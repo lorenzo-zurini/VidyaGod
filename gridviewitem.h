@@ -4,7 +4,7 @@
 #include <QWidget>
 
 namespace Ui {
-class GridViewItem;
+class GameItem;
 }
 
 class GridViewItem : public QWidget
@@ -16,7 +16,7 @@ public:
     ~GridViewItem();
 
 private:
-    Ui::GridViewItem *ui;
+    Ui::GameItem *ui;
 };
 
 #endif // GRIDVIEWITEM_H

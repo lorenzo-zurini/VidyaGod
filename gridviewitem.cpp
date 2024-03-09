@@ -3,7 +3,7 @@
 
 GridViewItem::GridViewItem(QWidget *parent)
     : QWidget(parent)
-    , ui(new Ui::GridViewItem)
+    , ui(new Ui::GameItem)
 {
     ui->setupUi(this);
 }
