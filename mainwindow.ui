@@ -13,18 +13,67 @@
   <property name="windowTitle">
    <string>MainWindow</string>
   </property>
-  <widget class="QWidget" name="centralwidget"/>
-  <widget class="QMenuBar" name="menubar">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>800</width>
-     <height>23</height>
-    </rect>
+  <widget class="QWidget" name="MainWidget">
+   <property name="enabled">
+    <bool>true</bool>
    </property>
+   <layout class="QGridLayout" name="gridLayout">
+    <property name="leftMargin">
+     <number>2</number>
+    </property>
+    <property name="topMargin">
+     <number>2</number>
+    </property>
+    <property name="rightMargin">
+     <number>2</number>
+    </property>
+    <property name="bottomMargin">
+     <number>2</number>
+    </property>
+    <item row="0" column="0">
+     <widget class="QTabWidget" name="TabWidget">
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <property name="iconSize">
+       <size>
+        <width>16</width>
+        <height>16</height>
+       </size>
+      </property>
+      <property name="elideMode">
+       <enum>Qt::ElideNone</enum>
+      </property>
+      <widget class="QWidget" name="LibraryTab">
+       <attribute name="title">
+        <string>Library</string>
+       </attribute>
+       <layout class="QGridLayout" name="gridLayout_2"/>
+      </widget>
+      <widget class="QWidget" name="StoreTab">
+       <attribute name="title">
+        <string>Store</string>
+       </attribute>
+      </widget>
+      <widget class="QWidget" name="ProfileTab">
+       <attribute name="title">
+        <string>Profile</string>
+       </attribute>
+      </widget>
+      <widget class="QWidget" name="BitTorrentTab">
+       <attribute name="title">
+        <string>BitTorrent</string>
+       </attribute>
+      </widget>
+      <widget class="QWidget" name="SettingsTab">
+       <attribute name="title">
+        <string>Settings</string>
+       </attribute>
+      </widget>
+     </widget>
+    </item>
+   </layout>
   </widget>
-  <widget class="QStatusBar" name="statusbar"/>
  </widget>
  <resources/>
  <connections/>

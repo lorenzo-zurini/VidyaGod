@@ -16,9 +16,15 @@ set(TS_FILES VidyaGod_en_US.ts)
 
 set(PROJECT_SOURCES
         main.cpp
+
         mainwindow.cpp
         mainwindow.h
         mainwindow.ui
+
+        gridviewitem.cpp
+        gridviewitem.h
+        gridviewitem.ui
+
         ${TS_FILES}
 )
 
@@ -43,6 +49,7 @@ else()
     else()
         add_executable(VidyaGod
             ${PROJECT_SOURCES}
+            gridviewitem.h gridviewitem.cpp gridviewitem.ui
         )
     endif()
 
