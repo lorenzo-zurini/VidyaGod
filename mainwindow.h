@@ -3,6 +3,11 @@
 
 #include <QMainWindow>
 
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+
 QT_BEGIN_NAMESPACE
 namespace Ui {
 class MainWindow;
@@ -19,5 +24,8 @@ public:
 
 private:
     Ui::MainWindow *ui;
+
+    QJsonDocument LoadJSON(QFile);
+    bool SaveJSON(QJsonDocument, QFile);
 };
 #endif // MAINWINDOW_H
