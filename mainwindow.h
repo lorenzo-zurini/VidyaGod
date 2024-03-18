@@ -4,13 +4,17 @@
 #include <QMainWindow>
 
 #include <QFile>
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 
+#include <QFileDialog>
+
 QT_BEGIN_NAMESPACE
-namespace Ui {
-class MainWindow;
+namespace Ui
+{
+    class MainWindow;
 }
 QT_END_NAMESPACE
 
@@ -22,10 +26,16 @@ public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
 
+private slots:
+    void on_AddGameButton_clicked();
+
 private:
     Ui::MainWindow *ui;
 
+    QJsonDocument * LibraryJSONDocument;
+
+    void InitClassVariables();
     QJsonDocument LoadJSON(QFile);
-    bool SaveJSON(QJsonDocument, QFile);
+    void SaveJSON(QJsonDocument, QFile);
 };
 #endif // MAINWINDOW_H
