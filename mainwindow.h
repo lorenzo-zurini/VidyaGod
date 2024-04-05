@@ -9,6 +9,8 @@
 #include <QJsonObject>
 #include <QJsonArray>
 
+#include <QStandardItemModel>
+
 #include <QFileDialog>
 
 QT_BEGIN_NAMESPACE
@@ -33,9 +35,11 @@ private:
     Ui::MainWindow *ui;
 
     QJsonDocument * LibraryJSONDocument;
+    QStandardItemModel * LibraryModel;
+
 
     void InitClassVariables();
-    QJsonDocument LoadJSON(QFile);
-    void SaveJSON(QJsonDocument, QFile);
+    QJsonDocument * LoadJSON(QFile*);
+    void SaveJSON(QJsonDocument*, QFile*);
 };
 #endif // MAINWINDOW_H

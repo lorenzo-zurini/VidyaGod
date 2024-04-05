@@ -17,7 +17,7 @@
    <property name="enabled">
     <bool>true</bool>
    </property>
-   <layout class="QGridLayout" name="gridLayout_3">
+   <layout class="QVBoxLayout" name="verticalLayout">
     <property name="leftMargin">
      <number>2</number>
     </property>
@@ -30,7 +30,7 @@
     <property name="bottomMargin">
      <number>2</number>
     </property>
-    <item row="0" column="0">
+    <item>
      <widget class="QTabWidget" name="TabWidget">
       <property name="currentIndex">
        <number>0</number>
@@ -102,6 +102,26 @@
              <height>534</height>
             </rect>
            </property>
+           <layout class="QVBoxLayout" name="verticalLayout_2">
+            <property name="spacing">
+             <number>0</number>
+            </property>
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QListView" name="listView"/>
+            </item>
+           </layout>
           </widget>
          </widget>
         </item>
