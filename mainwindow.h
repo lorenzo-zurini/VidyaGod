@@ -34,9 +34,8 @@ private slots:
 private:
     Ui::MainWindow *ui;
 
-    QJsonDocument * LibraryJSONDocument;
-    QStandardItemModel * LibraryModel;
-
+    QFile * GlobalConfigFile;
+    QJsonDocument * GlobalConfigJSONDocument;
 
     void InitClassVariables();
     QJsonDocument * LoadJSON(QFile*);

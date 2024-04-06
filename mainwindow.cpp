@@ -17,8 +17,8 @@ MainWindow::~MainWindow()
 
 void MainWindow::InitClassVariables()
 {
-    //MainWindow::LibraryJSONDocument = new QJsonDocument(LoadJSON(QFile("LIBRARY.JSON")));
-    MainWindow::LibraryModel = new QStandardItemModel;
+    MainWindow::GlobalConfigFile = new QFile("GlobalCOnfig.JSON");
+    MainWindow::GlobalConfigJSONDocument = LoadJSON(GlobalConfigFile);
 }
 
 QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
@@ -30,10 +30,8 @@ QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
     {
         std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened successfully!" << std::endl;
 
-        QJsonDocument * JSONDocument = new QJsonDocument;
         QJsonParseError * Error = new QJsonParseError;
-        JSONDocument->fromJson(JSONFile->readAll(), Error);
-        std::cout << JSONDocument->toJson().toStdString() << std::endl;
+        QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll(), Error));
 
         if (Error->error != QJsonParseError::NoError)
         {
@@ -47,6 +45,11 @@ QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
             return JSONDocument;
         }
     }
+    else
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] File could not be opened!" << std::endl;
+        return nullptr;
+    }
 }
 
 void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
@@ -59,7 +62,7 @@ void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
 void MainWindow::on_AddGameButton_clicked()
 {
     QString GameDirPathString(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << GameDirPathString.toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Scanning " << GameDirPathString.toStdString() << std::endl;
 
     //Check if the path is empty, such as when the file picker was canceled.
     if (GameDirPathString.isEmpty())
@@ -85,12 +88,16 @@ void MainWindow::on_AddGameButton_clicked()
     }
     std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Found " << MANIFESTFile->fileName().toStdString() << std::endl;
 
-
+    //Catch null return value of the JSON, returned if parser errorred.
     QJsonDocument * MANIFESTJSON = LoadJSON(MANIFESTFile);
     if (MANIFESTJSON == nullptr)
     {
         return;
     }
-    std::cout << "test" << MANIFESTJSON->toJson().toStdString() << "test2" << std::endl;
+
+    QJsonObject MANIFESTJSONObject(MANIFESTJSON->object());
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSONObject["Name"].toString().toStdString() << std::endl;
+
+    QJsonObject GlobalConfigJSONObject(GlobalConfigJSONDocument->object());
 }
 
