@@ -1,6 +1,5 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
-#include <iostream>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -17,11 +16,18 @@ MainWindow::~MainWindow()
 
 void MainWindow::InitClassVariables()
 {
-    MainWindow::GlobalConfigFile = new QFile("GlobalCOnfig.JSON");
-    MainWindow::GlobalConfigJSONDocument = LoadJSON(GlobalConfigFile);
+    MainWindow::GlobalConfigFile = new QFile("GlobalConfig.JSON");
+    if (!GlobalConfigFile->exists())
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Config flie not deteced. Creating... " << std::endl;
+        nlohmann::json DefaultJSON;
+        DefaultJSON["LibraryUIDs"] = {"0000", "0001"};
+        SaveJSON(&DefaultJSON, GlobalConfigFile);
+    }
+    MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
 }
 
-QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
+nlohmann::json MainWindow::LoadJSON(QFile * JSONFile)
 {
     std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Parsing JSON " << JSONFile->fileName().toStdString() << std::endl;
     //ADD VALID JSON CHECK HERE
@@ -29,34 +35,30 @@ QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
     if (JSONFile->open(QFile::ReadOnly))
     {
         std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened successfully!" << std::endl;
-
-        QJsonParseError * Error = new QJsonParseError;
-        QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll(), Error));
-
-        if (Error->error != QJsonParseError::NoError)
-        {
-            delete JSONDocument;
-            std::cout << QTime::currentTime().toString().toStdString() << " [ERR] JSON parse error: " << Error->errorString().toStdString() << std::endl;
-            return nullptr;
-        }
-        else
-        {
-            std::cout << QTime::currentTime().toString().toStdString() << " [OUT] JSON parsed successfully!" << std::endl;
-            return JSONDocument;
-        }
+        nlohmann::json JsonDocument = nlohmann::json::parse(JSONFile->readAll());
+        return JsonDocument;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] File could not be opened!" << std::endl;
-        return nullptr;
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file!" << std::endl;
+        return nlohmann::json();
     }
 }
 
-void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
+void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
 {
-    JSONFile->open(QFile::WriteOnly);
-    JSONFile->write(JSONDocument->toJson());
-    JSONFile->close();
+    if (JSONFile->open(QFile::WriteOnly))
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Saved " << GlobalConfigFile->fileName().toStdString() << std::endl;
+        std::ofstream OutFileStream(JSONFile->fileName().toUtf8());
+        OutFileStream << *JSONDocument;
+        OutFileStream.close();
+        JSONFile->close();
+    }
+    else
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file!" << std::endl;
+    }
 }
 
 void MainWindow::on_AddGameButton_clicked()
@@ -89,15 +91,24 @@ void MainWindow::on_AddGameButton_clicked()
     std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Found " << MANIFESTFile->fileName().toStdString() << std::endl;
 
     //Catch null return value of the JSON, returned if parser errorred.
-    QJsonDocument * MANIFESTJSON = LoadJSON(MANIFESTFile);
-    if (MANIFESTJSON == nullptr)
+    nlohmann::json MANIFESTJSON = LoadJSON(MANIFESTFile);
+    if (MANIFESTJSON.empty())
     {
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Parser returned empty JSON." << std::endl;
         return;
     }
 
-    QJsonObject MANIFESTJSONObject(MANIFESTJSON->object());
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSONObject["Name"].toString().toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSON["Name"] << std::endl;
 
-    QJsonObject GlobalConfigJSONObject(GlobalConfigJSONDocument->object());
+    if (GlobalConfigJSON["LibraryUIDs"].contains(MANIFESTJSON["UID"]))
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Game already exists in library, aborting!" << std::endl;
+        return;
+    }
+
+    GlobalConfigJSON["LibraryUIDs"].push_back(MANIFESTJSON["UID"]);
+    std::cout << QTime::currentTime().toString().toStdString() << GlobalConfigJSON << std::endl;
+    SaveJSON(&GlobalConfigJSON, GlobalConfigFile);
+    //std::cout << QTime::currentTime().toString().toStdString() << GlobalConfigJSONDocument->toJson().toStdString() << std::endl;
 }
 

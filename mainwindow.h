@@ -5,6 +5,10 @@
 
 #include <QFile>
 
+#include <iostream>
+#include <fstream>
+#include <nlohmann/json.hpp>
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -35,10 +39,10 @@ private:
     Ui::MainWindow *ui;
 
     QFile * GlobalConfigFile;
-    QJsonDocument * GlobalConfigJSONDocument;
+    nlohmann::json GlobalConfigJSON;
 
     void InitClassVariables();
-    QJsonDocument * LoadJSON(QFile*);
-    void SaveJSON(QJsonDocument*, QFile*);
+    nlohmann::json LoadJSON(QFile * JSONFile);
+    void SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile);
 };
 #endif // MAINWINDOW_H
