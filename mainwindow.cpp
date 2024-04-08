@@ -21,7 +21,7 @@ void MainWindow::InitClassVariables()
     {
         std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Config flie not deteced. Creating... " << std::endl;
         nlohmann::json DefaultJSON;
-        DefaultJSON["LibraryUIDs"] = {"0000", "0001"};
+        DefaultJSON["LibraryUIDs"] = nlohmann::json::array();
         SaveJSON(&DefaultJSON, GlobalConfigFile);
     }
     MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
@@ -34,13 +34,14 @@ nlohmann::json MainWindow::LoadJSON(QFile * JSONFile)
 
     if (JSONFile->open(QFile::ReadOnly))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened successfully!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened for reading successfully!" << std::endl;
         nlohmann::json JsonDocument = nlohmann::json::parse(JSONFile->readAll());
+        JSONFile->close();
         return JsonDocument;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file for reading!" << std::endl;
         return nlohmann::json();
     }
 }
@@ -49,6 +50,7 @@ void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
+        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened for writing successfully!" << std::endl;
         std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Saved " << GlobalConfigFile->fileName().toStdString() << std::endl;
         std::ofstream OutFileStream(JSONFile->fileName().toUtf8());
         OutFileStream << *JSONDocument;
@@ -57,14 +59,13 @@ void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file for writing!" << std::endl;
     }
 }
 
 void MainWindow::on_AddGameButton_clicked()
 {
     QString GameDirPathString(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Scanning " << GameDirPathString.toStdString() << std::endl;
 
     //Check if the path is empty, such as when the file picker was canceled.
     if (GameDirPathString.isEmpty())
@@ -72,6 +73,8 @@ void MainWindow::on_AddGameButton_clicked()
         std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Path is empty. Canceled?" << std::endl;
         return;
     }
+
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Scanning " << GameDirPathString.toStdString() << std::endl;
 
     //Check if the directory contains a METADATA subdirectory.
     QDir GameDir(GameDirPathString);
@@ -98,17 +101,21 @@ void MainWindow::on_AddGameButton_clicked()
         return;
     }
 
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSON["Name"] << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSON["Name"] << " UID: " << MANIFESTJSON["UID"] <<  std::endl;
 
-    if (GlobalConfigJSON["LibraryUIDs"].contains(MANIFESTJSON["UID"]))
+    //Checking if the game is already in library (by UID).
+    for (auto ExistingUID : GlobalConfigJSON["LibraryUIDs"].items())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Game already exists in library, aborting!" << std::endl;
-        return;
+        if (ExistingUID.value() == MANIFESTJSON["UID"])
+        {
+            std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Game already exists in library, aborting!" << std::endl;
+            return;
+        }
     }
-
     GlobalConfigJSON["LibraryUIDs"].push_back(MANIFESTJSON["UID"]);
-    std::cout << QTime::currentTime().toString().toStdString() << GlobalConfigJSON << std::endl;
+
+
+    GlobalConfigJSON["LibraryGames"][MANIFESTJSON["UID"]] = MANIFESTJSON;
     SaveJSON(&GlobalConfigJSON, GlobalConfigFile);
-    //std::cout << QTime::currentTime().toString().toStdString() << GlobalConfigJSONDocument->toJson().toStdString() << std::endl;
 }
 
