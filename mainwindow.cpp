@@ -114,7 +114,6 @@ void MainWindow::on_AddGameButton_clicked()
     }
     GlobalConfigJSON["LibraryUIDs"].push_back(MANIFESTJSON["UID"]);
 
-
     GlobalConfigJSON["LibraryGames"][MANIFESTJSON["UID"]] = MANIFESTJSON;
     SaveJSON(&GlobalConfigJSON, GlobalConfigFile);
 }
