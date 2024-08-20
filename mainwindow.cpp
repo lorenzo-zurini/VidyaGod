@@ -5,8 +5,8 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
-    InitClassVariables();
     ui->setupUi(this);
+    InitClassVariables();
 }
 
 MainWindow::~MainWindow()
@@ -16,33 +16,66 @@ MainWindow::~MainWindow()
 
 void MainWindow::InitClassVariables()
 {
+    MainWindow::ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
+    MainWindow::InitGlobalConfigJSON();
+    MainWindow::InitDatabaseAndModel();
+    ui->LibraryTableView->setModel(MainWindow::GlobalDBModel);
+}
+
+void MainWindow::InitDatabaseAndModel()
+{
+    qDebug() << QTime::currentTime() << " [OUT] Attempting database init... ";
+    MainWindow::GlobalDB = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
+    MainWindow::GlobalDB->setDatabaseName(ApplicationDirectory->filePath(QString("Global.DB")));
+
+    if (MainWindow::GlobalDB->open())
+    {
+        qDebug() << QTime::currentTime() << " [OUT] " << MainWindow::GlobalDB->databaseName() << " opened successfully.";
+    }
+    else
+    {
+        qDebug() << QTime::currentTime() << " [ERR] " << ApplicationDirectory->filePath(QString("Global.DB")) << " could not be opened.";
+        return;
+    }
+
+    //QSqlQuery InitQuery(*GlobalDB);
+    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS LIBRARY (UID INTEGER NOT NULL UNIQUE, NAME TEXT NOT NULL, PATH TEXT, PRIMARY KEY(UID))");
+    MainWindow::GlobalDBModel = new QSqlRelationalTableModel(ui->LibraryTableView, *MainWindow::GlobalDB);
+    MainWindow::GlobalDBModel->setTable("LIBRARY");
+    MainWindow::GlobalDBModel->select();
+}
+
+void MainWindow::InitGlobalConfigJSON()
+{
     MainWindow::GlobalConfigFile = new QFile("GlobalConfig.JSON");
     if (!GlobalConfigFile->exists())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Config flie not deteced. Creating... " << std::endl;
+        qDebug() << QTime::currentTime() << " [OUT] Config flie not deteced. Creating... ";
         nlohmann::json DefaultJSON;
         DefaultJSON["LibraryUIDs"] = nlohmann::json::array();
+        DefaultJSON["Library"] = nlohmann::json::array();
         SaveJSON(&DefaultJSON, GlobalConfigFile);
     }
     MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
 }
 
-nlohmann::json MainWindow::LoadJSON(QFile * JSONFile)
+nlohmann::json * MainWindow::LoadJSON(QFile * JSONFile)
 {
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Parsing JSON " << JSONFile->fileName().toStdString() << std::endl;
+    qDebug() << QTime::currentTime() << " [OUT] Parsing JSON " << JSONFile->fileName();
     //ADD VALID JSON CHECK HERE
 
     if (JSONFile->open(QFile::ReadOnly))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened for reading successfully!" << std::endl;
-        nlohmann::json JsonDocument = nlohmann::json::parse(JSONFile->readAll());
+        qDebug() << QTime::currentTime() << " [OUT] File opened for reading successfully!";
+        nlohmann::json * JsonDocument = new nlohmann::json(nlohmann::json::parse(JSONFile->readAll()));
         JSONFile->close();
+        qDebug() << QTime::currentTime() << " [OUT] Parse done!";
         return JsonDocument;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file for reading!" << std::endl;
-        return nlohmann::json();
+        qDebug() << QTime::currentTime() << " [ERR] Could not open file for reading!";
+        return nullptr;
     }
 }
 
@@ -50,8 +83,8 @@ void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] File opened for writing successfully!" << std::endl;
-        std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Saved " << GlobalConfigFile->fileName().toStdString() << std::endl;
+        qDebug() << QTime::currentTime() << " [OUT] File opened for writing successfully!";
+        qDebug() << QTime::currentTime() << " [OUT] Saved " << GlobalConfigFile->fileName();
         std::ofstream OutFileStream(JSONFile->fileName().toUtf8());
         OutFileStream << *JSONDocument;
         OutFileStream.close();
@@ -59,7 +92,7 @@ void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Could not open file for writing!" << std::endl;
+        qDebug() << QTime::currentTime() << " [ERR] Could not open file for writing!";
     }
 }
 
@@ -70,17 +103,17 @@ void MainWindow::on_AddGameButton_clicked()
     //Check if the path is empty, such as when the file picker was canceled.
     if (GameDirPathString.isEmpty())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Path is empty. Canceled?" << std::endl;
+        qDebug() << QTime::currentTime() << " [ERR] Path is empty. Canceled?";
         return;
     }
 
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Scanning " << GameDirPathString.toStdString() << std::endl;
+    qDebug() << QTime::currentTime() << " [OUT] Scanning " << GameDirPathString;
 
     //Check if the directory contains a METADATA subdirectory.
     QDir GameDir(GameDirPathString);
     if (!GameDir.cd("METADATA"))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Selected directory does not contain METADATA subdirectory." << std::endl;
+        qDebug() << QTime::currentTime() << " [ERR] Selected directory does not contain METADATA subdirectory.";
         return;
     }
 
@@ -88,33 +121,56 @@ void MainWindow::on_AddGameButton_clicked()
     QFile * MANIFESTFile = new QFile(GameDir.filePath("MANIFEST.json"));
     if (!MANIFESTFile->exists())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] MANIFEST.json file not found in GAMEDIR/METADATA." << std::endl;
+        qDebug() << QTime::currentTime() << " [ERR] MANIFEST.json file not found in GAMEDIR/METADATA.";
         return;
     }
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Found " << MANIFESTFile->fileName().toStdString() << std::endl;
+    qDebug() << QTime::currentTime() << " [OUT] Found " << MANIFESTFile->fileName();
 
-    //Catch null return value of the JSON, returned if parser errorred.
-    nlohmann::json MANIFESTJSON = LoadJSON(MANIFESTFile);
-    if (MANIFESTJSON.empty())
+    //Catch nullptr return value of the JSON, returned if parser errorred.
+    nlohmann::json * MANIFESTJSON = LoadJSON(MANIFESTFile);
+    if (MANIFESTJSON == nullptr)
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Parser returned empty JSON." << std::endl;
+        qDebug() << QTime::currentTime() << " [ERR] Parser returned nullptr.";
+        delete MANIFESTJSON;
         return;
     }
+    else if (MANIFESTJSON->empty())
+    {
+        qDebug() << QTime::currentTime() << " [ERR] Parser returned empty JSON.";
+        delete MANIFESTJSON;
+        return;
+    }
+    else
+    {
+        qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
+    }
 
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << MANIFESTJSON["Name"] << " UID: " << MANIFESTJSON["UID"] <<  std::endl;
+    qDebug() << QTime::currentTime() << " [OUT] Adding to library: " << MANIFESTJSON->at("Name").get<std::string>() << " UID: " << MANIFESTJSON->at("UID").get<std::string>();
 
     //Checking if the game is already in library (by UID).
-    for (auto ExistingUID : GlobalConfigJSON["LibraryUIDs"].items())
+    if (GlobalConfigJSON->at("LibraryUIDs").contains(MANIFESTJSON->at("UID").get<std::string>()))
     {
-        if (ExistingUID.value() == MANIFESTJSON["UID"])
-        {
-            std::cout << QTime::currentTime().toString().toStdString() << " [ERR] Game already exists in library, aborting!" << std::endl;
-            return;
-        }
+        qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
+        return;
     }
-    GlobalConfigJSON["LibraryUIDs"].push_back(MANIFESTJSON["UID"]);
 
-    GlobalConfigJSON["LibraryGames"][MANIFESTJSON["UID"]] = MANIFESTJSON;
-    SaveJSON(&GlobalConfigJSON, GlobalConfigFile);
+    QSqlQuery AddGameQuery(*GlobalDB);
+    AddGameQuery.prepare("INSERT INTO LIBRARY (UID, NAME, PATH) VALUES (:UID, :NAME, :PATH)");
+    AddGameQuery.bindValue(":UID", QString::fromStdString(MANIFESTJSON->at("UID").get<std::string>()).toInt());
+    AddGameQuery.bindValue(":NAME", QString::fromStdString(MANIFESTJSON->at("Name").get<std::string>()));
+    AddGameQuery.bindValue(":PATH", GameDir.path());
+    AddGameQuery.exec();
+
+    MainWindow::GlobalDBModel->select();
+    ui->LibraryTableView->resizeColumnsToContents();
+
+    delete MANIFESTJSON;
+    delete MANIFESTFile;
+}
+
+
+void MainWindow::on_TestButton_clicked()
+{
+    qDebug() << QTime::currentTime() << "[OUT] TEST";
 }
 

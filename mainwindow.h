@@ -5,6 +5,14 @@
 
 #include <QFile>
 
+#include <QSqlError>
+#include <QSqlDatabase>
+#include <QSqlRelationalTableModel>
+#include <QSqlQuery>
+#include <QSqlRecord>
+
+#include <QStandardItemModel>
+
 #include <iostream>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -12,8 +20,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-
-#include <QStandardItemModel>
 
 #include <QFileDialog>
 
@@ -35,14 +41,21 @@ public:
 private slots:
     void on_AddGameButton_clicked();
 
+    void on_TestButton_clicked();
+
 private:
     Ui::MainWindow *ui;
 
+    QDir * ApplicationDirectory;
     QFile * GlobalConfigFile;
-    nlohmann::json GlobalConfigJSON;
+    nlohmann::json * GlobalConfigJSON;
+    QSqlDatabase * GlobalDB;
+    QSqlRelationalTableModel * GlobalDBModel;
 
     void InitClassVariables();
-    nlohmann::json LoadJSON(QFile * JSONFile);
+    void InitGlobalConfigJSON();
+    void InitDatabaseAndModel();
+    nlohmann::json * LoadJSON(QFile * JSONFile);
     void SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile);
 };
 #endif // MAINWINDOW_H
