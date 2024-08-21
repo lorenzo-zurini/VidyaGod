@@ -1,12 +1,14 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
+#include "ui_mainwindow.h"
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    InitClassVariables();
+    MainWindow::InitClassVariables();
+    MainWindow::ResetTables();
 }
 
 MainWindow::~MainWindow()
@@ -19,7 +21,8 @@ void MainWindow::InitClassVariables()
     MainWindow::ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
     MainWindow::InitGlobalConfigJSON();
     MainWindow::InitDatabaseAndModel();
-    ui->LibraryTableView->setModel(MainWindow::GlobalDBModel);
+    ui->LibraryTableView->setModel(MainWindow::LibraryModel);
+    ui->PackagesTableView->setModel(MainWindow::PackagesModel);
 }
 
 void MainWindow::InitDatabaseAndModel()
@@ -39,10 +42,50 @@ void MainWindow::InitDatabaseAndModel()
     }
 
     //QSqlQuery InitQuery(*GlobalDB);
-    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS LIBRARY (UID INTEGER NOT NULL UNIQUE, NAME TEXT NOT NULL, PATH TEXT, PRIMARY KEY(UID))");
-    MainWindow::GlobalDBModel = new QSqlRelationalTableModel(ui->LibraryTableView, *MainWindow::GlobalDB);
-    MainWindow::GlobalDBModel->setTable("LIBRARY");
-    MainWindow::GlobalDBModel->select();
+    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS PACKAGES"
+                              "("   "PACKAGEUID INTEGER NOT NULL UNIQUE,"
+                                    "PACKAGENAME TEXT NOT NULL,"
+                                    "PACKAGEVERSION TEXT,"
+                                    "PATH TEXT,"
+                                    "PRIMARY KEY(PACKAGEUID)"               ")");
+
+    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS LIBRARY"
+                              "("   "GAMEUID INTEGER NOT NULL UNIQUE,"
+                                    "TITLE TEXT NOT NULL,"
+                                    "PARENTPACKAGE INTEGER NOT NULL,"
+                                    "TGDBID INTEGER,"
+                                    "STEAMAPPID INTEGER,"
+                                    "GOGPRODUCTID INTEGER,"
+                                    "COVER TEXT,"
+                                    "RELEASEDATE TEXT,"
+                                    "EDITION TEXT,"
+                                    "EDITIONDATE TEXT,"
+                                    "DEVELOPER TEXT,"
+                                    "PUBLISHER TEXT,"
+                                    "SERIES TEXT,"
+                                    "SERIESSORTNUMBER INTEGER,"
+                                    "SUBSERIES TEXT,"
+                                    "SUBSERIESSORTNUMBER INTEGER,"
+                                    "EDITOR TEXT,"
+                                    "ONLINEDRM TEXT,"
+                                    "NETWORKMULTIPLAYER TEXT,"
+                                    "DIRECTCONNECT TEXT,"
+                                    "LANMULTIPLAYER TEXT,"
+                                    "ONLINEMULTIPLAYER TEXT,"
+                                    "NETWORKCOOP TEXT,"
+                                    "LOCALMULTIPLAYER TEXT,"
+                                    "LOCALCOOP TEXT,"
+                                    "OTHERONLINEFEATURES TEXT,"
+                                    "PRIMARY KEY(GAMEUID)"                  ")");
+
+    MainWindow::LibraryModel = new QSqlRelationalTableModel(ui->LibraryTableView, *MainWindow::GlobalDB);
+    MainWindow::LibraryModel->setTable("LIBRARY");
+    MainWindow::LibraryModel->select();
+
+    MainWindow::PackagesModel = new QSqlRelationalTableModel(ui->PackagesTableView, *MainWindow::GlobalDB);
+    MainWindow::PackagesModel->setTable("PACKAGES");
+    MainWindow::PackagesModel->select();
+
 }
 
 void MainWindow::InitGlobalConfigJSON()
@@ -96,6 +139,19 @@ void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
     }
 }
 
+void MainWindow::on_TestButton_clicked()
+{
+    qDebug() << QTime::currentTime() << "[OUT] TEST";
+}
+
+void MainWindow::ResetTables()
+{
+    MainWindow::LibraryModel->select();
+    MainWindow::PackagesModel->select();
+    ui->LibraryTableView->resizeColumnsToContents();
+    ui->PackagesTableView->resizeColumnsToContents();
+}
+
 void MainWindow::on_AddGameButton_clicked()
 {
     QString GameDirPathString(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
@@ -125,6 +181,8 @@ void MainWindow::on_AddGameButton_clicked()
         return;
     }
     qDebug() << QTime::currentTime() << " [OUT] Found " << MANIFESTFile->fileName();
+    GameDir.cdUp();
+
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
     nlohmann::json * MANIFESTJSON = LoadJSON(MANIFESTFile);
@@ -145,32 +203,49 @@ void MainWindow::on_AddGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
     }
 
-    qDebug() << QTime::currentTime() << " [OUT] Adding to library: " << MANIFESTJSON->at("Name").get<std::string>() << " UID: " << MANIFESTJSON->at("UID").get<std::string>();
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"] << std::endl;
 
     //Checking if the game is already in library (by UID).
-    if (GlobalConfigJSON->at("LibraryUIDs").contains(MANIFESTJSON->at("UID").get<std::string>()))
-    {
-        qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
-        return;
-    }
+    //if (GlobalConfigJSON->at("LibraryUIDs").contains(MANIFESTJSON->at("UID").get<std::string>()))
+    //{
+    //    qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
+    //    return;
+    //}
 
-    QSqlQuery AddGameQuery(*GlobalDB);
-    AddGameQuery.prepare("INSERT INTO LIBRARY (UID, NAME, PATH) VALUES (:UID, :NAME, :PATH)");
-    AddGameQuery.bindValue(":UID", QString::fromStdString(MANIFESTJSON->at("UID").get<std::string>()).toInt());
-    AddGameQuery.bindValue(":NAME", QString::fromStdString(MANIFESTJSON->at("Name").get<std::string>()));
-    AddGameQuery.bindValue(":PATH", GameDir.path());
-    AddGameQuery.exec();
+    QSqlQuery AddPackageQuery(*GlobalDB);
 
-    MainWindow::GlobalDBModel->select();
-    ui->LibraryTableView->resizeColumnsToContents();
+    AddPackageQuery.prepare("INSERT INTO PACKAGES"
+                         "("    "PACKAGEUID,"
+                                "PACKAGENAME,"
+                                "PACKAGEVERSION,"
+                                "PATH"              ")"
+                         "VALUES"
+                         "("    ":PACKAGEUID,"
+                                ":PACKAGENAME,"
+                                ":PACKAGEVERSION,"
+                                ":PATH"             ")");
 
+    AddPackageQuery.bindValue(":PACKAGEUID", (*MANIFESTJSON)["PACKAGEUID"]);
+    AddPackageQuery.bindValue(":PACKAGENAME", (*MANIFESTJSON)["PACKAGENAME"]);
+    AddPackageQuery.bindValue(":PACKAGEVERSION", (*MANIFESTJSON)["PACKAGEVERSION"]);
+    AddPackageQuery.bindValue(":PATH", GameDir.path());
+    AddPackageQuery.exec();
+
+    //for (auto& ITEM : MANIFESTJSON->at("SUBGAMES").items())
+    //{
+    //    std::cout << "TESSSST" << ITEM.key() << ITEM.value();
+    //}
+
+    std::cout << "TESTATRON" << (*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["TITLE"];
+
+    MainWindow::ResetTables();
     delete MANIFESTJSON;
     delete MANIFESTFile;
 }
 
 
-void MainWindow::on_TestButton_clicked()
+void MainWindow::on_PlayGameButton_clicked()
 {
-    qDebug() << QTime::currentTime() << "[OUT] TEST";
+    qDebug() << "PLAY";
 }
 

@@ -39,9 +39,9 @@ public:
     ~MainWindow();
 
 private slots:
-    void on_AddGameButton_clicked();
-
     void on_TestButton_clicked();
+    void on_AddGameButton_clicked();
+    void on_PlayGameButton_clicked();
 
 private:
     Ui::MainWindow *ui;
@@ -50,12 +50,14 @@ private:
     QFile * GlobalConfigFile;
     nlohmann::json * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
-    QSqlRelationalTableModel * GlobalDBModel;
+    QSqlRelationalTableModel * LibraryModel;
+    QSqlRelationalTableModel * PackagesModel;
 
     void InitClassVariables();
     void InitGlobalConfigJSON();
     void InitDatabaseAndModel();
     nlohmann::json * LoadJSON(QFile * JSONFile);
     void SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile);
+    void ResetTables();
 };
 #endif // MAINWINDOW_H
