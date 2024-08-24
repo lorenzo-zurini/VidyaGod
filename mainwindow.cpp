@@ -53,19 +53,6 @@ void MainWindow::InitDatabaseAndModel()
     MainWindow::PackagesModel->select();
 }
 
-void MainWindow::InitDBTable(std::string TableName)
-{
-    QString QueryString;
-
-    QueryString.append("CREATE TABLE IF NOT EXISTS").append(" ").append(QString::fromStdString(TableName)).append(" (");
-    for (auto ITEM : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].items())
-    {
-        QueryString.append("\"").append(QString::fromStdString(ITEM.key())).append("\" ").append(QString::fromStdString(ITEM.value())).append(", ");
-    }
-    QueryString.append("PRIMARY KEY(\"").append(QString::fromStdString((*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"])).append("\"))");
-    QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
-}
-
 void MainWindow::InitGlobalConfigJSON()
 {
     MainWindow::GlobalConfigFile = new QFile("GlobalConfig.JSON");
@@ -77,7 +64,7 @@ void MainWindow::InitGlobalConfigJSON()
     MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
 }
 
-nlohmann::ordered_json * MainWindow::LoadJSON(QFile * JSONFile)
+QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
 {
     qDebug() << QTime::currentTime() << " [OUT] Parsing JSON " << JSONFile->fileName();
     //ADD VALID JSON CHECK HERE
@@ -85,10 +72,10 @@ nlohmann::ordered_json * MainWindow::LoadJSON(QFile * JSONFile)
     if (JSONFile->open(QFile::ReadOnly))
     {
         qDebug() << QTime::currentTime() << " [OUT] File opened for reading successfully!";
-        nlohmann::ordered_json * JsonDocument = new nlohmann::ordered_json(nlohmann::ordered_json::parse(JSONFile->readAll()));
+        QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll()));
         JSONFile->close();
         qDebug() << QTime::currentTime() << " [OUT] Parse done!";
-        return JsonDocument;
+        return JSONDocument;
     }
     else
     {
@@ -97,14 +84,14 @@ nlohmann::ordered_json * MainWindow::LoadJSON(QFile * JSONFile)
     }
 }
 
-void MainWindow::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
+void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
         qDebug() << QTime::currentTime() << " [OUT] File opened for writing successfully!";
         qDebug() << QTime::currentTime() << " [OUT] Saved " << GlobalConfigFile->fileName();
         std::ofstream OutFileStream(JSONFile->fileName().toUtf8());
-        OutFileStream << *JSONDocument;
+        OutFileStream << *JSONDocument->toJson();
         OutFileStream.close();
         JSONFile->close();
     }
@@ -160,16 +147,16 @@ void MainWindow::on_AddGameButton_clicked()
 
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    nlohmann::ordered_json * MANIFESTJSON = LoadJSON(MANIFESTFile);
+    QJsonDocument * MANIFESTJSON = LoadJSON(MANIFESTFile);
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime() << " [ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
-    else if (MANIFESTJSON->empty())
+    else if (MANIFESTJSON->isNull())
     {
-        qDebug() << QTime::currentTime() << " [ERR] Parser returned empty JSON.";
+        qDebug() << QTime::currentTime() << " [ERR] Parser returned null JSON.";
         delete MANIFESTJSON;
         return;
     }
@@ -184,6 +171,7 @@ void MainWindow::on_AddGameButton_clicked()
     //{
     //    qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
     //}
+
     MainWindow::AddPackagetoDB(MANIFESTJSON, &GameDir);
     MainWindow::AddSubGamestoDB(MANIFESTJSON);
 
@@ -193,55 +181,73 @@ void MainWindow::on_AddGameButton_clicked()
     MainWindow::ResetTables();
 }
 
-void MainWindow::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir)
+void MainWindow::InitDBTable(QString TableName)
 {
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"] << std::endl;
-    QSqlQuery AddPackageQuery(*MainWindow::GlobalDB);
+    QString QueryString;
 
-    AddPackageQuery.prepare("INSERT INTO PACKAGES"
-                            "("     "PACKAGEUID,"
-                                    "PACKAGENAME,"
-                                    "PACKAGEVERSION,"
-                                    "PATH"              ")"
-                            "VALUES"
-                            "("     ":PACKAGEUID,"
-                                    ":PACKAGENAME,"
-                                    ":PACKAGEVERSION,"
-                                    ":PATH"             ")");
+    QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
 
-    AddPackageQuery.bindValue(":PACKAGEUID", QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])));
-    AddPackageQuery.bindValue(":PACKAGENAME", QString::fromStdString(((*MANIFESTJSON)["PACKAGENAME"])));
-    AddPackageQuery.bindValue(":PACKAGEVERSION", QString::fromStdString(((*MANIFESTJSON)["PACKAGEVERSION"])));
-    AddPackageQuery.bindValue(":PATH", GameDir->path());
-    AddPackageQuery.exec();
+    for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
+    {
+        QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
+    }
+    QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
+    QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
 }
 
-void MainWindow::AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON)
+void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
 {
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding subgames to library... " << std::endl;
+    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"];
 
+    QMap<QString, QString> PackagePathMap;
+    PackagePathMap["PATH"] = GameDir->path();
 
-    for (auto ITEM : (*MANIFESTJSON)["SUBGAMES"].items())
+    MainWindow::AddJSONObjectToDB("PACKAGES", (*MANIFESTJSON).object(), PackagePathMap);
+    QSqlQuery AddPackageQuery(*MainWindow::GlobalDB);
+}
+
+void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)
+{
+    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding subgames to library... ";
+
+    QMap<QString, QString> ParentPackageMap;
+    ParentPackageMap["PARENTPACKAGE"] = (*MANIFESTJSON)["PACKAGEUID"].toString();
+
+    for (auto SubGameObject : (*MANIFESTJSON)["SUBGAMES"].toArray())
     {
+        MainWindow::AddJSONObjectToDB("LIBRARY", SubGameObject.toObject(), ParentPackageMap);
+    }
+}
+
+void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap<QString, QString> ExtraData)
+{
         QString QueryString;
         QString ColumnString;
         QString ValueString;
 
-        for (auto SUBITEM : ITEM.value().items())
+        for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
         {
-            ColumnString.append("\"").append(QString::fromStdString(SUBITEM.key())).append("\", ");
-            ValueString.append("\"").append(QString::fromStdString(SUBITEM.value())).append("\", ");
+            if (JsonObject.keys().contains(Key))
+            {
+                ColumnString.append("\"" + Key + "\", ");
+                ValueString.append("\"" + JsonObject.value(Key).toString() + "\", ");
+            }
         }
 
-        ColumnString.append("\"PARENTPACKAGE\"");
-        ValueString.append(QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])));
+        for (auto [Column, Value] : ExtraData.asKeyValueRange())
+        {
+            if ((*MainWindow::GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys().contains(Column))
+            {
+                ColumnString.append("\"" + Column + "\", ");
+                ValueString.append("\"" + Value + "\", ");
+            }
+        }
 
-        QueryString.append("INSERT INTO LIBRARY (").append(ColumnString).append(") VALUES (").append(ValueString).append(")");
-        QSqlQuery TestQuery(*MainWindow::GlobalDB);
-        TestQuery.exec(QueryString);
-        qDebug().noquote() << TestQuery.lastError();
-        qDebug().noquote() << TestQuery.lastQuery();
-    }
+        ColumnString.chop(2);
+        ValueString.chop(2);
+
+        QueryString.append("INSERT INTO " + DBTable + " (" + ColumnString + ") VALUES (" + ValueString + ")");
+        QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
 }
 
 void MainWindow::on_PlayGameButton_clicked()

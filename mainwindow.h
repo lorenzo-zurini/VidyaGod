@@ -49,7 +49,7 @@ private:
 
     QDir * ApplicationDirectory;
     QFile * GlobalConfigFile;
-    nlohmann::ordered_json * GlobalConfigJSON;
+    QJsonDocument * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
     QSqlRelationalTableModel * LibraryModel;
     QSqlRelationalTableModel * PackagesModel;
@@ -57,11 +57,12 @@ private:
     void InitClassVariables();
     void InitGlobalConfigJSON();
     void InitDatabaseAndModel();
-    void InitDBTable(std::string TableName);
-    nlohmann::ordered_json * LoadJSON(QFile * JSONFile);
-    void SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
-    void AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir);
-    void AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON);
+    void InitDBTable(QString TableName);
+    QJsonDocument * LoadJSON(QFile * JSONFile);
+    void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
+    void AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir);
+    void AddSubGamestoDB(QJsonDocument * MANIFESTJSON);
+    void AddJSONObjectToDB(QString DBTable, QJsonObject MANIFESTJSON, QMap<QString, QString> ExtraData);
     void ResetTables();
 };
 #endif // MAINWINDOW_H
