@@ -165,11 +165,18 @@ void MainWindow::on_AddGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
     }
 
-    //QSqlQuery CheckGameExistsQuery(*MainWindow::GlobalDB);
-    //CheckGameExistsQuery.exec("SELECT GAMEUID FROM LIBRARY");
-    //while (CheckGameExistsQuery.next())
+    //QSqlQuery CheckPackageExistsQuery(*MainWindow::GlobalDB);
+    //CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
+    //qDebug() << CheckPackageExistsQuery.lastQuery();
+    //qDebug() << CheckPackageExistsQuery.lastError();
+    //qDebug() << "QUERY: " << CheckPackageExistsQuery.value(0).toInt();
+    //while (CheckPackageExistsQuery.next())
     //{
-    //    qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
+    //    if (CheckPackageExistsQuery.value("PACKAGEUID").toInt() == (*MANIFESTJSON)["PACKAGEUID"].toInt())
+    //    {
+    //        qDebug() << QTime::currentTime() << " [ERR] Package already exists in library, aborting!";
+    //        return;
+    //    }
     //}
 
     MainWindow::AddPackagetoDB(MANIFESTJSON, &GameDir);
@@ -203,7 +210,6 @@ void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
     PackagePathMap["PATH"] = GameDir->path();
 
     MainWindow::AddJSONObjectToDB("PACKAGES", (*MANIFESTJSON).object(), PackagePathMap);
-    QSqlQuery AddPackageQuery(*MainWindow::GlobalDB);
 }
 
 void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)

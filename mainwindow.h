@@ -15,7 +15,6 @@
 
 #include <iostream>
 #include <fstream>
-#include <nlohmann/json.hpp>
 
 #include <QJsonDocument>
 #include <QJsonObject>
