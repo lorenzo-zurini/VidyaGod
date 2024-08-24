@@ -34,10 +34,7 @@ set(PROJECT_SOURCES
 
 add_executable(VidyaGod ${PROJECT_SOURCES})
 
-add_subdirectory(json)
-
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)
-target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 
 configure_file(DefaultConfig.JSON DefaultConfig.JSON)
