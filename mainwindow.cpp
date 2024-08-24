@@ -41,51 +41,29 @@ void MainWindow::InitDatabaseAndModel()
         return;
     }
 
-    //QSqlQuery InitQuery(*GlobalDB);
-    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS PACKAGES"
-                              "("   "PACKAGEUID INTEGER NOT NULL UNIQUE,"
-                                    "PACKAGENAME TEXT NOT NULL,"
-                                    "PACKAGEVERSION TEXT,"
-                                    "PATH TEXT,"
-                                    "PRIMARY KEY(PACKAGEUID)"               ")");
-
-    QSqlQuery(*GlobalDB).exec("CREATE TABLE IF NOT EXISTS LIBRARY"
-                              "("   "GAMEUID INTEGER NOT NULL UNIQUE,"
-                                    "TITLE TEXT NOT NULL,"
-                                    "PARENTPACKAGE INTEGER NOT NULL,"
-                                    "TGDBID INTEGER,"
-                                    "STEAMAPPID INTEGER,"
-                                    "GOGPRODUCTID INTEGER,"
-                                    "COVER TEXT,"
-                                    "RELEASEDATE TEXT,"
-                                    "EDITION TEXT,"
-                                    "EDITIONDATE TEXT,"
-                                    "DEVELOPER TEXT,"
-                                    "PUBLISHER TEXT,"
-                                    "SERIES TEXT,"
-                                    "SERIESSORTNUMBER INTEGER,"
-                                    "SUBSERIES TEXT,"
-                                    "SUBSERIESSORTNUMBER INTEGER,"
-                                    "EDITOR TEXT,"
-                                    "ONLINEDRM TEXT,"
-                                    "NETWORKMULTIPLAYER TEXT,"
-                                    "DIRECTCONNECT TEXT,"
-                                    "LANMULTIPLAYER TEXT,"
-                                    "ONLINEMULTIPLAYER TEXT,"
-                                    "NETWORKCOOP TEXT,"
-                                    "LOCALMULTIPLAYER TEXT,"
-                                    "LOCALCOOP TEXT,"
-                                    "OTHERONLINEFEATURES TEXT,"
-                                    "PRIMARY KEY(GAMEUID)"                  ")");
-
+    MainWindow::InitDBTable("LIBRARY");
     MainWindow::LibraryModel = new QSqlRelationalTableModel(ui->LibraryTableView, *MainWindow::GlobalDB);
     MainWindow::LibraryModel->setTable("LIBRARY");
     MainWindow::LibraryModel->select();
 
+
+    MainWindow::InitDBTable("PACKAGES");
     MainWindow::PackagesModel = new QSqlRelationalTableModel(ui->PackagesTableView, *MainWindow::GlobalDB);
     MainWindow::PackagesModel->setTable("PACKAGES");
     MainWindow::PackagesModel->select();
+}
 
+void MainWindow::InitDBTable(std::string TableName)
+{
+    QString QueryString;
+
+    QueryString.append("CREATE TABLE IF NOT EXISTS").append(" ").append(QString::fromStdString(TableName)).append(" (");
+    for (auto ITEM : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].items())
+    {
+        QueryString.append("\"").append(QString::fromStdString(ITEM.key())).append("\" ").append(QString::fromStdString(ITEM.value())).append(", ");
+    }
+    QueryString.append("PRIMARY KEY(\"").append(QString::fromStdString((*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"])).append("\"))");
+    QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
 }
 
 void MainWindow::InitGlobalConfigJSON()
@@ -94,15 +72,12 @@ void MainWindow::InitGlobalConfigJSON()
     if (!GlobalConfigFile->exists())
     {
         qDebug() << QTime::currentTime() << " [OUT] Config flie not deteced. Creating... ";
-        nlohmann::json DefaultJSON;
-        DefaultJSON["LibraryUIDs"] = nlohmann::json::array();
-        DefaultJSON["Library"] = nlohmann::json::array();
-        SaveJSON(&DefaultJSON, GlobalConfigFile);
+        QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
     MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
 }
 
-nlohmann::json * MainWindow::LoadJSON(QFile * JSONFile)
+nlohmann::ordered_json * MainWindow::LoadJSON(QFile * JSONFile)
 {
     qDebug() << QTime::currentTime() << " [OUT] Parsing JSON " << JSONFile->fileName();
     //ADD VALID JSON CHECK HERE
@@ -110,7 +85,7 @@ nlohmann::json * MainWindow::LoadJSON(QFile * JSONFile)
     if (JSONFile->open(QFile::ReadOnly))
     {
         qDebug() << QTime::currentTime() << " [OUT] File opened for reading successfully!";
-        nlohmann::json * JsonDocument = new nlohmann::json(nlohmann::json::parse(JSONFile->readAll()));
+        nlohmann::ordered_json * JsonDocument = new nlohmann::ordered_json(nlohmann::ordered_json::parse(JSONFile->readAll()));
         JSONFile->close();
         qDebug() << QTime::currentTime() << " [OUT] Parse done!";
         return JsonDocument;
@@ -122,7 +97,7 @@ nlohmann::json * MainWindow::LoadJSON(QFile * JSONFile)
     }
 }
 
-void MainWindow::SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile)
+void MainWindow::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
@@ -185,7 +160,7 @@ void MainWindow::on_AddGameButton_clicked()
 
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    nlohmann::json * MANIFESTJSON = LoadJSON(MANIFESTFile);
+    nlohmann::ordered_json * MANIFESTJSON = LoadJSON(MANIFESTFile);
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime() << " [ERR] Parser returned nullptr.";
@@ -203,15 +178,24 @@ void MainWindow::on_AddGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
     }
 
-    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"] << std::endl;
-
-    //Checking if the game is already in library (by UID).
-    //if (GlobalConfigJSON->at("LibraryUIDs").contains(MANIFESTJSON->at("UID").get<std::string>()))
+    //QSqlQuery CheckGameExistsQuery(*MainWindow::GlobalDB);
+    //CheckGameExistsQuery.exec("SELECT GAMEUID FROM LIBRARY");
+    //while (CheckGameExistsQuery.next())
     //{
     //    qDebug() << QTime::currentTime() << " [ERR] Game already exists in library, aborting!";
-    //    return;
     //}
+    MainWindow::AddPackagetoDB(MANIFESTJSON, &GameDir);
+    MainWindow::AddSubGamestoDB(MANIFESTJSON);
 
+    delete MANIFESTJSON;
+    delete MANIFESTFile;
+
+    MainWindow::ResetTables();
+}
+
+void MainWindow::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir)
+{
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"] << std::endl;
     QSqlQuery AddPackageQuery(*MainWindow::GlobalDB);
 
     AddPackageQuery.prepare("INSERT INTO PACKAGES"
@@ -225,108 +209,40 @@ void MainWindow::on_AddGameButton_clicked()
                                     ":PACKAGEVERSION,"
                                     ":PATH"             ")");
 
-    AddPackageQuery.bindValue(":PACKAGEUID", QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])).toInt());
+    AddPackageQuery.bindValue(":PACKAGEUID", QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])));
     AddPackageQuery.bindValue(":PACKAGENAME", QString::fromStdString(((*MANIFESTJSON)["PACKAGENAME"])));
     AddPackageQuery.bindValue(":PACKAGEVERSION", QString::fromStdString(((*MANIFESTJSON)["PACKAGEVERSION"])));
-    AddPackageQuery.bindValue(":PATH", GameDir.path());
+    AddPackageQuery.bindValue(":PATH", GameDir->path());
     AddPackageQuery.exec();
-
-    //for (auto& ITEM : MANIFESTJSON->at("SUBGAMES").items())
-    //{
-    //    std::cout << "TESSSST" << ITEM.key() << ITEM.value();
-    //}
-
-    QSqlQuery AddGameQuery(*MainWindow::GlobalDB);
-
-    AddGameQuery.prepare("INSERT INTO GAMES"
-                         "("    "GAMEUID,"
-                                "TITLE,"
-                                "PARENTPACKAGE,"
-                                "TGDBID,"
-                                "STEAMAPPID,"
-                                "GOGPRODUCTID,"
-                                "COVER,"
-                                "RELEASEDATE,"
-                                "EDITION,"
-                                "EDITIONDATE,"
-                                "DEVELOPER,"
-                                "PUBLISHER,"
-                                "SERIES,"
-                                "SERIESSORTNUMBER,"
-                                "SUBSERIES,"
-                                "SUBSERIESSORTNUMBER,"
-                                "EDITOR,"
-                                "ONLINEDRM,"
-                                "NETWORKMULTIPLAYER,"
-                                "DIRECTCONNECT,"
-                                "LANMULTIPLAYER,"
-                                "ONLINEMULTIPLAYER,"
-                                "NETWORKCOOP,"
-                                "LOCALMULTIPLAYER,"
-                                "LOCALCOOP,"
-                                "OTHERONLINEFEATURES"                 ")"
-                         "VALUES"
-                         "("    ":GAMEUID,"
-                                ":TITLE,"
-                                ":PARENTPACKAGE,"
-                                ":TGDBID,"
-                                ":STEAMAPPID,"
-                                ":GOGPRODUCTID,"
-                                ":COVER,"
-                                ":RELEASEDATE,"
-                                ":EDITION,"
-                                ":EDITIONDATE,"
-                                ":DEVELOPER,"
-                                ":PUBLISHER,"
-                                ":SERIES,"
-                                ":SERIESSORTNUMBER,"
-                                ":SUBSERIES,"
-                                ":SUBSERIESSORTNUMBER,"
-                                ":EDITOR,"
-                                ":ONLINEDRM,"
-                                ":NETWORKMULTIPLAYER,"
-                                ":DIRECTCONNECT,"
-                                ":LANMULTIPLAYER,"
-                                ":ONLINEMULTIPLAYER,"
-                                ":NETWORKCOOP,"
-                                ":LOCALMULTIPLAYER,"
-                                ":LOCALCOOP,"
-                                ":OTHERONLINEFEATURES"                ")");
-
-    AddGameQuery.bindValue(":GAMEUID", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["GAMEUID"])).toInt());
-    AddGameQuery.bindValue(":TITLE", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["TITLE"])));
-    AddGameQuery.bindValue(":PARENTPACKAGE", QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])).toInt());
-    AddGameQuery.bindValue(":TGDBID", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["TGDBID"])).toInt());
-    AddGameQuery.bindValue(":STEAMAPPID", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["STEAMAPPID"])).toInt());
-    AddGameQuery.bindValue(":GOGPRODUCTID", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["GOGPRODUCTID"])).toInt());
-    AddGameQuery.bindValue(":COVER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["COVER"])));
-    AddGameQuery.bindValue(":RELEASEDATE", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["RELEASEDATE"])));
-    AddGameQuery.bindValue(":EDITION", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["EDITION"])));
-    AddGameQuery.bindValue(":EDITIONDATE", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["EDITIONDATE"])));
-    AddGameQuery.bindValue(":DEVELOPER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["DEVELOPER"])));
-    AddGameQuery.bindValue(":PUBLISHER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["PUBLISHER"])));
-    AddGameQuery.bindValue(":SERIES", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["SERIES"])));
-    AddGameQuery.bindValue(":SERIESSORTNUMBER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["SERIESSORTNUMBER"])).toInt());
-    AddGameQuery.bindValue(":SUBSERIES", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["SUBSERIES"])));
-    AddGameQuery.bindValue(":SUBSERIESSORTNUMBER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["SUBSERIESSORTNUMBER"])).toInt());
-    AddGameQuery.bindValue(":EDITOR", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["EDITOR"])));
-    AddGameQuery.bindValue(":ONLINEDRM", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["ONLINEDRM"])));
-    AddGameQuery.bindValue(":NETWORKMULTIPLAYER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["NETWORKMULTIPLAYER"])));
-    AddGameQuery.bindValue(":DIRECTCONNECT", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["DIRECTCONNECT"])));
-    AddGameQuery.bindValue(":LANMULTIPLAYER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["LANMULTIPLAYER"])));
-    AddGameQuery.bindValue(":ONLINEMULTIPLAYER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["ONLINEMULTIPLAYER"])));
-    AddGameQuery.bindValue(":NETWORKCOOP", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["NETWORKCOOP"])));
-    AddGameQuery.bindValue(":LOCALMULTIPLAYER", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["LOCALMULTIPLAYER"])));
-    AddGameQuery.bindValue(":LOCALCOOP", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["LOCALCOOP"])));
-    AddGameQuery.bindValue(":OTHERONLINEFEATURES", QString::fromStdString(((*MANIFESTJSON)["SUBGAMES"]["1"]["METADATA"]["OTHERONLINEFEATURES"])));
-    AddGameQuery.exec();
-    qDebug() << AddGameQuery.lastError() << " " << AddGameQuery.lastQuery();
-
-    MainWindow::ResetTables();
-    delete MANIFESTJSON;
-    delete MANIFESTFile;
 }
 
+void MainWindow::AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON)
+{
+    std::cout << QTime::currentTime().toString().toStdString() << " [OUT] Adding subgames to library... " << std::endl;
+
+
+    for (auto ITEM : (*MANIFESTJSON)["SUBGAMES"].items())
+    {
+        QString QueryString;
+        QString ColumnString;
+        QString ValueString;
+
+        for (auto SUBITEM : ITEM.value().items())
+        {
+            ColumnString.append("\"").append(QString::fromStdString(SUBITEM.key())).append("\", ");
+            ValueString.append("\"").append(QString::fromStdString(SUBITEM.value())).append("\", ");
+        }
+
+        ColumnString.append("\"PARENTPACKAGE\"");
+        ValueString.append(QString::fromStdString(((*MANIFESTJSON)["PACKAGEUID"])));
+
+        QueryString.append("INSERT INTO LIBRARY (").append(ColumnString).append(") VALUES (").append(ValueString).append(")");
+        QSqlQuery TestQuery(*MainWindow::GlobalDB);
+        TestQuery.exec(QueryString);
+        qDebug().noquote() << TestQuery.lastError();
+        qDebug().noquote() << TestQuery.lastQuery();
+    }
+}
 
 void MainWindow::on_PlayGameButton_clicked()
 {

@@ -1,0 +1,50 @@
+{
+    "DefaultTables":
+    {
+        "LIBRARY":
+        {
+            "COLUMNS":
+            {
+                "GAMEUID": "INTEGER NOT NULL UNIQUE",
+                "TITLE": "TEXT NOT NULL",
+                "PARENTPACKAGE": "INTEGER NOT NULL",
+                "TGDBID": "INTEGER",
+                "STEAMAPPID": "INTEGER",
+                "GOGPRODUCTID": "INTEGER",
+                "COVER": "TEXT",
+                "RELEASEDATE": "TEXT",
+                "EDITION": "TEXT",
+                "EDITIONDATE": "TEXT",
+                "DEVELOPER": "TEXT",
+                "PUBLISHER": "TEXT",
+                "SERIES": "TEXT",
+                "SERIESSORTNUMBER": "INTEGER",
+                "SUBSERIES": "TEXT",
+                "SUBSERIESSORTNUMBER": "INTEGER",
+                "EDITOR": "TEXT",
+                "ONLINEDRM": "TEXT",
+                "NETWORKMULTIPLAYER": "TEXT",
+                "DIRECTCONNECT": "TEXT",
+                "LANMULTIPLAYER": "TEXT",
+                "ONLINEMULTIPLAYER": "TEXT",
+                "NETWORKCOOP": "TEXT",
+                "LOCALMULTIPLAYER": "TEXT",
+                "LOCALCOOP": "TEXT",
+                "OTHERONLINEFEATURES": "TEXT",
+                "RECIPE": "TEXT"
+            },
+            "PRIMARY KEY": "GAMEUID"
+        },
+        "PACKAGES":
+        {
+            "COLUMNS":
+            {
+                "PACKAGEUID": "INTEGER NOT NULL UNIQUE",
+                "PACKAGENAME": "TEXT NOT NULL",
+                "PACKAGEVERSION": "TEXT",
+                "PATH": "TEXT"
+            },
+            "PRIMARY KEY": "PACKAGEUID"
+        }
+    }
+}

@@ -20,6 +20,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QJsonValue>
 
 #include <QFileDialog>
 
@@ -48,7 +49,7 @@ private:
 
     QDir * ApplicationDirectory;
     QFile * GlobalConfigFile;
-    nlohmann::json * GlobalConfigJSON;
+    nlohmann::ordered_json * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
     QSqlRelationalTableModel * LibraryModel;
     QSqlRelationalTableModel * PackagesModel;
@@ -56,8 +57,11 @@ private:
     void InitClassVariables();
     void InitGlobalConfigJSON();
     void InitDatabaseAndModel();
-    nlohmann::json * LoadJSON(QFile * JSONFile);
-    void SaveJSON(nlohmann::json * JSONDocument, QFile * JSONFile);
+    void InitDBTable(std::string TableName);
+    nlohmann::ordered_json * LoadJSON(QFile * JSONFile);
+    void SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
+    void AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir);
+    void AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON);
     void ResetTables();
 };
 #endif // MAINWINDOW_H
