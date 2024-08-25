@@ -7,8 +7,8 @@ MainWindow::MainWindow(QWidget *parent)
     , ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    MainWindow::InitClassVariables();
-    MainWindow::ResetTables();
+    InitClassVariables();
+    ResetTables();
 }
 
 MainWindow::~MainWindow()
@@ -18,9 +18,9 @@ MainWindow::~MainWindow()
 
 void MainWindow::InitClassVariables()
 {
-    MainWindow::ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
-    MainWindow::InitGlobalConfigJSON();
-    MainWindow::InitDatabaseAndModel();
+    ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
+    InitGlobalConfigJSON();
+    InitDatabaseAndModel();
     ui->LibraryTableView->setModel(MainWindow::LibraryModel);
     ui->PackagesTableView->setModel(MainWindow::PackagesModel);
 }
@@ -28,12 +28,12 @@ void MainWindow::InitClassVariables()
 void MainWindow::InitDatabaseAndModel()
 {
     qDebug() << QTime::currentTime() << " [OUT] Attempting database init... ";
-    MainWindow::GlobalDB = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
-    MainWindow::GlobalDB->setDatabaseName(ApplicationDirectory->filePath(QString("Global.DB")));
+    GlobalDB = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
+    GlobalDB->setDatabaseName(ApplicationDirectory->filePath(QString("Global.DB")));
 
-    if (MainWindow::GlobalDB->open())
+    if (GlobalDB->open())
     {
-        qDebug() << QTime::currentTime() << " [OUT] " << MainWindow::GlobalDB->databaseName() << " opened successfully.";
+        qDebug() << QTime::currentTime() << " [OUT] " << GlobalDB->databaseName() << " opened successfully.";
     }
     else
     {
@@ -41,27 +41,19 @@ void MainWindow::InitDatabaseAndModel()
         return;
     }
 
-    MainWindow::InitDBTable("LIBRARY");
-    MainWindow::LibraryModel = new QSqlRelationalTableModel(ui->LibraryTableView, *MainWindow::GlobalDB);
-    MainWindow::LibraryModel->setTable("LIBRARY");
-    MainWindow::LibraryModel->select();
-
-
-    MainWindow::InitDBTable("PACKAGES");
-    MainWindow::PackagesModel = new QSqlRelationalTableModel(ui->PackagesTableView, *MainWindow::GlobalDB);
-    MainWindow::PackagesModel->setTable("PACKAGES");
-    MainWindow::PackagesModel->select();
+    LibraryModel = InitDBTable("LIBRARY", ui->LibraryTableView, GlobalDB);
+    PackagesModel = InitDBTable("PACKAGES", ui->PackagesTableView, GlobalDB);
 }
 
 void MainWindow::InitGlobalConfigJSON()
 {
-    MainWindow::GlobalConfigFile = new QFile("GlobalConfig.JSON");
+    GlobalConfigFile = new QFile("GlobalConfig.JSON");
     if (!GlobalConfigFile->exists())
     {
         qDebug() << QTime::currentTime() << " [OUT] Config flie not deteced. Creating... ";
         QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
-    MainWindow::GlobalConfigJSON = LoadJSON(GlobalConfigFile);
+    GlobalConfigJSON = LoadJSON(GlobalConfigFile);
 }
 
 QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
@@ -90,9 +82,8 @@ void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
     {
         qDebug() << QTime::currentTime() << " [OUT] File opened for writing successfully!";
         qDebug() << QTime::currentTime() << " [OUT] Saved " << GlobalConfigFile->fileName();
-        std::ofstream OutFileStream(JSONFile->fileName().toUtf8());
+        QTextStream OutFileStream(JSONFile);
         OutFileStream << *JSONDocument->toJson();
-        OutFileStream.close();
         JSONFile->close();
     }
     else
@@ -108,8 +99,8 @@ void MainWindow::on_TestButton_clicked()
 
 void MainWindow::ResetTables()
 {
-    MainWindow::LibraryModel->select();
-    MainWindow::PackagesModel->select();
+    LibraryModel->select();
+    PackagesModel->select();
     ui->LibraryTableView->resizeColumnsToContents();
     ui->PackagesTableView->resizeColumnsToContents();
 }
@@ -165,7 +156,7 @@ void MainWindow::on_AddGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
     }
 
-    QSqlQuery CheckPackageExistsQuery(*MainWindow::GlobalDB);
+    QSqlQuery CheckPackageExistsQuery(*GlobalDB);
     CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
     while (CheckPackageExistsQuery.next())
     {
@@ -176,27 +167,35 @@ void MainWindow::on_AddGameButton_clicked()
         }
     }
 
-    MainWindow::AddPackagetoDB(MANIFESTJSON, &GameDir);
-    MainWindow::AddSubGamestoDB(MANIFESTJSON);
+    AddPackagetoDB(MANIFESTJSON, &GameDir);
+    AddSubGamestoDB(MANIFESTJSON);
 
     delete MANIFESTJSON;
     delete MANIFESTFile;
 
-    MainWindow::ResetTables();
+    ResetTables();
 }
 
-void MainWindow::InitDBTable(QString TableName)
+QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * Parent, QSqlDatabase * DataBase)
 {
-    QString QueryString;
-
-    QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
-
-    for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
+    if (!MainWindow::GlobalDB->tables().contains(TableName))
     {
-        QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
+        QString QueryString;
+        QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
+
+        for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
+        {
+            QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
+        }
+        QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
+        QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
     }
-    QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
-    QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
+
+    QSqlRelationalTableModel * Model = new QSqlRelationalTableModel(Parent, *DataBase);
+    Model->setTable(TableName);
+    Model->select();
+
+    return Model;
 }
 
 void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
@@ -206,7 +205,7 @@ void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
     QMap<QString, QString> PackagePathMap;
     PackagePathMap["PATH"] = GameDir->path();
 
-    MainWindow::AddJSONObjectToDB("PACKAGES", (*MANIFESTJSON).object(), PackagePathMap);
+    AddJSONObjectToDB("PACKAGES", (*MANIFESTJSON).object(), PackagePathMap);
 }
 
 void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)
@@ -218,7 +217,7 @@ void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)
 
     for (auto SubGameObject : (*MANIFESTJSON)["SUBGAMES"].toArray())
     {
-        MainWindow::AddJSONObjectToDB("LIBRARY", SubGameObject.toObject(), ParentPackageMap);
+        AddJSONObjectToDB("LIBRARY", SubGameObject.toObject(), ParentPackageMap);
     }
 }
 
@@ -228,7 +227,7 @@ void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap
         QString ColumnString;
         QString ValueString;
 
-        for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
+        for (auto Key : (*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
         {
             if (JsonObject.keys().contains(Key))
             {
@@ -239,7 +238,7 @@ void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap
 
         for (auto [Column, Value] : ExtraData.asKeyValueRange())
         {
-            if ((*MainWindow::GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys().contains(Column))
+            if ((*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys().contains(Column))
             {
                 ColumnString.append("\"" + Column + "\", ");
                 ValueString.append("\"" + Value + "\", ");
@@ -250,7 +249,7 @@ void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap
         ValueString.chop(2);
 
         QueryString.append("INSERT INTO " + DBTable + " (" + ColumnString + ") VALUES (" + ValueString + ")");
-        QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
+        QSqlQuery(*GlobalDB).exec(QueryString);
 }
 
 void MainWindow::on_PlayGameButton_clicked()
@@ -258,7 +257,82 @@ void MainWindow::on_PlayGameButton_clicked()
     if (!ui->LibraryTableView->selectionModel()->hasSelection())
     {
         qDebug() << QTime::currentTime() << " [OUT] NO SELECTION!";
+        return;
     }
-    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << ui->LibraryTableView->selectionModel()->selectedRows();
+    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+
+
+    QJsonDocument * MANIFESTJSON;
+
+
+
+
+    qDebug() << QTime::currentTime() << " [OUT] COMPONENTS: "
+
+
+
+
+    //COMPILE DATA
+
+
+
+    //PREPARE DIRS
+
+
+
+
+    //WINEBOOT
+
+
+
+
+    //MOUNT ZIPS
+
+
+
+
+    //BUILD OVERLAYS
+
+
+
+
+    //BUILD REGISTRY
+
+
+
+
+
+    //BUILD COMMAND LINE
+
+
+
+
+    //LAUNCH
+
+
+
+
+    QProcess * GameProcess = new QProcess;
+    delete GameProcess;
 }
 
+QString MainWindow::GetSelectedItemByColumn(QTableView * TableView, QString Column)
+{
+    QString ResultString;
+    QAbstractItemModel * Model = TableView->model();
+    int ColumnIndex = GetModelColumnIndex(Model, Column);
+    ResultString = Model->data(Model->index(TableView->selectionModel()->currentIndex().row(), ColumnIndex)).toString();
+    return ResultString;
+}
+
+int MainWindow::GetModelColumnIndex(QAbstractItemModel * Model, QString Column)
+{
+    for (int i = 0; i < Model->columnCount(); i++)
+    {
+        if (Model->headerData(i, Qt::Horizontal).toString() == Column)
+        {
+            return i;
+        }
+    }
+    return 0;
+}

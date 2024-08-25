@@ -12,9 +12,7 @@
 #include <QSqlRecord>
 
 #include <QStandardItemModel>
-
-#include <iostream>
-#include <fstream>
+#include <QProcess>
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -22,6 +20,7 @@
 #include <QJsonValue>
 
 #include <QFileDialog>
+#include <qtableview.h>
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -56,12 +55,14 @@ private:
     void InitClassVariables();
     void InitGlobalConfigJSON();
     void InitDatabaseAndModel();
-    void InitDBTable(QString TableName);
+    QSqlRelationalTableModel * InitDBTable(QString TableName, QObject * Parent, QSqlDatabase * DataBase);
     QJsonDocument * LoadJSON(QFile * JSONFile);
     void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
     void AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir);
     void AddSubGamestoDB(QJsonDocument * MANIFESTJSON);
     void AddJSONObjectToDB(QString DBTable, QJsonObject MANIFESTJSON, QMap<QString, QString> ExtraData);
+    QString GetSelectedItemByColumn(QTableView * TableView, QString Column);
+    int GetModelColumnIndex(QAbstractItemModel * Model, QString Column);
     void ResetTables();
 };
 #endif // MAINWINDOW_H
