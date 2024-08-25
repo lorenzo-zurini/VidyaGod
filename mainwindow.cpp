@@ -165,19 +165,16 @@ void MainWindow::on_AddGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
     }
 
-    //QSqlQuery CheckPackageExistsQuery(*MainWindow::GlobalDB);
-    //CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
-    //qDebug() << CheckPackageExistsQuery.lastQuery();
-    //qDebug() << CheckPackageExistsQuery.lastError();
-    //qDebug() << "QUERY: " << CheckPackageExistsQuery.value(0).toInt();
-    //while (CheckPackageExistsQuery.next())
-    //{
-    //    if (CheckPackageExistsQuery.value("PACKAGEUID").toInt() == (*MANIFESTJSON)["PACKAGEUID"].toInt())
-    //    {
-    //        qDebug() << QTime::currentTime() << " [ERR] Package already exists in library, aborting!";
-    //        return;
-    //    }
-    //}
+    QSqlQuery CheckPackageExistsQuery(*MainWindow::GlobalDB);
+    CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
+    while (CheckPackageExistsQuery.next())
+    {
+        if (CheckPackageExistsQuery.value(0).toInt() == QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt())
+        {
+            qDebug() << QTime::currentTime() << " [ERR] Package already exists in library, aborting!";
+            return;
+        }
+    }
 
     MainWindow::AddPackagetoDB(MANIFESTJSON, &GameDir);
     MainWindow::AddSubGamestoDB(MANIFESTJSON);
@@ -204,7 +201,7 @@ void MainWindow::InitDBTable(QString TableName)
 
 void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
 {
-    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"] << " UID: " << (*MANIFESTJSON)["PACKAGEUID"];
+    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
 
     QMap<QString, QString> PackagePathMap;
     PackagePathMap["PATH"] = GameDir->path();
@@ -258,6 +255,10 @@ void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap
 
 void MainWindow::on_PlayGameButton_clicked()
 {
-    qDebug() << "PLAY";
+    if (!ui->LibraryTableView->selectionModel()->hasSelection())
+    {
+        qDebug() << QTime::currentTime() << " [OUT] NO SELECTION!";
+    }
+    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << ui->LibraryTableView->selectionModel()->selectedRows();
 }
 
