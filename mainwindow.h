@@ -20,7 +20,8 @@
 #include <QJsonValue>
 
 #include <QFileDialog>
-#include <qtableview.h>
+#include <QMessageBox>
+#include <QTableView>
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -46,6 +47,7 @@ private:
     Ui::MainWindow *ui;
 
     QDir * ApplicationDirectory;
+    QDir * ProtonPath;
     QFile * GlobalConfigFile;
     QJsonDocument * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
@@ -61,8 +63,10 @@ private:
     void AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir);
     void AddSubGamestoDB(QJsonDocument * MANIFESTJSON);
     void AddJSONObjectToDB(QString DBTable, QJsonObject MANIFESTJSON, QMap<QString, QString> ExtraData);
+
     QString GetSelectedItemByColumn(QTableView * TableView, QString Column);
-    int GetModelColumnIndex(QAbstractItemModel * Model, QString Column);
+    int GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column);
+    int GetHeaderColumn(QAbstractItemModel * Model, QString Column);
     void ResetTables();
 };
 #endif // MAINWINDOW_H

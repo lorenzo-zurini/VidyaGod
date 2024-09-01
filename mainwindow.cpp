@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
 #include "ui_mainwindow.h"
+#include <iostream>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -19,6 +20,7 @@ MainWindow::~MainWindow()
 void MainWindow::InitClassVariables()
 {
     ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
+    ProtonPath = new QDir("/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
     InitGlobalConfigJSON();
     InitDatabaseAndModel();
     ui->LibraryTableView->setModel(MainWindow::LibraryModel);
@@ -61,9 +63,14 @@ QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
     qDebug() << QTime::currentTime() << " [OUT] Parsing JSON " << JSONFile->fileName();
     //ADD VALID JSON CHECK HERE
 
+    if (!JSONFile->exists())
+    {
+        qDebug() << QTime::currentTime() << " [ERR] File " << JSONFile->fileName() << " does not exist.";
+        return nullptr;
+    }
     if (JSONFile->open(QFile::ReadOnly))
     {
-        qDebug() << QTime::currentTime() << " [OUT] File opened for reading successfully!";
+        qDebug() << QTime::currentTime() << " [OUT] File " << JSONFile->fileName() << " opened for reading successfully!";
         QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll()));
         JSONFile->close();
         qDebug() << QTime::currentTime() << " [OUT] Parse done!";
@@ -126,19 +133,8 @@ void MainWindow::on_AddGameButton_clicked()
         return;
     }
 
-    //Check for the existence of MANIFEST.json
-    QFile * MANIFESTFile = new QFile(GameDir.filePath("MANIFEST.json"));
-    if (!MANIFESTFile->exists())
-    {
-        qDebug() << QTime::currentTime() << " [ERR] MANIFEST.json file not found in GAMEDIR/METADATA.";
-        return;
-    }
-    qDebug() << QTime::currentTime() << " [OUT] Found " << MANIFESTFile->fileName();
-    GameDir.cdUp();
-
-
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    QJsonDocument * MANIFESTJSON = LoadJSON(MANIFESTFile);
+    QJsonDocument * MANIFESTJSON = LoadJSON(new QFile(GameDir.filePath("MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime() << " [ERR] Parser returned nullptr.";
@@ -154,6 +150,7 @@ void MainWindow::on_AddGameButton_clicked()
     else
     {
         qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
+        GameDir.cdUp();
     }
 
     QSqlQuery CheckPackageExistsQuery(*GlobalDB);
@@ -171,7 +168,6 @@ void MainWindow::on_AddGameButton_clicked()
     AddSubGamestoDB(MANIFESTJSON);
 
     delete MANIFESTJSON;
-    delete MANIFESTFile;
 
     ResetTables();
 }
@@ -188,6 +184,7 @@ QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * 
             QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
         }
         QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
+        qDebug() << "QUERYSTRING: " << QueryString;
         QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
     }
 
@@ -229,6 +226,10 @@ void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap
 
         for (auto Key : (*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
         {
+            if (JsonObject.value(Key).toString().isEmpty())
+            {
+                continue;
+            }
             if (JsonObject.keys().contains(Key))
             {
                 ColumnString.append("\"" + Key + "\", ");
@@ -259,42 +260,146 @@ void MainWindow::on_PlayGameButton_clicked()
         qDebug() << QTime::currentTime() << " [OUT] NO SELECTION!";
         return;
     }
-    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+    QString GameName = GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << GameName;
 
+    //Make a list of integers from the RECIPE string.
+    QList<int> Recipe;
+    foreach (QString string, GetSelectedItemByColumn(ui->LibraryTableView, "RECIPE").split(","))
+    {
+        Recipe.append(string.toInt());
+    }
 
-    QJsonDocument * MANIFESTJSON;
+    QString ParentPackage = GetSelectedItemByColumn(ui->LibraryTableView, "PARENTPACKAGE");
 
+    //Get Package PATH from the PACKAGES table by GAMEUID.
+    int row = GetRowByItemAndColumn(ui->PackagesTableView, ParentPackage, "PACKAGEUID");
+    int col = GetHeaderColumn(ui->PackagesTableView->model(), "PATH");
+    QString PackagePath = ui->PackagesTableView->model()->data(ui->PackagesTableView->model()->index(row, col)).toString();
 
+    //Initalise directories.
+    QDir PackageDir(PackagePath);
+    qDebug() << QTime::currentTime() << "[OUT] PACKAGEDIR: " << PackageDir.path();
 
+    QDir MetaDataDir = PackageDir;
+    MetaDataDir.cd("METADATA");
+    qDebug() << QTime::currentTime() << "[OUT] METADATADIR: " << MetaDataDir.path();
 
-    qDebug() << QTime::currentTime() << " [OUT] COMPONENTS: "
+    QDir PackageFilesDir = PackageDir;
+    PackageFilesDir.cd("PACKAGEFILES");
+    qDebug() << QTime::currentTime() << "[OUT] PACKAGEFILES: " << PackageFilesDir.path();
 
+    QDir UserDataDir = PackageDir;
+    UserDataDir.mkdir("USERDATA");
+    UserDataDir.cd("USERDATA");
+    qDebug() << QTime::currentTime() << "[OUT] USERDATA: " << UserDataDir.path();
 
+    QDir TempDir = PackageDir;
+    TempDir.mkdir("TEMP");
+    TempDir.cd("TEMP");
+    qDebug() << QTime::currentTime() << "[OUT] TEMP: " << TempDir.path();
 
+    QDir RuntimeDir = PackageDir;
+    RuntimeDir.mkdir("RUNTIME");
+    RuntimeDir.cd("RUNTIME");
+    qDebug() << QTime::currentTime() << "[OUT] RUNTIME: " << RuntimeDir.path();
 
-    //COMPILE DATA
+    QDir ProgramRuntimeDir = RuntimeDir;
+    ProgramRuntimeDir.mkdir("drive_c");
+    ProgramRuntimeDir.cd("drive_c");
+    ProgramRuntimeDir.mkdir(ParentPackage);
+    ProgramRuntimeDir.cd(ParentPackage);
+    qDebug() << QTime::currentTime() << "[OUT] RUNTIMEPROGRAMDIR: " << RuntimeDir.path();
 
+    QDir DefPrefixDir = TempDir;
+    DefPrefixDir.mkdir("DEFPREFIX");
+    DefPrefixDir.cd("DEFPREFIX");
+    qDebug() << QTime::currentTime() << "[OUT] DEFPREFIX: " << DefPrefixDir.path();
 
+    QFile ExeFile("C:/" + ParentPackage + "/" + GetSelectedItemByColumn(ui->LibraryTableView, "EXEPATH"));
+    QString ExeArgs(GetSelectedItemByColumn(ui->LibraryTableView, "EXEPATH"));
+    QString UMUID(GetSelectedItemByColumn(ui->LibraryTableView, "UMUID"));
 
-    //PREPARE DIRS
+    QJsonDocument * MANIFESTJSON = LoadJSON(new QFile(MetaDataDir.filePath("MANIFEST.json")));
 
+    //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
+    QJsonArray SubComponentsArray;
+    //qDebug() << QTime::currentTime() << " [OUT] COMPONENTS: ";
+    for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].toArray().count(); i++)
+    {
+        if (Recipe.contains(i))
+        {
+            for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"].toArray()[i].toObject()["SUBCOMPONENTS"].toArray().count(); j++)
+            {
+                SubComponentsArray.append((*MANIFESTJSON)["COMPONENTS"].toArray()[i].toObject()["SUBCOMPONENTS"].toArray()[j].toObject());
+            }
+        }
+    }
 
+    //START BUILDING THE STRING FOR THE UNIONFS
+    QString UnionFSString;
 
+    //INITIALISE umu wineprefix
+    QProcess * umuInit = new QProcess(this);
+    umuInit->setProgram("umu-run");
+    umuInit->setArguments({""});
 
-    //WINEBOOT
+    QProcessEnvironment umuInitEnvironment = QProcessEnvironment::systemEnvironment();
+    umuInitEnvironment.insert("WINEPREFIX", DefPrefixDir.path());
+    umuInitEnvironment.insert("GAMEID", UMUID);
+    umuInitEnvironment.insert("PROTONPATH", ProtonPath->path());
+    umuInitEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+    umuInit->setProcessEnvironment(umuInitEnvironment);
+    umuInit->start();
+    umuInit->waitForFinished(-1);
+    delete umuInit;
 
+    UnionFSString.prepend(DefPrefixDir.path() + "=RO");
 
+    //MOUNT FILE LAYERS IN TEMP
+    for (int i = 0; i < SubComponentsArray.count(); i++)
+    {
+        QJsonObject SubComponentJSON = SubComponentsArray[i].toObject();
 
+        if (SubComponentJSON["TYPE"].toString() == "ZipFileLayer")
+        {
+            QDir SubComponentDir = TempDir;
+            SubComponentDir.mkdir("[" + QString::number(i) + "]");
+            SubComponentDir.cd("[" + QString::number(i) + "]");
+            UnionFSString.prepend(SubComponentDir.path() + "=RO:");
 
-    //MOUNT ZIPS
+            QDir MountDir = SubComponentDir;
+            MountDir.mkpath(MountDir.path() + "/drive_c/" + ParentPackage);
+            MountDir.cd(MountDir.path() + "/drive_c/" + ParentPackage);
 
+            if (!(SubComponentJSON["TARGET"].toString() == ""))
+            {
+                QString PathWithTarget = MountDir.path() + "/" + SubComponentJSON["TARGET"].toString();
+                MountDir.mkpath(PathWithTarget);
+                MountDir.cd(PathWithTarget);
+            }
 
+            QProcess * MountZip = new QProcess(this);
+            MountZip->setProgram("fuse-zip");
+            MountZip->setArguments({"-r", PackageFilesDir.filePath(SubComponentJSON["PATH"].toString()), MountDir.path()});
+            MountZip->start();
+            MountZip->waitForFinished(-1);
+            delete MountZip;
+        }
+    }
 
+    UnionFSString.prepend(UserDataDir.path() + "=RW:");
 
-    //BUILD OVERLAYS
-
-
-
+    //BUILD UNIONFS
+    QProcess * BuildUnionFS = new QProcess(this);
+    BuildUnionFS->setProgram("unionfs");
+    BuildUnionFS->setArguments({"-o", "cow", "-o", "uid=1000", UnionFSString, RuntimeDir.path()});
+    BuildUnionFS->start();
+    BuildUnionFS->waitForFinished(-1);
+    qDebug().noquote() << BuildUnionFS->arguments();
+    qDebug().noquote() << "ERROR: " << BuildUnionFS->readAllStandardError();
+    qDebug().noquote() << "OUTPUT: " << BuildUnionFS->readAllStandardOutput();
+    delete BuildUnionFS;
 
     //BUILD REGISTRY
 
@@ -302,30 +407,96 @@ void MainWindow::on_PlayGameButton_clicked()
 
 
 
-    //BUILD COMMAND LINE
-
-
-
-
     //LAUNCH
+    QProcess * RunGame = new QProcess(this);
+
+    RunGame->setWorkingDirectory(ProgramRuntimeDir.path());
+    RunGame->setProgram("umu-run");
+    RunGame->setArguments({(ExeFile.fileName()), ExeArgs});
+
+    QProcessEnvironment RunGameEnvironment = QProcessEnvironment::systemEnvironment();
+    RunGameEnvironment.insert("WINEPREFIX", RuntimeDir.path());
+    RunGameEnvironment.insert("GAMEID", "0");
+    RunGameEnvironment.insert("PROTONPATH", ProtonPath->path());
+    RunGameEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+    RunGame->setProcessEnvironment(RunGameEnvironment);
+    RunGame->start();
+    RunGame->waitForFinished(-1);
+    qDebug().noquote() << "ERROR: " << RunGame->readAllStandardError();
+    qDebug().noquote() << "OUTPUT: " << RunGame->readAllStandardOutput();
+    delete RunGame;
 
 
+    //CLEANUP=====================================================================================================
+    QMessageBox::warning(this, "Ready for cleanup...", "Press OK to start cleanup");
 
+    QProcess * UnmountUnionFS = new QProcess(this);
+    UnmountUnionFS->setProgram("fusermount");
+    UnmountUnionFS->setArguments({"-u", RuntimeDir.path()});
+    UnmountUnionFS->start();
+    UnmountUnionFS->waitForFinished(-1);
+    delete UnmountUnionFS;
 
-    QProcess * GameProcess = new QProcess;
-    delete GameProcess;
+    for (int i = 0; i < SubComponentsArray.count(); i++)
+    {
+        QJsonObject SubComponentJSON = SubComponentsArray[i].toObject();
+
+        if (SubComponentJSON["TYPE"].toString() == "ZipFileLayer")
+        {
+            QDir SubComponentDir = TempDir;
+            SubComponentDir.mkdir("[" + QString::number(i) + "]");
+            SubComponentDir.cd("[" + QString::number(i) + "]");
+
+            QDir MountDir = SubComponentDir;
+            MountDir.mkpath(MountDir.path() + "/drive_c/" + ParentPackage);
+            MountDir.cd(MountDir.path() + "/drive_c/" + ParentPackage);
+
+            if (!(SubComponentJSON["TARGET"].toString() == ""))
+            {
+                QString PathWithTarget = MountDir.path() + "/" + SubComponentJSON["TARGET"].toString();
+                MountDir.mkpath(PathWithTarget);
+                MountDir.cd(PathWithTarget);
+            }
+
+            QProcess * UnmountZips = new QProcess(this);
+            UnmountZips->setProgram("fusermount");
+            UnmountZips->setArguments({"-u", MountDir.path()});
+            UnmountZips->start();
+            UnmountZips->waitForFinished(-1);
+            delete UnmountZips;
+        }
+    }
+
+    TempDir.removeRecursively();
+    RuntimeDir.removeRecursively();
+    delete MANIFESTJSON;
+}
+
+int MainWindow::GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column)
+{
+    QAbstractItemModel * Model = TableView->model();
+
+    for (int i = 0; i < Model->rowCount(); i++)
+    {
+        if (Model->data(Model->index(i, GetHeaderColumn(Model, Column))).toString() == Item)
+        {
+            return i;
+        }
+    }
+    qDebug() << "[OUT] " << Item << " not found in column " << Column;
+    return -1;
 }
 
 QString MainWindow::GetSelectedItemByColumn(QTableView * TableView, QString Column)
 {
     QString ResultString;
     QAbstractItemModel * Model = TableView->model();
-    int ColumnIndex = GetModelColumnIndex(Model, Column);
+    int ColumnIndex = GetHeaderColumn(Model, Column);
     ResultString = Model->data(Model->index(TableView->selectionModel()->currentIndex().row(), ColumnIndex)).toString();
     return ResultString;
 }
 
-int MainWindow::GetModelColumnIndex(QAbstractItemModel * Model, QString Column)
+int MainWindow::GetHeaderColumn(QAbstractItemModel * Model, QString Column)
 {
     for (int i = 0; i < Model->columnCount(); i++)
     {

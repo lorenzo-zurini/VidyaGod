@@ -6,10 +6,13 @@
             "COLUMNS":
             {
                 "GAMEUID": "INTEGER NOT NULL UNIQUE",
+                "EXEPATH": "TEXT NOT NULL",
+                "EXEARGS": "TEXT",
                 "TITLE": "TEXT NOT NULL",
                 "PARENTPACKAGE": "INTEGER NOT NULL",
                 "TGDBID": "INTEGER",
                 "STEAMAPPID": "INTEGER",
+                "UMUID": "TEXT DEFAULT '0'",
                 "GOGPRODUCTID": "INTEGER",
                 "COVER": "TEXT",
                 "RELEASEDATE": "TEXT",
