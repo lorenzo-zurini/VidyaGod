@@ -64,7 +64,21 @@ private:
     void AddSubGamestoDB(QJsonDocument * MANIFESTJSON);
     void AddJSONObjectToDB(QString DBTable, QJsonObject MANIFESTJSON, QMap<QString, QString> ExtraData);
 
+    QJsonArray GetSubComponents(QDir *PackageDir, QList<int> Recipe);
+    bool InitializeUMUPrefix(QDir *DefPrefixDir, QString * UnionFSString);
+    bool ProcessSubComponents(const QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QDir * DefPrefixDir, QDir * ProgramRuntimeDir, QString * UnionFSString, const QString ParentPackage);
+    bool RemoveSubComponents(QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
+    bool MountZipFileLayer(const QJsonObject SubComponentJSON, int LayerNumber, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
+    bool UnmountZipFileLayer(const QJsonObject SubComponentJSON, int LayerNumber, QDir * TempDir, const QString ParentPackage);
+    bool RegEdit(QJsonObject SubComponentJSON, QDir * DefPrefixDir, QDir * ProgramRuntimeDir);
+    bool RegAdd();
+    bool BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir * UserDataDir);
+    bool DestroyUnionFS(QDir * RuntimeDir);
+    bool RunWithUMU(QDir * WorkDir,  QDir * WinePrefix, QString GAMEID = "0", QFile * ExeFile = new QFile(""), QStringList * ExeArgs = new QStringList({}));
+
+    QList<int> IntListFromString(QString String);
     QString GetSelectedItemByColumn(QTableView * TableView, QString Column);
+    QString GetItemFromOtherTableByRelation(QTableView * OtherTable, QString Relation, QString RelationColumn, QString ItemColumn);
     int GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column);
     int GetHeaderColumn(QAbstractItemModel * Model, QString Column);
     void ResetTables();
