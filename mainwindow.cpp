@@ -28,17 +28,17 @@ void MainWindow::InitClassVariables()
 
 void MainWindow::InitDatabaseAndModel()
 {
-    qDebug() << QTime::currentTime() << " [OUT] Attempting database init... ";
+    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
     GlobalDB = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
     GlobalDB->setDatabaseName(ApplicationDirectory->filePath(QString("Global.DB")));
 
     if (GlobalDB->open())
     {
-        qDebug() << QTime::currentTime() << " [OUT] " << GlobalDB->databaseName() << " opened successfully.";
+        qDebug() << QTime::currentTime().toString() << " [OUT] " << GlobalDB->databaseName() << " opened successfully.";
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] " << ApplicationDirectory->filePath(QString("Global.DB")) << " could not be opened.";
+        qDebug() << QTime::currentTime().toString() << " [ERR] " << ApplicationDirectory->filePath(QString("Global.DB")) << " could not be opened.";
         return;
     }
 
@@ -51,7 +51,7 @@ void MainWindow::InitGlobalConfigJSON()
     GlobalConfigFile = new QFile("GlobalConfig.JSON");
     if (!GlobalConfigFile->exists())
     {
-        qDebug() << QTime::currentTime() << " [OUT] Config flie not deteced. Creating... ";
+        qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
         QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
     GlobalConfigJSON = LoadJSON(GlobalConfigFile);
@@ -59,25 +59,25 @@ void MainWindow::InitGlobalConfigJSON()
 
 QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
 {
-    qDebug() << QTime::currentTime() << " [OUT] Parsing JSON " << JSONFile->fileName();
+    qDebug() << QTime::currentTime().toString() << " [OUT] Parsing JSON " << JSONFile->fileName();
     //ADD VALID JSON CHECK HERE
 
     if (!JSONFile->exists())
     {
-        qDebug() << QTime::currentTime() << " [ERR] File " << JSONFile->fileName() << " does not exist.";
+        qDebug() << QTime::currentTime().toString() << " [ERR] File " << JSONFile->fileName() << " does not exist.";
         return nullptr;
     }
     if (JSONFile->open(QFile::ReadOnly))
     {
-        qDebug() << QTime::currentTime() << " [OUT] File " << JSONFile->fileName() << " opened for reading successfully!";
+        qDebug() << QTime::currentTime().toString() << " [OUT] File " << JSONFile->fileName() << " opened for reading successfully!";
         QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll()));
         JSONFile->close();
-        qDebug() << QTime::currentTime() << " [OUT] Parse done!";
+        qDebug() << QTime::currentTime().toString() << " [OUT] Parse done!";
         return JSONDocument;
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Could not open file for reading!";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Could not open file for reading!";
         return nullptr;
     }
 }
@@ -86,8 +86,8 @@ void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
-        qDebug() << QTime::currentTime() << " [OUT] File opened for writing successfully!";
-        qDebug() << QTime::currentTime() << " [OUT] Saved " << GlobalConfigFile->fileName();
+        qDebug() << QTime::currentTime().toString() << " [OUT] File opened for writing successfully!";
+        qDebug() << QTime::currentTime().toString() << " [OUT] Saved " << GlobalConfigFile->fileName();
         QTextStream OutFileStream(JSONFile);
         OutFileStream << *JSONDocument->toJson();
         JSONFile->close();
@@ -100,7 +100,7 @@ void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
 
 void MainWindow::on_TestButton_clicked()
 {
-    qDebug() << QTime::currentTime() << "[OUT] TEST";
+    qDebug() << QTime::currentTime().toString() << "[OUT] TEST";
 }
 
 void MainWindow::ResetTables()
@@ -118,17 +118,17 @@ void MainWindow::on_AddGameButton_clicked()
     //Check if the path is empty, such as when the file picker was canceled.
     if (GameDirPathString.isEmpty())
     {
-        qDebug() << QTime::currentTime() << " [ERR] Path is empty. Canceled?";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Path is empty. Canceled?";
         return;
     }
 
-    qDebug() << QTime::currentTime() << " [OUT] Scanning " << GameDirPathString;
+    qDebug() << QTime::currentTime().toString() << " [OUT] Scanning " << GameDirPathString;
 
     //Check if the directory contains a METADATA subdirectory.
     QDir GameDir(GameDirPathString);
     if (!GameDir.cd("METADATA"))
     {
-        qDebug() << QTime::currentTime() << " [ERR] Selected directory does not contain METADATA subdirectory.";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
         return;
     }
 
@@ -136,19 +136,19 @@ void MainWindow::on_AddGameButton_clicked()
     QJsonDocument * MANIFESTJSON = LoadJSON(new QFile(GameDir.filePath("MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
-        qDebug() << QTime::currentTime() << " [ERR] Parser returned nullptr.";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
     else if (MANIFESTJSON->isNull())
     {
-        qDebug() << QTime::currentTime() << " [ERR] Parser returned null JSON.";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned null JSON.";
         delete MANIFESTJSON;
         return;
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [OUT] Parser returned non-empty JSON.";
+        qDebug() << QTime::currentTime().toString() << " [OUT] Parser returned non-empty JSON.";
         GameDir.cdUp();
     }
 
@@ -158,7 +158,7 @@ void MainWindow::on_AddGameButton_clicked()
     {
         if (CheckPackageExistsQuery.value(0).toInt() == QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt())
         {
-            qDebug() << QTime::currentTime() << " [ERR] Package already exists in library, aborting!";
+            qDebug() << QTime::currentTime().toString() << " [ERR] Package already exists in library, aborting!";
             return;
         }
     }
@@ -183,7 +183,7 @@ QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * 
             QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
         }
         QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
-        qDebug() << "QUERYSTRING: " << QueryString;
+        qDebug() << QTime::currentTime().toString() << "[OUT] QUERYSTRING: " << QueryString;
         QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
     }
 
@@ -196,7 +196,7 @@ QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * 
 
 void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
 {
-    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
+    qDebug() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
 
     QMap<QString, QString> PackagePathMap;
     PackagePathMap["PATH"] = GameDir->path();
@@ -206,7 +206,7 @@ void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
 
 void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)
 {
-    qDebug() << QTime::currentTime().toString().toStdString() << " [OUT] Adding subgames to library... ";
+    qDebug() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
 
     QMap<QString, QString> ParentPackageMap;
     ParentPackageMap["PARENTPACKAGE"] = (*MANIFESTJSON)["PACKAGEUID"].toString();
@@ -257,7 +257,7 @@ void MainWindow::on_PlayGameButton_clicked()
     //Check if selection exists.
     if (!ui->LibraryTableView->selectionModel()->hasSelection())
     {
-        qDebug() << QTime::currentTime() << " [OUT] NO SELECTION!";
+        qDebug() << QTime::currentTime().toString() << " [OUT] NO SELECTION!";
         return;
     }
 
@@ -267,10 +267,14 @@ void MainWindow::on_PlayGameButton_clicked()
     QString PackagePath = GetItemFromOtherTableByRelation(ui->PackagesTableView, ParentPackage, "PACKAGEUID", "PATH");
     QFile * ExeFile = new QFile("C:/" + ParentPackage + "/" + GetSelectedItemByColumn(ui->LibraryTableView, "EXEPATH"));
     QString WorkDirPath = GetSelectedItemByColumn(ui->LibraryTableView, "WORKDIR");
-    QStringList * ExeArgs = new QStringList(GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").split(" "));                       //MUST MAKE THIS RESPECT QUOTES
+    QStringList * ExeArgs = new QStringList;
+    if (!GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").isEmpty())
+    {
+        ExeArgs->append(GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").split(" "));                       //MUST MAKE THIS RESPECT QUOTES
+    }
     QList<int> Recipe = IntListFromString(GetSelectedItemByColumn(ui->LibraryTableView, "RECIPE"));
 
-    qDebug() << QTime::currentTime() << " [OUT] Attempting launch of " << GameName;
+    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << GameName;
 
 
     //Initalise directories.
@@ -311,6 +315,8 @@ void MainWindow::on_PlayGameButton_clicked()
         return;
     }
 
+    CheckCaseConflicts(RuntimeDir);
+
     RunWithUMU(WorkDir, RuntimeDir, UMUID, ExeFile, ExeArgs);
 
     //CLEANUP=====================================================================================================
@@ -326,31 +332,35 @@ void MainWindow::on_PlayGameButton_clicked()
 
 bool MainWindow::InitializeUMUPrefix(QDir * DefPrefixDir, QString * UnionFSString)
 {
-    qDebug() << QTime::currentTime() << " [OUT] Initialising prefix" << DefPrefixDir->path();
+    qDebug() << QTime::currentTime().toString() << " [OUT] Initialising prefix" << DefPrefixDir->path();
     if (RunWithUMU(DefPrefixDir, DefPrefixDir, "0", new QFile("wineboot")))
     {
-        qDebug() << QTime::currentTime() << " [OUT] Prefix initialisation successful!";
+        qDebug() << QTime::currentTime().toString() << " [OUT] Prefix initialisation successful!";
         UnionFSString->prepend(DefPrefixDir->path() + "=RO");
         return true;
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Prefix initialisation failed!";
+        qDebug() << QTime::currentTime().toString() << " [ERR] Prefix initialisation failed!";
         return false;
     }
 }
 
 bool MainWindow::RunWithUMU(QDir * WorkDir, QDir * WinePrefix, QString GAMEID, QFile * ExeFile, QStringList * ExeArgs)
 {
-    qDebug() << QTime::currentTime() << " [OUT] Executing with umu-launcher: " << ExeFile->fileName() << *ExeArgs;
-    qDebug() << QTime::currentTime() << " [OUT] WINEPREFIX:" << WinePrefix->path();
-    qDebug() << QTime::currentTime() << " [OUT] WORKDIR:" << WorkDir->path();
+    qDebug() << QTime::currentTime().toString() << " [OUT] Executing with umu-launcher: " << ExeFile->fileName() << *ExeArgs;
+    qDebug() << QTime::currentTime().toString() << " [OUT] WINEPREFIX:" << WinePrefix->path();
+    qDebug() << QTime::currentTime().toString() << " [OUT] WORKDIR:" << WorkDir->path();
 
     QProcess * RunProcess = new QProcess(this);
     ExeArgs->prepend(ExeFile->fileName());
     RunProcess->setWorkingDirectory(WorkDir->path());
     RunProcess->setProgram("umu-run");
-    RunProcess->setArguments(*ExeArgs);
+
+    if (!(*ExeArgs).isEmpty())
+    {
+        RunProcess->setArguments(*ExeArgs);
+    }
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     RunProcessEnvironment.insert("WINEPREFIX", WinePrefix->path());
@@ -420,7 +430,7 @@ bool MainWindow::ProcessSubComponents(const QJsonArray SubComponentsArray, QDir 
         }
         else
         {
-            qDebug() << QTime::currentTime() << " [ERR] Invalid SubComponent:" << i;
+            qDebug() << QTime::currentTime().toString() << " [ERR] Invalid SubComponent:" << i;
             return false;
         }
     }
@@ -448,8 +458,8 @@ bool MainWindow::BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir *
     UnionFSString->prepend(UserDataDir->path() + "=RW:");
 
     //BUILD UNIONFS USING PARAMS
-    qDebug() << QTime::currentTime() << " [OUT] Building UnionFS RUNTIME.";
-    qDebug().noquote() << QTime::currentTime() << " [OUT] UnionFSString:" << *UnionFSString;
+    qDebug() << QTime::currentTime().toString() << "[OUT] Building UnionFS RUNTIME.";
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] UnionFSString:" << *UnionFSString;
 
     QProcess * BuildUnionFS = new QProcess(this);
     BuildUnionFS->setProgram("unionfs");
@@ -460,13 +470,13 @@ bool MainWindow::BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir *
 
     if(BuildUnionFS->exitCode() == 0)
     {
-        qDebug() << QTime::currentTime() << " [OUT] Successfully mounted UnionFS RUNTIME!";
+        qDebug() << QTime::currentTime().toString() << "[OUT] Successfully mounted UnionFS RUNTIME!";
         delete BuildUnionFS;
         return true;
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Failed to mount UnionFS RUNTIME!";
+        qDebug() << QTime::currentTime().toString() << "[ERR] Failed to mount UnionFS RUNTIME!";
         delete BuildUnionFS;
         return false;
     }
@@ -479,7 +489,6 @@ bool MainWindow::DestroyUnionFS(QDir * RuntimeDir)
     UnmountUnionFS->setArguments({"-u", RuntimeDir->path()});
     UnmountUnionFS->start();
     UnmountUnionFS->waitForFinished(-1);
-    qDebug() << "EXIT STATUS: " << UnmountUnionFS->exitCode();
     delete UnmountUnionFS;
     return true;
 }
@@ -501,7 +510,7 @@ bool MainWindow::MountZipFileLayer(const QJsonObject SubComponentJSON, int Layer
         MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
     }
 
-    qDebug() << QTime::currentTime() << " [OUT] Mounting ZipFileLayer" << PackageFilesDir->filePath(SubComponentJSON["PATH"].toString()) << "at" << MountDir.path();
+    qDebug() << QTime::currentTime().toString() << "[OUT] Mounting ZipFileLayer" << PackageFilesDir->filePath(SubComponentJSON["PATH"].toString()) << "at" << MountDir.path();
     QProcess * MountZip = new QProcess(this);
     MountZip->setProgram("fuse-zip");
     MountZip->setArguments({"-r", PackageFilesDir->filePath(SubComponentJSON["PATH"].toString()), MountDir.path()});
@@ -515,7 +524,7 @@ bool MainWindow::MountZipFileLayer(const QJsonObject SubComponentJSON, int Layer
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Failed to mount zip file layer" << PackageFilesDir->filePath(SubComponentJSON["PATH"].toString());
+        qDebug() << QTime::currentTime().toString() << "[ERR] Failed to mount zip file layer" << PackageFilesDir->filePath(SubComponentJSON["PATH"].toString());
         delete MountZip;
         return false;
     }
@@ -541,7 +550,7 @@ bool MainWindow::UnmountZipFileLayer(const QJsonObject SubComponentJSON, int Lay
     UnmountZips->setArguments({"-u", MountDir.path()});
     UnmountZips->start();
     UnmountZips->waitForFinished(-1);
-    qDebug() << "EXIT STATUS: " << UnmountZips->exitCode();
+    qDebug() << QTime::currentTime().toString() << "[OUT] UNMOUNT EXIT STATUS: " << UnmountZips->exitCode();
     delete UnmountZips;
     return true;
 }
@@ -549,19 +558,41 @@ bool MainWindow::UnmountZipFileLayer(const QJsonObject SubComponentJSON, int Lay
 bool MainWindow::RegEdit(QJsonObject SubComponentJSON, QDir * DefPrefixDir, QDir * ProgramRuntimeDir)
 {
     QString REGPATH = SubComponentJSON["REGPATH"].toString();
-    for (auto Key : SubComponentJSON["KEYVALUES"].toObject().keys())
+
+    if (SubComponentJSON.keys().contains("KEYVALUES"))
     {
-        QStringList * CommandArgs = new QStringList({});
+        for (auto Key : SubComponentJSON["KEYVALUES"].toObject().keys())
+        {
+            QStringList * CommandArgs = new QStringList();
+            CommandArgs->append("add");      CommandArgs->append(REGPATH);
+            CommandArgs->append("/v");       CommandArgs->append(Key);
+            CommandArgs->append("/t");       CommandArgs->append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["TYPE"].toString());
+            if (SubComponentJSON["KEYVALUES"].toObject()[Key].toObject().keys().contains("VALUE"))
+            {
+                CommandArgs->append("/d");       CommandArgs->append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["VALUE"].toString());
+            }
+            CommandArgs->append("/f");
+
+            if(SubComponentJSON["ARCHITECTURE"].toString() == "32")
+            {
+                CommandArgs->append("/reg:32");
+            }
+            qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << *CommandArgs;
+            RunWithUMU(DefPrefixDir, DefPrefixDir, "0", new QFile("reg"), CommandArgs);
+        }
+    }
+    else
+    {
+        QStringList * CommandArgs = new QStringList();
         CommandArgs->append("add");      CommandArgs->append(REGPATH);
-        CommandArgs->append("/v");       CommandArgs->append(Key);
-        CommandArgs->append("/t");       CommandArgs->append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["TYPE"].toString());
-        CommandArgs->append("/d");       CommandArgs->append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["VALUE"].toString());
         CommandArgs->append("/f");
+
         if(SubComponentJSON["ARCHITECTURE"].toString() == "32")
         {
             CommandArgs->append("/reg:32");
         }
-        qDebug().noquote() << "REG STRING: " << CommandArgs;
+
+        qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << *CommandArgs;
         RunWithUMU(DefPrefixDir, DefPrefixDir, "0", new QFile("reg"), CommandArgs);
     }
     return true;
@@ -601,7 +632,7 @@ int MainWindow::GetRowByItemAndColumn(QTableView * TableView, QString Item, QStr
             return i;
         }
     }
-    qDebug() << "[OUT] " << Item << " not found in column " << Column;
+    qDebug() << QTime::currentTime().toString() << "[OUT] " << Item << " not found in column " << Column;
     return -1;
 }
 
@@ -624,4 +655,26 @@ int MainWindow::GetHeaderColumn(QAbstractItemModel * Model, QString Column)
         }
     }
     return 0;
+}
+
+bool MainWindow::CheckCaseConflicts(QDir * RuntimeDir)
+{
+    QStringList * FileList = new QStringList;
+    bool NoConflict = true;
+
+    QDirIterator Iterator(*RuntimeDir, QDirIterator::Subdirectories);
+    while (Iterator.hasNext()) {
+        QString FilePath = Iterator.next().toLower();
+        if (FileList->contains(FilePath))
+        {
+            NoConflict = false;
+            qDebug() << QTime::currentTime() << "[ERR] Case conflict found: " << FilePath;
+        }
+        else
+        {
+            FileList->append(FilePath);
+        }
+    }
+    delete FileList;
+    return NoConflict;
 }

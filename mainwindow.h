@@ -4,6 +4,8 @@
 #include <QMainWindow>
 
 #include <QFile>
+#include <QDir>
+#include <QDirIterator>
 
 #include <QSqlError>
 #include <QSqlDatabase>
@@ -82,5 +84,6 @@ private:
     int GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column);
     int GetHeaderColumn(QAbstractItemModel * Model, QString Column);
     void ResetTables();
+    bool CheckCaseConflicts(QDir * RuntimeDir);
 };
 #endif // MAINWINDOW_H
