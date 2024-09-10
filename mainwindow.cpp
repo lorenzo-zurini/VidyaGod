@@ -1,6 +1,10 @@
 #include "mainwindow.h"
-#include "./ui_mainwindow.h"
 #include "ui_mainwindow.h"
+
+//TO-DO: ADD VARIABLE SUBSTITUTION WITH ENV VARS AND AUTOCALC
+//TO-DO: FIX EXE COMMAND LINE PARSING AND WORKDIR
+//IMPLEMENT WINEDLLOVERRIDES
+//IMPLEMENT MIRRORFS COMPONENTS
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -54,48 +58,7 @@ void MainWindow::InitGlobalConfigJSON()
         qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
         QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
-    GlobalConfigJSON = LoadJSON(GlobalConfigFile);
-}
-
-QJsonDocument * MainWindow::LoadJSON(QFile * JSONFile)
-{
-    qDebug() << QTime::currentTime().toString() << " [OUT] Parsing JSON " << JSONFile->fileName();
-    //ADD VALID JSON CHECK HERE
-
-    if (!JSONFile->exists())
-    {
-        qDebug() << QTime::currentTime().toString() << " [ERR] File " << JSONFile->fileName() << " does not exist.";
-        return nullptr;
-    }
-    if (JSONFile->open(QFile::ReadOnly))
-    {
-        qDebug() << QTime::currentTime().toString() << " [OUT] File " << JSONFile->fileName() << " opened for reading successfully!";
-        QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll()));
-        JSONFile->close();
-        qDebug() << QTime::currentTime().toString() << " [OUT] Parse done!";
-        return JSONDocument;
-    }
-    else
-    {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Could not open file for reading!";
-        return nullptr;
-    }
-}
-
-void MainWindow::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
-{
-    if (JSONFile->open(QFile::WriteOnly))
-    {
-        qDebug() << QTime::currentTime().toString() << " [OUT] File opened for writing successfully!";
-        qDebug() << QTime::currentTime().toString() << " [OUT] Saved " << GlobalConfigFile->fileName();
-        QTextStream OutFileStream(JSONFile);
-        OutFileStream << *JSONDocument->toJson();
-        JSONFile->close();
-    }
-    else
-    {
-        qDebug() << QTime::currentTime() << " [ERR] Could not open file for writing!";
-    }
+    GlobalConfigJSON = JSONOperations::LoadJSON(GlobalConfigFile);
 }
 
 void MainWindow::on_TestButton_clicked()
@@ -113,27 +76,16 @@ void MainWindow::ResetTables()
 
 void MainWindow::on_AddGameButton_clicked()
 {
-    QString GameDirPathString(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
+    QDir * PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
 
-    //Check if the path is empty, such as when the file picker was canceled.
-    if (GameDirPathString.isEmpty())
+    if(!FileSystemOperations::CheckPackageValid(PackageDir))
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Path is empty. Canceled?";
-        return;
+        qDebug() << QTime::currentTime().toString() << " [ERR] Invalid package, aborting..";
     }
 
-    qDebug() << QTime::currentTime().toString() << " [OUT] Scanning " << GameDirPathString;
-
-    //Check if the directory contains a METADATA subdirectory.
-    QDir GameDir(GameDirPathString);
-    if (!GameDir.cd("METADATA"))
-    {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
-        return;
-    }
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    QJsonDocument * MANIFESTJSON = LoadJSON(new QFile(GameDir.filePath("MANIFEST.json")));
+    QJsonDocument * MANIFESTJSON = JSONOperations::LoadJSON(new QFile(PackageDir->filePath("MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
@@ -149,23 +101,18 @@ void MainWindow::on_AddGameButton_clicked()
     else
     {
         qDebug() << QTime::currentTime().toString() << " [OUT] Parser returned non-empty JSON.";
-        GameDir.cdUp();
+        PackageDir->cdUp();
     }
 
-    QSqlQuery CheckPackageExistsQuery(*GlobalDB);
-    CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
-    while (CheckPackageExistsQuery.next())
+    if (DBOperations::CheckPackageExists(GlobalDB, QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt()))
     {
-        if (CheckPackageExistsQuery.value(0).toInt() == QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt())
-        {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Package already exists in library, aborting!";
-            return;
-        }
+        return;
     }
 
-    AddPackagetoDB(MANIFESTJSON, &GameDir);
-    AddSubGamestoDB(MANIFESTJSON);
+    DBOperations::AddPackagetoDB(MANIFESTJSON, PackageDir, GlobalDB, GlobalConfigJSON);
+    DBOperations::AddSubGamestoDB(MANIFESTJSON, GlobalDB, GlobalConfigJSON);
 
+    delete PackageDir;
     delete MANIFESTJSON;
 
     ResetTables();
@@ -183,7 +130,6 @@ QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * 
             QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
         }
         QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
-        qDebug() << QTime::currentTime().toString() << "[OUT] QUERYSTRING: " << QueryString;
         QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
     }
 
@@ -192,64 +138,6 @@ QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * 
     Model->select();
 
     return Model;
-}
-
-void MainWindow::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir)
-{
-    qDebug() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
-
-    QMap<QString, QString> PackagePathMap;
-    PackagePathMap["PATH"] = GameDir->path();
-
-    AddJSONObjectToDB("PACKAGES", (*MANIFESTJSON).object(), PackagePathMap);
-}
-
-void MainWindow::AddSubGamestoDB(QJsonDocument * MANIFESTJSON)
-{
-    qDebug() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
-
-    QMap<QString, QString> ParentPackageMap;
-    ParentPackageMap["PARENTPACKAGE"] = (*MANIFESTJSON)["PACKAGEUID"].toString();
-
-    for (auto SubGameObject : (*MANIFESTJSON)["SUBGAMES"].toArray())
-    {
-        AddJSONObjectToDB("LIBRARY", SubGameObject.toObject(), ParentPackageMap);
-    }
-}
-
-void MainWindow::AddJSONObjectToDB(QString DBTable, QJsonObject JsonObject, QMap<QString, QString> ExtraData)
-{
-        QString QueryString;
-        QString ColumnString;
-        QString ValueString;
-
-        for (auto Key : (*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
-        {
-            if (JsonObject.value(Key).toString().isEmpty())
-            {
-                continue;
-            }
-            if (JsonObject.keys().contains(Key))
-            {
-                ColumnString.append("\"" + Key + "\", ");
-                ValueString.append("\"" + JsonObject.value(Key).toString() + "\", ");
-            }
-        }
-
-        for (auto [Column, Value] : ExtraData.asKeyValueRange())
-        {
-            if ((*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys().contains(Column))
-            {
-                ColumnString.append("\"" + Column + "\", ");
-                ValueString.append("\"" + Value + "\", ");
-            }
-        }
-
-        ColumnString.chop(2);
-        ValueString.chop(2);
-
-        QueryString.append("INSERT INTO " + DBTable + " (" + ColumnString + ") VALUES (" + ValueString + ")");
-        QSqlQuery(*GlobalDB).exec(QueryString);
 }
 
 void MainWindow::on_PlayGameButton_clicked()
@@ -391,7 +279,7 @@ QJsonArray MainWindow::GetSubComponents(QDir * PackageDir, QList<int> Recipe)
 {
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
     QDir MetaDataDir = *PackageDir; MetaDataDir.cd("METADATA");
-    QJsonDocument * MANIFESTJSON = LoadJSON(new QFile(MetaDataDir.filePath("MANIFEST.json")));
+    QJsonDocument * MANIFESTJSON = JSONOperations::LoadJSON(new QFile(MetaDataDir.filePath("MANIFEST.json")));
     QJsonArray SubComponentsArray;
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].toArray().count(); i++)
     {

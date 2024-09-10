@@ -27,6 +27,24 @@ set(PROJECT_SOURCES
         gridviewitem.h
         gridviewitem.ui
 
+        filesystemoperations.h
+        filesystemoperations.cpp
+
+        jsonoperations.h
+        jsonoperations.cpp
+
+        dboperations.h
+        dboperations.cpp
+
+        winerunner.h
+        winerunner.cpp
+
+        dosboxrunner.h
+        dosboxrunner.cpp
+
+        umurunner.h
+        umurunner.cpp
+
         DefaultConfig.JSON
 
         ${TS_FILES}

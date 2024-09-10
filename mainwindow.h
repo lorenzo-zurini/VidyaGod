@@ -1,6 +1,13 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include "jsonoperations.h"
+#include "dboperations.h"
+#include "filesystemoperations.h"
+#include "winerunner.h"
+#include "umurunner.h"
+#include "dosboxrunner.h"
+
 #include <QMainWindow>
 
 #include <QFile>
@@ -60,11 +67,6 @@ private:
     void InitGlobalConfigJSON();
     void InitDatabaseAndModel();
     QSqlRelationalTableModel * InitDBTable(QString TableName, QObject * Parent, QSqlDatabase * DataBase);
-    QJsonDocument * LoadJSON(QFile * JSONFile);
-    void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
-    void AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir);
-    void AddSubGamestoDB(QJsonDocument * MANIFESTJSON);
-    void AddJSONObjectToDB(QString DBTable, QJsonObject MANIFESTJSON, QMap<QString, QString> ExtraData);
 
     QJsonArray GetSubComponents(QDir *PackageDir, QList<int> Recipe);
     bool InitializeUMUPrefix(QDir *DefPrefixDir, QString * UnionFSString);
@@ -76,7 +78,7 @@ private:
     bool RegAdd();
     bool BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir * UserDataDir);
     bool DestroyUnionFS(QDir * RuntimeDir);
-    bool RunWithUMU(QDir * WorkDir,  QDir * WinePrefix, QString GAMEID = "0", QFile * ExeFile = new QFile(""), QStringList * ExeArgs = new QStringList({}));
+    bool RunWithUMU(QDir * WorkDir, QDir * WinePrefix, QString GAMEID = "0", QFile * ExeFile = new QFile, QStringList * ExeArgs = new QStringList);
 
     QList<int> IntListFromString(QString String);
     QString GetSelectedItemByColumn(QTableView * TableView, QString Column);
