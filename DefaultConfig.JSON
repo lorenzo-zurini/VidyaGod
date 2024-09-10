@@ -5,6 +5,7 @@
         {
             "COLUMNS":
             {
+                "PLATFORM": "TEXT NOT NULL",
                 "GAMEUID": "INTEGER NOT NULL UNIQUE",
                 "EXEPATH": "TEXT NOT NULL",
                 "EXEARGS": "TEXT",
