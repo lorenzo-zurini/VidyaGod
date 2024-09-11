@@ -25,41 +25,14 @@ void MainWindow::InitClassVariables()
 {
     ApplicationDirectory = new QDir(QCoreApplication::applicationDirPath());
     ProtonPath = new QDir("/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
-    InitGlobalConfigJSON();
-    InitDatabaseAndModel();
+    GlobalConfigJSON = JSONOperations::InitGlobalConfigJSON(new QFile("GlobalConfig.JSON"));
+    GlobalDB = DBOperations::InitDatabase(ApplicationDirectory->filePath("GlobalDB.sqlite"));
+
+    LibraryModel = DBOperations::InitDBTable("LIBRARY", GlobalDB, GlobalConfigJSON, ui->LibraryTableView);
     ui->LibraryTableView->setModel(MainWindow::LibraryModel);
+
+    PackagesModel = DBOperations::InitDBTable("PACKAGES",  GlobalDB, GlobalConfigJSON, ui->PackagesTableView);
     ui->PackagesTableView->setModel(MainWindow::PackagesModel);
-}
-
-void MainWindow::InitDatabaseAndModel()
-{
-    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
-    GlobalDB = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
-    GlobalDB->setDatabaseName(ApplicationDirectory->filePath(QString("Global.DB")));
-
-    if (GlobalDB->open())
-    {
-        qDebug() << QTime::currentTime().toString() << " [OUT] " << GlobalDB->databaseName() << " opened successfully.";
-    }
-    else
-    {
-        qDebug() << QTime::currentTime().toString() << " [ERR] " << ApplicationDirectory->filePath(QString("Global.DB")) << " could not be opened.";
-        return;
-    }
-
-    LibraryModel = InitDBTable("LIBRARY", ui->LibraryTableView, GlobalDB);
-    PackagesModel = InitDBTable("PACKAGES", ui->PackagesTableView, GlobalDB);
-}
-
-void MainWindow::InitGlobalConfigJSON()
-{
-    GlobalConfigFile = new QFile("GlobalConfig.JSON");
-    if (!GlobalConfigFile->exists())
-    {
-        qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
-        QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
-    }
-    GlobalConfigJSON = JSONOperations::LoadJSON(GlobalConfigFile);
 }
 
 void MainWindow::on_TestButton_clicked()
@@ -82,29 +55,24 @@ void MainWindow::on_AddGameButton_clicked()
     if(!FileSystemOperations::CheckPackageValid(PackageDir))
     {
         qDebug() << QTime::currentTime().toString() << " [ERR] Invalid package, aborting..";
+        return;
     }
 
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    QJsonDocument * MANIFESTJSON = JSONOperations::LoadJSON(new QFile(PackageDir->filePath("MANIFEST.json")));
+    QJsonDocument * MANIFESTJSON = JSONOperations::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
-    else if (MANIFESTJSON->isNull())
-    {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned null JSON.";
-        delete MANIFESTJSON;
-        return;
-    }
     else
     {
         qDebug() << QTime::currentTime().toString() << " [OUT] Parser returned non-empty JSON.";
-        PackageDir->cdUp();
     }
 
+    //ABORT IF PACKAGE ALREADY EXISTS IN DB.
     if (DBOperations::CheckPackageExists(GlobalDB, QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt()))
     {
         return;
@@ -119,27 +87,7 @@ void MainWindow::on_AddGameButton_clicked()
     ResetTables();
 }
 
-QSqlRelationalTableModel * MainWindow::InitDBTable(QString TableName, QObject * Parent, QSqlDatabase * DataBase)
-{
-    if (!MainWindow::GlobalDB->tables().contains(TableName))
-    {
-        QString QueryString;
-        QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
 
-        for (auto Key : (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
-        {
-            QueryString.append("\"" + Key + "\" " + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
-        }
-        QueryString.append("PRIMARY KEY(\"" + (*MainWindow::GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
-        QSqlQuery(*MainWindow::GlobalDB).exec(QueryString);
-    }
-
-    QSqlRelationalTableModel * Model = new QSqlRelationalTableModel(Parent, *DataBase);
-    Model->setTable(TableName);
-    Model->select();
-
-    return Model;
-}
 
 void MainWindow::on_PlayGameButton_clicked()
 {
@@ -150,34 +98,33 @@ void MainWindow::on_PlayGameButton_clicked()
         return;
     }
 
-    QString GameName = GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
-    QString UMUID(GetSelectedItemByColumn(ui->LibraryTableView, "UMUID"));
-    QString ParentPackage = GetSelectedItemByColumn(ui->LibraryTableView, "PARENTPACKAGE");
-    QString PackagePath = GetItemFromOtherTableByRelation(ui->PackagesTableView, ParentPackage, "PACKAGEUID", "PATH");
-    QFile * ExeFile = new QFile("C:/" + ParentPackage + "/" + GetSelectedItemByColumn(ui->LibraryTableView, "EXEPATH"));
-    QString WorkDirPath = GetSelectedItemByColumn(ui->LibraryTableView, "WORKDIR");
-    QStringList * ExeArgs = new QStringList;
+    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+
+    QVariantMap * RunnerParams = new QVariantMap;
+    (*RunnerParams)["GameName"] = GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+    (*RunnerParams)["UMUID"] = GetSelectedItemByColumn(ui->LibraryTableView, "UMUID");
+    (*RunnerParams)["ParentPackage"] = GetSelectedItemByColumn(ui->LibraryTableView, "PARENTPACKAGE");
+    (*RunnerParams)["ExePath"] = QDir::cleanPath("C:/" + (*RunnerParams)["ParentPackage"].toString() + QDir::separator() + GetSelectedItemByColumn(ui->LibraryTableView, "EXEPATH"));
+    (*RunnerParams)["Recipe"].setValue<QList<int>>(IntListFromString(GetSelectedItemByColumn(ui->LibraryTableView, "RECIPE")));
+
     if (!GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").isEmpty())
     {
-        ExeArgs->append(GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").split(" "));                       //MUST MAKE THIS RESPECT QUOTES
+        //MUST MAKE THIS RESPECT QUOTES
+        (*RunnerParams)["ExeArgs"].toStringList().append(GetSelectedItemByColumn(ui->LibraryTableView, "EXEARGS").split(" "));
     }
-    QList<int> Recipe = IntListFromString(GetSelectedItemByColumn(ui->LibraryTableView, "RECIPE"));
 
-    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << GameName;
+    (*RunnerParams)["Paths"].toMap()["PackagePath"] = GetItemFromOtherTableByRelation(ui->PackagesTableView, (*RunnerParams)["Paths"].toMap()["ParentPackage"].toString(), "PACKAGEUID", "PATH");
+    (*RunnerParams)["Paths"].toMap()["RuntimePath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["PackagePath"].toString(), "RUNTIME");
+    (*RunnerParams)["Paths"].toMap()["WorkDir"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["RuntimePath"].toString(), GetSelectedItemByColumn(ui->LibraryTableView, "WORKDIR"));
+    (*RunnerParams)["Paths"].toMap()["ProgramPath"] = FileSystemOperations::SubPath(FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["RuntimePath"].toString(), "drive_c"), (*RunnerParams)["Paths"].toMap()["ParentPackage"].toString());
+    (*RunnerParams)["Paths"].toMap()["MetaDataPath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["PackagePath"].toString(), "METADATA");
+    (*RunnerParams)["Paths"].toMap()["PackageFilesPath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["PackagePath"].toString(), "PACKAGEFILES");
+    (*RunnerParams)["Paths"].toMap()["UserDataPath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["PackagePath"].toString(), "USERDATA");
+    (*RunnerParams)["Paths"].toMap()["TempPath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["PackagePath"].toString(), "TEMP");
+    (*RunnerParams)["Paths"].toMap()["DefPrefixPath"] = FileSystemOperations::SubPath((*RunnerParams)["Paths"].toMap()["TempPath"].toString(), "DEFPREFIX");
 
 
-    //Initalise directories.
-    QDir * PackageDir = new QDir(PackagePath);
-    QDir * MetaDataDir = new QDir(*PackageDir); MetaDataDir->cd("METADATA");
-    QDir * PackageFilesDir = new QDir(*PackageDir); PackageFilesDir->cd("PACKAGEFILES");
-    QDir * UserDataDir = new QDir(*PackageDir); UserDataDir->mkdir("USERDATA"); UserDataDir->cd("USERDATA");
-    QDir * TempDir = new QDir(*PackageDir); TempDir->mkdir("TEMP"); TempDir->cd("TEMP");
-    QDir * RuntimeDir = new QDir(*PackageDir); RuntimeDir->mkdir("RUNTIME"); RuntimeDir->cd("RUNTIME");
-    QDir * ProgramRuntimeDir = new QDir(*RuntimeDir); ProgramRuntimeDir->mkdir("drive_c"); ProgramRuntimeDir->cd("drive_c"); ProgramRuntimeDir->mkdir(ParentPackage); ProgramRuntimeDir->cd(ParentPackage);
-    QDir * WorkDir = new QDir(*ProgramRuntimeDir); WorkDir->mkpath(QDir::cleanPath(WorkDir->path() + QDir::separator() + WorkDirPath)); WorkDir->cd(QDir::cleanPath(WorkDir->path() + QDir::separator() + WorkDirPath));
-    QDir * DefPrefixDir = new QDir(*TempDir); DefPrefixDir->mkdir("DEFPREFIX"); DefPrefixDir->cd("DEFPREFIX");
-
-    QJsonArray SubComponentsArray = GetSubComponents(PackageDir, Recipe);
+    QJsonArray SubComponentsArray = GetSubComponents((*RunnerParams)["Paths"].toMap()["MetaDataPath"].toString(), (*RunnerParams)["Recipe"].toList());
 
     //START BUILDING THE STRING FOR THE UNIONFS
     QString * UnionFSString = new QString;
@@ -186,6 +133,7 @@ void MainWindow::on_PlayGameButton_clicked()
     if (!InitializeUMUPrefix(DefPrefixDir, UnionFSString))
     {
         delete ExeFile;
+        delete ExeArgs;
         delete UnionFSString;
         return;
     }
@@ -193,6 +141,7 @@ void MainWindow::on_PlayGameButton_clicked()
     if (!ProcessSubComponents(SubComponentsArray, TempDir, PackageFilesDir, DefPrefixDir, ProgramRuntimeDir, UnionFSString, ParentPackage))
     {
         delete ExeFile;
+        delete ExeArgs;
         delete UnionFSString;
         return;
     }
@@ -200,6 +149,7 @@ void MainWindow::on_PlayGameButton_clicked()
     if (!BuildUnionFS(UnionFSString, RuntimeDir, UserDataDir))
     {
         delete ExeFile;
+        delete ExeArgs;
         delete UnionFSString;
         return;
     }
@@ -215,6 +165,7 @@ void MainWindow::on_PlayGameButton_clicked()
 
     TempDir->removeRecursively();
     RuntimeDir->removeRecursively();
+
     delete ExeFile;
     delete UnionFSString;
 }
@@ -276,10 +227,10 @@ bool MainWindow::RunWithUMU(QDir * WorkDir, QDir * WinePrefix, QString GAMEID, Q
     }
 }
 
-QJsonArray MainWindow::GetSubComponents(QDir * PackageDir, QList<int> Recipe)
+QJsonArray MainWindow::GetSubComponents(QString MetaDataPath, QList<int> Recipe)
 {
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
-    QDir MetaDataDir = *PackageDir; MetaDataDir.cd("METADATA");
+    QDir MetaDataDir = PackagePath; MetaDataDir.cd("METADATA");
     QJsonDocument * MANIFESTJSON = JSONOperations::LoadJSON(new QFile(MetaDataDir.filePath("MANIFEST.json")));
     QJsonArray SubComponentsArray;
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].toArray().count(); i++)

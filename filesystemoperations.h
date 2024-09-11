@@ -10,6 +10,7 @@ class FileSystemOperations
 public:
     FileSystemOperations();
 
+    static QString SubPath(QString Parent, QString SubDir);
     static bool CheckPackageValid(QDir * PackageDir);
 };
 

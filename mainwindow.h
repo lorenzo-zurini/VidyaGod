@@ -64,11 +64,8 @@ private:
     QSqlRelationalTableModel * PackagesModel;
 
     void InitClassVariables();
-    void InitGlobalConfigJSON();
-    void InitDatabaseAndModel();
-    QSqlRelationalTableModel * InitDBTable(QString TableName, QObject * Parent, QSqlDatabase * DataBase);
 
-    QJsonArray GetSubComponents(QDir *PackageDir, QList<int> Recipe);
+    QJsonArray GetSubComponents(QString MetaDataPath, QList<int> Recipe);
     bool InitializeUMUPrefix(QDir *DefPrefixDir, QString * UnionFSString);
     bool ProcessSubComponents(const QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QDir * DefPrefixDir, QDir * ProgramRuntimeDir, QString * UnionFSString, const QString ParentPackage);
     bool RemoveSubComponents(QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);

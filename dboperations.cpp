@@ -2,6 +2,46 @@
 
 DBOperations::DBOperations() {}
 
+QSqlDatabase * DBOperations::InitDatabase(QString FileName)
+{
+    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
+    QSqlDatabase * NewDataBase = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
+    NewDataBase->setDatabaseName(FileName);
+
+    if (NewDataBase->open())
+    {
+        qDebug() << QTime::currentTime().toString() << " [OUT] " << NewDataBase->databaseName() << " opened successfully.";
+        return NewDataBase;
+    }
+    else
+    {
+        qDebug() << QTime::currentTime().toString() << " [ERR] " << FileName << " could not be opened.";
+        return nullptr;
+    }
+}
+
+QSqlRelationalTableModel * DBOperations::InitDBTable(QString TableName, QSqlDatabase * DataBase, QJsonDocument * GlobalConfigJSON, QObject * Parent)
+{
+    if (!DataBase->tables().contains(TableName))
+    {
+        QString QueryString;
+        QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
+
+        for (auto Key : (*GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
+        {
+            QueryString.append("\"" + Key + "\" " + (*GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
+        }
+        QueryString.append("PRIMARY KEY(\"" + (*GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
+        QSqlQuery(*DataBase).exec(QueryString);
+    }
+
+    QSqlRelationalTableModel * Model = new QSqlRelationalTableModel(Parent, *DataBase);
+    Model->setTable(TableName);
+    Model->select();
+
+    return Model;
+}
+
 void DBOperations::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();

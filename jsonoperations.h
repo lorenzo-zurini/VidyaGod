@@ -9,6 +9,7 @@ class JSONOperations
 public:
     JSONOperations();
 
+    static QJsonDocument * InitGlobalConfigJSON(QFile * GlobalConfigFile);
     static QJsonDocument * LoadJSON(QFile * JSONFile);
     static void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
 };

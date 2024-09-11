@@ -14,11 +14,17 @@ bool FileSystemOperations::CheckPackageValid(QDir * PackageDir)
     qDebug() << QTime::currentTime().toString() << " [OUT] Scanning " << PackageDir->path();
 
     //Check if the directory contains a METADATA subdirectory.
-    if (!PackageDir->cd("METADATA"))
+    if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
     {
         qDebug() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
         return false;
     }
-
     return true;
 }
+
+QString FileSystemOperations::SubPath(QString Parent, QString SubDir)
+{
+    return QDir::cleanPath(Parent + QDir::separator() + SubDir);
+}
+
+

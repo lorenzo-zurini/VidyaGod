@@ -2,10 +2,19 @@
 
 JSONOperations::JSONOperations() {}
 
+QJsonDocument * JSONOperations::InitGlobalConfigJSON(QFile * GlobalConfigFile)
+{
+    if (!GlobalConfigFile->exists())
+    {
+        qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
+        QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
+    }
+    return JSONOperations::LoadJSON(GlobalConfigFile);
+}
+
 QJsonDocument * JSONOperations::LoadJSON(QFile * JSONFile)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Parsing JSON " << JSONFile->fileName();
-    //ADD VALID JSON CHECK HERE
 
     if (!JSONFile->exists())
     {
@@ -18,6 +27,14 @@ QJsonDocument * JSONOperations::LoadJSON(QFile * JSONFile)
         QJsonDocument * JSONDocument = new QJsonDocument(QJsonDocument::fromJson(JSONFile->readAll()));
         JSONFile->close();
         qDebug() << QTime::currentTime().toString() << " [OUT] Parse done!";
+
+        if (JSONDocument->isNull() || JSONDocument->isEmpty())
+        {
+            qDebug() << QTime::currentTime().toString() << " [ERR] Null or empty JSON.";
+            delete JSONDocument;
+            return nullptr;
+        }
+
         return JSONDocument;
     }
     else
