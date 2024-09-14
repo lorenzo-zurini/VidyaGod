@@ -50,7 +50,9 @@ set(PROJECT_SOURCES
         ${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES})
+add_executable(VidyaGod ${PROJECT_SOURCES}
+    runnerparams.h runnerparams.cpp
+    registryoperations.h registryoperations.cpp)
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)

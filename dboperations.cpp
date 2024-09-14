@@ -1,8 +1,8 @@
 #include "dboperations.h"
 
-DBOperations::DBOperations() {}
+DBOps::DBOps() {}
 
-QSqlDatabase * DBOperations::InitDatabase(QString FileName)
+QSqlDatabase * DBOps::InitDatabase(QString FileName)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
     QSqlDatabase * NewDataBase = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
@@ -20,7 +20,7 @@ QSqlDatabase * DBOperations::InitDatabase(QString FileName)
     }
 }
 
-QSqlRelationalTableModel * DBOperations::InitDBTable(QString TableName, QSqlDatabase * DataBase, QJsonDocument * GlobalConfigJSON, QObject * Parent)
+QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * DataBase, QJsonDocument * GlobalConfigJSON, QObject * Parent)
 {
     if (!DataBase->tables().contains(TableName))
     {
@@ -42,7 +42,7 @@ QSqlRelationalTableModel * DBOperations::InitDBTable(QString TableName, QSqlData
     return Model;
 }
 
-void DBOperations::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
+void DBOps::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
 
@@ -52,7 +52,7 @@ void DBOperations::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir, 
     AddJSONObjectToDB(GlobalDB, "PACKAGES", GlobalConfigJSON, (*MANIFESTJSON).object(), PackagePathMap);
 }
 
-void DBOperations::AddSubGamestoDB(QJsonDocument * MANIFESTJSON, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
+void DBOps::AddSubGamestoDB(QJsonDocument * MANIFESTJSON, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
 
@@ -65,7 +65,7 @@ void DBOperations::AddSubGamestoDB(QJsonDocument * MANIFESTJSON, QSqlDatabase * 
     }
 }
 
-void DBOperations::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, QJsonDocument * GlobalConfigJSON, QJsonObject JsonObject, QMap<QString, QString> ExtraData)
+void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, QJsonDocument * GlobalConfigJSON, QJsonObject JsonObject, QMap<QString, QString> ExtraData)
 {
     QString QueryString;
     QString ColumnString;
@@ -110,7 +110,7 @@ void DBOperations::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, Q
     QSqlQuery(*GlobalDB).exec(QueryString);
 }
 
-bool DBOperations::CheckPackageExists(QSqlDatabase * GlobalDB, int PackageUID)
+bool DBOps::CheckPackageExists(QSqlDatabase * GlobalDB, int PackageUID)
 {
     QSqlQuery CheckPackageExistsQuery(*GlobalDB);
     CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
@@ -123,4 +123,58 @@ bool DBOperations::CheckPackageExists(QSqlDatabase * GlobalDB, int PackageUID)
         }
     }
     return false;
+}
+
+QString DBOps::GetItemFromOtherTableByRelation(QTableView * OtherTable, QString Relation, QString RelationColumn, QString ItemColumn)
+{
+    int row = GetRowByItemAndColumn(OtherTable, Relation, RelationColumn);
+    int col = GetHeaderColumn(OtherTable->model(), ItemColumn);
+    QString ResultString = OtherTable->model()->data(OtherTable->model()->index(row, col)).toString();
+    return ResultString;
+}
+
+QList<int> DBOps::IntListFromString(QString String)
+{
+    QList<int> IntList;
+    foreach (QString SubString, String.split(","))
+    {
+        IntList.append(SubString.toInt());
+    }
+    return IntList;
+}
+
+int DBOps::GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column)
+{
+    QAbstractItemModel * Model = TableView->model();
+
+    for (int i = 0; i < Model->rowCount(); i++)
+    {
+        if (Model->data(Model->index(i, GetHeaderColumn(Model, Column))).toString() == Item)
+        {
+            return i;
+        }
+    }
+    qDebug() << QTime::currentTime().toString() << "[OUT] " << Item << " not found in column " << Column;
+    return -1;
+}
+
+QString DBOps::GetSelectedItemByColumn(QTableView * TableView, QString Column)
+{
+    QString ResultString;
+    QAbstractItemModel * Model = TableView->model();
+    int ColumnIndex = GetHeaderColumn(Model, Column);
+    ResultString = Model->data(Model->index(TableView->selectionModel()->currentIndex().row(), ColumnIndex)).toString();
+    return ResultString;
+}
+
+int DBOps::GetHeaderColumn(QAbstractItemModel * Model, QString Column)
+{
+    for (int i = 0; i < Model->columnCount(); i++)
+    {
+        if (Model->headerData(i, Qt::Horizontal).toString() == Column)
+        {
+            return i;
+        }
+    }
+    return 0;
 }

@@ -1,18 +1,18 @@
 #include "jsonoperations.h"
 
-JSONOperations::JSONOperations() {}
+JSONOps::JSONOps() {}
 
-QJsonDocument * JSONOperations::InitGlobalConfigJSON(QFile * GlobalConfigFile)
+QJsonDocument * JSONOps::InitGlobalConfigJSON(QFile * GlobalConfigFile)
 {
     if (!GlobalConfigFile->exists())
     {
         qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
         QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
-    return JSONOperations::LoadJSON(GlobalConfigFile);
+    return JSONOps::LoadJSON(GlobalConfigFile);
 }
 
-QJsonDocument * JSONOperations::LoadJSON(QFile * JSONFile)
+QJsonDocument * JSONOps::LoadJSON(QFile * JSONFile)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Parsing JSON " << JSONFile->fileName();
 
@@ -44,7 +44,7 @@ QJsonDocument * JSONOperations::LoadJSON(QFile * JSONFile)
     }
 }
 
-void JSONOperations::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
+void JSONOps::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
@@ -58,4 +58,24 @@ void JSONOperations::SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile)
     {
         qDebug() << QTime::currentTime() << " [ERR] Could not open file for writing!";
     }
+}
+
+QJsonArray JSONOps::GetSubComponents(QString MetaDataPath, QList<int> Recipe)
+{
+    //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
+    QJsonDocument * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(MetaDataPath + QDir::separator() +"MANIFEST.json")));
+    QJsonArray SubComponentsArray;
+    for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].toArray().count(); i++)
+    {
+        if (Recipe.contains(i))
+        {
+            for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"].toArray()[i].toObject()["SUBCOMPONENTS"].toArray().count(); j++)
+            {
+                SubComponentsArray.append((*MANIFESTJSON)["COMPONENTS"].toArray()[i].toObject()["SUBCOMPONENTS"].toArray()[j].toObject());
+            }
+        }
+    }
+
+    delete MANIFESTJSON;
+    return SubComponentsArray;
 }

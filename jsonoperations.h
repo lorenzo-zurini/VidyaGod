@@ -2,16 +2,21 @@
 #define JSONOPERATIONS_H
 
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+
+#include <QDir>
 #include <QFile>
 
-class JSONOperations
+class JSONOps
 {
 public:
-    JSONOperations();
+    JSONOps();
 
     static QJsonDocument * InitGlobalConfigJSON(QFile * GlobalConfigFile);
     static QJsonDocument * LoadJSON(QFile * JSONFile);
     static void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
+    static QJsonArray GetSubComponents(QString MetaDataPath, QList<int> Recipe);
 };
 
 #endif // JSONOPERATIONS_H

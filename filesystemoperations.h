@@ -4,14 +4,28 @@
 #include <QtLogging>
 
 #include <QDir>
+#include <QDirIterator>
+#include <QProcess>
 
-class FileSystemOperations
+#include <QJsonObject>
+
+class RunnerParams;
+
+class FSOps
 {
 public:
-    FileSystemOperations();
+    FSOps();
 
     static QString SubPath(QString Parent, QString SubDir);
+    static bool CreateDirectories (QMap<QString, QString>);
     static bool CheckPackageValid(QDir * PackageDir);
+    static bool CheckCaseConflicts(QString RuntimePath);
+
+    static bool MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage);
+    static bool UnmountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage);
+
+    static bool BuildUnionFS(QString UnionFSString, QString RuntimePath, QString UserDataPath);
+    static bool DestroyUnionFS(QString RuntimePath);
 };
 
 #endif // FILESYSTEMOPERATIONS_H

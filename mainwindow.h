@@ -1,13 +1,6 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include "jsonoperations.h"
-#include "dboperations.h"
-#include "filesystemoperations.h"
-#include "winerunner.h"
-#include "umurunner.h"
-#include "dosboxrunner.h"
-
 #include <QMainWindow>
 
 #include <QFile>
@@ -55,9 +48,9 @@ private slots:
 private:
     Ui::MainWindow *ui;
 
-    QDir * ApplicationDirectory;
-    QDir * ProtonPath;
-    QFile * GlobalConfigFile;
+    QString ApplicationPath;
+    QString ProtonPath;
+    //QFile * GlobalConfigFile;
     QJsonDocument * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
     QSqlRelationalTableModel * LibraryModel;
@@ -65,8 +58,8 @@ private:
 
     void InitClassVariables();
 
-    QJsonArray GetSubComponents(QString MetaDataPath, QList<int> Recipe);
-    bool InitializeUMUPrefix(QDir *DefPrefixDir, QString * UnionFSString);
+
+    bool InitializeUMUPrefix(QVariantMap * RunnerParams);
     bool ProcessSubComponents(const QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QDir * DefPrefixDir, QDir * ProgramRuntimeDir, QString * UnionFSString, const QString ParentPackage);
     bool RemoveSubComponents(QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
     bool MountZipFileLayer(const QJsonObject SubComponentJSON, int LayerNumber, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
@@ -75,13 +68,9 @@ private:
     bool RegAdd();
     bool BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir * UserDataDir);
     bool DestroyUnionFS(QDir * RuntimeDir);
-    bool RunWithUMU(QDir * WorkDir, QDir * WinePrefix, QString GAMEID = "0", QFile * ExeFile = new QFile, QStringList * ExeArgs = new QStringList);
+    bool RunWithUMU(QString WorkDirPath, QString WinePrefix, QString GAMEID, QString ExePath, QStringList ExeArgs);
 
-    QList<int> IntListFromString(QString String);
-    QString GetSelectedItemByColumn(QTableView * TableView, QString Column);
-    QString GetItemFromOtherTableByRelation(QTableView * OtherTable, QString Relation, QString RelationColumn, QString ItemColumn);
-    int GetRowByItemAndColumn(QTableView * TableView, QString Item, QString Column);
-    int GetHeaderColumn(QAbstractItemModel * Model, QString Column);
+
     void ResetTables();
     bool CheckCaseConflicts(QDir * RuntimeDir);
 };
