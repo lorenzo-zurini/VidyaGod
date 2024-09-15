@@ -27,6 +27,12 @@ set(PROJECT_SOURCES
         gridviewitem.h
         gridviewitem.ui
 
+        runnerparams.h
+        runnerparams.cpp
+
+        registryoperations.h
+        registryoperations.cpp
+
         filesystemoperations.h
         filesystemoperations.cpp
 
@@ -50,9 +56,7 @@ set(PROJECT_SOURCES
         ${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES}
-    runnerparams.h runnerparams.cpp
-    registryoperations.h registryoperations.cpp)
+add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)

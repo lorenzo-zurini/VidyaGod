@@ -8,7 +8,7 @@ class RegOps
 {
 public:
     RegOps();
-    static bool RegAdd(QJsonObject SubComponentJSON, QString DefPrefixPath, QString ProtonPath);
+    static bool RegAdd(QJsonObject SubComponentJSON, QString PrefixPath, QString ProtonPath);
 };
 
 #endif // REGISTRYOPERATIONS_H

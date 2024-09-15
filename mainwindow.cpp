@@ -66,7 +66,6 @@ void MainWindow::on_AddGameButton_clicked()
         return;
     }
 
-
     //Catch nullptr return value of the JSON, returned if parser errorred.
     QJsonDocument * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
@@ -107,18 +106,11 @@ void MainWindow::on_PlayGameButton_clicked()
     qDebug() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << DBOps::GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
 
     UMURunner * UMURunner = new class UMURunner(ui->LibraryTableView, ui->PackagesTableView, ProtonPath);
+
+    UMURunner->Cleanup();
     UMURunner->Run();
+    QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
+    UMURunner->Cleanup();
 
-    //START BUILDING THE STRING FOR THE UNIONFS
-    //QString * UnionFSString = new QString;
-    //CREATE ALL PATHS
+    delete UMURunner;
 }
-
-
-
-
-
-
-
-
-

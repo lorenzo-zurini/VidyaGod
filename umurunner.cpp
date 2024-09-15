@@ -20,7 +20,7 @@ bool UMURunner::Run()
         return false;
     }
 
-    if (!ProcessSubComponents())
+    if (!ProcessFileSystemSubComponents())
     {
         return false;
     }
@@ -30,14 +30,20 @@ bool UMURunner::Run()
         return false;
     }
 
+    if (!ProcessOtherSubComponents())
+    {
+        return false;
+    }
+
     FSOps::CheckCaseConflicts(RunnerParams->Paths["RuntimePath"]);
 
     bool ExitStatus = RunWithUMU(RunnerParams->Paths["ProtonPath"],
-                                 RunnerParams->Paths["WorkDirPath"],
                                  RunnerParams->Paths["RuntimePath"],
-                                 RunnerParams->UMUID,
                                  RunnerParams->ExePath,
-                                 RunnerParams->ExeArgs);
+                                 RunnerParams->ExeArgs,
+                                 RunnerParams->Paths["WorkDirPath"],
+                                 RunnerParams->UMUID,
+                                 RunnerParams->DllOverrides);
 
     return ExitStatus;
 }
@@ -45,7 +51,7 @@ bool UMURunner::Run()
 bool UMURunner::InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Initialising prefix" << PrefixPath;
-    if (RunWithUMU(ProtonPath, PrefixPath, PrefixPath, "0", "wineboot", {}))
+    if (RunWithUMU(ProtonPath, PrefixPath, "wineboot"))
     {
         qDebug() << QTime::currentTime().toString() << " [OUT] Prefix initialisation successful!";
         UnionFSString->prepend(RunnerParams->Paths["DefPrefixPath"] + "=RO");
@@ -55,7 +61,7 @@ bool UMURunner::InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QStr
     return false;
 }
 
-bool UMURunner::ProcessSubComponents()
+bool UMURunner::ProcessFileSystemSubComponents()
 {
     for (int i = 0; i < RunnerParams->SubComponentsArray.count(); i++)
     {
@@ -68,27 +74,47 @@ bool UMURunner::ProcessSubComponents()
                 return false;
             }
         }
-        else if (SubComponentJSON["TYPE"].toString() == "RegEdit")
+    }
+    return true;
+}
+
+bool UMURunner::ProcessOtherSubComponents()
+{
+    for (int i = 0; i < RunnerParams->SubComponentsArray.count(); i++)
+    {
+        QJsonObject SubComponentJSON = RunnerParams->SubComponentsArray[i].toObject();
+
+        if (SubComponentJSON["TYPE"].toString() == "RegEdit")
         {
-            if(!RegOps::RegAdd(SubComponentJSON, RunnerParams->Paths["DefPrefixPath"], RunnerParams->Paths["ProtonPath"]))
+            if(!RegOps::RegAdd(SubComponentJSON, RunnerParams->Paths["RuntimePath"], RunnerParams->Paths["ProtonPath"]))
             {
                 return false;
             }
         }
-        else
+        else if (SubComponentJSON["TYPE"].toString() == "DllOverride")
         {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Invalid SubComponent:" << i;
-            return false;
+            if (!RunnerParams->DllOverrides.isEmpty())
+            {
+                RunnerParams->DllOverrides.append(";" + SubComponentJSON["DLLOVERRIDE"].toString());
+            }
+            else
+            {
+                RunnerParams->DllOverrides.append(SubComponentJSON["DLLOVERRIDE"].toString());
+            }
+        }
+        else if (SubComponentJSON["TYPE"].toString() == "FileEdit")
+        {
+            if (SubComponentJSON["MODE"].toString() == "ConfigWrite")
+            {
+                FSOps::ConfigWrite(SubComponentJSON["KEY"].toString(), SubComponentJSON["VALUE"].toString(), SubComponentJSON["FILE"].toString());
+            }
         }
     }
     return true;
 }
 
-
 bool UMURunner::Cleanup()
 {
-    QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
-
     if (!FSOps::DestroyUnionFS(RunnerParams->Paths["RuntimePath"]))
     {
         QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
@@ -131,27 +157,45 @@ bool UMURunner::RemoveSubComponents()
     return true;
 }
 
-bool UMURunner::RunWithUMU(QString ProtonPath, QString WorkDirPath, QString WinePrefix, QString GAMEID, QString ExePath, QStringList ExeArgs)
+bool UMURunner::RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs, QString WorkDirPath, QString GAMEID, QString DllOverrides)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Executing with umu-launcher: " << ExePath << ExeArgs;
-    qDebug() << QTime::currentTime().toString() << " [OUT] WINEPREFIX:" << WinePrefix;
-    qDebug() << QTime::currentTime().toString() << " [OUT] WORKDIR:" << WorkDirPath;
-    qDebug() << QTime::currentTime().toString() << " [OUT] GAMEID:" << GAMEID;
+    qDebug() << QTime::currentTime().toString() << " [OUT] ProtonPath:" << ProtonPath;
+    qDebug() << QTime::currentTime().toString() << " [OUT] WinePrefix:" << WinePrefix;
     qDebug() << QTime::currentTime().toString() << " [OUT] ExePath:" << ExePath;
     qDebug() << QTime::currentTime().toString() << " [OUT] ExeArgs:" << ExeArgs;
+    qDebug() << QTime::currentTime().toString() << " [OUT] WorkDirPath:" << WorkDirPath;
+    qDebug() << QTime::currentTime().toString() << " [OUT] GAMEID:" << GAMEID;
+    qDebug() << QTime::currentTime().toString() << " [OUT] DllOverrides:" << DllOverrides;
 
-    QProcess * RunProcess = new QProcess;
-
-    ExeArgs.prepend(ExePath);
-    RunProcess->setWorkingDirectory(WorkDirPath);
-    RunProcess->setProgram("umu-run");
-    RunProcess->setArguments(ExeArgs);
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    RunProcessEnvironment.insert("WINEPREFIX", WinePrefix);
-    RunProcessEnvironment.insert("GAMEID", GAMEID);
+    QProcess * RunProcess = new QProcess;
+    RunProcess->setProgram("umu-run");
+
     RunProcessEnvironment.insert("PROTONPATH", ProtonPath);
+    RunProcessEnvironment.insert("WINEPREFIX", WinePrefix);
+    ExeArgs.prepend(ExePath);
+
+    if (!ExeArgs.isEmpty())
+    {
+        RunProcess->setArguments(ExeArgs);
+    }
+
+    if (!WorkDirPath.isEmpty())
+    {
+        RunProcess->setWorkingDirectory(WorkDirPath);
+    }
+
+    RunProcessEnvironment.insert("GAMEID", GAMEID);
+
+    if (!DllOverrides.isEmpty())
+    {
+        RunProcessEnvironment.insert("WINEDLLOVERRIDES", DllOverrides);
+    }
+
     RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+
     RunProcess->setProcessEnvironment(RunProcessEnvironment);
     RunProcess->start();
     RunProcess->waitForFinished(-1);

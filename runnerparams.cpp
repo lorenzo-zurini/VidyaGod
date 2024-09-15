@@ -1,4 +1,7 @@
 #include "runnerparams.h"
+#include "dboperations.h"
+#include "jsonoperations.h"
+#include "filesystemoperations.h"
 
 RunnerParams::RunnerParams(QTableView * LibraryTableView, QTableView * PackagesTableView, QString ProtonPath)
 {
@@ -9,7 +12,10 @@ RunnerParams::RunnerParams(QTableView * LibraryTableView, QTableView * PackagesT
     Recipe                      = DBOps::IntListFromString(DBOps::GetSelectedItemByColumn(LibraryTableView, "RECIPE"));
 
     //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
-    ExeArgs                     = DBOps::GetSelectedItemByColumn(LibraryTableView, "EXEARGS").split(" ");
+    if (!DBOps::GetSelectedItemByColumn(LibraryTableView, "EXEARGS").isEmpty())
+    {
+        ExeArgs                 = DBOps::GetSelectedItemByColumn(LibraryTableView, "EXEARGS").split(" ");
+    }
 
     Paths["ProtonPath"]         = ProtonPath;
     Paths["PackagePath"]        = DBOps::GetItemFromOtherTableByRelation(PackagesTableView, ParentPackage, "PACKAGEUID", "PATH");
@@ -22,5 +28,27 @@ RunnerParams::RunnerParams(QTableView * LibraryTableView, QTableView * PackagesT
     Paths["TempPath"]           = FSOps::SubPath(Paths["PackagePath"], "TEMP");
     Paths["DefPrefixPath"]      = FSOps::SubPath(Paths["TempPath"], "DEFPREFIX");
 
+    WindowsPaths["WindowsProgramPath"]                  = QDir::cleanPath("C:/" + ParentPackage).replace("/", "\\");
+    WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + ParentPackage).replace("/", "\\\\");
+
+    SystemVariables["ScreenWidth"]      = QString::number(QGuiApplication::primaryScreen()->geometry().width());
+    SystemVariables["ScreenHeight"]     = QString::number(QGuiApplication::primaryScreen()->geometry().height());
+
     SubComponentsArray          = JSONOps::GetSubComponents(Paths["MetaDataPath"], Recipe);
+    SubComponentsArray          = JSONOps::ReplaceVariables(SubComponentsArray, WindowsPaths);
+    SubComponentsArray          = JSONOps::ReplaceVariables(SubComponentsArray, Paths);
+    SubComponentsArray          = JSONOps::ReplaceVariables(SubComponentsArray, SystemVariables);
+
+    ExeArgs =   StringListReplaceVariables(ExeArgs, WindowsPaths);
+    ExeArgs =   StringListReplaceVariables(ExeArgs, Paths);
+    ExeArgs =   StringListReplaceVariables(ExeArgs, SystemVariables);
+}
+
+QStringList RunnerParams::StringListReplaceVariables(QStringList OriginalStringList, QMap<QString, QString> VariableValues)
+{
+    for (auto [Variable, Value] : VariableValues.asKeyValueRange())
+    {
+        OriginalStringList.replaceInStrings(("%" + Variable + "%"), Value);
+    }
+    return OriginalStringList;
 }

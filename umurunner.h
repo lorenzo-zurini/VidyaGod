@@ -9,14 +9,16 @@ class RunnerParams;
 class UMURunner
 {
 public:
-    UMURunner(QTableView * LibraryTableView, QTableView * PackagesTableView, QString ProtonPath);
     bool Run();
-    static bool RunWithUMU(QString ProtonPath, QString WorkDirPath, QString WinePrefix, QString GAMEID, QString ExePath, QStringList ExeArgs);
+    bool Cleanup();
+
+    UMURunner(QTableView * LibraryTableView, QTableView * PackagesTableView, QString ProtonPath);
+    static bool RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs = {}, QString WorkDirPath = "", QString GAMEID = "0", QString DllOverrides = "");
 
 private:
     RunnerParams * RunnerParams;
-    bool Cleanup();
-    bool ProcessSubComponents();
+    bool ProcessFileSystemSubComponents();
+    bool ProcessOtherSubComponents();
     bool RemoveSubComponents();
     bool InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString);
 };

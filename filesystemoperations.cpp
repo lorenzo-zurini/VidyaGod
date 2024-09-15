@@ -51,10 +51,13 @@ bool FSOps::MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QSt
     MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
     MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
 
-    if (!(SubComponentJSON["TARGET"].toString().isEmpty()))
+    if (SubComponentJSON.keys().contains("TARGET"))
     {
-        MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
-        MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
+        if (!(SubComponentJSON["TARGET"].toString().isEmpty()))
+        {
+            MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
+            MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
+        }
     }
 
     QString FilePath = QDir::cleanPath(PackageFilesPath + QDir::separator() + SubComponentJSON["PATH"].toString());
@@ -161,7 +164,7 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
         if (FileList->contains(FilePath))
         {
             NoConflict = false;
-            qDebug() << QTime::currentTime() << "[ERR] Case conflict found: " << FilePath;
+            qDebug() << QTime::currentTime() << " [ERR] Case conflict found: " << FilePath;
         }
         else
         {
@@ -170,4 +173,48 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
     }
     delete FileList;
     return NoConflict;
+}
+
+bool FSOps::ConfigWrite(QString Key, QString Value, QString FilePath)
+{
+    qDebug() << QTime::currentTime() << " [OUT] Editing file: " << FilePath << " Key: " << Key << " Value: " << Value;
+    QFile ConfigFile(FilePath);
+    QTextStream OutFile(&ConfigFile);
+    if (ConfigFile.open(QFile::ReadWrite | QFile::Text))
+    {
+        QStringList LinesList;
+        while (!ConfigFile.atEnd())
+        {
+            LinesList.append(ConfigFile.readLine());
+        }
+
+        ConfigFile.seek(0);
+
+        for (int i = 0; i < LinesList.count(); i++)
+        {
+            if (!(LinesList[i].length() < Key.length()))
+            {
+                if (LinesList[i].first(Key.length()) == Key)
+                {
+                    LinesList[i] = Key + Value;
+                    OutFile << LinesList[i] << Qt::endl;
+                }
+                else
+                {
+                    OutFile << LinesList[i];
+                }
+            }
+            else
+            {
+                OutFile << LinesList[i];
+            }
+        }
+        ConfigFile.close();
+        return true;
+    }
+    else
+    {
+        qDebug() << QTime::currentTime() << " [ERR] Could not open file for ConfigWrite: " << FilePath;
+        return false;
+    }
 }

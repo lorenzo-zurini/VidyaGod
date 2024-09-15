@@ -3,7 +3,7 @@
 
 RegOps::RegOps() {}
 
-bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString DefPrefixPath, QString ProtonPath)
+bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString PrefixPath, QString ProtonPath)
 {
     QString REGPATH = SubComponentJSON["REGPATH"].toString();
 
@@ -28,7 +28,7 @@ bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString DefPrefixPath, QString
             }
 
             qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << CommandArgs;
-            UMURunner::RunWithUMU(ProtonPath, DefPrefixPath, DefPrefixPath, "0", "reg", CommandArgs);
+            UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
         }
     }
     else
@@ -43,7 +43,7 @@ bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString DefPrefixPath, QString
         }
 
         qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << CommandArgs;
-        UMURunner::RunWithUMU(ProtonPath, DefPrefixPath, DefPrefixPath, "0", "reg", CommandArgs);
+        UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
     }
     return true;
 }

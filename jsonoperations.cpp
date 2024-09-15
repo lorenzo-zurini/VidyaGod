@@ -79,3 +79,13 @@ QJsonArray JSONOps::GetSubComponents(QString MetaDataPath, QList<int> Recipe)
     delete MANIFESTJSON;
     return SubComponentsArray;
 }
+
+QJsonArray JSONOps::ReplaceVariables(QJsonArray OriginalArray, QMap<QString, QString> VariableValues)
+{
+    QString JSONString(QJsonDocument(OriginalArray).toJson());
+    for (auto [Variable, Value] : VariableValues.asKeyValueRange())
+    {
+        JSONString.replace(("%" + Variable + "%"), Value);
+    }
+    return QJsonDocument::fromJson(JSONString.toUtf8()).array();
+}

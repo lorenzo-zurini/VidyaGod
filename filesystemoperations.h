@@ -26,6 +26,8 @@ public:
 
     static bool BuildUnionFS(QString UnionFSString, QString RuntimePath, QString UserDataPath);
     static bool DestroyUnionFS(QString RuntimePath);
+
+    static bool ConfigWrite(QString Key, QString Value, QString FilePath);
 };
 
 #endif // FILESYSTEMOPERATIONS_H
