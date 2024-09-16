@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 
+#include "packageeditor.h"
 #include "jsonoperations.h"
 #include "dboperations.h"
 #include "filesystemoperations.h"
@@ -113,4 +114,10 @@ void MainWindow::on_PlayGameButton_clicked()
     UMURunner->Cleanup();
 
     delete UMURunner;
+}
+
+void MainWindow::on_CreatePackageButton_clicked()
+{
+    PackageEditor * PackageEditor = new class PackageEditor(this);
+    PackageEditor->show();
 }

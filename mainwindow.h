@@ -45,6 +45,8 @@ private slots:
     void on_AddGameButton_clicked();
     void on_PlayGameButton_clicked();
 
+    void on_CreatePackageButton_clicked();
+
 private:
     Ui::MainWindow *ui;
 

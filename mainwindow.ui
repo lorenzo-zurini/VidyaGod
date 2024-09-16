@@ -42,7 +42,7 @@
        <enum>QTabWidget::TabShape::Rounded</enum>
       </property>
       <property name="currentIndex">
-       <number>0</number>
+       <number>1</number>
       </property>
       <property name="iconSize">
        <size>
@@ -91,6 +91,13 @@
             </property>
             <property name="icon">
              <iconset theme="QIcon::ThemeIcon::MediaPlaybackStart"/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="pushButton">
+            <property name="text">
+             <string>PushButton</string>
             </property>
            </widget>
           </item>
@@ -199,6 +206,16 @@
              </size>
             </property>
            </spacer>
+          </item>
+          <item>
+           <widget class="QPushButton" name="CreatePackageButton">
+            <property name="text">
+             <string>Create</string>
+            </property>
+            <property name="icon">
+             <iconset theme="QIcon::ThemeIcon::FolderNew"/>
+            </property>
+           </widget>
           </item>
           <item>
            <widget class="QPushButton" name="TestButton_4">

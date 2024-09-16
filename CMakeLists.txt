@@ -27,6 +27,10 @@ set(PROJECT_SOURCES
         gridviewitem.h
         gridviewitem.ui
 
+        packageeditor.h
+        packageeditor.cpp
+        packageeditor.ui
+
         runnerparams.h
         runnerparams.cpp
 
