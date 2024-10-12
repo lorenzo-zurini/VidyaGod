@@ -1,9 +1,11 @@
 #include "packageeditor.h"
 #include "ui_packageeditor.h"
 
+#include "penewtabwidget.h"
+
 //MUST MAKE THIS CLASS MDI BASED!!!
 
-PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget *parent)
+PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QDir PackageDir, QWidget *parent)
     : QDialog(parent)
     , ui(new Ui::PackageEditor)
 {
@@ -12,6 +14,9 @@ PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget *parent)
     this->setWindowState(Qt::WindowMaximized);
 
     PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
+    PackageEditor::MANIFESTJSON = new QJsonDocument;
+    PackageEditor::PackageDir = PackageDir;
+
     SetupPackageDataFrame();
 }
 
@@ -22,9 +27,9 @@ PackageEditor::~PackageEditor()
 
 void PackageEditor::on_AddSubGameButton_clicked()
 {
-    QFrame * NewSubGameFrame = new QFrame(ui->SubGamesScrollArea);
-    QFormLayout * NewSubGameFrameLayout = new QFormLayout(NewSubGameFrame);
-    NewSubGameFrame->setLayout(NewSubGameFrameLayout);
+    QGroupBox * NewSubGameBox = new QGroupBox(ui->SubGamesScrollArea);
+    QFormLayout * NewSubGameBoxLayout = new QFormLayout(NewSubGameBox);
+    NewSubGameBox->setLayout(NewSubGameBoxLayout);
 
     for (auto Key : (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"].toObject().keys())
     {
@@ -33,13 +38,13 @@ void PackageEditor::on_AddSubGameButton_clicked()
             continue;
         }
 
-        QLineEdit * NewParamLineEdit = new QLineEdit(NewSubGameFrame);
+        QLineEdit * NewParamLineEdit = new QLineEdit(NewSubGameBox);
         NewParamLineEdit->setObjectName(Key);
-        NewSubGameFrameLayout->addRow(Key, NewParamLineEdit);
+        NewSubGameBoxLayout->addRow(Key, NewParamLineEdit);
     }
 
-    NewSubGameFrameLayout->addRow(new QPushButton("Remove"), new QPushButton("Duplicate"));
-    ui->MetaDataScrollAreaContents->layout()->addWidget(NewSubGameFrame);
+    NewSubGameBoxLayout->addRow(new QPushButton("Remove"), new QPushButton("Duplicate"));
+    ui->MetaDataScrollAreaContents->layout()->addWidget(NewSubGameBox);
 }
 
 bool PackageEditor::SetupPackageDataFrame()
@@ -62,6 +67,14 @@ bool PackageEditor::SetupPackageDataFrame()
 
 void PackageEditor::on_AddComponentButton_clicked()
 {
-    //ui->PackageEditorTabWidget->addTab(QString("Component " + QString::number(ui->PackageEditorTabWidget->count())), );
+    //PENewTabWidget * NewTabWidget = new class PENewTabWidget;
+    QWidget * NewTabWidget = new QWidget(this);
+    //QVBoxLayout * NewTabWidgetVerticalLayout
+
+    //ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component " + QString::number(ui->PackageEditorTabWidget->count())));
 }
 
+void PackageEditor::SavePackage()
+{
+
+}

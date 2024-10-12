@@ -118,6 +118,6 @@ void MainWindow::on_PlayGameButton_clicked()
 
 void MainWindow::on_CreatePackageButton_clicked()
 {
-    PackageEditor * PackageEditor = new class PackageEditor(GlobalConfigJSON, this);
+    PackageEditor * PackageEditor = new class PackageEditor(GlobalConfigJSON, QFileDialog::getExistingDirectory(this, "Select package directory..."), this);
     PackageEditor->show();
 }

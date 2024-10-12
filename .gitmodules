@@ -1,0 +1,3 @@
+[submodule "QJsonModelEx"]
+	path = QJsonModelEx
+	url = https://github.com/lorenzo-zurini/QJsonModelEx.git

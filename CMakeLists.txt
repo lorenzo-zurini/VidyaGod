@@ -60,7 +60,8 @@ set(PROJECT_SOURCES
         ${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES})
+add_executable(VidyaGod ${PROJECT_SOURCES}
+    penewtabwidget.h penewtabwidget.cpp penewtabwidget.ui)
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)
