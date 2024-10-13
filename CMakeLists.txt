@@ -64,12 +64,9 @@ set(PROJECT_SOURCES
         ${TS_FILES}
 )
 
-add_subdirectory(QJsonModelEx)
-
 add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)
-target_link_libraries(VidyaGod PRIVATE QJsonModelEx)
 
 configure_file(DefaultConfig.JSON DefaultConfig.JSON)

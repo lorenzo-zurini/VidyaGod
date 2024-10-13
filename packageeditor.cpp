@@ -3,10 +3,11 @@
 
 //#include "penewtabwidget.h"
 #include "filesystemoperations.h"
+#include "jsonoperations.h"
 
 //MUST MAKE THIS CLASS MDI BASED!!!
 
-PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget *parent)
+PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget * parent)
     : QDialog(parent)
     , ui(new Ui::PackageEditor)
 {
@@ -14,17 +15,11 @@ PackageEditor::PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget *parent)
     this->setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
     this->setWindowState(Qt::WindowMaximized);
 
-
-    InitPackage();
-
     PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
 
-    PackageEditor::PackageJSONModel = new QJsonModel;
-    PackageEditor::PackageJSONModel->GetRootItem()->setType(QJsonValue::Object);
-
-    ui->PackageJSONTreeView->setModel(PackageJSONModel);
-
-    SetupPackageDataFrame();
+    InitPackage();
+    InitMANIFESTJSON();
+    RefreshJSONView();
 }
 
 PackageEditor::~PackageEditor()
@@ -32,49 +27,33 @@ PackageEditor::~PackageEditor()
     delete ui;
 }
 
-bool PackageEditor::SetupPackageDataFrame()
+bool PackageEditor::InitMANIFESTJSON()
 {
-
+    QJsonObject RootJSONObject;
     for (auto Key : (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"].toObject().keys())
     {
         if (!(Key == "PATH"))
         {
-            QJsonTreeItem * NewParamItem = new QJsonTreeItem();
-            NewParamItem->setType(QJsonValue::String);
-            NewParamItem->setKey(Key);
-
-            PackageEditor::PackageJSONModel->GetRootItem()->appendChild(NewParamItem);
+            RootJSONObject[Key] = ".....";
         }
     }
 
-    QJsonTreeItem * NewSubgamesItem = new QJsonTreeItem();
-    NewSubgamesItem->setType(QJsonValue::Array);
-    NewSubgamesItem->setKey("SUBGAMES");
-
-    PackageEditor::PackageJSONModel->GetRootItem()->appendChild(NewSubgamesItem);
+    PackageEditor::MANIFESTJSON = new QJsonDocument(RootJSONObject);
     RefreshJSONView();
     return true;
 }
 
 void PackageEditor::on_AddSubGameButton_clicked()
 {
-    QJsonTreeItem * NewSubGameItem = new QJsonTreeItem();
-    NewSubGameItem->setType(QJsonValue::Object);
-
+    QJsonObject NewSubGameObject;
     for (auto Key : (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"].toObject().keys())
     {
         if (!(Key == "PARENTPACKAGE"))
         {
-
-            QJsonTreeItem * NewParamItem = new QJsonTreeItem();
-            NewParamItem->setType(QJsonValue::String);
-            NewParamItem->setKey(Key);
-
-            NewSubGameItem->appendChild(NewParamItem);
+            NewSubGameObject[Key] = ".....";
         }
     }
-
-    PackageEditor::PackageJSONModel->GetRootItem()->ChildByKey("SUBGAMES")->appendChild(NewSubGameItem);
+    (*MANIFESTJSON)["SUBGAMES"].toArray().append(NewSubGameObject);
     RefreshJSONView();
 }
 
@@ -89,12 +68,12 @@ void PackageEditor::on_AddComponentButton_clicked()
 
 void PackageEditor::on_SaveButton_clicked()
 {
-    qDebug().noquote() << "[OUT] SAVING JSONMODEL:" << PackageEditor::PackageJSONModel->json();
+    qDebug().noquote() << "[OUT] SAVING JSON:" << MANIFESTJSON->toJson();
     QFile ManifestFile(MetadataDir->filePath("MANIFEST.json"));
     QTextStream OutFile(&ManifestFile);
     if (ManifestFile.open(QFile::WriteOnly | QFile::Truncate))
     {
-        OutFile << PackageJSONModel->json();
+        OutFile << MANIFESTJSON->toJson();
         ManifestFile.close();
     }
     else
@@ -105,10 +84,7 @@ void PackageEditor::on_SaveButton_clicked()
 
 void PackageEditor::RefreshJSONView()
 {
-    ui->PackageJSONTreeView->setModel(PackageEditor::PackageJSONModel);
-    ui->PackageJSONTreeView->expandAll();
-    ui->PackageJSONTreeView->resizeColumnToContents(0);
-    ui->PackageJSONTreeView->resizeColumnToContents(1);
+    ui->JSONTextEdit->setText(PackageEditor::MANIFESTJSON->toJson());
 }
 
 void PackageEditor::InitPackage()
@@ -124,16 +100,20 @@ void PackageEditor::InitPackage()
     }
     else
     {
-        QFile ManifestJSONFile(MetadataDir->filePath("MANIFEST.json"));
-        if (ManifestJSONFile.open(QFile::ReadOnly))
-        {
-            qDebug() << "TEST1";
-            PackageEditor::PackageJSONModel->load(&ManifestJSONFile);
-            qDebug() << "TEST2";
-        }
-        else
-        {
-            qDebug() << QTime::currentTime() << " [ERR] Could not open MANIFEST.json file for reading.";
-        };
+        QFile MANIFESTJSONFile(MetadataDir->filePath("MANIFEST.json"));
+        PackageEditor::MANIFESTJSON = JSONOps::LoadJSON(&MANIFESTJSONFile);
     }
 }
+
+void PackageEditor::on_JSONTextEdit_textChanged()
+{
+    if (QJsonDocument::fromJson(ui->JSONTextEdit->toPlainText().toUtf8()).isNull())
+    {
+        qDebug() << "INVALID JSON";
+    }
+    else
+    {
+        qDebug() << "VALID JSON";
+    }
+}
+

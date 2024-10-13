@@ -42,8 +42,10 @@ private slots:
     void on_AddComponentButton_clicked();
     void on_SaveButton_clicked();
 
+    void on_JSONTextEdit_textChanged();
+
 private:
-    bool SetupPackageDataFrame();
+    bool InitMANIFESTJSON();
     void SavePackage();
     void RefreshJSONView();
     void InitPackage();
@@ -53,7 +55,7 @@ private:
     QDir * PackageFilesDir;
 
     Ui::PackageEditor * ui;
-    QJsonModel * PackageJSONModel;
+    QJsonDocument * MANIFESTJSON;
     QJsonDocument * GlobalConfigJSON;
 };
 

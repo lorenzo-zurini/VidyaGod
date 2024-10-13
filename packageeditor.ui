@@ -117,7 +117,7 @@
         <attribute name="title">
          <string>JSON</string>
         </attribute>
-        <layout class="QVBoxLayout" name="verticalLayout_4">
+        <layout class="QVBoxLayout" name="verticalLayout_2">
          <property name="spacing">
           <number>2</number>
          </property>
@@ -134,20 +134,7 @@
           <number>0</number>
          </property>
          <item>
-          <widget class="QTreeView" name="PackageJSONTreeView">
-           <property name="alternatingRowColors">
-            <bool>true</bool>
-           </property>
-           <property name="verticalScrollMode">
-            <enum>QAbstractItemView::ScrollPerPixel</enum>
-           </property>
-           <property name="itemsExpandable">
-            <bool>false</bool>
-           </property>
-           <property name="headerHidden">
-            <bool>true</bool>
-           </property>
-          </widget>
+          <widget class="QTextEdit" name="JSONTextEdit"/>
          </item>
         </layout>
        </widget>
