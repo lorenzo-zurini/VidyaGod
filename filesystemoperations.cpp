@@ -19,6 +19,8 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
         qDebug() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
         return false;
     }
+
+    qDebug() << QTime::currentTime().toString() << " [OUT] Valid package!";
     return true;
 }
 
