@@ -3,31 +3,31 @@
 
 RegOps::RegOps() {}
 
-bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString PrefixPath, QString ProtonPath)
+bool RegOps::RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath, QString ProtonPath)
 {
-    QString REGPATH = SubComponentJSON["REGPATH"].toString();
+    QString REGPATH = QString::fromStdString(SubComponentJSON["REGPATH"]);
 
-    if (SubComponentJSON.keys().contains("KEYVALUES"))
+    if (SubComponentJSON.contains("KEYVALUES"))
     {
-        for (auto Key : SubComponentJSON["KEYVALUES"].toObject().keys())
+        for (auto Item : SubComponentJSON["KEYVALUES"].items())
         {
             QStringList CommandArgs;
             CommandArgs.append("add");      CommandArgs.append(REGPATH);
             CommandArgs.append("/f");
-            CommandArgs.append("/v");       CommandArgs.append(Key);
-            CommandArgs.append("/t");       CommandArgs.append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["TYPE"].toString());
+            CommandArgs.append("/v");       CommandArgs.append(QString::fromStdString(Item.key()));
+            CommandArgs.append("/t");       CommandArgs.append(QString::fromStdString(SubComponentJSON["KEYVALUES"][Item.key()]["TYPE"]));
 
-            if (SubComponentJSON["KEYVALUES"].toObject()[Key].toObject().keys().contains("VALUE"))
+            if (SubComponentJSON["KEYVALUES"][Item.key()].contains("VALUE"))
             {
-                CommandArgs.append("/d");       CommandArgs.append(SubComponentJSON["KEYVALUES"].toObject()[Key].toObject()["VALUE"].toString());
+                CommandArgs.append("/d");       CommandArgs.append(QString::fromStdString(SubComponentJSON["KEYVALUES"][Item.key()]["VALUE"]));
             }
 
-            if(SubComponentJSON["ARCHITECTURE"].toString() == "32")
+            if(SubComponentJSON["ARCHITECTURE"] == "32")
             {
                 CommandArgs.append("/reg:32");
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << CommandArgs;
+            qDebug().noquote() << QTime::currentTime().toString() << " [OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
             UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
         }
     }
@@ -37,7 +37,7 @@ bool RegOps::RegAdd(QJsonObject SubComponentJSON, QString PrefixPath, QString Pr
         CommandArgs.append("add");      CommandArgs.append(REGPATH);
         CommandArgs.append("/f");
 
-        if(SubComponentJSON["ARCHITECTURE"].toString() == "32")
+        if(SubComponentJSON["ARCHITECTURE"] == "32")
         {
             CommandArgs.append("/reg:32");
         }

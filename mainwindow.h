@@ -16,16 +16,11 @@
 #include <QStandardItemModel>
 #include <QProcess>
 
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QJsonValue>
-
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QTableView>
 
-//#include "QJsonModelEx/QJsonModel.hpp"
+#include "nlohmann/json.hpp"
 
 QT_BEGIN_NAMESPACE
 namespace Ui
@@ -55,7 +50,7 @@ private:
     QString ApplicationPath;
     QString ProtonPath;
     //QFile * GlobalConfigFile;
-    QJsonDocument * GlobalConfigJSON;
+    nlohmann::ordered_json * GlobalConfigJSON;
     QSqlDatabase * GlobalDB;
     QSqlRelationalTableModel * LibraryModel;
     QSqlRelationalTableModel * PackagesModel;
@@ -64,11 +59,11 @@ private:
 
 
     bool InitializeUMUPrefix(QVariantMap * RunnerParams);
-    bool ProcessSubComponents(const QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QDir * DefPrefixDir, QDir * ProgramRuntimeDir, QString * UnionFSString, const QString ParentPackage);
-    bool RemoveSubComponents(QJsonArray SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
-    bool MountZipFileLayer(const QJsonObject SubComponentJSON, int LayerNumber, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
-    bool UnmountZipFileLayer(const QJsonObject SubComponentJSON, int LayerNumber, QDir * TempDir, const QString ParentPackage);
-    bool RegEdit(QJsonObject SubComponentJSON, QDir * DefPrefixDir, QDir * ProgramRuntimeDir);
+    bool ProcessSubComponents(const nlohmann::ordered_json SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QDir * DefPrefixDir, QDir * ProgramRuntimeDir, QString * UnionFSString, const QString ParentPackage);
+    bool RemoveSubComponents(nlohmann::ordered_json SubComponentsArray, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
+    bool MountZipFileLayer(const nlohmann::ordered_json SubComponentJSON, int LayerNumber, QDir * TempDir, QDir * PackageFilesDir, QString * UnionFSString, const QString ParentPackage);
+    bool UnmountZipFileLayer(const nlohmann::ordered_json SubComponentJSON, int LayerNumber, QDir * TempDir, const QString ParentPackage);
+    bool RegEdit(nlohmann::ordered_json SubComponentJSON, QDir * DefPrefixDir, QDir * ProgramRuntimeDir);
     bool RegAdd();
     bool BuildUnionFS(QString * UnionFSString, QDir * RuntimeDir, QDir * UserDataDir);
     bool DestroyUnionFS(QDir * RuntimeDir);

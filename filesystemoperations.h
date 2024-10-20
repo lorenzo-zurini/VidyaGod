@@ -7,7 +7,7 @@
 #include <QDirIterator>
 #include <QProcess>
 
-#include <QJsonObject>
+#include "nlohmann/json.hpp"
 
 class RunnerParams;
 
@@ -21,8 +21,8 @@ public:
     static bool CheckPackageValid(QDir * PackageDir);
     static bool CheckCaseConflicts(QString RuntimePath);
 
-    static bool MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage);
-    static bool UnmountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage);
+    static bool MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage);
+    static bool UnmountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage);
 
     static bool BuildUnionFS(QString UnionFSString, QString RuntimePath, QString UserDataPath);
     static bool DestroyUnionFS(QString RuntimePath);

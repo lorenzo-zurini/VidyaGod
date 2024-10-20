@@ -68,7 +68,7 @@ void MainWindow::on_AddGameButton_clicked()
     }
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    QJsonDocument * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
+    nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
         qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
@@ -81,7 +81,7 @@ void MainWindow::on_AddGameButton_clicked()
     }
 
     //ABORT IF PACKAGE ALREADY EXISTS IN DB.
-    if (DBOps::CheckPackageExists(GlobalDB, QString((*MANIFESTJSON)["PACKAGEUID"].toString()).toInt()))
+    if (DBOps::CheckPackageExists(GlobalDB, (*MANIFESTJSON)["PACKAGEUID"]))
     {
         return;
     }

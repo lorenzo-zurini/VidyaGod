@@ -63,11 +63,11 @@ bool UMURunner::InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QStr
 
 bool UMURunner::ProcessFileSystemSubComponents()
 {
-    for (int i = 0; i < RunnerParams->SubComponentsArray.count(); i++)
+    for (int i = 0; i < RunnerParams->SubComponentsArray.size(); i++)
     {
-        QJsonObject SubComponentJSON = RunnerParams->SubComponentsArray[i].toObject();
+        nlohmann::ordered_json SubComponentJSON = RunnerParams->SubComponentsArray[i];
 
-        if (SubComponentJSON["TYPE"].toString() == "ZipFileLayer")
+        if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
             if(!FSOps::MountZipFileLayer(SubComponentJSON, i, RunnerParams->Paths["TempPath"], RunnerParams->Paths["PackageFilesPath"], &RunnerParams->UnionFSString, RunnerParams->ParentPackage))
             {
@@ -80,33 +80,33 @@ bool UMURunner::ProcessFileSystemSubComponents()
 
 bool UMURunner::ProcessOtherSubComponents()
 {
-    for (int i = 0; i < RunnerParams->SubComponentsArray.count(); i++)
+    for (int i = 0; i < RunnerParams->SubComponentsArray.size(); i++)
     {
-        QJsonObject SubComponentJSON = RunnerParams->SubComponentsArray[i].toObject();
+        nlohmann::ordered_json SubComponentJSON = RunnerParams->SubComponentsArray[i];
 
-        if (SubComponentJSON["TYPE"].toString() == "RegEdit")
+        if (SubComponentJSON["TYPE"] == "RegEdit")
         {
             if(!RegOps::RegAdd(SubComponentJSON, RunnerParams->Paths["RuntimePath"], RunnerParams->Paths["ProtonPath"]))
             {
                 return false;
             }
         }
-        else if (SubComponentJSON["TYPE"].toString() == "DllOverride")
+        else if (SubComponentJSON["TYPE"] == "DllOverride")
         {
             if (!RunnerParams->DllOverrides.isEmpty())
             {
-                RunnerParams->DllOverrides.append(";" + SubComponentJSON["DLLOVERRIDE"].toString());
+                RunnerParams->DllOverrides.append(";" + QString::fromStdString(SubComponentJSON["DLLOVERRIDE"]));
             }
             else
             {
-                RunnerParams->DllOverrides.append(SubComponentJSON["DLLOVERRIDE"].toString());
+                RunnerParams->DllOverrides.append(QString::fromStdString(SubComponentJSON["DLLOVERRIDE"]));
             }
         }
-        else if (SubComponentJSON["TYPE"].toString() == "FileEdit")
+        else if (SubComponentJSON["TYPE"] == "FileEdit")
         {
-            if (SubComponentJSON["MODE"].toString() == "ConfigWrite")
+            if (SubComponentJSON["MODE"] == "ConfigWrite")
             {
-                FSOps::ConfigWrite(SubComponentJSON["KEY"].toString(), SubComponentJSON["VALUE"].toString(), SubComponentJSON["FILE"].toString());
+                FSOps::ConfigWrite(QString::fromStdString(SubComponentJSON["KEY"]), QString::fromStdString(SubComponentJSON["VALUE"]), QString::fromStdString(SubComponentJSON["FILE"]));
             }
         }
     }
@@ -144,11 +144,11 @@ bool UMURunner::Cleanup()
 
 bool UMURunner::RemoveSubComponents()
 {
-    for (int i = 0; i < RunnerParams->SubComponentsArray.count(); i++)
+    for (int i = 0; i < RunnerParams->SubComponentsArray.size(); i++)
     {
-        QJsonObject SubComponentJSON = RunnerParams->SubComponentsArray[i].toObject();
+        nlohmann::ordered_json SubComponentJSON = RunnerParams->SubComponentsArray[i];
 
-        if (SubComponentJSON["TYPE"].toString() == "ZipFileLayer")
+        if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
             FSOps::UnmountZipFileLayer(SubComponentJSON, i, RunnerParams->Paths["TempPath"], RunnerParams->ParentPackage);
         }

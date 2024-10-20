@@ -20,18 +20,19 @@ QSqlDatabase * DBOps::InitDatabase(QString FileName)
     }
 }
 
-QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * DataBase, QJsonDocument * GlobalConfigJSON, QObject * Parent)
+QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * DataBase, nlohmann::ordered_json * GlobalConfigJSON, QObject * Parent)
 {
     if (!DataBase->tables().contains(TableName))
     {
         QString QueryString;
         QueryString.append("CREATE TABLE IF NOT EXISTS " + TableName + " (");
 
-        for (auto Key : (*GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().keys())
+        for (auto Item : (*GlobalConfigJSON)["DefaultTables"][TableName.toStdString()]["COLUMNS"].items())
         {
-            QueryString.append("\"" + Key + "\" " + (*GlobalConfigJSON)["DefaultTables"][TableName]["COLUMNS"].toObject().value(Key).toString() + ", ");
+            QueryString.append(Item.key() + " " + Item.value().dump() + ", ");
         }
-        QueryString.append("PRIMARY KEY(\"" + (*GlobalConfigJSON)["DefaultTables"][TableName]["PRIMARY KEY"].toString() + "\"))");
+        QueryString.append("PRIMARY KEY(" + (*GlobalConfigJSON)["DefaultTables"][TableName.toStdString()]["PRIMARY KEY"].dump() + "))");
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Executing SQL query:" << QueryString;
         QSqlQuery(*DataBase).exec(QueryString);
     }
 
@@ -42,48 +43,49 @@ QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * 
     return Model;
 }
 
-void DBOps::AddPackagetoDB(QJsonDocument * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
+void DBOps::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, nlohmann::ordered_json * GlobalConfigJSON)
 {
-    qDebug() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].toString() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].toString();
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].dump() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].dump();
 
     QMap<QString, QString> PackagePathMap;
-    PackagePathMap["PATH"] = GameDir->path();
+    PackagePathMap["PATH"] = "\"" + GameDir->path() + "\"";
 
-    AddJSONObjectToDB(GlobalDB, "PACKAGES", GlobalConfigJSON, (*MANIFESTJSON).object(), PackagePathMap);
+    AddJSONObjectToDB(GlobalDB, "PACKAGES", GlobalConfigJSON, (*MANIFESTJSON), PackagePathMap);
 }
 
-void DBOps::AddSubGamestoDB(QJsonDocument * MANIFESTJSON, QSqlDatabase * GlobalDB, QJsonDocument * GlobalConfigJSON)
+void DBOps::AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON, QSqlDatabase * GlobalDB, nlohmann::ordered_json * GlobalConfigJSON)
 {
     qDebug() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
 
     QMap<QString, QString> ParentPackageMap;
-    ParentPackageMap["PARENTPACKAGE"] = (*MANIFESTJSON)["PACKAGEUID"].toString();
+    ParentPackageMap["PARENTPACKAGE"] = QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"].dump());
 
-    for (auto SubGameObject : (*MANIFESTJSON)["SUBGAMES"].toArray())
+    for (auto SubGameObject : (*MANIFESTJSON)["SUBGAMES"])
     {
-        AddJSONObjectToDB(GlobalDB, "LIBRARY", GlobalConfigJSON, SubGameObject.toObject(), ParentPackageMap);
+        AddJSONObjectToDB(GlobalDB, "LIBRARY", GlobalConfigJSON, SubGameObject, ParentPackageMap);
     }
 }
 
-void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, QJsonDocument * GlobalConfigJSON, QJsonObject JsonObject, QMap<QString, QString> ExtraData)
+void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, nlohmann::ordered_json * GlobalConfigJSON, nlohmann::ordered_json JsonObject, QMap<QString, QString> ExtraData)
 {
     QString QueryString;
     QString ColumnString;
     QString ValueString;
 
     //ITERATE OVER ENTRIES IN THE TABLE DEFINITIONS IN GLOBALCONFIGJSON
-    for (auto Key : (*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys())
+    for (auto Item : (*GlobalConfigJSON)["DefaultTables"][DBTable.toStdString()]["COLUMNS"].items())
     {
         //ADD THE CORRESPONDING VALUES TO THE SQLQUERY, SKIP IF EMPTY
-        if (JsonObject.value(Key).toString().isEmpty())
+        //if (JsonObject.value(Key).toString().isEmpty())
+        if (JsonObject[Item.key()].empty())
         {
             continue;
         }
         //KEYS THAT ARE NOT IN THE TABLE DEFINITIONS IN DefaultConfig.JSON will not be added
-        if (JsonObject.keys().contains(Key))
+        if (JsonObject.contains(Item.key()))
         {
-            ColumnString.append("\"" + Key + "\", ");
-            ValueString.append("\"" + JsonObject.value(Key).toString() + "\", ");
+            ColumnString.append(Item.key() + ", ");
+            ValueString.append(JsonObject[Item.key()].dump() + ", ");
         }
     }
 
@@ -94,10 +96,10 @@ void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, QJsonDoc
         {
             continue;
         }
-        if ((*GlobalConfigJSON)["DefaultTables"][DBTable]["COLUMNS"].toObject().keys().contains(Column))
+        if ((*GlobalConfigJSON)["DefaultTables"][DBTable.toStdString()]["COLUMNS"].contains(Column.toStdString()))
         {
-            ColumnString.append("\"" + Column + "\", ");
-            ValueString.append("\"" + Value + "\", ");
+            ColumnString.append(Column + ", ");
+            ValueString.append(Value + ", ");
         }
     }
 
@@ -107,6 +109,7 @@ void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, QJsonDoc
 
     //CONSTRUCT THE QUERY AND EXECUTE
     QueryString.append("INSERT INTO " + DBTable + " (" + ColumnString + ") VALUES (" + ValueString + ")");
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Executing SQL query:" << QueryString;
     QSqlQuery(*GlobalDB).exec(QueryString);
 }
 

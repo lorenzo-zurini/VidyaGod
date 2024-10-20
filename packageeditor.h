@@ -17,10 +17,6 @@
 #include <QBoxLayout>
 #include <QGroupBox>
 
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QJsonArray>
-
 #include <QAbstractItemModel>
 #include <QItemDelegate>
 
@@ -37,7 +33,7 @@ class PackageEditor : public QDialog
     Q_OBJECT
 
 public:
-    explicit PackageEditor(QJsonDocument * GlobalConfigJSON, QWidget *parent = nullptr);
+    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr);
     ~PackageEditor();
 
 private slots:
@@ -59,7 +55,7 @@ private:
 
     Ui::PackageEditor * ui;
     nlohmann::ordered_json * MANIFESTJSON;
-    QJsonDocument * GlobalConfigJSON;
+    nlohmann::ordered_json * GlobalConfigJSON;
 };
 
 #endif // PACKAGEEDITOR_H

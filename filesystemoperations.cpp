@@ -42,7 +42,7 @@ bool FSOps::CreateDirectories (QMap<QString, QString> PathsMap)
     return true;
 }
 
-bool FSOps::MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage)
+bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage)
 {
     QDir SubComponentDir = TempPath;
     SubComponentDir.mkdir("[" + QString::number(LayerNumber) + "]");
@@ -53,16 +53,16 @@ bool FSOps::MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QSt
     MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
     MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
 
-    if (SubComponentJSON.keys().contains("TARGET"))
+    if (SubComponentJSON.contains("TARGET"))
     {
-        if (!(SubComponentJSON["TARGET"].toString().isEmpty()))
+        if (!(SubComponentJSON["TARGET"].empty()))
         {
-            MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
-            MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
+            MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+            MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
         }
     }
 
-    QString FilePath = QDir::cleanPath(PackageFilesPath + QDir::separator() + SubComponentJSON["PATH"].toString());
+    QString FilePath = QDir::cleanPath(PackageFilesPath + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
 
     qDebug() << QTime::currentTime().toString() << "[OUT] Mounting ZipFileLayer" << FilePath << "at" << MountDir.path();
     QProcess * MountZip = new QProcess;
@@ -84,7 +84,7 @@ bool FSOps::MountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QSt
     }
 }
 
-bool FSOps::UnmountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage)
+bool FSOps::UnmountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage)
 {
     QDir SubComponentDir = TempPath;
     SubComponentDir.mkdir("[" + QString::number(LayerNumber) + "]");
@@ -93,10 +93,10 @@ bool FSOps::UnmountZipFileLayer(QJsonObject SubComponentJSON, int LayerNumber, Q
     QDir MountDir = SubComponentDir;
     MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
 
-    if (!(SubComponentJSON["TARGET"].toString().isEmpty()))
+    if (!(SubComponentJSON["TARGET"].empty()))
     {
-        MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
-        MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + SubComponentJSON["TARGET"].toString()));
+        MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+        MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
     }
 
     QProcess * UnmountZips = new QProcess;

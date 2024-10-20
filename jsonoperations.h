@@ -8,16 +8,18 @@
 #include <QDir>
 #include <QFile>
 
+#include "nlohmann/json.hpp"
+
 class JSONOps
 {
 public:
     JSONOps();
 
-    static QJsonDocument * InitGlobalConfigJSON(QFile * GlobalConfigFile);
-    static QJsonDocument * LoadJSON(QFile * JSONFile);
-    static void SaveJSON(QJsonDocument * JSONDocument, QFile * JSONFile);
-    static QJsonArray GetSubComponents(QString MetaDataPath, QList<int> Recipe);
-    static QJsonArray ReplaceVariables(QJsonArray OriginalArray, QMap<QString, QString> VariableValues);
+    static nlohmann::ordered_json * InitGlobalConfigJSON(QFile * GlobalConfigFile);
+    static nlohmann::ordered_json * LoadJSON(QFile * JSONFile);
+    static bool SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
+    static nlohmann::ordered_json GetSubComponents(QString MetaDataPath, QList<int> Recipe);
+    static nlohmann::ordered_json ReplaceVariables(nlohmann::ordered_json OriginalArray, QMap<QString, QString> VariableValues);
 };
 
 #endif // JSONOPERATIONS_H
