@@ -12,9 +12,12 @@ find_package(Qt6 REQUIRED Widgets)
 find_package(Qt6 REQUIRED LinguistTools)
 find_package(Qt6 REQUIRED Sql)
 
-set(TS_FILES
-    VidyaGod_en_US.ts
-)
+include(FetchContent)
+
+FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz)
+FetchContent_MakeAvailable(json)
+
+set(TS_FILES VidyaGod_en_US.ts)
 
 set(PROJECT_SOURCES
         main.cpp
@@ -64,9 +67,12 @@ set(PROJECT_SOURCES
         ${TS_FILES}
 )
 
+
+
 add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE Qt6::Sql)
+target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 
 configure_file(DefaultConfig.JSON DefaultConfig.JSON)

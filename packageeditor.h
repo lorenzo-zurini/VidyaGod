@@ -5,7 +5,6 @@
 #include <QDialog>
 #include <QScreen>
 #include <QDir>
-#include "QJsonModelEx/QJsonModel.hpp"
 
 #include <QFileDialog>
 #include <QLineEdit>
@@ -24,6 +23,10 @@
 
 #include <QAbstractItemModel>
 #include <QItemDelegate>
+
+#include "filesystemoperations.h"
+#include "jsonoperations.h"
+#include "nlohmann/json.hpp"
 
 namespace Ui {
 class PackageEditor;
@@ -55,7 +58,7 @@ private:
     QDir * PackageFilesDir;
 
     Ui::PackageEditor * ui;
-    QJsonDocument * MANIFESTJSON;
+    nlohmann::ordered_json * MANIFESTJSON;
     QJsonDocument * GlobalConfigJSON;
 };
 
