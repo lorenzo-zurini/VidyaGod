@@ -6,7 +6,7 @@ nlohmann::ordered_json * JSONOps::InitGlobalConfigJSON(QFile * GlobalConfigFile)
 {
     if (!GlobalConfigFile->exists())
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Config flie not deteced. Creating... ";
         QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
     }
     return JSONOps::LoadJSON(GlobalConfigFile);
@@ -14,36 +14,36 @@ nlohmann::ordered_json * JSONOps::InitGlobalConfigJSON(QFile * GlobalConfigFile)
 
 nlohmann::ordered_json * JSONOps::LoadJSON(QFile * JSONFile)
 {
-    qDebug() << QTime::currentTime().toString() << " [OUT] Parsing JSON" << JSONFile->fileName();
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Parsing JSON" << JSONFile->fileName();
     nlohmann::ordered_json * JSONDocument;
 
     if (!JSONFile->exists())
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] File" << JSONFile->fileName() << "does not exist.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] File" << JSONFile->fileName() << "does not exist.";
         return nullptr;
     }
     if (JSONFile->open(QFile::ReadOnly))
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] File" << JSONFile->fileName() << "opened for reading successfully!";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] File" << JSONFile->fileName() << "opened for reading successfully!";
         QByteArray JSONFileData = JSONFile->readAll();
         if (nlohmann::ordered_json::accept(JSONFileData))
         {
-            qDebug() << QTime::currentTime().toString() << " [OUT] File" << JSONFile->fileName() << "appears valid, parsing.";
+            qDebug().noquote() << QTime::currentTime().toString() << " [OUT] File" << JSONFile->fileName() << "appears valid, parsing.";
             JSONDocument = new nlohmann::ordered_json(nlohmann::ordered_json::parse(JSONFileData));
         }
         else
         {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
+            qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
             return nullptr;
         }
 
         JSONFile->close();
-        qDebug() << QTime::currentTime().toString() << " [OUT] Parse done!";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Parse done!";
         return JSONDocument;
     }
     else
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Could not open file for reading!";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Could not open file for reading!";
         return nullptr;
     }
 }
@@ -52,8 +52,8 @@ bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] File opened for writing successfully!";
-        qDebug() << QTime::currentTime().toString() << " [OUT] Saved" << JSONFile->fileName();
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] File opened for writing successfully!";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Saved" << JSONFile->fileName();
         QTextStream OutFileStream(JSONFile);
         OutFileStream << QString::fromStdString((*JSONDocument).dump(4));
         JSONFile->close();
@@ -61,7 +61,7 @@ bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Could not open file for writing!";
+        qDebug().noquote() << QTime::currentTime() << " [ERR] Could not open file for writing!";
         return false;
     }
 }
@@ -78,13 +78,13 @@ nlohmann::ordered_json JSONOps::GetSubComponents(QString MetaDataPath, QList<int
             for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
             {
                 SubComponentsArray.push_back((*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
-                qDebug() << QTime::currentTime() << " [OUT] Added COMPONENT" << i << "SUBCOMPONENT" << j;
+                qDebug().noquote() << QTime::currentTime() << " [OUT] Added COMPONENT" << i << "SUBCOMPONENT" << j;
             }
         }
     }
 
     delete MANIFESTJSON;
-    qDebug() << QTime::currentTime() << " [OUT] Completed SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
+    qDebug().noquote() << QTime::currentTime() << "[OUT] Completed SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
     return SubComponentsArray;
 }
 

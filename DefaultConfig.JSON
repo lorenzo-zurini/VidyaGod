@@ -5,16 +5,16 @@
         {
             "COLUMNS":
             {
+                "TITLE": "TEXT NOT NULL",
+                "PARENTPACKAGE": "INTEGER NOT NULL",
                 "PLATFORM": "TEXT NOT NULL",
                 "GAMEUID": "INTEGER NOT NULL UNIQUE",
                 "EXEPATH": "TEXT NOT NULL",
                 "EXEARGS": "TEXT",
                 "WORKDIR": "TEXT",
-                "TITLE": "TEXT NOT NULL",
-                "PARENTPACKAGE": "INTEGER NOT NULL",
                 "TGDBID": "INTEGER",
                 "STEAMAPPID": "INTEGER",
-                "UMUID": "TEXT DEFAULT '0'",
+                "UMUID": "TEXT NOT NULL DEFAULT '0'",
                 "GOGPRODUCTID": "INTEGER",
                 "COVER": "TEXT",
                 "RELEASEDATE": "TEXT",

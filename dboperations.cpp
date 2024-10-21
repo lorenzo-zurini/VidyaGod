@@ -4,18 +4,18 @@ DBOps::DBOps() {}
 
 QSqlDatabase * DBOps::InitDatabase(QString FileName)
 {
-    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
     QSqlDatabase * NewDataBase = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
     NewDataBase->setDatabaseName(FileName);
 
     if (NewDataBase->open())
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] " << NewDataBase->databaseName() << " opened successfully.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] " << NewDataBase->databaseName() << " opened successfully.";
         return NewDataBase;
     }
     else
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] " << FileName << " could not be opened.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] " << FileName << " could not be opened.";
         return nullptr;
     }
 }
@@ -55,7 +55,7 @@ void DBOps::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir
 
 void DBOps::AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON, QSqlDatabase * GlobalDB, nlohmann::ordered_json * GlobalConfigJSON)
 {
-    qDebug() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
 
     QMap<QString, QString> ParentPackageMap;
     ParentPackageMap["PARENTPACKAGE"] = QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"].dump());
@@ -121,7 +121,7 @@ bool DBOps::CheckPackageExists(QSqlDatabase * GlobalDB, int PackageUID)
     {
         if (CheckPackageExistsQuery.value(0).toInt() == PackageUID)
         {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Package already exists in library, aborting!";
+            qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Package already exists in library, aborting!";
             return true;
         }
     }
@@ -157,7 +157,7 @@ int DBOps::GetRowByItemAndColumn(QTableView * TableView, QString Item, QString C
             return i;
         }
     }
-    qDebug() << QTime::currentTime().toString() << "[OUT] " << Item << " not found in column " << Column;
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] " << Item << " not found in column " << Column;
     return -1;
 }
 

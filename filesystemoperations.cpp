@@ -7,20 +7,20 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     //Check if the path is empty, such as when the file picker was canceled.
     if (PackageDir->path().isEmpty())
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Path is empty. Canceled?";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Path is empty. Canceled?";
         return false;
     }
 
-    qDebug() << QTime::currentTime().toString() << " [OUT] Scanning " << PackageDir->path();
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Scanning " << PackageDir->path();
 
     //Check if the directory contains a METADATA subdirectory.
     if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
         return false;
     }
 
-    qDebug() << QTime::currentTime().toString() << " [OUT] Valid package!";
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid package!";
     return true;
 }
 
@@ -31,11 +31,11 @@ bool FSOps::CreateDirectories (QMap<QString, QString> PathsMap)
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {
-            qDebug() << QTime::currentTime().toString() << " [OUT] Created direcotry " << Name << "PATH: " << Path;
+            qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Created direcotry " << Name << "PATH: " << Path;
         }
         else
         {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Could not create directory " << Name << "PATH: " << Path;
+            qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Could not create directory " << Name << "PATH: " << Path;
             return false;
         }
     }
@@ -64,7 +64,7 @@ bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int Layer
 
     QString FilePath = QDir::cleanPath(PackageFilesPath + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
 
-    qDebug() << QTime::currentTime().toString() << "[OUT] Mounting ZipFileLayer" << FilePath << "at" << MountDir.path();
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Mounting ZipFileLayer" << FilePath << "at" << MountDir.path();
     QProcess * MountZip = new QProcess;
     MountZip->setProgram("fuse-zip");
     MountZip->setArguments({"-r", FilePath, MountDir.path()});
@@ -78,7 +78,7 @@ bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int Layer
     }
     else
     {
-        qDebug() << QTime::currentTime().toString() << "[ERR] Failed to mount zip file layer" << FilePath;
+        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Failed to mount zip file layer" << FilePath;
         delete MountZip;
         return false;
     }
@@ -104,7 +104,7 @@ bool FSOps::UnmountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int Lay
     UnmountZips->setArguments({"-u", MountDir.path()});
     UnmountZips->start();
     UnmountZips->waitForFinished(-1);
-    qDebug() << QTime::currentTime().toString() << "[OUT] UNMOUNT EXIT STATUS: " << UnmountZips->exitCode();
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] UNMOUNT EXIT STATUS: " << UnmountZips->exitCode();
     delete UnmountZips;
     return true;
 }
@@ -115,7 +115,7 @@ bool FSOps::BuildUnionFS(QString UnionFSString, QString RuntimePath, QString Use
     UnionFSString.prepend(UserDataPath + "=RW:");
 
     //BUILD UNIONFS USING PARAMS
-    qDebug() << QTime::currentTime().toString() << "[OUT] Building UnionFS RUNTIME.";
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Building UnionFS RUNTIME.";
     qDebug().noquote() << QTime::currentTime().toString() << "[OUT] UnionFSString:" << UnionFSString;
 
     QProcess * BuildUnionFS = new QProcess;
@@ -127,13 +127,13 @@ bool FSOps::BuildUnionFS(QString UnionFSString, QString RuntimePath, QString Use
 
     if(BuildUnionFS->exitCode() == 0)
     {
-        qDebug() << QTime::currentTime().toString() << "[OUT] Successfully mounted UnionFS RUNTIME!";
+        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Successfully mounted UnionFS RUNTIME!";
         delete BuildUnionFS;
         return true;
     }
     else
     {
-        qDebug() << QTime::currentTime().toString() << "[ERR] Failed to mount UnionFS RUNTIME!";
+        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Failed to mount UnionFS RUNTIME!";
         delete BuildUnionFS;
         return false;
     }
@@ -166,7 +166,7 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
         if (FileList->contains(FilePath))
         {
             NoConflict = false;
-            qDebug() << QTime::currentTime() << " [ERR] Case conflict found: " << FilePath;
+            qDebug().noquote() << QTime::currentTime() << " [ERR] Case conflict found: " << FilePath;
         }
         else
         {
@@ -179,7 +179,7 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
 
 bool FSOps::ConfigWrite(QString Key, QString Value, QString FilePath)
 {
-    qDebug() << QTime::currentTime() << " [OUT] Editing file: " << FilePath << " Key: " << Key << " Value: " << Value;
+    qDebug().noquote() << QTime::currentTime() << " [OUT] Editing file: " << FilePath << " Key: " << Key << " Value: " << Value;
     QFile ConfigFile(FilePath);
     QTextStream OutFile(&ConfigFile);
     if (ConfigFile.open(QFile::ReadWrite | QFile::Text))
@@ -216,7 +216,7 @@ bool FSOps::ConfigWrite(QString Key, QString Value, QString FilePath)
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Could not open file for ConfigWrite: " << FilePath;
+        qDebug().noquote() << QTime::currentTime() << " [ERR] Could not open file for ConfigWrite: " << FilePath;
         return false;
     }
 }

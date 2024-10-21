@@ -13,11 +13,12 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     this->setWindowState(Qt::WindowMaximized);
 
     PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
-    PackageEditor::MANIFESTJSON = new json;
 
     InitPackage();
     InitMANIFESTJSON();
     RefreshJSONView();
+
+    BuildUI();
 }
 
 PackageEditor::~PackageEditor()
@@ -37,7 +38,6 @@ bool PackageEditor::InitMANIFESTJSON()
                 RootJSONObject[Item.key()] = nullptr;
             }
         }
-
         (*PackageEditor::MANIFESTJSON) = RootJSONObject;
         RefreshJSONView();
     }
@@ -54,7 +54,6 @@ void PackageEditor::on_AddSubGameButton_clicked()
             NewSubGameObject[Item.key()] = nullptr;
         }
     }
-
     (*MANIFESTJSON)[json::json_pointer("/SUBGAMES")].push_back(NewSubGameObject);
     RefreshJSONView();
 }
@@ -70,18 +69,20 @@ void PackageEditor::on_AddComponentButton_clicked()
 
 void PackageEditor::on_SaveButton_clicked()
 {
-    qDebug().noquote() << "[OUT] SAVING JSON:" << QString::fromStdString(MANIFESTJSON->dump(4));
-    QFile ManifestFile(MetadataDir->filePath("MANIFEST.json"));
-    QTextStream OutFile(&ManifestFile);
-    if (ManifestFile.open(QFile::WriteOnly | QFile::Truncate))
+    if (PackageEditor::SaveManifestJSON())
     {
-        OutFile << QString::fromStdString(MANIFESTJSON->dump(4));
-        ManifestFile.close();
+        qDebug().noquote() << QTime::currentTime() << "[OUT] Save successful.";
     }
     else
     {
-        qDebug() << QTime::currentTime() << " [ERR] Could not open MANIFEST.json file for writing.";
+        qDebug().noquote() << QTime::currentTime() << "[ERR] Save failed.";
     }
+}
+
+
+bool PackageEditor::SaveManifestJSON()
+{
+    return JSONOps::SaveJSON(PackageEditor::MANIFESTJSON, new QFile(MetadataDir->filePath("MANIFEST.json")));
 }
 
 void PackageEditor::RefreshJSONView()
@@ -100,48 +101,91 @@ void PackageEditor::InitPackage()
         MetadataDir->mkdir(MetadataDir->path());
         PackageFilesDir->mkdir(PackageFilesDir->path());
     }
-    else
+
+    PackageEditor::MANIFESTJSON = JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")));
+    if (!(PackageEditor::MANIFESTJSON == nullptr))
     {
-        QFile MANIFESTJSONFile(MetadataDir->filePath("MANIFEST.json"));
-        if (!MANIFESTJSONFile.exists())
-        {
-            qDebug() << QTime::currentTime().toString() << " [ERR] File " << MANIFESTJSONFile.fileName() << " does not exist.";
-        }
-        if (MANIFESTJSONFile.open(QFile::ReadOnly))
-        {
-            qDebug() << QTime::currentTime().toString() << " [OUT] File " << MANIFESTJSONFile.fileName() << "opened for reading successfully!";
-            QByteArray MANIFESTJSONFileData = MANIFESTJSONFile.readAll();
-            if (json::accept(MANIFESTJSONFileData))
-            {
-                qDebug() << "VALID JSON";
-                (*PackageEditor::MANIFESTJSON) = json::parse(MANIFESTJSONFileData);
-                qDebug() << "COCOROBOSCOS";
-            }
-            else
-            {
-                qDebug() << "INVALID JSON";
-                delete this;
-            }
-        }
-        else
-        {
-            qDebug() << QTime::currentTime().toString() << " [ERR] Could not open file for reading!";
-        }
+        return;
     }
+
+    qDebug().noquote() << QTime::currentTime() << " [ERR] Parser returner nullptr, creating new JSON.";
+    PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
 }
 
 void PackageEditor::on_JSONTextEdit_textChanged()
 {
     if (json::accept(ui->JSONTextEdit->toPlainText().toUtf8()))
     {
-        qDebug() << "VALID JSON";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid JSON!";
         ui->JSONTextEdit->setStyleSheet("");
         (*PackageEditor::MANIFESTJSON) = json::parse(ui->JSONTextEdit->toPlainText().toUtf8());
     }
     else
     {
-        qDebug() << "INVALID JSON";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
         ui->JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
     }
 }
 
+bool PackageEditor::BuildUI()
+{
+    PackageEditor::ManifestTabWidget = new QWidget(ui->PackageEditorTabWidget);
+    QVBoxLayout * ManifestTabWidgetLayout = new QVBoxLayout(ManifestTabWidget);
+    ManifestTabWidget->setLayout(ManifestTabWidgetLayout);
+
+    QGroupBox * PackageDataGroupBox = new QGroupBox(ManifestTabWidget);
+    ManifestTabWidgetLayout->addWidget(PackageDataGroupBox);
+    QFormLayout * PackageDataGroupBoxLayout = new QFormLayout(PackageDataGroupBox);
+    PackageDataGroupBox->setLayout(PackageDataGroupBoxLayout);
+
+    for (auto Item : (*PackageEditor::MANIFESTJSON).items())
+    {
+        if ((Item.key() == "SUBGAMES") || (Item.key() == "COMPONENTS"))
+        {
+            continue;
+        }
+
+        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << Item.key();
+        QLineEdit * NewParamField = new QLineEdit(PackageDataGroupBox);
+        QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
+        nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+        NewParamField->setProperty("JSONPath", JSONPath);
+        NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+        QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
+        PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
+    }
+
+    for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"].items())
+    {
+        QGroupBox * SubGameGroupBox = new QGroupBox(ManifestTabWidget);
+        ManifestTabWidgetLayout->addWidget(SubGameGroupBox);
+        QFormLayout * SubGameGroupBoxLayout = new QFormLayout(SubGameGroupBox);
+        SubGameGroupBox->setLayout(SubGameGroupBoxLayout);
+
+        nlohmann::ordered_json SubGameJSON = Item.value();
+        for (int i = 0; i < SubGameJSON.size(); i++)
+        {
+            //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << QString::fromStdString(SubGameJSON.items().);
+            //QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
+            //QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
+            //nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+            //NewParamField->setProperty("JSONPath", JSONPath);
+            //NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+            //QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
+            //PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
+        }
+    }
+    ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
+    return true;
+}
+
+void PackageEditor::JSONEditorEdited()
+{
+    QLineEdit * Editor = qobject_cast<QLineEdit *>(QObject::sender());
+    QString String = Editor->text();
+    nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
+    (*PackageEditor::MANIFESTJSON)[JSONPointer] = String.toStdString();
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
+    PackageEditor::SaveManifestJSON();
+    PackageEditor::RefreshJSONView();
+}

@@ -45,7 +45,7 @@ void MainWindow::InitClassVariables()
 
 void MainWindow::on_TestButton_clicked()
 {
-    qDebug() << QTime::currentTime().toString() << "[OUT] TEST";
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] TEST";
 }
 
 void MainWindow::ResetTables()
@@ -63,7 +63,7 @@ void MainWindow::on_AddGameButton_clicked()
 
     if(!FSOps::CheckPackageValid(PackageDir))
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Invalid package, aborting..";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid package, aborting..";
         return;
     }
 
@@ -71,13 +71,13 @@ void MainWindow::on_AddGameButton_clicked()
     nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
-        qDebug() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
     else
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] Parser returned non-empty JSON.";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Parser returned non-empty JSON.";
     }
 
     //ABORT IF PACKAGE ALREADY EXISTS IN DB.
@@ -100,11 +100,11 @@ void MainWindow::on_PlayGameButton_clicked()
     //Check if selection exists.
     if (!ui->LibraryTableView->selectionModel()->hasSelection())
     {
-        qDebug() << QTime::currentTime().toString() << " [OUT] NO SELECTION!";
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] NO SELECTION!";
         return;
     }
 
-    qDebug() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << DBOps::GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Attempting launch of " << DBOps::GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
 
     UMURunner * UMURunner = new class UMURunner(ui->LibraryTableView, ui->PackagesTableView, ProtonPath);
 

@@ -40,14 +40,18 @@ private slots:
     void on_AddSubGameButton_clicked();
     void on_AddComponentButton_clicked();
     void on_SaveButton_clicked();
-
     void on_JSONTextEdit_textChanged();
+    void JSONEditorEdited();
 
 private:
     bool InitMANIFESTJSON();
     void SavePackage();
     void RefreshJSONView();
     void InitPackage();
+    bool BuildUI();
+    bool SaveManifestJSON();
+
+    QWidget * ManifestTabWidget;
 
     QDir * PackageDir;
     QDir * MetadataDir;
