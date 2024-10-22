@@ -55,6 +55,7 @@ void PackageEditor::on_AddSubGameButton_clicked()
         }
     }
     (*MANIFESTJSON)[json::json_pointer("/SUBGAMES")].push_back(NewSubGameObject);
+    BuildUI();
     RefreshJSONView();
 }
 
@@ -129,6 +130,8 @@ void PackageEditor::on_JSONTextEdit_textChanged()
 
 bool PackageEditor::BuildUI()
 {
+    //ui->PackageEditorTabWidget->removeTab(ui->PackageEditorTabWidget->indexOf(PackageEditor::ManifestTabWidget));
+    delete PackageEditor::ManifestTabWidget;
     PackageEditor::ManifestTabWidget = new QWidget(ui->PackageEditorTabWidget);
     QVBoxLayout * ManifestTabWidgetLayout = new QVBoxLayout(ManifestTabWidget);
     ManifestTabWidget->setLayout(ManifestTabWidgetLayout);
@@ -150,32 +153,64 @@ bool PackageEditor::BuildUI()
         QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
         nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
         NewParamField->setProperty("JSONPath", JSONPath);
-        NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+
+        if(!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+        {
+            NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+        }
+
         QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
         PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
     }
 
-    for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"].items())
+    QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
+    ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
+
+    for (int i = 0; i < (*PackageEditor::MANIFESTJSON)["SUBGAMES"].size(); i++)
     {
-        QGroupBox * SubGameGroupBox = new QGroupBox(ManifestTabWidget);
-        ManifestTabWidgetLayout->addWidget(SubGameGroupBox);
+        QWidget * SubGameTabWidget = new QWidget(SubGamesTabWidget);
+        QVBoxLayout * SubGameTabLayout = new QVBoxLayout(SubGameTabWidget);
+        SubGameTabWidget->setLayout(SubGameTabLayout);
+
+        QScrollArea * SubGameScrollArea = new QScrollArea(SubGameTabWidget);
+        QVBoxLayout * SubGameScrollAreaLayout = new QVBoxLayout(SubGameScrollArea);
+        SubGameScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        SubGameScrollArea->setWidgetResizable(1);
+        SubGameScrollArea->setLayout(SubGameScrollAreaLayout);
+        SubGameTabLayout->addWidget(SubGameScrollArea);
+
+        QGroupBox * SubGameGroupBox = new QGroupBox(SubGameScrollArea);
+        SubGameScrollAreaLayout->addWidget(SubGameGroupBox);
+        SubGameScrollArea->setWidget(SubGameGroupBox);
         QFormLayout * SubGameGroupBoxLayout = new QFormLayout(SubGameGroupBox);
         SubGameGroupBox->setLayout(SubGameGroupBoxLayout);
 
-        nlohmann::ordered_json SubGameJSON = Item.value();
-        for (int i = 0; i < SubGameJSON.size(); i++)
+        for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].items())
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << QString::fromStdString(SubGameJSON.items().);
-            //QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
-            //QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
-            //nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-            //NewParamField->setProperty("JSONPath", JSONPath);
-            //NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
-            //QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
-            //PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
+            qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << QString::fromStdString(Item.key());
+            QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
+            QString JSONPath = QString("/SUBGAMES/%1/%2").arg(QString::number(i)).arg(QString::fromStdString(Item.key()));
+            nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+            NewParamField->setProperty("JSONPath", JSONPath);
+
+            if(!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+            {
+                NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+            }
+
+            QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
+            SubGameGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
+        SubGamesTabWidget->addTab(SubGameTabWidget, QString("Subgame %1").arg(QString::number(i + 1)));
     }
     ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
+
+    ///////////////////////////////////////////////////////////////////////////
+    for (int i = 0; i < (*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); i++)
+    {
+        qDebug().noquote() << "COMPONENT:" << QString::fromStdString((*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].dump());
+    }
+
     return true;
 }
 

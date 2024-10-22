@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QLabel>
 #include <QLayout>
+#include <QScrollArea>
 
 #include <QVBoxLayout>
 #include <QFormLayout>
