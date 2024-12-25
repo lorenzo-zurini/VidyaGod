@@ -18,6 +18,8 @@
 #include <QBoxLayout>
 #include <QGroupBox>
 
+#include <QTextEdit>
+
 #include <QAbstractItemModel>
 #include <QItemDelegate>
 
@@ -41,8 +43,9 @@ private slots:
     void on_AddSubGameButton_clicked();
     void on_AddComponentButton_clicked();
     void on_SaveButton_clicked();
-    void on_JSONTextEdit_textChanged();
-    void JSONEditorEdited();
+    void JSONQTextEditChanged();
+    void JSONQLineEditChanged();
+    void SaveJSONButtonPressed();
 
 private:
     bool InitMANIFESTJSON();
@@ -52,7 +55,14 @@ private:
     bool BuildUI();
     bool SaveManifestJSON();
 
+    //int CurrentTab = 0;
+    //bool initdone = false;
+
+    QWidget * JSONTabWidget;
     QWidget * ManifestTabWidget;
+
+    QPushButton * SaveJSONButton;
+    QTextEdit * JSONTextEdit;
 
     QDir * PackageDir;
     QDir * MetadataDir;

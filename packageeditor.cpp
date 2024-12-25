@@ -16,9 +16,8 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
 
     InitPackage();
     InitMANIFESTJSON();
-    RefreshJSONView();
-
     BuildUI();
+    RefreshJSONView();
 }
 
 PackageEditor::~PackageEditor()
@@ -39,7 +38,6 @@ bool PackageEditor::InitMANIFESTJSON()
             }
         }
         (*PackageEditor::MANIFESTJSON) = RootJSONObject;
-        RefreshJSONView();
     }
     return true;
 }
@@ -65,7 +63,7 @@ void PackageEditor::on_AddComponentButton_clicked()
     RefreshJSONView();
 
     QWidget * NewTabWidget = new QWidget(this);
-    ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component " + QString::number(ui->PackageEditorTabWidget->count())));
+    ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component " + QString::number(ui->PackageEditorTabWidget->count() - 1)));
 }
 
 void PackageEditor::on_SaveButton_clicked()
@@ -88,7 +86,7 @@ bool PackageEditor::SaveManifestJSON()
 
 void PackageEditor::RefreshJSONView()
 {
-    ui->JSONTextEdit->setText(QString::fromStdString(MANIFESTJSON->dump(4)));
+    JSONTextEdit->setText(QString::fromStdString(MANIFESTJSON->dump(4)));
 }
 
 void PackageEditor::InitPackage()
@@ -113,26 +111,30 @@ void PackageEditor::InitPackage()
     PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
 }
 
-void PackageEditor::on_JSONTextEdit_textChanged()
-{
-    if (json::accept(ui->JSONTextEdit->toPlainText().toUtf8()))
-    {
-        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid JSON!";
-        ui->JSONTextEdit->setStyleSheet("");
-        (*PackageEditor::MANIFESTJSON) = json::parse(ui->JSONTextEdit->toPlainText().toUtf8());
-        PackageEditor::SaveManifestJSON();
-    }
-    else
-    {
-        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
-        ui->JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
-    }
-}
-
 bool PackageEditor::BuildUI()
 {
-    //ui->PackageEditorTabWidget->removeTab(ui->PackageEditorTabWidget->indexOf(PackageEditor::ManifestTabWidget));
+    //JSON TAB
+    ui->PackageEditorTabWidget->clear();
+
     delete PackageEditor::ManifestTabWidget;
+
+    PackageEditor::JSONTabWidget = new QWidget(ui->PackageEditorTabWidget);
+    QVBoxLayout * JSONTabWidgetLayout = new QVBoxLayout(JSONTabWidget);
+    JSONTabWidget->setLayout(JSONTabWidgetLayout);
+
+    PackageEditor::JSONTextEdit = new QTextEdit(JSONTabWidget);
+    JSONTabWidgetLayout->addWidget(JSONTextEdit);
+    JSONTextEdit->setText(QString::fromStdString(MANIFESTJSON->dump(4)));
+    QObject::connect(JSONTextEdit, &QTextEdit::textChanged, this, &PackageEditor::JSONQTextEditChanged);
+
+    PackageEditor::SaveJSONButton = new QPushButton(JSONTabWidget);
+    SaveJSONButton->setText("Save JSON");
+    JSONTabWidgetLayout->addWidget(SaveJSONButton);
+    QObject::connect(SaveJSONButton, &QPushButton::clicked, this, &PackageEditor::SaveJSONButtonPressed);
+
+    ui->PackageEditorTabWidget->addTab(JSONTabWidget, "JSON");
+
+    //MANIFEST TAB
     PackageEditor::ManifestTabWidget = new QWidget(ui->PackageEditorTabWidget);
     QVBoxLayout * ManifestTabWidgetLayout = new QVBoxLayout(ManifestTabWidget);
     ManifestTabWidget->setLayout(ManifestTabWidgetLayout);
@@ -160,11 +162,11 @@ bool PackageEditor::BuildUI()
             NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
         }
 
-        QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
+        QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
         PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
     }
 
-    ///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    //SUBGAMES TABS WIDGET
     QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
     ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
 
@@ -201,14 +203,14 @@ bool PackageEditor::BuildUI()
                 NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
             }
 
-            QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
+            QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
             SubGameGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
         SubGamesTabWidget->addTab(SubGameTabWidget, QString("Subgame %1").arg(QString::number(i + 1)));
     }
     ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
 
-    ///////////////////////////////////////////////////////////////////////////////////////////////////
+    //INDIVIDUAL COMPONENTS TABS
     for (int i = 0; i < (*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); i++)
     {
         QWidget * ComponentTabWidget = new QWidget(ui->PackageEditorTabWidget);
@@ -216,26 +218,34 @@ bool PackageEditor::BuildUI()
         QVBoxLayout * ComponentTabWidgetLayout = new QVBoxLayout(ComponentTabWidget);
         ComponentTabWidget->setLayout(ComponentTabWidgetLayout);
 
-        QGroupBox * ComponentNameGroupBox = new QGroupBox(ComponentTabWidget);
-        ComponentTabWidgetLayout->addWidget(ComponentNameGroupBox);
-        QFormLayout * ComponentNameGroupBoxLayout = new QFormLayout(ComponentNameGroupBox);
-        ComponentNameGroupBox->setLayout(ComponentNameGroupBoxLayout);
+            QGroupBox * ComponentNameGroupBox = new QGroupBox(ComponentTabWidget);
+            ComponentTabWidgetLayout->addWidget(ComponentNameGroupBox);
+            QFormLayout * ComponentNameGroupBoxLayout = new QFormLayout(ComponentNameGroupBox);
+            ComponentNameGroupBox->setLayout(ComponentNameGroupBoxLayout);
 
-        QLineEdit * ComponentNameField = new QLineEdit(ComponentNameGroupBox);
-        QString JSONPath = QString("/COMPONENTS/%1/NAME").arg(QString::number(i));
-        nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-        ComponentNameField->setProperty("JSONPath", JSONPath);
+                QLineEdit * ComponentNameField = new QLineEdit(ComponentNameGroupBox);
+                QString JSONPath = QString("/COMPONENTS/%1/NAME").arg(QString::number(i));
+                nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+                ComponentNameField->setProperty("JSONPath", JSONPath);
 
-        if(!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
-        {
-            ComponentNameField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
-        }
+                if(!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+                {
+                    ComponentNameField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+                }
 
-        QObject::connect(ComponentNameField, &QLineEdit::editingFinished, this, &PackageEditor::JSONEditorEdited);
-        ComponentNameGroupBoxLayout->addRow("NAME", ComponentNameField);
+                QObject::connect(ComponentNameField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                ComponentNameGroupBoxLayout->addRow("NAME", ComponentNameField);
 
 
+            QScrollArea * SubComponentsScrollArea = new QScrollArea(ComponentTabWidget);
+            ComponentTabWidgetLayout->addWidget(SubComponentsScrollArea);
+            QVBoxLayout * SubComponentsScrollAreaLayout = new QVBoxLayout(SubComponentsScrollArea);
+            SubComponentsScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            SubComponentsScrollArea->setWidgetResizable(1);
 
+                QPushButton * RunExeButton = new QPushButton(ComponentTabWidget);
+                RunExeButton->setText("Run EXE");
+                SubComponentsScrollAreaLayout->addWidget(RunExeButton);
 
 
 
@@ -245,7 +255,7 @@ bool PackageEditor::BuildUI()
     return true;
 }
 
-void PackageEditor::JSONEditorEdited()
+void PackageEditor::JSONQLineEditChanged()
 {
     QLineEdit * Editor = qobject_cast<QLineEdit *>(QObject::sender());
     QString String = Editor->text();
@@ -254,4 +264,28 @@ void PackageEditor::JSONEditorEdited()
     qDebug().noquote() << QTime::currentTime().toString() << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
+}
+void PackageEditor::JSONQTextEditChanged()
+{
+    qDebug() << "JSON TEXT EDITOR CHANGED";
+    if (nlohmann::ordered_json::accept(PackageEditor::JSONTextEdit->toPlainText().toUtf8()))
+    {
+        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid JSON!";
+        PackageEditor::JSONTextEdit->setStyleSheet("");
+        PackageEditor::SaveJSONButton->setDisabled(false);
+    }
+    else
+    {
+        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
+        PackageEditor::JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
+        PackageEditor::SaveJSONButton->setDisabled(true);
+    }
+}
+
+void PackageEditor::SaveJSONButtonPressed()
+{
+    qDebug() << "SAVE TRIGGERED";
+    (*PackageEditor::MANIFESTJSON) = nlohmann::ordered_json::parse(PackageEditor::JSONTextEdit->toPlainText().toUtf8());
+    PackageEditor::SaveManifestJSON();
+    BuildUI();
 }

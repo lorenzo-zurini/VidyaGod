@@ -111,33 +111,8 @@
      <item>
       <widget class="QTabWidget" name="PackageEditorTabWidget">
        <property name="currentIndex">
-        <number>0</number>
+        <number>-1</number>
        </property>
-       <widget class="QWidget" name="JSONPage">
-        <attribute name="title">
-         <string>JSON</string>
-        </attribute>
-        <layout class="QVBoxLayout" name="verticalLayout_2">
-         <property name="spacing">
-          <number>2</number>
-         </property>
-         <property name="leftMargin">
-          <number>0</number>
-         </property>
-         <property name="topMargin">
-          <number>0</number>
-         </property>
-         <property name="rightMargin">
-          <number>0</number>
-         </property>
-         <property name="bottomMargin">
-          <number>0</number>
-         </property>
-         <item>
-          <widget class="QTextEdit" name="JSONTextEdit"/>
-         </item>
-        </layout>
-       </widget>
       </widget>
      </item>
      <item>
