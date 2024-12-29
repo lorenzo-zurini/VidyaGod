@@ -4,10 +4,11 @@
 #include <QWidget>
 #include <QDialog>
 #include <QScreen>
-#include <QDir>
 
+#include <QDir>
 #include <QFileDialog>
 #include <QLineEdit>
+
 #include <QLabel>
 #include <QLayout>
 #include <QScrollArea>
@@ -15,16 +16,18 @@
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QStackedLayout>
+
 #include <QBoxLayout>
 #include <QGroupBox>
+#include <QComboBox>
 
 #include <QTextEdit>
-
 #include <QAbstractItemModel>
 #include <QItemDelegate>
 
 #include "filesystemoperations.h"
 #include "jsonoperations.h"
+#include "runner.h"
 #include "nlohmann/json.hpp"
 
 namespace Ui {
@@ -46,6 +49,12 @@ private slots:
     void JSONQTextEditChanged();
     void JSONQLineEditChanged();
     void SaveJSONButtonPressed();
+    void ParentComponentChanged();
+    void RemoveSubgame();
+    void RemoveComponent();
+    void RunExeInComponent();
+    void BrowseInComponent();
+    void RegeditInComponent();
 
 private:
     bool InitMANIFESTJSON();

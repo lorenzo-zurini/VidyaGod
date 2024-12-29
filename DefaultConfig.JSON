@@ -36,7 +36,8 @@
                 "LOCALMULTIPLAYER": "TEXT",
                 "LOCALCOOP": "TEXT",
                 "OTHERONLINEFEATURES": "TEXT",
-                "RECIPE": "TEXT"
+                "COMPONENT": "INTEGER",
+                "VARIANTS": "TEXT"
             },
             "PRIMARY KEY": "GAMEUID"
         },

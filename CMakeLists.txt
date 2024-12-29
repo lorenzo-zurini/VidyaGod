@@ -34,10 +34,6 @@ set(PROJECT_SOURCES
         packageeditor.cpp
         packageeditor.ui
 
-        penewtabwidget.h
-        penewtabwidget.cpp
-        penewtabwidget.ui
-
         runnerparams.h
         runnerparams.cpp
 
@@ -61,6 +57,9 @@ set(PROJECT_SOURCES
 
         umurunner.h
         umurunner.cpp
+
+        runner.h
+        runner.cpp
 
         DefaultConfig.JSON
 
