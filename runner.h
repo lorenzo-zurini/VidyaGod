@@ -8,10 +8,12 @@
 #include <QList>
 #include <QTableView>
 #include <QScreen>
+#include <QMessageBox>
 
 #include "dboperations.h"
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
+#include "registryoperations.h"
 
 class Runner
 {
@@ -24,7 +26,7 @@ public:
     nlohmann::ordered_json * GlobalConfigJSON;
 
     QString GameName;
-    QString UMUID;
+    QString UMUID = "0";
     QString ParentPackage;
     QString ExePath;
     QStringList ExeArgs;
@@ -33,12 +35,22 @@ public:
     QMap<QString, QString> WindowsPaths;
     QMap<QString, QString> SystemVariables;
     int subgame;
+    int component;
     QList<int> Recipe;
     nlohmann::ordered_json SubComponentsArray;
     QString UnionFSString;
-    //RunnerParams * RunnerParams;
 
-    Runner(QDir * PackageDir, nlohmann::ordered_json * MANIFESTJSON, nlohmann::ordered_json * GlobalConfigJSON, int subgame = 0);
+    Runner(QDir * PackageDir, nlohmann::ordered_json * MANIFESTJSON, nlohmann::ordered_json * GlobalConfigJSON, int subgame = 0, int component = 0);
+
+    bool BuildRuntime();
+    bool InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString);
+    bool ProcessFileSystemSubComponents();
+    bool ProcessOtherSubComponents();
+    bool Cleanup();
+    bool RemoveSubComponents();
+    bool Run(QString OverrideExePath = "", QStringList OverrideExeArgs = QStringList({}));
+
+    // static bool RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs = {}, QString WorkDirPath = "", QString GAMEID = "0", QString DllOverrides = "");
     static QStringList StringListReplaceVariables(QStringList OriginalStringList, QMap<QString, QString> VariableValues);
 };
 

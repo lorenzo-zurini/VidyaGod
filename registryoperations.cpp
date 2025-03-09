@@ -27,7 +27,7 @@ bool RegOps::RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath,
                 CommandArgs.append("/reg:32");
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << " [OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
+            qDebug().noquote() << QTime::currentTime().toString() << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
             UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
         }
     }

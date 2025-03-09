@@ -109,7 +109,7 @@ void PackageEditor::InitPackage()
         return;
     }
 
-    qDebug().noquote() << QTime::currentTime() << " [ERR] Parser returner nullptr, creating new JSON.";
+    qDebug().noquote() << QTime::currentTime() << "[ERR] Parser returned nullptr, creating new JSON.";
     PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
 }
 
@@ -165,6 +165,7 @@ bool PackageEditor::BuildUI()
             QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
             PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
+        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Manifest tab done!";
 
         //SUBGAMES TABS WIDGET
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
@@ -317,13 +318,13 @@ void PackageEditor::JSONQTextEditChanged()
     qDebug() << "JSON TEXT EDITOR CHANGED";
     if (nlohmann::ordered_json::accept(PackageEditor::JSONTextEdit->toPlainText().toUtf8()))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid JSON!";
+        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Valid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("");
         PackageEditor::SaveJSONButton->setDisabled(false);
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Invalid JSON!";
+        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Invalid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
         PackageEditor::SaveJSONButton->setDisabled(true);
     }
@@ -374,8 +375,12 @@ void PackageEditor::RemoveComponent()
 
 void PackageEditor::RunExeInComponent()
 {
-    qDebug() << "RUN EXE";
-    Runner * ExeRunner = new Runner(new QDir("caca"), MANIFESTJSON, GlobalConfigJSON, 0);
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    ExeRunner->Cleanup();
+    ExeRunner->BuildRuntime();
+    ExeRunner->Cleanup();
     qDebug() << "DONE";
 }
 

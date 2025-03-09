@@ -7,20 +7,20 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     //Check if the path is empty, such as when the file picker was canceled.
     if (PackageDir->path().isEmpty())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Path is empty. Canceled?";
+        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Path is empty. Canceled?";
         return false;
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Scanning " << PackageDir->path();
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Scanning " << PackageDir->path();
 
     //Check if the directory contains a METADATA subdirectory.
     if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Selected directory does not contain METADATA subdirectory.";
+        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Selected directory does not contain METADATA subdirectory.";
         return false;
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Valid package!";
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Valid package!";
     return true;
 }
 
@@ -31,18 +31,18 @@ bool FSOps::CreateDirectories (QMap<QString, QString> PathsMap)
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {
-            qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Created direcotry " << Name << "PATH: " << Path;
+            qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Created direcotry " << Name << "PATH: " << Path;
         }
         else
         {
-            qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Could not create directory " << Name << "PATH: " << Path;
+            qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Could not create directory " << Name << "PATH: " << Path;
             return false;
         }
     }
     return true;
 }
 
-bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString ParentPackage)
+bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString PackageName)
 {
     QDir SubComponentDir = TempPath;
     SubComponentDir.mkdir("[" + QString::number(LayerNumber) + "]");
@@ -50,8 +50,8 @@ bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int Layer
     UnionFSString->prepend(SubComponentDir.path() + "=RO:");
 
     QDir MountDir = SubComponentDir;
-    MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
-    MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + ParentPackage);
+    MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + PackageName);
+    MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + PackageName);
 
     if (SubComponentJSON.contains("TARGET"))
     {
