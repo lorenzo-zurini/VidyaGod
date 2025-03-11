@@ -386,7 +386,6 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs)
 
     RunProcessEnvironment.insert("PROTONPATH", Runner::Paths["ProtonPath"]);
     RunProcessEnvironment.insert("WINEPREFIX", Runner::Paths["RuntimePath"]);
-    ////WHY?????????
     FinalExeArgs.prepend(FinalExePath);
 
     if (!FinalExeArgs.isEmpty())

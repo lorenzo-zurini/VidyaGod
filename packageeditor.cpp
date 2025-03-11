@@ -380,16 +380,28 @@ void PackageEditor::RunExeInComponent()
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
     ExeRunner->Cleanup();
     ExeRunner->BuildRuntime();
+    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"));
     ExeRunner->Cleanup();
-    qDebug() << "DONE";
 }
 
 void PackageEditor::BrowseInComponent()
 {
-    qDebug() << "BROWSE";
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    ExplorerRunner->Cleanup();
+    ExplorerRunner->BuildRuntime();
+    ExplorerRunner->Run("explorer.exe");
+    ExplorerRunner->Cleanup();
 }
 
 void PackageEditor::RegeditInComponent()
 {
-    qDebug() << "REGEDIT";
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    RegeditRunner->Cleanup();
+    RegeditRunner->BuildRuntime();
+    RegeditRunner->Run("regedit.exe");
+    RegeditRunner->Cleanup();
 }
