@@ -4,18 +4,18 @@ DBOps::DBOps() {}
 
 QSqlDatabase * DBOps::InitDatabase(QString FileName)
 {
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Attempting database init... ";
+    qDebug().noquote() << QTime::currentTime().toString() << "DBOperations:" << "[OUT] Attempting database init...";
     QSqlDatabase * NewDataBase = new QSqlDatabase(QSqlDatabase::addDatabase("QSQLITE"));
     NewDataBase->setDatabaseName(FileName);
 
     if (NewDataBase->open())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] " << NewDataBase->databaseName() << " opened successfully.";
+        qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[OUT]" << NewDataBase->databaseName() << "opened successfully.";
         return NewDataBase;
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << " [ERR] " << FileName << " could not be opened.";
+        qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[ERR]" << FileName << "could not be opened.";
         return nullptr;
     }
 }
@@ -32,7 +32,7 @@ QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * 
             QueryString.append(Item.key() + " " + Item.value().dump() + ", ");
         }
         QueryString.append("PRIMARY KEY(" + (*GlobalConfigJSON)["DefaultTables"][TableName.toStdString()]["PRIMARY KEY"].dump() + "))");
-        qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Executing SQL query:" << QueryString;
+        qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[OUT] Executing SQL query:" << QueryString;
         QSqlQuery(*DataBase).exec(QueryString);
     }
 
@@ -45,7 +45,7 @@ QSqlRelationalTableModel * DBOps::InitDBTable(QString TableName, QSqlDatabase * 
 
 void DBOps::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir, QSqlDatabase * GlobalDB, nlohmann::ordered_json * GlobalConfigJSON)
 {
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Adding to library: " << (*MANIFESTJSON)["PACKAGENAME"].dump() << " UID: " << (*MANIFESTJSON)["PACKAGEUID"].dump();
+    qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[OUT] Adding to library:" << (*MANIFESTJSON)["PACKAGENAME"].dump() << "UID:" << (*MANIFESTJSON)["PACKAGEUID"].dump();
 
     QMap<QString, QString> PackagePathMap;
     PackagePathMap["PATH"] = "\"" + GameDir->path() + "\"";
@@ -55,7 +55,7 @@ void DBOps::AddPackagetoDB(nlohmann::ordered_json * MANIFESTJSON, QDir * GameDir
 
 void DBOps::AddSubGamestoDB(nlohmann::ordered_json * MANIFESTJSON, QSqlDatabase * GlobalDB, nlohmann::ordered_json * GlobalConfigJSON)
 {
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Adding subgames to library... ";
+    qDebug().noquote() << QTime::currentTime().toString() << "DBOperations:"  << "[OUT] Adding subgames to library...";
 
     QMap<QString, QString> ParentPackageMap;
     ParentPackageMap["PARENTPACKAGE"] = QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"].dump());
@@ -109,19 +109,19 @@ void DBOps::AddJSONObjectToDB(QSqlDatabase * GlobalDB, QString DBTable, nlohmann
 
     //CONSTRUCT THE QUERY AND EXECUTE
     QueryString.append("INSERT INTO " + DBTable + " (" + ColumnString + ") VALUES (" + ValueString + ")");
-    qDebug().noquote() << QTime::currentTime().toString() << " [OUT] Executing SQL query:" << QueryString;
+    qDebug().noquote() << QTime::currentTime().toString() << "DBOperations:" << "[OUT] Executing SQL query:" << QueryString;
     QSqlQuery(*GlobalDB).exec(QueryString);
 }
 
-bool DBOps::CheckPackageExists(QSqlDatabase * GlobalDB, int PackageUID)
+bool DBOps::CheckPackageExists(QSqlDatabase * GlobalDB, QString PackageUID)
 {
     QSqlQuery CheckPackageExistsQuery(*GlobalDB);
     CheckPackageExistsQuery.exec("SELECT PACKAGEUID FROM PACKAGES;");
     while (CheckPackageExistsQuery.next())
     {
-        if (CheckPackageExistsQuery.value(0).toInt() == PackageUID)
+        if (CheckPackageExistsQuery.value(0).toString() == PackageUID)
         {
-            qDebug().noquote() << QTime::currentTime().toString() << " [ERR] Package already exists in library, aborting!";
+            qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[ERR] Package already exists in library, aborting!";
             return true;
         }
     }
@@ -157,7 +157,7 @@ int DBOps::GetRowByItemAndColumn(QTableView * TableView, QString Item, QString C
             return i;
         }
     }
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] " << Item << " not found in column " << Column;
+    qDebug().noquote() << QTime::currentTime().toString()  << "DBOperations:" << "[OUT]" << Item << " not found in column" << Column;
     return -1;
 }
 

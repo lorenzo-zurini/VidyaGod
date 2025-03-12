@@ -72,11 +72,11 @@ void PackageEditor::on_SaveButton_clicked()
 {
     if (PackageEditor::SaveManifestJSON())
     {
-        qDebug().noquote() << QTime::currentTime() << "[OUT] Save successful.";
+        qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[OUT] Save successful.";
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime() << "[ERR] Save failed.";
+        qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Save failed.";
     }
 }
 
@@ -109,7 +109,7 @@ void PackageEditor::InitPackage()
         return;
     }
 
-    qDebug().noquote() << QTime::currentTime() << "[ERR] Parser returned nullptr, creating new JSON.";
+    qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Parser returned nullptr, creating new JSON.";
     PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
 }
 
@@ -151,7 +151,7 @@ bool PackageEditor::BuildUI()
                 continue;
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << Item.key();
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << Item.key();
             QLineEdit * NewParamField = new QLineEdit(PackageDataGroupBox);
             QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
             nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
@@ -165,7 +165,7 @@ bool PackageEditor::BuildUI()
             QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
             PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
-        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Manifest tab done!";
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Manifest tab done!";
 
         //SUBGAMES TABS WIDGET
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
@@ -193,7 +193,7 @@ bool PackageEditor::BuildUI()
 
             for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].items())
             {
-                qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Adding parameter editor:" << QString::fromStdString(Item.key());
+                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << QString::fromStdString(Item.key());
                 QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
                 QString JSONPath = QString("/SUBGAMES/%1/%2").arg(QString::number(i)).arg(QString::fromStdString(Item.key()));
                 nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
@@ -292,11 +292,63 @@ bool PackageEditor::BuildUI()
             ComponentTabWidgetLayout->addWidget(SubComponentsScrollArea);
 
             QGroupBox * SubComponentsGroupBox = new QGroupBox(SubComponentsScrollArea);
+            SubComponentsGroupBox->setTitle("Sub-Components");
             SubComponentsScrollAreaLayout->addWidget(SubComponentsGroupBox);
             SubComponentsScrollArea->setWidget(SubComponentsGroupBox);
-            //QFormLayout * SubGameGroupBoxLayout = new QFormLayout(SubGameGroupBox);
-            //SubGameGroupBox->setLayout(SubGameGroupBoxLayout);
+            QFormLayout * SubComponentsGroupBoxLayout = new QFormLayout(SubComponentsGroupBox);
+            SubComponentsGroupBox->setLayout(SubComponentsGroupBoxLayout);
 
+            for (int j = 0; j < (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
+            {
+                QString SubComponentType = QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["TYPE"]);
+                QGroupBox * IndividualSubComponentGroupBox = new QGroupBox(SubComponentsGroupBox);
+                QGridLayout * IndividualSubComponentGroupBoxLayout = new QGridLayout(IndividualSubComponentGroupBox);
+                IndividualSubComponentGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                IndividualSubComponentGroupBox->setLayout(IndividualSubComponentGroupBoxLayout);
+
+                IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TYPE:"), 0, 0);
+                IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(SubComponentType), 0, 1);
+
+                if(SubComponentType == "ZipFileLayer")
+                {
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"])), 1, 1);
+                }
+                else if (SubComponentType == "RegEdit")
+                {
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("REGPATH:"), 1, 0);
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["REGPATH"])), 1, 1);
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("ARCHITECTURE:"), 2, 0);
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["ARCHITECTURE"])), 2, 1);
+
+                        QGroupBox * RegKeysGroupBox = new QGroupBox(IndividualSubComponentGroupBox);
+                        QGridLayout * RegKeysGroupBoxLayout = new QGridLayout(RegKeysGroupBox);
+                        RegKeysGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                        RegKeysGroupBox->setLayout(RegKeysGroupBoxLayout);
+                        RegKeysGroupBox->setTitle("KEYS");
+
+                        RegKeysGroupBoxLayout->addWidget(new QLabel("Key"), 0, 0);
+                        RegKeysGroupBoxLayout->addWidget(new QLabel("Value"), 0, 1);
+                        RegKeysGroupBoxLayout->addWidget(new QLabel("Type"), 0, 2);
+
+                        int k = 1;
+                        for (auto Object : (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["KEYVALUES"].items())
+                        {
+                            RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.key())), k, 0);
+                            RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.value()["VALUE"])), k, 1);
+                            RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.value()["TYPE"])), k, 2);
+                            k++;
+                        }
+
+                    IndividualSubComponentGroupBoxLayout->addWidget(RegKeysGroupBox, 3, 0, 1, -1);
+                }
+                else
+                {
+                    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << QString("[ERR] Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType);
+                    continue;
+                }
+                SubComponentsGroupBoxLayout->addWidget(IndividualSubComponentGroupBox);
+            }
         ui->PackageEditorTabWidget->addTab(ComponentTabWidget, QString("Component %1").arg(QString::number(i + 1)));
     }
 
@@ -309,22 +361,22 @@ void PackageEditor::JSONQLineEditChanged()
     QString String = Editor->text();
     nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = String.toStdString();
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
 void PackageEditor::JSONQTextEditChanged()
 {
-    qDebug() << "JSON TEXT EDITOR CHANGED";
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON TEXT EDITOR CHANGED";
     if (nlohmann::ordered_json::accept(PackageEditor::JSONTextEdit->toPlainText().toUtf8()))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Valid JSON!";
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Valid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("");
         PackageEditor::SaveJSONButton->setDisabled(false);
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Invalid JSON!";
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Invalid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
         PackageEditor::SaveJSONButton->setDisabled(true);
     }
@@ -334,18 +386,18 @@ void PackageEditor::ParentComponentChanged()
 {
     QComboBox * ParentComponentPicker = qobject_cast<QComboBox *>(QObject::sender());
     QString Index = QString::number(ParentComponentPicker->currentIndex());
-    qDebug() << "PARENT COMPONENT CHANGED!" << ParentComponentPicker->currentIndex() << ParentComponentPicker->currentText();
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED!" << ParentComponentPicker->currentIndex() << ParentComponentPicker->currentText();
 
     nlohmann::ordered_json::json_pointer JSONPointer(ParentComponentPicker->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = Index.toStdString();
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] JSON value:" << ParentComponentPicker->currentIndex() << "Submitted to:" << ParentComponentPicker->property("JSONPath").toString();
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << ParentComponentPicker->currentIndex() << "Submitted to:" << ParentComponentPicker->property("JSONPath").toString();
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
 
 void PackageEditor::SaveJSONButtonPressed()
 {
-    qDebug() << "SAVE TRIGGERED";
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] SAVE TRIGGERED!";
     (*PackageEditor::MANIFESTJSON) = nlohmann::ordered_json::parse(PackageEditor::JSONTextEdit->toPlainText().toUtf8());
     PackageEditor::SaveManifestJSON();
     BuildUI();
@@ -355,18 +407,18 @@ void PackageEditor::RemoveSubgame()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * SubgameTabWidget = Button->parentWidget();
-    qDebug() << "REMOVE SUBGAME" << SubgameTabWidget->property("JSONPath");
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE SUBGAME" << SubgameTabWidget->property("JSONPath");
 }
 
 void PackageEditor::RemoveComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * ComponentTabWidget = Button->parentWidget();
-    qDebug() << "REMOVE COMPONENT" << ComponentTabWidget->property("JSONPath");
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE COMPONENT" << ComponentTabWidget->property("JSONPath");
 
     nlohmann::ordered_json::json_pointer JSONPointer(ComponentTabWidget->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON).at(JSONPointer.parent_pointer()).erase(ComponentTabWidget->property("Index").toInt());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Deleted component:" << ComponentTabWidget->property("Index").toString();
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Deleted component:" << ComponentTabWidget->property("Index").toString();
     delete ComponentTabWidget;
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
@@ -376,7 +428,7 @@ void PackageEditor::RemoveComponent()
 void PackageEditor::RunExeInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
     ExeRunner->Cleanup();
     ExeRunner->BuildRuntime();
@@ -387,7 +439,7 @@ void PackageEditor::RunExeInComponent()
 void PackageEditor::BrowseInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
     ExplorerRunner->Cleanup();
     ExplorerRunner->BuildRuntime();
@@ -398,7 +450,7 @@ void PackageEditor::BrowseInComponent()
 void PackageEditor::RegeditInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
     RegeditRunner->Cleanup();
     RegeditRunner->BuildRuntime();

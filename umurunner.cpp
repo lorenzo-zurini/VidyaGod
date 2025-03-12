@@ -50,14 +50,14 @@ bool UMURunner::Run()
 
 bool UMURunner::InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString)
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Initialising prefix" << PrefixPath;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] Initialising prefix" << PrefixPath;
     if (RunWithUMU(ProtonPath, PrefixPath, "wineboot"))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Prefix initialisation successful!";
+        qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] Prefix initialisation successful!";
         UnionFSString->prepend(RunnerParams->Paths["DefPrefixPath"] + "=RO");
         return true;
     }
-    qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Prefix initialisation failed!";
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[ERR] Prefix initialisation failed!";
     return false;
 }
 
@@ -159,14 +159,14 @@ bool UMURunner::RemoveSubComponents()
 
 bool UMURunner::RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs, QString WorkDirPath, QString GAMEID, QString DllOverrides)
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Executing with umu-launcher: " << ExePath << ExeArgs;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] ProtonPath:" << ProtonPath;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] WinePrefix:" << WinePrefix;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] ExePath:" << ExePath;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] ExeArgs:" << ExeArgs;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] WorkDirPath:" << WorkDirPath;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] GAMEID:" << GAMEID;
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] DllOverrides:" << DllOverrides;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] Executing with umu-launcher: " << ExePath << ExeArgs;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] ProtonPath:" << ProtonPath;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] WinePrefix:" << WinePrefix;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] ExePath:" << ExePath;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] ExeArgs:" << ExeArgs;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] WorkDirPath:" << WorkDirPath;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] GAMEID:" << GAMEID;
+    qDebug().noquote() << QTime::currentTime().toString() << "UMURunner:" << "[OUT] DllOverrides:" << DllOverrides;
 
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();

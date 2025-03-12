@@ -6,11 +6,12 @@
 #include <QTime>
 
 class RunnerParams;
+class Runner;
 class RegOps
 {
 public:
     RegOps();
-    static bool RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath, QString ProtonPath);
+    static bool RegAdd(Runner Runner, nlohmann::ordered_json SubComponentJSON, QString PrefixPath, QString ProtonPath);
 };
 
 #endif // REGISTRYOPERATIONS_H

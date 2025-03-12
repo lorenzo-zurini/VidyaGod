@@ -1,9 +1,9 @@
 #include "registryoperations.h"
-#include "umurunner.h"
+#include "runner.h"
 
 RegOps::RegOps() {}
 
-bool RegOps::RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath, QString ProtonPath)
+bool RegOps::RegAdd(Runner Runner, nlohmann::ordered_json SubComponentJSON)
 {
     QString REGPATH = QString::fromStdString(SubComponentJSON["REGPATH"]);
 
@@ -27,7 +27,7 @@ bool RegOps::RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath,
                 CommandArgs.append("/reg:32");
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
+            qDebug().noquote() << QTime::currentTime().toString() << "REGOps:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
             UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
         }
     }
@@ -42,7 +42,7 @@ bool RegOps::RegAdd(nlohmann::ordered_json SubComponentJSON, QString PrefixPath,
             CommandArgs.append("/reg:32");
         }
 
-        qDebug().noquote() << QTime::currentTime().toString() << "REG STRING: " << CommandArgs;
+        qDebug().noquote() << QTime::currentTime().toString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
         UMURunner::RunWithUMU(ProtonPath, PrefixPath, "reg", CommandArgs);
     }
     return true;

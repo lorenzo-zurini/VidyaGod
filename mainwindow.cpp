@@ -5,9 +5,6 @@
 #include "jsonoperations.h"
 #include "dboperations.h"
 #include "filesystemoperations.h"
-#include "winerunner.h"
-#include "umurunner.h"
-#include "dosboxrunner.h"
 
 //TO-DO: ADD VARIABLE SUBSTITUTION WITH ENV VARS AND AUTOCALC
 //TO-DO: FIX EXE COMMAND LINE PARSING AND WORKDIR
@@ -45,18 +42,10 @@ void MainWindow::InitClassVariables()
 
 void MainWindow::on_TestButton_clicked()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] TEST";
+    qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] TEST";
 }
 
-void MainWindow::ResetTables()    //bool ExitStatus = RunWithUMU(Runner::Paths["ProtonPath"],
-    //                             Runner::Paths["RuntimePath"],
-    //                             Runner::ExePath,
-    //                             Runner::ExeArgs,
-    //                             Runner::Paths["WorkDirPath"],
-    //                             Runner::UMUID,
-    //                             Runner::DllOverrides);
-
-//return ExitStatus;
+void MainWindow::ResetTables()
 {
     LibraryModel->select();
     PackagesModel->select();
@@ -71,7 +60,7 @@ void MainWindow::on_AddGameButton_clicked()
 
     if(!FSOps::CheckPackageValid(PackageDir))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Invalid package, aborting..";
+        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Invalid package, aborting..";
         return;
     }
 
@@ -79,17 +68,17 @@ void MainWindow::on_AddGameButton_clicked()
     nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[ERR] Parser returned nullptr.";
+        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Parser returned non-empty JSON.";
+        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON.";
     }
 
     //ABORT IF PACKAGE ALREADY EXISTS IN DB.
-    if (DBOps::CheckPackageExists(GlobalDB, (*MANIFESTJSON)["PACKAGEUID"]))
+    if (DBOps::CheckPackageExists(GlobalDB, QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"])))
     {
         return;
     }
@@ -108,13 +97,12 @@ void MainWindow::on_PlayGameButton_clicked()
     //Check if selection exists.
     if (!ui->LibraryTableView->selectionModel()->hasSelection())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "[OUT] NO SELECTION!";
+        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] NO SELECTION!";
         return;
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] Attempting launch of " << DBOps::GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
+    qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Attempting launch of " << DBOps::GetSelectedItemByColumn(ui->LibraryTableView, "TITLE");
 
-    //UMURunner * UMURunner = new class UMURunner(ui->LibraryTableView, ui->PackagesTableView, ProtonPath);
     //Send partial JSON when converting from DB to JSON.
     //FIXTHIS FIXTHIS FIXTHIS
     Runner * NewRunner = new Runner(new QDir(""), JSONOps::LoadJSON(new QFile("")), MainWindow::GlobalConfigJSON, 0, 0);

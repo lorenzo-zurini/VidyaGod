@@ -13,7 +13,6 @@
 #include "dboperations.h"
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
-#include "registryoperations.h"
 
 class Runner
 {
@@ -48,6 +47,7 @@ public:
     bool ProcessOtherSubComponents();
     bool Cleanup();
     bool RemoveSubComponents();
+    bool RegAdd(nlohmann::ordered_json SubComponentJSON);
     bool Run(QString OverrideExePath = "", QStringList OverrideExeArgs = QStringList({}));
 
     // static bool RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs = {}, QString WorkDirPath = "", QString GAMEID = "0", QString DllOverrides = "");

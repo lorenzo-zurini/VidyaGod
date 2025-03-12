@@ -34,12 +34,6 @@ set(PROJECT_SOURCES
         packageeditor.cpp
         packageeditor.ui
 
-        runnerparams.h
-        runnerparams.cpp
-
-        registryoperations.h
-        registryoperations.cpp
-
         filesystemoperations.h
         filesystemoperations.cpp
 
@@ -48,15 +42,6 @@ set(PROJECT_SOURCES
 
         dboperations.h
         dboperations.cpp
-
-        winerunner.h
-        winerunner.cpp
-
-        dosboxrunner.h
-        dosboxrunner.cpp
-
-        umurunner.h
-        umurunner.cpp
 
         runner.h
         runner.cpp
