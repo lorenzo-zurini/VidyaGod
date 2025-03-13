@@ -155,7 +155,7 @@ bool Runner::BuildRuntime()
     }
 
     //QMessageBox::warning(nullptr, "Building Runtime", "Initializing UMU Prefix.");
-    if (!InitializeUMUPrefix(Runner::Paths["DefPrefixPath"], Runner::Paths["ProtonPath"], &(Runner::UnionFSString)))
+    if (!this->InitializeUMUPrefix(&(Runner::UnionFSString)))
     {
         return false;
     }
@@ -182,19 +182,6 @@ bool Runner::BuildRuntime()
     FSOps::CheckCaseConflicts(Runner::Paths["RuntimePath"]);
 
     return true;
-}
-
-bool Runner::InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString)
-{
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Initialising prefix" << PrefixPath;
-    if (Runner::Run("wineboot"))
-    {
-        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Prefix initialisation successful!";
-        UnionFSString->prepend(Runner::Paths["DefPrefixPath"] + "=RO");
-        return true;
-    }
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Prefix initialisation failed!";
-    return false;
 }
 
 bool Runner::ProcessFileSystemSubComponents()
@@ -364,6 +351,41 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs)
     else
     {
         delete RunProcess;
+        return false;
+    }
+}
+
+bool Runner::InitializeUMUPrefix(QString * UnionFSString)
+{
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Initialising prefix" << this->Paths["DefPrefixPath"];
+
+    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    QProcess * RunProcess = new QProcess;
+    RunProcess->setProgram("umu-run");
+
+    RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
+    RunProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
+    RunProcess->setArguments({"wineboot"});
+    RunProcessEnvironment.insert("GAMEID", 0);
+    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+
+    RunProcess->setProcessEnvironment(RunProcessEnvironment);
+    RunProcess->start();
+    RunProcess->waitForFinished(-1);
+    qDebug().noquote() << RunProcess->readAllStandardError();
+    qDebug().noquote() << RunProcess->readAllStandardOutput();
+
+    if(RunProcess->exitCode() == 0)
+    {
+        delete RunProcess;
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Prefix initialisation successful!";
+        UnionFSString->prepend(this->Paths["DefPrefixPath"] + "=RO");
+        return true;
+    }
+    else
+    {
+        delete RunProcess;
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Prefix initialisation failed!";
         return false;
     }
 }

@@ -42,7 +42,7 @@ public:
     Runner(QDir * PackageDir, nlohmann::ordered_json * MANIFESTJSON, nlohmann::ordered_json * GlobalConfigJSON, int subgame = 0, int component = 0);
 
     bool BuildRuntime();
-    bool InitializeUMUPrefix(QString PrefixPath, QString ProtonPath, QString * UnionFSString);
+    bool InitializeUMUPrefix(QString * UnionFSString);
     bool ProcessFileSystemSubComponents();
     bool ProcessOtherSubComponents();
     bool Cleanup();
