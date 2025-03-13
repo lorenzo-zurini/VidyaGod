@@ -55,6 +55,8 @@ private slots:
     void RunExeInComponent();
     void BrowseInComponent();
     void RegeditInComponent();
+    void AnalyzeComponent();
+    void FinalizeComponent();
 
 private:
     bool InitMANIFESTJSON();

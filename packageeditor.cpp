@@ -277,6 +277,18 @@ bool PackageEditor::BuildUI()
                 SubComponentsToolbarLayout->addWidget(EditRegistryButton);
                 QObject::connect(EditRegistryButton, &QPushButton::clicked, this, &PackageEditor::RegeditInComponent);
 
+                SubComponentsToolbarLayout->addStretch();
+
+                QPushButton * AnalyzeButton = new QPushButton(ComponentTabWidget);
+                AnalyzeButton->setText("Analyze");
+                SubComponentsToolbarLayout->addWidget(AnalyzeButton);
+                QObject::connect(AnalyzeButton, &QPushButton::clicked, this, &PackageEditor::AnalyzeComponent);
+
+                QPushButton * FinalizeButton = new QPushButton(ComponentTabWidget);
+                FinalizeButton->setText("Finalize");
+                SubComponentsToolbarLayout->addWidget(FinalizeButton);
+                QObject::connect(FinalizeButton, &QPushButton::clicked, this, &PackageEditor::FinalizeComponent);
+
                 QPushButton * RemoveComponentButton = new QPushButton(ComponentTabWidget);
                 RemoveComponentButton->setText("Remove Component");
                 SubComponentsToolbarLayout->addWidget(RemoveComponentButton);
@@ -456,4 +468,16 @@ void PackageEditor::RegeditInComponent()
     RegeditRunner->BuildRuntime();
     RegeditRunner->Run("regedit.exe");
     RegeditRunner->Cleanup();
+}
+
+void PackageEditor::AnalyzeComponent()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Analyzing component" << Button->parentWidget()->property("Index").toInt() + 1;
+}
+
+void PackageEditor::FinalizeComponent()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
 }
