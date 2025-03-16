@@ -93,9 +93,9 @@ void PackageEditor::RefreshJSONView()
 
 void PackageEditor::InitPackage()
 {
-    PackageEditor::PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select package directory..."));
-    PackageEditor::MetadataDir = new QDir(FSOps::SubPath((*PackageDir).path(), "METADATA"));
-    PackageEditor::PackageFilesDir = new QDir(FSOps::SubPath((*PackageDir).path(), "PACKAGEFILES"));
+    this->PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select package directory..."));
+    this->MetadataDir = new QDir(FSOps::SubPath((*PackageDir).path(), "METADATA"));
+    this->PackageFilesDir = new QDir(FSOps::SubPath((*PackageDir).path(), "PACKAGEFILES"));
 
     if (!FSOps::CheckPackageValid(PackageDir))
     {
@@ -442,10 +442,10 @@ void PackageEditor::RunExeInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    ExeRunner->Cleanup();
-    ExeRunner->BuildRuntime();
-    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"));
-    ExeRunner->Cleanup();
+    ExeRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    ExeRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
+    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"), QStringList(), FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    ExeRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
 }
 
 void PackageEditor::BrowseInComponent()
@@ -453,10 +453,10 @@ void PackageEditor::BrowseInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    ExplorerRunner->Cleanup();
-    ExplorerRunner->BuildRuntime();
-    ExplorerRunner->Run("explorer.exe");
-    ExplorerRunner->Cleanup();
+    ExplorerRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    ExplorerRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
+    ExplorerRunner->Run("explorer.exe", QStringList(), FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    ExplorerRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
 }
 
 void PackageEditor::RegeditInComponent()
@@ -464,16 +464,43 @@ void PackageEditor::RegeditInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    RegeditRunner->Cleanup();
-    RegeditRunner->BuildRuntime();
-    RegeditRunner->Run("regedit.exe");
-    RegeditRunner->Cleanup();
+    RegeditRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    RegeditRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
+    RegeditRunner->Run("regedit.exe", QStringList(), FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+    RegeditRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
 }
 
 void PackageEditor::AnalyzeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Analyzing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Analyzing new component."; // << Button->parentWidget()->property("Index").toInt() + 1;
+
+    int component = Button->parentWidget()->property("Index").toInt();
+    int parentcomponent = 0;
+    if ((!(*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"].is_null()) && (QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]) != "0"))
+    {
+        parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]).toInt();
+    }
+
+    Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, parentcomponent);
+    ComparatorRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"));
+    ComparatorRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"), "READONLY");
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
+    ComparatorRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"));
+
+    //QStringList * FileList = new QStringList;
+
+    //QDirIterator Iterator(RuntimePath, QDirIterator::Subdirectories);
+    //while (Iterator.hasNext()) {
+    //    QString FilePath = Iterator.next().toLower();
+
+    //}
+    //delete FileList;
+    //return NoConflict;
+
+
+
+
 }
 
 void PackageEditor::FinalizeComponent()

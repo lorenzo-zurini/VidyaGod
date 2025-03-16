@@ -22,10 +22,8 @@ public:
     static bool CheckCaseConflicts(QString RuntimePath);
 
     static bool MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString PackageName);
-    static bool UnmountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString ParentPackage);
 
-    static bool BuildUnionFS(QString UnionFSString, QString RuntimePath, QString UserDataPath);
-    static bool DestroyUnionFS(QString RuntimePath);
+
 
     static bool ConfigWrite(QString Key, QString Value, QString FilePath);
 };
