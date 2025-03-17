@@ -464,10 +464,13 @@ void PackageEditor::RegeditInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    RegeditRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    RegeditRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
-    RegeditRunner->Run("regedit.exe", QStringList(), FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    RegeditRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+
+    QString NewComponentRuntimePath = FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME");
+    QString NewComponentUserDataPath = FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA");
+    RegeditRunner->Cleanup(NewComponentRuntimePath);
+    RegeditRunner->BuildRuntime(NewComponentRuntimePath, NewComponentUserDataPath);
+    RegeditRunner->Run("regedit.exe", QStringList(), NewComponentRuntimePath);
+    RegeditRunner->Cleanup(NewComponentRuntimePath);
 }
 
 void PackageEditor::AnalyzeComponent()
@@ -483,10 +486,11 @@ void PackageEditor::AnalyzeComponent()
     }
 
     Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, parentcomponent);
-    ComparatorRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"));
-    ComparatorRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"), "READONLY");
+    QString ComparatorPath = FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR");
+    ComparatorRunner->Cleanup(ComparatorPath);
+    ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-    ComparatorRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR"));
+    ComparatorRunner->Cleanup(ComparatorPath);
 
     //QStringList * FileList = new QStringList;
 
