@@ -485,26 +485,61 @@ void PackageEditor::AnalyzeComponent()
         parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]).toInt();
     }
 
+    //TO ADD FULL NEWCOMPONENT RUNTIME FOR COMPARISON
+
+    QString NewComponentRuntimePath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "RUNTIME");
+    QString NewComponentUserDataPath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "USERDATA");
+    QString NewComponentComparatorPath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR");
+
+    Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, component);
+    NewComponentRunner->Cleanup(NewComponentRuntimePath);
+    NewComponentRunner->BuildRuntime(NewComponentRuntimePath, NewComponentUserDataPath);
+
     Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, parentcomponent);
-    QString ComparatorPath = FSOps::SubPath(FSOps::SubPath(ComparatorRunner->PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR");
-    ComparatorRunner->Cleanup(ComparatorPath);
-    ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
+    ComparatorRunner->Cleanup(NewComponentComparatorPath);
+    ComparatorRunner->BuildRuntime(NewComponentComparatorPath, "READONLY");
+
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-    ComparatorRunner->Cleanup(ComparatorPath);
-
-    //QStringList * FileList = new QStringList;
-
-    //QDirIterator Iterator(RuntimePath, QDirIterator::Subdirectories);
-    //while (Iterator.hasNext()) {
-    //    QString FilePath = Iterator.next().toLower();
-
-    //}
-    //delete FileList;
-    //return NoConflict;
+    QDir NewComponentComparatorDir(QDir::cleanPath(NewComponentComparatorPath + QDir::separator() + "drive_c"));
+    QDir NewComponentRuntimeDir(QDir::cleanPath(NewComponentRuntimePath + QDir::separator() + "drive_c"));
 
 
+    QFileInfoList * NewComponentComparatorDirFileList = new QFileInfoList;
+    QFileInfoList * NewComponentRuntimeFileList = new QFileInfoList;
 
+    QDirIterator  NewComponentComparatorDirIterator(NewComponentComparatorDir, QDirIterator::Subdirectories);
+    while (NewComponentComparatorDirIterator.hasNext())
+    {
+        NewComponentComparatorDirFileList->append(NewComponentComparatorDirIterator.nextFileInfo());
+    }
 
+    QDirIterator  NewComponentRuntimeDirIterator(NewComponentRuntimeDir, QDirIterator::Subdirectories);
+    while (NewComponentComparatorDirIterator.hasNext())
+    {
+        NewComponentRuntimeFileList->append(NewComponentRuntimeDirIterator.nextFileInfo());
+    }
+
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "RUNNING COMPARISON");
+
+    for (int i = 0; i < NewComponentComparatorDirFileList->count(); i++)
+    {
+        for (int j = 0; j < NewComponentRuntimeFileList->count(); j++)
+        {
+            qDebug() << (*NewComponentRuntimeFileList)[j].path();
+            if ((*NewComponentComparatorDirFileList)[i].path() == (*NewComponentRuntimeFileList)[j].path())
+            {
+                qDebug() << QString("File %1 exists in both directories.").arg((*NewComponentRuntimeFileList)[j].path());
+            }
+        }
+    }
+
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
+
+    delete NewComponentComparatorDirFileList;
+    delete NewComponentRuntimeFileList;
+
+    NewComponentRunner->Cleanup(NewComponentRuntimePath);
+    ComparatorRunner->Cleanup(NewComponentComparatorPath);
 }
 
 void PackageEditor::FinalizeComponent()
