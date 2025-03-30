@@ -10,7 +10,6 @@
 #include <QScreen>
 #include <QMessageBox>
 
-#include "dboperations.h"
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
 

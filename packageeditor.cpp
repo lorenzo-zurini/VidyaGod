@@ -533,8 +533,28 @@ void PackageEditor::AnalyzeComponent()
         while (KeysRegexExtractor.hasNext())
         {
             QRegularExpressionMatch ExtractedKey = KeysRegexExtractor.next();
-            qDebug().noquote() << "KEY:" << ExtractedKey.captured(1);
-            qDebug().noquote() << "CONTENTS:" << ExtractedKey.captured(2);
+            QString KeyPath(ExtractedKey.captured(1));
+            QStringList SubKeys(ExtractedKey.captured(2).split("\n"));
+
+            for (int i = 0; i < SubKeys.size(); i++)
+            {
+                if (SubKeys.at(i).isEmpty())
+                {
+                    SubKeys.removeAt(i);
+                    i--;
+                    continue;
+                }
+                if (SubKeys.at(i).left(5) == "#time")
+                {
+                    SubKeys.removeAt(i);
+                    i--;
+                    continue;
+                }
+                //DISCRIMINATE TYPES OF REGISTRY KEYS
+            }
+
+            qDebug().noquote() << "KEY:" << KeyPath;
+            qDebug().noquote() << "CONTENTS:" << SubKeys;
         }
 
 
