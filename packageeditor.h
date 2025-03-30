@@ -25,6 +25,8 @@
 #include <QAbstractItemModel>
 #include <QItemDelegate>
 
+#include <QSettings>
+
 #include "filesystemoperations.h"
 #include "jsonoperations.h"
 #include "runner.h"
@@ -56,6 +58,7 @@ private slots:
     void BrowseInComponent();
     void RegeditInComponent();
     void AnalyzeComponent();
+    void AddFileLayer();
     void FinalizeComponent();
 
 private:

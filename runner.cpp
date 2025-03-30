@@ -20,70 +20,90 @@ bool Runner::InitParams()
 {
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Initializing Runner";
 
+    if ((this->subgame == 0) && (this->component == 0))
+    {
+        //this->subgame = 1;
+        //this->component = 1;
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Neither subgame nor component specified, mounting defprefix." << component;
+    }
+    else if ((this->subgame != 0) && (this->component == 0))
+    {
+        if (!(*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["COMPONENT"].is_null())
+        {
+            component = QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["COMPONENT"]).toInt();
+        }
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running subgame" << QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["TITLE"]);
+    }
+    else if ((this->subgame == 0) && (this->component != 0))
+    {
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running component" << QString::fromStdString((*this->MANIFESTJSON)["COMPONENTS"][this->component - 1]["NAME"]);
+    }
+    else
+    {
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running subgame" << subgame << "component" << component;
+    }
+
     this->PackageName = QString::fromStdString((*MANIFESTJSON)["PACKAGENAME"]);
 
-    Runner::Paths["ProtonPath"] = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProtonPath" << Runner::Paths["ProtonPath"];
+    this->Paths["ProtonPath"] = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProtonPath" << this->Paths["ProtonPath"];
 
-    Runner::Paths["PackagePath"] = PackageDir->path();
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackagePath" << Runner::Paths["PackagePath"];
+    this->Paths["PackagePath"] = PackageDir->path();
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackagePath" << this->Paths["PackagePath"];
 
-    Runner::Paths["RuntimePath"] = FSOps::SubPath(Paths["PackagePath"], "RUNTIME");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] RuntimePath" << Runner::Paths["RuntimePath"];
+    this->Paths["RuntimePath"] = FSOps::SubPath(Paths["PackagePath"], "RUNTIME");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] RuntimePath" << this->Paths["RuntimePath"];
 
     //Runner::Paths["ProgramPath"] = FSOps::SubPath(FSOps::SubPath(Paths["RuntimePath"], "drive_c"), QString::fromStdString((*MANIFESTJSON)["PACKAGENAME"]));
     //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProgramPath" << Runner::Paths["ProgramPath"];
 
-    Runner::Paths["MetaDataPath"] = FSOps::SubPath(Paths["PackagePath"], "METADATA");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] MetaDataPath" << Runner::Paths["MetaDataPath"];
+    this->Paths["MetaDataPath"] = FSOps::SubPath(Paths["PackagePath"], "METADATA");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] MetaDataPath" << this->Paths["MetaDataPath"];
 
-    Runner::Paths["PackageFilesPath"] = FSOps::SubPath(Paths["PackagePath"], "PACKAGEFILES");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackageFilesPath" << Runner::Paths["PackageFilesPath"];
+    this->Paths["PackageFilesPath"] = FSOps::SubPath(Paths["PackagePath"], "PACKAGEFILES");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackageFilesPath" << this->Paths["PackageFilesPath"];
 
-    Runner::Paths["UserDataPath"] = FSOps::SubPath(Paths["PackagePath"], "USERDATA");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UserDataPath" << Runner::Paths["UserDataPath"];
+    this->Paths["UserDataPath"] = FSOps::SubPath(Paths["PackagePath"], "USERDATA");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UserDataPath" << this->Paths["UserDataPath"];
 
-    Runner::Paths["TempPath"] = FSOps::SubPath(Paths["PackagePath"], "TEMP");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] TempPath" << Runner::Paths["TempPath"];
+    this->Paths["TempPath"] = FSOps::SubPath(Paths["PackagePath"], "TEMP");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] TempPath" << this->Paths["TempPath"];
 
-    Runner::Paths["DefPrefixPath"] = FSOps::SubPath(Paths["TempPath"], "DEFPREFIX");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] DefPrefixPath" << Runner::Paths["DefPrefixPath"];
+    this->Paths["DefPrefixPath"] = FSOps::SubPath(Paths["TempPath"], "DEFPREFIX");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] DefPrefixPath" << this->Paths["DefPrefixPath"];
 
-    if (Runner::subgame != 0)
+    if (this->subgame != 0)
     {
-        this->GameName = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["TITLE"]);
+        this->GameName = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["TITLE"]);
         qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] GameName: " << this->GameName;
 
-        this->UMUID = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["UMUID"]);
+        this->UMUID = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["UMUID"]);
         qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UMUID: " << this->UMUID;
 
-        this->ExePath = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["EXEPATH"]);
+        this->ExePath = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEPATH"]);
         qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] EXEPATH: " << this->ExePath;
 
-        this->WorkDir = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["WORKDIR"]);
-        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WORKDIR: " << this->WorkDir;
-
-        //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
-        if (!((*MANIFESTJSON)["SUBGAMES"][subgame]["EXEARGS"].empty() || (*MANIFESTJSON)["SUBGAMES"][subgame]["EXEARGS"] == "" || (*MANIFESTJSON)["SUBGAMES"][subgame]["EXEARGS"].is_null()))
+        if (!((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].empty() || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"] == "" || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].is_null()))
         {
-            Runner::ExeArgs = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["EXEARGS"]).split(" ");
-            for (int i = 0; i < Runner::ExeArgs.count(); i++)
-            {
-                qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << QString("[OUT] ExeArg %1:").arg(i) << Runner::ExeArgs.at(i);
-            }
+            this->WorkDir = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["WORKDIR"]);
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WORKDIR: " << this->WorkDir;
         }
 
-        if(component == 0)
+        //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
+        if (!((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEARGS"].empty() || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEARGS"] == "" || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEARGS"].is_null()))
         {
-            component = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["COMPONENT"]).toInt();
-            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Component" << component;
+            this->ExeArgs = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEARGS"]).split(" ");
+            for (int i = 0; i < this->ExeArgs.count(); i++)
+            {
+                qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << QString("[OUT] ExeArg %1:").arg(i) << this->ExeArgs.at(i);
+            }
         }
     }
 
     //CREATE RECIPE BY RESOLVING COMPONENT DEPENDENCY
     while (component != 0)
     {
-        Runner::Recipe.prepend(component);
+        this->Recipe.prepend(component);
         qDebug() << component;
 
         if ((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"].is_null())
@@ -108,43 +128,46 @@ bool Runner::InitParams()
     }
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Recipe:" << this->Recipe;
 
-    Runner::WindowsPaths["WindowsProgramPath"] = QDir::cleanPath("C:/" + PackageDir->path()).replace("/", "\\");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPath" << Runner::WindowsPaths["WindowsProgramPath"];
+    this->WindowsPaths["WindowsProgramPath"] = QDir::cleanPath("C:/" + this->PackageName).replace("/", "\\");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPath" << this->WindowsPaths["WindowsProgramPath"];
 
-    Runner::WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + PackageDir->path()).replace("/", "\\\\");
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << Runner::WindowsPaths["WindowsProgramPathDoubleBackSlash"];
+    this->WindowsPaths["WindowsExePath"] = QDir::cleanPath("C:/" + this->PackageName + QDir::separator() + this->ExePath).replace("/", "\\");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsExePath" << this->WindowsPaths["WindowsExePath"];
 
-    Runner::SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenWidth" << Runner::SystemVariables["ScreenWidth"];
+    this->WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + this->PackageName).replace("/", "\\\\");
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << this->WindowsPaths["WindowsProgramPathDoubleBackSlash"];
 
-    Runner::SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenHeight" << Runner::SystemVariables["ScreenHeight"];
+    this->SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"];
+
+    this->SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"];
 
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].size(); i++)
     {
-        if (Runner::Recipe.contains(i + 1))
+        if (this->Recipe.contains(i + 1))
         {
             for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
             {
-                Runner::SubComponentsArray.push_back((*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
+                this->SubComponentsArray.push_back((*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
                 qDebug().noquote() << QTime::currentTime() << "Runner:" << "[OUT] Added COMPONENT" << i + 1 << "SUBCOMPONENT" << j + 1;
             }
         }
     }
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Completed SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
 
-    Runner::SubComponentsArray = JSONOps::ReplaceVariables(Runner::SubComponentsArray, Runner::WindowsPaths);
-    Runner::SubComponentsArray = JSONOps::ReplaceVariables(Runner::SubComponentsArray, Runner::Paths);
-    Runner::SubComponentsArray = JSONOps::ReplaceVariables(Runner::SubComponentsArray, Runner::SystemVariables);
-    Runner::ExeArgs = StringListReplaceVariables(Runner::ExeArgs, Runner::WindowsPaths);
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->WindowsPaths);
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->Paths);
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->SystemVariables);
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->WindowsPaths);
     //CAUTION! ESCAPE CHARACHTERS IN WINDOWS PATHS CRASHES JSON! FIXME
-    Runner::ExeArgs = StringListReplaceVariables(Runner::ExeArgs, Runner::Paths);
-    Runner::ExeArgs = StringListReplaceVariables(Runner::ExeArgs, Runner::SystemVariables);
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->Paths);
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->SystemVariables);
 
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< Runner::ExeArgs;
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Runner initialisation complete!"<< Runner::ExeArgs;
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Runner initialisation complete!"<< this->ExeArgs;
     return true;
 }
 
@@ -277,9 +300,9 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     {
         UnionFSString.prepend(FinalUserDataPath + "=RW:");
         qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
+        QDir(FinalUserDataPath).mkpath(FinalUserDataPath);
     }
 
-    QDir(FinalUserDataPath).mkpath(FinalUserDataPath);
     QDir(FinalRuntimePath).mkpath(FinalRuntimePath);
 
     //Mounting UnionFS
@@ -427,22 +450,25 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
 
 bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString OverrideRuntimePath)
 {
-    QString FinalExePath = this->ExePath;
+    QString FinalExePath = this->WindowsPaths["WindowsExePath"];
     QStringList FinalExeArgs = this->ExeArgs;
     QString FinalRuntimePath = this->Paths["RuntimePath"];
 
-    if (!OverrideExePath.isNull())
+    if (!OverrideExePath.isEmpty())
     {
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath;
         FinalExePath = OverrideExePath;
     }
 
     if (!OverrideExeArgs.isEmpty())
     {
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs;
         FinalExeArgs = OverrideExeArgs;
     }
 
     if (!OverrideRuntimePath.isEmpty())
     {
+        qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath;
         FinalRuntimePath = OverrideRuntimePath;
     }
 

@@ -26,10 +26,6 @@ set(PROJECT_SOURCES
         mainwindow.h
         mainwindow.ui
 
-        gridviewitem.cpp
-        gridviewitem.h
-        gridviewitem.ui
-
         packageeditor.h
         packageeditor.cpp
         packageeditor.ui
@@ -39,9 +35,6 @@ set(PROJECT_SOURCES
 
         jsonoperations.h
         jsonoperations.cpp
-
-        dboperations.h
-        dboperations.cpp
 
         runner.h
         runner.cpp

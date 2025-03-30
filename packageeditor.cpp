@@ -280,9 +280,14 @@ bool PackageEditor::BuildUI()
                 SubComponentsToolbarLayout->addStretch();
 
                 QPushButton * AnalyzeButton = new QPushButton(ComponentTabWidget);
-                AnalyzeButton->setText("Analyze");
+                AnalyzeButton->setText("Analyze Registry");
                 SubComponentsToolbarLayout->addWidget(AnalyzeButton);
                 QObject::connect(AnalyzeButton, &QPushButton::clicked, this, &PackageEditor::AnalyzeComponent);
+
+                QPushButton * AddFileLayerButton = new QPushButton(ComponentTabWidget);
+                AddFileLayerButton->setText("Add File Layer");
+                SubComponentsToolbarLayout->addWidget(AddFileLayerButton);
+                QObject::connect(AddFileLayerButton, &QPushButton::clicked, this, &PackageEditor::AddFileLayer);
 
                 QPushButton * FinalizeButton = new QPushButton(ComponentTabWidget);
                 FinalizeButton->setText("Finalize");
@@ -321,7 +326,12 @@ bool PackageEditor::BuildUI()
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TYPE:"), 0, 0);
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(SubComponentType), 0, 1);
 
-                if(SubComponentType == "ZipFileLayer")
+                if (SubComponentType == "ZipFileLayer")
+                {
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"])), 1, 1);
+                }
+                else if (SubComponentType == "FileLayer")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"])), 1, 1);
@@ -442,10 +452,13 @@ void PackageEditor::RunExeInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    ExeRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    ExeRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
-    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"), QStringList(), FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    ExeRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+
+    QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
+    QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
+    ExeRunner->Cleanup(NewComponentRuntimePath);
+    ExeRunner->BuildRuntime(NewComponentRuntimePath, FSOps::SubPath(FSOps::SubPath(ExeRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
+    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"), QStringList(), NewComponentRuntimePath);
+    ExeRunner->Cleanup(NewComponentRuntimePath);
 }
 
 void PackageEditor::BrowseInComponent()
@@ -453,10 +466,13 @@ void PackageEditor::BrowseInComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-    ExplorerRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    ExplorerRunner->BuildRuntime(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"), FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
-    ExplorerRunner->Run("explorer.exe", QStringList(), FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
-    ExplorerRunner->Cleanup(FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME"));
+
+    QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
+    QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
+    ExplorerRunner->Cleanup(NewComponentRuntimePath);
+    ExplorerRunner->BuildRuntime(NewComponentRuntimePath, FSOps::SubPath(FSOps::SubPath(ExplorerRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA"));
+    ExplorerRunner->Run("explorer.exe", QStringList(), NewComponentRuntimePath);
+    ExplorerRunner->Cleanup(NewComponentRuntimePath);
 }
 
 void PackageEditor::RegeditInComponent()
@@ -465,8 +481,8 @@ void PackageEditor::RegeditInComponent()
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
-    QString NewComponentRuntimePath = FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "RUNTIME");
-    QString NewComponentUserDataPath = FSOps::SubPath(FSOps::SubPath(RegeditRunner->PackageDir->path(), "NEWCOMPONENT"), "USERDATA");
+    QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
+    QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
     RegeditRunner->Cleanup(NewComponentRuntimePath);
     RegeditRunner->BuildRuntime(NewComponentRuntimePath, NewComponentUserDataPath);
     RegeditRunner->Run("regedit.exe", QStringList(), NewComponentRuntimePath);
@@ -485,65 +501,262 @@ void PackageEditor::AnalyzeComponent()
         parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]).toInt();
     }
 
-    //TO ADD FULL NEWCOMPONENT RUNTIME FOR COMPARISON
-
-    QString NewComponentRuntimePath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "RUNTIME");
-    QString NewComponentUserDataPath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "USERDATA");
-    QString NewComponentComparatorPath = FSOps::SubPath(FSOps::SubPath(PackageDir->path(), "NEWCOMPONENT"), "COMPARATOR");
-
+    QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
+    QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
     Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, component);
     NewComponentRunner->Cleanup(NewComponentRuntimePath);
     NewComponentRunner->BuildRuntime(NewComponentRuntimePath, NewComponentUserDataPath);
 
+    //QString NewComponentComparatorUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "COMPARATORUSERDATA");
+    QString NewComponentComparatorPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "COMPARATOR");
     Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, parentcomponent);
     ComparatorRunner->Cleanup(NewComponentComparatorPath);
     ComparatorRunner->BuildRuntime(NewComponentComparatorPath, "READONLY");
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-    QDir NewComponentComparatorDir(QDir::cleanPath(NewComponentComparatorPath + QDir::separator() + "drive_c"));
+
+
+    nlohmann::ordered_json * OldSysReg = new nlohmann::ordered_json;
+
+    QFile RegFile(QDir::cleanPath((NewComponentComparatorPath + QDir::separator() + "system.reg")));
+    QStringList KeysList;
+
+    if (RegFile.open(QFile::ReadOnly | QFile::Text))
+    {
+        //WorkingFileString.split(QRegularExpression("<tr><td class=\"tdnplus\">\\s*?PREZENTARE\\s[0-9]*?.*?<\\/td><\\/tr>", QRegularExpression::DotMatchesEverythingOption));
+        QString RegFileString = RegFile.readAll();
+        //qDebug() << RegFileString;
+
+
+        QRegularExpression KeysRegex("(\\[.+?\\]) [0-9]{7,15}(.*?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
+        QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(RegFileString);
+        while (KeysRegexExtractor.hasNext())
+        {
+            QRegularExpressionMatch ExtractedKey = KeysRegexExtractor.next();
+            qDebug().noquote() << "KEY:" << ExtractedKey.captured(1);
+            qDebug().noquote() << "CONTENTS:" << ExtractedKey.captured(2);
+        }
+
+
+        //KeysList = QString(RegFile.readAll()).split(QRegularExpression("(\[.+\])"));//, QRegularExpression::DotMatchesEverythingOption));
+
+        /*
+        while (!RegFile.atEnd())
+        {
+            LinesList.append(RegFile.readLine());
+        }
+        */
+    }
+
+
+    for (QString Key : KeysList)
+    {
+        qDebug().noquote() << Key;
+    }
+
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
+    /*
+    QString RegCmpPath(QDir::cleanPath(QCoreApplication::applicationDirPath() + QDir::separator() + "registrychangesview-x64" + QDir::separator() + "RegistryChangesView.exe"));
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TAKING OLDSNAP");
+
+    QDir OldSnap(QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT") + QDir::separator() + "OLDREG");
+    OldSnap.mkpath(OldSnap.path());
+    QProcess * OldRegCmpProcess = new QProcess;
+    OldRegCmpProcess->setProgram("umu-run");
+
+    QProcessEnvironment OldRegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    OldRegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
+    OldRegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentComparatorPath);
+    OldRegCmpProcessEnvironment.insert("GAMEID", 0);
+    OldRegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+
+    OldRegCmpProcess->setArguments(QStringList() << RegCmpPath << "/CreateSnapshot" << OldSnap.path());
+
+    OldRegCmpProcess->setProcessEnvironment(OldRegCmpProcessEnvironment);
+    OldRegCmpProcess->start();
+    OldRegCmpProcess->waitForFinished(-1);
+    qDebug().noquote() << OldRegCmpProcess->readAllStandardError();
+    qDebug().noquote() << OldRegCmpProcess->readAllStandardOutput();
+
+    delete OldRegCmpProcess;
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST NEWSNAP");
+
+    QDir NewSnap(QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT") + QDir::separator() + "NEWREG");
+    NewSnap.mkpath(NewSnap.path());
+    QProcess * NewRegCmpProcess = new QProcess;
+    NewRegCmpProcess->setProgram("umu-run");
+
+    QProcessEnvironment NewRegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    NewRegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
+    NewRegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentRuntimePath);
+    NewRegCmpProcessEnvironment.insert("GAMEID", 0);
+    NewRegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+
+    NewRegCmpProcess->setArguments(QStringList() << RegCmpPath << "/CreateSnapshot" << NewSnap.path());
+
+    NewRegCmpProcess->setProcessEnvironment(NewRegCmpProcessEnvironment);
+    NewRegCmpProcess->start();
+    NewRegCmpProcess->waitForFinished(-1);
+    qDebug().noquote() << NewRegCmpProcess->readAllStandardError();
+    qDebug().noquote() << NewRegCmpProcess->readAllStandardOutput();
+
+    delete NewRegCmpProcess;
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "COMPARING SNAPS");
+
+    QProcess * RegCmpProcess = new QProcess;
+    RegCmpProcess->setProgram("umu-run");
+
+    QProcessEnvironment RegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    RegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
+    RegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentRuntimePath);
+    RegCmpProcessEnvironment.insert("GAMEID", 0);
+    RegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+
+    RegCmpProcess->setArguments(QStringList() << RegCmpPath \
+                                                 << "/DataSourceDirection" << "2" \
+                                                 << "/DataSourceType1" << "2" \
+                                                 << "/DataSourceType2" << "2" \
+                                                 << "/RegSnapshotPath1" << OldSnap.path() \
+                                                 << "/RegSnapshotPath2" << NewSnap.path() \
+                                                 << "/sreg" << QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RegDiff.reg"));
+
+    RegCmpProcess->setProcessEnvironment(RegCmpProcessEnvironment);
+    RegCmpProcess->start();
+    RegCmpProcess->waitForFinished(-1);
+    qDebug().noquote() << RegCmpProcess->readAllStandardError();
+    qDebug().noquote() << RegCmpProcess->readAllStandardOutput();
+
+    delete RegCmpProcess;
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    */
+
+    //QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
+    //QProcess * DiffProcess = new QProcess(this);
+    //DiffProcess->setProgram("diff");
+    //DiffProcess->setArguments({QDir(NewComponentComparatorPath).filePath("system.reg"), QDir(NewComponentUserDataPath).filePath("system.reg")});
+    //QStringList ExeArgs;
+    //ExeArgs << QDir(NewComponentComparatorPath).filePath("system.reg") << QDir(NewComponentUserDataPath).filePath("system.reg");
+    //qDebug() << ExeArgs;
+
+    //DiffProcess->start("diff", ExeArgs);
+    //DiffProcess->waitForFinished(-1);
+    //qDebug().noquote() << DiffProcess->readAllStandardError();
+    //QByteArray DiffOutput(DiffProcess->readAllStandardOutput());
+
+    //qDebug() << DiffOutput.toStdString();
+
+    //QSettings * NewSysReg = new QSettings(QDir(NewComponentUserDataPath).filePath("system.reg"), QSettings::IniFormat);
+    //QSettings * OldSysReg = new QSettings(QDir(NewComponentComparatorPath).filePath("system.reg"), QSettings::IniFormat);
+
+    //NewSysReg->beginGroup("System");
+    //OldSysReg->beginGroup("System");
+
+    //qDebug() << "CHILDGROUPS:" << NewSysReg->childGroups();
+
+    //QSettings * NewUsrReg = new QSettings(QDir(NewComponentUserDataPath).filePath("user.reg"), QSettings::IniFormat);
+    //QSettings * OldUsrReg = new QSettings(QDir(NewComponentComparatorPath).filePath("user.reg"), QSettings::IniFormat);
+
+    //QSettings * NewUsrDefReg = new QSettings(QDir(NewComponentUserDataPath).filePath("userdef.reg"), QSettings::IniFormat);
+    //QSettings * OldUsrDefReg = new QSettings(QDir(NewComponentComparatorPath).filePath("userdef.reg"), QSettings::IniFormat);
+
+    //qDebug() << NewSysReg;
+
+
+    /*
+    //ATTEMPT TO MAKE FILESYSTEM DIFF BELOW, VERY HACKY AND SUPERFLUOUS
     QDir NewComponentRuntimeDir(QDir::cleanPath(NewComponentRuntimePath + QDir::separator() + "drive_c"));
-
-
-    QFileInfoList * NewComponentComparatorDirFileList = new QFileInfoList;
+    NewComponentRuntimeDir.setFilter(QDir::Files);
     QFileInfoList * NewComponentRuntimeFileList = new QFileInfoList;
+    QDirIterator NewComponentRuntimeDirIterator(NewComponentRuntimeDir, QDirIterator::Subdirectories);
+    while (NewComponentRuntimeDirIterator.hasNext())
+    {
+        NewComponentRuntimeFileList->append(NewComponentRuntimeDirIterator.nextFileInfo());
+    }
 
-    QDirIterator  NewComponentComparatorDirIterator(NewComponentComparatorDir, QDirIterator::Subdirectories);
+    QDir NewComponentComparatorDir(QDir::cleanPath(NewComponentComparatorPath + QDir::separator() + "drive_c"));
+    NewComponentComparatorDir.setFilter(QDir::Files);
+    QFileInfoList * NewComponentComparatorDirFileList = new QFileInfoList;
+    QDirIterator NewComponentComparatorDirIterator(NewComponentComparatorDir, QDirIterator::Subdirectories);
     while (NewComponentComparatorDirIterator.hasNext())
     {
         NewComponentComparatorDirFileList->append(NewComponentComparatorDirIterator.nextFileInfo());
     }
 
-    QDirIterator  NewComponentRuntimeDirIterator(NewComponentRuntimeDir, QDirIterator::Subdirectories);
-    while (NewComponentComparatorDirIterator.hasNext())
-    {
-        NewComponentRuntimeFileList->append(NewComponentRuntimeDirIterator.nextFileInfo());
-    }
+    QMessageBox::warning(nullptr, "TEST COMPARATOR", "RUNNING COMPARISON");
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "COMPARATOR FILE COUNT:" << NewComponentComparatorDirFileList->count();
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "RUNTIME FILE COUNT:" << NewComponentRuntimeFileList->count();
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "RUNNING COMPARISON");
 
-    for (int i = 0; i < NewComponentComparatorDirFileList->count(); i++)
+    for (int i = 0; i < NewComponentRuntimeFileList->count(); i++)
     {
-        for (int j = 0; j < NewComponentRuntimeFileList->count(); j++)
+        QFileInfo NewFile = NewComponentRuntimeFileList->at(i);
+        for (int j = 0; j < NewComponentComparatorDirFileList->count(); j++)
         {
-            qDebug() << (*NewComponentRuntimeFileList)[j].path();
-            if ((*NewComponentComparatorDirFileList)[i].path() == (*NewComponentRuntimeFileList)[j].path())
+            QFileInfo OldFile = NewComponentComparatorDirFileList->at(j);
+            if (NewFile.filePath().slice(NewComponentRuntimeDir.path().size()) == (OldFile.filePath().slice(NewComponentComparatorDir.path().size())))
             {
-                qDebug() << QString("File %1 exists in both directories.").arg((*NewComponentRuntimeFileList)[j].path());
+                if (NewFile.lastModified() == OldFile.lastModified())
+                {
+                    //qDebug() << QString("File %1 exists in both directories.").arg(NewFile.filePath().slice(NewComponentRuntimeDir.path().size()));
+                    NewComponentRuntimeFileList->removeAt(i);
+                    i--;
+                }
+                else
+                {
+                    qDebug() << QString("MODIFIED FILE %1").arg(NewFile.filePath().slice(NewComponentRuntimeDir.path().size()));
+                }
+                break;
             }
         }
+    }
+
+    for (int i = 0; i < NewComponentRuntimeFileList->count(); i++)
+    {
+        qDebug() << "NEWFILE:" << NewComponentRuntimeFileList->at(i).filePath();
     }
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
 
     delete NewComponentComparatorDirFileList;
     delete NewComponentRuntimeFileList;
+    */
+
 
     NewComponentRunner->Cleanup(NewComponentRuntimePath);
     ComparatorRunner->Cleanup(NewComponentComparatorPath);
 }
 
+void PackageEditor::AddFileLayer()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Adding FileLayer in component" << Button->parentWidget()->property("Index").toInt() + 1;
+
+    QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
+    QString SelectedProgramDir = QFileDialog::getExistingDirectory(this, "Select ProgramDir", NewComponentUserDataPath);
+    nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
+    QString ComponentName = QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]["NAME"]);
+
+    (*PackageEditor::MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "FileLayer"}, {"PATH", ComponentName.toStdString()}}));
+
+    QDir DirMover;
+    DirMover.mkdir(PackageFilesDir->path());
+    DirMover.rename(SelectedProgramDir, QDir::cleanPath(PackageFilesDir->path() + QDir::separator() + ComponentName));
+
+    PackageEditor::SaveManifestJSON();
+    PackageEditor::RefreshJSONView();
+    PackageEditor::BuildUI();
+}
+
 void PackageEditor::FinalizeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
 }
