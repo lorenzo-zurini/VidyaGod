@@ -515,48 +515,67 @@ void PackageEditor::AnalyzeComponent()
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
 
+    nlohmann::ordered_json * OldSysRegJSON = new nlohmann::ordered_json;
+    QFile OldSysRegFile(QDir::cleanPath((NewComponentComparatorPath + QDir::separator() + "system.reg")));
 
-    nlohmann::ordered_json * OldSysReg = new nlohmann::ordered_json;
-
-    QFile RegFile(QDir::cleanPath((NewComponentComparatorPath + QDir::separator() + "system.reg")));
-    QStringList KeysList;
-
-    if (RegFile.open(QFile::ReadOnly | QFile::Text))
+    if (OldSysRegFile.open(QFile::ReadOnly | QFile::Text))
     {
         //WorkingFileString.split(QRegularExpression("<tr><td class=\"tdnplus\">\\s*?PREZENTARE\\s[0-9]*?.*?<\\/td><\\/tr>", QRegularExpression::DotMatchesEverythingOption));
-        QString RegFileString = RegFile.readAll();
+        QString OldSysRegFileString = OldSysRegFile.readAll();
         //qDebug() << RegFileString;
 
 
-        QRegularExpression KeysRegex("(\\[.+?\\]) [0-9]{7,15}(.*?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
-        QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(RegFileString);
+        QRegularExpression KeysRegex("\\[(Software.+?)\\] [0-9]{7,15}(.*?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
+        QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(OldSysRegFileString);
         while (KeysRegexExtractor.hasNext())
         {
             QRegularExpressionMatch ExtractedKey = KeysRegexExtractor.next();
-            QString KeyPath(ExtractedKey.captured(1));
+            QString KeyPath(ExtractedKey.captured(1).replace("\\\\", "/"));
             QStringList SubKeys(ExtractedKey.captured(2).split("\n"));
+
+            QRegularExpression NumbersRegex("/[0-9]+?/");
+            QRegularExpressionMatchIterator NumbersRegexExtractor = NumbersRegex.globalMatch(KeyPath);
+            while (NumbersRegexExtractor.hasNext())
+            {
+                QString Number(NumbersRegexExtractor.next().captured());
+                KeyPath.replace(Number, "\"" + Number + "\"");
+            }
+
+
+
+
+
+            nlohmann::ordered_json::json_pointer JSONPointer(KeyPath.prepend("/").toStdString());
 
             for (int i = 0; i < SubKeys.size(); i++)
             {
                 if (SubKeys.at(i).isEmpty())
                 {
-                    SubKeys.removeAt(i);
-                    i--;
                     continue;
                 }
-                if (SubKeys.at(i).left(5) == "#time")
+                if (SubKeys.at(i) == "#time")
                 {
-                    SubKeys.removeAt(i);
-                    i--;
                     continue;
                 }
-                //DISCRIMINATE TYPES OF REGISTRY KEYS
+                if (!SubKeys.at(i).contains("="))
+                {
+                    continue;
+                }
+                if (SubKeys.at(i).split("=").size() == 1)
+                {
+                    (*OldSysRegJSON)[JSONPointer][SubKeys.at(i).split("=").at(0).toStdString()] = "";
+                    continue;
+                }
+
+
+                (*OldSysRegJSON)[JSONPointer][SubKeys.at(i).split("=").at(0).toStdString()] = SubKeys.at(i).split("=").at(1).toStdString();
             }
 
             qDebug().noquote() << "KEY:" << KeyPath;
             qDebug().noquote() << "CONTENTS:" << SubKeys;
         }
 
+        qDebug().noquote() << "JSON:" << OldSysRegJSON->dump(1);
 
         //KeysList = QString(RegFile.readAll()).split(QRegularExpression("(\[.+\])"));//, QRegularExpression::DotMatchesEverythingOption));
 
@@ -569,10 +588,10 @@ void PackageEditor::AnalyzeComponent()
     }
 
 
-    for (QString Key : KeysList)
-    {
-        qDebug().noquote() << Key;
-    }
+
+
+
+    //nlohmann::ordered_json * NewSysReg = new nlohmann::ordered_json;
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
     /*
