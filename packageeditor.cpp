@@ -1,5 +1,6 @@
 #include "packageeditor.h"
 #include "ui_packageeditor.h"
+#include <iostream>
 
 using json = nlohmann::ordered_json;
 //MUST MAKE THIS CLASS MDI BASED!!!
@@ -515,262 +516,87 @@ void PackageEditor::AnalyzeComponent()
 
     QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
 
-    nlohmann::ordered_json * OldSysRegJSON = new nlohmann::ordered_json;
     QFile OldSysRegFile(QDir::cleanPath((NewComponentComparatorPath + QDir::separator() + "system.reg")));
+    QFile NewSysRegFile(QDir::cleanPath((NewComponentComparatorPath + QDir::separator() + "system.reg")));
 
-    if (OldSysRegFile.open(QFile::ReadOnly | QFile::Text))
+    //HEREHERE
+    //DISCRIMINATE BETWEEN DIFFERENT TYPES OF VALUES
+    //ADD SUPPORT DOR 32BIT / 46 BIT KEYS
+    //DO / FIX THE ACTUAL DIFFING
+
+    qDebug() << nlohmann::ordered_json::diff((*PackageEditor::RegFileToJSON(&OldSysRegFile)), (*PackageEditor::RegFileToJSON(&NewSysRegFile))).dump();
+
+    //JSONOps::SaveJSON(OldSysRegJSON, new QFile("TESTARONI.JSON"));
+
+    QMessageBox::warning(nullptr, "CLEANUP", "CLEANUP");
+
+    NewComponentRunner->Cleanup(NewComponentRuntimePath);
+    ComparatorRunner->Cleanup(NewComponentComparatorPath);
+}
+
+nlohmann::ordered_json * PackageEditor::RegFileToJSON(QFile * RegFile)
+{
+
+    nlohmann::ordered_json * RegJSON = new nlohmann::ordered_json;
+    if (RegFile->open(QFile::ReadOnly | QFile::Text))
     {
-        //WorkingFileString.split(QRegularExpression("<tr><td class=\"tdnplus\">\\s*?PREZENTARE\\s[0-9]*?.*?<\\/td><\\/tr>", QRegularExpression::DotMatchesEverythingOption));
-        QString OldSysRegFileString = OldSysRegFile.readAll();
-        //qDebug() << RegFileString;
-
+        QString RegFileString = RegFile->readAll();
 
         QRegularExpression KeysRegex("\\[(Software.+?)\\] [0-9]{7,15}(.*?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
-        QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(OldSysRegFileString);
+        QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(RegFileString);
         while (KeysRegexExtractor.hasNext())
         {
             QRegularExpressionMatch ExtractedKey = KeysRegexExtractor.next();
-            QString KeyPath(ExtractedKey.captured(1).replace("\\\\", "/"));
-            QStringList SubKeys(ExtractedKey.captured(2).split("\n"));
-
-            QRegularExpression NumbersRegex("/[0-9]+?/");
-            QRegularExpressionMatchIterator NumbersRegexExtractor = NumbersRegex.globalMatch(KeyPath);
-            while (NumbersRegexExtractor.hasNext())
-            {
-                QString Number(NumbersRegexExtractor.next().captured());
-                KeyPath.replace(Number, "\"" + Number + "\"");
+            QStringList KeyPathTokens(ExtractedKey.captured(1).split("\\\\"));
+            QString KeyPathString;
+            for (int i = 0; i < KeyPathTokens.size(); ++i) {
+                if (QRegularExpression("^\\d+$").match(KeyPathTokens[i]).hasMatch())
+                {
+                    KeyPathTokens[i] = "\"" + KeyPathTokens[i] + "\"";
+                }
+                KeyPathString.append("/").append(KeyPathTokens[i]);
             }
+            qDebug().noquote() << "KEY:" << KeyPathString;
+            nlohmann::ordered_json::json_pointer JSONPointer(KeyPathString.toStdString());
 
-
-
-
-
-            nlohmann::ordered_json::json_pointer JSONPointer(KeyPath.prepend("/").toStdString());
-
+            QStringList SubKeys(ExtractedKey.captured(2).split("\n"));
             for (int i = 0; i < SubKeys.size(); i++)
             {
                 if (SubKeys.at(i).isEmpty())
                 {
+                    SubKeys.removeAt(i);
+                    i--;
                     continue;
                 }
-                if (SubKeys.at(i) == "#time")
+                if (SubKeys.at(i).left(5) == "#time")
                 {
+                    SubKeys.removeAt(i);
+                    i--;
                     continue;
                 }
                 if (!SubKeys.at(i).contains("="))
                 {
+                    SubKeys.removeAt(i);
+                    i--;
                     continue;
                 }
+
+                QString Subkey(PackageEditor::UnquoteString(SubKeys.at(i).split("=").at(0)));
+                QString Value(PackageEditor::UnquoteString(SubKeys.at(i).split("=").at(1)));
+
                 if (SubKeys.at(i).split("=").size() == 1)
                 {
-                    (*OldSysRegJSON)[JSONPointer][SubKeys.at(i).split("=").at(0).toStdString()] = "";
+                    (*RegJSON)[JSONPointer][Subkey.toStdString()] = "";
                     continue;
-                }
-
-
-                (*OldSysRegJSON)[JSONPointer][SubKeys.at(i).split("=").at(0).toStdString()] = SubKeys.at(i).split("=").at(1).toStdString();
-            }
-
-            qDebug().noquote() << "KEY:" << KeyPath;
-            qDebug().noquote() << "CONTENTS:" << SubKeys;
-        }
-
-        qDebug().noquote() << "JSON:" << OldSysRegJSON->dump(1);
-
-        //KeysList = QString(RegFile.readAll()).split(QRegularExpression("(\[.+\])"));//, QRegularExpression::DotMatchesEverythingOption));
-
-        /*
-        while (!RegFile.atEnd())
-        {
-            LinesList.append(RegFile.readLine());
-        }
-        */
-    }
-
-
-
-
-
-    //nlohmann::ordered_json * NewSysReg = new nlohmann::ordered_json;
-
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-    /*
-    QString RegCmpPath(QDir::cleanPath(QCoreApplication::applicationDirPath() + QDir::separator() + "registrychangesview-x64" + QDir::separator() + "RegistryChangesView.exe"));
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TAKING OLDSNAP");
-
-    QDir OldSnap(QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT") + QDir::separator() + "OLDREG");
-    OldSnap.mkpath(OldSnap.path());
-    QProcess * OldRegCmpProcess = new QProcess;
-    OldRegCmpProcess->setProgram("umu-run");
-
-    QProcessEnvironment OldRegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    OldRegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
-    OldRegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentComparatorPath);
-    OldRegCmpProcessEnvironment.insert("GAMEID", 0);
-    OldRegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-
-    OldRegCmpProcess->setArguments(QStringList() << RegCmpPath << "/CreateSnapshot" << OldSnap.path());
-
-    OldRegCmpProcess->setProcessEnvironment(OldRegCmpProcessEnvironment);
-    OldRegCmpProcess->start();
-    OldRegCmpProcess->waitForFinished(-1);
-    qDebug().noquote() << OldRegCmpProcess->readAllStandardError();
-    qDebug().noquote() << OldRegCmpProcess->readAllStandardOutput();
-
-    delete OldRegCmpProcess;
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST NEWSNAP");
-
-    QDir NewSnap(QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT") + QDir::separator() + "NEWREG");
-    NewSnap.mkpath(NewSnap.path());
-    QProcess * NewRegCmpProcess = new QProcess;
-    NewRegCmpProcess->setProgram("umu-run");
-
-    QProcessEnvironment NewRegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    NewRegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
-    NewRegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentRuntimePath);
-    NewRegCmpProcessEnvironment.insert("GAMEID", 0);
-    NewRegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-
-    NewRegCmpProcess->setArguments(QStringList() << RegCmpPath << "/CreateSnapshot" << NewSnap.path());
-
-    NewRegCmpProcess->setProcessEnvironment(NewRegCmpProcessEnvironment);
-    NewRegCmpProcess->start();
-    NewRegCmpProcess->waitForFinished(-1);
-    qDebug().noquote() << NewRegCmpProcess->readAllStandardError();
-    qDebug().noquote() << NewRegCmpProcess->readAllStandardOutput();
-
-    delete NewRegCmpProcess;
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "COMPARING SNAPS");
-
-    QProcess * RegCmpProcess = new QProcess;
-    RegCmpProcess->setProgram("umu-run");
-
-    QProcessEnvironment RegCmpProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    RegCmpProcessEnvironment.insert("PROTONPATH", "/usr/share/steam/compatibilitytools.d/proton-ge-custom/");
-    RegCmpProcessEnvironment.insert("WINEPREFIX", NewComponentRuntimePath);
-    RegCmpProcessEnvironment.insert("GAMEID", 0);
-    RegCmpProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-
-    RegCmpProcess->setArguments(QStringList() << RegCmpPath \
-                                                 << "/DataSourceDirection" << "2" \
-                                                 << "/DataSourceType1" << "2" \
-                                                 << "/DataSourceType2" << "2" \
-                                                 << "/RegSnapshotPath1" << OldSnap.path() \
-                                                 << "/RegSnapshotPath2" << NewSnap.path() \
-                                                 << "/sreg" << QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RegDiff.reg"));
-
-    RegCmpProcess->setProcessEnvironment(RegCmpProcessEnvironment);
-    RegCmpProcess->start();
-    RegCmpProcess->waitForFinished(-1);
-    qDebug().noquote() << RegCmpProcess->readAllStandardError();
-    qDebug().noquote() << RegCmpProcess->readAllStandardOutput();
-
-    delete RegCmpProcess;
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    */
-
-    //QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-    //QProcess * DiffProcess = new QProcess(this);
-    //DiffProcess->setProgram("diff");
-    //DiffProcess->setArguments({QDir(NewComponentComparatorPath).filePath("system.reg"), QDir(NewComponentUserDataPath).filePath("system.reg")});
-    //QStringList ExeArgs;
-    //ExeArgs << QDir(NewComponentComparatorPath).filePath("system.reg") << QDir(NewComponentUserDataPath).filePath("system.reg");
-    //qDebug() << ExeArgs;
-
-    //DiffProcess->start("diff", ExeArgs);
-    //DiffProcess->waitForFinished(-1);
-    //qDebug().noquote() << DiffProcess->readAllStandardError();
-    //QByteArray DiffOutput(DiffProcess->readAllStandardOutput());
-
-    //qDebug() << DiffOutput.toStdString();
-
-    //QSettings * NewSysReg = new QSettings(QDir(NewComponentUserDataPath).filePath("system.reg"), QSettings::IniFormat);
-    //QSettings * OldSysReg = new QSettings(QDir(NewComponentComparatorPath).filePath("system.reg"), QSettings::IniFormat);
-
-    //NewSysReg->beginGroup("System");
-    //OldSysReg->beginGroup("System");
-
-    //qDebug() << "CHILDGROUPS:" << NewSysReg->childGroups();
-
-    //QSettings * NewUsrReg = new QSettings(QDir(NewComponentUserDataPath).filePath("user.reg"), QSettings::IniFormat);
-    //QSettings * OldUsrReg = new QSettings(QDir(NewComponentComparatorPath).filePath("user.reg"), QSettings::IniFormat);
-
-    //QSettings * NewUsrDefReg = new QSettings(QDir(NewComponentUserDataPath).filePath("userdef.reg"), QSettings::IniFormat);
-    //QSettings * OldUsrDefReg = new QSettings(QDir(NewComponentComparatorPath).filePath("userdef.reg"), QSettings::IniFormat);
-
-    //qDebug() << NewSysReg;
-
-
-    /*
-    //ATTEMPT TO MAKE FILESYSTEM DIFF BELOW, VERY HACKY AND SUPERFLUOUS
-    QDir NewComponentRuntimeDir(QDir::cleanPath(NewComponentRuntimePath + QDir::separator() + "drive_c"));
-    NewComponentRuntimeDir.setFilter(QDir::Files);
-    QFileInfoList * NewComponentRuntimeFileList = new QFileInfoList;
-    QDirIterator NewComponentRuntimeDirIterator(NewComponentRuntimeDir, QDirIterator::Subdirectories);
-    while (NewComponentRuntimeDirIterator.hasNext())
-    {
-        NewComponentRuntimeFileList->append(NewComponentRuntimeDirIterator.nextFileInfo());
-    }
-
-    QDir NewComponentComparatorDir(QDir::cleanPath(NewComponentComparatorPath + QDir::separator() + "drive_c"));
-    NewComponentComparatorDir.setFilter(QDir::Files);
-    QFileInfoList * NewComponentComparatorDirFileList = new QFileInfoList;
-    QDirIterator NewComponentComparatorDirIterator(NewComponentComparatorDir, QDirIterator::Subdirectories);
-    while (NewComponentComparatorDirIterator.hasNext())
-    {
-        NewComponentComparatorDirFileList->append(NewComponentComparatorDirIterator.nextFileInfo());
-    }
-
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "RUNNING COMPARISON");
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "COMPARATOR FILE COUNT:" << NewComponentComparatorDirFileList->count();
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "RUNTIME FILE COUNT:" << NewComponentRuntimeFileList->count();
-
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "RUNNING COMPARISON");
-
-    for (int i = 0; i < NewComponentRuntimeFileList->count(); i++)
-    {
-        QFileInfo NewFile = NewComponentRuntimeFileList->at(i);
-        for (int j = 0; j < NewComponentComparatorDirFileList->count(); j++)
-        {
-            QFileInfo OldFile = NewComponentComparatorDirFileList->at(j);
-            if (NewFile.filePath().slice(NewComponentRuntimeDir.path().size()) == (OldFile.filePath().slice(NewComponentComparatorDir.path().size())))
-            {
-                if (NewFile.lastModified() == OldFile.lastModified())
-                {
-                    //qDebug() << QString("File %1 exists in both directories.").arg(NewFile.filePath().slice(NewComponentRuntimeDir.path().size()));
-                    NewComponentRuntimeFileList->removeAt(i);
-                    i--;
                 }
                 else
                 {
-                    qDebug() << QString("MODIFIED FILE %1").arg(NewFile.filePath().slice(NewComponentRuntimeDir.path().size()));
+                    (*RegJSON)[JSONPointer][Subkey.toStdString()] = Value.toStdString();
                 }
-                break;
             }
         }
     }
-
-    for (int i = 0; i < NewComponentRuntimeFileList->count(); i++)
-    {
-        qDebug() << "NEWFILE:" << NewComponentRuntimeFileList->at(i).filePath();
-    }
-
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
-
-    delete NewComponentComparatorDirFileList;
-    delete NewComponentRuntimeFileList;
-    */
-
-
-    NewComponentRunner->Cleanup(NewComponentRuntimePath);
-    ComparatorRunner->Cleanup(NewComponentComparatorPath);
+    return RegJSON;
 }
 
 void PackageEditor::AddFileLayer()
@@ -799,3 +625,15 @@ void PackageEditor::FinalizeComponent()
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
 }
+
+QString PackageEditor::UnquoteString(QString InputString)
+{
+    if(InputString.startsWith('"') && InputString.endsWith('"') && InputString.size() > 1)
+    {
+        return InputString.mid(1, InputString.length() - 2);
+    }
+    else
+    {
+        return InputString;
+    }
+};

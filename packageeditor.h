@@ -42,6 +42,8 @@ class PackageEditor : public QDialog
 
 public:
     explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr);
+    static QString UnquoteString(QString InputString);
+    static nlohmann::ordered_json * RegFileToJSON(QFile * RegFile);
     ~PackageEditor();
 
 private slots:
