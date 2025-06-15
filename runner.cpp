@@ -22,8 +22,6 @@ bool Runner::InitParams()
 
     if ((this->subgame == 0) && (this->component == 0))
     {
-        //this->subgame = 1;
-        //this->component = 1;
         qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Neither subgame nor component specified, mounting defprefix." << component;
     }
     else if ((this->subgame != 0) && (this->component == 0))
@@ -167,7 +165,7 @@ bool Runner::InitParams()
 
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
-    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Runner initialisation complete!"<< this->ExeArgs;
+    qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Runner initialisation complete!";
     return true;
 }
 
@@ -286,6 +284,47 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
             }
             qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
         }
+        else if (SubComponentJSON["TYPE"] == "DirLayer")
+        {
+            QDir SubComponentDir = this->Paths["TempPath"];
+            SubComponentDir.mkdir("[" + QString::number(i) + "]");
+            SubComponentDir.cd("[" + QString::number(i) + "]");
+            UnionFSString.prepend(SubComponentDir.path() + "=RO:");
+
+            QDir MountDir = SubComponentDir;
+            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageName);
+            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageName);
+
+            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
+            {
+                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+            }
+
+            QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
+
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Mounting DirLayer" << DirPath << "at" << MountDir.path();
+
+            QProcess * BindDir = new QProcess;
+            BindDir->setProgram("bindfs");
+            BindDir->setArguments({"-r", DirPath, MountDir.path()});
+            BindDir->start();
+            BindDir->waitForFinished(-1);
+
+            if(BindDir->exitCode() == 0)
+            {
+                delete BindDir;
+            }
+            else
+            {
+                qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to mount dir layer" << DirPath;
+                qDebug().noquote() << BindDir->readAllStandardError();
+                qDebug().noquote() << BindDir->readAllStandardOutput();
+                delete BindDir;
+                return false;
+            }
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
+        }
     }
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -382,7 +421,7 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Unmounting UnionFS" << FinalRuntimePath;
     QProcess * UnmountUnionFS = new QProcess;
     UnmountUnionFS->setProgram("fusermount");
-    UnmountUnionFS->setArguments({"-u", FinalRuntimePath});
+    UnmountUnionFS->setArguments({"-uz", FinalRuntimePath});
     UnmountUnionFS->start();
     UnmountUnionFS->waitForFinished(-1);
     qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountUnionFS->exitCode();
@@ -411,7 +450,47 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
 
             QProcess * UnmountDir = new QProcess;
             UnmountDir->setProgram("fusermount");
-            UnmountDir->setArguments({"-u", MountDir.path()});
+            UnmountDir->setArguments({"-uz", MountDir.path()});
+            UnmountDir->start();
+            UnmountDir->waitForFinished(-1);
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode();
+            qDebug().noquote() << UnmountDir->readAllStandardError();
+            qDebug().noquote() << UnmountDir->readAllStandardOutput();
+
+            if(UnmountDir->exitCode() == 0)
+            {
+                delete UnmountDir;
+            }
+            else
+            {
+                qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path();
+                delete UnmountDir;
+                return false;
+            }
+        }
+        else if (SubComponentJSON["TYPE"] == "DirLayer")
+        {
+            QDir SubComponentDir = this->Paths["TempPath"];
+            SubComponentDir.mkdir("[" + QString::number(i) + "]");
+            SubComponentDir.cd("[" + QString::number(i) + "]");
+
+            QDir MountDir = SubComponentDir;
+            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageName);
+            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageName);
+
+            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
+            {
+                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+            }
+
+            QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
+
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Unmounting DirLayer" << DirPath << "at" << MountDir.path();
+
+            QProcess * UnmountDir = new QProcess;
+            UnmountDir->setProgram("fusermount");
+            UnmountDir->setArguments({"-uz", MountDir.path()});
             UnmountDir->start();
             UnmountDir->waitForFinished(-1);
             qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode();
