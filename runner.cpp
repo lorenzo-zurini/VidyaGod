@@ -83,7 +83,7 @@ bool Runner::InitParams()
 
         if (!((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].empty() || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"] == "" || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].is_null()))
         {
-            this->WorkDir = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame]["WORKDIR"]);
+            this->WorkDir = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"]);
             qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WORKDIR: " << this->WorkDir;
         }
 
@@ -640,7 +640,7 @@ bool Runner::RegAdd(nlohmann::ordered_json SubComponentJSON)
                 CommandArgs.append("/reg:32");
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << "REGOps:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
+            qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
             this->Run("reg", CommandArgs);
         }
     }

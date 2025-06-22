@@ -346,7 +346,7 @@ bool PackageEditor::BuildUI()
 
                         QGroupBox * RegKeysGroupBox = new QGroupBox(IndividualSubComponentGroupBox);
                         QGridLayout * RegKeysGroupBoxLayout = new QGridLayout(RegKeysGroupBox);
-                        RegKeysGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+                        //RegKeysGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
                         RegKeysGroupBox->setLayout(RegKeysGroupBoxLayout);
                         RegKeysGroupBox->setTitle("KEYS");
 
@@ -491,14 +491,14 @@ void PackageEditor::AnalyzeComponent()
 
     int component = Button->parentWidget()->property("Index").toInt() + 1;
     int parentcomponent = 0;
-    if ((!(*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"].is_null()) && (QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]) != "0"))
+    if ((!(*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"].is_null()) && (QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]) != "0"))
     {
-        parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component]["PARENTCOMPONENT"]).toInt();
+        parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]).toInt();
     }
 
     //QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
     //QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
-    Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, component);
+    Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, component - 1);
     NewComponentRunner->Cleanup();
     NewComponentRunner->BuildRuntime();
 
@@ -508,48 +508,288 @@ void PackageEditor::AnalyzeComponent()
     ComparatorRunner->Cleanup(ComparatorPath);
     ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
 
-    QMessageBox::warning(nullptr, "TEST COMPARATOR", "TEST COMPARATOR");
+    //The registry files are read into memory and compared. A delta JSON is generated for each pair.
+    //The DeltaJSON is then converted into RegEdit subcomponents.
+    //All existing RegEdit subcomponents of the current component are iterated through.
+    //If a subcomponent with the same REGPATH already exists, the SUBKEYS are merged.
+    //Else, a new subcomponent is created.
+    nlohmann::ordered_json OldSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg"))));
+    nlohmann::ordered_json NewSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "system.reg"))));
+    //nlohmann::ordered_json SysRegDeltaJSON = SubtractJSON(OldSysRegJSON, NewSysRegJSON);
+    nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SubtractJSON(OldSysRegJSON, NewSysRegJSON), "HKLM");
+    //qDebug() << SysDeltaSubComponentArray.dump();
 
-    QFile OldSysRegFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg")));
-    nlohmann::ordered_json * OldSysRegJSON = PackageEditor::RegFileToJSON(&OldSysRegFile);
-    JSONOps::SaveJSON(OldSysRegJSON, new QFile("TESTARONIOld.JSON"));
+    for (int i = 0; i < SysDeltaSubComponentArray.size(); i++)
+    {
+        qDebug().noquote() << SysDeltaSubComponentArray[i].dump();
+        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size(); j++)
+        {
+            //If the component is not a RegEdit type, skip.
+            if (!((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["TYPE"] == "RegEdit"))
+            {
+                qDebug().noquote() << "NOT REGEDIT TYPE";
+                continue;
+            }
 
-    QFile NewSysRegFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "system.reg")));
-    nlohmann::ordered_json * NewSysRegJSON = PackageEditor::RegFileToJSON(&NewSysRegFile);
-    JSONOps::SaveJSON(NewSysRegJSON, new QFile("TESTARONINew.JSON"));
+            //qDebug().noquote() << "COMPARING: ================================================================================";
+            //qDebug().noquote() << QString::fromStdString(SysDeltaSubComponentArray[i]["REGPATH"]);
+            //qDebug().noquote() << QString::fromStdString(((*MANIFESTJSON)["COMPONENTS"][component]["SUBCOMPONENTS"][j]["REGPATH"]));
+            //Potential problem if two subcomponents have the same path but different architecture!
+            if (SysDeltaSubComponentArray[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
+            {
+                for (auto KeyValueObject : SysDeltaSubComponentArray[i]["KEYVALUES"].items())
+                {
+                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
+                }
+                goto SkipMergeNewSubComponent;
+            }
+        }
 
-    //HEREHERE
-    //DISCRIMINATE BETWEEN DIFFERENT TYPES OF VALUES
-    //ADD SUPPORT DOR 32BIT / 46 BIT KEYS
-    //DO / FIX THE ACTUAL DIFFING
+        //The current subcomponent is merged into MANIFESTJSON.
+        (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][(*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size()] = SysDeltaSubComponentArray[i];
+        SkipMergeNewSubComponent:
+    }
 
-    QMessageBox::warning(nullptr, "TEST DIFF", "TEST DIFF");
+    //JSONOps::SaveJSON(&SysRegDeltaJSON, new QFile("SYSDELTA.json"));
+    //nlohmann::ordered_json SysRegDeltaFLATJSON = SysRegDeltaJSON.flatten();
+    //JSONOps::SaveJSON(&SysRegDeltaFLATJSON, new QFile("SYSDELTAFLAT.json"));
+    //qDebug().noquote() << RegDeltaToSubComponentArray(SysRegDeltaJSON, "HKLM").dump();
 
-    nlohmann::ordered_json * DiffJSON = new nlohmann::ordered_json(nlohmann::ordered_json::diff((*OldSysRegJSON), (*NewSysRegJSON)));
-    JSONOps::SaveJSON(DiffJSON, new QFile("TESTARONIDiff.JSON"));
+    nlohmann::ordered_json OldUsrRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "user.reg"))));
+    nlohmann::ordered_json NewUsrRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "user.reg"))));
+    //nlohmann::ordered_json UsrRegDeltaJSON = SubtractJSON(OldUsrRegJSON, NewUsrRegJSON);
+    nlohmann::ordered_json UsrDeltaSubComponentArray = RegDeltaToSubComponentArray(SubtractJSON(OldUsrRegJSON, NewUsrRegJSON), "HKCU");
 
-    QMessageBox::warning(nullptr, "CLEANUP", "CLEANUP");
+    for (int i = 0; i < UsrDeltaSubComponentArray.size(); i++)
+    {
+        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size(); j++)
+        {
+            //If the component is not a RegEdit type, skip.
+            if (!((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["TYPE"] == "RegEdit"))
+            {
+                continue;
+            }
+            //Potential problem if two subcomponents have the same path but different architecture!
+            if (UsrDeltaSubComponentArray[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
+            {
+                for (auto KeyValueObject : UsrDeltaSubComponentArray[i]["KEYVALUES"].items())
+                {
+                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
+                }
+                goto SkipMergeNewSubComponent2;
+            }
+        }
+
+        //The current subcomponent is merged into MANIFESTJSON.
+        (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][(*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size()] = UsrDeltaSubComponentArray[i];
+    SkipMergeNewSubComponent2:
+    }
+
+    //JSONOps::SaveJSON(&UsrRegDeltaJSON, new QFile("USRDELTA.json"));
+    //nlohmann::ordered_json UsrRegDeltaFLATJSON = UsrRegDeltaJSON.flatten();
+    //JSONOps::SaveJSON(&UsrRegDeltaFLATJSON, new QFile("USRDELTAFLAT.json"));
+    //qDebug().noquote() << RegDeltaToSubComponentArray(UsrRegDeltaJSON, "HKCU").dump();
+
+    //nlohmann::ordered_json OldUsrDefRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "userdef.reg"))));
+    //nlohmann::ordered_json NewUsrDefRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "userdef.reg"))));
+    //nlohmann::ordered_json UsrDefRegDeltaJSON = SubtractJSON(OldUsrDefRegJSON, NewUsrDefRegJSON);
+    //JSONOps::SaveJSON(&UsrDefRegDeltaJSON, new QFile("USRDEFDELTA.json"));
 
     NewComponentRunner->Cleanup();
     ComparatorRunner->Cleanup(ComparatorPath);
+
+    PackageEditor::SaveManifestJSON();
+    PackageEditor::RefreshJSONView();
+    PackageEditor::BuildUI();
 }
 
-nlohmann::ordered_json * PackageEditor::RegFileToJSON(QFile * RegFile)
+nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::ordered_json RegDeltaJSON, QString Hive)
+{
+    nlohmann::ordered_json SubComponentArray = nlohmann::ordered_json::array();
+    RegDeltaJSON = RegDeltaJSON.flatten();
+    for (auto Item : RegDeltaJSON.items())
+    {
+        //Exclude useless windows and wine registry keys form further processing.
+        //Excluded paths must be exposed in settings.
+        //Use a nice loop for those values, not 100x if's.
+        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/Windows"))
+        {
+            continue;
+        }
+
+        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/Cryptography"))
+        {
+            continue;
+        }
+
+        if (QString::fromStdString(Item.key()).contains("Software/Wow6432Node/Microsoft/Windows"))
+        {
+            continue;
+        }
+
+        if (QString::fromStdString(Item.key()).contains("Software/Classes"))
+        {
+            continue;
+        }
+
+        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/ActiveMovie"))
+        {
+            continue;
+        }
+
+        if (QString::fromStdString(Item.key()).contains("Software/Wine"))
+        {
+            continue;
+        }
+
+        QString REGPATH = QString::fromStdString(Item.key()).prepend(Hive);
+        //Determine 64/32 bit architecture based on presence of "Wow6432Node" in the path string.
+        QString ARCHITECTURE = "64";
+        if (REGPATH.contains("Wow6432Node"))
+        {
+            ARCHITECTURE = "32";
+        }
+
+        //Split the REGPATH by separator.
+        QStringList REGPATHTokens = REGPATH.split("/");
+        //Extract the key names (the last item in the path).
+        QString KEY = REGPATHTokens.last();
+        //Remove the key name form the path object.
+        REGPATHTokens.removeLast();
+        //Reconstruct the REGPATH with "\\" separators.
+        //The "Wow6432Node item is skipped.
+        REGPATH.clear();
+        for (QString Token : REGPATHTokens)
+        {
+            if (Token == "Wow6432Node")
+            {
+                continue;
+            }
+            REGPATH.append(Token);
+            REGPATH.append("\\");
+        }
+        //Remove the last 2 chars (extrenuous "\\").
+        REGPATH.chop(1); //No idea why using chop(1) actually chops 2 chars ?!
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Interpreting registry key:" << "REGPATH:" << REGPATH << "KEY:" << KEY;
+
+        nlohmann::ordered_json KeyValueObject = nlohmann::ordered_json::object();
+        QString VALUE = QString::fromStdString(Item.value());
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Raw value:" << VALUE;
+        //Processing of value based on value type.
+        if (VALUE.first(6) == "dword:")
+        {
+            KeyValueObject["TYPE"] = "REG_DWORD";
+            VALUE.remove(0, 6);
+            VALUE = QString::number(VALUE.toUInt(nullptr, 16));
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
+        }
+        else if (VALUE.first(4) == "hex:")
+        {
+            KeyValueObject["TYPE"] = "REG_BINARY";
+            VALUE.remove(0, 4);
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
+            //No further processing needed, the binary value is passed as comma separated string.
+        }
+        else if (VALUE.first(7) == "hex(b):")
+        {
+            KeyValueObject["TYPE"] = "REG_QWORD";
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_QWORD value type!";
+            continue;
+            //VALUE.remove(0, 7);
+            //VALUE.remove(",");
+            //qDebug() << "QBYTEARRAY" << QByteArray::fromHex(VALUE.toUtf8());
+            //VALUE = QString::number(QByteArray::fromHex(VALUE.toUtf8()).toUInt(nullptr, 16));
+            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+        }
+        else if (VALUE.first(7) == "str(7):")
+        {
+            KeyValueObject["TYPE"] = "REG_MULTI_SZ";
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_MULTI_SZ value type!";
+            continue;
+            //VALUE.remove(0, 6);
+            //qDebug() << "VALUE CHOPPED:" << VALUE;
+            //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
+            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+        }
+        else if (VALUE.first(7) == "str(2):")
+        {
+            KeyValueObject["TYPE"] = "REG_EXPAND_SZ";
+            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_EXPAND_SZ value type!";
+            continue;
+            //VALUE.remove(0, 7);
+            //qDebug() << "VALUE CHOPPED:" << VALUE;
+            //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
+            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+        }
+        else
+        {
+            //REG_SZ values must be cleaned of extrenuous backslashes introduced along the way.
+            KeyValueObject["TYPE"] = "REG_SZ";
+            VALUE = VALUE.replace("\\\\", "\\");
+        }
+        KeyValueObject["VALUE"] = VALUE.toStdString();
+
+        //If there is another subcomponent with the same REGPATH, add the current item as a KEYVALUE.
+        //If there is not, create a new subcomponent and add KEYVALUE.
+
+        nlohmann::ordered_json NewSubComponentObject = nlohmann::ordered_json::object();
+        //Make this a function to avoid nested for loop shenanigains.
+
+        for (int i = 0; i < SubComponentArray.size(); i++)
+        {
+            if (SubComponentArray[i]["REGPATH"] == REGPATH.toStdString())
+            {
+                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Subcomponent with same REGPATH exists. Merging.";
+                SubComponentArray[i]["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+                goto SkipNewSubComponentObjectContruct;
+            }
+        }
+
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Constructing new RegEdit subcomponent.";
+        NewSubComponentObject["TYPE"] = "RegEdit";
+        NewSubComponentObject["REGPATH"] = REGPATH.toStdString();
+        NewSubComponentObject["ARCHITECTURE"] = ARCHITECTURE.toStdString();
+        NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] New subcomponent:" << NewSubComponentObject.dump();
+        SubComponentArray[SubComponentArray.size()] = NewSubComponentObject;
+        SkipNewSubComponentObjectContruct:
+    }
+    return SubComponentArray;
+}
+
+nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSON, nlohmann::ordered_json NewJSON)
+{
+    nlohmann::ordered_json DiffJSON = nlohmann::ordered_json(nlohmann::ordered_json::diff(OldJSON, NewJSON));
+    nlohmann::ordered_json DeltaJSON = nlohmann::ordered_json();
+
+    for (int i = 0; i < DiffJSON.size(); i++)
+    {
+        //All items in the DiffJSON are iterated over.
+        //The DeltaJSON is recreating by using the "path" as json pointers.
+        DeltaJSON[nlohmann::ordered_json::json_pointer(DiffJSON.at(i)["path"])] = DiffJSON.at(i)["value"];
+    }
+
+    return DeltaJSON;
+}
+
+nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
 {
 
-    nlohmann::ordered_json * RegJSON = new nlohmann::ordered_json;
-    if (RegFile->open(QFile::ReadOnly | QFile::Text))
+    nlohmann::ordered_json RegJSON = nlohmann::ordered_json();
+    if (RegFile.open(QFile::ReadOnly | QFile::Text))
     {
-        QString RegFileString = RegFile->readAll();
+        QString RegFileString = RegFile.readAll();
 
-        QRegularExpression KeysRegex("\\[(Software.+?)\\] [0-9]{7,15}(.*?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
+        QRegularExpression KeysRegex("\\[(Software.+?)\\] [0-9]{7,15}(.+?)(?=\\[.+?\\])", QRegularExpression::DotMatchesEverythingOption);
         QRegularExpressionMatchIterator KeysRegexExtractor = KeysRegex.globalMatch(RegFileString);
         while (KeysRegexExtractor.hasNext())
         {
             QRegularExpressionMatch ExtractedKey = KeysRegexExtractor.next();
             QStringList KeyPathTokens(ExtractedKey.captured(1).split("\\\\"));
             QString KeyPathString;
-            for (int i = 0; i < KeyPathTokens.size(); ++i) {
+            for (int i = 0; i < KeyPathTokens.size(); ++i)
+            {
+                //If the path contains numerical tokens, they need to be quoted, so they are not interpreted as JSON array indices.
                 if (QRegularExpression("^\\d+$").match(KeyPathTokens[i]).hasMatch())
                 {
                     KeyPathTokens[i] = "\"" + KeyPathTokens[i] + "\"";
@@ -559,7 +799,10 @@ nlohmann::ordered_json * PackageEditor::RegFileToJSON(QFile * RegFile)
             //qDebug().noquote() << "KEY:" << KeyPathString;
             nlohmann::ordered_json::json_pointer JSONPointer(KeyPathString.toStdString());
 
-            QStringList SubKeys(ExtractedKey.captured(2).split("\n"));
+            //The regex should match the entire contents of the key, including all subkeys.
+            //In order to account for multi-line keys (like hex values), the specific sequence "\\\n  " is removed, thus making them single line.
+            //Since all subkeys should now be single line, the entite match is then split by line to get the infividual key-value pairs.
+            QStringList SubKeys(ExtractedKey.captured(2).remove("\\\n  ").split("\n"));
             for (int i = 0; i < SubKeys.size(); i++)
             {
                 if (SubKeys.at(i).isEmpty())
@@ -584,12 +827,12 @@ nlohmann::ordered_json * PackageEditor::RegFileToJSON(QFile * RegFile)
                 QString Subkey(PackageEditor::UnquoteString(SubKeys.at(i).split("=").at(0)));
                 if (SubKeys.at(i).split("=").size() == 1)
                 {
-                    (*RegJSON)[JSONPointer][Subkey.toStdString()] = "";
+                    RegJSON[JSONPointer][Subkey.toStdString()] = "";
                     continue;
                 }
 
                 QString Value(PackageEditor::UnquoteString(SubKeys.at(i).split("=").at(1)));
-                (*RegJSON)[JSONPointer][Subkey.toStdString()] = Value.toStdString();
+                RegJSON[JSONPointer][Subkey.toStdString()] = Value.toStdString();
             }
         }
     }

@@ -43,7 +43,9 @@ class PackageEditor : public QDialog
 public:
     explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr);
     static QString UnquoteString(QString InputString);
-    static nlohmann::ordered_json * RegFileToJSON(QFile * RegFile);
+    static nlohmann::ordered_json RegFileToJSON(QFile RegFile);
+    static nlohmann::ordered_json SubtractJSON(nlohmann::ordered_json OldJSON, nlohmann::ordered_json NewJSON);
+    static nlohmann::ordered_json RegDeltaToSubComponentArray(nlohmann::ordered_json RegDeltaJSON, QString Hive);
     ~PackageEditor();
 
 private slots:
