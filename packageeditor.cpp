@@ -539,7 +539,7 @@ void PackageEditor::AnalyzeComponent()
             {
                 for (auto KeyValueObject : SysDeltaSubComponentArray[i]["KEYVALUES"].items())
                 {
-                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
+                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
                 }
                 goto SkipMergeNewSubComponent;
             }
@@ -560,6 +560,7 @@ void PackageEditor::AnalyzeComponent()
     //nlohmann::ordered_json UsrRegDeltaJSON = SubtractJSON(OldUsrRegJSON, NewUsrRegJSON);
     nlohmann::ordered_json UsrDeltaSubComponentArray = RegDeltaToSubComponentArray(SubtractJSON(OldUsrRegJSON, NewUsrRegJSON), "HKCU");
 
+    /*
     for (int i = 0; i < UsrDeltaSubComponentArray.size(); i++)
     {
         for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size(); j++)
@@ -594,6 +595,7 @@ void PackageEditor::AnalyzeComponent()
     //nlohmann::ordered_json NewUsrDefRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "userdef.reg"))));
     //nlohmann::ordered_json UsrDefRegDeltaJSON = SubtractJSON(OldUsrDefRegJSON, NewUsrDefRegJSON);
     //JSONOps::SaveJSON(&UsrDefRegDeltaJSON, new QFile("USRDEFDELTA.json"));
+    */
 
     NewComponentRunner->Cleanup();
     ComparatorRunner->Cleanup(ComparatorPath);
@@ -676,21 +678,21 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         QString VALUE = QString::fromStdString(Item.value());
         qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Raw value:" << VALUE;
         //Processing of value based on value type.
-        if (VALUE.first(6) == "dword:")
+        if (VALUE.left(6) == "dword:")
         {
             KeyValueObject["TYPE"] = "REG_DWORD";
             VALUE.remove(0, 6);
             VALUE = QString::number(VALUE.toUInt(nullptr, 16));
             qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
         }
-        else if (VALUE.first(4) == "hex:")
+        else if (VALUE.left(4) == "hex:")
         {
             KeyValueObject["TYPE"] = "REG_BINARY";
             VALUE.remove(0, 4);
             qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
             //No further processing needed, the binary value is passed as comma separated string.
         }
-        else if (VALUE.first(7) == "hex(b):")
+        else if (VALUE.left(7) == "hex(b):")
         {
             KeyValueObject["TYPE"] = "REG_QWORD";
             qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_QWORD value type!";
@@ -701,7 +703,7 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
             //VALUE = QString::number(QByteArray::fromHex(VALUE.toUtf8()).toUInt(nullptr, 16));
             //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
         }
-        else if (VALUE.first(7) == "str(7):")
+        else if (VALUE.left(7) == "str(7):")
         {
             KeyValueObject["TYPE"] = "REG_MULTI_SZ";
             qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_MULTI_SZ value type!";
@@ -711,7 +713,7 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
             //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
             //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
         }
-        else if (VALUE.first(7) == "str(2):")
+        else if (VALUE.left(7) == "str(2):")
         {
             KeyValueObject["TYPE"] = "REG_EXPAND_SZ";
             qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_EXPAND_SZ value type!";
