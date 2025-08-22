@@ -24,6 +24,7 @@ public:
     nlohmann::ordered_json * GlobalConfigJSON;
 
     QString PackageName;
+    QString PackageUID;
     QString GameName;
     QString UMUID = "0";
     QString ParentPackage;
@@ -44,7 +45,7 @@ public:
 
     bool BuildRuntime(QString OverrideRuntimePath = QString(), QString OverrideUserDataPath = QString());
     bool Cleanup(QString OverrideRuntimePath = QString());
-    bool RegAdd(nlohmann::ordered_json SubComponentJSON);
+    //bool RegAdd(nlohmann::ordered_json SubComponentJSON);
     bool Run(QString OverrideExePath = QString(), QStringList OverrideExeArgs = QStringList(), QString OverrideRuntimePath = QString());
 
     // static bool RunWithUMU(QString ProtonPath, QString WinePrefix, QString ExePath, QStringList ExeArgs = {}, QString WorkDirPath = "", QString GAMEID = "0", QString DllOverrides = "");

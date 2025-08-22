@@ -3,7 +3,6 @@
 #include <iostream>
 
 using json = nlohmann::ordered_json;
-//MUST MAKE THIS CLASS MDI BASED!!!
 
 PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent)
     : QDialog(parent)
@@ -260,7 +259,6 @@ bool PackageEditor::BuildUI()
                 }
                 QObject::connect(ParentComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
                 SubComponentsToolbarLayout->addWidget(ParentComponentPicker);
-
                 SubComponentsToolbarLayout->addStretch();
 
                 QPushButton * RunExeButton = new QPushButton(ComponentTabWidget);
@@ -278,12 +276,25 @@ bool PackageEditor::BuildUI()
                 SubComponentsToolbarLayout->addWidget(EditRegistryButton);
                 QObject::connect(EditRegistryButton, &QPushButton::clicked, this, &PackageEditor::RegeditInComponent);
 
+                QPushButton * ExecuteComponentButton = new QPushButton(ComponentTabWidget);
+                ExecuteComponentButton->setText("Execute Component");
+                SubComponentsToolbarLayout->addWidget(ExecuteComponentButton);
+                QObject::connect(ExecuteComponentButton, &QPushButton::clicked, this, &PackageEditor::ExecuteComponent);
+
                 SubComponentsToolbarLayout->addStretch();
 
-                QPushButton * AnalyzeButton = new QPushButton(ComponentTabWidget);
-                AnalyzeButton->setText("Analyze Registry");
+                QPushButton * AnalyzeButton = new QPushButton("Analyze Registry", ComponentTabWidget);
                 SubComponentsToolbarLayout->addWidget(AnalyzeButton);
-                QObject::connect(AnalyzeButton, &QPushButton::clicked, this, &PackageEditor::AnalyzeComponent);
+                QObject::connect(AnalyzeButton, &QPushButton::clicked, this,
+                [this, i, ParentComponentJSONPointer, ParentComponentJSONPath]
+                {
+                    qDebug() << "lambda entered";
+                    qDebug() << "i + 1=" << i + 1;
+                    qDebug() << "ParentComponentJSONPointer=" << ParentComponentJSONPath.toStdString();
+                    //CAUTION!!!! THIS CRASHES IF PARENTCOMPONENT IS NULL!! SET DEFAULT TO 0!!
+                    qDebug() << "QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt() =" << QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt();
+                    this->CompareComponentsRegistry(QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt(), i + 1);
+                });
 
                 QPushButton * AddFileLayerButton = new QPushButton(ComponentTabWidget);
                 AddFileLayerButton->setText("Add File Layer");
@@ -451,7 +462,7 @@ void PackageEditor::RemoveComponent()
 void PackageEditor::RunExeInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ExeRunner->Cleanup();
@@ -463,7 +474,7 @@ void PackageEditor::RunExeInComponent()
 void PackageEditor::BrowseInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ExplorerRunner->Cleanup();
@@ -475,7 +486,7 @@ void PackageEditor::BrowseInComponent()
 void PackageEditor::RegeditInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     RegeditRunner->Cleanup();
@@ -484,125 +495,122 @@ void PackageEditor::RegeditInComponent()
     RegeditRunner->Cleanup();
 }
 
+void PackageEditor::ExecuteComponent()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+
+    ComponentRunner->Cleanup();
+    ComponentRunner->BuildRuntime();
+    ComponentRunner->Run();
+    ComponentRunner->Cleanup();
+}
+
 void PackageEditor::AnalyzeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PackageEditor:" << "Analyzing new component." << Button->parentWidget()->property("Index").toInt() + 1;
+    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
-    int component = Button->parentWidget()->property("Index").toInt() + 1;
-    int parentcomponent = 0;
-    if ((!(*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"].is_null()) && (QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]) != "0"))
-    {
-        parentcomponent = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]).toInt();
-    }
+    ComponentRunner->Cleanup();
+    ComponentRunner->BuildRuntime();
+    ComponentRunner->Run();
+    ComponentRunner->Cleanup();
 
-    //QString NewComponentUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "USERDATA");
-    //QString NewComponentRuntimePath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "RUNTIME");
-    Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, component - 1);
-    NewComponentRunner->Cleanup();
-    NewComponentRunner->BuildRuntime();
 
-    //QString NewComponentComparatorUserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "NEWCOMPONENT" + QDir::separator() + "COMPARATORUSERDATA");
+}
+
+void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int newcomponent)
+{
+    //The component numbers to be compared are passed as friendly number, not array index!
+    //If oldcomponent is 0, the newcomponent will be comapred against DEFPREFIX,
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparing component" << newcomponent << "against" << oldcomponent;
+
+    //A runner object is created for each of the two states.
     QString ComparatorPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "COMPARATOR");
-    Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, parentcomponent);
+    Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, oldcomponent);
     ComparatorRunner->Cleanup(ComparatorPath);
     ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparator initialzed!";
 
-    //The registry files are read into memory and compared. A delta JSON is generated for each pair.
+    QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
+    //Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, newcomponent);
+    //NewComponentRunner->Cleanup();
+    //NewComponentRunner->BuildRuntime();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Runtime initialized!";
+
+    //The registry files are read into memory and converted to JSON for easy processing.
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting REG to JSON conversion";
+    nlohmann::ordered_json OldSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg"))));
+    nlohmann::ordered_json NewSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "system.reg"))));
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "OldSysRegJSON:" << OldSysRegJSON.dump();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "NewSysRegJSON:" << NewSysRegJSON.dump();
+
+    nlohmann::ordered_json OldUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "user.reg"))));
+    nlohmann::ordered_json NewUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "user.reg"))));
+
+    //A delta JSON is generated for each pair using the SubtractJSON function.
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting JSON Diff subtraction.";
+    nlohmann::ordered_json SysDeltaJSON = SubtractJSON(OldSysRegJSON, NewSysRegJSON);
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SYSDELTAJSON:" << SysDeltaJSON.dump();
+    nlohmann::ordered_json UserDeltaJSON = SubtractJSON(OldUserRegJSON, NewUserRegJSON);
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "USERDELTAJSON:" << UserDeltaJSON.dump();
+
     //The DeltaJSON is then converted into RegEdit subcomponents.
-    //All existing RegEdit subcomponents of the current component are iterated through.
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray.";
+    nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
+    nlohmann::ordered_json UserDeltaSubComponentArray = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
+
+    //The Registry Delta objects are merged into MANIFESTJSON.
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Merging deltas to MANIFESTJSON.";
+    MergeRegistryDeltaInComponent(&SysDeltaSubComponentArray, newcomponent);
+    MergeRegistryDeltaInComponent(&UserDeltaSubComponentArray, newcomponent);
+
+    //The runners perform cleanup and are then deleted.
+    //NewComponentRunner->Cleanup();
+    ComparatorRunner->Cleanup(ComparatorPath);
+
+    //delete NewComponentRunner;
+    delete ComparatorRunner;
+
+    //The changes are saved to ManifestJSON and the UI is refreshed.
+    PackageEditor::SaveManifestJSON();
+    PackageEditor::RefreshJSONView();
+    PackageEditor::BuildUI();
+}
+
+void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const int targetcomponent)
+{
+    //All existing RegEdit subcomponents of the target component are iterated through.
     //If a subcomponent with the same REGPATH already exists, the SUBKEYS are merged.
     //Else, a new subcomponent is created.
-    nlohmann::ordered_json OldSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg"))));
-    nlohmann::ordered_json NewSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "system.reg"))));
-    //nlohmann::ordered_json SysRegDeltaJSON = SubtractJSON(OldSysRegJSON, NewSysRegJSON);
-    nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SubtractJSON(OldSysRegJSON, NewSysRegJSON), "HKLM");
-    //qDebug() << SysDeltaSubComponentArray.dump();
-
-    for (int i = 0; i < SysDeltaSubComponentArray.size(); i++)
+    qDebug() << "DeltaSubComponentArray->size()" << DeltaSubComponentArray->size();
+    for (int i = 0; i < DeltaSubComponentArray->size(); i++)
     {
-        qDebug().noquote() << SysDeltaSubComponentArray[i].dump();
-        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size(); j++)
+        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"].size(); j++)
         {
             //If the component is not a RegEdit type, skip.
-            if (!((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["TYPE"] == "RegEdit"))
+            if (!(QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["TYPE"]) == "RegEdit"))
             {
-                qDebug().noquote() << "NOT REGEDIT TYPE";
                 continue;
             }
 
-            //qDebug().noquote() << "COMPARING: ================================================================================";
-            //qDebug().noquote() << QString::fromStdString(SysDeltaSubComponentArray[i]["REGPATH"]);
-            //qDebug().noquote() << QString::fromStdString(((*MANIFESTJSON)["COMPONENTS"][component]["SUBCOMPONENTS"][j]["REGPATH"]));
             //Potential problem if two subcomponents have the same path but different architecture!
-            if (SysDeltaSubComponentArray[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
+            if ((*DeltaSubComponentArray)[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
             {
-                for (auto KeyValueObject : SysDeltaSubComponentArray[i]["KEYVALUES"].items())
+                for (auto KeyValueObject : (*DeltaSubComponentArray)[i]["KEYVALUES"].items())
                 {
-                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
+                    (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
                 }
                 goto SkipMergeNewSubComponent;
             }
         }
 
         //The current subcomponent is merged into MANIFESTJSON.
-        (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][(*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size()] = SysDeltaSubComponentArray[i];
+        (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"].push_back((*DeltaSubComponentArray)[i]);
         SkipMergeNewSubComponent:
     }
-
-    //JSONOps::SaveJSON(&SysRegDeltaJSON, new QFile("SYSDELTA.json"));
-    //nlohmann::ordered_json SysRegDeltaFLATJSON = SysRegDeltaJSON.flatten();
-    //JSONOps::SaveJSON(&SysRegDeltaFLATJSON, new QFile("SYSDELTAFLAT.json"));
-    //qDebug().noquote() << RegDeltaToSubComponentArray(SysRegDeltaJSON, "HKLM").dump();
-
-    nlohmann::ordered_json OldUsrRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "user.reg"))));
-    nlohmann::ordered_json NewUsrRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "user.reg"))));
-    //nlohmann::ordered_json UsrRegDeltaJSON = SubtractJSON(OldUsrRegJSON, NewUsrRegJSON);
-    nlohmann::ordered_json UsrDeltaSubComponentArray = RegDeltaToSubComponentArray(SubtractJSON(OldUsrRegJSON, NewUsrRegJSON), "HKCU");
-
-    /*
-    for (int i = 0; i < UsrDeltaSubComponentArray.size(); i++)
-    {
-        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size(); j++)
-        {
-            //If the component is not a RegEdit type, skip.
-            if (!((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["TYPE"] == "RegEdit"))
-            {
-                continue;
-            }
-            //Potential problem if two subcomponents have the same path but different architecture!
-            if (UsrDeltaSubComponentArray[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
-            {
-                for (auto KeyValueObject : UsrDeltaSubComponentArray[i]["KEYVALUES"].items())
-                {
-                    (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
-                }
-                goto SkipMergeNewSubComponent2;
-            }
-        }
-
-        //The current subcomponent is merged into MANIFESTJSON.
-        (*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"][(*MANIFESTJSON)["COMPONENTS"][component - 1]["SUBCOMPONENTS"].size()] = UsrDeltaSubComponentArray[i];
-    SkipMergeNewSubComponent2:
-    }
-
-    //JSONOps::SaveJSON(&UsrRegDeltaJSON, new QFile("USRDELTA.json"));
-    //nlohmann::ordered_json UsrRegDeltaFLATJSON = UsrRegDeltaJSON.flatten();
-    //JSONOps::SaveJSON(&UsrRegDeltaFLATJSON, new QFile("USRDELTAFLAT.json"));
-    //qDebug().noquote() << RegDeltaToSubComponentArray(UsrRegDeltaJSON, "HKCU").dump();
-
-    //nlohmann::ordered_json OldUsrDefRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "userdef.reg"))));
-    //nlohmann::ordered_json NewUsrDefRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((NewComponentRunner->Paths["RuntimePath"] + QDir::separator() + "userdef.reg"))));
-    //nlohmann::ordered_json UsrDefRegDeltaJSON = SubtractJSON(OldUsrDefRegJSON, NewUsrDefRegJSON);
-    //JSONOps::SaveJSON(&UsrDefRegDeltaJSON, new QFile("USRDEFDELTA.json"));
-    */
-
-    NewComponentRunner->Cleanup();
-    ComparatorRunner->Cleanup(ComparatorPath);
-
-    PackageEditor::SaveManifestJSON();
-    PackageEditor::RefreshJSONView();
-    PackageEditor::BuildUI();
 }
 
 nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::ordered_json RegDeltaJSON, QString Hive)
@@ -743,7 +751,7 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
             {
                 qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Subcomponent with same REGPATH exists. Merging.";
                 SubComponentArray[i]["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
-                goto SkipNewSubComponentObjectContruct;
+                goto SkipNewSubComponentObjectConstruct;
             }
         }
 
@@ -754,8 +762,10 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
         qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] New subcomponent:" << NewSubComponentObject.dump();
         SubComponentArray[SubComponentArray.size()] = NewSubComponentObject;
-        SkipNewSubComponentObjectContruct:
+        SkipNewSubComponentObjectConstruct:
     }
+
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SUBCOMPONENTARRAY:" << SubComponentArray.dump();
     return SubComponentArray;
 }
 
@@ -768,9 +778,14 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
     {
         //All items in the DiffJSON are iterated over.
         //The DeltaJSON is recreating by using the "path" as json pointers.
-        DeltaJSON[nlohmann::ordered_json::json_pointer(DiffJSON.at(i)["path"])] = DiffJSON.at(i)["value"];
+        qDebug() << "beforeif";
+        if((QString::fromStdString(DiffJSON[i]["op"]) == "add") || (QString::fromStdString(DiffJSON[i]["op"]) == "replace"))
+        {
+            DeltaJSON[nlohmann::ordered_json::json_pointer(DiffJSON[i]["path"])] = DiffJSON[i]["value"];
+            qDebug() << QString::fromStdString(DiffJSON[i]["path"]) << QString::fromStdString(DiffJSON[i]["value"]);
+        }
     }
-
+    qDebug() << "AFTERFOR";
     return DeltaJSON;
 }
 

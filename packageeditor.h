@@ -61,6 +61,7 @@ private slots:
     void RunExeInComponent();
     void BrowseInComponent();
     void RegeditInComponent();
+    void ExecuteComponent();
     void AnalyzeComponent();
     void AddFileLayer();
     void FinalizeComponent();
@@ -70,6 +71,8 @@ private:
     void SavePackage();
     void RefreshJSONView();
     void InitPackage();
+    void CompareComponentsRegistry(const int oldcomponent, const int newcomponent);
+    void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const int targetcomponent);
     bool BuildUI();
     bool SaveManifestJSON();
 

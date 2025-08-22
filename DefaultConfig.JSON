@@ -52,5 +52,9 @@
             },
             "PRIMARY KEY": "PACKAGEUID"
         }
+    },
+    "Settings":
+    {
+        "LibraryGridSize": 5
     }
 }
