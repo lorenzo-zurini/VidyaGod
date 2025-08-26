@@ -778,11 +778,35 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
     {
         //All items in the DiffJSON are iterated over.
         //The DeltaJSON is recreating by using the "path" as json pointers.
-        qDebug() << "beforeif";
+        qDebug() << "beforeif" << "i" << i;
+        qDebug() << DiffJSON[i].dump();
         if((QString::fromStdString(DiffJSON[i]["op"]) == "add") || (QString::fromStdString(DiffJSON[i]["op"]) == "replace"))
         {
-            DeltaJSON[nlohmann::ordered_json::json_pointer(DiffJSON[i]["path"])] = DiffJSON[i]["value"];
-            qDebug() << QString::fromStdString(DiffJSON[i]["path"]) << QString::fromStdString(DiffJSON[i]["value"]);
+            QString KeyPath = QString::fromStdString(DiffJSON[i]["path"]);
+            qDebug().noquote() << "KeyPath:" << KeyPath;
+
+            //Ensure the DeltaJSON parent object is an object so that it doesn't get turned into an array by paths that end in numbers (HKLM/SOFTWARE/FOO/BAR/1234).
+            if (!DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString()).parent_pointer()].is_object())
+            {
+                DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString()).parent_pointer()] = nlohmann::ordered_json::object();
+            }
+
+            //Make this a switch!
+            if (DiffJSON[i]["value"].is_object())
+            {
+                for (auto ValueItem : DiffJSON[i]["value"].items())
+                {
+                    DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString())][ValueItem.key()] = ValueItem.value();
+                }
+            }
+            else if (DiffJSON[i]["value"].is_string())
+            {
+                DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString())] = DiffJSON[i]["value"];
+            }
+            else
+            {
+                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] DiffJSON[i][\"value\"] is unknown type! Dump:" << DiffJSON[i]["value"].dump();
+            }
         }
     }
     qDebug() << "AFTERFOR";
