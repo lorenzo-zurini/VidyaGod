@@ -645,7 +645,7 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
     QProcess * RunProcess = new QProcess;
     RunProcess->setProgram("umu-run");
     RunProcess->setWorkingDirectory(this->Paths["WorkDirPath"]);
-    RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
+    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
     RunProcessEnvironment.insert("WINEPREFIX", FinalRuntimePath);
     FinalExeArgs.prepend(FinalExePath);
 
@@ -673,8 +673,8 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
     RunProcess->setProcessEnvironment(RunProcessEnvironment);
     RunProcess->start();
     RunProcess->waitForFinished(-1);
-    qDebug().noquote() << RunProcess->readAllStandardError();
-    qDebug().noquote() << RunProcess->readAllStandardOutput();
+    qDebug() << RunProcess->readAllStandardError();
+    qDebug() << RunProcess->readAllStandardOutput();
 
     if(RunProcess->exitCode() == 0)
     {

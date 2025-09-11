@@ -558,14 +558,16 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
     qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "USERDELTAJSON:" << UserDeltaJSON.dump();
 
     //The DeltaJSON is then converted into RegEdit subcomponents.
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray.";
-    nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
-    nlohmann::ordered_json UserDeltaSubComponentArray = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
-
     //The Registry Delta objects are merged into MANIFESTJSON.
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Merging deltas to MANIFESTJSON.";
-    MergeRegistryDeltaInComponent(&SysDeltaSubComponentArray, newcomponent);
-    MergeRegistryDeltaInComponent(&UserDeltaSubComponentArray, newcomponent);
+    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray and merging deltas to MANIFESTJSON.";
+    if (!SysDeltaJSON.is_null()){
+        nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
+        MergeRegistryDeltaInComponent(&SysDeltaSubComponentArray, newcomponent);
+    }
+    if (!UserDeltaJSON.is_null()){
+        nlohmann::ordered_json UserDeltaSubComponentArray = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
+        MergeRegistryDeltaInComponent(&UserDeltaSubComponentArray, newcomponent);
+    }
 
     //The runners perform cleanup and are then deleted.
     //NewComponentRunner->Cleanup();
