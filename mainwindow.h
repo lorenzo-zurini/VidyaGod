@@ -65,6 +65,11 @@ private:
     QLabel * CoverLabel;
     QLabel * TitleLabel;
 
+    QVBoxLayout * LibraryGameCardLayout;
+
+    QGroupBox * ButtonsGroupBox;
+    QHBoxLayout * ButtonsGroupBoxLayout;
+
     QPushButton * PlayButton;
     QPushButton * EditButton;
 
@@ -72,6 +77,7 @@ private:
     nlohmann::ordered_json * MANIFESTJSON;
 
 private slots:
+    void on_GameCard_clicked();
     void on_PlayGameButton_clicked();
 };
 /////////////////////////////////////////////////////////////////////////////

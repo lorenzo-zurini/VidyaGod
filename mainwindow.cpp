@@ -21,7 +21,8 @@ MainWindow::MainWindow(QWidget *parent)
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
     BuildPackagesDynamicUI();
-    this->setMinimumWidth(1000);
+    this->setFixedWidth(1280); //Fixed Steam Deck resolution.
+    this->setFixedHeight(800);
 }
 
 MainWindow::~MainWindow()
@@ -67,13 +68,13 @@ void MainWindow::BuildStaticUI()
     LibraryTabWidgetLayout->addWidget(LibraryScrollArea);
     LibraryScrollArea->setWidgetResizable(1);
 
-    QSlider * GridSizeSlider = new QSlider(Qt::Horizontal, LibraryTabWidget);
-    GridSizeSlider->setValue((*GlobalConfigJSON)["Settings"]["LibraryGridSize"]);
-    GridSizeSlider->setMinimum(3);
-    GridSizeSlider->setMaximum(7);
-    GridSizeSlider->setSingleStep(1);
-    LibraryTabWidgetLayout->addWidget(GridSizeSlider);
-    QObject::connect(GridSizeSlider, &QSlider::sliderReleased, this, &MainWindow::MainWindowGridSizeChanged);
+    //QSlider * GridSizeSlider = new QSlider(Qt::Horizontal, LibraryTabWidget);
+    //GridSizeSlider->setValue((*GlobalConfigJSON)["Settings"]["LibraryGridSize"]);
+    //GridSizeSlider->setMinimum(3);
+    //GridSizeSlider->setMaximum(7);
+    //GridSizeSlider->setSingleStep(1);
+    //LibraryTabWidgetLayout->addWidget(GridSizeSlider);
+    //QObject::connect(GridSizeSlider, &QSlider::sliderReleased, this, &MainWindow::MainWindowGridSizeChanged);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     PackagesTabWidget = new QWidget(MainWindowTabWidget);
@@ -136,9 +137,15 @@ void MainWindow::BuildLibraryDynamicUI()
     }
 
     QWidget * LibraryWidget = new QWidget(LibraryScrollArea);
-    LibraryScrollArea->setWidget(LibraryWidget);
     QGridLayout * LibraryWidgetLayout = new QGridLayout(LibraryWidget);
     LibraryWidget->setLayout(LibraryWidgetLayout);
+
+    LibraryScrollArea->setWidget(LibraryWidget);
+    LibraryScrollArea->setWidgetResizable(true);
+
+    LibraryWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    LibraryWidgetLayout->setContentsMargins(0, 0, 5, 0);
+    LibraryWidgetLayout->setSpacing(30);
 
     if (LibraryGameCards->empty())
     {
@@ -146,7 +153,8 @@ void MainWindow::BuildLibraryDynamicUI()
         return;
     }
 
-    int GridSize = (*GlobalConfigJSON)["Settings"]["LibraryGridSize"];
+    int GridSize = 4;
+    //int GridSize = (*GlobalConfigJSON)["Settings"]["LibraryGridSize"];
     for (int i = 0; i < LibraryGameCards->count(); i++)
     {
         LibraryGameCards->at(i)->setParent(LibraryWidget);
@@ -250,32 +258,46 @@ void MainWindow::MainWindowGridSizeChanged()
 
 LibraryGameCard::LibraryGameCard(QWidget * parent) : QGroupBox(parent)
 {   
-    QGridLayout * LibraryGameCardLayout = new QGridLayout(this);
+    LibraryGameCardLayout = new QVBoxLayout(this);
+    //this->setFlat(true);
     this->setLayout(LibraryGameCardLayout);
-    this->setFixedHeight(550);
-    this->setFixedWidth(320);
+    LibraryGameCardLayout->setSpacing(0);
+    LibraryGameCardLayout->setContentsMargins(0, 0, 0, 0);
 
     CoverLabel = new QLabel(this);
     CoverLabel->setAlignment(Qt::AlignCenter);
-    CoverLabel->setFixedHeight(450);
-    CoverLabel->setFixedWidth(300);
     CoverLabel->setScaledContents(true); // We'll scale manually to maintain aspect ratio
-    LibraryGameCardLayout->addWidget(CoverLabel, 0, 0, 1, 2);
+    CoverLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    LibraryGameCardLayout->addWidget(CoverLabel);
 
-    TitleLabel = new QLabel(this);
-    TitleLabel->setAlignment(Qt::AlignCenter);
-    TitleLabel->setWordWrap(true);
-    LibraryGameCardLayout->addWidget(TitleLabel, 1, 0, 1, 2);
+    //TitleLabel = new QLabel(this);
+    //TitleLabel->setAlignment(Qt::AlignCenter);
+    //TitleLabel->setWordWrap(true);
+    //LibraryGameCardLayout->addWidget(TitleLabel, 1, 0, 1, 2);
 
-    PlayButton = new QPushButton(this);
+    ButtonsGroupBox = new QGroupBox(this);
+    ButtonsGroupBox->setFlat(true);
+    ButtonsGroupBoxLayout = new QHBoxLayout(ButtonsGroupBox);
+    ButtonsGroupBox->setFixedHeight(40);
+    ButtonsGroupBoxLayout->setSpacing(0);
+    ButtonsGroupBoxLayout->setContentsMargins(0, 0, 0, 0);
+    LibraryGameCardLayout->addWidget(ButtonsGroupBox);
+
+    PlayButton = new QPushButton(ButtonsGroupBox);
+    PlayButton->setFlat(true);
     PlayButton->setText("Play");
     PlayButton->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart));
-    LibraryGameCardLayout->addWidget(PlayButton, 2, 0);
+    ButtonsGroupBoxLayout->addWidget(PlayButton);
     QObject::connect(PlayButton, &QPushButton::clicked, this, &LibraryGameCard::on_PlayGameButton_clicked);
 
-    EditButton = new QPushButton(this);
+    EditButton = new QPushButton(ButtonsGroupBox);
+    EditButton->setFlat(true);
     EditButton->setText("...");
-    LibraryGameCardLayout->addWidget(EditButton, 2, 1);
+    ButtonsGroupBoxLayout->addWidget(EditButton);
+
+    //ButtonsGroupBox->setHidden(true);
+
+    //QObject::connect(this, &QGroupBox::clicked, this, &LibraryGameCard::on_GameCard_clicked);
 }
 
 void LibraryGameCard::PassGlobalConfigJSON(nlohmann::ordered_json * PassedGlobalConfigJSON)
@@ -298,10 +320,11 @@ void LibraryGameCard::InitializeClassVariables()
     this->PackagePath = QString::fromStdString((*MANIFESTJSON)["PACKAGEPATH"]);
 
     this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["TITLE"]);
-    this->TitleLabel->setText(this->GameTitle);
+    //this->TitleLabel->setText(this->GameTitle);
 
-    this->CoverPixmap = new QPixmap(QDir::cleanPath(this->PackagePath + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"])));
-    this->CoverLabel->setPixmap(CoverPixmap->scaled(CoverLabel->width(), CoverLabel->width() * this->CoverPixmap->height() / width(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(this->PackagePath + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"]))));
+    //this->CoverPixmap = new QPixmap(QDir::cleanPath(this->PackagePath + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"])));
+    //this->CoverLabel->setPixmap(CoverPixmap->scaled(CoverLabel->width(), CoverLabel->width() * this->CoverPixmap->height() / width(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 
 void LibraryGameCard::on_PlayGameButton_clicked()
@@ -320,8 +343,15 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     delete MANIFESTJSON;
 }
 
+void LibraryGameCard::on_GameCard_clicked()
+{
+    qDebug() << "CLICKED GAME CARD" << this->GameTitle;
+}
+
 void LibraryGameCard::resizeEvent(QResizeEvent * event) {
     QGroupBox::resizeEvent(event);
+    this->CoverLabel->setFixedHeight(this->CoverLabel->width() * 3 / 2);
+    this->ButtonsGroupBox->setAlignment(Qt::AlignBottom);
     //this->setFixedHeight(this->width() * 1.8);
     //float CoverAspectRatio = this->CoverPixmap->height() / width();
     //if (!this->CoverPixmap->isNull())
