@@ -1,8 +1,6 @@
 #ifndef FILESYSTEMOPERATIONS_H
 #define FILESYSTEMOPERATIONS_H
 
-#include <QtLogging>
-
 #include <QDir>
 #include <QDirIterator>
 #include <QProcess>
