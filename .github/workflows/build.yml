@@ -16,7 +16,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake build-essential nlohmann-json3-dev wget patchelf qt6-base-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cmake build-essential nlohmann-json3-dev wget patchelf qt6-base-dev qt6-tools-dev
 
       - name: Configure with CMake
         run: |
