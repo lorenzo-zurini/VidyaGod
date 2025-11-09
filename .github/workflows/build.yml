@@ -16,16 +16,31 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake build-essential qt6-base-dev qt6-tools-dev \
-            qt6-tools-dev-tools libqt6sql6 libqt6sql6-sqlite nlohmann-json3-dev wget patchelf
+          sudo apt install -y cmake build-essential nlohmann-json3-dev wget patchelf
 
       - name: Configure with CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: |
+          set -e
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Show CMake cache & debug
+        run: |
+          echo "=== CMake configure summary ==="
+          cmake --build build --config Release -- -n || true
+          echo "=== List build dir ==="
+          ls -la build || true
 
       - name: Build
         run: cmake --build build --config Release -j$(nproc)
 
-      - name: Download linuxdeploy and plugin
+      - name: Show built executables
+        run: |
+          echo "=== Find executables under build ==="
+          find build -type f -executable -maxdepth 6 -print || true
+          echo "=== file info for likely executables ==="
+          find build -type f -executable -maxdepth 6 -print0 | xargs -0 -r file || true
+
+      - name: Prepare linuxdeploy tools
         run: |
           mkdir -p tools
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O tools/linuxdeploy
@@ -34,12 +49,29 @@ jobs:
 
       - name: Package AppImage
         run: |
+          set -e
+          # locate the built executable (adjust pattern if your target name differs)
+          BIN=$(find build -type f -executable -maxdepth 6 -name 'VidyaGod' -print -quit || true)
+          if [ -z "$BIN" ]; then
+            # fallback: take first executable under build
+            BIN=$(find build -type f -executable -maxdepth 6 -print -quit)
+          fi
+          if [ -z "$BIN" ]; then
+            echo "No built executable found under build/ — failing."
+            ls -R build || true
+            exit 1
+          fi
+          echo "Found binary: $BIN"
           mkdir -p AppDir/usr/bin
-          cp build/VidyaGod AppDir/usr/bin/
-          ./tools/linuxdeploy --appdir AppDir --plugin qt --output appimage
+          cp "$BIN" AppDir/usr/bin/
+          # Run the AppImage without requiring FUSE
+          ./tools/linuxdeploy --appimage-extract-and-run --appdir AppDir --plugin qt --output appimage
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: ./*.AppImage
+          path: |
+            ./*.AppImage
+            */*.AppImage
+            AppDir/*.AppImage
