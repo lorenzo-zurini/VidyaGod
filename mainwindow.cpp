@@ -290,7 +290,7 @@ LibraryGameCard::LibraryGameCard(QWidget * parent) : QGroupBox(parent)
     PlayButton = new QPushButton(ButtonsGroupBox);
     PlayButton->setFlat(true);
     PlayButton->setText("Play");
-    PlayButton->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart));
+    //PlayButton->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart));
     ButtonsGroupBoxLayout->addWidget(PlayButton);
     QObject::connect(PlayButton, &QPushButton::clicked, this, &LibraryGameCard::on_PlayGameButton_clicked);
 
