@@ -8,7 +8,10 @@
 #include <QList>
 #include <QTableView>
 #include <QScreen>
+#include <QGuiApplication>
+#include <Application>
 #include <QMessageBox>
+
 
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
