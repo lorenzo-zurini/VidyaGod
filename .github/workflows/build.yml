@@ -1,0 +1,45 @@
+name: Build VidyaGod
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake build-essential qt6-base-dev qt6-tools-dev \
+            qt6-tools-dev-tools libqt6sql6 libqt6sql6-sqlite nlohmann-json3-dev wget patchelf
+
+      - name: Configure with CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j$(nproc)
+
+      - name: Download linuxdeploy and plugin
+        run: |
+          mkdir -p tools
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O tools/linuxdeploy
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -O tools/linuxdeploy-plugin-qt
+          chmod +x tools/linuxdeploy tools/linuxdeploy-plugin-qt
+
+      - name: Package AppImage
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp build/VidyaGod AppDir/usr/bin/
+          ./tools/linuxdeploy --appdir AppDir --plugin qt --output appimage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VidyaGod-AppImage
+          path: ./*.AppImage
