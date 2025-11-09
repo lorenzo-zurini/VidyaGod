@@ -7,12 +7,6 @@
 #include <QDir>
 #include <QDirIterator>
 
-#include <QSqlError>
-#include <QSqlDatabase>
-#include <QSqlRelationalTableModel>
-#include <QSqlQuery>
-#include <QSqlRecord>
-
 #include <QStandardItemModel>
 #include <QProcess>
 

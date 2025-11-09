@@ -9,35 +9,33 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 REQUIRED Widgets)
-find_package(Qt6 REQUIRED LinguistTools)
-find_package(Qt6 REQUIRED Sql)
 find_package(nlohmann_json 3.11.3 REQUIRED)
 
 set(TS_FILES VidyaGod_en_US.ts)
 
 set(PROJECT_SOURCES
-        main.cpp
+        src/main.cpp
 
-        mainwindow.cpp
-        mainwindow.h
-        mainwindow.ui
+        src/mainwindow.cpp
+        src/mainwindow.h
+        src/mainwindow.ui
 
-        packageeditor.h
-        packageeditor.cpp
-        packageeditor.ui
+        src/packageeditor.h
+        src/packageeditor.cpp
+        src/packageeditor.ui
 
-        filesystemoperations.h
-        filesystemoperations.cpp
+        src/filesystemoperations.h
+        src/filesystemoperations.cpp
 
-        jsonoperations.h
-        jsonoperations.cpp
+        src/jsonoperations.h
+        src/jsonoperations.cpp
 
-        runner.h
-        runner.cpp
+        src/runner.h
+        src/runner.cpp
 
-        DefaultConfig.JSON
+        resources/DefaultConfig.JSON
 
-        ${TS_FILES}
+        translations/${TS_FILES}
 )
 
 
@@ -45,7 +43,6 @@ set(PROJECT_SOURCES
 add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
-target_link_libraries(VidyaGod PRIVATE Qt6::Sql)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 
-configure_file(DefaultConfig.JSON DefaultConfig.JSON)
+configure_file(resources/DefaultConfig.JSON DefaultConfig.JSON)
