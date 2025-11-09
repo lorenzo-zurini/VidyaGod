@@ -39,7 +39,7 @@ void MainWindow::InitClassVariables()
 
 void MainWindow::on_TestButton_clicked()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] TEST";
+    //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] TEST";
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -125,7 +125,7 @@ void MainWindow::BuildLibraryGameCards()
 
 void MainWindow::BuildLibraryDynamicUI()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Building LibraryDynamicUI";
+    //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Building LibraryDynamicUI";
     if (LibraryScrollArea->widget() != nullptr)
     {
         //Reparent all LibraryGameCards so they survive LibraryWidget being deleted.
@@ -149,7 +149,7 @@ void MainWindow::BuildLibraryDynamicUI()
 
     if (LibraryGameCards->empty())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] GameCard array is empty, aborting building LibraryDynamicUI";
+        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] GameCard array is empty, aborting building LibraryDynamicUI";
         return;
     }
 
@@ -210,7 +210,7 @@ void MainWindow::on_AddGameButton_clicked()
 
     if(!FSOps::CheckPackageValid(PackageDir))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Invalid package, aborting..";
+        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Invalid package, aborting..";
         return;
     }
 
@@ -218,20 +218,20 @@ void MainWindow::on_AddGameButton_clicked()
     nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Parser returned nullptr.";
+        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Parser returned nullptr.";
         delete MANIFESTJSON;
         return;
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON.";
+        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON.";
     }
 
     for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
     {
         if ((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"] == (*MANIFESTJSON)["PACKAGEUID"])
         {
-            qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Package already exists in library.";
+            //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Package already exists in library.";
             return;
         }
     }
@@ -254,7 +254,7 @@ bool MainWindow::SaveGlobalConfigJSON()
 void MainWindow::MainWindowGridSizeChanged()
 {
     QSlider * Slider = qobject_cast<QSlider *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Set GridSize" << Slider->value();
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Set GridSize" << Slider->value();
     (*GlobalConfigJSON)["Settings"]["LibraryGridSize"] = Slider->value();
     MainWindow::SaveGlobalConfigJSON();
     BuildLibraryDynamicUI();
@@ -333,7 +333,7 @@ void LibraryGameCard::InitializeClassVariables()
 
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Running game" << QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"]);
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Running game" << QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"]);
 
     Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
 
@@ -349,7 +349,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
 
 void LibraryGameCard::on_GameCard_clicked()
 {
-    qDebug() << "CLICKED GAME CARD" << this->GameTitle;
+    //qDebug() << "CLICKED GAME CARD" << this->GameTitle;
 }
 
 void LibraryGameCard::resizeEvent(QResizeEvent * event) {

@@ -7,20 +7,20 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     //Check if the path is empty, such as when the file picker was canceled.
     if (PackageDir->path().isEmpty())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Path is empty. Canceled?";
+        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Path is empty. Canceled?";
         return false;
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Scanning" << PackageDir->path();
+    //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Scanning" << PackageDir->path();
 
     //Check if the directory contains a METADATA subdirectory.
     if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Selected directory does not contain METADATA subdirectory.";
+        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Selected directory does not contain METADATA subdirectory.";
         return false;
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Valid package!";
+    //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Valid package!";
     return true;
 }
 
@@ -45,7 +45,7 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
         if (FileList->contains(FilePath))
         {
             NoConflict = false;
-            qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[ERR] Case conflict found: " << FilePath;
+            //qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[ERR] Case conflict found: " << FilePath;
         }
         else
         {
@@ -58,7 +58,7 @@ bool FSOps::CheckCaseConflicts(QString RuntimePath)
 
 bool FSOps::ConfigWrite(QString Key, QString Value, QString FilePath)
 {
-    qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[OUT] Editing file:" << FilePath << " Key: " << Key << " Value: " << Value;
+    //qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[OUT] Editing file:" << FilePath << " Key: " << Key << " Value: " << Value;
     QFile ConfigFile(FilePath);
     QTextStream OutFile(&ConfigFile);
     if (ConfigFile.open(QFile::ReadWrite | QFile::Text))
@@ -95,7 +95,7 @@ bool FSOps::ConfigWrite(QString Key, QString Value, QString FilePath)
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[ERR] Could not open file for ConfigWrite: " << FilePath;
+        //qDebug().noquote() << QTime::currentTime() << "FSOperations:" << "[ERR] Could not open file for ConfigWrite: " << FilePath;
         return false;
     }
 }

@@ -72,11 +72,11 @@ void PackageEditor::on_SaveButton_clicked()
 {
     if (PackageEditor::SaveManifestJSON())
     {
-        qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[OUT] Save successful.";
+        //qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[OUT] Save successful.";
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Save failed.";
+        //qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Save failed.";
     }
 }
 
@@ -109,7 +109,7 @@ void PackageEditor::InitPackage()
         return;
     }
 
-    qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Parser returned nullptr, creating new JSON.";
+    //qDebug().noquote() << QTime::currentTime() << "PackageEditor:" << "[ERR] Parser returned nullptr, creating new JSON.";
     PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
 }
 
@@ -151,7 +151,7 @@ bool PackageEditor::BuildUI()
                 continue;
             }
 
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << Item.key();
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << Item.key();
             QLineEdit * NewParamField = new QLineEdit(PackageDataGroupBox);
             QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
             nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
@@ -165,7 +165,7 @@ bool PackageEditor::BuildUI()
             QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
             PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Manifest tab done!";
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Manifest tab done!";
 
         //SUBGAMES TABS WIDGET
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
@@ -193,7 +193,7 @@ bool PackageEditor::BuildUI()
 
             for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].items())
             {
-                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << QString::fromStdString(Item.key());
+                //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << QString::fromStdString(Item.key());
                 QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
                 QString JSONPath = QString("/SUBGAMES/%1/%2").arg(QString::number(i)).arg(QString::fromStdString(Item.key()));
                 nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
@@ -288,11 +288,11 @@ bool PackageEditor::BuildUI()
                 QObject::connect(AnalyzeButton, &QPushButton::clicked, this,
                 [this, i, ParentComponentJSONPointer, ParentComponentJSONPath]
                 {
-                    qDebug() << "lambda entered";
-                    qDebug() << "i + 1=" << i + 1;
-                    qDebug() << "ParentComponentJSONPointer=" << ParentComponentJSONPath.toStdString();
+                    //qDebug() << "lambda entered";
+                    //qDebug() << "i + 1=" << i + 1;
+                    //qDebug() << "ParentComponentJSONPointer=" << ParentComponentJSONPath.toStdString();
                     //CAUTION!!!! THIS CRASHES IF PARENTCOMPONENT IS NULL!! SET DEFAULT TO 0!!
-                    qDebug() << "QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt() =" << QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt();
+                    //qDebug() << "QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt() =" << QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt();
                     this->CompareComponentsRegistry(QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt(), i + 1);
                 });
 
@@ -378,7 +378,7 @@ bool PackageEditor::BuildUI()
                 }
                 else
                 {
-                    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << QString("[ERR] Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType);
+                    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << QString("[ERR] Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType);
                     continue;
                 }
                 SubComponentsGroupBoxLayout->addWidget(IndividualSubComponentGroupBox);
@@ -395,22 +395,22 @@ void PackageEditor::JSONQLineEditChanged()
     QString String = Editor->text();
     nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = String.toStdString();
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << Editor->text() << "Submitted to:" << Editor->property("JSONPath").toString();
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
 void PackageEditor::JSONQTextEditChanged()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON TEXT EDITOR CHANGED";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON TEXT EDITOR CHANGED";
     if (nlohmann::ordered_json::accept(PackageEditor::JSONTextEdit->toPlainText().toUtf8()))
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Valid JSON!";
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Valid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("");
         PackageEditor::SaveJSONButton->setDisabled(false);
     }
     else
     {
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Invalid JSON!";
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Invalid JSON!";
         PackageEditor::JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
         PackageEditor::SaveJSONButton->setDisabled(true);
     }
@@ -420,18 +420,18 @@ void PackageEditor::ParentComponentChanged()
 {
     QComboBox * ParentComponentPicker = qobject_cast<QComboBox *>(QObject::sender());
     QString Index = QString::number(ParentComponentPicker->currentIndex());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED!" << ParentComponentPicker->currentIndex() << ParentComponentPicker->currentText();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED!" << ParentComponentPicker->currentIndex() << ParentComponentPicker->currentText();
 
     nlohmann::ordered_json::json_pointer JSONPointer(ParentComponentPicker->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = Index.toStdString();
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << ParentComponentPicker->currentIndex() << "Submitted to:" << ParentComponentPicker->property("JSONPath").toString();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] JSON value:" << ParentComponentPicker->currentIndex() << "Submitted to:" << ParentComponentPicker->property("JSONPath").toString();
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
 
 void PackageEditor::SaveJSONButtonPressed()
 {
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] SAVE TRIGGERED!";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] SAVE TRIGGERED!";
     (*PackageEditor::MANIFESTJSON) = nlohmann::ordered_json::parse(PackageEditor::JSONTextEdit->toPlainText().toUtf8());
     PackageEditor::SaveManifestJSON();
     BuildUI();
@@ -441,18 +441,18 @@ void PackageEditor::RemoveSubgame()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * SubgameTabWidget = Button->parentWidget();
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE SUBGAME" << SubgameTabWidget->property("JSONPath");
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE SUBGAME" << SubgameTabWidget->property("JSONPath");
 }
 
 void PackageEditor::RemoveComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * ComponentTabWidget = Button->parentWidget();
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE COMPONENT" << ComponentTabWidget->property("JSONPath");
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] REMOVE COMPONENT" << ComponentTabWidget->property("JSONPath");
 
     nlohmann::ordered_json::json_pointer JSONPointer(ComponentTabWidget->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON).at(JSONPointer.parent_pointer()).erase(ComponentTabWidget->property("Index").toInt());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Deleted component:" << ComponentTabWidget->property("Index").toString();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Deleted component:" << ComponentTabWidget->property("Index").toString();
     delete ComponentTabWidget;
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
@@ -462,7 +462,7 @@ void PackageEditor::RemoveComponent()
 void PackageEditor::RunExeInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ExeRunner->Cleanup();
@@ -474,7 +474,7 @@ void PackageEditor::RunExeInComponent()
 void PackageEditor::BrowseInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ExplorerRunner->Cleanup();
@@ -486,7 +486,7 @@ void PackageEditor::BrowseInComponent()
 void PackageEditor::RegeditInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     RegeditRunner->Cleanup();
@@ -498,7 +498,7 @@ void PackageEditor::RegeditInComponent()
 void PackageEditor::ExecuteComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ComponentRunner->Cleanup();
@@ -510,7 +510,7 @@ void PackageEditor::ExecuteComponent()
 void PackageEditor::AnalyzeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1;
     Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
 
     ComponentRunner->Cleanup();
@@ -525,41 +525,41 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
 {
     //The component numbers to be compared are passed as friendly number, not array index!
     //If oldcomponent is 0, the newcomponent will be comapred against DEFPREFIX,
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparing component" << newcomponent << "against" << oldcomponent;
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparing component" << newcomponent << "against" << oldcomponent;
 
     //A runner object is created for each of the two states.
     QString ComparatorPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "COMPARATOR");
     Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, oldcomponent);
     ComparatorRunner->Cleanup(ComparatorPath);
     ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparator initialzed!";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Comparator initialzed!";
 
     QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
     //Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, newcomponent);
     //NewComponentRunner->Cleanup();
     //NewComponentRunner->BuildRuntime();
-    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Runtime initialized!";
+    ////qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Runtime initialized!";
 
     //The registry files are read into memory and converted to JSON for easy processing.
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting REG to JSON conversion";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting REG to JSON conversion";
     nlohmann::ordered_json OldSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg"))));
     nlohmann::ordered_json NewSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "system.reg"))));
-    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "OldSysRegJSON:" << OldSysRegJSON.dump();
-    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "NewSysRegJSON:" << NewSysRegJSON.dump();
+    ////qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "OldSysRegJSON:" << OldSysRegJSON.dump();
+    ////qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "NewSysRegJSON:" << NewSysRegJSON.dump();
 
     nlohmann::ordered_json OldUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "user.reg"))));
     nlohmann::ordered_json NewUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "user.reg"))));
 
     //A delta JSON is generated for each pair using the SubtractJSON function.
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting JSON Diff subtraction.";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Starting JSON Diff subtraction.";
     nlohmann::ordered_json SysDeltaJSON = SubtractJSON(OldSysRegJSON, NewSysRegJSON);
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SYSDELTAJSON:" << SysDeltaJSON.dump();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SYSDELTAJSON:" << SysDeltaJSON.dump();
     nlohmann::ordered_json UserDeltaJSON = SubtractJSON(OldUserRegJSON, NewUserRegJSON);
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "USERDELTAJSON:" << UserDeltaJSON.dump();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "USERDELTAJSON:" << UserDeltaJSON.dump();
 
     //The DeltaJSON is then converted into RegEdit subcomponents.
     //The Registry Delta objects are merged into MANIFESTJSON.
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray and merging deltas to MANIFESTJSON.";
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray and merging deltas to MANIFESTJSON.";
     if (!SysDeltaJSON.is_null()){
         nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
         MergeRegistryDeltaInComponent(&SysDeltaSubComponentArray, newcomponent);
@@ -587,7 +587,7 @@ void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json * Delta
     //All existing RegEdit subcomponents of the target component are iterated through.
     //If a subcomponent with the same REGPATH already exists, the SUBKEYS are merged.
     //Else, a new subcomponent is created.
-    qDebug() << "DeltaSubComponentArray->size()" << DeltaSubComponentArray->size();
+    //qDebug() << "DeltaSubComponentArray->size()" << DeltaSubComponentArray->size();
     for (int i = 0; i < DeltaSubComponentArray->size(); i++)
     {
         for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"].size(); j++)
@@ -682,56 +682,56 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         }
         //Remove the last 2 chars (extrenuous "\\").
         REGPATH.chop(1); //No idea why using chop(1) actually chops 2 chars ?!
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Interpreting registry key:" << "REGPATH:" << REGPATH << "KEY:" << KEY;
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Interpreting registry key:" << "REGPATH:" << REGPATH << "KEY:" << KEY;
 
         nlohmann::ordered_json KeyValueObject = nlohmann::ordered_json::object();
         QString VALUE = QString::fromStdString(Item.value());
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Raw value:" << VALUE;
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Raw value:" << VALUE;
         //Processing of value based on value type.
         if (VALUE.left(6) == "dword:")
         {
             KeyValueObject["TYPE"] = "REG_DWORD";
             VALUE.remove(0, 6);
             VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
         }
         else if (VALUE.left(4) == "hex:")
         {
             KeyValueObject["TYPE"] = "REG_BINARY";
             VALUE.remove(0, 4);
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
             //No further processing needed, the binary value is passed as comma separated string.
         }
         else if (VALUE.left(7) == "hex(b):")
         {
             KeyValueObject["TYPE"] = "REG_QWORD";
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_QWORD value type!";
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_QWORD value type!";
             continue;
             //VALUE.remove(0, 7);
             //VALUE.remove(",");
-            //qDebug() << "QBYTEARRAY" << QByteArray::fromHex(VALUE.toUtf8());
+            ////qDebug() << "QBYTEARRAY" << QByteArray::fromHex(VALUE.toUtf8());
             //VALUE = QString::number(QByteArray::fromHex(VALUE.toUtf8()).toUInt(nullptr, 16));
-            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
         }
         else if (VALUE.left(7) == "str(7):")
         {
             KeyValueObject["TYPE"] = "REG_MULTI_SZ";
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_MULTI_SZ value type!";
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_MULTI_SZ value type!";
             continue;
             //VALUE.remove(0, 6);
-            //qDebug() << "VALUE CHOPPED:" << VALUE;
+            ////qDebug() << "VALUE CHOPPED:" << VALUE;
             //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
         }
         else if (VALUE.left(7) == "str(2):")
         {
             KeyValueObject["TYPE"] = "REG_EXPAND_SZ";
-            qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_EXPAND_SZ value type!";
+            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_EXPAND_SZ value type!";
             continue;
             //VALUE.remove(0, 7);
-            //qDebug() << "VALUE CHOPPED:" << VALUE;
+            ////qDebug() << "VALUE CHOPPED:" << VALUE;
             //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            //qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
         }
         else
         {
@@ -751,23 +751,23 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         {
             if (SubComponentArray[i]["REGPATH"] == REGPATH.toStdString())
             {
-                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Subcomponent with same REGPATH exists. Merging.";
+                //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Subcomponent with same REGPATH exists. Merging.";
                 SubComponentArray[i]["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
                 goto SkipNewSubComponentObjectConstruct;
             }
         }
 
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Constructing new RegEdit subcomponent.";
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Constructing new RegEdit subcomponent.";
         NewSubComponentObject["TYPE"] = "RegEdit";
         NewSubComponentObject["REGPATH"] = REGPATH.toStdString();
         NewSubComponentObject["ARCHITECTURE"] = ARCHITECTURE.toStdString();
         NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
-        qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] New subcomponent:" << NewSubComponentObject.dump();
+        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] New subcomponent:" << NewSubComponentObject.dump();
         SubComponentArray[SubComponentArray.size()] = NewSubComponentObject;
         SkipNewSubComponentObjectConstruct:
     }
 
-    qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SUBCOMPONENTARRAY:" << SubComponentArray.dump();
+    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SUBCOMPONENTARRAY:" << SubComponentArray.dump();
     return SubComponentArray;
 }
 
@@ -780,12 +780,12 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
     {
         //All items in the DiffJSON are iterated over.
         //The DeltaJSON is recreating by using the "path" as json pointers.
-        qDebug() << "beforeif" << "i" << i;
-        qDebug() << DiffJSON[i].dump();
+        //qDebug() << "beforeif" << "i" << i;
+        //qDebug() << DiffJSON[i].dump();
         if((QString::fromStdString(DiffJSON[i]["op"]) == "add") || (QString::fromStdString(DiffJSON[i]["op"]) == "replace"))
         {
             QString KeyPath = QString::fromStdString(DiffJSON[i]["path"]);
-            qDebug().noquote() << "KeyPath:" << KeyPath;
+            //qDebug().noquote() << "KeyPath:" << KeyPath;
 
             //Ensure the DeltaJSON parent object is an object so that it doesn't get turned into an array by paths that end in numbers (HKLM/SOFTWARE/FOO/BAR/1234).
             if (!DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString()).parent_pointer()].is_object())
@@ -807,11 +807,11 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
             }
             else
             {
-                qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] DiffJSON[i][\"value\"] is unknown type! Dump:" << DiffJSON[i]["value"].dump();
+                //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] DiffJSON[i][\"value\"] is unknown type! Dump:" << DiffJSON[i]["value"].dump();
             }
         }
     }
-    qDebug() << "AFTERFOR";
+    //qDebug() << "AFTERFOR";
     return DeltaJSON;
 }
 
@@ -839,7 +839,7 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
                 }
                 KeyPathString.append("/").append(KeyPathTokens[i]);
             }
-            //qDebug().noquote() << "KEY:" << KeyPathString;
+            ////qDebug().noquote() << "KEY:" << KeyPathString;
             nlohmann::ordered_json::json_pointer JSONPointer(KeyPathString.toStdString());
 
             //The regex should match the entire contents of the key, including all subkeys.
@@ -885,7 +885,7 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
 void PackageEditor::AddFileLayer()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Adding DirLayer in component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Adding DirLayer in component" << Button->parentWidget()->property("Index").toInt() + 1;
 
     QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
     QString SelectedProgramDir = QFileDialog::getExistingDirectory(this, "Select ProgramDir", UserDataPath);
@@ -906,7 +906,7 @@ void PackageEditor::AddFileLayer()
 void PackageEditor::FinalizeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
+    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1;
 }
 
 QString PackageEditor::UnquoteString(QString InputString)
