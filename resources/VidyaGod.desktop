@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=VidyaGod
+Comment=A game launcher for MetaPackageFormat packages.
+Exec=AppRun
+Icon=VidyaGod
+Terminal=false
+Categories=Utility;
+StartupNotify=true

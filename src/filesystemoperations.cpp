@@ -24,10 +24,10 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     return true;
 }
 
-bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString PackageName)
-{
-
-}
+//bool FSOps::MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString PackageName)
+//{
+//
+//}
 
 QString FSOps::SubPath(QString Parent, QString SubDir)
 {

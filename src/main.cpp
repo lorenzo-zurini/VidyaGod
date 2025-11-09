@@ -1,24 +1,20 @@
 #include "mainwindow.h"
 
 #include <QApplication>
-#include <QLocale>
-#include <QTranslator>
+#include <QStyleFactory>
+#include "mainwindow.h"
 
 int main(int argc, char *argv[])
 {
+    // Enable high-DPI scaling before QApplication is created
     QApplication a(argc, argv);
 
-    QTranslator translator;
-    const QStringList uiLanguages = QLocale::system().uiLanguages();
-    for (const QString &locale : uiLanguages)
-    {
-        const QString baseName = "VidyaGod_" + QLocale(locale).name();
-        if (translator.load(":/i18n/" + baseName))
-        {
-            a.installTranslator(&translator);
-            break;
-        }
-    }
+    // Force a consistent Qt style
+    a.setStyle(QStyleFactory::create("Breeze"));
+
+    // Optional: set a default font to ensure consistent spacing
+    a.setFont(QFont("DejaVu Sans", 10));
+
     MainWindow w;
     w.show();
     return a.exec();

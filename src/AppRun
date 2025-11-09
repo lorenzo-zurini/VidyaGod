@@ -1,0 +1,16 @@
+#!/bin/bash
+# AppRun script for VidyaGod AppImage
+
+# Resolve AppDir path (works when extracted or mounted)
+APPDIR="$(dirname "$(readlink -f "$0")")"
+
+# Set up library and plugin paths
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"
+export QT_PLUGIN_PATH="$APPDIR/usr/plugins"
+export QML2_IMPORT_PATH="$APPDIR/usr/qml"
+
+# Ensure working directory is inside AppDir (so resources like default.json are found)
+cd "$APPDIR/usr/bin" || exit 1
+
+# Launch the actual app
+exec "$APPDIR/usr/bin/VidyaGod" "$@"

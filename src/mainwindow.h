@@ -2,6 +2,7 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <iostream>
 
 #include <QFile>
 #include <QDir>
@@ -83,10 +84,13 @@ class MainWindow : public QMainWindow
 public:
     MainWindow(QWidget *parent = nullptr);
     ~MainWindow();
+
+    QDir * AppDataDir;
+    QFile * GlobalConfigFile;
+
     void RebuildDynamicUI();
 
 private slots:
-    void on_TestButton_clicked();
     void on_AddGameButton_clicked();
     void MainWindowGridSizeChanged();
 

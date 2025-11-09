@@ -33,13 +33,19 @@ MainWindow::~MainWindow()
 void MainWindow::InitClassVariables()
 {
     ApplicationPath = QCoreApplication::applicationDirPath();
-    ProtonPath = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
-    GlobalConfigJSON = JSONOps::InitGlobalConfigJSON(new QFile("GlobalConfig.JSON"));
-}
 
-void MainWindow::on_TestButton_clicked()
-{
-    //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] TEST";
+    AppDataDir = new QDir(QDir::homePath() +  "/.VidyaGod");
+    AppDataDir->mkpath(".");
+
+    GlobalConfigFile = new QFile(AppDataDir->filePath("GlobalConfig.JSON"));
+    if (!GlobalConfigFile->exists())
+    {
+        //qDebug().noquote() << QTime::currentTime().toString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... ";
+        QFile("DefaultConfig.JSON").copy(GlobalConfigFile->fileName());
+    }
+    GlobalConfigJSON = JSONOps::LoadJSON(GlobalConfigFile);
+
+    ProtonPath = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -248,7 +254,7 @@ void MainWindow::on_AddGameButton_clicked()
 
 bool MainWindow::SaveGlobalConfigJSON()
 {
-    return JSONOps::SaveJSON(MainWindow::GlobalConfigJSON, new QFile("GlobalConfig.JSON"));
+    return JSONOps::SaveJSON(MainWindow::GlobalConfigJSON, new QFile(AppDataDir->filePath("GlobalConfig.JSON")));
 }
 
 void MainWindow::MainWindowGridSizeChanged()

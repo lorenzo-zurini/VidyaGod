@@ -15,7 +15,7 @@ class JSONOps
 public:
     JSONOps();
 
-    static nlohmann::ordered_json * InitGlobalConfigJSON(QFile * GlobalConfigFile);
+
     static nlohmann::ordered_json * LoadJSON(QFile * JSONFile);
     static bool SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
     static nlohmann::ordered_json GetSubComponents(QString MetaDataPath, QList<int> Recipe);

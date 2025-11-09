@@ -2,16 +2,6 @@
 
 JSONOps::JSONOps() {}
 
-nlohmann::ordered_json * JSONOps::InitGlobalConfigJSON(QFile * GlobalConfigFile)
-{
-    if (!GlobalConfigFile->exists())
-    {
-        //qDebug().noquote() << QTime::currentTime().toString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... ";
-        QFile("DefaultConfig.JSON").copy("GlobalConfig.JSON");
-    }
-    return JSONOps::LoadJSON(GlobalConfigFile);
-}
-
 nlohmann::ordered_json * JSONOps::LoadJSON(QFile * JSONFile)
 {
     //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] Parsing JSON" << JSONFile->fileName();
