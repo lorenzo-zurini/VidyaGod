@@ -166,6 +166,8 @@ void MainWindow::BuildLibraryDynamicUI()
     {
         LibraryWidgetLayout->setColumnStretch(column, 1);
     }
+
+    LibraryWidgetLayout->setRowStretch((LibraryGameCards->count() + GridSize - 1) / GridSize, 1);
 }
 
 void MainWindow::BuildPackagesDynamicUI()
@@ -190,6 +192,8 @@ void MainWindow::BuildPackagesDynamicUI()
         QObject::connect(RemovePackageButton, &QPushButton::clicked, this, [this, i]{(*GlobalConfigJSON)["LIBRARY"].erase(i); this->RebuildDynamicUI(); this->SaveGlobalConfigJSON();});
         PackagesWidgetLayout->addWidget(RemovePackageButton, i, 3);
     }
+
+    PackagesWidgetLayout->setRowStretch(PackagesWidgetLayout->rowCount(), 1);
 }
 
 void MainWindow::RebuildDynamicUI()
@@ -340,7 +344,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     GameRunner->Cleanup();
 
     delete GameRunner;
-    delete MANIFESTJSON;
+    //delete MANIFESTJSON;
 }
 
 void LibraryGameCard::on_GameCard_clicked()
