@@ -9,7 +9,7 @@
 #include <QTableView>
 #include <QScreen>
 #include <QGuiApplication>
-#include <Application>
+#include <QApplication>
 #include <QMessageBox>
 
 
