@@ -37,35 +37,40 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      # 5. Install Flatpak SDK
+      # 5. Debug directory structure
+      - name: Debug directory structure
+        run: |
+          echo "Current working directory: $(pwd)"
+          echo "Files in root:"
+          ls -R
+          echo "Files in build folder:"
+          ls -R build
+          echo "Files in flatpak folder:"
+          ls -R flatpak
+
+      # 6. Install Flatpak SDK
       - name: Install Flatpak SDK
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.freedesktop.Sdk//22.08
           flatpak install --user -y flathub org.freedesktop.Platform//22.08
 
-      # 6. Build Flatpak using manifest
+      # 7. Build Flatpak using manifest in flatpak/
       - name: Build Flatpak
         run: |
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak \
             flatpak/org.vidyagod.VidyaGod.json
 
-      # 7. Create distributable Flatpak bundle
-      - name: Bundle Flatpak
-        run: |
-          flatpak build-bundle build/flatpak VidyaGod.flatpak org.vidyagod.VidyaGod
-
-      # 8. Copy manifest and Flatpak bundle to dist/
-      - name: Copy manifest and Flatpak bundle
+      # 8. Copy manifest somewhere else (optional)
+      - name: Copy Flatpak manifest
         run: |
           mkdir -p dist/flatpak
           cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
-          cp VidyaGod.flatpak dist/flatpak/
 
-      # 9. Upload Flatpak bundle and manifest
-      - name: Upload Flatpak artifacts
+      # 9. Upload the manifest as artifact
+      - name: Upload Flatpak manifest
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-Flatpak
-          path: dist/flatpak/
+          name: VidyaGod-Flatpak-Manifest
+          path: dist/flatpak/org.vidyagod.VidyaGod.json
