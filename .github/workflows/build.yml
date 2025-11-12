@@ -9,10 +9,10 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout code
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -22,7 +22,7 @@ jobs:
           sudo apt update
           sudo apt install -y flatpak flatpak-builder
 
-      # 3. Install system dependencies for building your app
+      # 3. Install system dependencies
       - name: Install dependencies
         run: |
           sudo apt install -y build-essential cmake git \
@@ -37,38 +37,34 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      # 5. Debug directory structure
-      - name: Debug directory structure
-        run: |
-          echo "Current working directory: $(pwd)"
-          echo "Files in root:"
-          ls -R
-          echo "Files in build folder:"
-          ls -R build
-          echo "Files in flatpak folder:"
-          ls -R flatpak
-
-      # 6. Install Flatpak SDK
-      - name: Install Flatpak SDK
+      # 5. Add Flathub remote and install SDK locally for user
+      - name: Setup Flatpak SDK
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.freedesktop.Sdk//22.08
           flatpak install --user -y flathub org.freedesktop.Platform//22.08
 
-      # 7. Build Flatpak using manifest in flatpak/
+      # 6. Build Flatpak
       - name: Build Flatpak
         run: |
           mkdir -p build/flatpak
-          flatpak-builder --force-clean build/flatpak \
-            flatpak/org.vidyagod.VidyaGod.json
+          flatpak-builder --force-clean build/flatpak flatpak/org.vidyagod.VidyaGod.json
 
-      # 8. Copy manifest somewhere else (optional)
+      # 7. List the build output for debug
+      - name: Show Flatpak build output
+        run: |
+          echo "Contents of build/flatpak:"
+          find build/flatpak
+          echo "Contents of .flatpak-builder:"
+          find .flatpak-builder
+
+      # 8. Copy manifest to dist/flatpak
       - name: Copy Flatpak manifest
         run: |
           mkdir -p dist/flatpak
           cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
 
-      # 9. Upload the manifest as artifact
+      # 9. Upload Flatpak manifest as artifact
       - name: Upload Flatpak manifest
         uses: actions/upload-artifact@v4
         with:
