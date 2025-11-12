@@ -22,7 +22,8 @@ jobs:
           sudo apt install -y \
             build-essential cmake git wget patchelf \
             qt6-base-dev qt6-tools-dev \
-            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev libxkbcommon-dev nlohmann-json3-dev
+            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
+            libxkbcommon-dev
 
       - name: Install linuxdeployqt
         run: |
@@ -32,19 +33,22 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/cmake/Qt6
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project
         run: |
-          cmake --build build --target AppImage -j$(nproc)
+          cmake --build build -j$(nproc)
+
+      - name: Create AppImage
+        run: |
+          ./build/VidyaGod # ensure executable built
+          linuxdeployqt ./build/VidyaGod -appimage
 
       - name: List build output
-        run: |
-          ls -R build
+        run: ls -R build
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: build/*.AppImage
+          path: *.AppImage
