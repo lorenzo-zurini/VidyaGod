@@ -23,7 +23,7 @@ jobs:
             build-essential cmake git wget patchelf \
             qt6-base-dev qt6-tools-dev \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev
+            libxkbcommon-dev nlohmann-json3-dev
 
       - name: Install linuxdeployqt
         run: |
@@ -32,16 +32,13 @@ jobs:
           sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
       - name: Configure CMake
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project
-        run: |
-          cmake --build build -j$(nproc)
+        run: cmake --build build -j$(nproc)
 
       - name: Create AppImage
         run: |
-          ./build/VidyaGod # ensure executable built
           linuxdeployqt ./build/VidyaGod -appimage
 
       - name: List build output
