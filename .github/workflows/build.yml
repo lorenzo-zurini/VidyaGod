@@ -9,14 +9,14 @@ on:
 
 jobs:
   build:
-    name: Build AppImage (Ubuntu 22.04 + GCC 15)
+    name: Build AppImage (Ubuntu 22.04 + GCC 13)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install GCC 15
+      - name: Install GCC 13
         run: |
           sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
           sudo apt update
@@ -47,15 +47,16 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      - name: Install Qt qmake
-        run: |
-          sudo apt update
-          sudo apt install -y qt6-qmake
-          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake
-
       - name: Create AppImage
         run: |
-          linuxdeployqt ./build/VidyaGod -appimage
+          # Qt 6 libraries are under /usr/lib/qt6
+          QT_DIR="/usr/lib/qt6"
+
+          # Ensure linuxdeployqt can access the executable
+          chmod +x ./build/VidyaGod
+
+          # Generate AppImage
+          linuxdeployqt ./build/VidyaGod -appimage -qtdir=$QT_DIR
 
       - name: List build output
         run: ls -R build
