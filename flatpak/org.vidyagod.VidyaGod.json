@@ -17,8 +17,16 @@
       "buildsystem": "simple",
       "sources": [
         {
-          "type": "dir",
-          "path": "flatpak/files"
+          "type": "file",
+          "path": "../build/VidyaGod"
+        },
+        {
+          "type": "file",
+          "path": "../resources/VidyaGod.desktop"
+        },
+        {
+          "type": "file",
+          "path": "../resources/VidyaGod.png"
         }
       ],
       "build-commands": [
