@@ -9,22 +9,12 @@ on:
 
 jobs:
   build:
-    name: Build AppImage (Ubuntu 22.04 + GCC 13)
+    name: Build AppImage (Ubuntu 22.04)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Install GCC 13
-        run: |
-          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
-          sudo apt update
-          sudo apt install -y gcc-13 g++-13
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 100
-          gcc --version
-          g++ --version
 
       - name: Install dependencies
         run: |
@@ -35,51 +25,34 @@ jobs:
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev
 
-      - name: Install linuxdeployqt
-        run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
-          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
-
       - name: Configure CMake
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      - name: Create AppImage
+      - name: Install linuxdeployqt
         run: |
-          export PATH=/usr/lib/qt6/bin:$PATH
-          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
+          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          chmod +x linuxdeployqt-continuous-x86_64.AppImage
+          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
-          # Ensure executable is ready
+      - name: Prepare AppImage environment
+        run: |
+          # Ensure Qt binaries are on PATH for linuxdeployqt
+          export PATH=/usr/lib/qt6/bin:$PATH
+          # Make sure your binary is executable
           chmod +x ./build/VidyaGod
 
-          # Create default desktop and icon if missing (avoids linuxdeployqt errors)
-          if [ ! -f ./build/VidyaGod.desktop ]; then
-            echo "[Desktop Entry]" > ./build/VidyaGod.desktop
-            echo "Name=VidyaGod" >> ./build/VidyaGod.desktop
-            echo "Exec=VidyaGod" >> ./build/VidyaGod.desktop
-            echo "Icon=VidyaGod" >> ./build/VidyaGod.desktop
-            echo "Type=Application" >> ./build/VidyaGod.desktop
-            echo "Categories=Utility;" >> ./build/VidyaGod.desktop
-          fi
-
-          if [ ! -f ./build/VidyaGod.png ]; then
-            wget -q https://raw.githubusercontent.com/github/explore/main/topics/qt/qt.png -O ./build/VidyaGod.png
-          fi
-
-          # Run linuxdeployqt (no -qtdir)
-          linuxdeployqt ./build/VidyaGod.desktop -appimage
-
-          # Rename the AppImage for clarity
-          mv *.AppImage ./build/VidyaGod-x86_64.AppImage
+      - name: Create AppImage
+        run: |
+          linuxdeployqt ./build/VidyaGod -appimage
 
       - name: List build output
-        run: ls -lh build
+        run: ls -R build
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: build/VidyaGod-x86_64.AppImage
+          path: build/*.AppImage
