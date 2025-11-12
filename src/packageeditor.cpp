@@ -582,192 +582,128 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
     PackageEditor::BuildUI();
 }
 
-void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const int targetcomponent)
+//CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!
+void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json *DeltaSubComponentArray, const int targetcomponent)
 {
-    //All existing RegEdit subcomponents of the target component are iterated through.
-    //If a subcomponent with the same REGPATH already exists, the SUBKEYS are merged.
-    //Else, a new subcomponent is created.
-    //qDebug() << "DeltaSubComponentArray->size()" << DeltaSubComponentArray->size();
+    // Iterate through all new subcomponents
     for (int i = 0; i < DeltaSubComponentArray->size(); i++)
     {
-        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"].size(); j++)
-        {
-            //If the component is not a RegEdit type, skip.
-            if (!(QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["TYPE"]) == "RegEdit"))
-            {
-                continue;
-            }
+        bool merged = false; // flag to track if the subcomponent was merged
 
-            //Potential problem if two subcomponents have the same path but different architecture!
-            if ((*DeltaSubComponentArray)[i]["REGPATH"] == ((*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["REGPATH"]))
+        auto &deltaSub = (*DeltaSubComponentArray)[i];
+        auto &targetSubComponents = (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"];
+
+        for (int j = 0; j < targetSubComponents.size(); j++)
+        {
+            auto &existingSub = targetSubComponents[j];
+
+            // Skip if not a RegEdit type
+            if (!(QString::fromStdString(existingSub["TYPE"]) == "RegEdit"))
+                continue;
+
+            // Merge if REGPATH matches
+            if (deltaSub["REGPATH"] == existingSub["REGPATH"])
             {
-                for (auto KeyValueObject : (*DeltaSubComponentArray)[i]["KEYVALUES"].items())
+                for (auto KeyValueObject : deltaSub["KEYVALUES"].items())
                 {
-                    (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"][j]["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
+                    existingSub["KEYVALUES"][KeyValueObject.key()] = KeyValueObject.value();
                 }
-                goto SkipMergeNewSubComponent;
+                merged = true;
+                break; // stop searching; already merged
             }
         }
 
-        //The current subcomponent is merged into MANIFESTJSON.
-        (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"].push_back((*DeltaSubComponentArray)[i]);
-        SkipMergeNewSubComponent:
+        // If not merged, append new subcomponent
+        if (!merged)
+        {
+            targetSubComponents.push_back(deltaSub);
+        }
     }
 }
 
+//CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!
 nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::ordered_json RegDeltaJSON, QString Hive)
 {
     nlohmann::ordered_json SubComponentArray = nlohmann::ordered_json::array();
     RegDeltaJSON = RegDeltaJSON.flatten();
+
     for (auto Item : RegDeltaJSON.items())
     {
-        //Exclude useless windows and wine registry keys form further processing.
-        //Excluded paths must be exposed in settings.
-        //Use a nice loop for those values, not 100x if's.
-        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/Windows"))
+        QString KeyPath = QString::fromStdString(Item.key());
+        if (KeyPath.contains("Software/Microsoft/Windows") ||
+            KeyPath.contains("Software/Microsoft/Cryptography") ||
+            KeyPath.contains("Software/Wow6432Node/Microsoft/Windows") ||
+            KeyPath.contains("Software/Classes") ||
+            KeyPath.contains("Software/Microsoft/ActiveMovie") ||
+            KeyPath.contains("Software/Wine"))
         {
             continue;
         }
 
-        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/Cryptography"))
-        {
-            continue;
-        }
+        QString REGPATH = Hive + KeyPath;
+        QString ARCHITECTURE = REGPATH.contains("Wow6432Node") ? "32" : "64";
 
-        if (QString::fromStdString(Item.key()).contains("Software/Wow6432Node/Microsoft/Windows"))
-        {
-            continue;
-        }
-
-        if (QString::fromStdString(Item.key()).contains("Software/Classes"))
-        {
-            continue;
-        }
-
-        if (QString::fromStdString(Item.key()).contains("Software/Microsoft/ActiveMovie"))
-        {
-            continue;
-        }
-
-        if (QString::fromStdString(Item.key()).contains("Software/Wine"))
-        {
-            continue;
-        }
-
-        QString REGPATH = QString::fromStdString(Item.key()).prepend(Hive);
-        //Determine 64/32 bit architecture based on presence of "Wow6432Node" in the path string.
-        QString ARCHITECTURE = "64";
-        if (REGPATH.contains("Wow6432Node"))
-        {
-            ARCHITECTURE = "32";
-        }
-
-        //Split the REGPATH by separator.
         QStringList REGPATHTokens = REGPATH.split("/");
-        //Extract the key names (the last item in the path).
-        QString KEY = REGPATHTokens.last();
-        //Remove the key name form the path object.
-        REGPATHTokens.removeLast();
-        //Reconstruct the REGPATH with "\\" separators.
-        //The "Wow6432Node item is skipped.
+        QString KEY = REGPATHTokens.takeLast(); // removes last element
         REGPATH.clear();
-        for (QString Token : REGPATHTokens)
+        for (const QString &Token : REGPATHTokens)
         {
-            if (Token == "Wow6432Node")
+            if (Token != "Wow6432Node")
             {
-                continue;
+                REGPATH.append(Token + "\\");
             }
-            REGPATH.append(Token);
-            REGPATH.append("\\");
         }
-        //Remove the last 2 chars (extrenuous "\\").
-        REGPATH.chop(1); //No idea why using chop(1) actually chops 2 chars ?!
-        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Interpreting registry key:" << "REGPATH:" << REGPATH << "KEY:" << KEY;
+        if (!REGPATH.isEmpty()) REGPATH.chop(1); // remove trailing backslash
 
-        nlohmann::ordered_json KeyValueObject = nlohmann::ordered_json::object();
+        nlohmann::ordered_json KeyValueObject;
         QString VALUE = QString::fromStdString(Item.value());
-        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Raw value:" << VALUE;
-        //Processing of value based on value type.
-        if (VALUE.left(6) == "dword:")
+
+        if (VALUE.startsWith("dword:"))
         {
             KeyValueObject["TYPE"] = "REG_DWORD";
             VALUE.remove(0, 6);
             VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
         }
-        else if (VALUE.left(4) == "hex:")
+        else if (VALUE.startsWith("hex:"))
         {
             KeyValueObject["TYPE"] = "REG_BINARY";
             VALUE.remove(0, 4);
-            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Processed value:" << VALUE;
-            //No further processing needed, the binary value is passed as comma separated string.
         }
-        else if (VALUE.left(7) == "hex(b):")
+        else if (VALUE.startsWith("hex(b):") || VALUE.startsWith("str(7):") || VALUE.startsWith("str(2):"))
         {
-            KeyValueObject["TYPE"] = "REG_QWORD";
-            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_QWORD value type!";
-            continue;
-            //VALUE.remove(0, 7);
-            //VALUE.remove(",");
-            ////qDebug() << "QBYTEARRAY" << QByteArray::fromHex(VALUE.toUtf8());
-            //VALUE = QString::number(QByteArray::fromHex(VALUE.toUtf8()).toUInt(nullptr, 16));
-            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
-        }
-        else if (VALUE.left(7) == "str(7):")
-        {
-            KeyValueObject["TYPE"] = "REG_MULTI_SZ";
-            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_MULTI_SZ value type!";
-            continue;
-            //VALUE.remove(0, 6);
-            ////qDebug() << "VALUE CHOPPED:" << VALUE;
-            //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
-        }
-        else if (VALUE.left(7) == "str(2):")
-        {
-            KeyValueObject["TYPE"] = "REG_EXPAND_SZ";
-            //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[ERR] Unsupported REG_EXPAND_SZ value type!";
-            continue;
-            //VALUE.remove(0, 7);
-            ////qDebug() << "VALUE CHOPPED:" << VALUE;
-            //VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-            ////qDebug().noquote() << "VALUE PROCESSED:" << VALUE;
+            continue; // skip unsupported types
         }
         else
         {
-            //REG_SZ values must be cleaned of extrenuous backslashes introduced along the way.
             KeyValueObject["TYPE"] = "REG_SZ";
-            VALUE = VALUE.replace("\\\\", "\\");
+            VALUE.replace("\\\\", "\\");
         }
+
         KeyValueObject["VALUE"] = VALUE.toStdString();
 
-        //If there is another subcomponent with the same REGPATH, add the current item as a KEYVALUE.
-        //If there is not, create a new subcomponent and add KEYVALUE.
-
-        nlohmann::ordered_json NewSubComponentObject = nlohmann::ordered_json::object();
-        //Make this a function to avoid nested for loop shenanigains.
-
-        for (int i = 0; i < SubComponentArray.size(); i++)
+        // Check if subcomponent with same REGPATH exists
+        bool merged = false;
+        for (auto &SubComponent : SubComponentArray)
         {
-            if (SubComponentArray[i]["REGPATH"] == REGPATH.toStdString())
+            if (SubComponent["REGPATH"] == REGPATH.toStdString())
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Subcomponent with same REGPATH exists. Merging.";
-                SubComponentArray[i]["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
-                goto SkipNewSubComponentObjectConstruct;
+                SubComponent["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+                merged = true;
+                break;
             }
         }
 
-        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] Constructing new RegEdit subcomponent.";
-        NewSubComponentObject["TYPE"] = "RegEdit";
-        NewSubComponentObject["REGPATH"] = REGPATH.toStdString();
-        NewSubComponentObject["ARCHITECTURE"] = ARCHITECTURE.toStdString();
-        NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
-        //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor:" << "[OUT] New subcomponent:" << NewSubComponentObject.dump();
-        SubComponentArray[SubComponentArray.size()] = NewSubComponentObject;
-        SkipNewSubComponentObjectConstruct:
+        if (!merged)
+        {
+            nlohmann::ordered_json NewSubComponentObject;
+            NewSubComponentObject["TYPE"] = "RegEdit";
+            NewSubComponentObject["REGPATH"] = REGPATH.toStdString();
+            NewSubComponentObject["ARCHITECTURE"] = ARCHITECTURE.toStdString();
+            NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+            SubComponentArray.push_back(NewSubComponentObject);
+        }
     }
 
-    //qDebug().noquote() << QTime::currentTime().toString() << "PackageEditor: [OUT]" << "SUBCOMPONENTARRAY:" << SubComponentArray.dump();
     return SubComponentArray;
 }
 
