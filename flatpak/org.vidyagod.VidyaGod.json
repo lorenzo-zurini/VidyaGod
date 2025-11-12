@@ -15,10 +15,16 @@
     {
       "name": "vidyagod-binary",
       "buildsystem": "simple",
+      "sources": [
+        {
+          "type": "dir",
+          "path": "flatpak/files"
+        }
+      ],
       "build-commands": [
-        "install -Dm755 files/VidyaGod /app/bin/VidyaGod",
-        "install -Dm644 files/VidyaGod.desktop /app/share/applications/VidyaGod.desktop",
-        "install -Dm644 files/VidyaGod.png /app/share/icons/hicolor/256x256/apps/VidyaGod.png"
+        "install -Dm755 VidyaGod /app/bin/VidyaGod",
+        "install -Dm644 VidyaGod.desktop /app/share/applications/VidyaGod.desktop",
+        "install -Dm644 VidyaGod.png /app/share/icons/hicolor/256x256/apps/VidyaGod.png"
       ]
     }
   ]
