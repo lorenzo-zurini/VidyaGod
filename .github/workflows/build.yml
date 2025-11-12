@@ -1,45 +1,33 @@
-name: Package VidyaGod Flatpak
+name: Build Flatpak
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+    branches: [ main ]
 
 jobs:
-  package:
+  flatpak:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout code
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2. Install Flatpak and builder tools
-      - name: Install Flatpak tools
-        run: |
-          sudo apt update
-          sudo apt install -y flatpak flatpak-builder
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y flatpak flatpak-builder cmake qtbase5-dev qttools5-dev-tools
 
-      # 3. Ensure Flathub remote & SDK/platform for user
-      - name: Setup Flatpak SDK
+      - name: Build app
         run: |
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y flathub org.freedesktop.Sdk//22.08
-          flatpak install --user -y flathub org.freedesktop.Platform//22.08
+          mkdir -p build
+          cd build
+          cmake ..
+          make -j$(nproc)
 
-      # 4. Show directory structure for debugging
-      - name: Show project tree
-        run: |
-          echo "Current directory: $(pwd)"
-          find . -type f -ls
-
-      # 6. Build Flatpak using manifest in flatpak/
-      - name: Build Flatpak
+      - name: Prepare Flatpak context
         run: |
           mkdir -p flatpak/files
-          # Copy the built binary and resources into the Flatpak context
+          # Copy built binary and resources
           cp build/Desktop-Debug/VidyaGod flatpak/files/ || cp build/VidyaGod flatpak/files/
           cp resources/VidyaGod.desktop flatpak/files/
           cp resources/VidyaGod.png flatpak/files/
@@ -47,21 +35,15 @@ jobs:
           echo "Flatpak build context:"
           find flatpak -maxdepth 3 -type f
 
+      - name: Build Flatpak bundle
+        run: |
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak flatpak/org.vidyagod.VidyaGod.json
+          flatpak build-export build/repo build/flatpak
+          flatpak build-bundle build/repo VidyaGod.flatpak org.vidyagod.VidyaGod
 
-
-      # 6. Export Flatpak bundle
-      - name: Export Flatpak bundle
-        run: |
-          mkdir -p dist/flatpak
-          flatpak-builder --run build/flatpak flatpak/org.vidyagod.VidyaGod.json /usr/bin/true
-          # Export to bundle
-          flatpak build-bundle build/flatpak dist/flatpak/VidyaGod.flatpak org.vidyagod.VidyaGod 22.08
-
-      # 7. Upload Flatpak bundle
-      - name: Upload Flatpak bundle
+      - name: Upload Flatpak artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-Flatpak
-          path: dist/flatpak/VidyaGod.flatpak
+          name: VidyaGod-flatpak
+          path: VidyaGod.flatpak
