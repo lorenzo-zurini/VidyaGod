@@ -50,6 +50,10 @@ jobs:
         run: |
           linuxdeployqt build/VidyaGod.desktop -appimage
 
+      - name: Copy desktop file
+        run: |
+          cp resources/VidyaGod.desktop build/VidyaGod.desktop
+
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
