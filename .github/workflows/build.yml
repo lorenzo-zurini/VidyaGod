@@ -9,12 +9,22 @@ on:
 
 jobs:
   build:
-    name: Build AppImage (Ubuntu 22.04)
+    name: Build AppImage (Ubuntu 22.04 + GCC 15)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install GCC 15
+        run: |
+          sudo add-apt-repository ppa:ubuntu-toolchain-r/test -y
+          sudo apt update
+          sudo apt install -y gcc-15 g++-15
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100
+          gcc --version
+          g++ --version
 
       - name: Install dependencies
         run: |
