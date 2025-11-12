@@ -20,8 +20,9 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y \
-            qt6-base-dev qt6-tools-dev-tools \
-            build-essential cmake wget patchelf git
+            build-essential cmake git wget patchelf \
+            qt6-base-dev qt6-tools-dev qt6-base-dev-tools \
+            qt6-opengl-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev
 
       - name: Install linuxdeployqt
         run: |
@@ -31,7 +32,8 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/cmake/Qt6
 
       - name: Build project
         run: |
