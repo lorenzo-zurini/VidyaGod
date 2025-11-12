@@ -9,27 +9,27 @@ on:
 
 jobs:
   build:
-    name: Build AppImage (Ubuntu 22.04 + GCC 13 + Qt6)
     runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install GCC 12
         run: |
           sudo apt update
-          sudo apt install -y \
-            build-essential cmake git wget patchelf \
-            qt6-base-dev qt6-tools-dev qmake6-bin \
+          sudo apt install -y gcc-12 g++-12
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+          gcc --version
+          g++ --version
+
+      - name: Install dependencies
+        run: |
+          sudo apt install -y build-essential cmake git wget patchelf \
+            qt6-base-dev qt6-tools-dev \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev
-
-      - name: Install linuxdeployqt
-        run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
-          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
       - name: Configure CMake
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -37,27 +37,20 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      - name: Prepare AppImage files
+      - name: Install linuxdeployqt
         run: |
-          mkdir -p build
-          cp resources/VidyaGod.desktop build/
-          cp resources/VidyaGod.png build/
-          chmod +x build/VidyaGod
+          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          chmod +x linuxdeployqt-continuous-x86_64.AppImage
+          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
-      - name: Ensure Qt qmake is on PATH
-        run: |
-          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake
-          export PATH=/usr/lib/qt6/bin:$PATH
+      - name: Prepare Qt env
+        run: export PATH=/usr/lib/qt6/bin:$PATH
 
       - name: Create AppImage
         run: |
-          export PATH=/usr/lib/qt6/bin:$PATH
           linuxdeployqt build/VidyaGod.desktop -appimage
 
-      - name: List build output
-        run: ls -R build
-
-      - name: Upload AppImage artifact
+      - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
