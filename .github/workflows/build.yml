@@ -37,20 +37,27 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
-      # 5. Build Flatpak using manifest in flatpak/
+      # 5. Install Flatpak SDK
+      - name: Install Flatpak SDK
+        run: |
+          flatpak install -y flathub org.freedesktop.Sdk//22.08
+          flatpak install -y flathub org.freedesktop.Platform//22.08
+
+
+      # 6. Build Flatpak using manifest in flatpak/
       - name: Build Flatpak
         run: |
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak \
             flatpak/org.vidyagod.VidyaGod.json
 
-      # 6. Copy manifest somewhere else (optional)
+      # 7. Copy manifest somewhere else (optional)
       - name: Copy Flatpak manifest
         run: |
           mkdir -p dist/flatpak
           cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
 
-      # 7. Upload the manifest as artifact
+      # 8. Upload the manifest as artifact
       - name: Upload Flatpak manifest
         uses: actions/upload-artifact@v4
         with:
