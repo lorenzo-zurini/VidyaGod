@@ -35,11 +35,21 @@ jobs:
           echo "Current directory: $(pwd)"
           find . -type f -ls
 
-      # 5. Build Flatpak using existing binary
+      # 6. Build Flatpak using manifest in flatpak/
       - name: Build Flatpak
         run: |
+          mkdir -p flatpak/files
+          # Copy the built binary and resources into the Flatpak context
+          cp build/Desktop-Debug/VidyaGod flatpak/files/ || cp build/VidyaGod flatpak/files/
+          cp resources/VidyaGod.desktop flatpak/files/
+          cp resources/VidyaGod.png flatpak/files/
+
+          echo "Flatpak build context:"
+          find flatpak -maxdepth 3 -type f
+
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak flatpak/org.vidyagod.VidyaGod.json
+
 
       # 6. Export Flatpak bundle
       - name: Export Flatpak bundle
