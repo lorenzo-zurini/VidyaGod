@@ -18,15 +18,15 @@
       "sources": [
         {
           "type": "file",
-          "path": "build/VidyaGod"
+          "path": "../build/VidyaGod"
         },
         {
           "type": "file",
-          "path": "resources/VidyaGod.desktop"
+          "path": "../resources/VidyaGod.desktop"
         },
         {
           "type": "file",
-          "path": "resources/VidyaGod.png"
+          "path": "../resources/VidyaGod.png"
         }
       ],
       "build-commands": [
