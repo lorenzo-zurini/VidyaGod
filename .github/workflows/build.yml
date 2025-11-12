@@ -43,16 +43,27 @@ jobs:
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
           sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
-      - name: Prepare Qt env
-        run: export PATH=/usr/lib/qt6/bin:$PATH
+      - name: Prepare Qt environment
+        run: |
+          export PATH=/usr/lib/qt6/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
+
+      - name: Copy desktop file and icon
+        run: |
+          mkdir -p build
+          cp resources/VidyaGod.desktop build/VidyaGod.desktop
+          cp resources/VidyaGod.png build/  # Desktop icon
+
+      - name: Fix desktop file for linuxdeployqt
+        run: |
+          sed -i 's|Icon=.*|Icon=VidyaGod|' build/VidyaGod.desktop
 
       - name: Create AppImage
         run: |
-          linuxdeployqt build/VidyaGod.desktop -appimage
-
-      - name: Copy desktop file
-        run: |
-          cp resources/VidyaGod.desktop build/VidyaGod.desktop
+          linuxdeployqt build/VidyaGod.desktop \
+            -appimage \
+            -executable=build/VidyaGod \
+            -icon-file=build/VidyaGod.png
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
