@@ -47,6 +47,12 @@ jobs:
       - name: Build project
         run: cmake --build build -j$(nproc)
 
+      - name: Install Qt qmake
+        run: |
+          sudo apt update
+          sudo apt install -y qt6-qmake
+          sudo ln -sf /usr/bin/qmake6 /usr/bin/qmake
+
       - name: Create AppImage
         run: |
           linuxdeployqt ./build/VidyaGod -appimage
