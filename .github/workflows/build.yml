@@ -8,38 +8,51 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-flatpak:
+  build:
     runs-on: ubuntu-22.04
 
     steps:
-      # 1️⃣ Checkout repository
+      # 1. Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Flatpak and builder tools
-      - name: Install Flatpak
+      # 2. Install Flatpak and builder tools
+      - name: Install Flatpak tools
         run: |
           sudo apt update
           sudo apt install -y flatpak flatpak-builder
 
-      # 3️⃣ Copy Flatpak manifest (optional if you want to separate it)
-      - name: Copy Flatpak manifest
-        run: mkdir -p flatpak && cp flatpak/org.vidyagod.VidyaGod.json flatpak/
+      # 3. Install system dependencies for building your app
+      - name: Install dependencies
+        run: |
+          sudo apt install -y build-essential cmake git \
+            qt6-base-dev qt6-tools-dev \
+            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
+            libxkbcommon-dev nlohmann-json3-dev
 
-      # 4️⃣ Build Flatpak
+      # 4. Configure and build your project
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build project
+        run: cmake --build build -j$(nproc)
+
+      # 5. Build Flatpak using manifest in flatpak/
       - name: Build Flatpak
         run: |
-          mkdir -p flatpak/build-dir flatpak/repo
-          flatpak-builder --force-clean --repo=flatpak/repo flatpak/build-dir flatpak/org.vidyagod.VidyaGod.json
+          mkdir -p build/flatpak
+          flatpak-builder --force-clean build/flatpak \
+            flatpak/org.vidyagod.VidyaGod.json
 
-      # 5️⃣ Export Flatpak bundle
-      - name: Export Flatpak bundle
+      # 6. Copy manifest somewhere else (optional)
+      - name: Copy Flatpak manifest
         run: |
-          flatpak build-bundle flatpak/repo flatpak/VidyaGod.flatpak org.vidyagod.VidyaGod
+          mkdir -p dist/flatpak
+          cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
 
-      # 6️⃣ Upload Flatpak artifact
-      - name: Upload Flatpak
+      # 7. Upload the manifest as artifact
+      - name: Upload Flatpak manifest
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-Flatpak
-          path: flatpak/VidyaGod.flatpak
+          name: VidyaGod-Flatpak-Manifest
+          path: dist/flatpak/org.vidyagod.VidyaGod.json
