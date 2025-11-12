@@ -44,23 +44,28 @@ jobs:
           flatpak install --user -y flathub org.freedesktop.Sdk//22.08
           flatpak install --user -y flathub org.freedesktop.Platform//22.08
 
-
-      # 6. Build Flatpak using manifest in flatpak/
+      # 6. Build Flatpak using manifest
       - name: Build Flatpak
         run: |
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak \
             flatpak/org.vidyagod.VidyaGod.json
 
-      # 7. Copy manifest somewhere else (optional)
-      - name: Copy Flatpak manifest
+      # 7. Create distributable Flatpak bundle
+      - name: Bundle Flatpak
+        run: |
+          flatpak build-bundle build/flatpak VidyaGod.flatpak org.vidyagod.VidyaGod
+
+      # 8. Copy manifest and Flatpak bundle to dist/
+      - name: Copy manifest and Flatpak bundle
         run: |
           mkdir -p dist/flatpak
           cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
+          cp VidyaGod.flatpak dist/flatpak/
 
-      # 8. Upload the manifest as artifact
-      - name: Upload Flatpak manifest
+      # 9. Upload Flatpak bundle and manifest
+      - name: Upload Flatpak artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-Flatpak-Manifest
-          path: dist/flatpak/org.vidyagod.VidyaGod.json
+          name: VidyaGod-Flatpak
+          path: dist/flatpak/
