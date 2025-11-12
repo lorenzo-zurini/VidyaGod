@@ -20,11 +20,16 @@ jobs:
           sudo apt update
           sudo apt install -y flatpak-builder flatpak cmake git wget ninja-build
 
-      - name: Build Flatpak
+      - name: Prepare Flatpak build directory
         run: |
           mkdir -p build/flatpak
-          
-          # Create a simple manifest file for Flatpak
+
+          # Copy your desktop file and icon into the Flatpak build directory
+          cp resources/VidyaGod.desktop build/flatpak/
+          cp resources/VidyaGod.png build/flatpak/
+
+      - name: Create Flatpak manifest
+        run: |
           cat > build/flatpak/vidyagod.json << 'EOF'
 {
   "app-id": "org.vidyagod.VidyaGod",
@@ -49,6 +54,14 @@ jobs:
           "type": "git",
           "url": "https://github.com/<YOUR_GITHUB_USER>/VidyaGod.git",
           "branch": "main"
+        },
+        {
+          "type": "file",
+          "path": "VidyaGod.desktop"
+        },
+        {
+          "type": "file",
+          "path": "VidyaGod.png"
         }
       ]
     }
@@ -56,7 +69,8 @@ jobs:
 }
 EOF
 
-          # Build the Flatpak using the manifest
+      - name: Build Flatpak
+        run: |
           flatpak-builder --force-clean --repo=build/repo build/flatpak/build-dir build/flatpak/vidyagod.json
 
       - name: Export Flatpak bundle
