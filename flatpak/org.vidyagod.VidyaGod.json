@@ -15,22 +15,24 @@
     {
       "name": "vidyagod-binary",
       "buildsystem": "simple",
-      "build-commands": [
-        "install -Dm755 ../build/VidyaGod /app/bin/VidyaGod",
-        "install -Dm644 ../resources/VidyaGod.desktop /app/share/applications/VidyaGod.desktop",
-        "install -Dm644 ../resources/VidyaGod.png /app/share/icons/hicolor/256x256/apps/VidyaGod.png"
-      ],
       "sources": [
         {
-          "type": "dir",
-          "path": "../build",
-          "dest": "build"
+          "type": "file",
+          "path": "../build/VidyaGod"
         },
         {
-          "type": "dir",
-          "path": "../resources",
-          "dest": "resources"
+          "type": "file",
+          "path": "../resources/VidyaGod.desktop"
+        },
+        {
+          "type": "file",
+          "path": "../resources/VidyaGod.png"
         }
+      ],
+      "build-commands": [
+        "install -Dm755 VidyaGod /app/bin/VidyaGod",
+        "install -Dm644 VidyaGod.desktop /app/share/applications/VidyaGod.desktop",
+        "install -Dm644 VidyaGod.png /app/share/icons/hicolor/256x256/apps/VidyaGod.png"
       ]
     }
   ]
