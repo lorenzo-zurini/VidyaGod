@@ -81,9 +81,15 @@ nlohmann::ordered_json JSONOps::GetSubComponents(QString MetaDataPath, QList<int
 nlohmann::ordered_json JSONOps::ReplaceVariables(nlohmann::ordered_json OriginalArray, QMap<QString, QString> VariableValues)
 {
     QString JSONString(QString::fromStdString(OriginalArray.dump()));
-    for (auto [Variable, Value] : VariableValues.asKeyValueRange())
+
+    // Iterate using a const iterator (Qt 6.2+ compatible)
+    for (auto it = VariableValues.constBegin(); it != VariableValues.constEnd(); ++it)
     {
-        JSONString.replace(("%" + Variable + "%"), Value);
+        const QString &Variable = it.key();
+        const QString &Value = it.value();
+
+        JSONString.replace("%" + Variable + "%", Value);
     }
+
     return nlohmann::ordered_json::parse(JSONString.toUtf8());
 }
