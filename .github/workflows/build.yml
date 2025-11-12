@@ -60,7 +60,23 @@ jobs:
 
       - name: Create AppImage
         run: |
-          linuxdeployqt build/VidyaGod.desktop -appimage
+          mkdir -p build/appimage
+          cp build/Desktop-Debug/VidyaGod build/appimage/
+          cp resources/VidyaGod.desktop build/appimage/
+          cp resources/VidyaGod.png build/appimage/
+      
+          # Fix desktop file icon entry
+          sed -i 's|Icon=.*|Icon=VidyaGod|' build/appimage/VidyaGod.desktop
+      
+          # Set Qt paths for this step
+          export PATH=/usr/lib/qt6/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
+      
+          # Run linuxdeployqt pointing at desktop file, with explicit binary and icon
+          linuxdeployqt build/appimage/VidyaGod.desktop \
+            -appimage \
+            -executable=build/appimage/VidyaGod \
+            -icon-file=build/appimage/VidyaGod.png
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
