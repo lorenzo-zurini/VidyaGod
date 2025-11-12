@@ -15,7 +15,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt update && sudo apt install -y flatpak flatpak-builder cmake qtbase5-dev qttools5-dev-tools
+        run: |
+          sudo apt update
+          sudo apt install -y flatpak flatpak-builder cmake g++ build-essential \
+            qt6-base-dev qt6-tools-dev qt6-l10n-tools \
+            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
+            libxkbcommon-dev nlohmann-json3-dev
+
 
       - name: Build app
         run: |
