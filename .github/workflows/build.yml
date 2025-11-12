@@ -1,4 +1,4 @@
-name: Build VidyaGod Flatpak
+name: Package VidyaGod Flatpak
 
 on:
   push:
@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  package:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout repository
+      # 1. Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -22,51 +22,36 @@ jobs:
           sudo apt update
           sudo apt install -y flatpak flatpak-builder
 
-      # 3. Install system dependencies
-      - name: Install dependencies
-        run: |
-          sudo apt install -y build-essential cmake git \
-            qt6-base-dev qt6-tools-dev \
-            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev nlohmann-json3-dev
-
-      # 4. Configure and build your project
-      - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build project
-        run: cmake --build build -j$(nproc)
-
-      # 5. Add Flathub remote and install SDK locally for user
+      # 3. Ensure Flathub remote & SDK/platform for user
       - name: Setup Flatpak SDK
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y flathub org.freedesktop.Sdk//22.08
           flatpak install --user -y flathub org.freedesktop.Platform//22.08
 
-      # 6. Build Flatpak
+      # 4. Show directory structure for debugging
+      - name: Show project tree
+        run: |
+          echo "Current directory: $(pwd)"
+          find . -type f -ls
+
+      # 5. Build Flatpak using existing binary
       - name: Build Flatpak
         run: |
           mkdir -p build/flatpak
           flatpak-builder --force-clean build/flatpak flatpak/org.vidyagod.VidyaGod.json
 
-      # 7. List the build output for debug
-      - name: Show Flatpak build output
-        run: |
-          echo "Contents of build/flatpak:"
-          find build/flatpak
-          echo "Contents of .flatpak-builder:"
-          find .flatpak-builder
-
-      # 8. Copy manifest to dist/flatpak
-      - name: Copy Flatpak manifest
+      # 6. Export Flatpak bundle
+      - name: Export Flatpak bundle
         run: |
           mkdir -p dist/flatpak
-          cp flatpak/org.vidyagod.VidyaGod.json dist/flatpak/
+          flatpak-builder --run build/flatpak flatpak/org.vidyagod.VidyaGod.json /usr/bin/true
+          # Export to bundle
+          flatpak build-bundle build/flatpak dist/flatpak/VidyaGod.flatpak org.vidyagod.VidyaGod 22.08
 
-      # 9. Upload Flatpak manifest as artifact
-      - name: Upload Flatpak manifest
+      # 7. Upload Flatpak bundle
+      - name: Upload Flatpak bundle
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-Flatpak-Manifest
-          path: dist/flatpak/org.vidyagod.VidyaGod.json
+          name: VidyaGod-Flatpak
+          path: dist/flatpak/VidyaGod.flatpak
