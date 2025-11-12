@@ -193,18 +193,21 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
         FinalUserDataPath = OverrideUserDataPath;
     }
 
-    //Creating all necessary directories based on the Paths QMap.
-    //QMessageBox::warning(nullptr, "Building Runtime", "Creating directories.");
-    for (auto [Name, Path] : this->Paths.asKeyValueRange())
+    // Creating all necessary directories based on the Paths QMap.
+    // QMessageBox::warning(nullptr, "Building Runtime", "Creating directories.");
+    for (auto it = this->Paths.constBegin(); it != this->Paths.constEnd(); ++it)
     {
+        const QString &Name = it.key();
+        const QString &Path = it.value();
+    
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Created direcotry " << Name << "PATH: " << Path;
+            // qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Created directory " << Name << " PATH: " << Path;
         }
         else
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Could not create directory " << Name << "PATH: " << Path;
+            // qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Could not create directory " << Name << " PATH: " << Path;
             return false;
         }
     }
@@ -690,10 +693,15 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
 
 QStringList Runner::StringListReplaceVariables(QStringList OriginalStringList, QMap<QString, QString> VariableValues)
 {
-    for (auto [Variable, Value] : VariableValues.asKeyValueRange())
+    // Iterate using a const iterator (Qt 6.2+ compatible)
+    for (auto it = VariableValues.constBegin(); it != VariableValues.constEnd(); ++it)
     {
-        OriginalStringList.replaceInStrings(("%" + Variable + "%"), Value);
+        const QString &Variable = it.key();
+        const QString &Value = it.value();
+
+        OriginalStringList.replaceInStrings("%" + Variable + "%", Value);
     }
+
     return OriginalStringList;
 }
 
