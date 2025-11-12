@@ -10,7 +10,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
-find_package(nlohmann_json 3.11.3 REQUIRED)
+find_package(nlohmann_json REQUIRED)
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
