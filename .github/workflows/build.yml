@@ -18,21 +18,29 @@ jobs:
       - name: Install GCC 12
         run: |
           sudo apt update
-          sudo apt install -y gcc-12 g++-12
+          sudo apt install -y gcc-12 g++-12 cmake build-essential wget patchelf
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
           gcc --version
           g++ --version
 
-      - name: Install dependencies
+      - name: Install Qt 6 bundle
         run: |
-          sudo apt install -y build-essential cmake git wget patchelf \
-            qt6-base-dev qt6-tools-dev \
-            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev nlohmann-json3-dev
+          mkdir -p $HOME/Qt6
+          cd $HOME/Qt6
+          # Download prebuilt Qt 6 for Linux x64 compatible with Ubuntu 22.04 / GCC 12
+          wget -O qt6-linux.tar.xz "https://download.qt.io/official_releases/qt/6.6/6.6.5/qt-opensource-linux-x64-6.6.5.run"
+          chmod +x qt6-linux.tar.xz
+          ./qt6-linux.tar.xz --quiet --platform minimal --target $HOME/Qt6/6.6.5
+          export CMAKE_PREFIX_PATH=$HOME/Qt6/6.6.5/gcc_64
 
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=/usr/bin/gcc-12 -DCMAKE_CXX_COMPILER=/usr/bin/g++-12
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
+            -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
+            -DCMAKE_PREFIX_PATH=$HOME/Qt6/6.6.5/gcc_64
 
       - name: Build project
         run: cmake --build build -j$(nproc)
@@ -43,39 +51,19 @@ jobs:
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
           sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
 
-      - name: Prepare Qt environment
-        run: |
-          export PATH=/usr/lib/qt6/bin:$PATH
-          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
-
-      - name: Copy desktop file and icon
-        run: |
-          mkdir -p build
-          cp resources/VidyaGod.desktop build/VidyaGod.desktop
-          cp resources/VidyaGod.png build/  # Desktop icon
-
-      - name: Fix desktop file for linuxdeployqt
-        run: |
-          sed -i 's|Icon=.*|Icon=VidyaGod|' build/VidyaGod.desktop
-
-      - name: Create AppImage
+      - name: Prepare AppImage environment
         run: |
           mkdir -p build/appimage
           cp build/Desktop-Debug/VidyaGod build/appimage/
           cp resources/VidyaGod.desktop build/appimage/
           cp resources/VidyaGod.png build/appimage/
-      
-          # Make desktop file point to the correct icon name (without extension)
           sed -i 's|Icon=.*|Icon=VidyaGod|' build/appimage/VidyaGod.desktop
-      
-          # Set Qt paths for this step
-          export PATH=/usr/lib/qt6/bin:$PATH
-          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
-      
-          # Run linuxdeployqt pointing at desktop file, with explicit binary
-          linuxdeployqt build/appimage/VidyaGod.desktop \
-            -appimage \
-            -executable=build/appimage/VidyaGod
+          export PATH=$HOME/Qt6/6.6.5/gcc_64/bin:$PATH
+          export LD_LIBRARY_PATH=$HOME/Qt6/6.6.5/gcc_64/lib:$LD_LIBRARY_PATH
+
+      - name: Create AppImage
+        run: |
+          linuxdeployqt build/appimage/VidyaGod.desktop -appimage -executable=build/appimage/VidyaGod
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
