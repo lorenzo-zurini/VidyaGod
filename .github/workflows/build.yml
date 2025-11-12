@@ -49,20 +49,37 @@ jobs:
 
       - name: Create AppImage
         run: |
-          # Qt 6 libraries are under /usr/lib/qt6
-          QT_DIR="/usr/lib/qt6"
+          export PATH=/usr/lib/qt6/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/lib/qt6/lib:$LD_LIBRARY_PATH
 
-          # Ensure linuxdeployqt can access the executable
+          # Ensure executable is ready
           chmod +x ./build/VidyaGod
 
-          # Generate AppImage
-          linuxdeployqt ./build/VidyaGod -appimage -qtdir=$QT_DIR
+          # Create default desktop and icon if missing (avoids linuxdeployqt errors)
+          if [ ! -f ./build/VidyaGod.desktop ]; then
+            echo "[Desktop Entry]" > ./build/VidyaGod.desktop
+            echo "Name=VidyaGod" >> ./build/VidyaGod.desktop
+            echo "Exec=VidyaGod" >> ./build/VidyaGod.desktop
+            echo "Icon=VidyaGod" >> ./build/VidyaGod.desktop
+            echo "Type=Application" >> ./build/VidyaGod.desktop
+            echo "Categories=Utility;" >> ./build/VidyaGod.desktop
+          fi
+
+          if [ ! -f ./build/VidyaGod.png ]; then
+            wget -q https://raw.githubusercontent.com/github/explore/main/topics/qt/qt.png -O ./build/VidyaGod.png
+          fi
+
+          # Run linuxdeployqt (no -qtdir)
+          linuxdeployqt ./build/VidyaGod.desktop -appimage
+
+          # Rename the AppImage for clarity
+          mv *.AppImage ./build/VidyaGod-x86_64.AppImage
 
       - name: List build output
-        run: ls -R build
+        run: ls -lh build
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: "*.AppImage"
+          path: build/VidyaGod-x86_64.AppImage
