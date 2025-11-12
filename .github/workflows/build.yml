@@ -1,4 +1,4 @@
-name: Build VidyaGod AppImage
+name: Build VidyaGod Flatpak
 
 on:
   push:
@@ -15,58 +15,56 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install GCC 12
+      - name: Install Flatpak Builder & Dependencies
         run: |
           sudo apt update
-          sudo apt install -y gcc-12 g++-12 cmake build-essential wget patchelf
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
-          gcc --version
-          g++ --version
+          sudo apt install -y flatpak-builder flatpak cmake git wget ninja-build
 
-      - name: Install Qt 6 bundle
+      - name: Build Flatpak
         run: |
-          mkdir -p $HOME/Qt6
-          cd $HOME/Qt6
-          # Download prebuilt Qt 6 for Linux x64 compatible with Ubuntu 22.04 / GCC 12
-          wget -O qt6-linux.tar.xz "https://download.qt.io/official_releases/qt/6.6/6.6.5/qt-opensource-linux-x64-6.6.5.run"
-          chmod +x qt6-linux.tar.xz
-          ./qt6-linux.tar.xz --quiet --platform minimal --target $HOME/Qt6/6.6.5
-          export CMAKE_PREFIX_PATH=$HOME/Qt6/6.6.5/gcc_64
+          mkdir -p build/flatpak
+          
+          # Create a simple manifest file for Flatpak
+          cat > build/flatpak/vidyagod.json << 'EOF'
+{
+  "app-id": "org.vidyagod.VidyaGod",
+  "runtime": "org.kde.Platform",
+  "runtime-version": "6.6",
+  "sdk": "org.kde.Sdk",
+  "command": "VidyaGod",
+  "finish-args": [
+    "--share=network",
+    "--share=ipc",
+    "--filesystem=home"
+  ],
+  "modules": [
+    {
+      "name": "vidyagod",
+      "buildsystem": "cmake",
+      "buildsystem-options": {
+        "build-args": ["-DCMAKE_BUILD_TYPE=Release"]
+      },
+      "sources": [
+        {
+          "type": "git",
+          "url": "https://github.com/<YOUR_GITHUB_USER>/VidyaGod.git",
+          "branch": "main"
+        }
+      ]
+    }
+  ]
+}
+EOF
 
-      - name: Configure CMake
+          # Build the Flatpak using the manifest
+          flatpak-builder --force-clean --repo=build/repo build/flatpak/build-dir build/flatpak/vidyagod.json
+
+      - name: Export Flatpak bundle
         run: |
-          cmake -S . -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/bin/gcc-12 \
-            -DCMAKE_CXX_COMPILER=/usr/bin/g++-12 \
-            -DCMAKE_PREFIX_PATH=$HOME/Qt6/6.6.5/gcc_64
+          flatpak build-bundle build/repo build/VidyaGod.flatpak org.vidyagod.VidyaGod
 
-      - name: Build project
-        run: cmake --build build -j$(nproc)
-
-      - name: Install linuxdeployqt
-        run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
-          chmod +x linuxdeployqt-continuous-x86_64.AppImage
-          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
-
-      - name: Prepare AppImage environment
-        run: |
-          mkdir -p build/appimage
-          cp build/Desktop-Debug/VidyaGod build/appimage/
-          cp resources/VidyaGod.desktop build/appimage/
-          cp resources/VidyaGod.png build/appimage/
-          sed -i 's|Icon=.*|Icon=VidyaGod|' build/appimage/VidyaGod.desktop
-          export PATH=$HOME/Qt6/6.6.5/gcc_64/bin:$PATH
-          export LD_LIBRARY_PATH=$HOME/Qt6/6.6.5/gcc_64/lib:$LD_LIBRARY_PATH
-
-      - name: Create AppImage
-        run: |
-          linuxdeployqt build/appimage/VidyaGod.desktop -appimage -executable=build/appimage/VidyaGod
-
-      - name: Upload AppImage
+      - name: Upload Flatpak Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-AppImage
-          path: "*.AppImage"
+          name: VidyaGod-Flatpak
+          path: build/VidyaGod.flatpak
