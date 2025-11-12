@@ -1,80 +1,48 @@
-name: Build VidyaGod
+name: Build VidyaGod AppImage
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build AppImage (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            cmake build-essential nlohmann-json3-dev wget patchelf \
-            qt6-base-dev qt6-tools-dev qt6-declarative-dev qt6-svg-dev \
-            qt6-multimedia-dev qt6-webengine-dev
+          sudo apt update
+          sudo apt install -y \
+            qt6-base-dev qt6-tools-dev-tools \
+            build-essential cmake wget patchelf git
 
-      - name: Configure with CMake
+      - name: Install linuxdeployqt
         run: |
-          set -e
+          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          chmod +x linuxdeployqt-continuous-x86_64.AppImage
+          sudo mv linuxdeployqt-continuous-x86_64.AppImage /usr/local/bin/linuxdeployqt
+
+      - name: Configure CMake
+        run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
-      - name: Show CMake cache & debug
+      - name: Build project
         run: |
-          echo "=== CMake configure summary ==="
-          cmake --build build --config Release -- -n || true
-          echo "=== List build dir ==="
-          ls -la build || true
+          cmake --build build --target AppImage -j$(nproc)
 
-      - name: Build
-        run: cmake --build build --config Release -j$(nproc)
-
-      - name: Show built executables
+      - name: List build output
         run: |
-          echo "=== Find executables under build ==="
-          find build -type f -executable -maxdepth 6 -print || true
-          echo "=== file info for likely executables ==="
-          find build -type f -executable -maxdepth 6 -print0 | xargs -0 -r file || true
-
-      - name: Prepare linuxdeploy tools
-        run: |
-          mkdir -p tools
-          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O tools/linuxdeploy
-          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -O tools/linuxdeploy-plugin-qt
-          chmod +x tools/linuxdeploy tools/linuxdeploy-plugin-qt
-
-      - name: Package AppImage
-        run: |
-          set -e
-          # locate the built executable (adjust pattern if your target name differs)
-          BIN=$(find build -type f -executable -maxdepth 6 -name 'VidyaGod' -print -quit || true)
-          if [ -z "$BIN" ]; then
-            # fallback: take first executable under build
-            BIN=$(find build -type f -executable -maxdepth 6 -print -quit)
-          fi
-          if [ -z "$BIN" ]; then
-            echo "No built executable found under build/ — failing."
-            ls -R build || true
-            exit 1
-          fi
-          echo "Found binary: $BIN"
-          mkdir -p AppDir/usr/bin
-          cp "$BIN" AppDir/usr/bin/
-          # Run the AppImage without requiring FUSE
-          ./tools/linuxdeploy --appimage-extract-and-run --appdir AppDir --plugin qt --output appimage
+          ls -R build
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: |
-            ./*.AppImage
-            */*.AppImage
-            AppDir/*.AppImage
+          path: build/*.AppImage
