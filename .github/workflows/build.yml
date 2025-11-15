@@ -21,10 +21,6 @@ jobs:
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev wget fuse-zip
 
-          # Make Qt6 binaries (qmake, etc.) available in PATH
-          export PATH=/usr/lib/qt6/bin:$PATH
-          qmake -v
-
       - name: Build project
         run: |
           mkdir -p build
@@ -40,7 +36,7 @@ jobs:
           mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Copy binary
+          # Copy your binary
           cp build/VidyaGod AppDir/usr/bin/
 
           # Copy default config
@@ -49,18 +45,18 @@ jobs:
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
 
-          # Copy main icon to root of AppDir
+          # Copy main icon
           cp resources/org.vidyagod.VidyaGod.png AppDir/
 
           # Copy AppRun
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
-          # Bundle fuse-zip binary
+          # Bundle fuse-zip (but NOT system libraries like libc)
           cp /usr/bin/fuse-zip AppDir/usr/bin/
-
-          # Bundle only non-system dependencies of fuse-zip
-          ldd /usr/bin/fuse-zip | grep '=>' | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib/x86_64-linux-gnu)$' | xargs -I{} cp -v {} AppDir/usr/lib/ || true
+          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib)$'); do
+              cp -v "$lib" AppDir/usr/lib/ || true
+          done
 
       - name: Download linuxdeployqt
         run: |
@@ -69,9 +65,9 @@ jobs:
 
       - name: Build AppImage
         run: |
-          # Ensure Qt6 qmake is on PATH
+          # Make sure Qt6 qmake is on PATH
           export PATH=/usr/lib/qt6/bin:$PATH
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage --no-copy-glibc
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
