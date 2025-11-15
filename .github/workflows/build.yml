@@ -17,9 +17,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-qmake qmake6-bin qt6-l10n-tools \
+          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev wget
+
+          # Make Qt6 binaries (qmake, etc.) available in PATH
+          export PATH=/usr/lib/qt6/bin:$PATH
+          qmake -v
 
       - name: Build project
         run: |
@@ -32,27 +36,28 @@ jobs:
         run: |
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-          mkdir -p AppDir/usr/share/metainfo
 
-          # Copy the binary
+          # Copy binary
           cp build/VidyaGod AppDir/usr/bin/
-
-          # Copy the desktop file
-          cp resources/org.vidyagod.VidyaGod.desktop AppDir/
-
-          # Copy the icon
-          cp resources/icons/org.vidyagod.VidyaGod_256x256.png AppDir/usr/share/icons/hicolor/256x256/apps/VidyaGod.png
 
           # Copy default config
           cp resources/DefaultConfig.JSON AppDir/usr/bin/
 
+          # Copy desktop file
+          cp resources/org.vidyagod.VidyaGod.desktop AppDir/
+
+          # Copy icon (adjust sizes if needed)
+          cp resources/icons/org.vidyagod.VidyaGod_256x256.png AppDir/usr/share/icons/hicolor/256x256/apps/VidyaGod.png
+
       - name: Download linuxdeployqt
         run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          wget https://github.com/AppImage/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
       - name: Build AppImage
         run: |
+          # Make sure Qt6 qmake is on PATH for linuxdeployqt
+          export PATH=/usr/lib/qt6/bin:$PATH
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
 
       - name: Upload AppImage
