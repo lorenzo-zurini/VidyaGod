@@ -228,6 +228,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     RunProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
     RunProcessEnvironment.insert("GAMEID", 0);
     RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
 
     RunProcess->setProcessEnvironment(RunProcessEnvironment);
     RunProcess->start();
@@ -650,6 +651,7 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
     RunProcess->setWorkingDirectory(this->Paths["WorkDirPath"]);
     //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
     RunProcessEnvironment.insert("WINEPREFIX", FinalRuntimePath);
+    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
     FinalExeArgs.prepend(FinalExePath);
 
     if (!FinalExeArgs.isEmpty())
