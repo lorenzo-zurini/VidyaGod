@@ -34,38 +34,33 @@ jobs:
 
       - name: Prepare AppDir
         run: |
-
-      - name: Prepare AppDir
-        run: |
           set -euxo pipefail
-      
+
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-      
+
           # Copy binary
           cp build/VidyaGod AppDir/usr/bin/
-      
+
           # Copy default config
           cp resources/DefaultConfig.JSON AppDir/usr/bin/
-      
+
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
-      
+
           # Copy main icon to root of AppDir
           cp resources/org.vidyagod.VidyaGod.png AppDir/
-      
+
           # Copy AppRun
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
-      
+
           # Bundle fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
-      
-          # Copy only non-system shared libs of fuse-zip
-          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib)$'); do
-              cp -v "$lib" AppDir/usr/lib/ || true
-          done
+
+          # Bundle only non-system dependencies of fuse-zip
+          ldd /usr/bin/fuse-zip | grep '=>' | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib/x86_64-linux-gnu)$' | xargs -I{} cp -v {} AppDir/usr/lib/ || true
 
       - name: Download linuxdeployqt
         run: |
@@ -74,9 +69,9 @@ jobs:
 
       - name: Build AppImage
         run: |
-          # Make sure Qt6 qmake is on PATH for linuxdeployqt
+          # Ensure Qt6 qmake is on PATH
           export PATH=/usr/lib/qt6/bin:$PATH
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage --no-copy-glibc
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
