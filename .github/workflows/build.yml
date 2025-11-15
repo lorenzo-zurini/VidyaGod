@@ -17,7 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qmake6-bin qt6-l10n-tools \
+          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-qmake qmake6-bin qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev wget
 
