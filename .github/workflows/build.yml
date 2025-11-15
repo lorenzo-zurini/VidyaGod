@@ -51,7 +51,6 @@ jobs:
 
           # Bundle fuse-zip
           cp /usr/bin/fuse-zip AppDir/usr/bin/
-          chmod +x AppDir/AppRun
 
           # Copy AppRun
           cp resources/AppRun AppDir/
