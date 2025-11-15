@@ -7,12 +7,8 @@ set -euxo pipefail  # Print each command, exit on errors, undefined vars are err
 APPDIR="$(dirname "$(readlink -f "$0")")"
 export APPDIR
 
-echo "=============================="
-echo "APPDIR: $APPDIR"
-echo "PATH: $PATH"
-echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
-echo "Current dir: $(pwd)"
-echo "=============================="
+# Ensure LD_LIBRARY_PATH exists
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
 
 # Add AppDir bin to PATH
 export PATH="$APPDIR/usr/bin:$PATH"
@@ -23,11 +19,26 @@ export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"
 # Set locale translations path
 export QT_TRANSLATIONS_DIR="$APPDIR/usr/share/locale"
 
-# Optional: drop into an interactive shell for debugging
+# Debug info
+echo "=============================="
+echo "APPDIR: $APPDIR"
+echo "PATH: $PATH"
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+echo "Current working directory: $(pwd)"
+echo "=============================="
+
+# Interactive shell mode for debugging
 if [[ "$1" == "--shell" ]]; then
-    echo "Launching interactive shell inside AppImage..."
+    cd "$APPDIR"
+    echo "Entering AppImage shell in $APPDIR"
     exec bash
 fi
 
-# Run the real app
+# Check if fuse-zip is available
+if ! command -v fuse-zip >/dev/null 2>&1; then
+    echo "ERROR: fuse-zip not found in PATH!"
+    exit 1
+fi
+
+# Run the actual application
 exec "$APPDIR/usr/bin/VidyaGod" "$@"
