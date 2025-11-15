@@ -33,4 +33,4 @@ if [[ "$1" == "--shell" ]]; then
 fi
 
 # Launch the application normally
-exec "$APPDIR/usr/bin/VidyaGod" "$@"
+LD_LIBRARY_PATH="$APPDIR/usr/lib" "$APPDIR/usr/bin/VidyaGod"
