@@ -62,8 +62,8 @@ jobs:
           # Bundle fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
       
-          # Automatically bundle fuse-zip shared libs
-          for lib in $(ldd /usr/bin/fuse-zip | grep '=>' | awk '{print $3}'); do
+          # Copy only non-system shared libs of fuse-zip
+          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib)$'); do
               cp -v "$lib" AppDir/usr/lib/ || true
           done
 
