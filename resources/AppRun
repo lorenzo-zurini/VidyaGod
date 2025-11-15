@@ -15,9 +15,8 @@ export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"
 # Set locale translations path
 export QT_TRANSLATIONS_DIR="$APPDIR/usr/share/locale"
 
-
+# Check for required executables
 executables=("unionfs" "fuse-zip" "umu-run")
-
 for exe in "${executables[@]}"; do
     if command -v "$exe" >/dev/null 2>&1; then
         echo "$exe is available on the system."
@@ -26,5 +25,12 @@ for exe in "${executables[@]}"; do
     fi
 done
 
-# Launch the application
+# If called with --shell, drop into an interactive shell
+if [[ "$1" == "--shell" ]]; then
+    echo "Launching interactive shell inside AppImage..."
+    cd "$APPDIR"
+    exec bash
+fi
+
+# Launch the application normally
 exec "$APPDIR/usr/bin/VidyaGod" "$@"
