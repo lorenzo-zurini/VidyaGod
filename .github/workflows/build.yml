@@ -39,7 +39,6 @@ jobs:
           mkdir build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
           make -j$(nproc)
-          ls -l unionfs-fuse/build/src/
 
       - name: Prepare AppDir
         run: |
