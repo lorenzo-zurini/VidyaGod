@@ -34,7 +34,7 @@ jobs:
 
       - name: Build unionfs-fuse
         run: |
-          git clone https://github.com/ptpt52/unionfs-fuse.git
+          git clone https://github.com/rpodgorny/unionfs-fuse.git
           cd unionfs-fuse
           ./autogen.sh
           ./configure
