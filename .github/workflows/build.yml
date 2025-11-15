@@ -58,6 +58,19 @@ jobs:
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
 
+
+      - name: Download linuxdeploy
+        run: |
+          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+      - name: Bundle AppImage with linuxdeploy
+        run: |
+          # Use linuxdeploy to bundle fuse-zip with its libraries
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/fuse-zip
+
       - name: Download linuxdeployqt
         run: |
           wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
