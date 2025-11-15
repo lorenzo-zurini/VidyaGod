@@ -19,9 +19,9 @@ jobs:
           sudo apt update
           sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev nlohmann-json3-dev wget fuse-zip
+            libxkbcommon-dev nlohmann-json3-dev wget fuse-zip autoconf automake libtool pkg-config
 
-          # Make Qt6 binaries (qmake, etc.) available in PATH
+          # Make Qt6 binaries available in PATH
           export PATH=/usr/lib/qt6/bin:$PATH
           qmake -v
 
@@ -31,6 +31,16 @@ jobs:
           cd build
           cmake ..
           make -j$(nproc)
+
+      - name: Build unionfs-fuse
+        run: |
+          git clone https://github.com/ptpt52/unionfs-fuse.git
+          cd unionfs-fuse
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          mkdir -p ../../AppDir/usr/bin
+          cp src/unionfs-fuse ../../AppDir/usr/bin/
 
       - name: Prepare AppDir
         run: |
@@ -58,15 +68,14 @@ jobs:
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
 
-
       - name: Download linuxdeploy
         run: |
           wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
 
-      - name: Bundle AppImage with linuxdeploy
+      - name: Bundle unionfs-fuse and fuse-zip
         run: |
-          # Use linuxdeploy to bundle fuse-zip with its libraries
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/unionfs-fuse
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/fuse-zip
 
       - name: Download linuxdeployqt
@@ -74,15 +83,15 @@ jobs:
           wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
-      - name: Bundle with linuxdeployqt
+      - name: Bundle main app with linuxdeployqt
         run: |
           export PATH=/usr/lib/qt6/bin:$PATH
 
-          # Bundle your app (will detect AppRun, desktop file, icons)
+          # Bundle your Qt app
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
           name: VidyaGod-AppImage
-          path: "*.AppImage"
+          path: "VidyaGod*.AppImage"
