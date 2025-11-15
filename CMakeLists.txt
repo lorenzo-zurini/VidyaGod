@@ -10,7 +10,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
-find_package(nlohmann_json REQUIRED)
+add_subdirectory(submodules/json)
+add_subdirectory(submodules/unionfs-fuse)
+add_subdirectory(submodules/fuse-zip/)
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
@@ -44,6 +46,7 @@ add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(VidyaGod PRIVATE unionfs-fuse)
 
 # Copy the default config to build directory
 configure_file(resources/DefaultConfig.JSON DefaultConfig.JSON COPYONLY)

@@ -1,0 +1,9 @@
+[submodule "submodules/json"]
+	path = submodules/json
+	url = https://github.com/nlohmann/json.git
+[submodule "submodules/unionfs-fuse"]
+	path = submodules/unionfs-fuse
+	url = https://github.com/rpodgorny/unionfs-fuse.git
+[submodule "submodules/fuse-zip"]
+	path = submodules/fuse-zip
+	url = https://github.com/ralic/fuse-zip.git
