@@ -46,13 +46,8 @@ jobs:
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
 
-          # Copy icon (adjust sizes if needed)
-          mkdir -p AppDir/usr/share/icons/hicolor
-          for size in 16 24 32 48 64 128 256 512 1024; do
-            mkdir -p AppDir/usr/share/icons/hicolor/${size}x${size}/apps
-            cp resources/icons/org.vidyagod.VidyaGod_${size}x${size}.png AppDir/usr/share/icons/hicolor/${size}x${size}/apps/VidyaGod.png
-          done
-
+          # Copy main icon to the root of AppDir
+          cp resources/org.vidyagod.VidyaGod.png AppDir/
 
       - name: Download linuxdeployqt
         run: |
