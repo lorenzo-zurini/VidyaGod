@@ -36,7 +36,15 @@ jobs:
           # Copy built binary and resources
           cp build/Desktop-Debug/VidyaGod flatpak/files/ || cp build/VidyaGod flatpak/files/
           cp resources/org.vidyagod.VidyaGod.desktop flatpak/files/
-          cp resources/org.vidyagod.VidyaGod.png flatpak/files/
+          cp resources/DefaultConfig.JSON flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_1024x1024.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_512x512.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_256x256.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_128x128.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_64x64.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_48x48.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_32x32.png flatpak/files/
+          cp resources/icons/org.vidyagod.VidyaGod_16x16.png flatpak/files/
 
           echo "Flatpak build context:"
           find flatpak -maxdepth 3 -type f
