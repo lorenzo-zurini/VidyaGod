@@ -353,8 +353,11 @@ void LibraryGameCard::on_PlayGameButton_clicked()
 
     Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
 
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Executing pre-run cleanup." << std::endl;
     GameRunner->Cleanup();
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Building runtime." << std::endl;
     GameRunner->BuildRuntime();
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"] << std::endl;
     GameRunner->Run();
     QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
     GameRunner->Cleanup();
