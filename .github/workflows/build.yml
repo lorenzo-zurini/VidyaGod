@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
-            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
+            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 \
             libxkbcommon-dev nlohmann-json3-dev wget fuse-zip autoconf automake libtool pkg-config
 
           # Make Qt6 binaries available in PATH
