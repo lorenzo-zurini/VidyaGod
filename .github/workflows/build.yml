@@ -1,4 +1,4 @@
-name: Build Flatpak
+name: Build AppImage
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  flatpak:
+  appimage:
     runs-on: ubuntu-latest
 
     steps:
@@ -17,52 +17,46 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y flatpak flatpak-builder cmake g++ build-essential \
-            qt6-base-dev qt6-tools-dev qt6-l10n-tools \
+          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev nlohmann-json3-dev
+            libxkbcommon-dev nlohmann-json3-dev wget
 
-
-      - name: Build app
+      - name: Build project
         run: |
           mkdir -p build
           cd build
           cmake ..
           make -j$(nproc)
 
-      - name: Prepare Flatpak context
+      - name: Prepare AppDir
         run: |
-          mkdir -p flatpak/files
-          # Copy built binary and resources
-          cp build/Desktop-Debug/VidyaGod flatpak/files/ || cp build/VidyaGod flatpak/files/
-          cp resources/org.vidyagod.VidyaGod.desktop flatpak/files/
-          cp resources/DefaultConfig.JSON flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_512x512.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_256x256.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_128x128.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_64x64.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_48x48.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_32x32.png flatpak/files/
-          cp resources/icons/org.vidyagod.VidyaGod_16x16.png flatpak/files/
+          mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/share/metainfo
 
-          echo "Flatpak build context:"
-          find flatpak -maxdepth 3 -type f
-          
-      - name: Install Flatpak SDK
+          # Copy the binary
+          cp build/VidyaGod AppDir/usr/bin/
+
+          # Copy the desktop file
+          cp resources/org.vidyagod.VidyaGod.desktop AppDir/
+
+          # Copy the icon
+          cp resources/icons/org.vidyagod.VidyaGod_256x256.png AppDir/usr/share/icons/hicolor/256x256/apps/VidyaGod.png
+
+          # Copy default config
+          cp resources/DefaultConfig.JSON AppDir/usr/bin/
+
+      - name: Download linuxdeployqt
         run: |
-          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          flatpak install --user -y flathub org.kde.Sdk//6.8
-          flatpak install --user -y flathub org.kde.Platform//6.8
+          wget https://github.com/AppImage/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
-      - name: Build Flatpak bundle
+      - name: Build AppImage
         run: |
-          mkdir -p build/flatpak
-          flatpak-builder --force-clean build/flatpak flatpak/org.vidyagod.VidyaGod.json
-          flatpak build-export build/repo build/flatpak
-          flatpak build-bundle build/repo VidyaGod.flatpak org.vidyagod.VidyaGod
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
 
-      - name: Upload Flatpak artifact
+      - name: Upload AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: VidyaGod-flatpak
-          path: VidyaGod.flatpak
+          name: VidyaGod-AppImage
+          path: "*.AppImage"
