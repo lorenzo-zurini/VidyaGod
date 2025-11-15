@@ -224,7 +224,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     RunProcess->setProgram("umu-run");
     RunProcess->setArguments({"wineboot"});
 
-    RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
+    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
     RunProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
     RunProcessEnvironment.insert("GAMEID", 0);
     RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
