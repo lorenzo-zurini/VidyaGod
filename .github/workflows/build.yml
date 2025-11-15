@@ -49,9 +49,16 @@ jobs:
           # Copy main icon to the root of AppDir
           cp resources/org.vidyagod.VidyaGod.png AppDir/
 
-                    # Bundle fuse-zip
+          # Bundle fuse-zip
           cp /usr/bin/fuse-zip AppDir/usr/bin/
           chmod +x AppDir/AppRun
+
+          # Copy AppRun
+          cp src/AppRun AppDir/
+          chmod +x AppDir/AppRun
+
+          # Copy DefaultConfig.JSON
+          cp resources/DefaultConfig.JSON AppDir/
 
       - name: Download linuxdeployqt
         run: |
