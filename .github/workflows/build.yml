@@ -54,7 +54,7 @@ jobs:
           chmod +x AppDir/AppRun
 
           # Copy AppRun
-          cp src/AppRun AppDir/
+          cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
           # Copy DefaultConfig.JSON
