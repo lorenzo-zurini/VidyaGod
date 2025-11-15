@@ -1,16 +1,12 @@
 #!/bin/bash
 # AppRun script for VidyaGod AppImage
 
-set -euxo pipefail  # Print each command, exit on errors, undefined vars are errors
+# Set APPDIR if not already set (AppImage sets this automatically)
+if [ -z "$APPDIR" ]; then
+    export APPDIR="$(dirname "$(readlink -f "$0")")"
+fi
 
-# The root of the AppImage
-APPDIR="$(dirname "$(readlink -f "$0")")"
-export APPDIR
-
-# Ensure LD_LIBRARY_PATH exists
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-
-# Add AppDir bin to PATH
+# Add bundled binaries to PATH (so fuse-zip can be called)
 export PATH="$APPDIR/usr/bin:$PATH"
 
 # Add Qt libraries if necessary (optional, linuxdeployqt usually handles this)
@@ -19,26 +15,5 @@ export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"
 # Set locale translations path
 export QT_TRANSLATIONS_DIR="$APPDIR/usr/share/locale"
 
-# Debug info
-echo "=============================="
-echo "APPDIR: $APPDIR"
-echo "PATH: $PATH"
-echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
-echo "Current working directory: $(pwd)"
-echo "=============================="
-
-# Interactive shell mode for debugging
-if [[ "$1" == "--shell" ]]; then
-    cd "$APPDIR"
-    echo "Entering AppImage shell in $APPDIR"
-    exec bash
-fi
-
-# Check if fuse-zip is available
-if ! command -v fuse-zip >/dev/null 2>&1; then
-    echo "ERROR: fuse-zip not found in PATH!"
-    exit 1
-fi
-
-# Run the actual application
+# Launch the application
 exec "$APPDIR/usr/bin/VidyaGod" "$@"
