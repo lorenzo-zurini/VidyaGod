@@ -63,6 +63,9 @@ jobs:
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
+          # Copy unionfs-fuse binary
+          cp cp unionfs-fuse/build/unionfs AppDir/usr/bin/unionfs
+
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
 
@@ -73,7 +76,7 @@ jobs:
 
       - name: Bundle unionfs-fuse and fuse-zip
         run: |
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/unionfs-fuse
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/unionfs
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/fuse-zip
 
       - name: Download linuxdeployqt
