@@ -2,6 +2,7 @@
 #define FILESYSTEMOPERATIONS_H
 
 #include <QDir>
+#include <iostream>
 #include <QDirIterator>
 #include <QProcess>
 

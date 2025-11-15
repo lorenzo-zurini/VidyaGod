@@ -113,7 +113,7 @@ private:
 
     //QSlider * GridSizeSlider;
 
-    void InitClassVariables();
+    bool InitClassVariables();
 
     void BuildStaticUI();
     void BuildLibraryGameCards();

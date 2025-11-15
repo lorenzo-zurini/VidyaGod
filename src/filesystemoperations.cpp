@@ -7,20 +7,20 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     //Check if the path is empty, such as when the file picker was canceled.
     if (PackageDir->path().isEmpty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Path is empty. Canceled?";
+        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[ERR] Path is empty. Canceled?" << std::endl;
         return false;
     }
 
-    //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Scanning" << PackageDir->path();
+    std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[OUT] Scanning" << PackageDir->path().toStdString() << std::endl;
 
     //Check if the directory contains a METADATA subdirectory.
     if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Selected directory does not contain METADATA subdirectory.";
+        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[ERR] Selected directory does not contain METADATA subdirectory." << std::endl;
         return false;
     }
 
-    //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Valid package!";
+    std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[OUT] Valid package!" << std::endl;
     return true;
 }
 

@@ -4,36 +4,36 @@ JSONOps::JSONOps() {}
 
 nlohmann::ordered_json * JSONOps::LoadJSON(QFile * JSONFile)
 {
-    //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] Parsing JSON" << JSONFile->fileName();
+    std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Parsing JSON" << JSONFile->fileName().toStdString() << std::endl;
     nlohmann::ordered_json * JSONDocument;
 
     if (!JSONFile->exists())
     {
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[ERR] File" << JSONFile->fileName() << "does not exist.";
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] File" << JSONFile->fileName().toStdString() << "does not exist." << std::endl;
         return nullptr;
     }
     if (JSONFile->open(QFile::ReadOnly))
     {
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName() << "opened for reading successfully!";
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName().toStdString() << "opened for reading successfully!" << std::endl;
         QByteArray JSONFileData = JSONFile->readAll();
         if (nlohmann::ordered_json::accept(JSONFileData))
         {
-            //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName() << "appears valid, parsing.";
+            std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName().toStdString() << "appears valid, parsing." << std::endl;
             JSONDocument = new nlohmann::ordered_json(nlohmann::ordered_json::parse(JSONFileData));
         }
         else
         {
-            //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[ERR] Invalid JSON!";
+            std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] Invalid JSON!" << std::endl;
             return nullptr;
         }
 
         JSONFile->close();
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] Parse done!";
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Parse done!" << std::endl;
         return JSONDocument;
     }
     else
     {
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[ERR] Could not open file for reading!";
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] Could not open file for reading!" << std::endl;
         return nullptr;
     }
 }
@@ -42,8 +42,8 @@ bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] File opened for writing successfully!";
-        //qDebug().noquote() << QTime::currentTime().toString()  << "JSONOperations:" << "[OUT] Saved" << JSONFile->fileName();
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File opened for writing successfully!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Saved" << JSONFile->fileName().toStdString() << std::endl;
         QTextStream OutFileStream(JSONFile);
         OutFileStream << QString::fromStdString((*JSONDocument).dump(4));
         JSONFile->close();

@@ -30,7 +30,7 @@ MainWindow::~MainWindow()
     delete ui;
 }
 
-void MainWindow::InitClassVariables()
+bool MainWindow::InitClassVariables()
 {
     ApplicationPath = QCoreApplication::applicationDirPath();
 
@@ -40,12 +40,22 @@ void MainWindow::InitClassVariables()
     GlobalConfigFile = new QFile(AppDataDir->filePath("GlobalConfig.JSON"));
     if (!GlobalConfigFile->exists())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... ";
-        QFile("DefaultConfig.JSON").copy(GlobalConfigFile->fileName());
+        std::cout << QTime::currentTime().toString().toStdString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... " << std::endl;
+        QFile * DefaultConfigFile = new QFile("DefaultConfig.JSON");
+        if (!DefaultConfigFile->exists())
+        {
+            std::cout << "DefaultConfig.JSON not found, aborting." << std::endl;
+            return false;
+        }
+
+
+        //                        .copy(GlobalConfigFile->fileName());
     }
     GlobalConfigJSON = JSONOps::LoadJSON(GlobalConfigFile);
 
     ProtonPath = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
+
+    return true;
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -131,7 +141,7 @@ void MainWindow::BuildLibraryGameCards()
 
 void MainWindow::BuildLibraryDynamicUI()
 {
-    //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Building LibraryDynamicUI";
+    std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[OUT] Building LibraryDynamicUI" << std::endl;
     if (LibraryScrollArea->widget() != nullptr)
     {
         //Reparent all LibraryGameCards so they survive LibraryWidget being deleted.
@@ -155,7 +165,7 @@ void MainWindow::BuildLibraryDynamicUI()
 
     if (LibraryGameCards->empty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] GameCard array is empty, aborting building LibraryDynamicUI";
+        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] GameCard array is empty, aborting building LibraryDynamicUI" << std::endl;
         return;
     }
 
@@ -216,7 +226,7 @@ void MainWindow::on_AddGameButton_clicked()
 
     if(!FSOps::CheckPackageValid(PackageDir))
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Invalid package, aborting..";
+        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Invalid package, aborting.." << std::endl;
         return;
     }
 
@@ -224,20 +234,20 @@ void MainWindow::on_AddGameButton_clicked()
     nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
     if (MANIFESTJSON == nullptr)
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Parser returned nullptr.";
+        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Parser returned nullptr." << std::endl;
         delete MANIFESTJSON;
         return;
     }
     else
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON.";
+        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON." << std::endl;
     }
 
     for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
     {
         if ((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"] == (*MANIFESTJSON)["PACKAGEUID"])
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "MainWindow:" << "[ERR] Package already exists in library.";
+            std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Package already exists in library." << std::endl;
             return;
         }
     }
@@ -260,7 +270,7 @@ bool MainWindow::SaveGlobalConfigJSON()
 void MainWindow::MainWindowGridSizeChanged()
 {
     QSlider * Slider = qobject_cast<QSlider *>(QObject::sender());
-    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Set GridSize" << Slider->value();
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Set GridSize" << Slider->value() << std::endl;
     (*GlobalConfigJSON)["Settings"]["LibraryGridSize"] = Slider->value();
     MainWindow::SaveGlobalConfigJSON();
     BuildLibraryDynamicUI();
@@ -339,7 +349,7 @@ void LibraryGameCard::InitializeClassVariables()
 
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
-    //qDebug().noquote() << QTime::currentTime().toString() << "[OUT] MainWindow:" << "Running game" << QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"]);
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"] << std::endl;
 
     Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
 

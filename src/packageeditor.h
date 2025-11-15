@@ -2,6 +2,7 @@
 #define PACKAGEEDITOR_H
 
 #include <QWidget>
+#include <iostream>
 #include <QDialog>
 #include <QScreen>
 

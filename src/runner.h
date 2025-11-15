@@ -11,6 +11,7 @@
 #include <QGuiApplication>
 #include <QApplication>
 #include <QMessageBox>
+#include <iostream>
 
 
 #include "jsonoperations.h"

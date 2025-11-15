@@ -2,6 +2,7 @@
 #define JSONOPERATIONS_H
 
 #include <QJsonDocument>
+#include <iostream>
 #include <QJsonObject>
 #include <QJsonArray>
 

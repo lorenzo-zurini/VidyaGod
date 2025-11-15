@@ -18,11 +18,11 @@ Runner::Runner(
 
 bool Runner::InitParams()
 {
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Initializing Runner";
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Initializing Runner" << std::endl;
 
     if ((this->subgame == 0) && (this->component == 0))
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Neither subgame nor component specified, mounting defprefix." << component;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Neither subgame nor component specified, mounting defprefix." << component << std::endl;
     }
     else if ((this->subgame != 0) && (this->component == 0))
     {
@@ -30,15 +30,15 @@ bool Runner::InitParams()
         {
             component = QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["COMPONENT"]).toInt();
         }
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running subgame" << QString::fromStdString((*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["TITLE"]);
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Running subgame" << (*this->MANIFESTJSON)["SUBGAMES"][this->subgame - 1]["TITLE"] << std::endl;
     }
     else if ((this->subgame == 0) && (this->component != 0))
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running component" << QString::fromStdString((*this->MANIFESTJSON)["COMPONENTS"][this->component - 1]["NAME"]);
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Running component" << (*this->MANIFESTJSON)["COMPONENTS"][this->component - 1]["NAME"] << std::endl;
     }
     else
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Running subgame" << subgame << "component" << component;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Running subgame" << subgame << "component" << component << std::endl;
     }
 
     this->PackageName = QString::fromStdString((*MANIFESTJSON)["PACKAGENAME"]);
@@ -46,52 +46,52 @@ bool Runner::InitParams()
     this->PackageUID = QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"]);
 
     this->Paths["ProtonPath"] = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProtonPath" << this->Paths["ProtonPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProtonPath" << this->Paths["ProtonPath"].toStdString() << std::endl;
 
     this->Paths["PackagePath"] = PackageDir->path();
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackagePath" << this->Paths["PackagePath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] PackagePath" << this->Paths["PackagePath"].toStdString() << std::endl;
 
     this->Paths["RuntimePath"] = FSOps::SubPath(Paths["PackagePath"], "RUNTIME");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] RuntimePath" << this->Paths["RuntimePath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] RuntimePath" << this->Paths["RuntimePath"].toStdString() << std::endl;
 
     this->Paths["ProgramPath"] = FSOps::SubPath(FSOps::SubPath(Paths["RuntimePath"], "drive_c"), QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"]));
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProgramPath" << Runner::Paths["ProgramPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProgramPath" << Runner::Paths["ProgramPath"].toStdString() << std::endl;
 
     this->Paths["MetaDataPath"] = FSOps::SubPath(Paths["PackagePath"], "METADATA");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] MetaDataPath" << this->Paths["MetaDataPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] MetaDataPath" << this->Paths["MetaDataPath"].toStdString() << std::endl;
 
     this->Paths["PackageFilesPath"] = FSOps::SubPath(Paths["PackagePath"], "PACKAGEFILES");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] PackageFilesPath" << this->Paths["PackageFilesPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] PackageFilesPath" << this->Paths["PackageFilesPath"].toStdString() << std::endl;
 
     this->Paths["UserDataPath"] = FSOps::SubPath(Paths["PackagePath"], "USERDATA");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UserDataPath" << this->Paths["UserDataPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UserDataPath" << this->Paths["UserDataPath"].toStdString() << std::endl;
 
     this->Paths["TempPath"] = FSOps::SubPath(Paths["PackagePath"], "TEMP");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] TempPath" << this->Paths["TempPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] TempPath" << this->Paths["TempPath"].toStdString() << std::endl;
 
     this->Paths["DefPrefixPath"] = FSOps::SubPath(Paths["TempPath"], "DEFPREFIX");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] DefPrefixPath" << this->Paths["DefPrefixPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] DefPrefixPath" << this->Paths["DefPrefixPath"].toStdString() << std::endl;
 
     if (this->subgame != 0)
     {
         this->GameName = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["TITLE"]);
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] GameName: " << this->GameName;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] GameName: " << this->GameName.toStdString() << std::endl;
 
         this->UMUID = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["UMUID"]);
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UMUID: " << this->UMUID;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UMUID: " << this->UMUID.toStdString() << std::endl;
 
         this->ExePath = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEPATH"]);
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] EXEPATH: " << this->ExePath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] EXEPATH: " << this->ExePath.toStdString() << std::endl;
 
         if (!((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].empty() || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"] == "" || (*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"].is_null()))
         {
             this->Paths["WorkDirPath"] = QDir::cleanPath(this->Paths["ProgramPath"] + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["WORKDIR"]));
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WORKDIR: " << this->Paths["WorkDirPath"];
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WORKDIR: " << this->Paths["WorkDirPath"].toStdString() << std::endl;
         }
         else
         {
             this->Paths["WorkDirPath"] = this->Paths["ProgramPath"];
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WORKDIR: " << this->Paths["WorkDirPath"];
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WORKDIR: " << this->Paths["WorkDirPath"].toStdString() << std::endl;
         }
 
         //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
@@ -100,7 +100,7 @@ bool Runner::InitParams()
             this->ExeArgs = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][subgame - 1]["EXEARGS"]).split(" ");
             for (int i = 0; i < this->ExeArgs.count(); i++)
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << QString("[OUT] ExeArg %1:").arg(i) << this->ExeArgs.at(i);
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << QString("[OUT] ExeArg %1:").arg(i).toStdString() << this->ExeArgs.at(i).toStdString() << std::endl;
             }
         }
     }
@@ -113,40 +113,40 @@ bool Runner::InitParams()
 
         if ((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"].is_null())
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Parent component is null, ending recipe.";
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Parent component is null, ending recipe." << std::endl;
             break;
         }
 
         if ((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"] == "")
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Parent component is empty, ending recipe.";
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Parent component is empty, ending recipe." << std::endl;
             break;
         }
 
         if (QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]).toInt() == 0)
         {
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Parent component is 0, ending recipe.";
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Parent component is 0, ending recipe." << std::endl;
             break;
         }
 
         component = QString::fromStdString((*MANIFESTJSON)["COMPONENTS"][component - 1]["PARENTCOMPONENT"]).toInt();
     }
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Recipe:" << this->Recipe;
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Recipe:" << this->Recipe.toStdString();
 
     this->WindowsPaths["WindowsProgramPath"] = QDir::cleanPath("C:/" + this->PackageUID).replace("/", "\\");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPath" << this->WindowsPaths["WindowsProgramPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsProgramPath" << this->WindowsPaths["WindowsProgramPath"].toStdString() << std::endl;
 
     this->WindowsPaths["WindowsExePath"] = QDir::cleanPath("C:/" + this->PackageUID + QDir::separator() + this->ExePath).replace("/", "\\");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsExePath" << this->WindowsPaths["WindowsExePath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsExePath" << this->WindowsPaths["WindowsExePath"].toStdString() << std::endl;
 
     this->WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + this->PackageUID).replace("/", "\\\\");
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << this->WindowsPaths["WindowsProgramPathDoubleBackSlash"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << this->WindowsPaths["WindowsProgramPathDoubleBackSlash"].toStdString() << std::endl;
 
     this->SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"].toStdString() << std::endl;
 
     this->SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"].toStdString() << std::endl;
 
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].size(); i++)
@@ -160,7 +160,7 @@ bool Runner::InitParams()
             }
         }
     }
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Completed SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Completed SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
 
     this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->WindowsPaths);
     this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->Paths);
@@ -171,9 +171,9 @@ bool Runner::InitParams()
     this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->SystemVariables);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< QString::fromStdString(SubComponentsArray.dump(4));
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Runner initialisation complete!";
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Runner initialisation complete!" << std::endl;
     return true;
 }
 
@@ -182,14 +182,14 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     QString FinalRuntimePath = this->Paths["RuntimePath"];
     if (!OverrideRuntimePath.isNull())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath.toStdString() << std::endl;
         FinalRuntimePath = OverrideRuntimePath;
     }
 
     QString FinalUserDataPath = this->Paths["UserDataPath"];
     if (!OverrideUserDataPath.isNull())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Passed UserDataPath" << OverrideUserDataPath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed UserDataPath" << OverrideUserDataPath.toStdString() << std::endl;
         FinalUserDataPath = OverrideUserDataPath;
     }
 
@@ -217,7 +217,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     QString UnionFSString;
 
     //Initialising UMU prefix.
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Initialising prefix" << this->Paths["DefPrefixPath"];
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Initialising prefix" << this->Paths["DefPrefixPath"].toStdString() << std::endl;
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     QProcess * RunProcess = new QProcess;
@@ -239,18 +239,18 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     if(RunProcess->exitCode() == 0)
     {
         delete RunProcess;
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Prefix initialisation successful!";
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Prefix initialisation successful!" << std::endl;
         UnionFSString.prepend(this->Paths["DefPrefixPath"] + "=RO");
     }
     else
     {
         delete RunProcess;
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Prefix initialisation failed!";
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Prefix initialisation failed!" << std::endl;
         return false;
     }
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Executing registry subcomponents";
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Executing registry subcomponents" << std::endl;
 
     QProcessEnvironment RegAddProcessEnvironment = QProcessEnvironment::systemEnvironment();
     RegAddProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
@@ -288,7 +288,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
                         CommandArgs.append("/reg:32");
                     }
 
-                    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
+                    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
                     //this->Run("reg", CommandArgs);
                     RegAddProcess->setArguments(CommandArgs);
                     RegAddProcess->start();
@@ -311,7 +311,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
                     CommandArgs.append("/reg:32");
                 }
 
-                //qDebug().noquote() << QTime::currentTime().toString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
+                //std::cout << QTime::currentTime().toString().toStdString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
                 //this->Run("reg", CommandArgs);
                 RegAddProcess->setArguments(CommandArgs);
                 RegAddProcess->start();
@@ -326,7 +326,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing filesystem Subcomponents.");
     //Mounting filesystem components in TEMP and adding to UnionFSString
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Processing filesystem Subcomponents.";
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Processing filesystem Subcomponents." << std::endl;
     for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = Runner::SubComponentsArray[i];
@@ -349,7 +349,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
             QString ZipFilePath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
 
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Mounting ZipFileLayer" << ZipFilePath << "at" << MountDir.path();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Mounting ZipFileLayer" << ZipFilePath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
 
             QProcess * MountZip = new QProcess;
             MountZip->setProgram("fuse-zip");
@@ -363,11 +363,11 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
             }
             else
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to mount zip file layer" << ZipFilePath;
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to mount zip file layer" << ZipFilePath.toStdString() << std::endl;
                 delete MountZip;
                 return false;
             }
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
         }
         else if (SubComponentJSON["TYPE"] == "DirLayer")
         {
@@ -388,7 +388,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
             QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
 
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Mounting DirLayer" << DirPath << "at" << MountDir.path();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Mounting DirLayer" << DirPath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
 
             QProcess * BindDir = new QProcess;
             BindDir->setProgram("bindfs");
@@ -402,13 +402,13 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
             }
             else
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to mount dir layer" << DirPath;
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to mount dir layer" << DirPath.toStdString() << std::endl;
                 //qDebug().noquote() << BindDir->readAllStandardError();
                 //qDebug().noquote() << BindDir->readAllStandardOutput();
                 delete BindDir;
                 return false;
             }
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
         }
     }
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -418,20 +418,20 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
     if (FinalUserDataPath == "READONLY")
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << "NO USERDATA - RUNTIME IS READONLY!";
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << "NO USERDATA - RUNTIME IS READONLY!" << std::endl;
     }
     else
     {
         UnionFSString.prepend(FinalUserDataPath + "=RW:");
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
         QDir(FinalUserDataPath).mkpath(FinalUserDataPath);
     }
 
     QDir(FinalRuntimePath).mkpath(FinalRuntimePath);
 
     //Mounting UnionFS
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Building UnionFS.";
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] FINAL UnionFSString:" << UnionFSString;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Building UnionFS." << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] FINAL UnionFSString:" << UnionFSString.toStdString() << std::endl;
 
     QProcess * BuildUnionFS = new QProcess;
     BuildUnionFS->setProgram("unionfs");
@@ -442,12 +442,12 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
     if(BuildUnionFS->exitCode() == 0)
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[OUT] Successfully mounted UnionFS!";
+        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[OUT] Successfully mounted UnionFS!" << std::endl;
         delete BuildUnionFS;
     }
     else
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "FSOperations:" << "[ERR] Failed to mount UnionFS!";
+        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[ERR] Failed to mount UnionFS!" << std::endl;
         delete BuildUnionFS;
         return false;
     }
@@ -455,7 +455,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing other Subcomponents.");
     //PROCESSING OTHER SUBCOMPONENTS
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Processing other subcomponents.";
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Processing other subcomponents." << std::endl;
     for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = Runner::SubComponentsArray[i];
@@ -491,18 +491,18 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
     QString FinalRuntimePath = this->Paths["RuntimePath"];
     if (!OverrideRuntimePath.isNull())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath.toStdString() << std::endl;
         FinalRuntimePath = OverrideRuntimePath;
     }
 
     //Destroy UnionFS
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Unmounting UnionFS" << FinalRuntimePath;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Unmounting UnionFS" << FinalRuntimePath.toStdString() << std::endl;
     QProcess * UnmountUnionFS = new QProcess;
     UnmountUnionFS->setProgram("fusermount");
     UnmountUnionFS->setArguments({"-uz", FinalRuntimePath});
     UnmountUnionFS->start();
     UnmountUnionFS->waitForFinished(-1);
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountUnionFS->exitCode();
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountUnionFS->exitCode() << std::endl;
     //qDebug().noquote() << UnmountUnionFS->readAllStandardError();
     //qDebug().noquote() << UnmountUnionFS->readAllStandardOutput();
     delete UnmountUnionFS;
@@ -531,7 +531,7 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
             UnmountDir->setArguments({"-uz", MountDir.path()});
             UnmountDir->start();
             UnmountDir->waitForFinished(-1);
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode() << std::endl;
             //qDebug().noquote() << UnmountDir->readAllStandardError();
             //qDebug().noquote() << UnmountDir->readAllStandardOutput();
 
@@ -541,7 +541,7 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
             }
             else
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path();
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path().toStdString() << std::endl;
                 delete UnmountDir;
                 return false;
             }
@@ -564,14 +564,14 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
 
             QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
 
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Unmounting DirLayer" << DirPath << "at" << MountDir.path();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Unmounting DirLayer" << DirPath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
 
             QProcess * UnmountDir = new QProcess;
             UnmountDir->setProgram("fusermount");
             UnmountDir->setArguments({"-uz", MountDir.path()});
             UnmountDir->start();
             UnmountDir->waitForFinished(-1);
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode() << std::endl;
             //qDebug().noquote() << UnmountDir->readAllStandardError();
             //qDebug().noquote() << UnmountDir->readAllStandardOutput();
 
@@ -581,7 +581,7 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
             }
             else
             {
-                //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path();
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path().toStdString() << std::endl;
                 delete UnmountDir;
                 return false;
             }
@@ -613,36 +613,36 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
 
     if (!OverrideExePath.isEmpty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath.toStdString() << std::endl;
         FinalExePath = OverrideExePath;
     }
 
     if (!OverrideExeArgs.isEmpty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs;
+        //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs.toStdString();
         FinalExeArgs = OverrideExeArgs;
     }
 
     if (!OverrideRuntimePath.isEmpty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath;
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath.toStdString() << std::endl;
         FinalRuntimePath = OverrideRuntimePath;
     }
 
     if(FinalExePath.isEmpty())
     {
-        //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] ExePath is empty! Nothing to execute! Aborting";
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] ExePath is empty! Nothing to execute! Aborting" << std::endl;
         return false;
     }
 
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Executing with umu-launcher: " << FinalExePath << FinalExeArgs;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ProtonPath:" << this->Paths["ProtonPath"];
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WinePrefix:" << FinalRuntimePath;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ExePath:" << FinalExePath;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] ExeArgs:" << FinalExeArgs;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WorkDirPath:" << this->Paths["WorkDirPath"];
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] GAMEID:" << this->UMUID;
-    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] DllOverrides:" << this->DllOverrides;
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Executing with umu-launcher: " << FinalExePath.toStdString() << FinalExeArgs.toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProtonPath:" << this->Paths["ProtonPath"].toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WinePrefix:" << FinalRuntimePath.toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ExePath:" << FinalExePath.toStdString() << std::endl;
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ExeArgs:" << FinalExeArgs.toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WorkDirPath:" << this->Paths["WorkDirPath"].toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] GAMEID:" << this->UMUID.toStdString() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] DllOverrides:" << this->DllOverrides.toStdString() << std::endl;
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     QProcess * RunProcess = new QProcess;
@@ -661,7 +661,7 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
     //{
     //    RunProcess->setWorkingDirectory(this->Paths["WorkDirPath"]);
     //    //RunProcess->setWorkingDirectory(FSOps::SubPath(FSOps::SubPath(FSOps::SubPath(FinalRuntimePath, "drive_c"), QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"])), this->WorkDir));
-    //    //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] WorkDirPath:" << RunProcess->workingDirectory();
+    //    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WorkDirPath:" << RunProcess->workingDirectory();
     //}
 
     RunProcessEnvironment.insert("GAMEID", this->UMUID);
@@ -730,7 +730,7 @@ bool Runner::RegAdd(nlohmann::ordered_json SubComponentJSON)
                 CommandArgs.append("/reg:32");
             }
 
-            //qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
             this->Run("reg", CommandArgs);
         }
     }
@@ -745,7 +745,7 @@ bool Runner::RegAdd(nlohmann::ordered_json SubComponentJSON)
             CommandArgs.append("/reg:32");
         }
 
-        //qDebug().noquote() << QTime::currentTime().toString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
+        std::cout << QTime::currentTime().toString().toStdString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
         this->Run("reg", CommandArgs);
     }
     return true;
