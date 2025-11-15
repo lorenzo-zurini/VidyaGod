@@ -16,7 +16,7 @@ export LD_LIBRARY_PATH="$APPDIR/usr/lib:$LD_LIBRARY_PATH"
 export QT_TRANSLATIONS_DIR="$APPDIR/usr/share/locale"
 
 # Check for required executables
-executables=("unionfs" "fuse-zip" "umu-run")
+executables=("unionfs" "fuse-zip" "umu-run" "fusermount")
 for exe in "${executables[@]}"; do
     if command -v "$exe" >/dev/null 2>&1; then
         echo "$exe is available on the system."
