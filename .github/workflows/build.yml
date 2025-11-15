@@ -19,7 +19,7 @@ jobs:
           sudo apt update
           sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
-            libxkbcommon-dev nlohmann-json3-dev wget
+            libxkbcommon-dev nlohmann-json3-dev wget fuse-zip
 
           # Make Qt6 binaries (qmake, etc.) available in PATH
           export PATH=/usr/lib/qt6/bin:$PATH
@@ -48,6 +48,10 @@ jobs:
 
           # Copy main icon to the root of AppDir
           cp resources/org.vidyagod.VidyaGod.png AppDir/
+
+                    # Bundle fuse-zip
+          cp /usr/bin/fuse-zip AppDir/usr/bin/
+          chmod +x AppDir/AppRun
 
       - name: Download linuxdeployqt
         run: |
