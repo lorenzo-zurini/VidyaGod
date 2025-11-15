@@ -34,30 +34,38 @@ jobs:
 
       - name: Prepare AppDir
         run: |
+
+      - name: Prepare AppDir
+        run: |
+          set -euxo pipefail
+      
           mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-
+      
           # Copy binary
-          cp build/VidyaGod AppDir/usr/bin/
-
+          cp build/Desktop-Release/VidyaGod AppDir/usr/bin/
+      
           # Copy default config
           cp resources/DefaultConfig.JSON AppDir/usr/bin/
-
+      
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
-
-          # Copy main icon to the root of AppDir
+      
+          # Copy main icon to root of AppDir
           cp resources/org.vidyagod.VidyaGod.png AppDir/
-
-          # Bundle fuse-zip
-          cp /usr/bin/fuse-zip AppDir/usr/bin/
-
+      
           # Copy AppRun
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
-
-          # Copy DefaultConfig.JSON
-          cp resources/DefaultConfig.JSON AppDir/
+      
+          # Bundle fuse-zip binary
+          cp /usr/bin/fuse-zip AppDir/usr/bin/
+      
+          # Automatically bundle fuse-zip shared libs
+          for lib in $(ldd /usr/bin/fuse-zip | grep '=>' | awk '{print $3}'); do
+              cp -v "$lib" AppDir/usr/lib/ || true
+          done
 
       - name: Download linuxdeployqt
         run: |
