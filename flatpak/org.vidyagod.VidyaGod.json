@@ -22,17 +22,52 @@
         },
         {
           "type": "file",
-          "path": "../resources/VidyaGod.desktop"
+          "path": "../resources/org.vidyagod.VidyaGod.desktop"
         },
         {
           "type": "file",
-          "path": "../resources/VidyaGod.png"
+          "path": "../resources/icons/org.vidyagod.VidyaGod_1024x1024.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_512x512.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_256x256.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_128x128.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_64x64.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_48x48.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_32x32.png"
+        },
+        {
+          "type": "file",
+          "path": "../resources/icons/org.vidyagod.VidyaGod_16x16.png"
         }
       ],
       "build-commands": [
         "install -Dm755 VidyaGod /app/bin/VidyaGod",
-        "install -Dm644 VidyaGod.desktop /app/share/applications/VidyaGod.desktop",
-        "install -Dm644 VidyaGod.png /app/share/icons/hicolor/256x256/apps/VidyaGod.png"
+        "install -Dm644 VidyaGod.desktop /app/share/applications/org.vidyagod.VidyaGod.desktop",
+        "install -Dm644 org.vidyagod.VidyaGod_1024x1024.png /app/share/icons/hicolor/1024x1024/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_512x512.png /app/share/icons/hicolor/512x512/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_256x256.png /app/share/icons/hicolor/256x256/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_128x128.png /app/share/icons/hicolor/128x128/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_64x64.png /app/share/icons/hicolor/64x64/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_48x48.png /app/share/icons/hicolor/48x48/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_32x32.png /app/share/icons/hicolor/32x32/apps/org.vidyagod.VidyaGod.png",
+        "install -Dm644 org.vidyagod.VidyaGod_16x16.png /app/share/icons/hicolor/16x16/apps/org.vidyagod.VidyaGod.png"
       ]
     }
   ]
