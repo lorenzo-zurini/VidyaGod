@@ -1,6 +1,16 @@
 #!/bin/bash
 # AppRun script for VidyaGod AppImage
 
+executables=("unionfs" "fuse-zip" "umu-run")
+
+for exe in "${executables[@]}"; do
+    if command -v "$exe" >/dev/null 2>&1; then
+        echo "$exe is available on the system."
+    else
+        echo "$exe is NOT available on the system."
+    fi
+done
+
 # Set APPDIR if not already set (AppImage sets this automatically)
 if [ -z "$APPDIR" ]; then
     export APPDIR="$(dirname "$(readlink -f "$0")")"
