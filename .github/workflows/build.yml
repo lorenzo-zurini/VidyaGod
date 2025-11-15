@@ -21,6 +21,10 @@ jobs:
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev \
             libxkbcommon-dev nlohmann-json3-dev wget fuse-zip
 
+          # Make Qt6 binaries (qmake, etc.) available in PATH
+          export PATH=/usr/lib/qt6/bin:$PATH
+          qmake -v
+
       - name: Build project
         run: |
           mkdir -p build
@@ -33,10 +37,9 @@ jobs:
           set -euxo pipefail
 
           mkdir -p AppDir/usr/bin
-          mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Copy your main binary
+          # Copy your app binary
           cp build/VidyaGod AppDir/usr/bin/
 
           # Copy default config
@@ -52,25 +55,23 @@ jobs:
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
-          # Bundle fuse-zip binary
+          # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
-
-          # Automatically bundle only non-system dependencies of fuse-zip
-          # Exclude libc, libm, libpthread, ld-linux, libGL*, etc.
-          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib/x86_64-linux-gnu/|/lib64|/lib64/ld-linux)'); do
-              cp -v "$lib" AppDir/usr/lib/ || true
-          done
 
       - name: Download linuxdeployqt
         run: |
           wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
-      - name: Build AppImage
+      - name: Bundle with linuxdeployqt
         run: |
-          # Make sure Qt6 qmake is on PATH
           export PATH=/usr/lib/qt6/bin:$PATH
+
+          # Bundle your app (will detect AppRun, desktop file, icons)
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
+
+          # Explicitly bundle fuse-zip libraries
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/usr/bin/fuse-zip -executable
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
