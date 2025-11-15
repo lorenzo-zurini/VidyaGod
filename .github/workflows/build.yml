@@ -35,8 +35,8 @@ jobs:
           mkdir -p flatpak/files
           # Copy built binary and resources
           cp build/Desktop-Debug/VidyaGod flatpak/files/ || cp build/VidyaGod flatpak/files/
-          cp resources/VidyaGod.desktop flatpak/files/
-          cp resources/VidyaGod.png flatpak/files/
+          cp resources/org.vidyagod.VidyaGod.desktop flatpak/files/
+          cp resources/org.vidyagod.VidyaGod.png flatpak/files/
 
           echo "Flatpak build context:"
           find flatpak -maxdepth 3 -type f
