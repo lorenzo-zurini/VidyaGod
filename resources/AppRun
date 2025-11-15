@@ -32,5 +32,11 @@ if [[ "$1" == "--shell" ]]; then
     exec bash
 fi
 
+# Resolve the directory where this script (AppRun) lives
+HERE="$(dirname "$(readlink -f "$0")")"
+
+# Output the path for debugging
+echo "AppRun is located in: $HERE"
+
 # Launch the application normally
 LD_LIBRARY_PATH="$APPDIR/usr/lib" "$APPDIR/usr/bin/VidyaGod"
