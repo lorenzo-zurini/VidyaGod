@@ -41,7 +41,7 @@ bool MainWindow::InitClassVariables()
     if (!GlobalConfigFile->exists())
     {
         std::cout << QTime::currentTime().toString().toStdString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... " << std::endl;
-        QFile * DefaultConfigFile = new QFile("./DefaultConfig.JSON");
+        QFile * DefaultConfigFile = new QFile(QDir::cleanPath(ApplicationPath + QDir::separator() + "DefaultConfig.JSON"));
         if (!DefaultConfigFile->exists())
         {
             std::cout << "DefaultConfig.JSON not found, aborting." << std::endl;
