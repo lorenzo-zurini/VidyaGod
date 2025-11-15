@@ -39,6 +39,7 @@ jobs:
           mkdir build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
           make -j$(nproc)
+          ls -l unionfs-fuse/build/src/
 
       - name: Prepare AppDir
         run: |
@@ -64,7 +65,7 @@ jobs:
           chmod +x AppDir/AppRun
 
           # Copy unionfs-fuse binary
-          cp unionfs-fuse/build/unionfs AppDir/usr/bin/unionfs
+          cp unionfs-fuse/build/src/unionfs AppDir/usr/bin/unionfs
 
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
