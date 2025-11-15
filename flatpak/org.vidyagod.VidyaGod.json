@@ -2,7 +2,7 @@
   "id": "org.vidyagod.VidyaGod",
   "runtime": "org.kde.Platform",
   "sdk": "org.kde.Sdk",
-  "runtime-version": "6.7",
+  "runtime-version": "6.8",
   "command": "VidyaGod",
   "finish-args": [
     "--share=network",
