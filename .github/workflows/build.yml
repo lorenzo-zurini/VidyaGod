@@ -67,9 +67,7 @@ jobs:
       - name: Bundle AppImage with linuxdeploy
         run: |
           # Use linuxdeploy to bundle fuse-zip with its libraries
-          ./linuxdeploy-x86_64.AppImage \
-            --appdir AppDir \
-            --executable AppDir/usr/bin/fuse-zip
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/fuse-zip
 
       - name: Download linuxdeployqt
         run: |
@@ -82,9 +80,6 @@ jobs:
 
           # Bundle your app (will detect AppRun, desktop file, icons)
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
-
-          # Explicitly bundle fuse-zip libraries
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/usr/bin/fuse-zip -executable
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4
