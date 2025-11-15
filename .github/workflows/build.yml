@@ -36,7 +36,7 @@ jobs:
           mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Copy your binary
+          # Copy your main binary
           cp build/VidyaGod AppDir/usr/bin/
 
           # Copy default config
@@ -52,9 +52,12 @@ jobs:
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
-          # Bundle fuse-zip (but NOT system libraries like libc)
+          # Bundle fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
-          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib)$'); do
+
+          # Automatically bundle only non-system dependencies of fuse-zip
+          # Exclude libc, libm, libpthread, ld-linux, libGL*, etc.
+          for lib in $(ldd /usr/bin/fuse-zip | awk '{print $3}' | grep -v -E '^(/lib|/usr/lib/x86_64-linux-gnu/|/lib64|/lib64/ld-linux)'); do
               cp -v "$lib" AppDir/usr/lib/ || true
           done
 
