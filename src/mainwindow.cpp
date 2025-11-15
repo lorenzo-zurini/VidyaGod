@@ -48,8 +48,8 @@ bool MainWindow::InitClassVariables()
             return false;
         }
 
-
-        //                        .copy(GlobalConfigFile->fileName());
+        DefaultConfigFile->copy(GlobalConfigFile->fileName());
+        delete DefaultConfigFile;
     }
     GlobalConfigJSON = JSONOps::LoadJSON(GlobalConfigFile);
 
