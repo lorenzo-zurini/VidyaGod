@@ -84,8 +84,7 @@ jobs:
           cp unionfs-fuse/build/src/unionfs AppDir/usr/bin/unionfs
 
           # Copy bindfs into AppDir
-          tree
-          cp bindfs/bin/bindfs AppDir/usr/bin/
+          cp bindfs/build/bindfs/bin/bindfs AppDir/usr/bin/
           
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
