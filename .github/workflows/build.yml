@@ -40,6 +40,23 @@ jobs:
           cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
           make -j$(nproc)
 
+      - name: Build bindfs
+        run: |
+          # Clone the repo
+          git clone https://github.com/mpartel/bindfs.git
+          cd bindfs
+          
+          # Prepare build system
+          ./autogen.sh
+          
+          # Configure build to install in a local folder
+          mkdir -p build/bindfs
+          ./configure --prefix=$PWD/build/bindfs
+          
+          # Build and install
+          make -j$(nproc)
+          make install
+
       - name: Prepare AppDir
         run: |
           set -euxo pipefail
@@ -65,6 +82,11 @@ jobs:
 
           # Copy unionfs-fuse binary
           cp unionfs-fuse/build/src/unionfs AppDir/usr/bin/unionfs
+
+          # Copy bindfs into AppDir
+          cp bindfs/bin/bindfs AppDir/usr/bin/
+          # Show the directory tree of the local build folder
+          find / -type f
 
           # Copy fuse-zip binary
           cp /usr/bin/fuse-zip AppDir/usr/bin/
