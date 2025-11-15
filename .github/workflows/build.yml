@@ -51,7 +51,7 @@ jobs:
 
       - name: Download linuxdeployqt
         run: |
-          wget https://github.com/AppImage/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
       - name: Build AppImage
