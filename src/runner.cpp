@@ -45,8 +45,8 @@ bool Runner::InitParams()
 
     this->PackageUID = QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"]);
 
-    this->Paths["ProtonPath"] = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProtonPath" << this->Paths["ProtonPath"].toStdString() << std::endl;
+    //this->Paths["ProtonPath"] = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProtonPath" << this->Paths["ProtonPath"].toStdString() << std::endl;
 
     this->Paths["PackagePath"] = PackageDir->path();
     std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] PackagePath" << this->Paths["PackagePath"].toStdString() << std::endl;
