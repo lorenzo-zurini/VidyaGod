@@ -203,11 +203,11 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {
-            // qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[OUT] Created directory " << Name << " PATH: " << Path;
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Created directory " << Name.toStdString() << " PATH: " << Path.toStdString();
         }
         else
         {
-            // qDebug().noquote() << QTime::currentTime().toString() << "Runner:" << "[ERR] Could not create directory " << Name << " PATH: " << Path;
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Could not create directory " << Name.toStdString() << " PATH: " << Path.toStdString();
             return false;
         }
     }
@@ -234,8 +234,8 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     RunProcess->start();
     RunProcess->waitForFinished(-1);
 
-    //qDebug().noquote() << RunProcess->readAllStandardError();
-    //qDebug().noquote() << RunProcess->readAllStandardOutput();
+    std::cout << RunProcess->readAllStandardError().toStdString() << std::endl;
+    std::cout << RunProcess->readAllStandardOutput().toStdString() << std::endl;
 
     if(RunProcess->exitCode() == 0)
     {
@@ -255,6 +255,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
     QProcessEnvironment RegAddProcessEnvironment = QProcessEnvironment::systemEnvironment();
     RegAddProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
+    RegAddProcessEnvironment.remove("LD_LIBRARY_PATH");
 
 
     QProcess * RegAddProcess = new QProcess;
@@ -295,8 +296,8 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
                     RegAddProcess->start();
                     RegAddProcess->waitForFinished(-1);
 
-                    //qDebug().noquote() << RegAddProcess->readAllStandardError();
-                    //qDebug().noquote() << RegAddProcess->readAllStandardOutput();
+                    std::cout << RegAddProcess->readAllStandardError().toStdString() << std::endl;
+                    std::cout << RegAddProcess->readAllStandardOutput().toStdString() << std::endl;
                 }
             }
             else
@@ -318,8 +319,8 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
                 RegAddProcess->start();
                 RegAddProcess->waitForFinished(-1);
 
-                //qDebug().noquote() << RegAddProcess->readAllStandardError();
-                //qDebug().noquote() << RegAddProcess->readAllStandardOutput();
+                std::cout << RegAddProcess->readAllStandardError().toStdString() << std::endl;
+                std::cout << RegAddProcess->readAllStandardOutput().toStdString() << std::endl;
             }
         }
     }
@@ -358,8 +359,13 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
             MountZip->start();
             MountZip->waitForFinished(-1);
 
+            std::cout << MountZip->readAllStandardError().toStdString() << std::endl;
+            std::cout << MountZip->readAllStandardOutput().toStdString() << std::endl;
+
             if(MountZip->exitCode() == 0)
             {
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully mounted zip file layer" << ZipFilePath.toStdString() << std::endl;
+
                 delete MountZip;
             }
             else
@@ -397,15 +403,18 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
             BindDir->start();
             BindDir->waitForFinished(-1);
 
+            std::cout << BindDir->readAllStandardError().toStdString() << std::endl;
+            std::cout << BindDir->readAllStandardOutput().toStdString() << std::endl;
+
             if(BindDir->exitCode() == 0)
             {
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully mounted dir layer" << DirPath.toStdString() << std::endl;
+
                 delete BindDir;
             }
             else
             {
                 std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to mount dir layer" << DirPath.toStdString() << std::endl;
-                //qDebug().noquote() << BindDir->readAllStandardError();
-                //qDebug().noquote() << BindDir->readAllStandardOutput();
                 delete BindDir;
                 return false;
             }
@@ -439,7 +448,9 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     BuildUnionFS->setArguments({"-o", "cow", "-o", "uid=1000", UnionFSString, FinalRuntimePath});
     BuildUnionFS->start();
     BuildUnionFS->waitForFinished(-1);
-    //qDebug().noquote() << BuildUnionFS->readAllStandardError();
+
+    std::cout << BuildUnionFS->readAllStandardError().toStdString() << std::endl;
+    std::cout << BuildUnionFS->readAllStandardOutput().toStdString() << std::endl;
 
     if(BuildUnionFS->exitCode() == 0)
     {
@@ -503,10 +514,21 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
     UnmountUnionFS->setArguments({"-uz", FinalRuntimePath});
     UnmountUnionFS->start();
     UnmountUnionFS->waitForFinished(-1);
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountUnionFS->exitCode() << std::endl;
-    //qDebug().noquote() << UnmountUnionFS->readAllStandardError();
-    //qDebug().noquote() << UnmountUnionFS->readAllStandardOutput();
-    delete UnmountUnionFS;
+
+    std::cout << UnmountUnionFS->readAllStandardError().toStdString() << std::endl;
+    std::cout << UnmountUnionFS->readAllStandardOutput().toStdString() << std::endl;
+
+    if(UnmountUnionFS->exitCode() == 0)
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully UNmounted UnionFS!" << std::endl;
+        delete UnmountUnionFS;
+    }
+    else
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to UNmount UnionFS!" << std::endl;
+        delete UnmountUnionFS;
+        return false;
+    }
 
     for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
     {
@@ -532,12 +554,13 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
             UnmountDir->setArguments({"-uz", MountDir.path()});
             UnmountDir->start();
             UnmountDir->waitForFinished(-1);
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode() << std::endl;
-            //qDebug().noquote() << UnmountDir->readAllStandardError();
-            //qDebug().noquote() << UnmountDir->readAllStandardOutput();
+
+            std::cout << UnmountDir->readAllStandardError().toStdString() << std::endl;
+            std::cout << UnmountDir->readAllStandardOutput().toStdString() << std::endl;
 
             if(UnmountDir->exitCode() == 0)
             {
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully unmounted dir" << MountDir.path().toStdString() << std::endl;
                 delete UnmountDir;
             }
             else
@@ -572,12 +595,13 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
             UnmountDir->setArguments({"-uz", MountDir.path()});
             UnmountDir->start();
             UnmountDir->waitForFinished(-1);
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Exit status: " << UnmountDir->exitCode() << std::endl;
-            //qDebug().noquote() << UnmountDir->readAllStandardError();
-            //qDebug().noquote() << UnmountDir->readAllStandardOutput();
+
+            std::cout << UnmountDir->readAllStandardError().toStdString() << std::endl;
+            std::cout << UnmountDir->readAllStandardOutput().toStdString() << std::endl;
 
             if(UnmountDir->exitCode() == 0)
             {
+                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully unmounted dir" << MountDir.path().toStdString() << std::endl;
                 delete UnmountDir;
             }
             else
@@ -678,8 +702,8 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
     RunProcess->setProcessEnvironment(RunProcessEnvironment);
     RunProcess->start();
     RunProcess->waitForFinished(-1);
-    //qDebug() << RunProcess->readAllStandardError();
-    //qDebug() << RunProcess->readAllStandardOutput();
+    std::cout << RunProcess->readAllStandardError().toStdString() << std::endl;
+    std::cout << RunProcess->readAllStandardOutput().toStdString() << std::endl;
 
     if(RunProcess->exitCode() == 0)
     {
