@@ -203,11 +203,11 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Created directory " << Name.toStdString() << " PATH: " << Path.toStdString();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Created directory " << Name.toStdString() << " PATH: " << Path.toStdString() << std::endl;
         }
         else
         {
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Could not create directory " << Name.toStdString() << " PATH: " << Path.toStdString();
+            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Could not create directory " << Name.toStdString() << " PATH: " << Path.toStdString() << std::endl;
             return false;
         }
     }
