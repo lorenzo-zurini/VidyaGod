@@ -35,9 +35,9 @@ class LibraryGameCard : public QGroupBox
 {
     Q_OBJECT
 public:
-    explicit LibraryGameCard(QWidget * parent = nullptr);
-    void PassGlobalConfigJSON(nlohmann::ordered_json * PassedGlobalConfigJSON);
-    void SetGame(int PassedGame, int PassedSubGame);
+    explicit LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, int PassedSubGame, QWidget * parent);
+
+
     void InitializeClassVariables();
 
     //////HANDLE GRIDSIZE!
@@ -82,7 +82,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
+    MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * AppDataDir, QWidget *parent = nullptr);
     ~MainWindow();
 
     QDir * AppDataDir;
@@ -112,8 +112,6 @@ private:
     QScrollArea * PackagesScrollArea;
 
     //QSlider * GridSizeSlider;
-
-    bool InitClassVariables();
 
     void BuildStaticUI();
     void BuildLibraryGameCards();

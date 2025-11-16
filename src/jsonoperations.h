@@ -17,7 +17,7 @@ public:
     JSONOps();
 
 
-    static nlohmann::ordered_json * LoadJSON(QFile * JSONFile);
+    static bool LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument);
     static bool SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
     static nlohmann::ordered_json GetSubComponents(QString MetaDataPath, QList<int> Recipe);
     static nlohmann::ordered_json ReplaceVariables(nlohmann::ordered_json OriginalArray, QMap<QString, QString> VariableValues);

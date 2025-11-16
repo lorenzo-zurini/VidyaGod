@@ -103,11 +103,16 @@ void PackageEditor::InitPackage()
         PackageFilesDir->mkdir(PackageFilesDir->path());
     }
 
-    PackageEditor::MANIFESTJSON = JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")));
-    if (!(PackageEditor::MANIFESTJSON == nullptr))
+
+    nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
+    if(JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")), PackageEditor::MANIFESTJSON))
     {
+        //ADD ERROR HANDLING HERE
         return;
     }
+
+
+
 
     std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[ERR] Parser returned nullptr, creating new JSON." << std::endl;
     PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;

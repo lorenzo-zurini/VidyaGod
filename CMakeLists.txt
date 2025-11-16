@@ -18,6 +18,7 @@ set(TS_FILES VidyaGod_en_US.ts)
 # Sources
 set(PROJECT_SOURCES
     src/main.cpp
+    src/main.h
 
     src/mainwindow.cpp
     src/mainwindow.h

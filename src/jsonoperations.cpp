@@ -2,39 +2,39 @@
 
 JSONOps::JSONOps() {}
 
-nlohmann::ordered_json * JSONOps::LoadJSON(QFile * JSONFile)
+bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
 {
-    std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Parsing JSON" << JSONFile->fileName().toStdString() << std::endl;
-    nlohmann::ordered_json * JSONDocument;
+    std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parsing JSON " << JSONFile->fileName().toStdString() << std::endl;
 
     if (!JSONFile->exists())
     {
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] File" << JSONFile->fileName().toStdString() << "does not exist." << std::endl;
-        return nullptr;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] File " << JSONFile->fileName().toStdString() << " does not exist." << std::endl;
+        return 1;
     }
     if (JSONFile->open(QFile::ReadOnly))
     {
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName().toStdString() << "opened for reading successfully!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] File " << JSONFile->fileName().toStdString() << " opened for reading successfully!" << std::endl;
         QByteArray JSONFileData = JSONFile->readAll();
         if (nlohmann::ordered_json::accept(JSONFileData))
         {
-            std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File" << JSONFile->fileName().toStdString() << "appears valid, parsing." << std::endl;
-            JSONDocument = new nlohmann::ordered_json(nlohmann::ordered_json::parse(JSONFileData));
+            std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] File " << JSONFile->fileName().toStdString() << " appears valid, parsing." << std::endl;
+            *JSONDocument = nlohmann::ordered_json::parse(JSONFileData);
+            //std::cout << JSONDocument->dump() << std::endl;
         }
         else
         {
-            std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] Invalid JSON!" << std::endl;
-            return nullptr;
+            std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] Invalid JSON! " << std::endl;
+            return 1;
         }
 
         JSONFile->close();
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Parse done!" << std::endl;
-        return JSONDocument;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parse done! " << std::endl;
+        return 0;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[ERR] Could not open file for reading!" << std::endl;
-        return nullptr;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] Could not open file for reading! " << std::endl;
+        return 1;
     }
 }
 
@@ -42,8 +42,8 @@ bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 {
     if (JSONFile->open(QFile::WriteOnly))
     {
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] File opened for writing successfully!" << std::endl;
-        std::cout << QTime::currentTime().toString().toStdString()  << "JSONOperations:" << "[OUT] Saved" << JSONFile->fileName().toStdString() << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] File opened for writing successfully!" << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Saved " << JSONFile->fileName().toStdString() << std::endl;
         QTextStream OutFileStream(JSONFile);
         OutFileStream << QString::fromStdString((*JSONDocument).dump(4));
         JSONFile->close();
@@ -59,7 +59,13 @@ bool JSONOps::SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile)
 nlohmann::ordered_json JSONOps::GetSubComponents(QString MetaDataPath, QList<int> Recipe)
 {
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
-    nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(MetaDataPath + QDir::separator() +"MANIFEST.json")));
+    nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
+
+    if(JSONOps::LoadJSON(new QFile(QDir::cleanPath(MetaDataPath + QDir::separator() + "MANIFEST.json")), MANIFESTJSON))
+    {
+        //ADD ERROR HANDLING HERE!
+    }
+
     nlohmann::ordered_json SubComponentsArray;
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].size(); i++)
     {

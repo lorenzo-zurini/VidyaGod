@@ -11,12 +11,10 @@
 //IMPLEMENT MIRRORFS COMPONENTS
 //ADD MORE RUNNERS BASED ON PLATFORM
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
-    , ui(new Ui::MainWindow)
+MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * PassedAppDataDir, QWidget * parent)
+    : GlobalConfigJSON(PassedGlobalConfigJSON), AppDataDir(PassedAppDataDir), QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
-    InitClassVariables();
     BuildStaticUI();
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
@@ -28,34 +26,6 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
-}
-
-bool MainWindow::InitClassVariables()
-{
-    ApplicationPath = QCoreApplication::applicationDirPath();
-
-    AppDataDir = new QDir(QDir::homePath() +  "/.VidyaGod");
-    AppDataDir->mkpath(".");
-
-    GlobalConfigFile = new QFile(AppDataDir->filePath("GlobalConfig.JSON"));
-    if (!GlobalConfigFile->exists())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "JSONOperations:" << "[OUT] Config flie not deteced. Creating... " << std::endl;
-        QFile * DefaultConfigFile = new QFile(QDir::cleanPath(ApplicationPath + QDir::separator() + "DefaultConfig.JSON"));
-        if (!DefaultConfigFile->exists())
-        {
-            std::cout << "DefaultConfig.JSON not found, aborting." << std::endl;
-            return false;
-        }
-
-        DefaultConfigFile->copy(GlobalConfigFile->fileName());
-        delete DefaultConfigFile;
-    }
-    GlobalConfigJSON = JSONOps::LoadJSON(GlobalConfigFile);
-
-    ProtonPath = "/usr/share/steam/compatibilitytools.d/proton-ge-custom/";
-
-    return true;
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)
@@ -130,9 +100,7 @@ void MainWindow::BuildLibraryGameCards()
     {
         for (int j = 0; j < (*GlobalConfigJSON)["LIBRARY"][i]["SUBGAMES"].size(); j++)
         {
-            LibraryGameCard * NewGameCard = new LibraryGameCard(nullptr);
-            NewGameCard->PassGlobalConfigJSON(GlobalConfigJSON);
-            NewGameCard->SetGame(i, j + 1);
+            LibraryGameCard * NewGameCard = new LibraryGameCard(GlobalConfigJSON, i, j + 1, nullptr);
             NewGameCard->InitializeClassVariables();
             LibraryGameCards->append(NewGameCard);
         }
@@ -231,16 +199,13 @@ void MainWindow::on_AddGameButton_clicked()
     }
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-    nlohmann::ordered_json * MANIFESTJSON = JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")));
-    if (MANIFESTJSON == nullptr)
+
+    nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
+    if(JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), MANIFESTJSON))
     {
         std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Parser returned nullptr." << std::endl;
         delete MANIFESTJSON;
         return;
-    }
-    else
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[OUT] Parser returned non-empty JSON." << std::endl;
     }
 
     for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
@@ -276,7 +241,8 @@ void MainWindow::MainWindowGridSizeChanged()
     BuildLibraryDynamicUI();
 }
 
-LibraryGameCard::LibraryGameCard(QWidget * parent) : QGroupBox(parent)
+LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, int PassedSubGame, QWidget * parent)
+    : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubGame(PassedSubGame), QGroupBox(parent)
 {   
     LibraryGameCardLayout = new QVBoxLayout(this);
     //this->setFlat(true);
@@ -306,7 +272,6 @@ LibraryGameCard::LibraryGameCard(QWidget * parent) : QGroupBox(parent)
     PlayButton = new QPushButton(ButtonsGroupBox);
     PlayButton->setFlat(true);
     PlayButton->setText("Play");
-    //PlayButton->setIcon(QIcon::fromTheme(QIcon::ThemeIcon::MediaPlaybackStart));
     ButtonsGroupBoxLayout->addWidget(PlayButton);
     QObject::connect(PlayButton, &QPushButton::clicked, this, &LibraryGameCard::on_PlayGameButton_clicked);
 
@@ -318,19 +283,6 @@ LibraryGameCard::LibraryGameCard(QWidget * parent) : QGroupBox(parent)
     //ButtonsGroupBox->setHidden(true);
 
     //QObject::connect(this, &QGroupBox::clicked, this, &LibraryGameCard::on_GameCard_clicked);
-}
-
-void LibraryGameCard::PassGlobalConfigJSON(nlohmann::ordered_json * PassedGlobalConfigJSON)
-{
-    this->GlobalConfigJSON = PassedGlobalConfigJSON;
-    return;
-}
-
-void LibraryGameCard::SetGame(int PassedGame, int PasedSubGame)
-{
-    this->Game = PassedGame;
-    this->SubGame = PasedSubGame;
-    return;
 }
 
 void LibraryGameCard::InitializeClassVariables()

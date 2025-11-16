@@ -55,6 +55,7 @@
     },
     "Settings":
     {
-        "LibraryGridSize": 5
+        "LibraryGridSize": 5,
+        "ProtonPath": null
     }
 }
