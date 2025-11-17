@@ -255,6 +255,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
 
     QProcessEnvironment RegAddProcessEnvironment = QProcessEnvironment::systemEnvironment();
     RegAddProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
+    RegAddProcessEnvironment.insert("GAMEID", "0");
     RegAddProcessEnvironment.remove("LD_LIBRARY_PATH");
 
 
