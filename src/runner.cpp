@@ -142,11 +142,13 @@ bool Runner::InitParams()
     this->WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + this->PackageUID).replace("/", "\\\\");
     std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << this->WindowsPaths["WindowsProgramPathDoubleBackSlash"].toStdString() << std::endl;
 
-    this->SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"].toStdString() << std::endl;
+    //FIND ANOTHER WAY TO GET SCREEN VARIABLES THAT DOESNT RELY ON QT
+    //this->SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"].toStdString() << std::endl;
 
-    this->SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"].toStdString() << std::endl;
+    //FIND ANOTHER WAY TO GET SCREEN VARIABLES THAT DOESNT RELY ON QT
+    //this->SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"].toStdString() << std::endl;
 
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
     for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].size(); i++)
@@ -617,14 +619,14 @@ bool Runner::Cleanup(QString OverrideRuntimePath)
     //QMessageBox::warning(nullptr, "Cleanup", "Removing mount points.");
     if (!QDir(Runner::Paths["TempPath"]).removeRecursively())
     {
-        QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
+        //QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
         return false;
     }
 
     //QMessageBox::warning(nullptr, "Cleanup", "Removing runtime.");
     if (!QDir(FinalRuntimePath).removeRecursively())
     {
-        QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
+        //QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
         return false;
     }
 

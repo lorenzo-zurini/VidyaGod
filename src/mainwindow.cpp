@@ -19,8 +19,8 @@ MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * P
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
     BuildPackagesDynamicUI();
-    this->setFixedWidth(1280); //Fixed Steam Deck resolution.
-    this->setFixedHeight(800);
+    //this->setFixedWidth(1280); //Fixed Steam Deck resolution.
+    //this->setFixedHeight(800);
 }
 
 MainWindow::~MainWindow()
