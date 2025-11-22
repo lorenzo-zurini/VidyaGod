@@ -41,7 +41,8 @@ set(PROJECT_SOURCES
     translations/${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES})
+add_executable(VidyaGod ${PROJECT_SOURCES}
+    src/containerwrapper.h src/containerwrapper.cpp)
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
