@@ -67,9 +67,6 @@ jobs:
           # Copy your app binary
           cp build/VidyaGod AppDir/usr/bin/
 
-          # Copy default config
-          cp resources/DefaultConfig.JSON AppDir/usr/bin/
-
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
 
