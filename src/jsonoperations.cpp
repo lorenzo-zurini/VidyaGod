@@ -9,7 +9,7 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
     if (!JSONFile->exists())
     {
         std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] File " << JSONFile->fileName().toStdString() << " does not exist." << std::endl;
-        return 1;
+        return 1; //fail
     }
     if (JSONFile->open(QFile::ReadOnly))
     {
@@ -24,17 +24,17 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
         else
         {
             std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] Invalid JSON! " << std::endl;
-            return 1;
+            return 1; //fail
         }
 
         JSONFile->close();
         std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parse done! " << std::endl;
-        return 0;
+        return 0; //success
     }
     else
     {
         std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] Could not open file for reading! " << std::endl;
-        return 1;
+        return 1; //fail
     }
 }
 

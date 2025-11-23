@@ -6,14 +6,12 @@
 #include <iostream>
 #include <fstream>
 
-
 #include <QCommandLineParser>
 #include <QCommandLineOption>
 #include <QMessageBox>
 #include <QApplication>
 #include <QStyleFactory>
 #include <QFile>
-
 
 #include "nlohmann/json.hpp"
 #include "filesystemoperations.h"

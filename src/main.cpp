@@ -28,12 +28,12 @@ int main(int argc, char *argv[])
 
     //TO-DO: Add support for portable mode.
     //Find and create AppDataDir.
-    QDir * AppDataDir = new QDir(QDir::homePath() +  "/.VidyaGod");
-    AppDataDir->mkpath(".");
+    QDir AppDataDir(QDir::homePath() +  "/.VidyaGod");
+    AppDataDir.mkpath(".");
 
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     nlohmann::ordered_json GlobalConfigJSON;// = new nlohmann::ordered_json();
-    if (InitializeGlobalConfigJSON(&GlobalConfigJSON, AppDataDir))
+    if (InitializeGlobalConfigJSON(&GlobalConfigJSON, &AppDataDir))
     {
         std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Fatal error. GlobalConfigJSON initialization failed, aborting." << std::endl;
         return 1;
@@ -74,7 +74,7 @@ int main(int argc, char *argv[])
     Application.setFont(QFont("DejaVu Sans", 10));
 
     //Create and launch MainWindow.
-    MainWindow MainWindow(&GlobalConfigJSON, AppDataDir);
+    MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
     MainWindow.show();
     return Application.exec();
 }
@@ -111,30 +111,74 @@ bool CheckExecutableDependencies()
 bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir)
 {
     //Handle GlobalConfigJSON.
-    QFile * GlobalConfigFile = new QFile(AppDataDir->filePath("GlobalConfig.JSON"));
-    if (!GlobalConfigFile->exists())
+    QFile GlobalConfigFile(AppDataDir->filePath("GlobalConfig.JSON"));
+    if (!GlobalConfigFile.exists())
     {
         std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Config flie not deteced. Creating... " << std::endl;
-        QFile * DefaultConfigFile = new QFile(QDir::cleanPath(QString::fromStdString(std::filesystem::current_path()) + QDir::separator() + "DefaultConfig.JSON"));
-        if (!DefaultConfigFile->exists())
+
+        //nlohmann::ordered_json NewGlobalConfigJSON = nlohmann::ordered_json::object();
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TITLE"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PARENTPACKAGE"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PLATFORM"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["GAMEUID"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EXEPATH"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EXEARGS"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["WORKDIR"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TGDBID"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["STEAMAPPID"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["UMUID"] = "0";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["GOGPRODUCTID"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["COVER"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["RELEASEDATE"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITION"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITIONDATE"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["DEVELOPER"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PUBLISHER"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SERIES"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SERIESSORTNUMBER"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SUBSERIES"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SUBSERIESSORTNUMBER"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITOR"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["ONLINEDRM"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["NETWORKMULTIPLAYER"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["DIRECTCONNECT"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LANMULTIPLAYER"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["ONLINEMULTIPLAYER"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["NETWORKCOOP"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LOCALMULTIPLAYER"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LOCALCOOP"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["OTHERONLINEFEATURES"] = false;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["COMPONENT"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["VARIANTS"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["PRIMARY KEY"] = "GAMEUID";
+        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEUID"] = 0;
+        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGENAME"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEVERSION"] = "";
+        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PATH"] = "";
+        (*GlobalConfigJSON)["Settings"]["LibraryGridSize"] = 5;
+        (*GlobalConfigJSON)["Settings"]["ProtonPath"] = "";
+
+        if (JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
         {
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] DefaultConfig.JSON not found, aborting." << std::endl;
-            return 1; //Fail
+            return false; //success
         }
-
-        DefaultConfigFile->copy(GlobalConfigFile->fileName());
-        delete DefaultConfigFile;
+        else
+        {
+            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] DefaultConfig.JSON could not be initialised." << std::endl;
+            return true; //fail
+        }
     }
-
-    if (JSONOps::LoadJSON(GlobalConfigFile, GlobalConfigJSON))
+    else if (JSONOps::LoadJSON(&GlobalConfigFile, GlobalConfigJSON))
     {
         std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Failed to parse GlobalConfig.JSON, aborting." << std::endl;
-        return 1; //Fail
+        return true; //Fail
     }
-
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] GlobalConfigJSON initialized successfully:" << std::endl;
-    //std::cout << GlobalConfigJSON->dump() << std::endl;
-    return 0; //Success
+    else
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] GlobalConfigJSON initialized successfully:" << std::endl;
+        //std::cout << GlobalConfigJSON->dump() << std::endl;
+        return false; //Success
+    }
 }
 
 bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
