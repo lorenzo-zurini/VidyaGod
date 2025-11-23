@@ -115,7 +115,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     if (!GlobalConfigFile->exists())
     {
         std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Config flie not deteced. Creating... " << std::endl;
-        QFile * DefaultConfigFile = new QFile(QDir::cleanPath(QCoreApplication::applicationDirPath() + QDir::separator() + "DefaultConfig.JSON"));
+        QFile * DefaultConfigFile = new QFile(QDir::cleanPath(QString::fromStdString(std::filesystem::current_path()) + QDir::separator() + "DefaultConfig.JSON"));
         if (!DefaultConfigFile->exists())
         {
             std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] DefaultConfig.JSON not found, aborting." << std::endl;
