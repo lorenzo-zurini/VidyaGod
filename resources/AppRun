@@ -39,4 +39,4 @@ HERE="$(dirname "$(readlink -f "$0")")"
 echo "AppRun is located in: $HERE"
 
 # Launch the application normally
-LD_LIBRARY_PATH="$APPDIR/usr/lib" "$APPDIR/usr/bin/VidyaGod"
+LD_LIBRARY_PATH="$APPDIR/usr/lib" "$APPDIR/usr/bin/VidyaGod" "$@"
