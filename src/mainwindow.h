@@ -31,7 +31,7 @@ namespace Ui
 QT_END_NAMESPACE
 
 
-class LibraryGameCard : public QGroupBox
+class LibraryGameCard : public QWidget
 {
     Q_OBJECT
 public:
@@ -48,6 +48,8 @@ signals:
 
 protected:
     void resizeEvent(QResizeEvent * event) override;
+    void enterEvent(QEnterEvent * event) override;
+    void leaveEvent(QEvent * event) override;
 
 private:
     QString PackagePath;
@@ -62,7 +64,7 @@ private:
 
     QVBoxLayout * LibraryGameCardLayout;
 
-    QGroupBox * ButtonsGroupBox;
+    QWidget * ButtonsGroupBox;
     QHBoxLayout * ButtonsGroupBoxLayout;
 
     QPushButton * PlayButton;

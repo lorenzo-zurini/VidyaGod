@@ -68,7 +68,7 @@ int main(int argc, char *argv[])
     //---------------------------------------------------------------------------------------------------------
     QApplication Application(argc, argv);
     // Force a consistent Qt style
-    Application.setStyle(QStyleFactory::create("Breeze"));
+    Application.setStyle(QStyleFactory::create("Fusion"));
 
     // Optional: set a default font to ensure consistent spacing
     Application.setFont(QFont("DejaVu Sans", 10));
