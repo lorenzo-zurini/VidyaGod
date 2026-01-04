@@ -103,19 +103,17 @@ void PackageEditor::InitPackage()
         PackageFilesDir->mkdir(PackageFilesDir->path());
     }
 
-
-    nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
-    if(JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")), PackageEditor::MANIFESTJSON))
+    PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
+    if(!JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")), PackageEditor::MANIFESTJSON))
     {
         //ADD ERROR HANDLING HERE
+        std::cout << QTime::currentTime().toString().toStdString() << "packageeditor.cpp:" << "[OUT] ManifestJSON successfully parsed." << std::endl;
         return;
     }
-
-
-
-
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[ERR] Parser returned nullptr, creating new JSON." << std::endl;
-    PackageEditor::MANIFESTJSON = new nlohmann::ordered_json;
+    else
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "packageeditor.cpp:" << "[ERR] Parser returned nullptr, leaving MANIFESTJSON empty." << std::endl;
+    }
 }
 
 bool PackageEditor::BuildUI()

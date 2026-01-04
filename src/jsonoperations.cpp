@@ -18,18 +18,17 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
         if (nlohmann::ordered_json::accept(JSONFileData))
         {
             std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] File " << JSONFile->fileName().toStdString() << " appears valid, parsing." << std::endl;
-            *JSONDocument = nlohmann::ordered_json::parse(JSONFileData);
-            //std::cout << JSONDocument->dump() << std::endl;
+            (*JSONDocument) = nlohmann::ordered_json::parse(JSONFileData);
+            std::cout << JSONDocument->dump() << std::endl;
+            JSONFile->close();
+            std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parse done! " << std::endl;
+            return 0; //success
         }
         else
         {
             std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[ERR] Invalid JSON! " << std::endl;
             return 1; //fail
         }
-
-        JSONFile->close();
-        std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parse done! " << std::endl;
-        return 0; //success
     }
     else
     {

@@ -13,7 +13,6 @@
 #include <QMessageBox>
 #include <iostream>
 
-
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
 

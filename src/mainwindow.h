@@ -21,6 +21,7 @@
 #include <QResizeEvent>
 
 #include "nlohmann/json.hpp"
+#include "containerwrapper.h"
 #include "runner.h"
 
 QT_BEGIN_NAMESPACE
