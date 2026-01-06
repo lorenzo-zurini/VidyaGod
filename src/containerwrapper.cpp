@@ -1,12 +1,17 @@
 #include "containerwrapper.h"
 
-ContainerWrapper::ContainerWrapper(std::filesystem::path Passed_PackagePath, nlohmann::ordered_json Passed_MANIFESTJSON, nlohmann::ordered_json Passed_GlobalConfigJSON, int Passed_subgame, int Passed_component)
-    : PackagePath(Passed_PackagePath), MANIFESTJSON(Passed_MANIFESTJSON), GlobalConfigJSON(Passed_GlobalConfigJSON), subgame(Passed_subgame), component(Passed_component)
+ContainerWrapper::ContainerWrapper(struct ContainerParams Passed_ContainerParams)
+    : ContainerParams(Passed_ContainerParams)
 {
     std::cout << QTime::currentTime().toString().toStdString() << "ContainerWrapper: " << "[OUT] Initializing container..." << std::endl;
-    this->DecideComponent(this->MANIFESTJSON, this->subgame, this->component);
-    this->InitializeRunnerParams();
-    this->CreateRecipe();
+    this->DecideComponent(this->MANIFESTJSON, this->ContainerParams);
+    this->InitializeContainerParams();
+    this->CreateRecipe(this->MANIFESTJSON, component, this->Recipe);
+}
+
+ContainerParams::ContainerParams()
+{
+
 }
 
 bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, int &subgame, int &component)
@@ -40,7 +45,7 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, int 
     return false;
 }
 
-bool ContainerWrapper::InitializeRunnerParams()
+bool ContainerWrapper::InitializeContainerParams()
 {
     //Package-specific:
     std::string PackageName = MANIFESTJSON["PACKAGENAME"];
@@ -86,10 +91,10 @@ bool ContainerWrapper::InitializeRunnerParams()
     return true;
 }
 
-bool ContainerWrapper::CreateRecipe()
+bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, int component, std::vector<int> &Recipe)
 {
     //CREATE RECIPE BY RESOLVING COMPONENT DEPENDENCY
-    std::vector<int> Recipe;
+    Recipe.clear();
     while (component != 0)
     {
         Recipe.push_back(component);
@@ -114,57 +119,47 @@ bool ContainerWrapper::CreateRecipe()
         component = QString::fromStdString(MANIFESTJSON["COMPONENTS"][component - 1]["PARENTCOMPONENT"]).toInt();
     }
     std::reverse(Recipe.begin(), Recipe.end());
-    this->Recipe = Recipe;
-    std::cout << "ContainerWrapper:" << "[OUT] Recipe: " << [&](const std::vector<int>& v){ std::string r; for (int x : v) r += std::to_string(x) + " "; return r;}(this->Recipe) << std::endl;
+    std::cout << "ContainerWrapper:" << "[OUT] Recipe: " << [&](const std::vector<int>& v){ std::string r; for (int x : v) r += std::to_string(x) + " "; return r;}(Recipe) << std::endl;
     return true;
 }
 
-/*
-
-this->WindowsPaths["WindowsProgramPath"] = QDir::cleanPath("C:/" + this->PackageUID).replace("/", "\\");
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsProgramPath" << this->WindowsPaths["WindowsProgramPath"].toStdString() << std::endl;
-
-this->WindowsPaths["WindowsExePath"] = QDir::cleanPath("C:/" + this->PackageUID + QDir::separator() + this->ExePath).replace("/", "\\");
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsExePath" << this->WindowsPaths["WindowsExePath"].toStdString() << std::endl;
-
-this->WindowsPaths["WindowsProgramPathDoubleBackSlash"]   = QDir::cleanPath("C:/" + this->PackageUID).replace("/", "\\\\");
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WindowsProgramPathDoubleBackSlash" << this->WindowsPaths["WindowsProgramPathDoubleBackSlash"].toStdString() << std::endl;
-
-//FIND ANOTHER WAY TO GET SCREEN VARIABLES THAT DOESNT RELY ON QT
-//this->SystemVariables["ScreenWidth"] = QString::number(QGuiApplication::primaryScreen()->geometry().width());
-//std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenWidth" << this->SystemVariables["ScreenWidth"].toStdString() << std::endl;
-
-//FIND ANOTHER WAY TO GET SCREEN VARIABLES THAT DOESNT RELY ON QT
-//this->SystemVariables["ScreenHeight"] = QString::number(QGuiApplication::primaryScreen()->geometry().height());
-//std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ScreenHeight" << this->SystemVariables["ScreenHeight"].toStdString() << std::endl;
-
-//BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
-for (int i = 0; i < (*MANIFESTJSON)["COMPONENTS"].size(); i++)
+bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, std::vector<int> Recipe, nlohmann::ordered_json &SubComponentsArray)
 {
-    if (this->Recipe.contains(i + 1))
+    //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
+    for (int i = 0; i < MANIFESTJSON["COMPONENTS"].size(); i++)
     {
-        for (int j = 0; j < (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
+        if (std::find(Recipe.begin(), Recipe.end(), int(i + 1)) != Recipe.end())
         {
-            this->SubComponentsArray.push_back((*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
-            //qDebug().noquote() << QTime::currentTime() << "Runner:" << "[OUT] Added COMPONENT" << i + 1 << "SUBCOMPONENT" << j + 1;
+            for (int j = 0; j < MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
+            {
+                SubComponentsArray.push_back(MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
+                //qDebug().noquote() << QTime::currentTime() << "Runner:" << "[OUT] Added COMPONENT" << i + 1 << "SUBCOMPONENT" << j + 1;
+            }
         }
     }
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Completed SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
 }
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Completed SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
 
-this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->WindowsPaths);
-this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->Paths);
-this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->SystemVariables);
-this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->WindowsPaths);
-//CAUTION! ESCAPE CHARACHTERS IN WINDOWS PATHS CRASHES JSON! FIXME
-this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->Paths);
-this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->SystemVariables);
+bool ContainerWrapper::VariableSubstitution()
+{
+    /*
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->WindowsPaths);
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->Paths);
+    this->SubComponentsArray = JSONOps::ReplaceVariables(this->SubComponentsArray, this->SystemVariables);
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->WindowsPaths);
+    //CAUTION! ESCAPE CHARACHTERS IN WINDOWS PATHS CRASHES JSON! FIXME
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->Paths);
+    this->ExeArgs = StringListReplaceVariables(this->ExeArgs, this->SystemVariables);
 
-///////////////////////////////////////////////////////////////////////////////////////////////
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
-//std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
-std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Runner initialisation complete!" << std::endl;
-return true;
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on SubComponentsArray:"<< SubComponentsArray.dump(4) << std::endl;
+    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Performed substitution on ExeArgs:"<< this->ExeArgs;
+    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Runner initialisation complete!" << std::endl;
+    return true;
+    */
+}
+
+/*
 
 
 */
