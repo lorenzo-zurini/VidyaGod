@@ -283,16 +283,17 @@ LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON
 void LibraryGameCard::InitializeClassVariables()
 {
     this->MANIFESTJSON = new nlohmann::ordered_json((*GlobalConfigJSON)["LIBRARY"][Game]);
-    this->PackagePath = QString::fromStdString((*MANIFESTJSON)["PACKAGEPATH"]);
+    this->PackagePath = std::filesystem::path((*MANIFESTJSON)["PACKAGEPATH"]);
     this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["TITLE"]);
-    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(this->PackagePath + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"]))));
+    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"]))));
 }
 
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
     std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"] << std::endl;
 
-    ContainerWrapper * GameContainerWrapper = new ContainerWrapper(this->PackagePath.toStdString(), (*this->MANIFESTJSON), (*this->GlobalConfigJSON), this->SubGame);
+    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubGame);
+    class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
 
     //Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
 
@@ -305,7 +306,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     //QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
     //GameRunner->Cleanup();
 
-    delete GameContainerWrapper;
+    //delete NewContainerWrapper;
     //delete MANIFESTJSON;
 }
 

@@ -19,7 +19,7 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
         {
             std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] File " << JSONFile->fileName().toStdString() << " appears valid, parsing." << std::endl;
             (*JSONDocument) = nlohmann::ordered_json::parse(JSONFileData);
-            std::cout << JSONDocument->dump() << std::endl;
+            std::cout << JSONDocument->dump(4) << std::endl;
             JSONFile->close();
             std::cout << QTime::currentTime().toString().toStdString()  << " JSONOperations: " << "[OUT] Parse done! " << std::endl;
             return 0; //success
@@ -86,8 +86,6 @@ nlohmann::ordered_json JSONOps::GetSubComponents(QString MetaDataPath, QList<int
 nlohmann::ordered_json JSONOps::ReplaceVariables(nlohmann::ordered_json OriginalArray, QMap<QString, QString> VariableValues)
 {
     QString JSONString(QString::fromStdString(OriginalArray.dump()));
-
-    // Iterate using a const iterator (Qt 6.2+ compatible)
     for (auto it = VariableValues.constBegin(); it != VariableValues.constEnd(); ++it)
     {
         const QString &Variable = it.key();

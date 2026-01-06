@@ -42,7 +42,8 @@ set(PROJECT_SOURCES
 )
 
 add_executable(VidyaGod ${PROJECT_SOURCES}
-    src/containerwrapper.h src/containerwrapper.cpp)
+    src/containerwrapper.h src/containerwrapper.cpp
+    src/commonutils.h src/commonutils.cpp)
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)

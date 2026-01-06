@@ -53,7 +53,7 @@ protected:
     void leaveEvent(QEvent * event) override;
 
 private:
-    QString PackagePath;
+    std::filesystem::path PackagePath;
     QString GameTitle;
 
     int Game;
