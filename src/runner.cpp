@@ -76,7 +76,7 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
     {
         const QString &Name = it.key();
         const QString &Path = it.value();
-    
+
         QDir Dir(Path);
         if (Dir.mkpath(Path))
         {

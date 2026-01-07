@@ -3,6 +3,7 @@
 
 #include <nlohmann/json.hpp>
 #include <iostream>
+#include <fstream>
 #include <cstring>
 #include <ctime>
 #include <regex>
@@ -15,7 +16,7 @@
 #include <QMessageBox>
 #include <QGuiApplication>
 #include <QScreen>
-
+#include <QProcess>
 
 
 
@@ -26,37 +27,56 @@ public:
 
     //Container params:
     //Package-specific:
-    std::filesystem::path PackagePath;                  //PASSED
-    std::string PackageName;                            //DERIVED FROM MANIFESTJSON
-    std::string PackageUID;                             //DERIVED FORM MANIFESTJSON
+    std::filesystem::path PackagePath;                              //PASSED
+    std::string PackageName;                                        //DERIVED FROM MANIFESTJSON
+    std::string PackageUID;                                         //DERIVED FORM MANIFESTJSON
 
     //(Sub)game specific:
-    std::string GameName;                               //DERIVED FORM MANIFESTJSON
-    std::vector<int> Recipe;                            //DERIVED FORM MANIFESTJSON
-    nlohmann::ordered_json SubComponentsArray;          //DERIVED FORM MANIFESTJSON
+    std::string GameName;                                           //DERIVED FORM MANIFESTJSON
+    std::vector<int> Recipe;                                        //DERIVED FORM MANIFESTJSON
+    nlohmann::ordered_json SubComponentsArray;                      //DERIVED FORM MANIFESTJSON
 
-    int subgame;                                        //PASSED
-    int component;                                      //PASSED
+    int subgame;                                                    //PASSED
+    int component;                                                  //PASSED
 
     //Wine / Proton specific:
-    std::string ExePath;                                //DERIVED FORM MANIFESTJSON
-    std::string UMUID;                                  //DERIVED FORM MANIFESTJSON
-    std::filesystem::path WorkDirPath;                  //DERIVED FORM MANIFESTJSON
-    std::vector<std::string> ExeArgs;                   //DERIVED FORM MANIFESTJSON
+    std::string ExePath;                                            //DERIVED FORM MANIFESTJSON
+    std::string UMUID;                                              //DERIVED FORM MANIFESTJSON
+    std::filesystem::path WorkDirPath;                              //DERIVED FORM MANIFESTJSON
+    std::vector<std::string> ExeArgs;                               //DERIVED FORM MANIFESTJSON
+
+    //Result of initialisation:
+    nlohmann::ordered_json ContainerVariablesJSON;                  //DERIVED FROM CONTAINERPARAMS
 };
 
 class ContainerWrapper
 {
 public:
     ContainerWrapper(nlohmann::ordered_json Passed_GlobalConfigJSON, nlohmann::ordered_json Passed_MANIFESTJSON, ContainerParams Passed_ContainerParams);
-    static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, ContainerParams &ContainerParams);
-    static bool InitializeContainerParams(nlohmann::ordered_json MANIFESTJSON, ContainerParams &ContainerParams);
-    static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, ContainerParams &ContainerParams);
-    static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, ContainerParams &ContainerParams);
-    static bool VariableSubstitution(ContainerParams &ContainerParams);
+    struct ContainerParams ContainerParams;
+
+    bool BuildContainerRuntime();
+
+    //Container initialization:
+    static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool InitializeContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool CreateContainerVariablesJSON(struct ContainerParams &ContainerParams);
+    static bool VariableSubstitution(struct ContainerParams &ContainerParams);
+
+    //Filesystem management:
+    static bool CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON);
+
+    //Runner-specific:
+    static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
+    static bool CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams);
+    static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
+
 private:
     bool InitializeContainer();
-    struct ContainerParams ContainerParams;
+    bool BuildVirtualFilesystem();
+
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;
 };

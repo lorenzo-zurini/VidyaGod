@@ -534,7 +534,10 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
     QString ComparatorPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "COMPARATOR");
     Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, oldcomponent);
     ComparatorRunner->Cleanup(ComparatorPath);
+
+    //WHEN THIS BREAKS, USE DIRECT EDITING OF CONTAINERPARAMS.VARIABLEMAP INSTEAD!!! NO LONGER NEEDS A FUNCTION.
     ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
+
     std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Comparator initialzed!" << std::endl;
 
     QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
