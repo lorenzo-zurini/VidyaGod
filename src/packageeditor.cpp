@@ -661,31 +661,31 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         }
         if (!REGPATH.isEmpty()) REGPATH.chop(1); // remove trailing backslash
 
-        nlohmann::ordered_json KeyValueObject;
-        QString VALUE = QString::fromStdString(Item.value());
+        //nlohmann::ordered_json KeyValueObject;
+        //QString VALUE = QString::fromStdString(Item.value());
 
-        if (VALUE.startsWith("dword:"))
-        {
-            KeyValueObject["TYPE"] = "REG_DWORD";
-            VALUE.remove(0, 6);
-            VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-        }
-        else if (VALUE.startsWith("hex:"))
-        {
-            KeyValueObject["TYPE"] = "REG_BINARY";
-            VALUE.remove(0, 4);
-        }
-        else if (VALUE.startsWith("hex(b):") || VALUE.startsWith("str(7):") || VALUE.startsWith("str(2):"))
-        {
-            continue; // skip unsupported types
-        }
-        else
-        {
-            KeyValueObject["TYPE"] = "REG_SZ";
-            VALUE.replace("\\\\", "\\");
-        }
+        //if (VALUE.startsWith("dword:"))
+        //{
+        //    KeyValueObject["TYPE"] = "REG_DWORD";
+        //    VALUE.remove(0, 6);
+        //    VALUE = QString::number(VALUE.toUInt(nullptr, 16));
+        //}
+        //else if (VALUE.startsWith("hex:"))
+        //{
+        //    KeyValueObject["TYPE"] = "REG_BINARY";
+        //    VALUE.remove(0, 4);
+        //}
+        //else if (VALUE.startsWith("hex(b):") || VALUE.startsWith("str(7):") || VALUE.startsWith("str(2):"))
+        //{
+        //    continue; // skip unsupported types
+        //}
+        //else
+        //{
+        //KeyValueObject["TYPE"] = "REG_SZ";
+        //VALUE.replace("\\\\", "\\");
+        //}
 
-        KeyValueObject["VALUE"] = VALUE.toStdString();
+        //KeyValueObject["VALUE"] = VALUE.toStdString();
 
         // Check if subcomponent with same REGPATH exists
         bool merged = false;
@@ -693,7 +693,7 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         {
             if (SubComponent["REGPATH"] == REGPATH.toStdString())
             {
-                SubComponent["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+                SubComponent["KEYVALUES"][KEY.toStdString()] = Item.value();
                 merged = true;
                 break;
             }
@@ -705,7 +705,7 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
             NewSubComponentObject["TYPE"] = "RegEdit";
             NewSubComponentObject["REGPATH"] = REGPATH.toStdString();
             NewSubComponentObject["ARCHITECTURE"] = ARCHITECTURE.toStdString();
-            NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = KeyValueObject;
+            NewSubComponentObject["KEYVALUES"][KEY.toStdString()] = Item.value();
             SubComponentArray.push_back(NewSubComponentObject);
         }
     }

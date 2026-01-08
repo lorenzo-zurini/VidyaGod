@@ -74,6 +74,7 @@ bool ContainerWrapper::BuildVirtualFilesystem()
     this->InitializeDefPrefix(this->ContainerParams);
     this->CreateFlatRegPatchJSON(this->ContainerParams);
     this->CreateRegPatchFiles(this->ContainerParams);
+    this->MergeRegPatchFiles(this->ContainerParams);
     return true;
 }
 
@@ -329,9 +330,10 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
         }
         else
         {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Prefix initialisation successful!" << std::endl;
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
             return false;
         }
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Prefix initialisation successful!" << std::endl;
         return true;
     }
     else
@@ -341,6 +343,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
         return false;
     }
 }
+
 
 bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams)
 {
@@ -375,56 +378,129 @@ bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerP
     return true;
 }
 
-bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerParams)
+bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &params)
+//VIBE CODED
 {
-    //ADD NULL CHECKS AT ALL STEPS!!!
-    std::ofstream RegPatch32(std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "RegPatch32.reg");
-    RegPatch32 << "Windows Registry Editor Version 5.00" << std::endl << std::endl << std::endl;
-    for (const auto& [RegPath, KeyValuePairSet] : ContainerParams.ContainerVariablesJSON["FlatRegPatch"]["32"].items())
+    auto normalizeRootKey = [](std::string path) {
+        if (path.rfind("HKLM", 0) == 0) path.replace(0, 4, "HKEY_LOCAL_MACHINE");
+        else if (path.rfind("HKCU", 0) == 0) path.replace(0, 4, "HKEY_CURRENT_USER");
+        return path;
+    };
+
+    auto writeArch = [&](const std::string& arch) -> bool
     {
-        RegPatch32 << "[" << RegPath << "]" << std::endl;
-        for (const auto& [Key, Value] : KeyValuePairSet.items())
+        const std::filesystem::path filePath =
+            std::filesystem::path(params.ContainerVariablesJSON["ContainerPaths"]["TempPath"])
+            / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
+
+        std::ofstream out(filePath, std::ios::out | std::ios::trunc);
+        if (!out) return false;
+
+        // Header
+        out << "Windows Registry Editor Version 5.00\n\n";
+
+        // Iterate all registry paths
+        for (const auto& [rawPath, keySet] :
+             params.ContainerVariablesJSON["FlatRegPatch"][arch].items())
         {
-            RegPatch32 << Key << "=" << Value << std::endl;
+            std::string regPath = normalizeRootKey(rawPath);
+            out << "[" << regPath << "]\n";
+
+            // If keySet is null, just create the key (no values)
+            if (keySet.is_object())
+            {
+                for (const auto& [key, value] : keySet.items())
+                {
+                    out << "\"" << key << "\"=";
+
+                    if (value.is_null())
+                    {
+                        out << "\"\""; // empty string for null
+                    }
+                    else if (value.is_boolean())
+                    {
+                        out << "dword:" << (value.get<bool>() ? "00000001" : "00000000");
+                    }
+                    else if (value.is_number_integer() || value.is_number_unsigned())
+                    {
+                        out << "dword:"
+                            << std::hex << std::setw(8) << std::setfill('0')
+                            << value.get<uint32_t>()
+                            << std::dec;
+                    }
+                    else if (value.is_string())
+                    {
+                        std::string s = value.get<std::string>();
+
+                        // Already a literal (dword: or hex:) → write as-is
+                        if (s.rfind("dword:", 0) == 0 || s.rfind("hex:", 0) == 0)
+                        {
+                            out << s;
+                        }
+                        else
+                        {
+                            // Escape backslashes
+                            std::string escaped;
+                            for (char c : s)
+                                escaped += (c == '\\') ? "\\\\" : std::string(1, c);
+                            out << "\"" << escaped << "\"";
+                        }
+                    }
+
+                    out << "\n";
+                }
+            }
+
+            out << "\n"; // blank line between keys
         }
-        RegPatch32 << std::endl;
-    }
-    RegPatch32.close();
 
+        return true;
+    };
 
-
-
-    std::ofstream RegPatch64(std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "RegPatch64.reg");
-    return true;
+    // Write both 32-bit and 64-bit patches
+    return writeArch("32") && writeArch("64");
 }
 
+bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
+//VIBE CODED, SEEMS TO WORK PROPERLY
+{
+    // Prepare environment
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert("WINEPREFIX", QString::fromStdString(params.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    env.insert("GAMEID", "0");
+    env.remove("LD_LIBRARY_PATH");
 
-/*
-[Software\\Ciocoferoni] 1767816595
-#time=1dc8011971bd90e
-"CACAMAKOKO"=dword:00001337
-"CIOCOFERONN"=dword:00000000
-"MOKOBEZOKO"=dword:00001488
-"TESTOFERON"=dword:00000001
-*/
+    // Lambda to run a command and print output
+    auto runRegImport = [&](const QString& regFilePath) -> bool
+    {
+        QProcess process;
+        process.setProcessEnvironment(env);
+        process.setProgram("umu-run");
+        process.setArguments({ "reg", "import", regFilePath });
 
+        process.start();
+        if (!process.waitForFinished(-1))
+        {
+            std::cerr << "Failed to execute: " << regFilePath.toStdString() << std::endl;
+            return false;
+        }
+
+        std::cout << process.readAllStandardError().toStdString();
+        std::cout << process.readAllStandardOutput().toStdString();
+        return true;
+    };
+
+    // Import both 32-bit and 64-bit patches
+    const std::filesystem::path basePath = std::filesystem::path(params.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c";
+
+    bool ok32 = runRegImport(QString::fromStdString((basePath / "RegPatch32.reg").string()));
+    bool ok64 = runRegImport(QString::fromStdString((basePath / "RegPatch64.reg").string()));
+
+    return ok32 && ok64;
+}
 
 /*
 {
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Executing registry subcomponents" << std::endl;
-
-    QProcessEnvironment RegAddProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    RegAddProcessEnvironment.insert("WINEPREFIX", this->Paths["DefPrefixPath"]);
-    RegAddProcessEnvironment.insert("GAMEID", "0");
-    RegAddProcessEnvironment.remove("LD_LIBRARY_PATH");
-
-
-    QProcess * RegAddProcess = new QProcess;
-    RegAddProcess->setProcessEnvironment(RegAddProcessEnvironment);
-    RegAddProcess->setProgram("umu-run");
-
-
-
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing filesystem Subcomponents.");
     //Mounting filesystem components in TEMP and adding to UnionFSString
@@ -816,67 +892,6 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
         return false;
     }
 }
-
-QStringList Runner::StringListReplaceVariables(QStringList OriginalStringList, QMap<QString, QString> VariableValues)
-{
-    // Iterate using a const iterator (Qt 6.2+ compatible)
-    for (auto it = VariableValues.constBegin(); it != VariableValues.constEnd(); ++it)
-    {
-        const QString &Variable = it.key();
-        const QString &Value = it.value();
-
-        OriginalStringList.replaceInStrings("%" + Variable + "%", Value);
-    }
-
-    return OriginalStringList;
-}
-*/
-
-/*
-bool Runner::RegAdd(nlohmann::ordered_json SubComponentJSON)
-{
-    QString REGPATH = QString::fromStdString(SubComponentJSON["REGPATH"]);
-
-    if (SubComponentJSON.contains("KEYVALUES"))
-    {
-        for (auto Item : SubComponentJSON["KEYVALUES"].items())
-        {
-            QStringList CommandArgs;
-            CommandArgs.append("add");      CommandArgs.append(REGPATH);
-            CommandArgs.append("/f");
-            CommandArgs.append("/v");       CommandArgs.append(QString::fromStdString(Item.key()));
-            CommandArgs.append("/t");       CommandArgs.append(QString::fromStdString(SubComponentJSON["KEYVALUES"][Item.key()]["TYPE"]));
-
-            if (SubComponentJSON["KEYVALUES"][Item.key()].contains("VALUE"))
-            {
-                CommandArgs.append("/d");       CommandArgs.append(QString::fromStdString(SubComponentJSON["KEYVALUES"][Item.key()]["VALUE"]));
-            }
-
-            if(SubComponentJSON["ARCHITECTURE"] == "32")
-            {
-                CommandArgs.append("/reg:32");
-            }
-
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] EXECUTING REGISTRY STRING: " << CommandArgs;
-            this->Run("reg", CommandArgs);
-        }
-    }
-    else
-    {
-        QStringList CommandArgs;
-        CommandArgs.append("add");      CommandArgs.append(REGPATH);
-        CommandArgs.append("/f");
-
-        if(SubComponentJSON["ARCHITECTURE"] == "32")
-        {
-            CommandArgs.append("/reg:32");
-        }
-
-        std::cout << QTime::currentTime().toString().toStdString() << "REGOps:" << "[OUT] REG STRING: " << CommandArgs;
-        this->Run("reg", CommandArgs);
-    }
-    return true;
-}
 */
 
 //Container Wrapper structure outline:
@@ -894,27 +909,3 @@ bool Runner::RegAdd(nlohmann::ordered_json SubComponentJSON)
 //
 //   Runner execution part.
 //   I need to generalize the runner class so it works with all kinds of runners.
-
-
-
-
-
-
-
-/*
-bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataPath)
-{
-    QString FinalRuntimePath = this->Paths["RuntimePath"];
-    if (!OverrideRuntimePath.isNull())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath.toStdString() << std::endl;
-        FinalRuntimePath = OverrideRuntimePath;
-    }
-
-    QString FinalUserDataPath = this->Paths["UserDataPath"];
-    if (!OverrideUserDataPath.isNull())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed UserDataPath" << OverrideUserDataPath.toStdString() << std::endl;
-        FinalUserDataPath = OverrideUserDataPath;
-    }
-}*/

@@ -72,6 +72,7 @@ public:
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
     static bool CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams);
     static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
+    static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
 
 private:
     bool InitializeContainer();
