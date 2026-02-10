@@ -326,7 +326,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
         }
         else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
         {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
         }
         else
         {
@@ -378,8 +378,7 @@ bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerP
     return true;
 }
 
-bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &params)
-//VIBE CODED
+bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerParams)
 {
     auto normalizeRootKey = [](std::string path) {
         if (path.rfind("HKLM", 0) == 0) path.replace(0, 4, "HKEY_LOCAL_MACHINE");
@@ -390,7 +389,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &params)
     auto writeArch = [&](const std::string& arch) -> bool
     {
         const std::filesystem::path filePath =
-            std::filesystem::path(params.ContainerVariablesJSON["ContainerPaths"]["TempPath"])
+            std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"])
             / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
 
         std::ofstream out(filePath, std::ios::out | std::ios::trunc);
@@ -401,7 +400,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &params)
 
         // Iterate all registry paths
         for (const auto& [rawPath, keySet] :
-             params.ContainerVariablesJSON["FlatRegPatch"][arch].items())
+             ContainerParams.ContainerVariablesJSON["FlatRegPatch"][arch].items())
         {
             std::string regPath = normalizeRootKey(rawPath);
             out << "[" << regPath << "]\n";
@@ -461,12 +460,13 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &params)
     return writeArch("32") && writeArch("64");
 }
 
-bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
-//VIBE CODED, SEEMS TO WORK PROPERLY
+bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParams)
 {
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merging RegPatchFiles." << std::endl;
+
     // Prepare environment
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("WINEPREFIX", QString::fromStdString(params.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    env.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
     env.insert("GAMEID", "0");
     env.remove("LD_LIBRARY_PATH");
 
@@ -478,10 +478,12 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
         process.setProgram("umu-run");
         process.setArguments({ "reg", "import", regFilePath });
 
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merging: " << regFilePath.toStdString() << std::endl;
+
         process.start();
         if (!process.waitForFinished(-1))
         {
-            std::cerr << "Failed to execute: " << regFilePath.toStdString() << std::endl;
+            std::cerr << "Failed to merge: " << regFilePath.toStdString() << std::endl;
             return false;
         }
 
@@ -491,7 +493,7 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
     };
 
     // Import both 32-bit and 64-bit patches
-    const std::filesystem::path basePath = std::filesystem::path(params.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c";
+    const std::filesystem::path basePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c";
 
     bool ok32 = runRegImport(QString::fromStdString((basePath / "RegPatch32.reg").string()));
     bool ok64 = runRegImport(QString::fromStdString((basePath / "RegPatch64.reg").string()));
@@ -499,33 +501,46 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
     return ok32 && ok64;
 }
 
-/*
+bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &ContainerParams)
 {
-    ///////////////////////////////////////////////////////////////////////////////////////////////
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing filesystem Subcomponents.");
     //Mounting filesystem components in TEMP and adding to UnionFSString
     std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Processing filesystem Subcomponents." << std::endl;
-    for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
+    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
-        nlohmann::ordered_json SubComponentJSON = Runner::SubComponentsArray[i];
+        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
         if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
-            QDir SubComponentDir = this->Paths["TempPath"];
-            SubComponentDir.mkdir("[" + QString::number(i) + "]");
-            SubComponentDir.cd("[" + QString::number(i) + "]");
-            UnionFSString.prepend(SubComponentDir.path() + "=RO:");
+            //QDir SubComponentDir = this->Paths["TempPath"];
+            std::filesystem::path MountPath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / std::string("[" + std::to_string(i) + "]");
+            std::filesystem::create_directories(MountPath);
+            //SubComponentDir.mkdir();
+            //SubComponentDir.cd("[" + QString::number(i) + "]");
 
-            QDir MountDir = SubComponentDir;
-            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-
-            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
+            //MAKE THIS A FUNCTION
+            if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
             {
-                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
+                ContainerParams.ContainerVariablesJSON["VFSString"] = MountPath.string() + "=RO";
+            }
+            else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
+            {
+                ContainerParams.ContainerVariablesJSON["VFSString"] = MountPath.string() + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+            }
+            else
+            {
+                std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
+                return false;
             }
 
-            QString ZipFilePath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
+            //QDir MountDir = SubComponentDir;
+            std::filesystem::path ProgramPath = MountPath / "drive_c" / ContainerParams.PackageUID;
+            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
+            {
+                ProgramPath = ProgramPath / SubComponentJSON["TARGET"];
+            }
+
+            std::filesystem::path ZipFilePath = ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"];
+            ZipFilePath. = ZipFilePath / SubComponentJSON["PATH"];
 
             std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Mounting ZipFileLayer" << ZipFilePath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
 
@@ -536,7 +551,7 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
             MountZip->waitForFinished(-1);
 
             std::cout << MountZip->readAllStandardError().toStdString() << std::endl;
-            std::cout << MountZip->readAllStandardOutput().toStdString() << std::endl;
+            std::cout << MountZip->readAllStandardOutput().toStdString() << std::UnionFSStringendl;
 
             if(MountZip->exitCode() == 0)
             {
@@ -597,6 +612,12 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams& params)
             std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
         }
     }
+}
+
+/*
+{
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     //QMessageBox::warning(nullptr, "Building Runtime", "Building UnionFS.");

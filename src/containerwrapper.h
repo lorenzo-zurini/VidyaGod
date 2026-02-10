@@ -8,6 +8,7 @@
 #include <ctime>
 #include <regex>
 #include <filesystem>
+#include <string>
 
 
 
@@ -67,6 +68,8 @@ public:
 
     //Filesystem management:
     static bool CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON);
+    static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams);
+    static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
 
     //Runner-specific:
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
