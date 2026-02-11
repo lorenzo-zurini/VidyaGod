@@ -77,6 +77,9 @@ public:
     static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
     static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
 
+    //Misc
+    static int RunCommand(QString Program, QStringList Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::InheritFromParent);
+
 private:
     bool InitializeContainer();
     bool BuildVirtualFilesystem();

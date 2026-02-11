@@ -75,6 +75,7 @@ bool ContainerWrapper::BuildVirtualFilesystem()
     this->CreateFlatRegPatchJSON(this->ContainerParams);
     this->CreateRegPatchFiles(this->ContainerParams);
     this->MergeRegPatchFiles(this->ContainerParams);
+    this->PreMountFilesystemComponents(this->ContainerParams);
     return true;
 }
 
@@ -388,9 +389,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerPara
 
     auto writeArch = [&](const std::string& arch) -> bool
     {
-        const std::filesystem::path filePath =
-            std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"])
-            / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
+        const std::filesystem::path filePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
 
         std::ofstream out(filePath, std::ios::out | std::ios::trunc);
         if (!out) return false;
@@ -465,153 +464,93 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merging RegPatchFiles." << std::endl;
 
     // Prepare environment
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    env.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
-    env.insert("GAMEID", "0");
-    env.remove("LD_LIBRARY_PATH");
+    QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    ProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    ProcessEnvironment.insert("GAMEID", "0");
+    ProcessEnvironment.remove("LD_LIBRARY_PATH");
 
-    // Lambda to run a command and print output
-    auto runRegImport = [&](const QString& regFilePath) -> bool
+    int Merge32Complete = RunCommand("umu-run", {"reg", "import", QString::fromStdString((std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch32.reg"))}, ProcessEnvironment);
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch32.reg. " << "EXIT CODE: " << Merge32Complete << std::endl;
+    int Merge64Complete = RunCommand("umu-run", {"reg", "import", QString::fromStdString((std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch64.reg"))}, ProcessEnvironment);
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch64.reg. " << "EXIT CODE: " << Merge64Complete << std::endl;
+    return true;
+}
+
+int ContainerWrapper::RunCommand(QString Program, QStringList Arguments, QProcessEnvironment ProcessEnvironment)
+{
+    QString ArgsString;
+    for (QString Arg : Arguments)
     {
-        QProcess process;
-        process.setProcessEnvironment(env);
-        process.setProgram("umu-run");
-        process.setArguments({ "reg", "import", regFilePath });
+        ArgsString.append(Arg).append(" ");
+    }
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::RunCommand: " << "[OUT] Running program " << Program.toStdString() << " with arguments: " << ArgsString.toStdString() << std::endl;
 
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merging: " << regFilePath.toStdString() << std::endl;
+    QProcess Process;
+    Process.setProcessEnvironment(ProcessEnvironment);
+    Process.setProgram(Program);
+    Process.setArguments(Arguments);
 
-        process.start();
-        if (!process.waitForFinished(-1))
-        {
-            std::cerr << "Failed to merge: " << regFilePath.toStdString() << std::endl;
-            return false;
-        }
+    Process.start();
 
-        std::cout << process.readAllStandardError().toStdString();
-        std::cout << process.readAllStandardOutput().toStdString();
-        return true;
-    };
+    if (!Process.waitForFinished(-1))
+    {
+        return -1; //Failed to start or crashed
+    }
 
-    // Import both 32-bit and 64-bit patches
-    const std::filesystem::path basePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c";
+    std::cout << Process.readAllStandardError().toStdString();
+    std::cout << Process.readAllStandardOutput().toStdString();
 
-    bool ok32 = runRegImport(QString::fromStdString((basePath / "RegPatch32.reg").string()));
-    bool ok64 = runRegImport(QString::fromStdString((basePath / "RegPatch64.reg").string()));
-
-    return ok32 && ok64;
+    if (Process.exitStatus() == QProcess::NormalExit)
+    {
+        return Process.exitCode();
+    }
+    else
+    {
+        return -1; //Crashed
+    }
 }
 
 bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &ContainerParams)
 {
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing filesystem Subcomponents.");
     //Mounting filesystem components in TEMP and adding to UnionFSString
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Processing filesystem Subcomponents." << std::endl;
+    std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Processing filesystem Subcomponents." << std::endl;
     for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
+        std::filesystem::path PreMountPath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / std::string("[" + std::to_string(i) + "]");
+        std::filesystem::create_directories(PreMountPath);
+
+        //MAKE THIS A FUNCTION
+        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+        {
+            ContainerParams.ContainerVariablesJSON["VFSString"] = PreMountPath.string() + "=RO";
+        }
+        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
+        {
+            ContainerParams.ContainerVariablesJSON["VFSString"] = PreMountPath.string() + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+        }
+
+        //QDir MountDir = SubComponentDir;
+        std::filesystem::path TargetPath = PreMountPath / "drive_c" / ContainerParams.PackageUID;
+        if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
+        {
+            TargetPath = TargetPath / SubComponentJSON["TARGET"];
+        }
+
+        std::filesystem::path SourcePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"]) / SubComponentJSON["PATH"];
         if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
-            //QDir SubComponentDir = this->Paths["TempPath"];
-            std::filesystem::path MountPath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / std::string("[" + std::to_string(i) + "]");
-            std::filesystem::create_directories(MountPath);
-            //SubComponentDir.mkdir();
-            //SubComponentDir.cd("[" + QString::number(i) + "]");
-
-            //MAKE THIS A FUNCTION
-            if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
-            {
-                ContainerParams.ContainerVariablesJSON["VFSString"] = MountPath.string() + "=RO";
-            }
-            else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-            {
-                ContainerParams.ContainerVariablesJSON["VFSString"] = MountPath.string() + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-            }
-            else
-            {
-                std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
-                return false;
-            }
-
-            //QDir MountDir = SubComponentDir;
-            std::filesystem::path ProgramPath = MountPath / "drive_c" / ContainerParams.PackageUID;
-            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
-            {
-                ProgramPath = ProgramPath / SubComponentJSON["TARGET"];
-            }
-
-            std::filesystem::path ZipFilePath = ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"];
-            ZipFilePath. = ZipFilePath / SubComponentJSON["PATH"];
-
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Mounting ZipFileLayer" << ZipFilePath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
-
-            QProcess * MountZip = new QProcess;
-            MountZip->setProgram("fuse-zip");
-            MountZip->setArguments({"-r", ZipFilePath, MountDir.path()});
-            MountZip->start();
-            MountZip->waitForFinished(-1);
-
-            std::cout << MountZip->readAllStandardError().toStdString() << std::endl;
-            std::cout << MountZip->readAllStandardOutput().toStdString() << std::UnionFSStringendl;
-
-            if(MountZip->exitCode() == 0)
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully mounted zip file layer" << ZipFilePath.toStdString() << std::endl;
-
-                delete MountZip;
-            }
-            else
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to mount zip file layer" << ZipFilePath.toStdString() << std::endl;
-                delete MountZip;
-                return false;
-            }
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
+            std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Mounting ZipFileLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
+            ContainerWrapper::RunCommand("fuse-zip", {"-r", QString::fromStdString(SourcePath), QString::fromStdString(TargetPath)});
         }
         else if (SubComponentJSON["TYPE"] == "DirLayer")
         {
-            QDir SubComponentDir = this->Paths["TempPath"];
-            SubComponentDir.mkdir("[" + QString::number(i) + "]");
-            SubComponentDir.cd("[" + QString::number(i) + "]");
-            UnionFSString.prepend(SubComponentDir.path() + "=RO:");
-
-            QDir MountDir = SubComponentDir;
-            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-
-            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
-            {
-                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-            }
-
-            QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
-
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Mounting DirLayer" << DirPath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
-
-            QProcess * BindDir = new QProcess;
-            BindDir->setProgram("bindfs");
-            BindDir->setArguments({"-r", DirPath, MountDir.path()});
-            BindDir->start();
-            BindDir->waitForFinished(-1);
-
-            std::cout << BindDir->readAllStandardError().toStdString() << std::endl;
-            std::cout << BindDir->readAllStandardOutput().toStdString() << std::endl;
-
-            if(BindDir->exitCode() == 0)
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully mounted dir layer" << DirPath.toStdString() << std::endl;
-
-                delete BindDir;
-            }
-            else
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to mount dir layer" << DirPath.toStdString() << std::endl;
-                delete BindDir;
-                return false;
-            }
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
+            std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Mounting DirLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
+            ContainerWrapper::RunCommand("bindfs", {"-r", QString::fromStdString(SourcePath.string()), QString::fromStdString(TargetPath)});
         }
     }
+    return true;
 }
 
 /*
