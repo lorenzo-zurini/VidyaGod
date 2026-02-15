@@ -295,6 +295,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubGame);
     class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
     NewContainerWrapper.BuildContainerRuntime();
+    NewContainerWrapper.Execute();
 
     //Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
 

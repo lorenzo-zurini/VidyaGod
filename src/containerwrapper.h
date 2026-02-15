@@ -9,17 +9,15 @@
 #include <regex>
 #include <filesystem>
 #include <string>
-
-
-
+#include <unordered_set>
+#include <algorithm>
 
 #include <QDir>
+#include <QVector>
 #include <QMessageBox>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QProcess>
-
-
 
 struct ContainerParams
 {
@@ -39,12 +37,14 @@ public:
 
     int subgame;                                                    //PASSED
     int component;                                                  //PASSED
+    bool ReadOnlyVFS = false;                                       //SET
 
     //Wine / Proton specific:
     std::string ExePath;                                            //DERIVED FORM MANIFESTJSON
     std::string UMUID;                                              //DERIVED FORM MANIFESTJSON
     std::filesystem::path WorkDirPath;                              //DERIVED FORM MANIFESTJSON
     std::vector<std::string> ExeArgs;                               //DERIVED FORM MANIFESTJSON
+    std::vector<std::string> DLLOverrides;                          //DERIVED FORM MANIFESTJSON
 
     //Result of initialisation:
     nlohmann::ordered_json ContainerVariablesJSON;                  //DERIVED FROM CONTAINERPARAMS
@@ -57,6 +57,7 @@ public:
     struct ContainerParams ContainerParams;
 
     bool BuildContainerRuntime();
+    bool Execute();
 
     //Container initialization:
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
@@ -70,15 +71,27 @@ public:
     static bool CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON);
     static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams);
     static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
+    static bool AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath);
+    static bool FinalizeVFSString(struct ContainerParams &ContainerParams);
+    static bool MountVFS(struct ContainerParams &ContainerParams);
+    static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
 
-    //Runner-specific:
+    //Registry handling:
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
     static bool CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams);
     static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
     static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
 
+    //DLL overrides:
+    static bool ProcessDLLOverrides(struct ContainerParams &ContainerParams);
+
+    //FileEdits:
+    static bool ProcessFileEdits(struct ContainerParams &ContainerParams);
+    static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);
+
     //Misc
-    static int RunCommand(QString Program, QStringList Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::InheritFromParent);
+    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::InheritFromParent);
+
 
 private:
     bool InitializeContainer();

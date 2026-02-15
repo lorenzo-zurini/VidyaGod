@@ -19,12 +19,6 @@ public:
     static bool CreateDirectories (QMap<QString, QString>);
     static bool CheckPackageValid(QDir * PackageDir);
     static bool CheckCaseConflicts(QString RuntimePath);
-
-    static bool MountZipFileLayer(nlohmann::ordered_json SubComponentJSON, int LayerNumber, QString TempPath, QString PackageFilesPath, QString * UnionFSString, QString PackageName);
-
-
-
-    static bool ConfigWrite(QString Key, QString Value, QString FilePath);
 };
 
 #endif // FILESYSTEMOPERATIONS_H

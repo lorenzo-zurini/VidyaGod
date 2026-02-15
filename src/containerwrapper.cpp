@@ -12,6 +12,10 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, int P
     std::cout << std::chrono::system_clock::now() << " ContainerParams::ContainerParams: " << "[OUT] ContainerParams object created..." << std::endl;
 }
 
+//TO-DO:
+//CREATE SEPARATE CLASS FOR VFS
+//CREATE WRAPPER CLASS FOR REGISTRY
+
 bool ContainerWrapper::InitializeContainer()
 {
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] Initializing container..." << std::endl;
@@ -64,18 +68,29 @@ bool ContainerWrapper::InitializeContainer()
 bool ContainerWrapper::BuildContainerRuntime()
 {
     this->CreateDirectories(this->ContainerParams.ContainerVariablesJSON);
-    this->BuildVirtualFilesystem();
+    this->InitializeDefPrefix(this->ContainerParams);
+
+    //REGISTRY WRAPPER
+    this->CreateFlatRegPatchJSON(this->ContainerParams);
+    this->CreateRegPatchFiles(this->ContainerParams);
+    this->MergeRegPatchFiles(this->ContainerParams);
+
+    //VFS WRAPPER
+    this->PreMountFilesystemComponents(this->ContainerParams);
+    this->FinalizeVFSString(this->ContainerParams);
+    this->MountVFS(this->ContainerParams);
+    this->CheckCaseConflicts(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"]);
+
+    this->ProcessDLLOverrides(this->ContainerParams);
+    this->ProcessFileEdits(this->ContainerParams);
+
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildContainerRuntime: " << "[OUT] Container ready to run!" << std::endl;
     return true;
 }
 
 bool ContainerWrapper::BuildVirtualFilesystem()
 {
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildVirtualFilesystem: " << "[OUT] Building virtual filesystem." << std::endl;
-    this->InitializeDefPrefix(this->ContainerParams);
-    this->CreateFlatRegPatchJSON(this->ContainerParams);
-    this->CreateRegPatchFiles(this->ContainerParams);
-    this->MergeRegPatchFiles(this->ContainerParams);
-    this->PreMountFilesystemComponents(this->ContainerParams);
     return true;
 }
 
@@ -130,8 +145,7 @@ bool ContainerWrapper::InitializeContainerParams(nlohmann::ordered_json MANIFEST
     }
     else
     {
-        ContainerParams.WorkDirPath = ContainerParams.PackagePath / "drive_c" / ContainerParams.PackageUID;
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << "[OUT] WORKDIR: " << ContainerParams.WorkDirPath << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << "[OUT] WORKDIR: NULL" << std::endl;
     }
 
     //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
@@ -226,6 +240,7 @@ bool ContainerWrapper::CreateContainerVariablesJSON(struct ContainerParams &Cont
     ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]                          = ContainerParams.PackagePath / "TEMP" / "DEFPREFIX";
     ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathRelative"]                        = ContainerParams.ExePath;
     ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathComplete"]                        = ContainerParams.PackagePath / "RUNTIME" / "drive_c" / ContainerParams.PackageUID / ContainerParams.ExePath;
+    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"]                        = std::filesystem::path("C:/") / ContainerParams.PackageUID / ContainerParams.ExePath;
 
     //Windows Paths
     ContainerParams.ContainerVariablesJSON["WindowsPaths"]["WindowsProgramPath"]                   = "C:\\" + ContainerParams.PackageUID;
@@ -266,6 +281,40 @@ bool ContainerWrapper::VariableSubstitution(struct ContainerParams &ContainerPar
     return true;
 }
 
+int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment)
+{
+    auto toQStringList = [](const std::vector<std::string>& v){
+        QStringList l; for (auto& s : v) l << QString::fromStdString(s); return l;
+    };
+
+    QStringList ArgumentsQList = toQStringList(Arguments);
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::RunCommand: " << "[OUT] Running program " << Program << " with arguments: " << ArgumentsQList.join(" ").toStdString() << std::endl;
+
+    QProcess Process;
+    Process.setProcessEnvironment(ProcessEnvironment);
+    Process.setProgram(QString::fromStdString(Program));
+    Process.setArguments(ArgumentsQList);
+
+    Process.start();
+
+    if (!Process.waitForFinished(-1))
+    {
+        return -1; //Failed to start or crashed
+    }
+
+    std::cout << Process.readAllStandardError().toStdString();
+    std::cout << Process.readAllStandardOutput().toStdString();
+
+    if (Process.exitStatus() == QProcess::NormalExit)
+    {
+        return Process.exitCode();
+    }
+    else
+    {
+        return -1; //Crashed
+    }
+}
+
 bool ContainerWrapper::CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON)
 {
     // Creating all necessary directories based on the Paths QMap.
@@ -293,58 +342,9 @@ bool ContainerWrapper::CreateDirectories(const nlohmann::ordered_json ContainerV
     return true;
 }
 
-bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerParams)
-//Exclusive for wine / proton runners.
-//Must be made to work with any runner, not just UMU...
-{
-    //Initialising UMU prefix.
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Initialising DefPrefix, path: " << ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"] << std::endl;
-
-    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    QProcess * RunProcess = new QProcess;
-    RunProcess->setProgram("umu-run");
-    RunProcess->setArguments({"wineboot"});
-
-    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
-    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
-    RunProcessEnvironment.insert("GAMEID", "0");
-    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
-
-    RunProcess->setProcessEnvironment(RunProcessEnvironment);
-    RunProcess->start();
-    RunProcess->waitForFinished(-1);
-
-    std::cout << RunProcess->readAllStandardError().toStdString() << std::endl;
-    std::cout << RunProcess->readAllStandardOutput().toStdString() << std::endl;
-
-    if (RunProcess->exitCode() == 0)
-    {
-        delete RunProcess;
-        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO";
-        }
-        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-        }
-        else
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
-            return false;
-        }
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Prefix initialisation successful!" << std::endl;
-        return true;
-    }
-    else
-    {
-        delete RunProcess;
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
-        return false;
-    }
-}
-
+//=====================================================================================================================================================================
+//                                                                    REGISTRYWRAPPER CLASS
+//=====================================================================================================================================================================
 
 bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams)
 {
@@ -469,44 +469,66 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
     ProcessEnvironment.insert("GAMEID", "0");
     ProcessEnvironment.remove("LD_LIBRARY_PATH");
 
-    int Merge32Complete = RunCommand("umu-run", {"reg", "import", QString::fromStdString((std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch32.reg"))}, ProcessEnvironment);
+    int Merge32Complete = RunCommand("umu-run", {"reg", "import", std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch32.reg. " << "EXIT CODE: " << Merge32Complete << std::endl;
-    int Merge64Complete = RunCommand("umu-run", {"reg", "import", QString::fromStdString((std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch64.reg"))}, ProcessEnvironment);
+    int Merge64Complete = RunCommand("umu-run", {"reg", "import", std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch64.reg. " << "EXIT CODE: " << Merge64Complete << std::endl;
     return true;
 }
 
-int ContainerWrapper::RunCommand(QString Program, QStringList Arguments, QProcessEnvironment ProcessEnvironment)
+//=====================================================================================================================================================================
+//                                                                          VFSWRAPPER CLASS
+//=====================================================================================================================================================================
+
+bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerParams)
+//Exclusive for wine / proton runners.
+//Must be made to work with any runner, not just UMU...
 {
-    QString ArgsString;
-    for (QString Arg : Arguments)
+    //Initialising UMU prefix.
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Initialising DefPrefix, path: " << ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"] << std::endl;
+
+    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    QProcess * RunProcess = new QProcess;
+    RunProcess->setProgram("umu-run");
+    RunProcess->setArguments({"wineboot"});
+
+    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
+    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    RunProcessEnvironment.insert("GAMEID", "0");
+    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
+    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
+
+    RunProcess->setProcessEnvironment(RunProcessEnvironment);
+    RunProcess->start();
+    RunProcess->waitForFinished(-1);
+
+    std::cout << RunProcess->readAllStandardError().toStdString() << std::endl;
+    std::cout << RunProcess->readAllStandardOutput().toStdString() << std::endl;
+
+    if (RunProcess->exitCode() == 0)
     {
-        ArgsString.append(Arg).append(" ");
-    }
-    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::RunCommand: " << "[OUT] Running program " << Program.toStdString() << " with arguments: " << ArgsString.toStdString() << std::endl;
-
-    QProcess Process;
-    Process.setProcessEnvironment(ProcessEnvironment);
-    Process.setProgram(Program);
-    Process.setArguments(Arguments);
-
-    Process.start();
-
-    if (!Process.waitForFinished(-1))
-    {
-        return -1; //Failed to start or crashed
-    }
-
-    std::cout << Process.readAllStandardError().toStdString();
-    std::cout << Process.readAllStandardOutput().toStdString();
-
-    if (Process.exitStatus() == QProcess::NormalExit)
-    {
-        return Process.exitCode();
+        delete RunProcess;
+        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+        {
+            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO";
+        }
+        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
+        {
+            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+        }
+        else
+        {
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
+            return false;
+        }
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Prefix initialisation successful!" << std::endl;
+        return true;
     }
     else
     {
-        return -1; //Crashed
+        delete RunProcess;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
+        return false;
     }
 }
 
@@ -514,126 +536,331 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
 {
     //QMessageBox::warning(nullptr, "Building Runtime", "Processing filesystem Subcomponents.");
     //Mounting filesystem components in TEMP and adding to UnionFSString
-    std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Processing filesystem Subcomponents." << std::endl;
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Processing filesystem Subcomponents." << std::endl;
     for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
+        if (SubComponentJSON["TYPE"] != "ZipFileLayer" && SubComponentJSON["TYPE"] != "DirLayer")
+        {
+            continue;
+        }
+
         std::filesystem::path PreMountPath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / std::string("[" + std::to_string(i) + "]");
-        std::filesystem::create_directories(PreMountPath);
-
-        //MAKE THIS A FUNCTION
-        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = PreMountPath.string() + "=RO";
-        }
-        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = PreMountPath.string() + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-        }
-
-        //QDir MountDir = SubComponentDir;
         std::filesystem::path TargetPath = PreMountPath / "drive_c" / ContainerParams.PackageUID;
         if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
         {
             TargetPath = TargetPath / SubComponentJSON["TARGET"];
         }
+        std::filesystem::create_directories(TargetPath);
 
         std::filesystem::path SourcePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"]) / SubComponentJSON["PATH"];
         if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
-            std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Mounting ZipFileLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
-            ContainerWrapper::RunCommand("fuse-zip", {"-r", QString::fromStdString(SourcePath), QString::fromStdString(TargetPath)});
+            std::cout << std::chrono::system_clock::now() << "ContainerWrappNewPather::PreMountFilesystemComponents: " << "[OUT] Mounting ZipFileLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
+            if (!ContainerWrapper::RunCommand("fuse-zip", {"-r", SourcePath, TargetPath}))
+            {
+                if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
+                {
+                    return false;
+                }
+            }
         }
         else if (SubComponentJSON["TYPE"] == "DirLayer")
         {
-            std::cout << std::chrono::system_clock::now() << "Runner:" << "[OUT] Mounting DirLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
-            ContainerWrapper::RunCommand("bindfs", {"-r", QString::fromStdString(SourcePath.string()), QString::fromStdString(TargetPath)});
+            std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Mounting DirLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
+            if (!ContainerWrapper::RunCommand("bindfs", {"-r", SourcePath, TargetPath}))
+            {
+                if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Filesystem subcomponent pre-mount complete" << std::endl;
+    return true;
+}
+
+bool ContainerWrapper::AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath)
+{
+    if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+    {
+        ContainerParams.ContainerVariablesJSON["VFSString"] = NewPath + "=RO";
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::AddToVFSString:" << "[OUT] Initialized VFSString with " << NewPath << std::endl;
+        return true;
+    }
+    else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
+    {
+        ContainerParams.ContainerVariablesJSON["VFSString"] = NewPath + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::AddToVFSString:" << "[OUT] Added " << NewPath << " to VFSString" << std::endl;
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.ReadOnlyVFS)
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "ContainerWrapper::FinalizeVFSString: " << "[OUT] UnionFSString:" << "RUNTIME IS READONLY!" << std::endl;
+    }
+    else
+    {
+        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+        {
+            std::cout << std::chrono::system_clock::now() << "ContainerWrapper::FinalizeVFSString: " << "[ERR] VFSString is null or empty..." << std::endl;
+            return false;
+        }
+        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
+        {
+            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["UserDataPath"]) + "=RW:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
+            std::cout << std::chrono::system_clock::now() << "ContainerWrapper::FinalizeVFSString: " << "[OUT] Finalized VFSString. Final VFSSTRING:" << std::endl << ContainerParams.ContainerVariablesJSON["VFSString"] << std::endl;
+            return true;
+        }
+        else
+        {
+            return false;
         }
     }
     return true;
 }
 
-/*
+
+bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 {
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    //QMessageBox::warning(nullptr, "Building Runtime", "Building UnionFS.");
-    //FINALIZING UNIONFS STRING
-
-    if (FinalUserDataPath == "READONLY")
+    if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << "NO USERDATA - RUNTIME IS READONLY!" << std::endl;
-    }
-    else
-    {
-        UnionFSString.prepend(FinalUserDataPath + "=RW:");
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] UnionFSString:" << UnionFSString.toStdString() << std::endl;
-        QDir(FinalUserDataPath).mkpath(FinalUserDataPath);
-    }
-
-    QDir(FinalRuntimePath).mkpath(FinalRuntimePath);
-
-    //Mounting UnionFS
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Building UnionFS." << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] FINAL UnionFSString:" << UnionFSString.toStdString() << std::endl;
-
-    QProcess * BuildUnionFS = new QProcess;
-    BuildUnionFS->setProgram("unionfs");
-    BuildUnionFS->setArguments({"-o", "cow", "-o", "uid=1000", UnionFSString, FinalRuntimePath});
-    BuildUnionFS->start();
-    BuildUnionFS->waitForFinished(-1);
-
-    std::cout << BuildUnionFS->readAllStandardError().toStdString() << std::endl;
-    std::cout << BuildUnionFS->readAllStandardOutput().toStdString() << std::endl;
-
-    if(BuildUnionFS->exitCode() == 0)
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[OUT] Successfully mounted UnionFS!" << std::endl;
-        delete BuildUnionFS;
-    }
-    else
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "FSOperations:" << "[ERR] Failed to mount UnionFS!" << std::endl;
-        delete BuildUnionFS;
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[ERR] VFSString is null or empty..." << std::endl;
         return false;
     }
-    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] Proceeding with VFS mount....." << std::endl;
+    int result = ContainerWrapper::RunCommand("unionfs", {"-o", "cow", "-o", "uid=1000", std::string(ContainerParams.ContainerVariablesJSON["VFSString"]), std::string(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"])});
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] EXIT CODE: " << result << std::endl;
 
-    //QMessageBox::warning(nullptr, "Building Runtime", "Processing other Subcomponents.");
-    //PROCESSING OTHER SUBCOMPONENTS
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Processing other subcomponents." << std::endl;
-    for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
+    if (!result)
     {
-        nlohmann::ordered_json SubComponentJSON = Runner::SubComponentsArray[i];
+        //Success
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] Successfully mounted VFS." << std::endl;
+        return true;
+    }
+    else
+    {
+        //Failiure
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[ERR] Failed to mount VFS." << std::endl;
+        return false;
+    }
+}
 
+bool ContainerWrapper::CheckCaseConflicts(std::filesystem::path DirectoryPath)
+{
+    std::unordered_set<std::string> FilePathList;
+    std::unordered_set<std::string> CaseConflictList;
+    bool NoConflict = true;
+    for (const auto& FilePath : std::filesystem::recursive_directory_iterator(DirectoryPath))
+    {
+        std::string FilePathLowercase = FilePath.path().string();
+        std::transform(FilePathLowercase.begin(), FilePathLowercase.end(),FilePathLowercase.begin(),[](unsigned char c){ return std::tolower(c); });
+
+        if (FilePathList.find(FilePathLowercase) != FilePathList.end())
+        {
+            NoConflict = false;
+            CaseConflictList.insert(FilePathLowercase);
+        }
+        else
+        {
+            FilePathList.insert(FilePathLowercase);
+        }
+    }
+
+    if(!NoConflict)
+    {
+        std::ostringstream oss;
+        std::for_each(CaseConflictList.begin(), CaseConflictList.end(),[&oss](const std::string& s){ oss << s << '\n'; });
+        std::cerr << "CASE CONFLICTS:\n" << oss.str() << std::endl;
+        QMessageBox::warning(nullptr, "CASE CONFLICTS!", QString::fromStdString(oss.str()));
+        return false;
+    }
+    return true;
+}
+
+
+bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerParams)
+{
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::ProcessDLLOverrides: " << "[OUT] Processing DLL Overrides." << std::endl;
+    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    {
+        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
         if (SubComponentJSON["TYPE"] == "DllOverride")
         {
-            if (!Runner::DllOverrides.isEmpty())
+            if(!SubComponentJSON["DLLOVERRIDE"].is_null())
             {
-                Runner::DllOverrides.append(";" + QString::fromStdString(SubComponentJSON["DLLOVERRIDE"]));
+                ContainerParams.DLLOverrides.push_back(SubComponentJSON["DLLOVERRIDE"]);
             }
             else
             {
-                Runner::DllOverrides.append(QString::fromStdString(SubComponentJSON["DLLOVERRIDE"]));
-            }
-        }
-        else if (SubComponentJSON["TYPE"] == "FileEdit")
-        {
-            if (SubComponentJSON["MODE"] == "ConfigWrite")
-            {
-                FSOps::ConfigWrite(QString::fromStdString(SubComponentJSON["KEY"]), QString::fromStdString(SubComponentJSON["VALUE"]), QString::fromStdString(SubComponentJSON["FILE"]));
+                return false;
             }
         }
     }
-
-    //QMessageBox::warning(nullptr, "Building Runtime", "Checking case conflicts.");
-    FSOps::CheckCaseConflicts(FinalRuntimePath);
-
     return true;
 }
 
+bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams)
+{
+    //MUST BE RUN AFTER VARIABLE SUBSTITUTION!
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Processing filesystem Subcomponents." << std::endl;
+    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    {
+        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
+        if (SubComponentJSON["TYPE"] == "FileEdit")
+        {
+            if (SubComponentJSON["MODE"] == "ConfigWrite")
+            {
+                ContainerWrapper::ConfigWrite(SubComponentJSON["KEY"], SubComponentJSON["VALUE"], SubComponentJSON["FILE"]);
+            }
+        }
+    }
+    return true;
+}
+
+bool ContainerWrapper::ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath)
+{
+    std::ifstream inFile(FilePath);
+    if (!inFile.is_open())
+    {
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::ConfigWrite: " << "[ERR] Could not open file for reading: " << FilePath << std::endl;
+        return false;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+
+    while (std::getline(inFile, line))
+    {
+        lines.push_back(line);
+    }
+
+    inFile.close();
+
+    std::ofstream outFile(FilePath, std::ios::trunc);
+    if (!outFile.is_open())
+    {
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::ConfigWrite: " << "[ERR] Could not open file for writing: " << FilePath << std::endl;
+        return false;
+    }
+
+    for (auto& currentLine : lines)
+    {
+        if (currentLine.length() >= Key.length() && currentLine.compare(0, Key.length(), Key) == 0)
+        {
+            currentLine = Key + Value;
+            outFile << currentLine << '\n';
+        }
+        else
+        {
+            outFile << currentLine << '\n';
+        }
+    }
+
+    outFile.close();
+    return true;
+}
+
+
+
+//=====================================================================================================================================================================
+//                                                                          RUNNER CLASS
+//=====================================================================================================================================================================
+
+bool ContainerWrapper::Execute()
+{
+    /*
+    QString FinalExePath = this->WindowsPaths["WindowsExePath"];
+    QStringList FinalExeArgs = this->ExeArgs;
+    QString FinalRuntimePath = this->Paths["RuntimePath"];
+
+    if (!OverrideExePath.isEmpty())
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath.toStdString() << std::endl;
+        FinalExePath = OverrideExePath;
+    }
+
+    if (!OverrideExeArgs.isEmpty())
+    {
+        //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs.toStdString();
+        FinalExeArgs = OverrideExeArgs;
+    }
+
+    if (!OverrideRuntimePath.isEmpty())
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath.toStdString() << std::endl;
+        FinalRuntimePath = OverrideRuntimePath;
+    }
+
+    if(FinalExePath.isEmpty())
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] ExePath is empty! Nothing to execute! Aborting" << std::endl;
+        return false;
+    }
+    */
+
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"] << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] ExeArgs: " << std::accumulate(ContainerParams.ExeArgs.begin(), ContainerParams.ExeArgs.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WinePrefix: " << ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"] << std::endl;
+    if(!ContainerParams.WorkDirPath.empty())
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath: " << ContainerParams.WorkDirPath << std::endl;
+    }
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] DllOverrides: " << std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
+
+    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"]));
+    RunProcessEnvironment.remove("LD_LIBRARY_PATH");                                                                                                    //NEEDED FOR APPIMAGE COMPATIBILITY
+    RunProcessEnvironment.insert("GAMEID", QString::fromStdString(ContainerParams.UMUID));
+    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");\
+    if (!ContainerParams.DLLOverrides.empty())
+    {
+        RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
+    }
+
+    QProcess RunProcess;
+    RunProcess.setProgram("umu-run");
+    if(!ContainerParams.WorkDirPath.empty())
+    {
+        RunProcess.setWorkingDirectory(QString::fromStdString(ContainerParams.WorkDirPath));
+    }
+
+    QStringList Arguments;
+    Arguments.append(QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"]));
+    if (!ContainerParams.ExeArgs.empty())
+    {
+        for (std::string Arg : ContainerParams.ExeArgs)
+        {
+            Arguments.append(QString::fromStdString(Arg));
+        }
+    }
+    RunProcess.setArguments(Arguments);
+    RunProcess.setProcessEnvironment(RunProcessEnvironment);
+    RunProcess.start();
+    RunProcess.waitForFinished(-1);
+    std::cout << RunProcess.readAllStandardError().toStdString() << std::endl;
+    std::cout << RunProcess.readAllStandardOutput().toStdString() << std::endl;
+
+    if(RunProcess.exitCode() == 0)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
+/*
 bool Runner::Cleanup(QString OverrideRuntimePath)
 {
     QString FinalRuntimePath = this->Paths["RuntimePath"];
@@ -858,8 +1085,6 @@ bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString O
 //
 // -> STRUCT CONTAINERPARAMS
 //    Contains all the information needed for building runtime and executing runner.
-//
-//
 //
 //   Runtime building (runner-indifferent):
 //   Build VFS

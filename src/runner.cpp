@@ -18,40 +18,7 @@ Runner::Runner(
 
 bool Runner::InitParams()
 {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    return true;
 }
 
 bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataPath)
@@ -365,13 +332,13 @@ bool Runner::BuildRuntime(QString OverrideRuntimePath, QString OverrideUserDataP
         {
             if (SubComponentJSON["MODE"] == "ConfigWrite")
             {
-                FSOps::ConfigWrite(QString::fromStdString(SubComponentJSON["KEY"]), QString::fromStdString(SubComponentJSON["VALUE"]), QString::fromStdString(SubComponentJSON["FILE"]));
+                //FSOps::ConfigWrite(QString::fromStdString(SubComponentJSON["KEY"]), QString::fromStdString(SubComponentJSON["VALUE"]), QString::fromStdString(SubComponentJSON["FILE"]));
             }
         }
     }
 
     //QMessageBox::warning(nullptr, "Building Runtime", "Checking case conflicts.");
-    FSOps::CheckCaseConflicts(FinalRuntimePath);
+    //FSOps::CheckCaseConflicts(FinalRuntimePath);
 
     return true;
 }
