@@ -26,12 +26,12 @@ bool ContainerWrapper::InitializeContainer()
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::DecideComponent successful." << std::endl;
 
-    if(!this->InitializeContainerParams(this->MANIFESTJSON, this->ContainerParams))
+    if(!this->DeriveContainerParams(this->MANIFESTJSON, this->ContainerParams))
     {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[ERR] ContainerWrapper::InitializeContainerParams failed, aborting...." << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[ERR] ContainerWrapper::DeriveContainerParams failed, aborting...." << std::endl;
         return false;
     }
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::InitializeContainerParams successful." << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::DeriveContainerParams successful." << std::endl;
 
     if(!this->CreateRecipe(this->MANIFESTJSON, this->ContainerParams))
     {
@@ -47,27 +47,16 @@ bool ContainerWrapper::InitializeContainer()
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::BuildSubComponentsArray successful." << std::endl;
 
-    if(!this->CreateContainerVariablesJSON(this->ContainerParams))
-    {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[ERR] ContainerWrapper::CreateContainerVariablesJSON failed, aborting...." << std::endl;
-        return false;
-    }
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::CreateContainerVariablesJSON successful." << std::endl;
-
-
-    if(!this->VariableSubstitution(this->ContainerParams))
-    {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[ERR] ContainerWrapper::VariableSubstitution failed, aborting...." << std::endl;
-        return false;
-    }
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::VariableSubstitution successful." << std::endl;
+    /*
+    MOVE HERE: VARIABLE SUBSTITUTION FOR ARGS
+    VARIABLE SUBSTITUTUION FOR SUBCOMPONENTSARRAY
+    */
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << "[OUT] Container initialisation complete!" << std::endl;
     return true;
 }
 
 bool ContainerWrapper::BuildContainerRuntime()
 {
-    this->CreateDirectories(this->ContainerParams.ContainerVariablesJSON);
     this->InitializeDefPrefix(this->ContainerParams);
 
     //REGISTRY WRAPPER
@@ -79,7 +68,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     this->PreMountFilesystemComponents(this->ContainerParams);
     this->FinalizeVFSString(this->ContainerParams);
     this->MountVFS(this->ContainerParams);
-    this->CheckCaseConflicts(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"]);
+    this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
     this->ProcessDLLOverrides(this->ContainerParams);
     this->ProcessFileEdits(this->ContainerParams);
@@ -123,51 +112,6 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
         return true;
     }
     return false;
-}
-
-bool ContainerWrapper::InitializeContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
-{
-    //Package-specific:
-    ContainerParams.PackageName     = MANIFESTJSON["PACKAGENAME"];
-    ContainerParams.PackageUID      = MANIFESTJSON["PACKAGEUID"];
-
-    //(Sub)game specific:
-    ContainerParams.PackageName     = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"];
-    ContainerParams.UMUID           = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["UMUID"];
-
-    //Wine / Proton specific:
-    ContainerParams.ExePath         = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEPATH"];
-
-    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].is_null()))
-    {
-        ContainerParams.WorkDirPath = ContainerParams.PackagePath / "drive_c" / ContainerParams.PackageUID / MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"];
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << "[OUT] WORKDIR: " << ContainerParams.WorkDirPath << std::endl;
-    }
-    else
-    {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << "[OUT] WORKDIR: NULL" << std::endl;
-    }
-
-    //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
-    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].is_null()))
-    {
-        std::string UnsplitExeArgs(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"]);
-        ContainerParams.ExeArgs = [](const std::string& s)
-        {
-            std::vector<std::string> out;
-            std::istringstream iss(s);
-            for (std::string tok; std::getline(iss, tok, ' ');)
-            out.push_back(tok);
-            return out;
-        }
-        (UnsplitExeArgs);
-
-        for (int i = 0; i < ContainerParams.ExeArgs.size(); i++)
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainerParams: " << QString("[OUT] ExeArg %1: ").arg(i).toStdString() << ContainerParams.ExeArgs.at(i) << std::endl;
-        }
-    }
-    return true;
 }
 
 bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
@@ -220,65 +164,195 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
     return true;
 }
 
-bool ContainerWrapper::CreateContainerVariablesJSON(struct ContainerParams &ContainerParams)
+bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
+    //Package-specific:
+    ContainerParams.PackageName                         = MANIFESTJSON["PACKAGENAME"];
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] PackageName: " << ContainerParams.PackageName << std::endl;
+
+    ContainerParams.PackageUID                          = MANIFESTJSON["PACKAGEUID"];
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] PackageUID: " << ContainerParams.PackageUID << std::endl;
+
+    //(Sub)game specific:
+    ContainerParams.GameName                            = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"];
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] GameName: " << ContainerParams.GameName << std::endl;
+
+    ContainerParams.UMUID                               = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["UMUID"];
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
+
     //System Variables
-    ContainerParams.ContainerVariablesJSON["SystemVariables"]["ScreenWidth"]                       = QString::number(QGuiApplication::primaryScreen()->geometry().width()).toStdString();
-    ContainerParams.ContainerVariablesJSON["SystemVariables"]["ScreenHeight"]                      = QString::number(QGuiApplication::primaryScreen()->geometry().height()).toStdString();
+    ContainerParams.ScreenWidth                         = std::to_string(QGuiApplication::primaryScreen()->geometry().width());
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ScreenWidth: " << ContainerParams.ScreenWidth << std::endl;
+
+    ContainerParams.ScreenHeight                        = std::to_string(QGuiApplication::primaryScreen()->geometry().height());
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ScreenHeight: " << ContainerParams.ScreenHeight << std::endl;
 
     //Paths
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackagePath"]                        = ContainerParams.PackagePath;
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"]                        = ContainerParams.PackagePath / "RUNTIME";
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["MetaDataPath"]                       = ContainerParams.PackagePath / "METADATA";
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"]                   = ContainerParams.PackagePath / "PACKAGEFILES";
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["UserDataPath"]                       = ContainerParams.PackagePath / "USERDATA";
-    ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]                           = ContainerParams.PackagePath / "TEMP";
+    ContainerParams.RuntimePath                         = ContainerParams.PackagePath / "RUNTIME";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] RuntimePath: " << ContainerParams.RuntimePath << std::endl;
+
+    ContainerParams.MetaDataPath                        = ContainerParams.PackagePath / "METADATA";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] MetaDataPath: " << ContainerParams.MetaDataPath << std::endl;
+
+    ContainerParams.PackageFilesPath                    = ContainerParams.PackagePath / "PACKAGEFILES";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] PackageFilesPath: " << ContainerParams.PackageFilesPath << std::endl;
+
+    ContainerParams.UserDataPath                        = ContainerParams.PackagePath / "USERDATA";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] UserDataPath: " << ContainerParams.UserDataPath << std::endl;
+
+    ContainerParams.TempPath                            = ContainerParams.PackagePath / "TEMP";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] TempPath: " << ContainerParams.TempPath << std::endl;
 
     //Wine / Proton / Windows specific paths, must be generalised somehow.
     //This is a temporary solution, those path formulas will be encoded in the runner deficnition for windows platform runners
-    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ProgramPath"]                            = ContainerParams.PackagePath / "RUNTIME" / "drive_c"/ ContainerParams.PackageUID;
-    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]                          = ContainerParams.PackagePath / "TEMP" / "DEFPREFIX";
-    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathRelative"]                        = ContainerParams.ExePath;
-    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathComplete"]                        = ContainerParams.PackagePath / "RUNTIME" / "drive_c" / ContainerParams.PackageUID / ContainerParams.ExePath;
-    ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"]                        = std::filesystem::path("C:/") / ContainerParams.PackageUID / ContainerParams.ExePath;
+    ContainerParams.ProgramPath                         = ContainerParams.RuntimePath / "drive_c"/ ContainerParams.PackageUID;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ProgramPath: " << ContainerParams.ProgramPath << std::endl;
+
+    ContainerParams.DefPrefixPath                       = ContainerParams.TempPath / "DEFPREFIX";
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] DefPrefixPath: " << ContainerParams.DefPrefixPath << std::endl;
+
+    ContainerParams.ExePathRelative                     = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEPATH"]);
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathRelative: " << ContainerParams.ExePathRelative << std::endl;
+
+    ContainerParams.ExePathComplete                     = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathComplete: " << ContainerParams.ExePathComplete << std::endl;
+
+    ContainerParams.ExePathInPrefix                     = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathInPrefix: " << ContainerParams.ExePathInPrefix << std::endl;
 
     //Windows Paths
-    ContainerParams.ContainerVariablesJSON["WindowsPaths"]["WindowsProgramPath"]                   = "C:\\" + ContainerParams.PackageUID;
-    ContainerParams.ContainerVariablesJSON["WindowsPaths"]["WindowsExePathCompete"]                = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePath;
-    ContainerParams.ContainerVariablesJSON["WindowsPaths"]["WindowsProgramPathDoubleBackSlash"]    = "C:\\\\" + ContainerParams.PackageUID;
+    ContainerParams.WindowsProgramPath                  = "C:\\" + ContainerParams.PackageUID;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPath: " << ContainerParams.WindowsProgramPath << std::endl;
 
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateContainerVariablesJSON: " << "[OUT] Completed ContainerVariablesJSON:" << std::endl << ContainerParams.ContainerVariablesJSON.dump(4) << std::endl;
+    ContainerParams.WindowsExePathComplete              = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsExePathComplete: " << ContainerParams.WindowsExePathComplete << std::endl;
+
+    ContainerParams.WindowsProgramPathDoubleBackSlash   = "C:\\\\" + ContainerParams.PackageUID;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPathDoubleBackSlash: " << ContainerParams.WindowsProgramPathDoubleBackSlash << std::endl;
+
+    //Wine / Proton specific:
+    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].is_null()))
+    {
+        ContainerParams.WorkDirPathRelative             = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"]);
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathRelative: " << ContainerParams.WorkDirPathRelative << std::endl;
+        ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
+    }
+    else
+    {
+        ContainerParams.WorkDirPathComplete             = ContainerParams.ExePathComplete.parent_path();
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
+    }
+
+    //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
+    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].is_null()))
+    {
+        std::string UnsplitExeArgs(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"]);
+
+        //VARIABLE SUBSTITUTION
+        ContainerWrapper::StringVariableSubstitution(UnsplitExeArgs, ContainerParams.GetVariablesMap());
+
+        ContainerParams.ExeArgs = [](const std::string& s){std::vector<std::string> out;std::istringstream iss(s);for (std::string tok; std::getline(iss, tok, ' ');)out.push_back(tok);return out;}(UnsplitExeArgs);
+        for (int i = 0; i < ContainerParams.ExeArgs.size(); i++)
+        {
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << QString("[OUT] ExeArg %1: ").arg(i).toStdString() << ContainerParams.ExeArgs.at(i) << std::endl;
+        }
+    }
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] Completed ContainerParams!" << std::endl;
     return true;
 }
 
-bool ContainerWrapper::VariableSubstitution(struct ContainerParams &ContainerParams)
+std::map<std::string, std::string> ContainerParams::GetVariablesMap()
 {
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::VariableSubstitution: " << "[OUT] Performing variable substitution on SubComponentsArray." << std::endl;
-    std::string SubComponentsArrayString = ContainerParams.SubComponentsArray.dump();
+    std::map<std::string, std::string> VariablesMap;
+    VariablesMap["PackagePath"] = this->PackagePath;
+    VariablesMap["PackageName"] = this->PackageName;
+    VariablesMap["PackageUID"] = this->PackageUID;
+    VariablesMap["GameName"] = this->GameName;
+    VariablesMap["UMUID"] = this->UMUID;
+    VariablesMap["ScreenWidth"] = this->ScreenWidth;
+    VariablesMap["ScreenHeight"] = this->ScreenHeight;
+    VariablesMap["RuntimePath"] = this->RuntimePath;
+    VariablesMap["MetaDataPath"] = this->MetaDataPath;
+    VariablesMap["PackageFilesPath"] = this->PackageFilesPath;
+    VariablesMap["UserDataPath"] = this->UserDataPath;
+    VariablesMap["TempPath"] = this->TempPath;
+    VariablesMap["DefPrefixPath"] = this->DefPrefixPath;
+    VariablesMap["ExePathRelative"] = this->ExePathRelative;
+    VariablesMap["ExePathComplete"] = this->ExePathComplete;
+    VariablesMap["ExePathInPrefix"] = this->ExePathInPrefix;
+    VariablesMap["WindowsProgramPath"] = this->WindowsProgramPath;
+    VariablesMap["WindowsExePathComplete"] = this->WindowsExePathComplete;
+    VariablesMap["WindowsProgramPathDoubleBackSlash"] = this->WindowsProgramPathDoubleBackSlash;
+    VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
+    VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
+    VariablesMap["PackageName"] = this->PackageName;
+    VariablesMap["PackageName"] = this->PackageName;
+    VariablesMap["PackageName"] = this->PackageName;
+    return VariablesMap;
+}
 
-    for (const auto& [Category, Item] : ContainerParams.ContainerVariablesJSON.items())
-    {
-        for (const auto& [Key, Value] : Item.items())
-        {
-            SubComponentsArrayString = std::regex_replace(SubComponentsArrayString, std::regex("%" + Key + "%"), std::string(Value));
-        }
-    }
-    ContainerParams.SubComponentsArray = nlohmann::ordered_json::parse(SubComponentsArrayString);
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::VariableSubstitution: " << "[OUT] Performed variable substitution on SubComponentsArray. Result: " << std::endl << ContainerParams.SubComponentsArray.dump(4) << std::endl;
+bool ContainerWrapper::StringVariableSubstitution(
+    std::string &SourceString,
+    const std::map<std::string, std::string>& VariablesMap)
+{
+    std::cout << "[OUT] ContainerWrapper::StringVariableSubstitution:"
+              << " Starting substitution.\n";
+    std::cout << "      Original string: \"" << SourceString << "\"\n";
 
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::VariableSubstitution: " << "[OUT] Performing variable substitution on ExeArgs." << std::endl;
-    for (const auto& [Category, Item] : ContainerParams.ContainerVariablesJSON.items())
+    std::string result;
+    bool replaced = false;
+    size_t pos = 0;
+
+    while (pos < SourceString.size())
     {
-        for (const auto& [Key, Value] : Item.items())
+        size_t start = SourceString.find('%', pos);
+
+        if (start == std::string::npos)
         {
-            for (auto& Token : ContainerParams.ExeArgs)
-            {
-                Token = std::regex_replace(Token, std::regex("%" + Key + "%"), std::string(Value));
-            }
+            result += SourceString.substr(pos);
+            break;
         }
+
+        size_t end = SourceString.find('%', start + 1);
+
+        if (end == std::string::npos)
+        {
+            std::cout << "[WARN] Unmatched '%' at position "
+                      << start << ". Aborting further substitution.\n";
+            result += SourceString.substr(pos);
+            break;
+        }
+
+        // Append text before variable
+        result += SourceString.substr(pos, start - pos);
+
+        std::string key = SourceString.substr(start + 1, end - start - 1);
+
+        std::cout << "[OUT] Found variable: %" << key << "%\n";
+
+        auto it = VariablesMap.find(key);
+        if (it != VariablesMap.end())
+        {
+            std::cout << "      Replacing with: \"" << it->second << "\"\n";
+            result += it->second;
+            replaced = true;
+        }
+        else
+        {
+            std::cout << "      [WARN] Variable not found in map. Leaving unchanged.\n";
+            result += "%" + key + "%";
+        }
+
+        pos = end + 1;
     }
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::VariableSubstitution: " << "[OUT] Performed variable substitution on ExeArgs. Result: " << [](const auto& args){ std::string s; for(auto& a:args) s += a + " "; if(!s.empty()) s.pop_back(); return s;}(ContainerParams.ExeArgs) << std::endl;
-    return true;
+
+    std::cout << "[OUT] Final string: \"" << result << "\"\n";
+    std::cout << "[OUT] Substitution performed: "
+              << (replaced ? "YES" : "NO") << "\n";
+
+    SourceString = std::move(result);
+    return replaced;
 }
 
 int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment)
@@ -348,7 +422,7 @@ bool ContainerWrapper::CreateDirectories(const nlohmann::ordered_json ContainerV
 
 bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams)
 {
-    ContainerParams.ContainerVariablesJSON["FlatRegPatch"].clear();
+    ContainerParams.FlatRegPatch.clear();
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateFlatRegPatchJSON: " << "[OUT] Creating registry patch." << std::endl;
     for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
@@ -361,21 +435,21 @@ bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerP
                 {
                     if (!SubComponentJSON["KEYVALUES"][Item.key()].is_null())
                     {
-                        ContainerParams.ContainerVariablesJSON["FlatRegPatch"][std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = Item.value();
+                        ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = Item.value();
                     }
                     else
                     {
-                        ContainerParams.ContainerVariablesJSON["FlatRegPatch"][std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = nullptr;
+                        ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = nullptr;
                     }
                 }
             }
             else
             {
-                ContainerParams.ContainerVariablesJSON["FlatRegPatch"][std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])] = nullptr;
+                ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])] = nullptr;
             }
         }
     }
-    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::CreateFlatRegPatchJSON" << "[OUT] Successfully created FlatRegPatch: " << std::endl << ContainerParams.ContainerVariablesJSON["FlatRegPatch"].dump(4) << std::endl;
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::CreateFlatRegPatchJSON" << "[OUT] Successfully created FlatRegPatch: " << std::endl << ContainerParams.FlatRegPatch.dump(4) << std::endl;
     return true;
 }
 
@@ -389,7 +463,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerPara
 
     auto writeArch = [&](const std::string& arch) -> bool
     {
-        const std::filesystem::path filePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
+        const std::filesystem::path filePath = ContainerParams.TempPath / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
 
         std::ofstream out(filePath, std::ios::out | std::ios::trunc);
         if (!out) return false;
@@ -399,7 +473,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerPara
 
         // Iterate all registry paths
         for (const auto& [rawPath, keySet] :
-             ContainerParams.ContainerVariablesJSON["FlatRegPatch"][arch].items())
+             ContainerParams.FlatRegPatch[arch].items())
         {
             std::string regPath = normalizeRootKey(rawPath);
             out << "[" << regPath << "]\n";
@@ -465,13 +539,13 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
 
     // Prepare environment
     QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    ProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    ProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.DefPrefixPath));
     ProcessEnvironment.insert("GAMEID", "0");
     ProcessEnvironment.remove("LD_LIBRARY_PATH");
 
-    int Merge32Complete = RunCommand("umu-run", {"reg", "import", std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
+    int Merge32Complete = RunCommand("umu-run", {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch32.reg. " << "EXIT CODE: " << Merge32Complete << std::endl;
-    int Merge64Complete = RunCommand("umu-run", {"reg", "import", std::filesystem::path(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
+    int Merge64Complete = RunCommand("umu-run", {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch64.reg. " << "EXIT CODE: " << Merge64Complete << std::endl;
     return true;
 }
@@ -485,7 +559,8 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
 //Must be made to work with any runner, not just UMU...
 {
     //Initialising UMU prefix.
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Initialising DefPrefix, path: " << ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"] << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Initialising DefPrefix, path: " << ContainerParams.DefPrefixPath << std::endl;
+    std::filesystem::create_directories(ContainerParams.DefPrefixPath);
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     QProcess * RunProcess = new QProcess;
@@ -493,7 +568,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     RunProcess->setArguments({"wineboot"});
 
     //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
-    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]));
+    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.DefPrefixPath));
     RunProcessEnvironment.insert("GAMEID", "0");
     RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
     RunProcessEnvironment.remove("LD_LIBRARY_PATH");
@@ -508,17 +583,8 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     if (RunProcess->exitCode() == 0)
     {
         delete RunProcess;
-        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+        if (!ContainerWrapper::AddToVFSString(ContainerParams, ContainerParams.DefPrefixPath))
         {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO";
-        }
-        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["DefPrefixPath"]) + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-        }
-        else
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[ERR] Prefix initialisation failed!" << std::endl;
             return false;
         }
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeDefPrefix: " << "[OUT] Prefix initialisation successful!" << std::endl;
@@ -545,7 +611,8 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
             continue;
         }
 
-        std::filesystem::path PreMountPath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["TempPath"]) / std::string("[" + std::to_string(i) + "]");
+        std::filesystem::path PreMountPath = ContainerParams.TempPath / std::string("[" + std::to_string(i) + "]");
+        std::filesystem::create_directories(PreMountPath);
         std::filesystem::path TargetPath = PreMountPath / "drive_c" / ContainerParams.PackageUID;
         if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
         {
@@ -553,7 +620,7 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
         }
         std::filesystem::create_directories(TargetPath);
 
-        std::filesystem::path SourcePath = std::filesystem::path(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["PackageFilesPath"]) / SubComponentJSON["PATH"];
+        std::filesystem::path SourcePath = ContainerParams.PackageFilesPath / SubComponentJSON["PATH"];
         if (SubComponentJSON["TYPE"] == "ZipFileLayer")
         {
             std::cout << std::chrono::system_clock::now() << "ContainerWrappNewPather::PreMountFilesystemComponents: " << "[OUT] Mounting ZipFileLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
@@ -583,21 +650,17 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
 
 bool ContainerWrapper::AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath)
 {
-    if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+    if (ContainerParams.VFSString.empty())
     {
-        ContainerParams.ContainerVariablesJSON["VFSString"] = NewPath + "=RO";
+        ContainerParams.VFSString = NewPath + "=RO";
         std::cout << std::chrono::system_clock::now() << "ContainerWrapper::AddToVFSString:" << "[OUT] Initialized VFSString with " << NewPath << std::endl;
-        return true;
-    }
-    else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-    {
-        ContainerParams.ContainerVariablesJSON["VFSString"] = NewPath + "=RO:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::AddToVFSString:" << "[OUT] Added " << NewPath << " to VFSString" << std::endl;
         return true;
     }
     else
     {
-        return false;
+        ContainerParams.VFSString = NewPath + "=RO:" + ContainerParams.VFSString;
+        std::cout << std::chrono::system_clock::now() << "ContainerWrapper::AddToVFSString:" << "[OUT] Added " << NewPath << " to VFSString" << std::endl;
+        return true;
     }
 }
 
@@ -609,20 +672,17 @@ bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams
     }
     else
     {
-        if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+        if (ContainerParams.VFSString.empty())
         {
             std::cout << std::chrono::system_clock::now() << "ContainerWrapper::FinalizeVFSString: " << "[ERR] VFSString is null or empty..." << std::endl;
             return false;
         }
-        else if (ContainerParams.ContainerVariablesJSON["VFSString"].is_string())
-        {
-            ContainerParams.ContainerVariablesJSON["VFSString"] = std::string(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["UserDataPath"]) + "=RW:" + std::string(ContainerParams.ContainerVariablesJSON["VFSString"]);
-            std::cout << std::chrono::system_clock::now() << "ContainerWrapper::FinalizeVFSString: " << "[OUT] Finalized VFSString. Final VFSSTRING:" << std::endl << ContainerParams.ContainerVariablesJSON["VFSString"] << std::endl;
-            return true;
-        }
         else
         {
-            return false;
+            std::filesystem::create_directories(ContainerParams.UserDataPath);
+            ContainerParams.VFSString = ContainerParams.UserDataPath.string() + "=RW:" + ContainerParams.VFSString;
+            std::cout << std::chrono::system_clock::now() << "ContainerWrapper::FinalizeVFSString: " << "[OUT] Finalized VFSString. Final VFSSTRING:" << std::endl << ContainerParams.VFSString << std::endl;
+            return true;
         }
     }
     return true;
@@ -631,13 +691,14 @@ bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams
 
 bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 {
-    if (ContainerParams.ContainerVariablesJSON["VFSString"].is_null() or ContainerParams.ContainerVariablesJSON["VFSString"].empty())
+    if (ContainerParams.VFSString.empty())
     {
         std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[ERR] VFSString is null or empty..." << std::endl;
         return false;
     }
     std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] Proceeding with VFS mount....." << std::endl;
-    int result = ContainerWrapper::RunCommand("unionfs", {"-o", "cow", "-o", "uid=1000", std::string(ContainerParams.ContainerVariablesJSON["VFSString"]), std::string(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"])});
+    std::filesystem::create_directories(ContainerParams.RuntimePath);
+    int result = ContainerWrapper::RunCommand("unionfs", {"-o", "cow", "-o", "uid=1000", ContainerParams.VFSString, ContainerParams.RuntimePath});
     std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] EXIT CODE: " << result << std::endl;
 
     if (!result)
@@ -807,18 +868,15 @@ bool ContainerWrapper::Execute()
     }
     */
 
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"] << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << ContainerParams.ExePathInPrefix << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] ExeArgs: " << std::accumulate(ContainerParams.ExeArgs.begin(), ContainerParams.ExeArgs.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WinePrefix: " << ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"] << std::endl;
-    if(!ContainerParams.WorkDirPath.empty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath: " << ContainerParams.WorkDirPath << std::endl;
-    }
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WinePrefix: " << ContainerParams.RuntimePath << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath: " << ContainerParams.WorkDirPathComplete << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] DllOverrides: " << std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.ContainerVariablesJSON["ContainerPaths"]["RuntimePath"]));
+    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.RuntimePath));
     RunProcessEnvironment.remove("LD_LIBRARY_PATH");                                                                                                    //NEEDED FOR APPIMAGE COMPATIBILITY
     RunProcessEnvironment.insert("GAMEID", QString::fromStdString(ContainerParams.UMUID));
     RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");\
@@ -829,13 +887,10 @@ bool ContainerWrapper::Execute()
 
     QProcess RunProcess;
     RunProcess.setProgram("umu-run");
-    if(!ContainerParams.WorkDirPath.empty())
-    {
-        RunProcess.setWorkingDirectory(QString::fromStdString(ContainerParams.WorkDirPath));
-    }
+    RunProcess.setWorkingDirectory(QString::fromStdString(ContainerParams.WorkDirPathComplete));
 
     QStringList Arguments;
-    Arguments.append(QString::fromStdString(ContainerParams.ContainerVariablesJSON["RunnerPaths"]["ExePathInPrefix"]));
+    Arguments.append(QString::fromStdString(ContainerParams.ExePathInPrefix));
     if (!ContainerParams.ExeArgs.empty())
     {
         for (std::string Arg : ContainerParams.ExeArgs)

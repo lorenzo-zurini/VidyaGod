@@ -26,28 +26,54 @@ public:
 
     //Container params:
     //Package-specific:
-    std::filesystem::path PackagePath;                              //PASSED
-    std::string PackageName;                                        //DERIVED FROM MANIFESTJSON
-    std::string PackageUID;                                         //DERIVED FORM MANIFESTJSON
+    std::filesystem::path PackagePath;
+    std::string PackageName;
+    std::string PackageUID;
 
     //(Sub)game specific:
-    std::string GameName;                                           //DERIVED FORM MANIFESTJSON
-    std::vector<int> Recipe;                                        //DERIVED FORM MANIFESTJSON
-    nlohmann::ordered_json SubComponentsArray;                      //DERIVED FORM MANIFESTJSON
+    std::string GameName;
+    std::string UMUID;
+    std::vector<int> Recipe;
+    nlohmann::ordered_json SubComponentsArray;
 
+    //Flags
     int subgame;                                                    //PASSED
     int component;                                                  //PASSED
     bool ReadOnlyVFS = false;                                       //SET
 
+    //System Variables
+    std::string ScreenWidth;
+    std::string ScreenHeight;
+
+    //Paths (that need to be created)
+    std::filesystem::path RuntimePath;
+    std::filesystem::path MetaDataPath;
+    std::filesystem::path PackageFilesPath;
+    std::filesystem::path UserDataPath;
+    std::filesystem::path TempPath;
+    std::filesystem::path ProgramPath;
+    std::filesystem::path DefPrefixPath;
+    std::filesystem::path ExePathRelative;
+    std::filesystem::path ExePathComplete;
+    std::filesystem::path ExePathInPrefix;
+
+    //Paths (that don't need to be created)
+    std::string WindowsProgramPath;
+    std::string WindowsExePathComplete;
+    std::string WindowsProgramPathDoubleBackSlash;
+    std::filesystem::path WorkDirPathRelative;
+    std::filesystem::path WorkDirPathComplete;
+
     //Wine / Proton specific:
-    std::string ExePath;                                            //DERIVED FORM MANIFESTJSON
-    std::string UMUID;                                              //DERIVED FORM MANIFESTJSON
-    std::filesystem::path WorkDirPath;                              //DERIVED FORM MANIFESTJSON
     std::vector<std::string> ExeArgs;                               //DERIVED FORM MANIFESTJSON
     std::vector<std::string> DLLOverrides;                          //DERIVED FORM MANIFESTJSON
 
-    //Result of initialisation:
-    nlohmann::ordered_json ContainerVariablesJSON;                  //DERIVED FROM CONTAINERPARAMS
+    //REGISTRYWRAPPER CLASS
+    nlohmann::ordered_json FlatRegPatch;
+
+    //VFSWRAPPER CLASS
+    std::string VFSString;
+    std::map<std::string, std::string> GetVariablesMap();
 };
 
 class ContainerWrapper
@@ -61,11 +87,9 @@ public:
 
     //Container initialization:
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-    static bool InitializeContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-    static bool CreateContainerVariablesJSON(struct ContainerParams &ContainerParams);
-    static bool VariableSubstitution(struct ContainerParams &ContainerParams);
+    static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
     //Filesystem management:
     static bool CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON);
@@ -91,7 +115,7 @@ public:
 
     //Misc
     static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::InheritFromParent);
-
+    static bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);
 
 private:
     bool InitializeContainer();
