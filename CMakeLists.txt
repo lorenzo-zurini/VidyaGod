@@ -34,16 +34,13 @@ set(PROJECT_SOURCES
     src/jsonoperations.h
     src/jsonoperations.cpp
 
-    src/runner.h
-    src/runner.cpp
-
+    src/containerwrapper.h
+    src/containerwrapper.cpp
 
     translations/${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES}
-    src/containerwrapper.h src/containerwrapper.cpp
-    src/commonutils.h src/commonutils.cpp)
+add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)

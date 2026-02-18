@@ -16,7 +16,7 @@
 #include "nlohmann/json.hpp"
 #include "filesystemoperations.h"
 #include "mainwindow.h"
-#include "runner.h"
+#include "jsonoperations.h"
 
 
 struct LaunchParameters

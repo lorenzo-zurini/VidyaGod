@@ -50,16 +50,11 @@ int main(int argc, char *argv[])
             std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Fatal error. Paring MANIFESTJSON failed, aborting." << std::endl;
         }
 
-        Runner * GameRunner = new Runner(new QDir(LaunchParameters.HeadlessPackagePath), &MANIFESTJSON, &GlobalConfigJSON, LaunchParameters.HeadlessSubgame);
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Executing pre-run cleanup." << std::endl;
-        GameRunner->Cleanup();
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Building runtime." << std::endl;
-        GameRunner->BuildRuntime();
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running game" << MANIFESTJSON["SUBGAMES"][LaunchParameters.HeadlessSubgame - 1]["TITLE"] << std::endl;
-        GameRunner->Run();
-        GameRunner->Cleanup();
 
-        delete GameRunner;
+        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgame);
+        class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
+        NewContainerWrapper.BuildContainerRuntime();
+        NewContainerWrapper.Execute();
         return 0;
     }
 

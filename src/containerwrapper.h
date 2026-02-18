@@ -73,17 +73,20 @@ public:
 
     //VFSWRAPPER CLASS
     std::string VFSString;
+    std::vector<std::filesystem::path> CleanupUnmountPaths;
+    //std::vector<std::filesystem::path> CleanupDeletePaths;
     std::map<std::string, std::string> GetVariablesMap();
 };
 
 class ContainerWrapper
 {
 public:
-    ContainerWrapper(nlohmann::ordered_json Passed_GlobalConfigJSON, nlohmann::ordered_json Passed_MANIFESTJSON, ContainerParams Passed_ContainerParams);
+    ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
     struct ContainerParams ContainerParams;
 
     bool BuildContainerRuntime();
     bool Execute();
+    bool Cleanup();
 
     //Container initialization:
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
@@ -92,7 +95,6 @@ public:
     static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
     //Filesystem management:
-    static bool CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON);
     static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams);
     static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
     static bool AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath);

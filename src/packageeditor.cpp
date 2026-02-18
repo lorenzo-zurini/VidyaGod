@@ -464,6 +464,7 @@ void PackageEditor::RemoveComponent()
 
 void PackageEditor::RunExeInComponent()
 {
+    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
     Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
@@ -472,10 +473,12 @@ void PackageEditor::RunExeInComponent()
     ExeRunner->BuildRuntime();
     ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"), QStringList());
     ExeRunner->Cleanup();
+    */
 }
 
 void PackageEditor::BrowseInComponent()
 {
+    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
     Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
@@ -484,10 +487,12 @@ void PackageEditor::BrowseInComponent()
     ExplorerRunner->BuildRuntime();
     ExplorerRunner->Run("explorer.exe");
     ExplorerRunner->Cleanup();
+    */
 }
 
 void PackageEditor::RegeditInComponent()
 {
+    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
     Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
@@ -496,10 +501,12 @@ void PackageEditor::RegeditInComponent()
     RegeditRunner->BuildRuntime();
     RegeditRunner->Run("regedit.exe");
     RegeditRunner->Cleanup();
+    */
 }
 
 void PackageEditor::ExecuteComponent()
 {
+    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
     Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
@@ -508,10 +515,12 @@ void PackageEditor::ExecuteComponent()
     ComponentRunner->BuildRuntime();
     ComponentRunner->Run();
     ComponentRunner->Cleanup();
+    */
 }
 
 void PackageEditor::AnalyzeComponent()
 {
+    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
     Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
@@ -520,12 +529,12 @@ void PackageEditor::AnalyzeComponent()
     ComponentRunner->BuildRuntime();
     ComponentRunner->Run();
     ComponentRunner->Cleanup();
-
-
+    */
 }
 
 void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int newcomponent)
 {
+    /*
     //The component numbers to be compared are passed as friendly number, not array index!
     //If oldcomponent is 0, the newcomponent will be comapred against DEFPREFIX,
     std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Comparing component" << newcomponent << "against" << oldcomponent << std::endl;
@@ -586,6 +595,7 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
     PackageEditor::BuildUI();
+    */
 }
 
 //CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!

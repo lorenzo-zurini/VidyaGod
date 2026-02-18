@@ -1,6 +1,6 @@
 #include "containerwrapper.h"
 
-ContainerWrapper::ContainerWrapper(nlohmann::ordered_json Passed_GlobalConfigJSON, nlohmann::ordered_json Passed_MANIFESTJSON, struct ContainerParams Passed_ContainerParams)
+ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
     : GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON), ContainerParams(Passed_ContainerParams)
 {
     this->InitializeContainer();
@@ -46,7 +46,6 @@ bool ContainerWrapper::InitializeContainer()
         return false;
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::BuildSubComponentsArray successful." << std::endl;
-
     /*
     MOVE HERE: VARIABLE SUBSTITUTION FOR ARGS
     VARIABLE SUBSTITUTUION FOR SUBCOMPONENTSARRAY
@@ -155,7 +154,9 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
         {
             for (int j = 0; j < MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
             {
-                ContainerParams.SubComponentsArray.push_back(MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j]);
+                std::string NewComponentJSONString = MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].dump();
+                ContainerWrapper::StringVariableSubstitution(NewComponentJSONString, ContainerParams.GetVariablesMap());
+                ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(NewComponentJSONString));
                 std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildSubComponentsArray: " << "[OUT] Added COMPONENT " << i + 1 << " SUBCOMPONENT " << j + 1 << std::endl;
             }
         }
@@ -357,7 +358,8 @@ bool ContainerWrapper::StringVariableSubstitution(
 
 int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment)
 {
-    auto toQStringList = [](const std::vector<std::string>& v){
+    auto toQStringList = [](const std::vector<std::string>& v)
+    {
         QStringList l; for (auto& s : v) l << QString::fromStdString(s); return l;
     };
 
@@ -387,33 +389,6 @@ int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> A
     {
         return -1; //Crashed
     }
-}
-
-bool ContainerWrapper::CreateDirectories(const nlohmann::ordered_json ContainerVariablesJSON)
-{
-    // Creating all necessary directories based on the Paths QMap.
-    // QMessageBox::warning(nullptr, "Building Runtime", "Creating directories.");
-    for (const auto& [Key, Value] : ContainerVariablesJSON["ContainerPaths"].items())
-    {
-        if (std::filesystem::exists(Value) && std::filesystem::is_directory(Value))
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateDirectories: " << "[OUT] Directory: " << Value << " already exists, skipping..." << std::endl;
-            continue;
-        }
-
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateDirectories: " << "[OUT] Attempting to create directory: " << Key << " PATH: " << Value << std::endl;
-        if (std::filesystem::create_directories(Value))
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateDirectories: " << "[OUT] Created directory: " << Key << " PATH: " << Value << std::endl;
-        }
-        else
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateDirectories: " << "[ERR] Could not create directory " << Key << " PATH: " << Value << std::endl;
-            return false;
-        }
-    }
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateDirectories: " << "[OUT] Directory creation complete." << std::endl;
-    return true;
 }
 
 //=====================================================================================================================================================================
@@ -464,6 +439,7 @@ bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerPara
     auto writeArch = [&](const std::string& arch) -> bool
     {
         const std::filesystem::path filePath = ContainerParams.TempPath / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
+        std::filesystem::create_directories(filePath.parent_path());
 
         std::ofstream out(filePath, std::ios::out | std::ios::trunc);
         if (!out) return false;
@@ -626,10 +602,15 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
             std::cout << std::chrono::system_clock::now() << "ContainerWrappNewPather::PreMountFilesystemComponents: " << "[OUT] Mounting ZipFileLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
             if (!ContainerWrapper::RunCommand("fuse-zip", {"-r", SourcePath, TargetPath}))
             {
+                ContainerParams.CleanupUnmountPaths.push_back(TargetPath);
                 if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
                 {
                     return false;
                 }
+            }
+            else
+            {
+                std::cout << std::chrono::system_clock::now() << "ContainerWrappNewPather::PreMountFilesystemComponents: " << "[ERR] FAILED TO MOUNT ZipFileLayer " << SourcePath.string() << std::endl;
             }
         }
         else if (SubComponentJSON["TYPE"] == "DirLayer")
@@ -637,10 +618,15 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
             std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Mounting DirLayer " << SourcePath.string() << " at " << TargetPath.string() << std::endl;
             if (!ContainerWrapper::RunCommand("bindfs", {"-r", SourcePath, TargetPath}))
             {
+                ContainerParams.CleanupUnmountPaths.push_back(TargetPath);
                 if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
                 {
                     return false;
                 }
+            }
+            else
+            {
+                std::cout << std::chrono::system_clock::now() << "ContainerWrappNewPather::PreMountFilesystemComponents: " << "[ERR] FAILED TO MOUNT DirLayer " << SourcePath.string() << std::endl;
             }
         }
     }
@@ -704,6 +690,7 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
     if (!result)
     {
         //Success
+        ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
         std::cout << std::chrono::system_clock::now() << "ContainerWrapper::MountVFS: " << "[OUT] Successfully mounted VFS." << std::endl;
         return true;
     }
@@ -913,6 +900,17 @@ bool ContainerWrapper::Execute()
     {
         return false;
     }
+}
+
+bool ContainerWrapper::Cleanup()
+{
+    for (std::filesystem::path UnmountPath : ContainerParams.CleanupUnmountPaths)
+    {
+        ContainerWrapper::RunCommand("fusermount", {"-u", UnmountPath});
+    }
+    std::filesystem::remove_all(this->ContainerParams.RuntimePath);
+    std::filesystem::remove_all(this->ContainerParams.TempPath);
+    return true;
 }
 
 /*
