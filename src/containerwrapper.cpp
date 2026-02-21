@@ -156,6 +156,7 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
             {
                 std::string NewComponentJSONString = MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].dump();
                 ContainerWrapper::StringVariableSubstitution(NewComponentJSONString, ContainerParams.GetVariablesMap());
+                //std::cout << "AFTERSUBSTITUTION" << std::endl << std::endl << std::endl << NewComponentJSONString  << std::endl << std::endl << std::endl;
                 ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(NewComponentJSONString));
                 std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildSubComponentsArray: " << "[OUT] Added COMPONENT " << i + 1 << " SUBCOMPONENT " << j + 1 << std::endl;
             }
@@ -241,7 +242,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     }
     else
     {
-        ContainerParams.WorkDirPathComplete             = ContainerParams.ExePathComplete.parent_path();
+        ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath;
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
     }
 
@@ -278,6 +279,7 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["PackageFilesPath"] = this->PackageFilesPath;
     VariablesMap["UserDataPath"] = this->UserDataPath;
     VariablesMap["TempPath"] = this->TempPath;
+    VariablesMap["ProgramPath"] = this->ProgramPath;
     VariablesMap["DefPrefixPath"] = this->DefPrefixPath;
     VariablesMap["ExePathRelative"] = this->ExePathRelative;
     VariablesMap["ExePathComplete"] = this->ExePathComplete;
@@ -287,9 +289,6 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["WindowsProgramPathDoubleBackSlash"] = this->WindowsProgramPathDoubleBackSlash;
     VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
     VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
-    VariablesMap["PackageName"] = this->PackageName;
-    VariablesMap["PackageName"] = this->PackageName;
-    VariablesMap["PackageName"] = this->PackageName;
     return VariablesMap;
 }
 
@@ -759,7 +758,7 @@ bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerPara
 bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams)
 {
     //MUST BE RUN AFTER VARIABLE SUBSTITUTION!
-    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Processing filesystem Subcomponents." << std::endl;
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::PreMountFilesystemComponents: " << "[OUT] Processing FileEdit Subcomponents." << std::endl;
     for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
@@ -776,6 +775,7 @@ bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams)
 
 bool ContainerWrapper::ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath)
 {
+    std::cout << std::chrono::system_clock::now() << "ContainerWrapper::ConfigWrite: " << "FilePath: " << FilePath << " Key: " << Key << " Value: " << Value << std::endl;
     std::ifstream inFile(FilePath);
     if (!inFile.is_open())
     {

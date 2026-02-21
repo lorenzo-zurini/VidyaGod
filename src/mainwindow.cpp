@@ -296,6 +296,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
     NewContainerWrapper.BuildContainerRuntime();
     NewContainerWrapper.Execute();
+    QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
     NewContainerWrapper.Cleanup();
 
     //Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
