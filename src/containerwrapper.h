@@ -116,7 +116,7 @@ public:
     static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);
 
     //Misc
-    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::InheritFromParent);
+    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment);
     static bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);
 
 private:
