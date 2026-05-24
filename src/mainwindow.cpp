@@ -12,6 +12,9 @@
 //IMPLEMENT MIRRORFS COMPONENTS
 //ADD MORE RUNNERS BASED ON PLATFORM
 
+//Constructs the main window, wires up the UI file, and runs all three build phases
+//(static skeleton, game card population, dynamic layout) so the window is fully
+//populated before show() is called by main().
 MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * PassedAppDataDir, QWidget * parent)
     : GlobalConfigJSON(PassedGlobalConfigJSON), AppDataDir(PassedAppDataDir), QMainWindow(parent), ui(new Ui::MainWindow)
 {
@@ -37,12 +40,17 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     QMainWindow::resizeEvent(event);
 }
 
+//Creates the fixed structural widgets that exist for the lifetime of the window:
+//the tab widget, Library tab with its scroll area, and Packages tab with its toolbar.
+//Dynamic content (game cards, package rows) is added separately in the Build*DynamicUI methods.
 void MainWindow::BuildStaticUI()
 {
     MainWindowTabWidget = new QTabWidget(ui->MainWidget);
     ui->MainWidget->layout()->addWidget(MainWindowTabWidget);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
+    //Library tab: a scroll area that will hold the game card grid.
+    //Zero margins so the cards fill the full tab area.
     LibraryTabWidget = new QWidget(MainWindowTabWidget);
     LibraryTabWidgetLayout = new QVBoxLayout(LibraryTabWidget);
     LibraryTabWidgetLayout->setContentsMargins(0, 0, 0, 0);
@@ -52,10 +60,11 @@ void MainWindow::BuildStaticUI()
 
     LibraryScrollArea = new QScrollArea(LibraryTabWidget);
     LibraryScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    LibraryScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    LibraryScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); //Cards reflow to fit width; horizontal scroll is never needed
     LibraryTabWidgetLayout->addWidget(LibraryScrollArea);
     LibraryScrollArea->setWidgetResizable(1);
 
+    //Grid size slider — disabled for now, hardcoded to 4 columns in BuildLibraryDynamicUI.
     //QSlider * GridSizeSlider = new QSlider(Qt::Horizontal, LibraryTabWidget);
     //GridSizeSlider->setValue((*GlobalConfigJSON)["Settings"]["LibraryGridSize"]);
     //GridSizeSlider->setMinimum(3);
@@ -65,6 +74,7 @@ void MainWindow::BuildStaticUI()
     //QObject::connect(GridSizeSlider, &QSlider::sliderReleased, this, &MainWindow::MainWindowGridSizeChanged);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
+    //Packages tab: toolbar (add / open editor buttons) above a scroll area for the package list.
     PackagesTabWidget = new QWidget(MainWindowTabWidget);
     PackagesTabWidgetLayout = new QVBoxLayout(PackagesTabWidget);
     PackagesTabWidget->setLayout(PackagesTabWidgetLayout);
@@ -84,6 +94,7 @@ void MainWindow::BuildStaticUI()
     QPushButton * OpenPackageEditorButton = new QPushButton("Package Editor", PackagesToolbarGroupBox);
     OpenPackageEditorButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     PackagesToolbarGroupBoxLayout->addWidget(OpenPackageEditorButton);
+    //Lambda opens a PackageEditor dialog without blocking the main window.
     QObject::connect(OpenPackageEditorButton, &QPushButton::clicked, this, [this]{PackageEditor * NewPackageEditor = new PackageEditor(this->GlobalConfigJSON, this); NewPackageEditor->show();});
 
     PackagesScrollArea = new QScrollArea(PackagesTabWidget);
@@ -95,6 +106,9 @@ void MainWindow::BuildStaticUI()
     ///////////////////////////////////////////////////////////////////////////////////////////////
 }
 
+//Iterates GlobalConfigJSON["LIBRARY"], loads each package's MANIFEST.json, and creates
+//one LibraryGameCard per SUBGAMES entry. Skips packages whose MANIFEST cannot be parsed.
+//Must be called before BuildLibraryDynamicUI so LibraryGameCards is populated.
 void MainWindow::BuildLibraryGameCards()
 {
     LibraryGameCards->clear();
@@ -109,6 +123,7 @@ void MainWindow::BuildLibraryGameCards()
             continue;
         }
 
+        //One card per subgame — a multi-game package produces multiple cards in the grid.
         for (int j = 0; j < (int)PackageManifest["SUBGAMES"].size(); j++)
         {
             std::string SubgameID = PackageManifest["SUBGAMES"][j].contains("SUBGAMEID") && !PackageManifest["SUBGAMES"][j]["SUBGAMEID"].is_null()
@@ -120,6 +135,10 @@ void MainWindow::BuildLibraryGameCards()
     }
 }
 
+//Tears down the old LibraryWidget (if any) and rebuilds the game card grid.
+//Cards are reparented to nullptr before the old widget is deleted so they are not
+//destroyed prematurely — they are then re-parented into the new LibraryWidget.
+//Currently hardcoded to 4 columns; the slider-based GridSize path is disabled.
 void MainWindow::BuildLibraryDynamicUI()
 {
     LogOut("MainWindow", "Building LibraryDynamicUI");
@@ -142,7 +161,7 @@ void MainWindow::BuildLibraryDynamicUI()
 
     LibraryWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     LibraryWidgetLayout->setContentsMargins(5, 5, 5, 5);
-    LibraryWidgetLayout->setAlignment(Qt::AlignTop);
+    LibraryWidgetLayout->setAlignment(Qt::AlignTop); //Cards stick to the top; empty rows don't expand upward
     LibraryWidgetLayout->setSpacing(10);
 
     if (LibraryGameCards->empty())
@@ -157,17 +176,24 @@ void MainWindow::BuildLibraryDynamicUI()
     {
         LibraryGameCards->at(i)->setParent(LibraryWidget);
         LibraryGameCards->at(i)->GridSize = GridSize;
+        //Row = i / GridSize, column = i % GridSize — fills left-to-right, top-to-bottom.
         LibraryWidgetLayout->addWidget(LibraryGameCards->at(i), i / GridSize, i % GridSize);
     }
 
+    //Equal stretch on every column so cards share available width uniformly.
     for (int column = 0; column < GridSize; ++column)
     {
         LibraryWidgetLayout->setColumnStretch(column, 1);
     }
 
+    //Add a stretching empty row after the last card row so cards don't stretch vertically.
     LibraryWidgetLayout->setRowStretch((LibraryGameCards->count() + GridSize - 1) / GridSize, 1);
 }
 
+//Rebuilds the Packages tab content from GlobalConfigJSON["LIBRARY"].
+//Each row shows package name, UID, version, and a Remove button.
+//The Remove button erases the entry by index and immediately calls RebuildDynamicUI
+//to keep the view consistent, then persists the change to disk.
 void MainWindow::BuildPackagesDynamicUI()
 {
     if (PackagesScrollArea->widget() != nullptr)
@@ -187,13 +213,17 @@ void MainWindow::BuildPackagesDynamicUI()
         PackagesWidgetLayout->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEVERSION"]), PackagesWidget), i, 2);
 
         QPushButton * RemovePackageButton = new QPushButton("Remove", PackagesWidget);
+        //Capture i by value so each lambda removes the correct entry even after the loop ends.
         QObject::connect(RemovePackageButton, &QPushButton::clicked, this, [this, i]{(*GlobalConfigJSON)["LIBRARY"].erase(i); this->RebuildDynamicUI(); this->SaveGlobalConfigJSON();});
         PackagesWidgetLayout->addWidget(RemovePackageButton, i, 3);
     }
 
+    //Stretching row at the end prevents the last real row from expanding to fill the scroll area.
     PackagesWidgetLayout->setRowStretch(PackagesWidgetLayout->rowCount(), 1);
 }
 
+//Rebuilds the complete dynamic UI (game cards + library grid + packages list).
+//Called after any library mutation (add / remove package).
 void MainWindow::RebuildDynamicUI()
 {
     this->BuildLibraryGameCards();
@@ -202,6 +232,9 @@ void MainWindow::RebuildDynamicUI()
     return;
 }
 
+//Opens a native directory picker, validates the selection as a VidyaGod package,
+//guards against duplicate entries by PACKAGEUID, then appends a slim record to
+//GlobalConfigJSON["LIBRARY"] and saves to disk before rebuilding the UI.
 void MainWindow::on_AddGameButton_clicked()
 {
     QDir * PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
@@ -213,7 +246,6 @@ void MainWindow::on_AddGameButton_clicked()
     }
 
     //Catch nullptr return value of the JSON, returned if parser errorred.
-
     nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
     if(JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), MANIFESTJSON))
     {
@@ -222,6 +254,7 @@ void MainWindow::on_AddGameButton_clicked()
         return;
     }
 
+    //Prevent adding the same package twice — compare by PACKAGEUID, not path.
     for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
     {
         if ((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"] == (*MANIFESTJSON)["PACKAGEUID"])
@@ -231,6 +264,8 @@ void MainWindow::on_AddGameButton_clicked()
         }
     }
 
+    //Store only the fields needed for the Packages tab and card construction;
+    //the full MANIFEST is re-read per-subgame by LibraryGameCard::InitializeClassVariables.
     nlohmann::ordered_json SlimEntry;
     SlimEntry["PACKAGEUID"]     = (*MANIFESTJSON)["PACKAGEUID"];
     SlimEntry["PACKAGENAME"]    = (*MANIFESTJSON)["PACKAGENAME"];
@@ -245,11 +280,14 @@ void MainWindow::on_AddGameButton_clicked()
     this->RebuildDynamicUI();
 }
 
+//Serializes GlobalConfigJSON to GlobalConfig.JSON in AppDataDir.
 bool MainWindow::SaveGlobalConfigJSON()
 {
     return JSONOps::SaveJSON(MainWindow::GlobalConfigJSON, new QFile(AppDataDir->filePath("GlobalConfig.JSON")));
 }
 
+//Reads the new grid size from the slider that emitted the signal, persists it to
+//GlobalConfigJSON, saves to disk, and redraws the library grid at the new column count.
 void MainWindow::MainWindowGridSizeChanged()
 {
     QSlider * Slider = qobject_cast<QSlider *>(QObject::sender());
@@ -259,21 +297,25 @@ void MainWindow::MainWindowGridSizeChanged()
     BuildLibraryDynamicUI();
 }
 
+//Constructs the card widget with a cover label and Play/"..." button row.
+//Cover and title are NOT loaded here — call InitializeClassVariables() afterwards
+//so the widget tree exists before any file I/O or subgame index lookups occur.
 LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent)
     : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubgameID(PassedSubgameID), QWidget(parent)
 {
     LibraryGameCardLayout = new QVBoxLayout(this);
-    //this->setFlat(true);
     this->setLayout(LibraryGameCardLayout);
     LibraryGameCardLayout->setSpacing(0);
     LibraryGameCardLayout->setContentsMargins(0, 0, 0, 0);
 
+    //Cover label fills all available space; aspect ratio is enforced in resizeEvent.
     CoverLabel = new QLabel(this);
     CoverLabel->setAlignment(Qt::AlignCenter);
     CoverLabel->setScaledContents(true);
-    CoverLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    CoverLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored); //Ignored so the label shrinks below its pixmap's natural size
     LibraryGameCardLayout->addWidget(CoverLabel);
 
+    //Fixed-height button row beneath the cover.
     ButtonsGroupBox = new QWidget(this);
     ButtonsGroupBoxLayout = new QHBoxLayout(ButtonsGroupBox);
     ButtonsGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -296,6 +338,9 @@ LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON
     //QObject::connect(this, &QGroupBox::clicked, this, &LibraryGameCard::on_GameCard_clicked);
 }
 
+//Loads PackagePath from the library entry, reads MANIFEST.json, and sets the cover
+//pixmap and game title for the resolved SubgameID.
+//Safe to call only after the card widget has been fully constructed.
 void LibraryGameCard::InitializeClassVariables()
 {
     this->PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
@@ -311,9 +356,16 @@ void LibraryGameCard::InitializeClassVariables()
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
     if (SubgameIdx == -1) return;
     this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]);
+    //Build the full cover path from PackagePath + METADATA + the relative cover filename stored in the manifest.
     this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"]))));
 }
 
+//Builds and launches the full container stack for this card's subgame:
+//  1. Constructs ContainerParams and ContainerWrapper.
+//  2. Calls BuildContainerRuntime() — mounts VFS layers, applies registry patches, DLL overrides.
+//  3. Calls Execute() — runs the game and blocks until it exits.
+//  4. Calls Cleanup() regardless of success so mounts are always unmounted.
+//Shows a critical dialog if either build or execute fails.
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
@@ -333,6 +385,7 @@ void LibraryGameCard::on_PlayGameButton_clicked()
         QMessageBox::critical(nullptr, "Launch failed", "Failed to execute the game.\nCheck the runner configuration and file paths.");
         return;
     }
+    //Pause before cleanup so the user can inspect any post-exit state (e.g. crash logs).
     QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
     NewContainerWrapper.Cleanup();
 
@@ -356,6 +409,8 @@ void LibraryGameCard::on_GameCard_clicked()
     //qDebug() << "CLICKED GAME CARD" << this->GameTitle;
 }
 
+//Enforces a 2:3 cover aspect ratio (portrait) by fixing the label height to width * 3/2
+//whenever the card is resized. This keeps cover art proportional at any grid column width.
 void LibraryGameCard::resizeEvent(QResizeEvent * event) {
     QWidget::resizeEvent(event);
     this->CoverLabel->setFixedHeight(this->CoverLabel->width() * 3 / 2);
