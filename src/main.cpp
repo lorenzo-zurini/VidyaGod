@@ -157,7 +157,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         UmuProton["NAME"]       = "umu-proton";
         UmuProton["TYPE"]       = "wine";
         UmuProton["EXECUTABLE"] = "umu-run";
-        UmuProton["ENV"]        = { {"WINEPREFIX", "{RuntimePath}"}, {"GAMEID", "{UMUID}"}, {"PROTON_VERB", "waitforexitandrun"} };
+        UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
         UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
         (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
 
@@ -190,7 +190,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
             UmuProton["NAME"]       = "umu-proton";
             UmuProton["TYPE"]       = "wine";
             UmuProton["EXECUTABLE"] = "umu-run";
-            UmuProton["ENV"]        = { {"WINEPREFIX", "{RuntimePath}"}, {"GAMEID", "{UMUID}"}, {"PROTON_VERB", "waitforexitandrun"} };
+            UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
             UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
             (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
             std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added RUNNERS section." << std::endl;
