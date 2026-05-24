@@ -175,43 +175,82 @@ bool PackageEditor::BuildUI()
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
         ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
 
-        for (int i = 0; i < (*PackageEditor::MANIFESTJSON)["SUBGAMES"].size(); i++)
+        for (int i = 0; i < (int)(*PackageEditor::MANIFESTJSON)["SUBGAMES"].size(); i++)
         {
+            // Resolve SUBGAMEID for tab label and COMPONENT picker
+            std::string SubgameIDStr;
+            auto &SGIDField = (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i]["SUBGAMEID"];
+            if (!SGIDField.is_null() && SGIDField.is_string())
+                SubgameIDStr = std::string(SGIDField);
+
             QWidget * SubGameTabWidget = new QWidget(SubGamesTabWidget);
             SubGameTabWidget->setProperty("JSONPath", QString("/SUBGAMES/%1").arg(QString::number(i)));
+            SubGameTabWidget->setProperty("Index", i);
             QVBoxLayout * SubGameTabLayout = new QVBoxLayout(SubGameTabWidget);
             SubGameTabWidget->setLayout(SubGameTabLayout);
 
+            // Toolbar: Remove button
+            QHBoxLayout * SubGameToolbarLayout = new QHBoxLayout();
+            SubGameTabLayout->addLayout(SubGameToolbarLayout);
+            SubGameToolbarLayout->addStretch();
+            QPushButton * RemoveSubGameButton = new QPushButton("Remove Subgame", SubGameTabWidget);
+            SubGameToolbarLayout->addWidget(RemoveSubGameButton);
+            QObject::connect(RemoveSubGameButton, &QPushButton::clicked, this, &PackageEditor::RemoveSubgame);
+
             QScrollArea * SubGameScrollArea = new QScrollArea(SubGameTabWidget);
-            QVBoxLayout * SubGameScrollAreaLayout = new QVBoxLayout(SubGameScrollArea);
             SubGameScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
             SubGameScrollArea->setWidgetResizable(1);
-            SubGameScrollArea->setLayout(SubGameScrollAreaLayout);
             SubGameTabLayout->addWidget(SubGameScrollArea);
 
             QGroupBox * SubGameGroupBox = new QGroupBox(SubGameScrollArea);
-            SubGameScrollAreaLayout->addWidget(SubGameGroupBox);
             SubGameScrollArea->setWidget(SubGameGroupBox);
             QFormLayout * SubGameGroupBoxLayout = new QFormLayout(SubGameGroupBox);
             SubGameGroupBox->setLayout(SubGameGroupBoxLayout);
 
             for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].items())
             {
-                std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << Item.key() << std::endl;
-                QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
                 QString JSONPath = QString("/SUBGAMES/%1/%2").arg(QString::number(i)).arg(QString::fromStdString(Item.key()));
                 nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-                NewParamField->setProperty("JSONPath", JSONPath);
 
-                if(!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+                // COMPONENT gets a dropdown of available COMPONENTIDs
+                if (Item.key() == "COMPONENT")
                 {
-                    NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+                    QComboBox * ComponentPicker = new QComboBox(SubGameGroupBox);
+                    ComponentPicker->addItem("None");
+                    for (int j = 0; j < (int)(*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); j++)
+                    {
+                        auto &CIDField = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][j]["COMPONENTID"];
+                        std::string CIDStr = (!CIDField.is_null() && CIDField.is_string()) ? std::string(CIDField) : ("Component " + std::to_string(j + 1));
+                        ComponentPicker->addItem(QString::fromStdString(CIDStr));
+                    }
+                    ComponentPicker->setProperty("JSONPath", JSONPath);
+                    if (!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+                    {
+                        std::string CurrentComponent = std::string((*PackageEditor::MANIFESTJSON)[JSONPointer]);
+                        for (int k = 1; k < ComponentPicker->count(); k++)
+                        {
+                            if (ComponentPicker->itemText(k).toStdString() == CurrentComponent)
+                            {
+                                ComponentPicker->setCurrentIndex(k);
+                                break;
+                            }
+                        }
+                    }
+                    QObject::connect(ComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
+                    SubGameGroupBoxLayout->addRow("COMPONENT", ComponentPicker);
+                    continue;
                 }
 
+                QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
+                NewParamField->setProperty("JSONPath", JSONPath);
+                if (!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+                    NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
                 QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                 SubGameGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
             }
-            SubGamesTabWidget->addTab(SubGameTabWidget, QString("Subgame %1").arg(QString::number(i + 1)));
+
+            QString TabLabel = SubgameIDStr.empty() ? QString("Subgame %1").arg(i + 1) : QString::fromStdString(SubgameIDStr);
+            SubGamesTabWidget->addTab(SubGameTabWidget, TabLabel);
         }
         ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
 
