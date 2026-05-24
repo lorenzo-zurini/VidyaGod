@@ -30,6 +30,7 @@
 
 #include "filesystemoperations.h"
 #include "jsonoperations.h"
+#include "containerwrapper.h"
 #include "nlohmann/json.hpp"
 
 namespace Ui {

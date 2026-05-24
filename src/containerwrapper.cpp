@@ -176,10 +176,16 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] PackageUID: " << ContainerParams.PackageUID << std::endl;
 
     //(Sub)game specific:
-    ContainerParams.GameName                            = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"];
+    if (ContainerParams.subgame != 0)
+    {
+        ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"];
+        ContainerParams.UMUID                           = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["UMUID"];
+    }
+    else
+    {
+        ContainerParams.UMUID                           = "0";
+    }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] GameName: " << ContainerParams.GameName << std::endl;
-
-    ContainerParams.UMUID                               = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["UMUID"];
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
 
     //System Variables
@@ -213,52 +219,53 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.DefPrefixPath                       = ContainerParams.TempPath / "DEFPREFIX";
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] DefPrefixPath: " << ContainerParams.DefPrefixPath << std::endl;
 
-    ContainerParams.ExePathRelative                     = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEPATH"]);
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathRelative: " << ContainerParams.ExePathRelative << std::endl;
-
-    ContainerParams.ExePathComplete                     = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathComplete: " << ContainerParams.ExePathComplete << std::endl;
-
-    ContainerParams.ExePathInPrefix                     = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathInPrefix: " << ContainerParams.ExePathInPrefix << std::endl;
-
-    //Windows Paths
+    //Windows Paths (package-level, don't need subgame)
     ContainerParams.WindowsProgramPath                  = "C:\\" + ContainerParams.PackageUID;
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPath: " << ContainerParams.WindowsProgramPath << std::endl;
-
-    ContainerParams.WindowsExePathComplete              = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsExePathComplete: " << ContainerParams.WindowsExePathComplete << std::endl;
 
     ContainerParams.WindowsProgramPathDoubleBackSlash   = "C:\\\\" + ContainerParams.PackageUID;
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPathDoubleBackSlash: " << ContainerParams.WindowsProgramPathDoubleBackSlash << std::endl;
 
-    //Wine / Proton specific:
-    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].is_null()))
+    //Subgame-specific paths and args — only valid when a subgame is specified
+    if (ContainerParams.subgame != 0)
     {
-        ContainerParams.WorkDirPathRelative             = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"]);
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathRelative: " << ContainerParams.WorkDirPathRelative << std::endl;
-        ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
+        ContainerParams.ExePathRelative                 = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEPATH"]);
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathRelative: " << ContainerParams.ExePathRelative << std::endl;
+
+        ContainerParams.ExePathComplete                 = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathComplete: " << ContainerParams.ExePathComplete << std::endl;
+
+        ContainerParams.ExePathInPrefix                 = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathInPrefix: " << ContainerParams.ExePathInPrefix << std::endl;
+
+        ContainerParams.WindowsExePathComplete          = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsExePathComplete: " << ContainerParams.WindowsExePathComplete << std::endl;
+
+        if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].is_null()))
+        {
+            ContainerParams.WorkDirPathRelative         = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"]);
+            ContainerParams.WorkDirPathComplete         = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
+        }
+        else
+        {
+            ContainerParams.WorkDirPathComplete         = ContainerParams.ProgramPath;
+        }
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
+
+        if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].is_null()))
+        {
+            std::string UnsplitExeArgs(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"]);
+            ContainerWrapper::StringVariableSubstitution(UnsplitExeArgs, ContainerParams.GetVariablesMap());
+            ContainerParams.ExeArgs = [](const std::string& s){std::vector<std::string> out;std::istringstream iss(s);for (std::string tok; std::getline(iss, tok, ' ');)out.push_back(tok);return out;}(UnsplitExeArgs);
+            for (int i = 0; i < ContainerParams.ExeArgs.size(); i++)
+            {
+                std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << QString("[OUT] ExeArg %1: ").arg(i).toStdString() << ContainerParams.ExeArgs.at(i) << std::endl;
+            }
+        }
     }
     else
     {
         ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath;
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
-    }
-
-    //MUST MAKE THIS RESPECT QUOTES, ACCOUNT FOR EMPTY.
-    if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].is_null()))
-    {
-        std::string UnsplitExeArgs(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"]);
-
-        //VARIABLE SUBSTITUTION
-        ContainerWrapper::StringVariableSubstitution(UnsplitExeArgs, ContainerParams.GetVariablesMap());
-
-        ContainerParams.ExeArgs = [](const std::string& s){std::vector<std::string> out;std::istringstream iss(s);for (std::string tok; std::getline(iss, tok, ' ');)out.push_back(tok);return out;}(UnsplitExeArgs);
-        for (int i = 0; i < ContainerParams.ExeArgs.size(); i++)
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << QString("[OUT] ExeArg %1: ").arg(i).toStdString() << ContainerParams.ExeArgs.at(i) << std::endl;
-        }
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] Completed ContainerParams!" << std::endl;
     return true;
@@ -823,39 +830,17 @@ bool ContainerWrapper::ConfigWrite(std::string Key, std::string Value, std::file
 //                                                                          RUNNER CLASS
 //=====================================================================================================================================================================
 
-bool ContainerWrapper::Execute()
+bool ContainerWrapper::Execute(std::string OverrideExe)
 {
-    /*
-    QString FinalExePath = this->WindowsPaths["WindowsExePath"];
-    QStringList FinalExeArgs = this->ExeArgs;
-    QString FinalRuntimePath = this->Paths["RuntimePath"];
+    std::string FinalExe = OverrideExe.empty() ? ContainerParams.ExePathInPrefix.string() : OverrideExe;
 
-    if (!OverrideExePath.isEmpty())
+    if (FinalExe.empty())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath.toStdString() << std::endl;
-        FinalExePath = OverrideExePath;
-    }
-
-    if (!OverrideExeArgs.isEmpty())
-    {
-        //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs.toStdString();
-        FinalExeArgs = OverrideExeArgs;
-    }
-
-    if (!OverrideRuntimePath.isEmpty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath.toStdString() << std::endl;
-        FinalRuntimePath = OverrideRuntimePath;
-    }
-
-    if(FinalExePath.isEmpty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] ExePath is empty! Nothing to execute! Aborting" << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[ERR] No exe to run (no subgame and no override). Aborting." << std::endl;
         return false;
     }
-    */
 
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << ContainerParams.ExePathInPrefix << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << FinalExe << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] ExeArgs: " << std::accumulate(ContainerParams.ExeArgs.begin(), ContainerParams.ExeArgs.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WinePrefix: " << ContainerParams.RuntimePath << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath: " << ContainerParams.WorkDirPathComplete << std::endl;
@@ -872,13 +857,20 @@ bool ContainerWrapper::Execute()
         RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
     }
 
+    std::filesystem::path FinalWorkDir = ContainerParams.WorkDirPathComplete;
+    if (!std::filesystem::exists(FinalWorkDir))
+    {
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath does not exist, falling back to RuntimePath." << std::endl;
+        FinalWorkDir = ContainerParams.RuntimePath;
+    }
+
     QProcess RunProcess;
     RunProcess.setProgram("umu-run");
-    RunProcess.setWorkingDirectory(QString::fromStdString(ContainerParams.WorkDirPathComplete));
+    RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
 
     QStringList Arguments;
-    Arguments.append(QString::fromStdString(ContainerParams.ExePathInPrefix));
-    if (!ContainerParams.ExeArgs.empty())
+    Arguments.append(QString::fromStdString(FinalExe));
+    if (OverrideExe.empty() && !ContainerParams.ExeArgs.empty())
     {
         for (std::string Arg : ContainerParams.ExeArgs)
         {
@@ -906,244 +898,10 @@ bool ContainerWrapper::Cleanup()
 {
     for (std::filesystem::path UnmountPath : ContainerParams.CleanupUnmountPaths)
     {
-        ContainerWrapper::RunCommand("fusermount", {"-u", UnmountPath});
+        ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
     }
     std::filesystem::remove_all(this->ContainerParams.RuntimePath);
     std::filesystem::remove_all(this->ContainerParams.TempPath);
     return true;
 }
 
-/*
-bool Runner::Cleanup(QString OverrideRuntimePath)
-{
-    QString FinalRuntimePath = this->Paths["RuntimePath"];
-    if (!OverrideRuntimePath.isNull())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Passed RuntimePath" << OverrideRuntimePath.toStdString() << std::endl;
-        FinalRuntimePath = OverrideRuntimePath;
-    }
-
-    //Destroy UnionFS
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Unmounting UnionFS" << FinalRuntimePath.toStdString() << std::endl;
-    QProcess * UnmountUnionFS = new QProcess;
-    UnmountUnionFS->setProgram("fusermount");
-    UnmountUnionFS->setArguments({"-uz", FinalRuntimePath});
-    UnmountUnionFS->start();
-    UnmountUnionFS->waitForFinished(-1);
-
-    std::cout << UnmountUnionFS->readAllStandardError().toStdString() << std::endl;
-    std::cout << UnmountUnionFS->readAllStandardOutput().toStdString() << std::endl;
-
-    if(UnmountUnionFS->exitCode() == 0)
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully UNmounted UnionFS!" << std::endl;
-        delete UnmountUnionFS;
-    }
-    else
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to UNmount UnionFS!" << std::endl;
-        delete UnmountUnionFS;
-        return false;
-    }
-
-    for (int i = 0; i < Runner::SubComponentsArray.size(); i++)
-    {
-        nlohmann::ordered_json SubComponentJSON = Runner::SubComponentsArray[i];
-        if (SubComponentJSON["TYPE"] == "ZipFileLayer")
-        {
-            QDir SubComponentDir = this->Paths["TempPath"];
-            SubComponentDir.mkdir("[" + QString::number(i) + "]");
-            SubComponentDir.cd("[" + QString::number(i) + "]");
-
-            QDir MountDir = SubComponentDir;
-            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-
-            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
-            {
-                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-            }
-
-            QProcess * UnmountDir = new QProcess;
-            UnmountDir->setProgram("fusermount");
-            UnmountDir->setArguments({"-uz", MountDir.path()});
-            UnmountDir->start();
-            UnmountDir->waitForFinished(-1);
-
-            std::cout << UnmountDir->readAllStandardError().toStdString() << std::endl;
-            std::cout << UnmountDir->readAllStandardOutput().toStdString() << std::endl;
-
-            if(UnmountDir->exitCode() == 0)
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully unmounted dir" << MountDir.path().toStdString() << std::endl;
-                delete UnmountDir;
-            }
-            else
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path().toStdString() << std::endl;
-                delete UnmountDir;
-                return false;
-            }
-        }
-        else if (SubComponentJSON["TYPE"] == "DirLayer")
-        {
-            QDir SubComponentDir = this->Paths["TempPath"];
-            SubComponentDir.mkdir("[" + QString::number(i) + "]");
-            SubComponentDir.cd("[" + QString::number(i) + "]");
-
-            QDir MountDir = SubComponentDir;
-            MountDir.mkpath(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-            MountDir.cd(MountDir.path() + QDir::separator() + "drive_c" + QDir::separator() + this->PackageUID);
-
-            if (SubComponentJSON.contains("TARGET") || (!(SubComponentJSON["TARGET"].empty())))
-            {
-                MountDir.mkpath(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-                MountDir.cd(QDir::cleanPath(MountDir.path() + QDir::separator() + QString::fromStdString(SubComponentJSON["TARGET"])));
-            }
-
-            QString DirPath = QDir::cleanPath(this->Paths["PackageFilesPath"] + QDir::separator() + QString::fromStdString(SubComponentJSON["PATH"]));
-
-            std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Unmounting DirLayer" << DirPath.toStdString() << "at" << MountDir.path().toStdString() << std::endl;
-
-            QProcess * UnmountDir = new QProcess;
-            UnmountDir->setProgram("fusermount");
-            UnmountDir->setArguments({"-uz", MountDir.path()});
-            UnmountDir->start();
-            UnmountDir->waitForFinished(-1);
-
-            std::cout << UnmountDir->readAllStandardError().toStdString() << std::endl;
-            std::cout << UnmountDir->readAllStandardOutput().toStdString() << std::endl;
-
-            if(UnmountDir->exitCode() == 0)
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Successfully unmounted dir" << MountDir.path().toStdString() << std::endl;
-                delete UnmountDir;
-            }
-            else
-            {
-                std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] Failed to unmount dir" << MountDir.path().toStdString() << std::endl;
-                delete UnmountDir;
-                return false;
-            }
-        }
-    }
-
-    //QMessageBox::warning(nullptr, "Cleanup", "Removing mount points.");
-    if (!QDir(Runner::Paths["TempPath"]).removeRecursively())
-    {
-        //QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
-        return false;
-    }
-
-    //QMessageBox::warning(nullptr, "Cleanup", "Removing runtime.");
-    if (!QDir(FinalRuntimePath).removeRecursively())
-    {
-        //QMessageBox::warning(nullptr, "CLEANUP INCOMPLETE.", "Could not complete cleanup.");
-        return false;
-    }
-
-    return true;
-}
-
-bool Runner::Run(QString OverrideExePath, QStringList OverrideExeArgs, QString OverrideRuntimePath)
-{
-    QString FinalExePath = this->WindowsPaths["WindowsExePath"];
-    QStringList FinalExeArgs = this->ExeArgs;
-    QString FinalRuntimePath = this->Paths["RuntimePath"];
-
-    if (!OverrideExePath.isEmpty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExePath:" << OverrideExePath.toStdString() << std::endl;
-        FinalExePath = OverrideExePath;
-    }
-
-    if (!OverrideExeArgs.isEmpty())
-    {
-        //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override ExeArgs:" << OverrideExeArgs.toStdString();
-        FinalExeArgs = OverrideExeArgs;
-    }
-
-    if (!OverrideRuntimePath.isEmpty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Override RuntimePath:" << OverrideRuntimePath.toStdString() << std::endl;
-        FinalRuntimePath = OverrideRuntimePath;
-    }
-
-    if(FinalExePath.isEmpty())
-    {
-        std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[ERR] ExePath is empty! Nothing to execute! Aborting" << std::endl;
-        return false;
-    }
-
-    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] Executing with umu-launcher: " << FinalExePath.toStdString() << FinalExeArgs.toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ProtonPath:" << this->Paths["ProtonPath"].toStdString() << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WinePrefix:" << FinalRuntimePath.toStdString() << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ExePath:" << FinalExePath.toStdString() << std::endl;
-    //std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] ExeArgs:" << FinalExeArgs.toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WorkDirPath:" << this->Paths["WorkDirPath"].toStdString() << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] GAMEID:" << this->UMUID.toStdString() << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] DllOverrides:" << this->DllOverrides.toStdString() << std::endl;
-
-    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    QProcess * RunProcess = new QProcess;
-    RunProcess->setProgram("umu-run");
-    RunProcess->setWorkingDirectory(this->Paths["WorkDirPath"]);
-    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
-    RunProcessEnvironment.insert("WINEPREFIX", FinalRuntimePath);
-    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
-    FinalExeArgs.prepend(FinalExePath);
-
-    if (!FinalExeArgs.isEmpty())
-    {
-        RunProcess->setArguments(FinalExeArgs);
-    }
-
-    //if (!this->WorkDir.isEmpty())
-    //{
-    //    RunProcess->setWorkingDirectory(this->Paths["WorkDirPath"]);
-    //    //RunProcess->setWorkingDirectory(FSOps::SubPath(FSOps::SubPath(FSOps::SubPath(FinalRuntimePath, "drive_c"), QString::fromStdString((*MANIFESTJSON)["PACKAGEUID"])), this->WorkDir));
-    //    std::cout << QTime::currentTime().toString().toStdString() << "Runner:" << "[OUT] WorkDirPath:" << RunProcess->workingDirectory();
-    //}
-
-    RunProcessEnvironment.insert("GAMEID", this->UMUID);
-
-    if (!DllOverrides.isEmpty())
-    {
-        RunProcessEnvironment.insert("WINEDLLOVERRIDES", DllOverrides);
-    }
-
-    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-
-    RunProcess->setProcessEnvironment(RunProcessEnvironment);
-    RunProcess->start();
-    RunProcess->waitForFinished(-1);
-    std::cout << RunProcess->readAllStandardError().toStdString() << std::endl;
-    std::cout << RunProcess->readAllStandardOutput().toStdString() << std::endl;
-
-    if(RunProcess->exitCode() == 0)
-    {
-        delete RunProcess;
-        return true;
-    }
-    else
-    {
-        delete RunProcess;
-        return false;
-    }
-}
-*/
-
-//Container Wrapper structure outline:
-//
-// -> STRUCT CONTAINERPARAMS
-//    Contains all the information needed for building runtime and executing runner.
-//
-//   Runtime building (runner-indifferent):
-//   Build VFS
-//   Handle registry
-//   Basically put all subcomponents in place
-//   Download or find the actual runners
-//
-//   Runner execution part.
-//   I need to generalize the runner class so it works with all kinds of runners.

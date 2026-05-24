@@ -289,14 +289,15 @@ bool PackageEditor::BuildUI()
                 QPushButton * AnalyzeButton = new QPushButton("Analyze Registry", ComponentTabWidget);
                 SubComponentsToolbarLayout->addWidget(AnalyzeButton);
                 QObject::connect(AnalyzeButton, &QPushButton::clicked, this,
-                [this, i, ParentComponentJSONPointer, ParentComponentJSONPath]
+                [this, i, ParentComponentJSONPointer]
                 {
-                    //qDebug() << "lambda entered";
-                    //qDebug() << "i + 1=" << i + 1;
-                    //qDebug() << "ParentComponentJSONPointer=" << ParentComponentJSONPath.toStdString();
-                    //CAUTION!!!! THIS CRASHES IF PARENTCOMPONENT IS NULL!! SET DEFAULT TO 0!!
-                    //qDebug() << "QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt() =" << QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt();
-                    this->CompareComponentsRegistry(QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt(), i + 1);
+                    auto &ParentVal = (*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer];
+                    int oldcomponent = 0;
+                    if (!ParentVal.is_null() && ParentVal.is_string())
+                    {
+                        oldcomponent = QString::fromStdString(ParentVal).toInt();
+                    }
+                    this->CompareComponentsRegistry(oldcomponent, i + 1);
                 });
 
                 QPushButton * AddFileLayerButton = new QPushButton(ComponentTabWidget);
@@ -344,36 +345,71 @@ bool PackageEditor::BuildUI()
                 if (SubComponentType == "ZipFileLayer")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
-                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"])), 1, 1);
+                    QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
+                    QString PathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/PATH").arg(i).arg(j);
+                    PathField->setProperty("JSONPath", PathJSONPath);
+                    if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"].is_null())
+                    {
+                        PathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"]));
+                    }
+                    QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1);
                 }
                 else if (SubComponentType == "DirLayer")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
-                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"])), 1, 1);
+                    QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
+                    QString PathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/PATH").arg(i).arg(j);
+                    PathField->setProperty("JSONPath", PathJSONPath);
+                    if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"].is_null())
+                    {
+                        PathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"]));
+                    }
+                    QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1);
                 }
                 else if (SubComponentType == "RegEdit")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("REGPATH:"), 1, 0);
-                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["REGPATH"])), 1, 1);
+                    QLineEdit * RegPathField = new QLineEdit(IndividualSubComponentGroupBox);
+                    QString RegPathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/REGPATH").arg(i).arg(j);
+                    RegPathField->setProperty("JSONPath", RegPathJSONPath);
+                    if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["REGPATH"].is_null())
+                    {
+                        RegPathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["REGPATH"]));
+                    }
+                    QObject::connect(RegPathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(RegPathField, 1, 1);
+
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("ARCHITECTURE:"), 2, 0);
-                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["ARCHITECTURE"])), 2, 1);
+                    QLineEdit * ArchField = new QLineEdit(IndividualSubComponentGroupBox);
+                    QString ArchJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/ARCHITECTURE").arg(i).arg(j);
+                    ArchField->setProperty("JSONPath", ArchJSONPath);
+                    if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["ARCHITECTURE"].is_null())
+                    {
+                        ArchField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["ARCHITECTURE"]));
+                    }
+                    QObject::connect(ArchField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(ArchField, 2, 1);
 
                         QGroupBox * RegKeysGroupBox = new QGroupBox(IndividualSubComponentGroupBox);
                         QGridLayout * RegKeysGroupBoxLayout = new QGridLayout(RegKeysGroupBox);
-                        //RegKeysGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
                         RegKeysGroupBox->setLayout(RegKeysGroupBoxLayout);
                         RegKeysGroupBox->setTitle("KEYS");
 
                         RegKeysGroupBoxLayout->addWidget(new QLabel("Key"), 0, 0);
                         RegKeysGroupBoxLayout->addWidget(new QLabel("Value"), 0, 1);
-                        RegKeysGroupBoxLayout->addWidget(new QLabel("Type"), 0, 2);
 
                         int k = 1;
                         for (auto Object : (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["KEYVALUES"].items())
                         {
                             RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.key())), k, 0);
-                            RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.value()["VALUE"])), k, 1);
-                            RegKeysGroupBoxLayout->addWidget(new QLabel(QString::fromStdString(Object.value()["TYPE"])), k, 2);
+                            QLineEdit * KeyValueField = new QLineEdit(RegKeysGroupBox);
+                            QString KeyValueJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/KEYVALUES/%3").arg(i).arg(j).arg(QString::fromStdString(Object.key()));
+                            KeyValueField->setProperty("JSONPath", KeyValueJSONPath);
+                            KeyValueField->setText(QString::fromStdString(Object.value()));
+                            QObject::connect(KeyValueField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                            RegKeysGroupBoxLayout->addWidget(KeyValueField, k, 1);
                             k++;
                         }
 
@@ -464,138 +500,119 @@ void PackageEditor::RemoveComponent()
 
 void PackageEditor::RunExeInComponent()
 {
-    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Running EXE in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
-    Runner * ExeRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    int componentIndex = Button->parentWidget()->property("Index").toInt();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RunExeInComponent: " << "[OUT] Running EXE in component " << componentIndex + 1 << std::endl;
 
-    ExeRunner->Cleanup();
-    ExeRunner->BuildRuntime();
-    ExeRunner->Run(QFileDialog::getOpenFileName(this, "Select executable"), QStringList());
-    ExeRunner->Cleanup();
-    */
+    QString SelectedExe = QFileDialog::getOpenFileName(this, "Select executable");
+    if (SelectedExe.isEmpty()) return;
+
+    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
+    Container.Cleanup();
+    Container.BuildContainerRuntime();
+    Container.Execute(SelectedExe.toStdString());
+    Container.Cleanup();
 }
 
 void PackageEditor::BrowseInComponent()
 {
-    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Browsing in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
-    Runner * ExplorerRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    int componentIndex = Button->parentWidget()->property("Index").toInt();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::BrowseInComponent: " << "[OUT] Browsing in component " << componentIndex + 1 << std::endl;
 
-    ExplorerRunner->Cleanup();
-    ExplorerRunner->BuildRuntime();
-    ExplorerRunner->Run("explorer.exe");
-    ExplorerRunner->Cleanup();
-    */
+    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
+    Container.Cleanup();
+    Container.BuildContainerRuntime();
+    Container.Execute("explorer.exe");
+    Container.Cleanup();
 }
 
 void PackageEditor::RegeditInComponent()
 {
-    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Editing registry in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
-    Runner * RegeditRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    int componentIndex = Button->parentWidget()->property("Index").toInt();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RegeditInComponent: " << "[OUT] Editing registry in component " << componentIndex + 1 << std::endl;
 
-    RegeditRunner->Cleanup();
-    RegeditRunner->BuildRuntime();
-    RegeditRunner->Run("regedit.exe");
-    RegeditRunner->Cleanup();
-    */
+    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
+    Container.Cleanup();
+    Container.BuildContainerRuntime();
+    Container.Execute("regedit.exe");
+    Container.Cleanup();
 }
 
 void PackageEditor::ExecuteComponent()
 {
-    /*
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
-    Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
+    int componentIndex = Button->parentWidget()->property("Index").toInt();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::ExecuteComponent: " << "[OUT] Executing component " << componentIndex + 1 << std::endl;
 
-    ComponentRunner->Cleanup();
-    ComponentRunner->BuildRuntime();
-    ComponentRunner->Run();
-    ComponentRunner->Cleanup();
-    */
+    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
+    Container.Cleanup();
+    Container.BuildContainerRuntime();
+    Container.Execute("cmd.exe");
+    Container.Cleanup();
 }
 
 void PackageEditor::AnalyzeComponent()
 {
-    /*
-    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Executing component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
-    Runner * ComponentRunner = new Runner(this->PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, Button->parentWidget()->property("Index").toInt() + 1);
-
-    ComponentRunner->Cleanup();
-    ComponentRunner->BuildRuntime();
-    ComponentRunner->Run();
-    ComponentRunner->Cleanup();
-    */
+    // Not yet implemented
 }
 
 void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int newcomponent)
 {
-    /*
-    //The component numbers to be compared are passed as friendly number, not array index!
-    //If oldcomponent is 0, the newcomponent will be comapred against DEFPREFIX,
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Comparing component" << newcomponent << "against" << oldcomponent << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparing component " << newcomponent << " against " << oldcomponent << std::endl;
 
-    //A runner object is created for each of the two states.
-    QString ComparatorPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "COMPARATOR");
-    Runner * ComparatorRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, oldcomponent);
-    ComparatorRunner->Cleanup(ComparatorPath);
+    std::filesystem::path PackagePath = PackageDir->path().toStdString();
 
-    //WHEN THIS BREAKS, USE DIRECT EDITING OF CONTAINERPARAMS.VARIABLEMAP INSTEAD!!! NO LONGER NEEDS A FUNCTION.
-    ComparatorRunner->BuildRuntime(ComparatorPath, "READONLY");
+    // Build the comparator — the baseline state of oldcomponent (or bare defprefix if 0) in readonly mode.
+    // Custom TempPath/RuntimePath so it doesn't collide with the normal RUNTIME/TEMP.
+    ContainerParams ComparatorParams(PackagePath, 0, oldcomponent);
+    ContainerWrapper ComparatorContainer(*GlobalConfigJSON, *MANIFESTJSON, ComparatorParams);
+    ComparatorContainer.ContainerParams.TempPath       = PackagePath / "COMPARATOR_TEMP";
+    ComparatorContainer.ContainerParams.DefPrefixPath  = PackagePath / "COMPARATOR_TEMP" / "DEFPREFIX";
+    ComparatorContainer.ContainerParams.RuntimePath    = PackagePath / "COMPARATOR";
+    ComparatorContainer.ContainerParams.ReadOnlyVFS    = true;
+    ComparatorContainer.Cleanup();
+    ComparatorContainer.BuildContainerRuntime();
 
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Comparator initialzed!" << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparator initialized." << std::endl;
 
-    QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
-    //Runner * NewComponentRunner = new Runner(PackageDir, MANIFESTJSON, GlobalConfigJSON, 0, newcomponent);
-    //NewComponentRunner->Cleanup();
-    //NewComponentRunner->BuildRuntime();
-    //std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Runtime initialized!";
+    // Read baseline registry from the mounted comparator VFS.
+    std::filesystem::path ComparatorRuntime = ComparatorContainer.ContainerParams.RuntimePath;
+    nlohmann::ordered_json OldSysRegJSON  = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((ComparatorRuntime / "system.reg").string())));
+    nlohmann::ordered_json OldUserRegJSON = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((ComparatorRuntime / "user.reg").string())));
 
-    //The registry files are read into memory and converted to JSON for easy processing.
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Starting REG to JSON conversion" << std::endl;
-    nlohmann::ordered_json OldSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "system.reg"))));
-    nlohmann::ordered_json NewSysRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "system.reg"))));
-    //std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "OldSysRegJSON:" << OldSysRegJSON.dump();
-    //std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "NewSysRegJSON:" << NewSysRegJSON.dump();
+    ComparatorContainer.Cleanup();
 
-    nlohmann::ordered_json OldUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((ComparatorPath + QDir::separator() + "user.reg"))));
-    nlohmann::ordered_json NewUserRegJSON = PackageEditor::RegFileToJSON(QFile(QDir::cleanPath((UserDataPath + QDir::separator() + "user.reg"))));
+    // Read the "after" registry from UserDataPath — changes COW'd there by a previous Execute().
+    std::filesystem::path UserDataPath = PackagePath / "USERDATA";
+    nlohmann::ordered_json NewSysRegJSON  = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((UserDataPath / "system.reg").string())));
+    nlohmann::ordered_json NewUserRegJSON = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((UserDataPath / "user.reg").string())));
 
-    //A delta JSON is generated for each pair using the SubtractJSON function.
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Starting JSON Diff subtraction." << std::endl;
-    nlohmann::ordered_json SysDeltaJSON = SubtractJSON(OldSysRegJSON, NewSysRegJSON);
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "SYSDELTAJSON:" << SysDeltaJSON.dump() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Starting JSON diff." << std::endl;
+    nlohmann::ordered_json SysDeltaJSON  = SubtractJSON(OldSysRegJSON,  NewSysRegJSON);
     nlohmann::ordered_json UserDeltaJSON = SubtractJSON(OldUserRegJSON, NewUserRegJSON);
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "USERDELTAJSON:" << UserDeltaJSON.dump() << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] SYSDELTA: "  << SysDeltaJSON.dump()  << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] USERDELTA: " << UserDeltaJSON.dump() << std::endl;
 
-    //The DeltaJSON is then converted into RegEdit subcomponents.
-    //The Registry Delta objects are merged into MANIFESTJSON.
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor: [OUT]" << "Converting deltas to SubComponentArray and merging deltas to MANIFESTJSON." << std::endl;
-    if (!SysDeltaJSON.is_null()){
-        nlohmann::ordered_json SysDeltaSubComponentArray = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
-        MergeRegistryDeltaInComponent(&SysDeltaSubComponentArray, newcomponent);
+    if (!SysDeltaJSON.is_null())
+    {
+        nlohmann::ordered_json SysDelta = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
+        MergeRegistryDeltaInComponent(&SysDelta, newcomponent);
     }
-    if (!UserDeltaJSON.is_null()){
-        nlohmann::ordered_json UserDeltaSubComponentArray = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
-        MergeRegistryDeltaInComponent(&UserDeltaSubComponentArray, newcomponent);
+    if (!UserDeltaJSON.is_null())
+    {
+        nlohmann::ordered_json UserDelta = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
+        MergeRegistryDeltaInComponent(&UserDelta, newcomponent);
     }
 
-    //The runners perform cleanup and are then deleted.
-    //NewComponentRunner->Cleanup();
-    ComparatorRunner->Cleanup(ComparatorPath);
-
-    //delete NewComponentRunner;
-    delete ComparatorRunner;
-
-    //The changes are saved to ManifestJSON and the UI is refreshed.
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
     PackageEditor::BuildUI();
-    */
 }
 
 //CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!

@@ -8,8 +8,6 @@
 
 #include "nlohmann/json.hpp"
 
-class RunnerParams;
-
 class FSOps
 {
 public:
