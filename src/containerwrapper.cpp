@@ -94,43 +94,34 @@ bool ContainerWrapper::BuildContainerRuntime()
         }
     }
 
-    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-        return BuildWineRuntime();
+    bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
 
-    if (ContainerParams.UsesVFS)
-        return BuildDataVFSRuntime();
+    if (!WineMode && !ContainerParams.UsesVFS)
+    {
+        LogWarn("ContainerWrapper::BuildContainerRuntime", "No VFS layers found. Package may be malformed.");
+        return false;
+    }
 
-    // No VFS layers — should not happen with well-formed packages
-    LogWarn("ContainerWrapper::BuildContainerRuntime", "No VFS layers found. Package may be malformed.");
-    return false;
-}
+    if (WineMode)
+    {
+        this->InitializeDefPrefix(this->ContainerParams);
+        this->CreateFlatRegPatchJSON(this->ContainerParams);
+        this->CreateRegPatchFiles(this->ContainerParams);
+        this->MergeRegPatchFiles(this->ContainerParams);
+    }
 
-bool ContainerWrapper::BuildWineRuntime()
-{
-    this->InitializeDefPrefix(this->ContainerParams);
-    this->CreateFlatRegPatchJSON(this->ContainerParams);
-    this->CreateRegPatchFiles(this->ContainerParams);
-    this->MergeRegPatchFiles(this->ContainerParams);
-
-    this->PreMountFilesystemComponents(this->ContainerParams, true);
-    if (!this->FinalizeVFSString(this->ContainerParams)) return false;
-    this->MountVFS(this->ContainerParams);
-    this->CheckCaseConflicts(ContainerParams.RuntimePath);
-    this->ProcessDLLOverrides(this->ContainerParams);
-    this->ProcessFileEdits(this->ContainerParams);
-
-    LogSucc("ContainerWrapper::BuildWineRuntime", "Wine runtime ready.");
-    return true;
-}
-
-bool ContainerWrapper::BuildDataVFSRuntime()
-{
-    this->PreMountFilesystemComponents(this->ContainerParams, false);
+    this->PreMountFilesystemComponents(this->ContainerParams, WineMode);
     if (!this->FinalizeVFSString(this->ContainerParams)) return false;
     this->MountVFS(this->ContainerParams);
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
-    LogSucc("ContainerWrapper::BuildDataVFSRuntime", "Data VFS runtime ready.");
+    if (WineMode)
+    {
+        this->ProcessDLLOverrides(this->ContainerParams);
+        this->ProcessFileEdits(this->ContainerParams);
+    }
+
+    LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
     return true;
 }
 

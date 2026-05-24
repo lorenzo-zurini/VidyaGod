@@ -97,8 +97,6 @@ public:
     struct ContainerParams ContainerParams;
 
     bool BuildContainerRuntime();
-    bool BuildWineRuntime();
-    bool BuildDataVFSRuntime();
     bool Execute(std::string OverrideExe = "");
     bool Cleanup();
 
