@@ -6,10 +6,37 @@ ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJS
     this->InitializeContainer();
 }
 
-ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, int Passed_subgame, int Passed_component)
-    : PackagePath(Passed_PackagePath), subgame(Passed_subgame), component(Passed_component)
+ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::string Passed_subgame_id, std::string Passed_component_id)
+    : PackagePath(Passed_PackagePath), subgame_id(Passed_subgame_id), component_id(Passed_component_id)
 {
     std::cout << std::chrono::system_clock::now() << " ContainerParams::ContainerParams: " << "[OUT] ContainerParams object created..." << std::endl;
+}
+
+int ContainerWrapper::FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
+{
+    for (int i = 0; i < (int)MANIFESTJSON["SUBGAMES"].size(); i++)
+    {
+        if (!MANIFESTJSON["SUBGAMES"][i]["SUBGAMEID"].is_null() && MANIFESTJSON["SUBGAMES"][i]["SUBGAMEID"] == SubgameID)
+        {
+            return i;
+        }
+    }
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::FindSubgameIndex: " << "[ERR] Subgame ID not found: " << SubgameID << std::endl;
+    return -1;
+}
+
+int ContainerWrapper::FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID)
+{
+    if (ComponentID.empty()) return -1;
+    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
+    {
+        if (!MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null() && MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"] == ComponentID)
+        {
+            return i;
+        }
+    }
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::FindComponentIndex: " << "[ERR] Component ID not found: " << ComponentID << std::endl;
+    return -1;
 }
 
 //TO-DO:
@@ -26,7 +53,7 @@ bool ContainerWrapper::InitializeContainer()
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[OUT] ContainerWrapper::DecideComponent successful." << std::endl;
 
-    if(!this->DeriveContainerParams(this->MANIFESTJSON, this->ContainerParams))
+    if(!this->DeriveContainerParams(this->MANIFESTJSON, this->ContainerParams, this->GlobalConfigJSON))
     {
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::InitializeContainer: " << "[ERR] ContainerWrapper::DeriveContainerParams failed, aborting...." << std::endl;
         return false;
@@ -56,12 +83,15 @@ bool ContainerWrapper::InitializeContainer()
 
 bool ContainerWrapper::BuildContainerRuntime()
 {
-    this->InitializeDefPrefix(this->ContainerParams);
+    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        this->InitializeDefPrefix(this->ContainerParams);
 
-    //REGISTRY WRAPPER
-    this->CreateFlatRegPatchJSON(this->ContainerParams);
-    this->CreateRegPatchFiles(this->ContainerParams);
-    this->MergeRegPatchFiles(this->ContainerParams);
+        //REGISTRY WRAPPER
+        this->CreateFlatRegPatchJSON(this->ContainerParams);
+        this->CreateRegPatchFiles(this->ContainerParams);
+        this->MergeRegPatchFiles(this->ContainerParams);
+    }
 
     //VFS WRAPPER
     this->PreMountFilesystemComponents(this->ContainerParams);
@@ -69,8 +99,11 @@ bool ContainerWrapper::BuildContainerRuntime()
     this->MountVFS(this->ContainerParams);
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
-    this->ProcessDLLOverrides(this->ContainerParams);
-    this->ProcessFileEdits(this->ContainerParams);
+    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        this->ProcessDLLOverrides(this->ContainerParams);
+        this->ProcessFileEdits(this->ContainerParams);
+    }
 
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildContainerRuntime: " << "[OUT] Container ready to run!" << std::endl;
     return true;
@@ -84,30 +117,36 @@ bool ContainerWrapper::BuildVirtualFilesystem()
 
 bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Deciding component: subgame: " << ContainerParams.subgame << " component: " << ContainerParams.component << std::endl;
-    if ((ContainerParams.subgame == 0) && (ContainerParams.component == 0))
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Deciding component: subgame_id: " << ContainerParams.subgame_id << " component_id: " << ContainerParams.component_id << std::endl;
+
+    if (ContainerParams.subgame_id.empty() && ContainerParams.component_id.empty())
     {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Neither subgame nor component specified, mounting defprefix." << ContainerParams.component << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Neither subgame nor component specified, mounting defprefix." << std::endl;
         return true;
     }
-    else if ((ContainerParams.subgame != 0) && (ContainerParams.component == 0))
+    else if (!ContainerParams.subgame_id.empty() && ContainerParams.component_id.empty())
     {
-        if (!MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["COMPONENT"].is_null())
+        int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+        if (SubgameIdx == -1) return false;
+        auto &ComponentField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["COMPONENT"];
+        if (!ComponentField.is_null() && ComponentField != "")
         {
-            ContainerParams.component = QString::fromStdString(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["COMPONENT"]).toInt();
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Only subgame specified, getting component from JSON: " << ContainerParams.component << std::endl;
+            ContainerParams.component_id = ComponentField;
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Only subgame specified, resolved component_id: " << ContainerParams.component_id << std::endl;
         }
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running subgame " << MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"] << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running subgame " << MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"] << std::endl;
         return true;
     }
-    else if ((ContainerParams.subgame == 0) && (ContainerParams.component != 0))
+    else if (ContainerParams.subgame_id.empty() && !ContainerParams.component_id.empty())
     {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running component " << MANIFESTJSON["COMPONENTS"][ContainerParams.component - 1]["NAME"] << std::endl;
+        int ComponentIdx = FindComponentIndex(MANIFESTJSON, ContainerParams.component_id);
+        if (ComponentIdx == -1) return false;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running component " << MANIFESTJSON["COMPONENTS"][ComponentIdx]["NAME"] << std::endl;
         return true;
     }
     else
     {
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running subgame " << ContainerParams.subgame << " component " << ContainerParams.component << std::endl;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DecideComponent: " << "[OUT] Running subgame " << ContainerParams.subgame_id << " component " << ContainerParams.component_id << std::endl;
         return true;
     }
     return false;
@@ -115,50 +154,45 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
 
 bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    //CREATE RECIPE BY RESOLVING COMPONENT DEPENDENCY
+    //CREATE RECIPE BY RESOLVING COMPONENT DEPENDENCY CHAIN
     ContainerParams.Recipe.clear();
-    while (ContainerParams.component != 0)
+    std::string CurrentID = ContainerParams.component_id;
+    while (!CurrentID.empty())
     {
-        ContainerParams.Recipe.push_back(ContainerParams.component);
-        if (MANIFESTJSON["COMPONENTS"][ContainerParams.component - 1]["PARENTCOMPONENT"].is_null())
+        int Idx = FindComponentIndex(MANIFESTJSON, CurrentID);
+        if (Idx == -1) break;
+
+        ContainerParams.Recipe.push_back(CurrentID);
+
+        auto &ParentField = MANIFESTJSON["COMPONENTS"][Idx]["PARENTCOMPONENT"];
+        if (ParentField.is_null() || ParentField == "")
         {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] Parent component is null, ending recipe." << std::endl;
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] No parent, ending recipe." << std::endl;
             break;
         }
-
-        if (MANIFESTJSON["COMPONENTS"][ContainerParams.component - 1]["PARENTCOMPONENT"] == "")
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] Parent component is empty, ending recipe." << std::endl;
-            break;
-        }
-
-        if (QString::fromStdString(MANIFESTJSON["COMPONENTS"][ContainerParams.component - 1]["PARENTCOMPONENT"]).toInt() == 0)
-        {
-            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] Parent component is 0, ending recipe." << std::endl;
-            break;
-        }
-
-        ContainerParams.component = QString::fromStdString(MANIFESTJSON["COMPONENTS"][ContainerParams.component - 1]["PARENTCOMPONENT"]).toInt();
+        CurrentID = ParentField;
     }
     std::reverse(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end());
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] Recipe: " << [&](const std::vector<int>& v){ std::string r; for (int x : v) r += std::to_string(x) + " "; return r;}(ContainerParams.Recipe) << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::CreateRecipe: " << "[OUT] Recipe: " << [&](const std::vector<std::string>& v){ std::string r; for (const auto &x : v) r += x + " "; return r;}(ContainerParams.Recipe) << std::endl;
     return true;
 }
 
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
-    for (int i = 0; i < MANIFESTJSON["COMPONENTS"].size(); i++)
+    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
     {
-        if (std::find(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end(), int(i + 1)) != ContainerParams.Recipe.end())
+        std::string ComponentID = MANIFESTJSON["COMPONENTS"][i].contains("COMPONENTID") && !MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null()
+                                  ? std::string(MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"])
+                                  : "";
+        if (std::find(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end(), ComponentID) != ContainerParams.Recipe.end())
         {
-            for (int j = 0; j < MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
+            for (int j = 0; j < (int)MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
             {
                 std::string NewComponentJSONString = MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].dump();
                 ContainerWrapper::StringVariableSubstitution(NewComponentJSONString, ContainerParams.GetVariablesMap());
-                //std::cout << "AFTERSUBSTITUTION" << std::endl << std::endl << std::endl << NewComponentJSONString  << std::endl << std::endl << std::endl;
                 ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(NewComponentJSONString));
-                std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildSubComponentsArray: " << "[OUT] Added COMPONENT " << i + 1 << " SUBCOMPONENT " << j + 1 << std::endl;
+                std::cout << std::chrono::system_clock::now() << " ContainerWrapper::BuildSubComponentsArray: " << "[OUT] Added COMPONENT " << ComponentID << " SUBCOMPONENT " << j + 1 << std::endl;
             }
         }
     }
@@ -166,7 +200,7 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
     return true;
 }
 
-bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
 {
     //Package-specific:
     ContainerParams.PackageName                         = MANIFESTJSON["PACKAGENAME"];
@@ -176,17 +210,77 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] PackageUID: " << ContainerParams.PackageUID << std::endl;
 
     //(Sub)game specific:
-    if (ContainerParams.subgame != 0)
+    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+    if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["TITLE"];
-        ContainerParams.UMUID                           = MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["UMUID"];
+        ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"];
+        ContainerParams.UMUID                           = MANIFESTJSON["SUBGAMES"][SubgameIdx]["UMUID"];
+        ContainerParams.Platform                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["PLATFORM"];
     }
     else
     {
         ContainerParams.UMUID                           = "0";
+        ContainerParams.Platform                        = "Microsoft Windows";
     }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] GameName: " << ContainerParams.GameName << std::endl;
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] Platform: " << ContainerParams.Platform << std::endl;
+
+    // Runner resolution: USERSETTINGS > RECOMMENDED_RUNNER > first available
+    std::string PreferredRunner;
+    if (GlobalConfigJSON.contains("USERSETTINGS") &&
+        GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
+        GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("PREFERRED_RUNNER"))
+    {
+        PreferredRunner = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["PREFERRED_RUNNER"];
+    }
+    if (PreferredRunner.empty() && !ContainerParams.subgame_id.empty() && SubgameIdx != -1)
+    {
+        auto &RecommendedField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["RECOMMENDED_RUNNER"];
+        if (!RecommendedField.is_null() && RecommendedField != "")
+        {
+            PreferredRunner = RecommendedField;
+        }
+    }
+
+    nlohmann::ordered_json SelectedRunner;
+    if (GlobalConfigJSON.contains("RUNNERS") && GlobalConfigJSON["RUNNERS"].contains(ContainerParams.Platform))
+    {
+        auto &Runners = GlobalConfigJSON["RUNNERS"][ContainerParams.Platform];
+        for (auto &Runner : Runners)
+        {
+            if (!PreferredRunner.empty() && Runner["NAME"] == PreferredRunner)
+            {
+                SelectedRunner = Runner;
+                break;
+            }
+        }
+        if (SelectedRunner.is_null() && !Runners.empty())
+        {
+            SelectedRunner = Runners[0];
+        }
+    }
+
+    if (!SelectedRunner.is_null())
+    {
+        ContainerParams.RunnerName       = SelectedRunner["NAME"];
+        ContainerParams.RunnerExecutable = SelectedRunner["EXECUTABLE"];
+        std::string RunnerTypeStr        = SelectedRunner["TYPE"];
+        if (RunnerTypeStr == "wine")           ContainerParams.RunnerTypeEnum = RunnerType::Wine;
+        else if (RunnerTypeStr == "emulator")  ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
+        else                                   ContainerParams.RunnerTypeEnum = RunnerType::Native;
+        if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
+        if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(E);
+        if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(A);
+    }
+    else
+    {
+        // No runner found — fall back to umu-run/Wine for backwards compatibility
+        ContainerParams.RunnerExecutable = "umu-run";
+        ContainerParams.RunnerTypeEnum   = RunnerType::Wine;
+        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[WARN] No runner found for platform '" << ContainerParams.Platform << "', falling back to umu-run." << std::endl;
+    }
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] Runner: " << ContainerParams.RunnerName << " (" << ContainerParams.RunnerExecutable << ")" << std::endl;
 
     //System Variables
     ContainerParams.ScreenWidth                         = std::to_string(QGuiApplication::primaryScreen()->geometry().width());
@@ -211,39 +305,45 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.TempPath                            = ContainerParams.PackagePath / "TEMP";
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] TempPath: " << ContainerParams.TempPath << std::endl;
 
-    //Wine / Proton / Windows specific paths, must be generalised somehow.
-    //This is a temporary solution, those path formulas will be encoded in the runner deficnition for windows platform runners
-    ContainerParams.ProgramPath                         = ContainerParams.RuntimePath / "drive_c"/ ContainerParams.PackageUID;
+    // Wine-specific: prefix lives under TEMP/DEFPREFIX, programs under drive_c/PACKAGEUID
+    // Other runners: ProgramPath is the root of the RUNTIME mount
+    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        ContainerParams.ProgramPath                     = ContainerParams.RuntimePath / "drive_c" / ContainerParams.PackageUID;
+        ContainerParams.DefPrefixPath                   = ContainerParams.TempPath / "DEFPREFIX";
+        ContainerParams.WindowsProgramPath              = "C:\\" + ContainerParams.PackageUID;
+        ContainerParams.WindowsProgramPathDoubleBackSlash = "C:\\\\" + ContainerParams.PackageUID;
+    }
+    else
+    {
+        ContainerParams.ProgramPath                     = ContainerParams.RuntimePath;
+    }
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ProgramPath: " << ContainerParams.ProgramPath << std::endl;
-
-    ContainerParams.DefPrefixPath                       = ContainerParams.TempPath / "DEFPREFIX";
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] DefPrefixPath: " << ContainerParams.DefPrefixPath << std::endl;
-
-    //Windows Paths (package-level, don't need subgame)
-    ContainerParams.WindowsProgramPath                  = "C:\\" + ContainerParams.PackageUID;
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPath: " << ContainerParams.WindowsProgramPath << std::endl;
-
-    ContainerParams.WindowsProgramPathDoubleBackSlash   = "C:\\\\" + ContainerParams.PackageUID;
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsProgramPathDoubleBackSlash: " << ContainerParams.WindowsProgramPathDoubleBackSlash << std::endl;
 
     //Subgame-specific paths and args — only valid when a subgame is specified
-    if (ContainerParams.subgame != 0)
+    if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        ContainerParams.ExePathRelative                 = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEPATH"]);
+        ContainerParams.ExePathRelative                 = std::filesystem::path(MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXEPATH"]);
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathRelative: " << ContainerParams.ExePathRelative << std::endl;
 
         ContainerParams.ExePathComplete                 = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathComplete: " << ContainerParams.ExePathComplete << std::endl;
 
-        ContainerParams.ExePathInPrefix                 = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathInPrefix: " << ContainerParams.ExePathInPrefix << std::endl;
-
-        ContainerParams.WindowsExePathComplete          = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
-        std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsExePathComplete: " << ContainerParams.WindowsExePathComplete << std::endl;
-
-        if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"].is_null()))
+        if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
         {
-            ContainerParams.WorkDirPathRelative         = std::filesystem::path(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["WORKDIR"]);
+            ContainerParams.ExePathInPrefix             = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
+            ContainerParams.WindowsExePathComplete      = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] ExePathInPrefix: " << ContainerParams.ExePathInPrefix << std::endl;
+            std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WindowsExePathComplete: " << ContainerParams.WindowsExePathComplete << std::endl;
+        }
+
+        auto &WorkDirField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["WORKDIR"];
+        if (!(WorkDirField.empty() || WorkDirField == "" || WorkDirField.is_null()))
+        {
+            ContainerParams.WorkDirPathRelative         = std::filesystem::path(WorkDirField);
             ContainerParams.WorkDirPathComplete         = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
         }
         else
@@ -252,12 +352,13 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         }
         std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << "[OUT] WorkDirPathComplete: " << ContainerParams.WorkDirPathComplete << std::endl;
 
-        if (!(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].empty() || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"] == "" || MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"].is_null()))
+        auto &ExeArgsField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXEARGS"];
+        if (!(ExeArgsField.empty() || ExeArgsField == "" || ExeArgsField.is_null()))
         {
-            std::string UnsplitExeArgs(MANIFESTJSON["SUBGAMES"][ContainerParams.subgame - 1]["EXEARGS"]);
+            std::string UnsplitExeArgs(ExeArgsField);
             ContainerWrapper::StringVariableSubstitution(UnsplitExeArgs, ContainerParams.GetVariablesMap());
             ContainerParams.ExeArgs = [](const std::string& s){std::vector<std::string> out;std::istringstream iss(s);for (std::string tok; std::getline(iss, tok, ' ');)out.push_back(tok);return out;}(UnsplitExeArgs);
-            for (int i = 0; i < ContainerParams.ExeArgs.size(); i++)
+            for (int i = 0; i < (int)ContainerParams.ExeArgs.size(); i++)
             {
                 std::cout << std::chrono::system_clock::now() << " ContainerWrapper::DeriveContainerParams: " << QString("[OUT] ExeArg %1: ").arg(i).toStdString() << ContainerParams.ExeArgs.at(i) << std::endl;
             }
@@ -525,9 +626,9 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
     ProcessEnvironment.insert("GAMEID", "0");
     ProcessEnvironment.remove("LD_LIBRARY_PATH");
 
-    int Merge32Complete = RunCommand("umu-run", {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
+    int Merge32Complete = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch32.reg. " << "EXIT CODE: " << Merge32Complete << std::endl;
-    int Merge64Complete = RunCommand("umu-run", {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
+    int Merge64Complete = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
     std::cout << std::chrono::system_clock::now() << " ContainerWrapper::MergeRegPatchFiles: " << "[OUT] Merged RegPatch64.reg. " << "EXIT CODE: " << Merge64Complete << std::endl;
     return true;
 }
@@ -546,7 +647,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     QProcess * RunProcess = new QProcess;
-    RunProcess->setProgram("umu-run");
+    RunProcess->setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
     RunProcess->setArguments({"wineboot"});
 
     //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
@@ -832,7 +933,19 @@ bool ContainerWrapper::ConfigWrite(std::string Key, std::string Value, std::file
 
 bool ContainerWrapper::Execute(std::string OverrideExe)
 {
-    std::string FinalExe = OverrideExe.empty() ? ContainerParams.ExePathInPrefix.string() : OverrideExe;
+    std::string FinalExe;
+    if (!OverrideExe.empty())
+    {
+        FinalExe = OverrideExe;
+    }
+    else if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        FinalExe = ContainerParams.ExePathInPrefix.string();
+    }
+    else
+    {
+        FinalExe = ContainerParams.ExePathComplete.string();
+    }
 
     if (FinalExe.empty())
     {
@@ -840,19 +953,28 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         return false;
     }
 
-    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[OUT] Executing with umu-launcher: " << FinalExe << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] ExeArgs: " << std::accumulate(ContainerParams.ExeArgs.begin(), ContainerParams.ExeArgs.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WinePrefix: " << ContainerParams.RuntimePath << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[OUT] Runner: " << ContainerParams.RunnerExecutable << std::endl;
+    std::cout << std::chrono::system_clock::now() << " ContainerWrapper::Execute: " << "[OUT] Executing: " << FinalExe << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] WorkDirPath: " << ContainerParams.WorkDirPathComplete << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] UMUID: " << ContainerParams.UMUID << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " ContainerWrapper::Execute: " << "[OUT] DllOverrides: " << std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;}) << std::endl;
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.RuntimePath));
-    RunProcessEnvironment.remove("LD_LIBRARY_PATH");                                                                                                    //NEEDED FOR APPIMAGE COMPATIBILITY
-    RunProcessEnvironment.insert("GAMEID", QString::fromStdString(ContainerParams.UMUID));
-    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");\
-    if (!ContainerParams.DLLOverrides.empty())
+
+    // Apply runner-level env removes first
+    for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
+    {
+        RunProcessEnvironment.remove(QString::fromStdString(Key));
+    }
+
+    // Apply runner ENV with template substitution
+    for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
+    {
+        std::string ExpandedValue = Value.get<std::string>();
+        ContainerWrapper::StringVariableSubstitution(ExpandedValue, ContainerParams.GetVariablesMap());
+        RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(ExpandedValue));
+    }
+
+    // Wine-specific: WINEDLLOVERRIDES
+    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine && !ContainerParams.DLLOverrides.empty())
     {
         RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
     }
@@ -865,16 +987,33 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
 
     QProcess RunProcess;
-    RunProcess.setProgram("umu-run");
+    RunProcess.setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
     RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
 
+    // For emulator/native runners: prepend RunnerArgs (template-expanded), then exe
+    // For wine runners: exe first, then ExeArgs
     QStringList Arguments;
-    Arguments.append(QString::fromStdString(FinalExe));
-    if (OverrideExe.empty() && !ContainerParams.ExeArgs.empty())
+    if (ContainerParams.RunnerTypeEnum != RunnerType::Wine)
     {
-        for (std::string Arg : ContainerParams.ExeArgs)
+        for (std::string Arg : ContainerParams.RunnerArgs)
         {
+            ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
             Arguments.append(QString::fromStdString(Arg));
+        }
+        if (!FinalExe.empty())
+        {
+            Arguments.append(QString::fromStdString(FinalExe));
+        }
+    }
+    else
+    {
+        Arguments.append(QString::fromStdString(FinalExe));
+        if (OverrideExe.empty() && !ContainerParams.ExeArgs.empty())
+        {
+            for (std::string Arg : ContainerParams.ExeArgs)
+            {
+                Arguments.append(QString::fromStdString(Arg));
+            }
         }
     }
     RunProcess.setArguments(Arguments);

@@ -26,8 +26,8 @@ struct LaunchParameters
     bool RunningInPackageDir = false;
     bool HasHeadlessPackagePath = false;
     std::filesystem::path HeadlessPackagePath;
-    int HeadlessSubgame = 1;
-    int HeadlessComponent = 0;
+    std::string HeadlessSubgameID;
+    std::string HeadlessComponentID;
 };
 
 int main(int argc, char *argv[]);

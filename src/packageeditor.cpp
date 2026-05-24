@@ -45,6 +45,7 @@ bool PackageEditor::InitMANIFESTJSON()
 void PackageEditor::on_AddSubGameButton_clicked()
 {
     json NewSubGameObject;
+    NewSubGameObject["SUBGAMEID"] = nullptr;
     for (auto Item : (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"].items())
     {
         if (!(Item.key() == "PARENTPACKAGE"))
@@ -59,7 +60,7 @@ void PackageEditor::on_AddSubGameButton_clicked()
 
 void PackageEditor::on_AddComponentButton_clicked()
 {
-    (*MANIFESTJSON)[json::json_pointer("/COMPONENTS")].push_back(json::object({{"NAME", nullptr}}));
+    (*MANIFESTJSON)[json::json_pointer("/COMPONENTS")].push_back(json::object({{"COMPONENTID", nullptr}, {"NAME", nullptr}, {"SUBCOMPONENTS", json::array()}}));
     RefreshJSONView();
 
     QWidget * NewTabWidget = new QWidget(this);
@@ -215,11 +216,18 @@ bool PackageEditor::BuildUI()
         ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
 
     //INDIVIDUAL COMPONENTS TABS
-    for (int i = 0; i < (*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); i++)
+    for (int i = 0; i < (int)(*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); i++)
     {
+        // Resolve COMPONENTID string for this component
+        std::string ComponentIDStr;
+        auto &CIDField = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["COMPONENTID"];
+        if (!CIDField.is_null() && CIDField.is_string())
+            ComponentIDStr = std::string(CIDField);
+
         QWidget * ComponentTabWidget = new QWidget(ui->PackageEditorTabWidget);
         ComponentTabWidget->setProperty("JSONPath", QString("/COMPONENTS/%1").arg(QString::number(i)));
         ComponentTabWidget->setProperty("Index", i);
+        ComponentTabWidget->setProperty("ComponentID", QString::fromStdString(ComponentIDStr));
         QVBoxLayout * ComponentTabWidgetLayout = new QVBoxLayout(ComponentTabWidget);
         ComponentTabWidget->setLayout(ComponentTabWidgetLayout);
 
@@ -227,6 +235,14 @@ bool PackageEditor::BuildUI()
             ComponentTabWidgetLayout->addWidget(ComponentNameGroupBox);
             QFormLayout * ComponentNameGroupBoxLayout = new QFormLayout(ComponentNameGroupBox);
             ComponentNameGroupBox->setLayout(ComponentNameGroupBoxLayout);
+
+                QLineEdit * ComponentIDField = new QLineEdit(ComponentNameGroupBox);
+                QString ComponentIDFieldJSONPath = QString("/COMPONENTS/%1/COMPONENTID").arg(QString::number(i));
+                ComponentIDField->setProperty("JSONPath", ComponentIDFieldJSONPath);
+                if (!CIDField.is_null())
+                    ComponentIDField->setText(QString::fromStdString(ComponentIDStr));
+                QObject::connect(ComponentIDField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                ComponentNameGroupBoxLayout->addRow("COMPONENTID", ComponentIDField);
 
                 QLineEdit * ComponentNameField = new QLineEdit(ComponentNameGroupBox);
                 QString ComponentNameFieldJSONPath = QString("/COMPONENTS/%1/NAME").arg(QString::number(i));
@@ -247,18 +263,31 @@ bool PackageEditor::BuildUI()
                 ParentComponentPickerLabel->setText("Parent Component:");
                 SubComponentsToolbarLayout->addWidget(ParentComponentPickerLabel);
 
-                QComboBox * ParentComponentPicker = new QComboBox(ComponentTabWidget);
-                ParentComponentPicker->addItem("None");
-                for (int j = 1; j <= i; j++)
-                {
-                    ParentComponentPicker->addItem(QString::number(j));
-                }
                 QString ParentComponentJSONPath = QString("/COMPONENTS/%1/PARENTCOMPONENT").arg(QString::number(i));
                 nlohmann::ordered_json::json_pointer ParentComponentJSONPointer(ParentComponentJSONPath.toStdString());
+
+                QComboBox * ParentComponentPicker = new QComboBox(ComponentTabWidget);
+                ParentComponentPicker->addItem("None");
+                for (int j = 0; j < i; j++)
+                {
+                    std::string ParentCIDStr;
+                    auto &ParentCIDField = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][j]["COMPONENTID"];
+                    if (!ParentCIDField.is_null() && ParentCIDField.is_string())
+                        ParentCIDStr = std::string(ParentCIDField);
+                    ParentComponentPicker->addItem(QString::fromStdString(ParentCIDStr.empty() ? ("Component " + std::to_string(j + 1)) : ParentCIDStr));
+                }
                 ParentComponentPicker->setProperty("JSONPath", ParentComponentJSONPath);
                 if(!(*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer].is_null())
                 {
-                    ParentComponentPicker->setCurrentIndex(QString::fromStdString((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]).toInt());
+                    std::string CurrentParentID = std::string((*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer]);
+                    for (int k = 1; k < ParentComponentPicker->count(); k++)
+                    {
+                        if (ParentComponentPicker->itemText(k).toStdString() == CurrentParentID)
+                        {
+                            ParentComponentPicker->setCurrentIndex(k);
+                            break;
+                        }
+                    }
                 }
                 QObject::connect(ParentComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
                 SubComponentsToolbarLayout->addWidget(ParentComponentPicker);
@@ -289,15 +318,13 @@ bool PackageEditor::BuildUI()
                 QPushButton * AnalyzeButton = new QPushButton("Analyze Registry", ComponentTabWidget);
                 SubComponentsToolbarLayout->addWidget(AnalyzeButton);
                 QObject::connect(AnalyzeButton, &QPushButton::clicked, this,
-                [this, i, ParentComponentJSONPointer]
+                [this, ParentComponentJSONPointer, ComponentIDStr]
                 {
+                    std::string oldcomponent_id;
                     auto &ParentVal = (*PackageEditor::MANIFESTJSON)[ParentComponentJSONPointer];
-                    int oldcomponent = 0;
                     if (!ParentVal.is_null() && ParentVal.is_string())
-                    {
-                        oldcomponent = QString::fromStdString(ParentVal).toInt();
-                    }
-                    this->CompareComponentsRegistry(oldcomponent, i + 1);
+                        oldcomponent_id = std::string(ParentVal);
+                    this->CompareComponentsRegistry(oldcomponent_id, ComponentIDStr);
                 });
 
                 QPushButton * AddFileLayerButton = new QPushButton(ComponentTabWidget);
@@ -458,12 +485,12 @@ void PackageEditor::JSONQTextEditChanged()
 void PackageEditor::ParentComponentChanged()
 {
     QComboBox * ParentComponentPicker = qobject_cast<QComboBox *>(QObject::sender());
-    QString Index = QString::number(ParentComponentPicker->currentIndex());
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED!" << ParentComponentPicker->currentIndex() << ParentComponentPicker->currentText().toStdString() << std::endl;
+    std::string SelectedID = ParentComponentPicker->currentIndex() == 0 ? "" : ParentComponentPicker->currentText().toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED! SelectedID: " << SelectedID << std::endl;
 
     nlohmann::ordered_json::json_pointer JSONPointer(ParentComponentPicker->property("JSONPath").toString().toStdString());
-    (*PackageEditor::MANIFESTJSON)[JSONPointer] = Index.toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] JSON value:" << ParentComponentPicker->currentIndex() << "Submitted to:" << ParentComponentPicker->property("JSONPath").toString().toStdString() << std::endl;
+    (*PackageEditor::MANIFESTJSON)[JSONPointer] = SelectedID;
+    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Submitted PARENTCOMPONENT: " << SelectedID << " to: " << ParentComponentPicker->property("JSONPath").toString().toStdString() << std::endl;
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
@@ -501,13 +528,13 @@ void PackageEditor::RemoveComponent()
 void PackageEditor::RunExeInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    int componentIndex = Button->parentWidget()->property("Index").toInt();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RunExeInComponent: " << "[OUT] Running EXE in component " << componentIndex + 1 << std::endl;
+    std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RunExeInComponent: " << "[OUT] Running EXE in component " << ComponentID << std::endl;
 
     QString SelectedExe = QFileDialog::getOpenFileName(this, "Select executable");
     if (SelectedExe.isEmpty()) return;
 
-    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
     Container.Cleanup();
     Container.BuildContainerRuntime();
@@ -518,10 +545,10 @@ void PackageEditor::RunExeInComponent()
 void PackageEditor::BrowseInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    int componentIndex = Button->parentWidget()->property("Index").toInt();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::BrowseInComponent: " << "[OUT] Browsing in component " << componentIndex + 1 << std::endl;
+    std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::BrowseInComponent: " << "[OUT] Browsing in component " << ComponentID << std::endl;
 
-    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
     Container.Cleanup();
     Container.BuildContainerRuntime();
@@ -532,10 +559,10 @@ void PackageEditor::BrowseInComponent()
 void PackageEditor::RegeditInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    int componentIndex = Button->parentWidget()->property("Index").toInt();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RegeditInComponent: " << "[OUT] Editing registry in component " << componentIndex + 1 << std::endl;
+    std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RegeditInComponent: " << "[OUT] Editing registry in component " << ComponentID << std::endl;
 
-    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
     Container.Cleanup();
     Container.BuildContainerRuntime();
@@ -546,10 +573,10 @@ void PackageEditor::RegeditInComponent()
 void PackageEditor::ExecuteComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    int componentIndex = Button->parentWidget()->property("Index").toInt();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::ExecuteComponent: " << "[OUT] Executing component " << componentIndex + 1 << std::endl;
+    std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::ExecuteComponent: " << "[OUT] Executing component " << ComponentID << std::endl;
 
-    ContainerParams Params(PackageDir->path().toStdString(), 0, componentIndex + 1);
+    ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
     Container.Cleanup();
     Container.BuildContainerRuntime();
@@ -562,15 +589,15 @@ void PackageEditor::AnalyzeComponent()
     // Not yet implemented
 }
 
-void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int newcomponent)
+void PackageEditor::CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id)
 {
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparing component " << newcomponent << " against " << oldcomponent << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparing component " << newcomponent_id << " against " << oldcomponent_id << std::endl;
 
     std::filesystem::path PackagePath = PackageDir->path().toStdString();
 
     // Build the comparator — the baseline state of oldcomponent (or bare defprefix if 0) in readonly mode.
     // Custom TempPath/RuntimePath so it doesn't collide with the normal RUNTIME/TEMP.
-    ContainerParams ComparatorParams(PackagePath, 0, oldcomponent);
+    ContainerParams ComparatorParams(PackagePath, "", oldcomponent_id);
     ContainerWrapper ComparatorContainer(*GlobalConfigJSON, *MANIFESTJSON, ComparatorParams);
     ComparatorContainer.ContainerParams.TempPath       = PackagePath / "COMPARATOR_TEMP";
     ComparatorContainer.ContainerParams.DefPrefixPath  = PackagePath / "COMPARATOR_TEMP" / "DEFPREFIX";
@@ -602,12 +629,12 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
     if (!SysDeltaJSON.is_null())
     {
         nlohmann::ordered_json SysDelta = RegDeltaToSubComponentArray(SysDeltaJSON, "HKLM");
-        MergeRegistryDeltaInComponent(&SysDelta, newcomponent);
+        MergeRegistryDeltaInComponent(&SysDelta, newcomponent_id);
     }
     if (!UserDeltaJSON.is_null())
     {
         nlohmann::ordered_json UserDelta = RegDeltaToSubComponentArray(UserDeltaJSON, "HKCU");
-        MergeRegistryDeltaInComponent(&UserDelta, newcomponent);
+        MergeRegistryDeltaInComponent(&UserDelta, newcomponent_id);
     }
 
     PackageEditor::SaveManifestJSON();
@@ -616,17 +643,20 @@ void PackageEditor::CompareComponentsRegistry(const int oldcomponent, const int 
 }
 
 //CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!
-void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json *DeltaSubComponentArray, const int targetcomponent)
+void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json *DeltaSubComponentArray, const std::string &targetcomponent_id)
 {
+    int targetcomponentIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, targetcomponent_id);
+    if (targetcomponentIdx == -1) return;
+
     // Iterate through all new subcomponents
-    for (int i = 0; i < DeltaSubComponentArray->size(); i++)
+    for (int i = 0; i < (int)DeltaSubComponentArray->size(); i++)
     {
         bool merged = false; // flag to track if the subcomponent was merged
 
         auto &deltaSub = (*DeltaSubComponentArray)[i];
-        auto &targetSubComponents = (*MANIFESTJSON)["COMPONENTS"][targetcomponent - 1]["SUBCOMPONENTS"];
+        auto &targetSubComponents = (*MANIFESTJSON)["COMPONENTS"][targetcomponentIdx]["SUBCOMPONENTS"];
 
-        for (int j = 0; j < targetSubComponents.size(); j++)
+        for (int j = 0; j < (int)targetSubComponents.size(); j++)
         {
             auto &existingSub = targetSubComponents[j];
 
@@ -854,7 +884,7 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
 void PackageEditor::AddFileLayer()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Adding DirLayer in component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Adding DirLayer in component" << Button->parentWidget()->property("ComponentID").toString().toStdString() << std::endl;
 
     QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
     QString SelectedProgramDir = QFileDialog::getExistingDirectory(this, "Select ProgramDir", UserDataPath);

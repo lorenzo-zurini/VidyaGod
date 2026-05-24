@@ -35,7 +35,7 @@ class LibraryGameCard : public QWidget
 {
     Q_OBJECT
 public:
-    explicit LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, int PassedSubGame, QWidget * parent);
+    explicit LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent);
 
 
     void InitializeClassVariables();
@@ -56,7 +56,7 @@ private:
     QString GameTitle;
 
     int Game;
-    int SubGame;
+    std::string SubgameID;
 
     QPixmap * CoverPixmap;
     QLabel * CoverLabel;

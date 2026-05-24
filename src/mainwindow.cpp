@@ -99,9 +99,20 @@ void MainWindow::BuildLibraryGameCards()
     LibraryGameCards->clear();
     for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
     {
-        for (int j = 0; j < (*GlobalConfigJSON)["LIBRARY"][i]["SUBGAMES"].size(); j++)
+        std::string PackagePath = (*GlobalConfigJSON)["LIBRARY"][i]["PATH"];
+        nlohmann::ordered_json PackageManifest;
+        QFile ManifestFile(QString::fromStdString(PackagePath + "/METADATA/MANIFEST.json"));
+        if (JSONOps::LoadJSON(&ManifestFile, &PackageManifest))
         {
-            LibraryGameCard * NewGameCard = new LibraryGameCard(GlobalConfigJSON, i, j + 1, nullptr);
+            std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Could not load MANIFEST for " << PackagePath << ", skipping." << std::endl;
+            continue;
+        }
+
+        for (int j = 0; j < (int)PackageManifest["SUBGAMES"].size(); j++)
+        {
+            std::string SubgameID = PackageManifest["SUBGAMES"][j].contains("SUBGAMEID") && !PackageManifest["SUBGAMES"][j]["SUBGAMEID"].is_null()
+                                    ? std::string(PackageManifest["SUBGAMES"][j]["SUBGAMEID"]) : "";
+            LibraryGameCard * NewGameCard = new LibraryGameCard(GlobalConfigJSON, i, SubgameID, nullptr);
             NewGameCard->InitializeClassVariables();
             LibraryGameCards->append(NewGameCard);
         }
@@ -219,8 +230,12 @@ void MainWindow::on_AddGameButton_clicked()
         }
     }
 
-    (*MANIFESTJSON)["PACKAGEPATH"] = PackageDir->path().toStdString();
-    (*GlobalConfigJSON)["LIBRARY"].push_back(*MANIFESTJSON);
+    nlohmann::ordered_json SlimEntry;
+    SlimEntry["PACKAGEUID"]     = (*MANIFESTJSON)["PACKAGEUID"];
+    SlimEntry["PACKAGENAME"]    = (*MANIFESTJSON)["PACKAGENAME"];
+    SlimEntry["PACKAGEVERSION"] = (*MANIFESTJSON)["PACKAGEVERSION"];
+    SlimEntry["PATH"]           = PackageDir->path().toStdString();
+    (*GlobalConfigJSON)["LIBRARY"].push_back(SlimEntry);
     MainWindow::SaveGlobalConfigJSON();
 
     delete PackageDir;
@@ -243,8 +258,8 @@ void MainWindow::MainWindowGridSizeChanged()
     BuildLibraryDynamicUI();
 }
 
-LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, int PassedSubGame, QWidget * parent)
-    : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubGame(PassedSubGame), QWidget(parent)
+LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent)
+    : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubgameID(PassedSubgameID), QWidget(parent)
 {   
     LibraryGameCardLayout = new QVBoxLayout(this);
     //this->setFlat(true);
@@ -282,17 +297,28 @@ LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON
 
 void LibraryGameCard::InitializeClassVariables()
 {
-    this->MANIFESTJSON = new nlohmann::ordered_json((*GlobalConfigJSON)["LIBRARY"][Game]);
-    this->PackagePath = std::filesystem::path((*MANIFESTJSON)["PACKAGEPATH"]);
-    this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["TITLE"]);
-    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubGame - 1]["COVER"]))));
+    this->PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
+
+    this->MANIFESTJSON = new nlohmann::ordered_json;
+    QFile ManifestFile(QString::fromStdString(this->PackagePath.string() + "/METADATA/MANIFEST.json"));
+    if (JSONOps::LoadJSON(&ManifestFile, this->MANIFESTJSON))
+    {
+        std::cout << QTime::currentTime().toString().toStdString() << "LibraryGameCard:" << "[ERR] Could not load MANIFEST from " << this->PackagePath << std::endl;
+        return;
+    }
+
+    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
+    if (SubgameIdx == -1) return;
+    this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]);
+    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"]))));
 }
 
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"] << std::endl;
+    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
+    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID) << std::endl;
 
-    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubGame);
+    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID);
     class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
     NewContainerWrapper.BuildContainerRuntime();
     NewContainerWrapper.Execute();

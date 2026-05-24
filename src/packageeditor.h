@@ -72,8 +72,8 @@ private:
     void SavePackage();
     void RefreshJSONView();
     void InitPackage();
-    void CompareComponentsRegistry(const int oldcomponent, const int newcomponent);
-    void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const int targetcomponent);
+    void CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id);
+    void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
     bool SaveManifestJSON();
 

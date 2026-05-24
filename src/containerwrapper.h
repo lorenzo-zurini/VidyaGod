@@ -19,10 +19,12 @@
 #include <QScreen>
 #include <QProcess>
 
+enum class RunnerType { Wine, Emulator, Native };
+
 struct ContainerParams
 {
 public:
-    ContainerParams(std::filesystem::path Passed_PackagePath, int Passed_subgame = 0, int Passed_component = 0);
+    ContainerParams(std::filesystem::path Passed_PackagePath, std::string Passed_subgame_id = "", std::string Passed_component_id = "");
 
     //Container params:
     //Package-specific:
@@ -33,12 +35,21 @@ public:
     //(Sub)game specific:
     std::string GameName;
     std::string UMUID;
-    std::vector<int> Recipe;
+    std::string Platform;
+    std::vector<std::string> Recipe;
     nlohmann::ordered_json SubComponentsArray;
 
+    //Runner config (resolved from GlobalConfig RUNNERS by platform):
+    std::string RunnerName;
+    std::string RunnerExecutable;
+    RunnerType RunnerTypeEnum = RunnerType::Wine;
+    nlohmann::ordered_json RunnerEnv;
+    std::vector<std::string> RunnerRemoveEnv;
+    std::vector<std::string> RunnerArgs;
+
     //Flags
-    int subgame;                                                    //PASSED
-    int component;                                                  //PASSED
+    std::string subgame_id;                                         //PASSED
+    std::string component_id;                                       //PASSED
     bool ReadOnlyVFS = false;                                       //SET
 
     //System Variables
@@ -65,8 +76,8 @@ public:
     std::filesystem::path WorkDirPathComplete;
 
     //Wine / Proton specific:
-    std::vector<std::string> ExeArgs;                               //DERIVED FORM MANIFESTJSON
-    std::vector<std::string> DLLOverrides;                          //DERIVED FORM MANIFESTJSON
+    std::vector<std::string> ExeArgs;                               //DERIVED FROM MANIFESTJSON
+    std::vector<std::string> DLLOverrides;                          //DERIVED FROM MANIFESTJSON
 
     //REGISTRYWRAPPER CLASS
     nlohmann::ordered_json FlatRegPatch;
@@ -88,11 +99,15 @@ public:
     bool Execute(std::string OverrideExe = "");
     bool Cleanup();
 
+    //ID lookup helpers:
+    static int FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
+    static int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID);
+
     //Container initialization:
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-    static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
 
     //Filesystem management:
     static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams);

@@ -6,8 +6,8 @@ int main(int argc, char *argv[])
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
     std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running VidyaGod in " << LaunchParameters.CurrentPath << std::endl;
     std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless PackagePath: " << LaunchParameters.HeadlessPackagePath << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless Subgame: " << LaunchParameters.HeadlessSubgame << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless Component: " << LaunchParameters.HeadlessComponent << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless SubgameID: " << LaunchParameters.HeadlessSubgameID << std::endl;
+    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless ComponentID: " << LaunchParameters.HeadlessComponentID << std::endl;
 
     //Check if dependencies exist in the system
     CheckExecutableDependencies();
@@ -51,7 +51,7 @@ int main(int argc, char *argv[])
         }
 
 
-        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgame);
+        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         NewContainerWrapper.BuildContainerRuntime();
         NewContainerWrapper.Execute();
@@ -111,7 +111,6 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     {
         std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Config flie not deteced. Creating... " << std::endl;
 
-        //nlohmann::ordered_json NewGlobalConfigJSON = nlohmann::ordered_json::object();
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TITLE"]                     = "";
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PARENTPACKAGE"]             = 0;
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PLATFORM"]                  = "";
@@ -145,13 +144,25 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["OTHERONLINEFEATURES"]       = false;
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["COMPONENT"]                 = 0;
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["VARIANTS"]                  = "";
+        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["RECOMMENDED_RUNNER"]        = "";
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["PRIMARY KEY"]                          = "GAMEUID";
         (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEUID"]               = 0;
         (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGENAME"]              = "";
         (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEVERSION"]           = "";
         (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PATH"]                     = "";
         (*GlobalConfigJSON)["Settings"]["LibraryGridSize"]                                      = 5;
-        (*GlobalConfigJSON)["Settings"]["ProtonPath"]                                           = "";
+
+        // Default runners per platform
+        nlohmann::ordered_json UmuProton;
+        UmuProton["NAME"]       = "umu-proton";
+        UmuProton["TYPE"]       = "wine";
+        UmuProton["EXECUTABLE"] = "umu-run";
+        UmuProton["ENV"]        = { {"WINEPREFIX", "{RuntimePath}"}, {"GAMEID", "{UMUID}"}, {"PROTON_VERB", "waitforexitandrun"} };
+        UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
+        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
+
+        (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
+        (*GlobalConfigJSON)["LIBRARY"]      = nlohmann::ordered_json::array();
 
         if (JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
         {
@@ -170,8 +181,58 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] GlobalConfigJSON initialized successfully:" << std::endl;
-        //std::cout << GlobalConfigJSON->dump() << std::endl;
+        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] GlobalConfigJSON initialized successfully." << std::endl;
+
+        // Add missing top-level sections to existing configs (forward migration)
+        if (!GlobalConfigJSON->contains("RUNNERS"))
+        {
+            nlohmann::ordered_json UmuProton;
+            UmuProton["NAME"]       = "umu-proton";
+            UmuProton["TYPE"]       = "wine";
+            UmuProton["EXECUTABLE"] = "umu-run";
+            UmuProton["ENV"]        = { {"WINEPREFIX", "{RuntimePath}"}, {"GAMEID", "{UMUID}"}, {"PROTON_VERB", "waitforexitandrun"} };
+            UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
+            (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
+            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added RUNNERS section." << std::endl;
+        }
+
+        if (!GlobalConfigJSON->contains("USERSETTINGS"))
+        {
+            (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
+            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added USERSETTINGS section." << std::endl;
+        }
+
+        // Migrate old LIBRARY format: entries with SUBGAMES embedded → slim {PACKAGEUID, PACKAGENAME, PACKAGEVERSION, PATH}
+        if (GlobalConfigJSON->contains("LIBRARY"))
+        {
+            bool NeedsMigration = false;
+            for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
+            {
+                if (Entry.contains("SUBGAMES"))
+                {
+                    NeedsMigration = true;
+                    break;
+                }
+            }
+
+            if (NeedsMigration)
+            {
+                nlohmann::ordered_json SlimLibrary = nlohmann::ordered_json::array();
+                for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
+                {
+                    nlohmann::ordered_json SlimEntry;
+                    SlimEntry["PACKAGEUID"]     = Entry["PACKAGEUID"];
+                    SlimEntry["PACKAGENAME"]    = Entry["PACKAGENAME"];
+                    SlimEntry["PACKAGEVERSION"] = Entry["PACKAGEVERSION"];
+                    SlimEntry["PATH"]           = Entry.contains("PACKAGEPATH") ? Entry["PACKAGEPATH"] : "";
+                    SlimLibrary.push_back(SlimEntry);
+                }
+                (*GlobalConfigJSON)["LIBRARY"] = SlimLibrary;
+                JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile);
+                std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: slimmed LIBRARY entries." << std::endl;
+            }
+        }
+
         return false; //Success
     }
 }
@@ -205,11 +266,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         }
         else if (arg == "--subgame" && i + 1 < argc)
         {
-            RuntimeParameters.HeadlessSubgame = std::stoi(argv[++i]);
+            RuntimeParameters.HeadlessSubgameID = argv[++i];
         }
         else if (arg == "--component" && i + 1 < argc)
         {
-            RuntimeParameters.HeadlessComponent = std::stoi(argv[++i]);
+            RuntimeParameters.HeadlessComponentID = argv[++i];
         }
     }
     return RuntimeParameters;
