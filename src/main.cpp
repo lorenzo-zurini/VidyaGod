@@ -161,6 +161,15 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
         (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
 
+        nlohmann::ordered_json Snes9x;
+        Snes9x["NAME"]       = "snes9x";
+        Snes9x["TYPE"]       = "emulator";
+        Snes9x["EXECUTABLE"] = "snes9x";
+        Snes9x["ENV"]        = nlohmann::ordered_json::object();
+        Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
+        Snes9x["ARGS"]       = nlohmann::ordered_json::array();
+        (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
+
         (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
         (*GlobalConfigJSON)["LIBRARY"]      = nlohmann::ordered_json::array();
 
@@ -193,7 +202,29 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
             UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
             UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
             (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
+
+            nlohmann::ordered_json Snes9x;
+            Snes9x["NAME"]       = "snes9x";
+            Snes9x["TYPE"]       = "emulator";
+            Snes9x["EXECUTABLE"] = "snes9x";
+            Snes9x["ENV"]        = nlohmann::ordered_json::object();
+            Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
+            Snes9x["ARGS"]       = nlohmann::ordered_json::array();
+            (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
             std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added RUNNERS section." << std::endl;
+        }
+
+        if (!(*GlobalConfigJSON)["RUNNERS"].contains("SNES"))
+        {
+            nlohmann::ordered_json Snes9x;
+            Snes9x["NAME"]       = "snes9x";
+            Snes9x["TYPE"]       = "emulator";
+            Snes9x["EXECUTABLE"] = "snes9x";
+            Snes9x["ENV"]        = nlohmann::ordered_json::object();
+            Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
+            Snes9x["ARGS"]       = nlohmann::ordered_json::array();
+            (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
+            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added SNES runner." << std::endl;
         }
 
         if (!GlobalConfigJSON->contains("USERSETTINGS"))
