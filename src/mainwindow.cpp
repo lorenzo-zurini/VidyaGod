@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
+#include "commonutils.h"
 
 #include "packageeditor.h"
 #include "jsonoperations.h"
@@ -104,7 +105,7 @@ void MainWindow::BuildLibraryGameCards()
         QFile ManifestFile(QString::fromStdString(PackagePath + "/METADATA/MANIFEST.json"));
         if (JSONOps::LoadJSON(&ManifestFile, &PackageManifest))
         {
-            std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Could not load MANIFEST for " << PackagePath << ", skipping." << std::endl;
+            LogErr("MainWindow", "Could not load MANIFEST for " + PackagePath + ", skipping.");
             continue;
         }
 
@@ -121,7 +122,7 @@ void MainWindow::BuildLibraryGameCards()
 
 void MainWindow::BuildLibraryDynamicUI()
 {
-    std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[OUT] Building LibraryDynamicUI" << std::endl;
+    LogOut("MainWindow", "Building LibraryDynamicUI");
     if (LibraryScrollArea->widget() != nullptr)
     {
         //Reparent all LibraryGameCards so they survive LibraryWidget being deleted.
@@ -146,7 +147,7 @@ void MainWindow::BuildLibraryDynamicUI()
 
     if (LibraryGameCards->empty())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] GameCard array is empty, aborting building LibraryDynamicUI" << std::endl;
+        LogErr("MainWindow", "GameCard array is empty, aborting building LibraryDynamicUI");
         return;
     }
 
@@ -207,7 +208,7 @@ void MainWindow::on_AddGameButton_clicked()
 
     if(!FSOps::CheckPackageValid(PackageDir))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Invalid package, aborting.." << std::endl;
+        LogErr("MainWindow", "Invalid package, aborting..");
         return;
     }
 
@@ -216,7 +217,7 @@ void MainWindow::on_AddGameButton_clicked()
     nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
     if(JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), MANIFESTJSON))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Parser returned nullptr." << std::endl;
+        LogErr("MainWindow", "Parser returned nullptr.");
         delete MANIFESTJSON;
         return;
     }
@@ -225,7 +226,7 @@ void MainWindow::on_AddGameButton_clicked()
     {
         if ((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"] == (*MANIFESTJSON)["PACKAGEUID"])
         {
-            std::cout << QTime::currentTime().toString().toStdString() << "MainWindow:" << "[ERR] Package already exists in library." << std::endl;
+            LogErr("MainWindow", "Package already exists in library.");
             return;
         }
     }
@@ -252,7 +253,7 @@ bool MainWindow::SaveGlobalConfigJSON()
 void MainWindow::MainWindowGridSizeChanged()
 {
     QSlider * Slider = qobject_cast<QSlider *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Set GridSize" << Slider->value() << std::endl;
+    LogOut("MainWindow", "Set GridSize " + std::to_string(Slider->value()));
     (*GlobalConfigJSON)["Settings"]["LibraryGridSize"] = Slider->value();
     MainWindow::SaveGlobalConfigJSON();
     BuildLibraryDynamicUI();
@@ -260,7 +261,7 @@ void MainWindow::MainWindowGridSizeChanged()
 
 LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent)
     : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubgameID(PassedSubgameID), QWidget(parent)
-{   
+{
     LibraryGameCardLayout = new QVBoxLayout(this);
     //this->setFlat(true);
     this->setLayout(LibraryGameCardLayout);
@@ -303,7 +304,7 @@ void LibraryGameCard::InitializeClassVariables()
     QFile ManifestFile(QString::fromStdString(this->PackagePath.string() + "/METADATA/MANIFEST.json"));
     if (JSONOps::LoadJSON(&ManifestFile, this->MANIFESTJSON))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "LibraryGameCard:" << "[ERR] Could not load MANIFEST from " << this->PackagePath << std::endl;
+        LogErr("LibraryGameCard", "Could not load MANIFEST from " + this->PackagePath.string());
         return;
     }
 
@@ -316,12 +317,22 @@ void LibraryGameCard::InitializeClassVariables()
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID) << std::endl;
+    LogOut("MainWindow", "Running game " + (SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID));
 
     struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID);
     class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
-    NewContainerWrapper.BuildContainerRuntime();
-    NewContainerWrapper.Execute();
+    if (!NewContainerWrapper.BuildContainerRuntime())
+    {
+        NewContainerWrapper.Cleanup();
+        QMessageBox::critical(nullptr, "Launch failed", "Failed to build container runtime.\nCheck that all components are defined and their zip files exist.");
+        return;
+    }
+    if (!NewContainerWrapper.Execute())
+    {
+        NewContainerWrapper.Cleanup();
+        QMessageBox::critical(nullptr, "Launch failed", "Failed to execute the game.\nCheck the runner configuration and file paths.");
+        return;
+    }
     QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
     NewContainerWrapper.Cleanup();
 

@@ -37,6 +37,9 @@ set(PROJECT_SOURCES
     src/containerwrapper.h
     src/containerwrapper.cpp
 
+    src/commonutils.h
+    src/commonutils.cpp
+
     translations/${TS_FILES}
 )
 

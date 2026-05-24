@@ -57,6 +57,7 @@ private slots:
     void JSONQLineEditChanged();
     void SaveJSONButtonPressed();
     void ParentComponentChanged();
+    void PlatformChanged();
     void RemoveSubgame();
     void RemoveComponent();
     void RunExeInComponent();
@@ -76,6 +77,7 @@ private:
     void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
     bool SaveManifestJSON();
+    std::string GetRunnerType(const std::string &platform);
 
     //int CurrentTab = 0;
     //bool initdone = false;

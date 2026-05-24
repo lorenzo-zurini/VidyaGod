@@ -19,7 +19,7 @@
 #include <QScreen>
 #include <QProcess>
 
-enum class RunnerType { Wine, Emulator, Native };
+enum class RunnerType { Wine, Emulator, Native, Custom };
 
 struct ContainerParams
 {
@@ -51,6 +51,7 @@ public:
     std::string subgame_id;                                         //PASSED
     std::string component_id;                                       //PASSED
     bool ReadOnlyVFS = false;                                       //SET
+    bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
     //System Variables
     std::string ScreenWidth;
@@ -96,6 +97,8 @@ public:
     struct ContainerParams ContainerParams;
 
     bool BuildContainerRuntime();
+    bool BuildWineRuntime();
+    bool BuildDataVFSRuntime();
     bool Execute(std::string OverrideExe = "");
     bool Cleanup();
 
@@ -110,7 +113,7 @@ public:
     static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
 
     //Filesystem management:
-    static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams);
+    static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams, bool WineMode = false);
     static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
     static bool AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath);
     static bool FinalizeVFSString(struct ContainerParams &ContainerParams);

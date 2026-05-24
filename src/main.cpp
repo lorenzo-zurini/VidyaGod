@@ -1,13 +1,14 @@
 #include "main.h"
+#include "commonutils.h"
 
 int main(int argc, char *argv[])
 {
     //Parse command line arguments and initialize RuntimeParameters struct.
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running VidyaGod in " << LaunchParameters.CurrentPath << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless PackagePath: " << LaunchParameters.HeadlessPackagePath << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless SubgameID: " << LaunchParameters.HeadlessSubgameID << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Headless ComponentID: " << LaunchParameters.HeadlessComponentID << std::endl;
+    LogOut("main.cpp", "Running VidyaGod in " + LaunchParameters.CurrentPath.string());
+    LogOut("main.cpp", "Headless PackagePath: " + LaunchParameters.HeadlessPackagePath.string());
+    LogOut("main.cpp", "Headless SubgameID: " + LaunchParameters.HeadlessSubgameID);
+    LogOut("main.cpp", "Headless ComponentID: " + LaunchParameters.HeadlessComponentID);
 
     //Check if dependencies exist in the system
     CheckExecutableDependencies();
@@ -16,7 +17,7 @@ int main(int argc, char *argv[])
     {
         //Detect ./METADATA/MANIFEST.json to detemine if running in packagedir.
         //Start in GUI-less mode if so.
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Checking if running in a PACKAGEDIR." << std::endl;
+        LogOut("main.cpp", "Checking if running in a PACKAGEDIR.");
         if(IsRunningInPackageDir(LaunchParameters.CurrentPath))
         {
             LaunchParameters.HasHeadlessPackagePath = true;
@@ -35,19 +36,19 @@ int main(int argc, char *argv[])
     nlohmann::ordered_json GlobalConfigJSON;// = new nlohmann::ordered_json();
     if (InitializeGlobalConfigJSON(&GlobalConfigJSON, &AppDataDir))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Fatal error. GlobalConfigJSON initialization failed, aborting." << std::endl;
+        LogErr("main.cpp", "Fatal error. GlobalConfigJSON initialization failed, aborting.");
         return 1;
     }
 
     //HEADLESS MODE:
     if(LaunchParameters.RunningHeadless)
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running package " << LaunchParameters.HeadlessPackagePath << " in HEADLESS mode." << std::endl;
+        LogOut("main.cpp", "Running package " + LaunchParameters.HeadlessPackagePath.string() + " in HEADLESS mode.");
         nlohmann::ordered_json MANIFESTJSON;// = new nlohmann::ordered_json;
         //CLEAN THIS CRAP BELOW
         if (JSONOps::LoadJSON(new QFile(QDir::cleanPath(QString::fromStdString(LaunchParameters.HeadlessPackagePath) + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), &MANIFESTJSON))
         {
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Fatal error. Paring MANIFESTJSON failed, aborting." << std::endl;
+            LogErr("main.cpp", "Fatal error. Paring MANIFESTJSON failed, aborting.");
         }
 
 
@@ -83,11 +84,11 @@ bool CheckExecutableDependencies()
         std::string Command = "which " + Binary + " > /dev/null 2>&1";
         if (std::system(Command.c_str()) == 0)
         {
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: [OUT] " << Binary << " found on the system." << std::endl;
+            LogOut("main.cpp", Binary + " found on the system.");
         }
         else
         {
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: [ERR] " << Binary << " NOT FOUND ON THE SYSTEM, VFS WILL NOT WORK." << std::endl;
+            LogErr("main.cpp", Binary + " NOT FOUND ON THE SYSTEM, VFS WILL NOT WORK.");
             MissingDependencies = MissingDependencies + Binary + " \n";
             error = 1;
         }
@@ -109,7 +110,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     QFile GlobalConfigFile(AppDataDir->filePath("GlobalConfig.JSON"));
     if (!GlobalConfigFile.exists())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Config flie not deteced. Creating... " << std::endl;
+        LogOut("main.cpp", "Config flie not deteced. Creating... ");
 
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TITLE"]                     = "";
         (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PARENTPACKAGE"]             = 0;
@@ -179,91 +180,18 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         }
         else
         {
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] DefaultConfig.JSON could not be initialised." << std::endl;
+            LogErr("main.cpp", "DefaultConfig.JSON could not be initialised.");
             return true; //fail
         }
     }
     else if (JSONOps::LoadJSON(&GlobalConfigFile, GlobalConfigJSON))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[ERR] Failed to parse GlobalConfig.JSON, aborting." << std::endl;
+        LogErr("main.cpp", "Failed to parse GlobalConfig.JSON, aborting.");
         return true; //Fail
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] GlobalConfigJSON initialized successfully." << std::endl;
-
-        // Add missing top-level sections to existing configs (forward migration)
-        if (!GlobalConfigJSON->contains("RUNNERS"))
-        {
-            nlohmann::ordered_json UmuProton;
-            UmuProton["NAME"]       = "umu-proton";
-            UmuProton["TYPE"]       = "wine";
-            UmuProton["EXECUTABLE"] = "umu-run";
-            UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
-            UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-            (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
-
-            nlohmann::ordered_json Snes9x;
-            Snes9x["NAME"]       = "snes9x";
-            Snes9x["TYPE"]       = "emulator";
-            Snes9x["EXECUTABLE"] = "snes9x";
-            Snes9x["ENV"]        = nlohmann::ordered_json::object();
-            Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
-            Snes9x["ARGS"]       = nlohmann::ordered_json::array();
-            (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added RUNNERS section." << std::endl;
-        }
-
-        if (!(*GlobalConfigJSON)["RUNNERS"].contains("SNES"))
-        {
-            nlohmann::ordered_json Snes9x;
-            Snes9x["NAME"]       = "snes9x";
-            Snes9x["TYPE"]       = "emulator";
-            Snes9x["EXECUTABLE"] = "snes9x";
-            Snes9x["ENV"]        = nlohmann::ordered_json::object();
-            Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
-            Snes9x["ARGS"]       = nlohmann::ordered_json::array();
-            (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added SNES runner." << std::endl;
-        }
-
-        if (!GlobalConfigJSON->contains("USERSETTINGS"))
-        {
-            (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
-            std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: added USERSETTINGS section." << std::endl;
-        }
-
-        // Migrate old LIBRARY format: entries with SUBGAMES embedded → slim {PACKAGEUID, PACKAGENAME, PACKAGEVERSION, PATH}
-        if (GlobalConfigJSON->contains("LIBRARY"))
-        {
-            bool NeedsMigration = false;
-            for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
-            {
-                if (Entry.contains("SUBGAMES"))
-                {
-                    NeedsMigration = true;
-                    break;
-                }
-            }
-
-            if (NeedsMigration)
-            {
-                nlohmann::ordered_json SlimLibrary = nlohmann::ordered_json::array();
-                for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
-                {
-                    nlohmann::ordered_json SlimEntry;
-                    SlimEntry["PACKAGEUID"]     = Entry["PACKAGEUID"];
-                    SlimEntry["PACKAGENAME"]    = Entry["PACKAGENAME"];
-                    SlimEntry["PACKAGEVERSION"] = Entry["PACKAGEVERSION"];
-                    SlimEntry["PATH"]           = Entry.contains("PACKAGEPATH") ? Entry["PACKAGEPATH"] : "";
-                    SlimLibrary.push_back(SlimEntry);
-                }
-                (*GlobalConfigJSON)["LIBRARY"] = SlimLibrary;
-                JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile);
-                std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Migrated: slimmed LIBRARY entries." << std::endl;
-            }
-        }
-
+        LogSucc("main.cpp", "GlobalConfigJSON initialized successfully.");
         return false; //Success
     }
 }
@@ -272,12 +200,12 @@ bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
 {
     if (FSOps::CheckPackageValid(new QDir(CurrentPath))) //Convert FSOPS to stdlib! Remove unnecessary heap variable!
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running in PACKAGEDIR, running headless." << std::endl;
+        LogOut("main.cpp", "Running in PACKAGEDIR, running headless.");
         return true;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << " main.cpp: " << "[OUT] Running outside PACKAGEDIR, launching GUI." << std::endl;
+        LogOut("main.cpp", "Running outside PACKAGEDIR, launching GUI.");
         return false;
     }
 }

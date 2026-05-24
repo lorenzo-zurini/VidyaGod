@@ -1,5 +1,6 @@
 #include "packageeditor.h"
 #include "ui_packageeditor.h"
+#include "commonutils.h"
 #include <iostream>
 
 using json = nlohmann::ordered_json;
@@ -46,13 +47,7 @@ void PackageEditor::on_AddSubGameButton_clicked()
 {
     json NewSubGameObject;
     NewSubGameObject["SUBGAMEID"] = nullptr;
-    for (auto Item : (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"].items())
-    {
-        if (!(Item.key() == "PARENTPACKAGE"))
-        {
-            NewSubGameObject[Item.key()] = nullptr;
-        }
-    }
+    NewSubGameObject["PLATFORM"]  = nullptr;
     (*MANIFESTJSON)[json::json_pointer("/SUBGAMES")].push_back(NewSubGameObject);
     BuildUI();
     RefreshJSONView();
@@ -73,11 +68,11 @@ void PackageEditor::on_SaveButton_clicked()
 {
     if (PackageEditor::SaveManifestJSON())
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Save successful." << std::endl;
+        LogSucc("PackageEditor", "Save successful.");
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[ERR] Save failed." << std::endl;
+        LogErr("PackageEditor", "Save failed.");
     }
 }
 
@@ -108,12 +103,12 @@ void PackageEditor::InitPackage()
     if(!JSONOps::LoadJSON(new QFile(MetadataDir->filePath("MANIFEST.json")), PackageEditor::MANIFESTJSON))
     {
         //ADD ERROR HANDLING HERE
-        std::cout << QTime::currentTime().toString().toStdString() << "packageeditor.cpp:" << "[OUT] ManifestJSON successfully parsed." << std::endl;
+        LogSucc("packageeditor.cpp", "ManifestJSON successfully parsed.");
         return;
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "packageeditor.cpp:" << "[ERR] Parser returned nullptr, leaving MANIFESTJSON empty." << std::endl;
+        LogErr("packageeditor.cpp", "Parser returned nullptr, leaving MANIFESTJSON empty.");
     }
 }
 
@@ -155,7 +150,7 @@ bool PackageEditor::BuildUI()
                 continue;
             }
 
-            std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Adding parameter editor:" << Item.key() << std::endl;
+            LogOut("PackageEditor", "Adding parameter editor: " + Item.key());
             QLineEdit * NewParamField = new QLineEdit(PackageDataGroupBox);
             QString JSONPath = QString::fromStdString(Item.key()).prepend("/");
             nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
@@ -169,53 +164,64 @@ bool PackageEditor::BuildUI()
             QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
             PackageDataGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
         }
-        std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Manifest tab done!" << std::endl;
+        LogOut("PackageEditor", "Manifest tab done!");
 
         //SUBGAMES TABS WIDGET
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
         ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
 
-        for (int i = 0; i < (int)(*PackageEditor::MANIFESTJSON)["SUBGAMES"].size(); i++)
+        static const std::vector<std::string> IdentityFields = {
+            "SUBGAMEID", "PLATFORM", "GAMEUID"
+        };
+        static const std::vector<std::string> MetadataFields = {
+            "TITLE", "TGDBID", "COVER",
+            "RELEASEDATE", "EDITION", "EDITIONDATE",
+            "DEVELOPER", "PUBLISHER",
+            "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
+            "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
+            "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
+        };
+        static const std::vector<std::string> WineExecFields = {
+            "COMPONENT", "EXEPATH", "EXEARGS", "WORKDIR",
+            "STEAMAPPID", "UMUID", "GOGPRODUCTID",
+            "EDITOR", "ONLINEDRM",
+            "VARIANTS", "RECOMMENDED_RUNNER"
+        };
+        static const std::vector<std::string> EmulatorExecFields = { "COMPONENT", "ROM" };
+        static const std::vector<std::string> NativeExecFields = {
+            "COMPONENT", "EXEPATH", "EXEARGS", "WORKDIR"
+        };
+        static const std::vector<std::string> CustomExecFields = {
+            "COMPONENT", "DATAPATH", "EXEARGS", "WORKDIR"
+        };
+
+        auto BuildSubgameFields = [&](QFormLayout *Layout, const std::vector<std::string> &Fields, int i, auto &SubgameRef, const std::string &CurrentPlatform)
         {
-            // Resolve SUBGAMEID for tab label and COMPONENT picker
-            std::string SubgameIDStr;
-            auto &SGIDField = (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i]["SUBGAMEID"];
-            if (!SGIDField.is_null() && SGIDField.is_string())
-                SubgameIDStr = std::string(SGIDField);
-
-            QWidget * SubGameTabWidget = new QWidget(SubGamesTabWidget);
-            SubGameTabWidget->setProperty("JSONPath", QString("/SUBGAMES/%1").arg(QString::number(i)));
-            SubGameTabWidget->setProperty("Index", i);
-            QVBoxLayout * SubGameTabLayout = new QVBoxLayout(SubGameTabWidget);
-            SubGameTabWidget->setLayout(SubGameTabLayout);
-
-            // Toolbar: Remove button
-            QHBoxLayout * SubGameToolbarLayout = new QHBoxLayout();
-            SubGameTabLayout->addLayout(SubGameToolbarLayout);
-            SubGameToolbarLayout->addStretch();
-            QPushButton * RemoveSubGameButton = new QPushButton("Remove Subgame", SubGameTabWidget);
-            SubGameToolbarLayout->addWidget(RemoveSubGameButton);
-            QObject::connect(RemoveSubGameButton, &QPushButton::clicked, this, &PackageEditor::RemoveSubgame);
-
-            QScrollArea * SubGameScrollArea = new QScrollArea(SubGameTabWidget);
-            SubGameScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-            SubGameScrollArea->setWidgetResizable(1);
-            SubGameTabLayout->addWidget(SubGameScrollArea);
-
-            QGroupBox * SubGameGroupBox = new QGroupBox(SubGameScrollArea);
-            SubGameScrollArea->setWidget(SubGameGroupBox);
-            QFormLayout * SubGameGroupBoxLayout = new QFormLayout(SubGameGroupBox);
-            SubGameGroupBox->setLayout(SubGameGroupBoxLayout);
-
-            for (auto Item : (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i].items())
+            for (const std::string &FieldKey : Fields)
             {
-                QString JSONPath = QString("/SUBGAMES/%1/%2").arg(QString::number(i)).arg(QString::fromStdString(Item.key()));
-                nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+                QString JSONPath = QString("/SUBGAMES/%1/%2").arg(i).arg(QString::fromStdString(FieldKey));
 
-                // COMPONENT gets a dropdown of available COMPONENTIDs
-                if (Item.key() == "COMPONENT")
+                if (FieldKey == "PLATFORM")
                 {
-                    QComboBox * ComponentPicker = new QComboBox(SubGameGroupBox);
+                    QComboBox * PlatformPicker = new QComboBox();
+                    PlatformPicker->addItem("(none)");
+                    if ((*GlobalConfigJSON).contains("RUNNERS"))
+                        for (auto &[PlatformKey, _] : (*GlobalConfigJSON)["RUNNERS"].items())
+                            PlatformPicker->addItem(QString::fromStdString(PlatformKey));
+                    PlatformPicker->setProperty("JSONPath", JSONPath);
+                    if (!CurrentPlatform.empty())
+                    {
+                        int idx = PlatformPicker->findText(QString::fromStdString(CurrentPlatform));
+                        if (idx >= 0) PlatformPicker->setCurrentIndex(idx);
+                    }
+                    QObject::connect(PlatformPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::PlatformChanged);
+                    Layout->addRow("PLATFORM", PlatformPicker);
+                    continue;
+                }
+
+                if (FieldKey == "COMPONENT")
+                {
+                    QComboBox * ComponentPicker = new QComboBox();
                     ComponentPicker->addItem("None");
                     for (int j = 0; j < (int)(*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); j++)
                     {
@@ -224,9 +230,9 @@ bool PackageEditor::BuildUI()
                         ComponentPicker->addItem(QString::fromStdString(CIDStr));
                     }
                     ComponentPicker->setProperty("JSONPath", JSONPath);
-                    if (!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
+                    if (SubgameRef.contains("COMPONENT") && !SubgameRef["COMPONENT"].is_null() && SubgameRef["COMPONENT"].is_string())
                     {
-                        std::string CurrentComponent = std::string((*PackageEditor::MANIFESTJSON)[JSONPointer]);
+                        std::string CurrentComponent = std::string(SubgameRef["COMPONENT"]);
                         for (int k = 1; k < ComponentPicker->count(); k++)
                         {
                             if (ComponentPicker->itemText(k).toStdString() == CurrentComponent)
@@ -237,17 +243,77 @@ bool PackageEditor::BuildUI()
                         }
                     }
                     QObject::connect(ComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
-                    SubGameGroupBoxLayout->addRow("COMPONENT", ComponentPicker);
+                    Layout->addRow("COMPONENT", ComponentPicker);
                     continue;
                 }
 
-                QLineEdit * NewParamField = new QLineEdit(SubGameGroupBox);
+                QLineEdit * NewParamField = new QLineEdit();
                 NewParamField->setProperty("JSONPath", JSONPath);
-                if (!(*PackageEditor::MANIFESTJSON)[JSONPointer].is_null())
-                    NewParamField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]));
+                if (SubgameRef.contains(FieldKey) && !SubgameRef[FieldKey].is_null())
+                {
+                    auto &Val = SubgameRef[FieldKey];
+                    NewParamField->setText(Val.is_string() ? QString::fromStdString(std::string(Val)) : QString::fromStdString(Val.dump()));
+                }
                 QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
-                SubGameGroupBoxLayout->addRow(QString::fromStdString(Item.key()), NewParamField);
+                Layout->addRow(QString::fromStdString(FieldKey), NewParamField);
             }
+        };
+
+        for (int i = 0; i < (int)(*PackageEditor::MANIFESTJSON)["SUBGAMES"].size(); i++)
+        {
+            auto &SubgameRef = (*PackageEditor::MANIFESTJSON)["SUBGAMES"][i];
+
+            std::string SubgameIDStr;
+            if (SubgameRef.contains("SUBGAMEID") && !SubgameRef["SUBGAMEID"].is_null() && SubgameRef["SUBGAMEID"].is_string())
+                SubgameIDStr = std::string(SubgameRef["SUBGAMEID"]);
+
+            std::string CurrentPlatform;
+            if (SubgameRef.contains("PLATFORM") && !SubgameRef["PLATFORM"].is_null() && SubgameRef["PLATFORM"].is_string())
+                CurrentPlatform = std::string(SubgameRef["PLATFORM"]);
+            std::string RunnerType = GetRunnerType(CurrentPlatform);
+
+            const std::vector<std::string> *ExecFields = &WineExecFields;
+            if      (RunnerType == "emulator") ExecFields = &EmulatorExecFields;
+            else if (RunnerType == "native")   ExecFields = &NativeExecFields;
+            else if (RunnerType == "custom")   ExecFields = &CustomExecFields;
+
+            QWidget * SubGameTabWidget = new QWidget(SubGamesTabWidget);
+            SubGameTabWidget->setProperty("JSONPath", QString("/SUBGAMES/%1").arg(i));
+            SubGameTabWidget->setProperty("Index", i);
+            QVBoxLayout * SubGameTabLayout = new QVBoxLayout(SubGameTabWidget);
+            SubGameTabWidget->setLayout(SubGameTabLayout);
+
+            QHBoxLayout * SubGameToolbarLayout = new QHBoxLayout();
+            SubGameTabLayout->addLayout(SubGameToolbarLayout);
+            SubGameToolbarLayout->addStretch();
+            QPushButton * RemoveSubGameButton = new QPushButton("Remove Subgame", SubGameTabWidget);
+            SubGameToolbarLayout->addWidget(RemoveSubGameButton);
+            QObject::connect(RemoveSubGameButton, &QPushButton::clicked, this, &PackageEditor::RemoveSubgame);
+
+            QScrollArea * SubGameScrollArea = new QScrollArea(SubGameTabWidget);
+            SubGameScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+            SubGameScrollArea->setWidgetResizable(true);
+            SubGameTabLayout->addWidget(SubGameScrollArea);
+
+            QWidget * SubGameScrollContents = new QWidget();
+            QVBoxLayout * SubGameScrollLayout = new QVBoxLayout(SubGameScrollContents);
+            SubGameScrollContents->setLayout(SubGameScrollLayout);
+            SubGameScrollArea->setWidget(SubGameScrollContents);
+
+            auto MakeSection = [&](const QString &Title, const std::vector<std::string> &Fields)
+            {
+                QGroupBox * Box = new QGroupBox(Title, SubGameScrollContents);
+                QFormLayout * Form = new QFormLayout(Box);
+                Box->setLayout(Form);
+                BuildSubgameFields(Form, Fields, i, SubgameRef, CurrentPlatform);
+                SubGameScrollLayout->addWidget(Box);
+            };
+
+            MakeSection("Identity",  IdentityFields);
+            if (!CurrentPlatform.empty())
+                MakeSection("Execution", *ExecFields);
+            MakeSection("Metadata",  MetadataFields);
+            SubGameScrollLayout->addStretch();
 
             QString TabLabel = SubgameIDStr.empty() ? QString("Subgame %1").arg(i + 1) : QString::fromStdString(SubgameIDStr);
             SubGamesTabWidget->addTab(SubGameTabWidget, TabLabel);
@@ -408,29 +474,14 @@ bool PackageEditor::BuildUI()
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TYPE:"), 0, 0);
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(SubComponentType), 0, 1);
 
-                if (SubComponentType == "ZipFileLayer")
+                if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer" || SubComponentType == "RawFile")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
                     QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
                     QString PathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/PATH").arg(i).arg(j);
                     PathField->setProperty("JSONPath", PathJSONPath);
                     if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"].is_null())
-                    {
                         PathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"]));
-                    }
-                    QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
-                    IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1);
-                }
-                else if (SubComponentType == "DirLayer")
-                {
-                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
-                    QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
-                    QString PathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/PATH").arg(i).arg(j);
-                    PathField->setProperty("JSONPath", PathJSONPath);
-                    if (!(*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"].is_null())
-                    {
-                        PathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"]));
-                    }
                     QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                     IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1);
                 }
@@ -483,7 +534,7 @@ bool PackageEditor::BuildUI()
                 }
                 else
                 {
-                    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << QString("[ERR] Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType).toStdString() << std::endl;
+                    LogErr("PackageEditor", QString("Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType).toStdString());
                     continue;
                 }
                 SubComponentsGroupBoxLayout->addWidget(IndividualSubComponentGroupBox);
@@ -500,43 +551,65 @@ void PackageEditor::JSONQLineEditChanged()
     QString String = Editor->text();
     nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = String.toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] JSON value:" << Editor->text().toStdString() << "Submitted to:" << Editor->property("JSONPath").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "JSON value: " + Editor->text().toStdString() + " Submitted to: " + Editor->property("JSONPath").toString().toStdString());
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
+
 void PackageEditor::JSONQTextEditChanged()
 {
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] JSON TEXT EDITOR CHANGED" << std::endl;
+    LogOut("PackageEditor", "JSON TEXT EDITOR CHANGED");
     if (nlohmann::ordered_json::accept(PackageEditor::JSONTextEdit->toPlainText().toUtf8()))
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Valid JSON!" << std::endl;
+        LogOut("PackageEditor", "Valid JSON!");
         PackageEditor::JSONTextEdit->setStyleSheet("");
         PackageEditor::SaveJSONButton->setDisabled(false);
     }
     else
     {
-        std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[ERR] Invalid JSON!" << std::endl;
+        LogErr("PackageEditor", "Invalid JSON!");
         PackageEditor::JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
         PackageEditor::SaveJSONButton->setDisabled(true);
     }
+}
+
+std::string PackageEditor::GetRunnerType(const std::string &platform)
+{
+    if (platform.empty()) return "wine";
+    if (!(*GlobalConfigJSON).contains("RUNNERS")) return "wine";
+    auto &runners = (*GlobalConfigJSON)["RUNNERS"];
+    if (runners.contains(platform) && !runners[platform].empty())
+        return runners[platform][0].value("TYPE", std::string("wine"));
+    return "wine";
+}
+
+void PackageEditor::PlatformChanged()
+{
+    QComboBox * PlatformPicker = qobject_cast<QComboBox *>(QObject::sender());
+    std::string SelectedPlatform = PlatformPicker->currentIndex() == 0 ? "" : PlatformPicker->currentText().toStdString();
+    nlohmann::ordered_json::json_pointer JSONPointer(PlatformPicker->property("JSONPath").toString().toStdString());
+    (*PackageEditor::MANIFESTJSON)[JSONPointer] = SelectedPlatform.empty() ? nlohmann::ordered_json(nullptr) : nlohmann::ordered_json(SelectedPlatform);
+    PackageEditor::SaveManifestJSON();
+    PackageEditor::BuildUI();
+    PackageEditor::RefreshJSONView();
 }
 
 void PackageEditor::ParentComponentChanged()
 {
     QComboBox * ParentComponentPicker = qobject_cast<QComboBox *>(QObject::sender());
     std::string SelectedID = ParentComponentPicker->currentIndex() == 0 ? "" : ParentComponentPicker->currentText().toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] PARENT COMPONENT CHANGED! SelectedID: " << SelectedID << std::endl;
+    LogOut("PackageEditor", "PARENT COMPONENT CHANGED! SelectedID: " + SelectedID);
 
     nlohmann::ordered_json::json_pointer JSONPointer(ParentComponentPicker->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON)[JSONPointer] = SelectedID;
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Submitted PARENTCOMPONENT: " << SelectedID << " to: " << ParentComponentPicker->property("JSONPath").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "Submitted PARENTCOMPONENT: " + SelectedID + " to: " + ParentComponentPicker->property("JSONPath").toString().toStdString());
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
 }
 
 void PackageEditor::SaveJSONButtonPressed()
 {
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] SAVE TRIGGERED!" << std::endl;
+    LogOut("PackageEditor", "SAVE TRIGGERED!");
     (*PackageEditor::MANIFESTJSON) = nlohmann::ordered_json::parse(PackageEditor::JSONTextEdit->toPlainText().toUtf8());
     PackageEditor::SaveManifestJSON();
     BuildUI();
@@ -546,18 +619,18 @@ void PackageEditor::RemoveSubgame()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * SubgameTabWidget = Button->parentWidget();
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] REMOVE SUBGAME" << SubgameTabWidget->property("JSONPath").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "REMOVE SUBGAME " + SubgameTabWidget->property("JSONPath").toString().toStdString());
 }
 
 void PackageEditor::RemoveComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * ComponentTabWidget = Button->parentWidget();
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] REMOVE COMPONENT" << ComponentTabWidget->property("JSONPath").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "REMOVE COMPONENT " + ComponentTabWidget->property("JSONPath").toString().toStdString());
 
     nlohmann::ordered_json::json_pointer JSONPointer(ComponentTabWidget->property("JSONPath").toString().toStdString());
     (*PackageEditor::MANIFESTJSON).at(JSONPointer.parent_pointer()).erase(ComponentTabWidget->property("Index").toInt());
-    std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[OUT] Deleted component:" << ComponentTabWidget->property("Index").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "Deleted component: " + ComponentTabWidget->property("Index").toString().toStdString());
     delete ComponentTabWidget;
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
@@ -568,7 +641,7 @@ void PackageEditor::RunExeInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RunExeInComponent: " << "[OUT] Running EXE in component " << ComponentID << std::endl;
+    LogOut("PackageEditor::RunExeInComponent", "Running EXE in component " + ComponentID);
 
     QString SelectedExe = QFileDialog::getOpenFileName(this, "Select executable");
     if (SelectedExe.isEmpty()) return;
@@ -585,7 +658,7 @@ void PackageEditor::BrowseInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::BrowseInComponent: " << "[OUT] Browsing in component " << ComponentID << std::endl;
+    LogOut("PackageEditor::BrowseInComponent", "Browsing in component " + ComponentID);
 
     ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
@@ -599,7 +672,7 @@ void PackageEditor::RegeditInComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::RegeditInComponent: " << "[OUT] Editing registry in component " << ComponentID << std::endl;
+    LogOut("PackageEditor::RegeditInComponent", "Editing registry in component " + ComponentID);
 
     ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
@@ -613,7 +686,7 @@ void PackageEditor::ExecuteComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::ExecuteComponent: " << "[OUT] Executing component " << ComponentID << std::endl;
+    LogOut("PackageEditor::ExecuteComponent", "Executing component " + ComponentID);
 
     ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
@@ -630,7 +703,7 @@ void PackageEditor::AnalyzeComponent()
 
 void PackageEditor::CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id)
 {
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparing component " << newcomponent_id << " against " << oldcomponent_id << std::endl;
+    LogOut("PackageEditor::CompareComponentsRegistry", "Comparing component " + newcomponent_id + " against " + oldcomponent_id);
 
     std::filesystem::path PackagePath = PackageDir->path().toStdString();
 
@@ -645,7 +718,7 @@ void PackageEditor::CompareComponentsRegistry(const std::string &oldcomponent_id
     ComparatorContainer.Cleanup();
     ComparatorContainer.BuildContainerRuntime();
 
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Comparator initialized." << std::endl;
+    LogOut("PackageEditor::CompareComponentsRegistry", "Comparator initialized.");
 
     // Read baseline registry from the mounted comparator VFS.
     std::filesystem::path ComparatorRuntime = ComparatorContainer.ContainerParams.RuntimePath;
@@ -659,11 +732,11 @@ void PackageEditor::CompareComponentsRegistry(const std::string &oldcomponent_id
     nlohmann::ordered_json NewSysRegJSON  = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((UserDataPath / "system.reg").string())));
     nlohmann::ordered_json NewUserRegJSON = PackageEditor::RegFileToJSON(QFile(QString::fromStdString((UserDataPath / "user.reg").string())));
 
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] Starting JSON diff." << std::endl;
+    LogOut("PackageEditor::CompareComponentsRegistry", "Starting JSON diff.");
     nlohmann::ordered_json SysDeltaJSON  = SubtractJSON(OldSysRegJSON,  NewSysRegJSON);
     nlohmann::ordered_json UserDeltaJSON = SubtractJSON(OldUserRegJSON, NewUserRegJSON);
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] SYSDELTA: "  << SysDeltaJSON.dump()  << std::endl;
-    std::cout << QTime::currentTime().toString().toStdString() << " PackageEditor::CompareComponentsRegistry: " << "[OUT] USERDELTA: " << UserDeltaJSON.dump() << std::endl;
+    LogOut("PackageEditor::CompareComponentsRegistry", "SYSDELTA: " + SysDeltaJSON.dump());
+    LogOut("PackageEditor::CompareComponentsRegistry", "USERDELTA: " + UserDeltaJSON.dump());
 
     if (!SysDeltaJSON.is_null())
     {
@@ -757,32 +830,6 @@ nlohmann::ordered_json PackageEditor::RegDeltaToSubComponentArray(nlohmann::orde
         }
         if (!REGPATH.isEmpty()) REGPATH.chop(1); // remove trailing backslash
 
-        //nlohmann::ordered_json KeyValueObject;
-        //QString VALUE = QString::fromStdString(Item.value());
-
-        //if (VALUE.startsWith("dword:"))
-        //{
-        //    KeyValueObject["TYPE"] = "REG_DWORD";
-        //    VALUE.remove(0, 6);
-        //    VALUE = QString::number(VALUE.toUInt(nullptr, 16));
-        //}
-        //else if (VALUE.startsWith("hex:"))
-        //{
-        //    KeyValueObject["TYPE"] = "REG_BINARY";
-        //    VALUE.remove(0, 4);
-        //}
-        //else if (VALUE.startsWith("hex(b):") || VALUE.startsWith("str(7):") || VALUE.startsWith("str(2):"))
-        //{
-        //    continue; // skip unsupported types
-        //}
-        //else
-        //{
-        //KeyValueObject["TYPE"] = "REG_SZ";
-        //VALUE.replace("\\\\", "\\");
-        //}
-
-        //KeyValueObject["VALUE"] = VALUE.toStdString();
-
         // Check if subcomponent with same REGPATH exists
         bool merged = false;
         for (auto &SubComponent : SubComponentArray)
@@ -816,14 +863,9 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
 
     for (int i = 0; i < DiffJSON.size(); i++)
     {
-        //All items in the DiffJSON are iterated over.
-        //The DeltaJSON is recreating by using the "path" as json pointers.
-        //qDebug() << "beforeif" << "i" << i;
-        //qDebug() << DiffJSON[i].dump();
         if((QString::fromStdString(DiffJSON[i]["op"]) == "add") || (QString::fromStdString(DiffJSON[i]["op"]) == "replace"))
         {
             QString KeyPath = QString::fromStdString(DiffJSON[i]["path"]);
-            //qDebug().noquote() << "KeyPath:" << KeyPath;
 
             //Ensure the DeltaJSON parent object is an object so that it doesn't get turned into an array by paths that end in numbers (HKLM/SOFTWARE/FOO/BAR/1234).
             if (!DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString()).parent_pointer()].is_object())
@@ -831,7 +873,6 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
                 DeltaJSON[nlohmann::ordered_json::json_pointer(KeyPath.toStdString()).parent_pointer()] = nlohmann::ordered_json::object();
             }
 
-            //Make this a switch!
             if (DiffJSON[i]["value"].is_object())
             {
                 for (auto ValueItem : DiffJSON[i]["value"].items())
@@ -845,11 +886,10 @@ nlohmann::ordered_json PackageEditor::SubtractJSON(nlohmann::ordered_json OldJSO
             }
             else
             {
-                std::cout << QTime::currentTime().toString().toStdString() << "PackageEditor:" << "[ERR] DiffJSON[i][\"value\"] is unknown type! Dump:" << DiffJSON[i]["value"].dump() << std::endl;
+                LogErr("PackageEditor", "DiffJSON[i][\"value\"] is unknown type! Dump: " + DiffJSON[i]["value"].dump());
             }
         }
     }
-    //qDebug() << "AFTERFOR";
     return DeltaJSON;
 }
 
@@ -877,12 +917,8 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
                 }
                 KeyPathString.append("/").append(KeyPathTokens[i]);
             }
-            ////qDebug().noquote() << "KEY:" << KeyPathString;
             nlohmann::ordered_json::json_pointer JSONPointer(KeyPathString.toStdString());
 
-            //The regex should match the entire contents of the key, including all subkeys.
-            //In order to account for multi-line keys (like hex values), the specific sequence "\\\n  " is removed, thus making them single line.
-            //Since all subkeys should now be single line, the entite match is then split by line to get the infividual key-value pairs.
             QStringList SubKeys(ExtractedKey.captured(2).remove("\\\n  ").split("\n"));
             for (int i = 0; i < SubKeys.size(); i++)
             {
@@ -923,7 +959,7 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
 void PackageEditor::AddFileLayer()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Adding DirLayer in component" << Button->parentWidget()->property("ComponentID").toString().toStdString() << std::endl;
+    LogOut("PackageEditor", "Adding DirLayer in component " + Button->parentWidget()->property("ComponentID").toString().toStdString());
 
     QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
     QString SelectedProgramDir = QFileDialog::getExistingDirectory(this, "Select ProgramDir", UserDataPath);
@@ -944,7 +980,7 @@ void PackageEditor::AddFileLayer()
 void PackageEditor::FinalizeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    std::cout << QTime::currentTime().toString().toStdString() << "[OUT] PackageEditor:" << "Finalizing component" << Button->parentWidget()->property("Index").toInt() + 1 << std::endl;
+    LogOut("PackageEditor", "Finalizing component " + std::to_string(Button->parentWidget()->property("Index").toInt() + 1));
 }
 
 QString PackageEditor::UnquoteString(QString InputString)
