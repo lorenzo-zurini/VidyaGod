@@ -63,6 +63,10 @@ public:
     bool ReadOnlyVFS = false;                                       //SET — if true, USERDATA is not prepended to VFSString
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
+    //Custom variables (from CustomVar subcomponents):
+    std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
+    std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
+
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
     std::string ScreenHeight;
@@ -144,8 +148,13 @@ public:
     //Walks the PARENTCOMPONENT chain from component_id up to the root component,
     //producing an ordered Recipe (ancestor-first).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    //Scans all CustomVar subcomponents in the Recipe and resolves their values.
+    //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
+    //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.
+    static bool ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
     //Collects all SUBCOMPONENTS from components in the Recipe into SubComponentsArray.
     //Performs %VARIABLE% substitution on each subcomponent's JSON at collection time.
+    //CustomVar subcomponents are skipped here — they are resolved by ResolveCustomVariables.
     static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Fills all derived ContainerParams fields from MANIFEST and GlobalConfigJSON.
     //Must run after DecideComponent so platform and subgame index are known.

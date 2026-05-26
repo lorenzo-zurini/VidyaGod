@@ -63,6 +63,8 @@ int main(int argc, char *argv[])
         //Construct the container, build its runtime (mounts, prefix, registry patches),
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
         struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
+        //Pass CLI variable overrides so ResolveCustomVariables can apply them at highest priority.
+        NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         NewContainerWrapper.BuildContainerRuntime();
         NewContainerWrapper.Execute();
@@ -248,9 +250,10 @@ bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
 
 //Parses argc/argv sequentially.
 //Recognized arguments:
-//  --package <path>    : path to the package to run headlessly
-//  --subgame <id>      : SUBGAMEID string from the package's MANIFEST.json
-//  --component <id>    : COMPONENTID override (bypasses subgame's default component)
+//  --package <path>      : path to the package to run headlessly
+//  --subgame <id>        : SUBGAMEID string from the package's MANIFEST.json
+//  --component <id>      : COMPONENTID override (bypasses subgame's default component)
+//  --var KEY=VALUE       : override a CustomVar variable; may be repeated for multiple vars
 //Unknown arguments are silently ignored.
 LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
 {
@@ -272,6 +275,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--component" && i + 1 < argc)
         {
             RuntimeParameters.HeadlessComponentID = argv[++i];
+        }
+        else if (arg == "--var" && i + 1 < argc)
+        {
+            //Expects KEY=VALUE format; silently skips malformed entries without '='.
+            std::string kv = argv[++i];
+            auto eq = kv.find('=');
+            if (eq != std::string::npos)
+                RuntimeParameters.VariableOverrides[kv.substr(0, eq)] = kv.substr(eq + 1);
         }
     }
     return RuntimeParameters;

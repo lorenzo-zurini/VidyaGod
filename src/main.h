@@ -8,6 +8,7 @@
 #include <iostream>
 #include <fstream>
 #include <list>
+#include <map>
 
 #include <QCommandLineParser>
 #include <QCommandLineOption>
@@ -33,6 +34,7 @@ struct LaunchParameters
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
     std::string HeadlessSubgameID;                                        //Subgame to launch (empty = use default)
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from subgame)
+    std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
 };
 
 int main(int argc, char *argv[]);

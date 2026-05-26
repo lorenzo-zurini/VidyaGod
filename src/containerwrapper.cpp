@@ -52,9 +52,10 @@ int ContainerWrapper::FindComponentIndex(const nlohmann::ordered_json &MANIFESTJ
 //CREATE SEPARATE CLASS FOR VFS
 //CREATE WRAPPER CLASS FOR REGISTRY
 
-//Runs the four initialization steps in the required order:
-//  DecideComponent → DeriveContainerParams → CreateRecipe → BuildSubComponentsArray
-//Each step depends on the results of the previous one; failure at any step aborts the chain.
+//Runs the initialization steps in the required order:
+//  DecideComponent → DeriveContainerParams → CreateRecipe → ResolveCustomVariables → BuildSubComponentsArray
+//ResolveCustomVariables must precede BuildSubComponentsArray so that custom %KEY% tokens
+//are already in GetVariablesMap() when subcomponent strings are substituted.
 bool ContainerWrapper::InitializeContainer()
 {
     LogOut("ContainerWrapper::InitializeContainer", "Initializing container...");
@@ -78,6 +79,13 @@ bool ContainerWrapper::InitializeContainer()
         return false;
     }
     LogSucc("ContainerWrapper::InitializeContainer", "ContainerWrapper::CreateRecipe successful.");
+
+    if(!this->ResolveCustomVariables(this->MANIFESTJSON, this->ContainerParams, this->GlobalConfigJSON))
+    {
+        LogErr("ContainerWrapper::InitializeContainer", "ContainerWrapper::ResolveCustomVariables failed, aborting....");
+        return false;
+    }
+    LogSucc("ContainerWrapper::InitializeContainer", "ContainerWrapper::ResolveCustomVariables successful.");
 
     if(!this->BuildSubComponentsArray(this->MANIFESTJSON, this->ContainerParams))
     {
@@ -230,10 +238,64 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
     return true;
 }
 
+//Scans all CustomVar subcomponents in the Recipe and resolves their values into
+//ContainerParams.CustomVariables. Must be called BEFORE BuildSubComponentsArray so that
+//custom %KEY% tokens are available in GetVariablesMap() during subcomponent substitution.
+//
+//Resolution priority (highest to lowest):
+//  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags
+//  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
+//  3. DEFAULT field in the CustomVar subcomponent definition
+bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
+{
+    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving CustomVar subcomponents...");
+    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
+    {
+        std::string ComponentID = MANIFESTJSON["COMPONENTS"][i].contains("COMPONENTID") && !MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null()
+                                  ? std::string(MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"])
+                                  : "";
+        if (std::find(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end(), ComponentID) == ContainerParams.Recipe.end())
+            continue;
+
+        for (auto &Sub : MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"])
+        {
+            if (Sub.value("TYPE", std::string()) != "CustomVar") continue;
+
+            std::string Key     = Sub.value("KEY",     std::string());
+            std::string Value   = Sub.value("DEFAULT", std::string());
+
+            //CLI override takes highest priority.
+            if (ContainerParams.VariableOverrides.count(Key))
+            {
+                Value = ContainerParams.VariableOverrides.at(Key);
+                LogOut("ContainerWrapper::ResolveCustomVariables", "CLI override: " + Key + " = " + Value);
+            }
+            //Persisted user setting overrides DEFAULT if present.
+            else if (GlobalConfigJSON.contains("USERSETTINGS") &&
+                     GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
+                     GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("VARIABLES") &&
+                     GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"].contains(Key))
+            {
+                Value = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"][Key];
+                LogOut("ContainerWrapper::ResolveCustomVariables", "User setting: " + Key + " = " + Value);
+            }
+            else
+            {
+                LogOut("ContainerWrapper::ResolveCustomVariables", "Default: " + Key + " = " + Value);
+            }
+
+            ContainerParams.CustomVariables[Key] = Value;
+        }
+    }
+    LogSucc("ContainerWrapper::ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
+    return true;
+}
+
 //Iterates all COMPONENTS in MANIFEST order, collects SUBCOMPONENTS from those whose
 //COMPONENTID appears in Recipe, and appends them to SubComponentsArray.
 //Variable substitution is applied to each subcomponent's JSON string at this point
 //so all downstream consumers receive already-expanded values.
+//CustomVar subcomponents are skipped — they are handled by ResolveCustomVariables.
 //MANIFEST order is preserved, which determines VFS layer stacking order.
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
@@ -247,6 +309,10 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
         {
             for (int j = 0; j < (int)MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
             {
+                //Skip CustomVar entries — they were already resolved by ResolveCustomVariables.
+                if (MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].value("TYPE", std::string()) == "CustomVar")
+                    continue;
+
                 //Serialize to string, substitute, then re-parse so every field in the
                 //subcomponent JSON has its %VARIABLE% tokens resolved before use.
                 std::string NewComponentJSONString = MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].dump();
@@ -501,6 +567,9 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["WindowsProgramPathDoubleBackSlash"] = this->WindowsProgramPathDoubleBackSlash;
     VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
     VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
+    //Custom variables are appended last; they can shadow built-in names if needed.
+    for (auto &[Key, Value] : this->CustomVariables)
+        VariablesMap[Key] = Value;
     return VariablesMap;
 }
 
