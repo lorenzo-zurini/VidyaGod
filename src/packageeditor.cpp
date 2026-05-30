@@ -2,6 +2,8 @@
 #include "ui_packageeditor.h"
 #include "commonutils.h"
 #include <iostream>
+#include <QBuffer>
+#include <QImage>
 
 using json = nlohmann::ordered_json;
 
@@ -117,6 +119,10 @@ void PackageEditor::InitPackage(const QString &PreselectedPath)
 
 bool PackageEditor::BuildUI()
 {
+    //Save current tab positions so we can restore them after the UI is rebuilt.
+    SavedMainTab    = ui->PackageEditorTabWidget->currentIndex();
+    SavedSubgameTab = SubGamesTabWidget ? SubGamesTabWidget->currentIndex() : 0;
+
     //JSON TAB
     ui->PackageEditorTabWidget->clear();
 
@@ -170,7 +176,7 @@ bool PackageEditor::BuildUI()
         LogOut("PackageEditor", "Manifest tab done!");
 
         //SUBGAMES TABS WIDGET
-        QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
+        SubGamesTabWidget = new QTabWidget(ManifestTabWidget); // assign to member for position save/restore
         ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
 
         //TITLE and GAMEUID stay flat — they are the subgame's primary identifiers.
@@ -285,6 +291,40 @@ bool PackageEditor::BuildUI()
             QVBoxLayout * SubGameScrollLayout = new QVBoxLayout(SubGameScrollContents);
             SubGameScrollContents->setLayout(SubGameScrollLayout);
             SubGameScrollArea->setWidget(SubGameScrollContents);
+
+            //Cover drop area — 2:3 aspect ratio matching SteamGridDB vertical art standard.
+            QLabel * CoverDropLabel = new QLabel(SubGameScrollContents);
+            CoverDropLabel->setFixedSize(150, 225);
+            CoverDropLabel->setAlignment(Qt::AlignCenter);
+            CoverDropLabel->setWordWrap(true);
+            CoverDropLabel->setStyleSheet(
+                "QLabel { background-color: #1e1e1e; border: 2px dashed #555555; "
+                "color: #777777; border-radius: 4px; font-size: 11px; }");
+            CoverDropLabel->setText("Drop cover art\nhere\n\n2 : 3");
+            CoverDropLabel->setAcceptDrops(true);
+            CoverDropLabel->setProperty("SubgameIndex", i);
+
+            //Load existing cover if set in metadata.
+            {
+                std::string CoverFile;
+                if (SubgameRef.contains("METADATA") && SubgameRef["METADATA"].is_object()
+                    && SubgameRef["METADATA"].contains("COVER") && SubgameRef["METADATA"]["COVER"].is_string())
+                    CoverFile = std::string(SubgameRef["METADATA"]["COVER"]);
+                else if (SubgameRef.contains("COVER") && SubgameRef["COVER"].is_string())
+                    CoverFile = std::string(SubgameRef["COVER"]);
+                if (!CoverFile.empty())
+                {
+                    QPixmap Pix(QDir::cleanPath(MetadataDir->path() + "/" + QString::fromStdString(CoverFile)));
+                    if (!Pix.isNull())
+                        CoverDropLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                }
+            }
+            CoverDropLabel->installEventFilter(this);
+
+            QHBoxLayout * CoverRowLayout = new QHBoxLayout();
+            CoverRowLayout->addWidget(CoverDropLabel);
+            CoverRowLayout->addStretch();
+            SubGameScrollLayout->addLayout(CoverRowLayout);
 
             auto MakeSection = [&](const QString &Title, const std::vector<std::string> &Fields, const std::string &SubPath = "")
             {
@@ -526,6 +566,20 @@ bool PackageEditor::BuildUI()
                 }
                 QObject::connect(ParentComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
                 SubComponentsToolbarLayout->addWidget(ParentComponentPicker);
+
+                //Move up/down buttons reorder components in the JSON array.
+                QPushButton * MoveUpBtn = new QPushButton("↑", ComponentTabWidget);
+                MoveUpBtn->setFixedWidth(30);
+                MoveUpBtn->setEnabled(i > 0);
+                SubComponentsToolbarLayout->addWidget(MoveUpBtn);
+                QObject::connect(MoveUpBtn, &QPushButton::clicked, this, &PackageEditor::MoveComponentUp);
+
+                QPushButton * MoveDownBtn = new QPushButton("↓", ComponentTabWidget);
+                MoveDownBtn->setFixedWidth(30);
+                MoveDownBtn->setEnabled(i < (int)(*MANIFESTJSON)["COMPONENTS"].size() - 1);
+                SubComponentsToolbarLayout->addWidget(MoveDownBtn);
+                QObject::connect(MoveDownBtn, &QPushButton::clicked, this, &PackageEditor::MoveComponentDown);
+
                 SubComponentsToolbarLayout->addStretch();
 
                 QPushButton * RunExeButton = new QPushButton(ComponentTabWidget);
@@ -637,6 +691,113 @@ bool PackageEditor::BuildUI()
                         IndividualSubComponentGroupBoxLayout->addWidget(FieldEdit, row, 1);
                         row++;
                     }
+
+                    //Execute button — launches this specific variant directly.
+                    QPushButton * VDExecBtn = new QPushButton("▶ Execute", IndividualSubComponentGroupBox);
+                    IndividualSubComponentGroupBoxLayout->addWidget(VDExecBtn, row, 0, 1, -1);
+
+                    //Capture by value so the lambda is valid after BuildUI rebuilds.
+                    std::string CompID   = ((*MANIFESTJSON)["COMPONENTS"][i].contains("COMPONENTID") &&
+                                            !(*MANIFESTJSON)["COMPONENTS"][i]["COMPONENTID"].is_null())
+                                           ? std::string((*MANIFESTJSON)["COMPONENTS"][i]["COMPONENTID"]) : "";
+                    auto &VDSub          = (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                    std::string ExeID    = (VDSub.contains("EXECUTABLE_ID") && VDSub["EXECUTABLE_ID"].is_string())
+                                           ? std::string(VDSub["EXECUTABLE_ID"]) : "";
+                    std::string VariantID= (VDSub.contains("VARIANT_ID")    && VDSub["VARIANT_ID"].is_string())
+                                           ? std::string(VDSub["VARIANT_ID"]) : "";
+
+                    QObject::connect(VDExecBtn, &QPushButton::clicked, this,
+                    [this, CompID, ExeID, VariantID]()
+                    {
+                        //Guards
+                        if (CompID.empty())  { QMessageBox::warning(this, "Execute", "Component has no COMPONENTID."); return; }
+                        if (ExeID.empty())   { QMessageBox::warning(this, "Execute", "VariantDefinition has no EXECUTABLE_ID."); return; }
+
+                        //Collect runners for the runner picker.
+                        std::vector<std::pair<QString, nlohmann::ordered_json>> Runners;
+                        auto CollectR = [&](const nlohmann::ordered_json &Src)
+                        {
+                            if (!Src.contains("RUNNERS")) return;
+                            for (auto &[Plat, PlatRunners] : Src["RUNNERS"].items())
+                                for (auto &R : PlatRunners)
+                                {
+                                    std::string Name = (R.contains("NAME") && R["NAME"].is_string()) ? std::string(R["NAME"]) : "(unnamed)";
+                                    Runners.push_back({QString::fromStdString(Name), R});
+                                }
+                        };
+                        CollectR(*GlobalConfigJSON);
+                        CollectR(*MANIFESTJSON);
+                        if (Runners.empty()) { QMessageBox::warning(this, "Execute", "No runners defined."); return; }
+
+                        //Runner picker dialog.
+                        QDialog D(this);
+                        D.setWindowTitle(QString("Execute: %1 [%2]")
+                            .arg(QString::fromStdString(ExeID))
+                            .arg(VariantID.empty() ? "(no variant)" : QString::fromStdString(VariantID)));
+                        D.setMinimumWidth(380);
+                        QVBoxLayout * DL = new QVBoxLayout(&D);
+                        QFormLayout * DF = new QFormLayout(); DL->addLayout(DF);
+                        QComboBox * RC = new QComboBox(&D);
+                        for (auto &[Label, _] : Runners) RC->addItem(Label);
+                        DF->addRow("Runner:", RC);
+                        QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
+                        QPushButton * OkBtn = new QPushButton("Execute", &D); OkBtn->setDefault(true);
+                        QPushButton * CaBtn = new QPushButton("Cancel",  &D);
+                        BR->addWidget(CaBtn); BR->addWidget(OkBtn);
+                        QObject::connect(CaBtn, &QPushButton::clicked, &D, &QDialog::reject);
+                        QObject::connect(OkBtn, &QPushButton::clicked, &D, &QDialog::accept);
+                        if (D.exec() != QDialog::Accepted) return;
+
+                        int RIdx = RC->currentIndex();
+                        if (RIdx < 0 || RIdx >= (int)Runners.size()) return;
+                        nlohmann::ordered_json SelectedRunner = Runners[RIdx].second;
+
+                        //Build container with the component containing this VariantDefinition.
+                        ContainerParams Params(PackageDir->path().toStdString(), "", CompID);
+                        ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
+
+                        //Apply selected runner.
+                        Container.ContainerParams.RunnerName       = (SelectedRunner.contains("NAME")       && SelectedRunner["NAME"].is_string())       ? std::string(SelectedRunner["NAME"])       : "";
+                        Container.ContainerParams.RunnerExecutable = (SelectedRunner.contains("EXECUTABLE") && SelectedRunner["EXECUTABLE"].is_string()) ? std::string(SelectedRunner["EXECUTABLE"]) : "";
+                        std::string TypeStr = (SelectedRunner.contains("TYPE") && SelectedRunner["TYPE"].is_string()) ? std::string(SelectedRunner["TYPE"]) : "custom";
+                        if      (TypeStr == "wine")     Container.ContainerParams.RunnerTypeEnum = RunnerType::Wine;
+                        else if (TypeStr == "emulator") Container.ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
+                        else if (TypeStr == "custom")   Container.ContainerParams.RunnerTypeEnum = RunnerType::Custom;
+                        else                            Container.ContainerParams.RunnerTypeEnum = RunnerType::Native;
+                        Container.ContainerParams.RunnerEnv.clear();
+                        Container.ContainerParams.RunnerRemoveEnv.clear();
+                        Container.ContainerParams.RunnerArgs.clear();
+                        if (SelectedRunner.contains("ENV"))        Container.ContainerParams.RunnerEnv = SelectedRunner["ENV"];
+                        if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) Container.ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
+                        if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       Container.ContainerParams.RunnerArgs.push_back(std::string(A));
+
+                        //Re-derive paths for Wine vs non-Wine.
+                        if (Container.ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+                        {
+                            Container.ContainerParams.ProgramPath   = Container.ContainerParams.RuntimePath / "drive_c" / Container.ContainerParams.PackageUID;
+                            Container.ContainerParams.DefPrefixPath = Container.ContainerParams.TempPath / "DEFPREFIX";
+                            Container.ContainerParams.WindowsProgramPath = "C:\\" + Container.ContainerParams.PackageUID;
+                            Container.ContainerParams.WindowsProgramPathDoubleBackSlash = "C:\\\\" + Container.ContainerParams.PackageUID;
+                            Container.ContainerParams.WorkDirPathComplete = Container.ContainerParams.ProgramPath;
+                        }
+                        else Container.ContainerParams.ProgramPath = Container.ContainerParams.WorkDirPathComplete = Container.ContainerParams.RuntimePath;
+
+                        //ExecutableID tells ResolveExecutableDefinition which VariantDefinition to use.
+                        //The component_id constraint already ensures only one VariantDefinition with ExeID exists.
+                        Container.ContainerParams.ExecutableID = ExeID;
+
+                        if (!ContainerWrapper::ResolveExecutableDefinition(Container.ContainerParams))
+                        { QMessageBox::critical(this, "Execute", "ResolveExecutableDefinition failed."); return; }
+
+                        Container.Cleanup();
+                        if (!Container.BuildContainerRuntime())
+                        { QMessageBox::critical(this, "Execute", "BuildContainerRuntime failed."); Container.Cleanup(); return; }
+
+                        if (!Container.Execute())
+                            QMessageBox::warning(this, "Execute", "Process exited with an error.");
+
+                        Container.Cleanup();
+                    });
                 }
                 else if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer" || SubComponentType == "VFSFileLayer")
                 {
@@ -765,6 +926,12 @@ bool PackageEditor::BuildUI()
         ui->PackageEditorTabWidget->addTab(ComponentTabWidget, ComponentTabLabel);
     }
 
+    //Restore saved tab positions (clamped to valid range).
+    int MainCount = ui->PackageEditorTabWidget->count();
+    ui->PackageEditorTabWidget->setCurrentIndex(qBound(0, SavedMainTab, MainCount - 1));
+    if (SubGamesTabWidget && SubGamesTabWidget->count() > 0)
+        SubGamesTabWidget->setCurrentIndex(qBound(0, SavedSubgameTab, SubGamesTabWidget->count() - 1));
+
     return true;
 }
 
@@ -855,11 +1022,13 @@ void PackageEditor::RemoveComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
     QWidget * ComponentTabWidget = Button->parentWidget();
-    LogOut("PackageEditor", "REMOVE COMPONENT " + ComponentTabWidget->property("JSONPath").toString().toStdString());
+    std::string ComponentID = ComponentTabWidget->property("ComponentID").toString().toStdString();
+    LogOut("PackageEditor", "REMOVE COMPONENT " + ComponentID);
 
-    nlohmann::ordered_json::json_pointer JSONPointer(ComponentTabWidget->property("JSONPath").toString().toStdString());
-    (*PackageEditor::MANIFESTJSON).at(JSONPointer.parent_pointer()).erase(ComponentTabWidget->property("Index").toInt());
-    LogOut("PackageEditor", "Deleted component: " + ComponentTabWidget->property("Index").toString().toStdString());
+    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    if (Idx == -1) { LogErr("PackageEditor", "Component not found: " + ComponentID); return; }
+    (*PackageEditor::MANIFESTJSON)["COMPONENTS"].erase(Idx);
+    LogOut("PackageEditor", "Deleted component: " + ComponentID);
     delete ComponentTabWidget;
     PackageEditor::SaveManifestJSON();
     PackageEditor::RefreshJSONView();
@@ -1394,10 +1563,187 @@ void PackageEditor::AddCustomVar()
     SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 
+void PackageEditor::MoveComponentUp()
+{
+    std::string ComponentID = qobject_cast<QPushButton*>(sender())->parentWidget()->property("ComponentID").toString().toStdString();
+    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    if (Idx <= 0) return;
+    auto Tmp = (*MANIFESTJSON)["COMPONENTS"][Idx];
+    (*MANIFESTJSON)["COMPONENTS"][Idx]     = (*MANIFESTJSON)["COMPONENTS"][Idx - 1];
+    (*MANIFESTJSON)["COMPONENTS"][Idx - 1] = Tmp;
+    SaveManifestJSON();
+    SavedMainTab = (Idx - 1) + 2; // +2 for JSON and MANIFEST tabs
+    BuildUI();
+    RefreshJSONView();
+}
+
+void PackageEditor::MoveComponentDown()
+{
+    std::string ComponentID = qobject_cast<QPushButton*>(sender())->parentWidget()->property("ComponentID").toString().toStdString();
+    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    int Total = (int)(*MANIFESTJSON)["COMPONENTS"].size();
+    if (Idx < 0 || Idx >= Total - 1) return;
+    auto Tmp = (*MANIFESTJSON)["COMPONENTS"][Idx];
+    (*MANIFESTJSON)["COMPONENTS"][Idx]     = (*MANIFESTJSON)["COMPONENTS"][Idx + 1];
+    (*MANIFESTJSON)["COMPONENTS"][Idx + 1] = Tmp;
+    SaveManifestJSON();
+    SavedMainTab = (Idx + 1) + 2;
+    BuildUI();
+    RefreshJSONView();
+}
+
 void PackageEditor::FinalizeComponent()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    LogOut("PackageEditor", "Finalizing component " + std::to_string(Button->parentWidget()->property("Index").toInt() + 1));
+    LogOut("PackageEditor", "Finalizing component " + Button->parentWidget()->property("ComponentID").toString().toStdString());
+}
+
+//Saves image data to METADATA/<SUBGAMEID>_cover.<ext>, sets COVER in manifest, and updates the label.
+void PackageEditor::ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int SubgameIndex)
+{
+    if (Data.isEmpty()) return;
+
+    //Build filename from SUBGAMEID or fallback to index.
+    std::string SubgameID;
+    if (SubgameIndex < (int)(*MANIFESTJSON)["SUBGAMES"].size())
+    {
+        auto &IDField = (*MANIFESTJSON)["SUBGAMES"][SubgameIndex]["SUBGAMEID"];
+        if (!IDField.is_null() && IDField.is_string()) SubgameID = std::string(IDField);
+    }
+    QString FileName = (SubgameID.empty() ? QString("subgame%1").arg(SubgameIndex) : QString::fromStdString(SubgameID))
+                       + "_cover." + Extension.toLower();
+    QString DestPath = QDir::cleanPath(MetadataDir->path() + "/" + FileName);
+
+    //Write the image file.
+    QFile OutFile(DestPath);
+    if (!OutFile.open(QIODevice::WriteOnly)) { LogErr("PackageEditor", "Could not write cover: " + DestPath.toStdString()); return; }
+    OutFile.write(Data);
+    OutFile.close();
+
+    //Update MANIFEST METADATA.COVER.
+    nlohmann::ordered_json::json_pointer CoverPtr(QString("/SUBGAMES/%1/METADATA/COVER").arg(SubgameIndex).toStdString());
+    (*MANIFESTJSON)[CoverPtr] = FileName.toStdString();
+    SaveManifestJSON();
+
+    //Update the label pixmap.
+    QPixmap Pix;
+    Pix.loadFromData(Data);
+    if (!Pix.isNull())
+        CoverLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    LogSucc("PackageEditor", "Cover set: " + FileName.toStdString());
+}
+
+bool PackageEditor::eventFilter(QObject *obj, QEvent *event)
+{
+    QLabel *CoverLabel = qobject_cast<QLabel*>(obj);
+    if (!CoverLabel || !CoverLabel->property("SubgameIndex").isValid())
+        return QDialog::eventFilter(obj, event);
+
+    if (event->type() == QEvent::DragEnter)
+    {
+        QDragEnterEvent *ev = static_cast<QDragEnterEvent*>(event);
+        if (ev->mimeData()->hasImage() || ev->mimeData()->hasUrls() || ev->mimeData()->hasText())
+            ev->acceptProposedAction();
+        return true;
+    }
+
+    if (event->type() == QEvent::DragMove)
+    {
+        static_cast<QDragMoveEvent*>(event)->acceptProposedAction();
+        return true;
+    }
+
+    if (event->type() == QEvent::Drop)
+    {
+        QDropEvent *ev = static_cast<QDropEvent*>(event);
+        int Idx = CoverLabel->property("SubgameIndex").toInt();
+        const QMimeData *Mime = ev->mimeData();
+
+        //1. Direct image data (drag from image viewer, browser image, etc.)
+        if (Mime->hasImage())
+        {
+            QImage Img = qvariant_cast<QImage>(Mime->imageData());
+            QByteArray Data;
+            QBuffer Buf(&Data);
+            Buf.open(QIODevice::WriteOnly);
+            Img.save(&Buf, "PNG");
+            ApplyCoverImage(CoverLabel, Data, "png", Idx);
+            return true;
+        }
+
+        //2. URL(s) — could be local file or http(s)
+        if (Mime->hasUrls())
+        {
+            QUrl Url = Mime->urls().first();
+            if (Url.isLocalFile())
+            {
+                //Local file — read and copy.
+                QString FilePath = Url.toLocalFile();
+                QFile F(FilePath);
+                if (F.open(QIODevice::ReadOnly))
+                {
+                    QByteArray Data = F.readAll();
+                    QString Ext = QFileInfo(FilePath).suffix();
+                    if (Ext.isEmpty()) Ext = "png";
+                    ApplyCoverImage(CoverLabel, Data, Ext, Idx);
+                }
+            }
+            else
+            {
+                //Remote URL — download synchronously.
+                if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
+                QNetworkReply *Reply = NetMgr->get(QNetworkRequest(Url));
+                QEventLoop Loop;
+                QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit);
+                Loop.exec();
+                if (Reply->error() == QNetworkReply::NoError)
+                {
+                    QByteArray Data = Reply->readAll();
+                    //Detect extension from URL or Content-Type.
+                    QString Ext = QFileInfo(Url.path()).suffix();
+                    if (Ext.isEmpty())
+                    {
+                        QString CT = Reply->header(QNetworkRequest::ContentTypeHeader).toString();
+                        if (CT.contains("jpeg") || CT.contains("jpg")) Ext = "jpg";
+                        else if (CT.contains("webp")) Ext = "webp";
+                        else Ext = "png";
+                    }
+                    ApplyCoverImage(CoverLabel, Data, Ext, Idx);
+                }
+                else { LogErr("PackageEditor", "Failed to download cover: " + Reply->errorString().toStdString()); }
+                Reply->deleteLater();
+            }
+            return true;
+        }
+
+        //3. Plain text that looks like a URL (some browsers drop as text/plain)
+        if (Mime->hasText())
+        {
+            QString Text = Mime->text().trimmed();
+            QUrl Url(Text);
+            if (Url.isValid() && (Url.scheme() == "http" || Url.scheme() == "https"))
+            {
+                if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
+                QNetworkReply *Reply = NetMgr->get(QNetworkRequest(Url));
+                QEventLoop Loop;
+                QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit);
+                Loop.exec();
+                if (Reply->error() == QNetworkReply::NoError)
+                {
+                    QByteArray Data = Reply->readAll();
+                    QString Ext = QFileInfo(Url.path()).suffix();
+                    if (Ext.isEmpty()) Ext = "png";
+                    ApplyCoverImage(CoverLabel, Data, Ext, Idx);
+                }
+                Reply->deleteLater();
+            }
+            return true;
+        }
+
+        return true;
+    }
+
+    return QDialog::eventFilter(obj, event);
 }
 
 QString PackageEditor::UnquoteString(QString InputString)

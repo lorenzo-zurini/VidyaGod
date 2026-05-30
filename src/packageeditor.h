@@ -27,6 +27,14 @@
 #include <QItemDelegate>
 
 #include <QSettings>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QEventLoop>
+#include <QPixmap>
+#include <QFileInfo>
 
 #include "filesystemoperations.h"
 #include "jsonoperations.h"
@@ -72,6 +80,8 @@ private slots:
     void AddVariantDefinition();
     void AddCustomVar();
     void FinalizeComponent();
+    void MoveComponentUp();
+    void MoveComponentDown();
 
 private:
     bool InitMANIFESTJSON();
@@ -83,12 +93,19 @@ private:
     bool BuildUI();
     bool SaveManifestJSON();
     std::string GetRunnerType(const std::string &platform);
+    bool eventFilter(QObject *obj, QEvent *event) override;
+    void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int SubgameIndex);
 
     //int CurrentTab = 0;
     //bool initdone = false;
 
     QWidget * JSONTabWidget;
     QWidget * ManifestTabWidget;
+    QTabWidget * SubGamesTabWidget = nullptr; // kept as member for position save/restore
+
+    //Saved UI state — restored after BuildUI() to keep the user on the same tab/subgame.
+    int SavedMainTab = 1;
+    int SavedSubgameTab = 0;
 
     QPushButton * SaveJSONButton;
     QTextEdit * JSONTextEdit;
@@ -100,6 +117,7 @@ private:
     Ui::PackageEditor * ui;
     nlohmann::ordered_json * MANIFESTJSON;
     nlohmann::ordered_json * GlobalConfigJSON;
+    QNetworkAccessManager * NetMgr = nullptr;
 };
 
 #endif // PACKAGEEDITOR_H

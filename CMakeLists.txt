@@ -9,7 +9,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network)
 find_package(nlohmann_json REQUIRED)
 
 # Translation files
@@ -48,5 +48,5 @@ set(PROJECT_SOURCES
 
 add_executable(VidyaGod ${PROJECT_SOURCES})
 
-target_link_libraries(VidyaGod PRIVATE Qt6::Widgets)
+target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
