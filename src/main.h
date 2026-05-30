@@ -35,7 +35,7 @@ struct LaunchParameters
     std::string HeadlessSubgameID;                                        //Subgame to launch (empty = use default)
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from subgame)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
-    std::string SelectedVariant;                                          //Variant override from --variant (bypasses DEFAULT_VARIANT)
+    std::string VariantID;                                                //Variant override from --variant (selects which component to stop the chain at)
 };
 
 int main(int argc, char *argv[]);

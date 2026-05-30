@@ -60,12 +60,25 @@ int main(int argc, char *argv[])
             LogErr("main.cpp", "Fatal error. Paring MANIFESTJSON failed, aborting.");
         }
 
+        //Resolve component_id from --variant if supplied, otherwise let DecideComponent handle it.
+        std::string HeadlessComponentID = LaunchParameters.HeadlessComponentID;
+        if (HeadlessComponentID.empty() && !LaunchParameters.VariantID.empty())
+        {
+            //Read EXECUTABLE_ID from the subgame, then find the component for the requested variant.
+            int SubgameIdx = ContainerWrapper::FindSubgameIndex(MANIFESTJSON, LaunchParameters.HeadlessSubgameID);
+            if (SubgameIdx != -1)
+            {
+                auto &ExeIDField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
+                std::string ExecutableID = (!ExeIDField.is_null() && ExeIDField.is_string()) ? std::string(ExeIDField) : "";
+                std::string ResolvedID = ContainerWrapper::FindComponentForVariant(MANIFESTJSON, ExecutableID, LaunchParameters.VariantID);
+                if (!ResolvedID.empty()) HeadlessComponentID = ResolvedID;
+            }
+        }
+
         //Construct the container, build its runtime (mounts, prefix, registry patches),
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
-        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
+        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, HeadlessComponentID);
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
-        //SelectedVariant set before construction so DeriveContainerParams sees it and skips DefaultVariant.
-        NewContainerParams.SelectedVariant   = LaunchParameters.SelectedVariant;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
         {
@@ -201,6 +214,15 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
         (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
 
+        //Plain Wine — no Proton/pressure-vessel container, sees FUSE mounts directly.
+        nlohmann::ordered_json Wine;
+        Wine["NAME"]       = "wine";
+        Wine["TYPE"]       = "wine";
+        Wine["EXECUTABLE"] = "wine";
+        Wine["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"} };
+        Wine["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
+        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(Wine);
+
         //snes9x handles SNES ROMs; the ROM path is passed as the sole argument.
         nlohmann::ordered_json Snes9x;
         Snes9x["NAME"]       = "snes9x";
@@ -296,7 +318,7 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         }
         else if (arg == "--variant" && i + 1 < argc)
         {
-            RuntimeParameters.SelectedVariant = argv[++i];
+            RuntimeParameters.VariantID = argv[++i];
         }
     }
     return RuntimeParameters;

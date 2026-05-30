@@ -376,39 +376,148 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
     LogOut("MainWindow", "Running game " + (SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID));
 
-    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID);
-    class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
-
-    //Show a variant picker when the component chain exposes multiple variants for this EXECUTABLE_ID.
-    std::vector<std::string> Variants = ContainerWrapper::GetAvailableVariants(NewContainerWrapper.ContainerParams);
-    if (Variants.size() > 1)
+    // Read the subgame's EXECUTABLE_ID and DEFAULT_VARIANT_ID
+    std::string ExecutableID = "";
+    std::string DefaultVariantID = "";
+    if (SubgameIdx != -1)
     {
-        QDialog VariantDialog(nullptr);
-        VariantDialog.setWindowTitle("Select Variant");
-        QVBoxLayout * VLayout = new QVBoxLayout(&VariantDialog);
-        QComboBox * VariantPicker = new QComboBox(&VariantDialog);
-        for (auto &V : Variants)
-            VariantPicker->addItem(V.empty() ? "(default)" : QString::fromStdString(V));
-        //Pre-select DefaultVariant if it's in the list.
-        int DefaultIdx = VariantPicker->findText(QString::fromStdString(NewContainerWrapper.ContainerParams.DefaultVariant));
-        if (DefaultIdx >= 0) VariantPicker->setCurrentIndex(DefaultIdx);
-        VLayout->addWidget(new QLabel("Multiple variants available. Select one to launch:"));
-        VLayout->addWidget(VariantPicker);
+        auto &EField = (*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
+        if (!EField.is_null() && EField.is_string()) ExecutableID = std::string(EField);
+        auto &DField = (*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
+        if (!DField.is_null() && DField.is_string()) DefaultVariantID = std::string(DField);
+    }
+
+    // Collect available variants from the full manifest
+    std::vector<VariantInfo> Variants = ContainerWrapper::GetAvailableVariants(*this->MANIFESTJSON, ExecutableID);
+
+    // Determine the default component to use
+    std::string SelectedComponentID = ContainerWrapper::FindComponentForVariant(*this->MANIFESTJSON, ExecutableID, DefaultVariantID);
+    if (SelectedComponentID.empty() && !Variants.empty())
+        SelectedComponentID = Variants.front().ComponentID;
+
+    // Collect available runners (need a temporary container to resolve platform)
+    // Build a temporary ContainerParams with the resolved component to get the platform/runner info
+    struct ContainerParams TempParams = ContainerParams(this->PackagePath, this->SubgameID, SelectedComponentID);
+    class ContainerWrapper TempWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), TempParams);
+
+    std::vector<std::pair<QString, nlohmann::ordered_json>> Runners;
+    auto CollectRunners = [&](const nlohmann::ordered_json &Source)
+    {
+        if (!Source.contains("RUNNERS")) return;
+        std::string Platform = TempWrapper.ContainerParams.Platform;
+        if (!Source["RUNNERS"].contains(Platform)) return;
+        for (auto &Runner : Source["RUNNERS"][Platform])
+        {
+            QString Label = QString::fromStdString(Runner.value("NAME", std::string("(unnamed)")));
+            Runners.push_back({Label, Runner});
+        }
+    };
+    CollectRunners(*GlobalConfigJSON);
+    CollectRunners(*this->MANIFESTJSON);
+
+    //Show the launch dialog when there is a choice to make (runner or variant).
+    if (Variants.size() > 1 || Runners.size() > 1)
+    {
+        QDialog LaunchDialog(nullptr);
+        LaunchDialog.setWindowTitle("Launch " + QString::fromStdString(
+            SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID));
+        LaunchDialog.setMinimumWidth(400);
+        QVBoxLayout * VLayout = new QVBoxLayout(&LaunchDialog);
+        QFormLayout * Form = new QFormLayout();
+        VLayout->addLayout(Form);
+
+        //Runner picker — always shown when multiple runners are available.
+        QComboBox * RunnerPicker = nullptr;
+        if (Runners.size() > 1)
+        {
+            RunnerPicker = new QComboBox(&LaunchDialog);
+            for (auto &[Label, _] : Runners)
+                RunnerPicker->addItem(Label);
+            //Pre-select current runner.
+            int CurrentIdx = RunnerPicker->findText(QString::fromStdString(TempWrapper.ContainerParams.RunnerName));
+            if (CurrentIdx >= 0) RunnerPicker->setCurrentIndex(CurrentIdx);
+            Form->addRow("Runner:", RunnerPicker);
+        }
+
+        //Variant picker — shown when multiple variants exist. Label is ComponentName; value is VariantID.
+        QComboBox * VariantPicker = nullptr;
+        if (Variants.size() > 1)
+        {
+            VariantPicker = new QComboBox(&LaunchDialog);
+            for (auto &V : Variants)
+                VariantPicker->addItem(QString::fromStdString(V.ComponentName), QString::fromStdString(V.VariantID));
+            // Pre-select the default variant
+            for (int k = 0; k < VariantPicker->count(); k++)
+            {
+                if (VariantPicker->itemData(k).toString().toStdString() == DefaultVariantID)
+                { VariantPicker->setCurrentIndex(k); break; }
+            }
+            Form->addRow("Variant:", VariantPicker);
+        }
+
         QHBoxLayout * BtnRow = new QHBoxLayout();
         VLayout->addLayout(BtnRow);
         BtnRow->addStretch();
-        QPushButton * OkBtn = new QPushButton("Launch", &VariantDialog);
-        OkBtn->setDefault(true);
-        BtnRow->addWidget(OkBtn);
-        QObject::connect(OkBtn, &QPushButton::clicked, &VariantDialog, &QDialog::accept);
-        VariantDialog.exec();
-        std::string Picked = VariantPicker->currentText().toStdString();
-        NewContainerWrapper.ContainerParams.SelectedVariant = (Picked == "(default)") ? "" : Picked;
+        QPushButton * CancelBtn = new QPushButton("Cancel", &LaunchDialog);
+        QPushButton * LaunchBtn = new QPushButton("Launch", &LaunchDialog);
+        LaunchBtn->setDefault(true);
+        BtnRow->addWidget(CancelBtn);
+        BtnRow->addWidget(LaunchBtn);
+        QObject::connect(CancelBtn, &QPushButton::clicked, &LaunchDialog, &QDialog::reject);
+        QObject::connect(LaunchBtn, &QPushButton::clicked, &LaunchDialog, &QDialog::accept);
+
+        if (LaunchDialog.exec() != QDialog::Accepted) return;
+
+        //Apply selected variant — find the component for the chosen VariantID.
+        if (VariantPicker)
+        {
+            std::string PickedVariantID = VariantPicker->currentData().toString().toStdString();
+            std::string NewComponentID  = ContainerWrapper::FindComponentForVariant(*this->MANIFESTJSON, ExecutableID, PickedVariantID);
+            if (!NewComponentID.empty()) SelectedComponentID = NewComponentID;
+        }
+
+        //Apply selected runner override (will be set on the final ContainerWrapper below).
+        if (RunnerPicker)
+        {
+            int Idx = RunnerPicker->currentIndex();
+            if (Idx >= 0 && Idx < (int)Runners.size())
+            {
+                auto &R = Runners[Idx].second;
+                TempWrapper.ContainerParams.RunnerName       = R.value("NAME",       std::string());
+                TempWrapper.ContainerParams.RunnerExecutable = R.value("EXECUTABLE",  std::string());
+                std::string TypeStr                          = R.value("TYPE",        std::string("wine"));
+                if      (TypeStr == "wine")      TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Wine;
+                else if (TypeStr == "emulator")  TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
+                else if (TypeStr == "custom")    TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Custom;
+                else                             TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Native;
+                TempWrapper.ContainerParams.RunnerEnv       = R.contains("ENV")        ? R["ENV"]        : nlohmann::ordered_json::object();
+                TempWrapper.ContainerParams.RunnerRemoveEnv.clear();
+                TempWrapper.ContainerParams.RunnerArgs.clear();
+                if (R.contains("REMOVE_ENV")) for (auto &E : R["REMOVE_ENV"]) TempWrapper.ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
+                if (R.contains("ARGS"))       for (auto &A : R["ARGS"])       TempWrapper.ContainerParams.RunnerArgs.push_back(std::string(A));
+            }
+        }
+    }
+
+    // Construct the final ContainerWrapper with the resolved component_id
+    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID, SelectedComponentID);
+    class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
+
+    // Apply runner override from dialog if one was picked
+    if (!TempWrapper.ContainerParams.RunnerName.empty() &&
+        TempWrapper.ContainerParams.RunnerName != NewContainerWrapper.ContainerParams.RunnerName)
+    {
+        NewContainerWrapper.ContainerParams.RunnerName       = TempWrapper.ContainerParams.RunnerName;
+        NewContainerWrapper.ContainerParams.RunnerExecutable = TempWrapper.ContainerParams.RunnerExecutable;
+        NewContainerWrapper.ContainerParams.RunnerTypeEnum   = TempWrapper.ContainerParams.RunnerTypeEnum;
+        NewContainerWrapper.ContainerParams.RunnerEnv        = TempWrapper.ContainerParams.RunnerEnv;
+        NewContainerWrapper.ContainerParams.RunnerRemoveEnv  = TempWrapper.ContainerParams.RunnerRemoveEnv;
+        NewContainerWrapper.ContainerParams.RunnerArgs       = TempWrapper.ContainerParams.RunnerArgs;
     }
 
     if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
     {
-        QMessageBox::critical(nullptr, "Launch failed", "Could not resolve executable definition.\nCheck EXECUTABLE_ID and VARIANT in the manifest.");
+        QMessageBox::critical(nullptr, "Launch failed", "Could not resolve variant definition.\nCheck EXECUTABLE_ID and VARIANT_ID in the manifest.");
         return;
     }
 

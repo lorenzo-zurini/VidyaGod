@@ -185,16 +185,16 @@ bool PackageEditor::BuildUI()
             "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
         };
         static const std::vector<std::string> WineExecFields = {
-            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT", "RECOMMENDED_RUNNER"
+            "EXECUTABLE_ID", "DEFAULT_VARIANT_ID", "RECOMMENDED_RUNNER"
         };
         static const std::vector<std::string> EmulatorExecFields = {
-            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
+            "EXECUTABLE_ID", "DEFAULT_VARIANT_ID"
         };
         static const std::vector<std::string> NativeExecFields = {
-            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
+            "EXECUTABLE_ID", "DEFAULT_VARIANT_ID"
         };
         static const std::vector<std::string> CustomExecFields = {
-            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
+            "EXECUTABLE_ID", "DEFAULT_VARIANT_ID"
         };
 
         //SubPath: when non-empty, fields are read/written under SUBGAMES[i][SubPath][field].
@@ -227,31 +227,6 @@ bool PackageEditor::BuildUI()
                     }
                     QObject::connect(PlatformPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::PlatformChanged);
                     Layout->addRow("PLATFORM", PlatformPicker);
-                    continue;
-                }
-
-                if (FieldKey == "LASTCOMPONENT")
-                {
-                    QComboBox * ComponentPicker = new QComboBox();
-                    ComponentPicker->addItem("None");
-                    for (int j = 0; j < (int)(*PackageEditor::MANIFESTJSON)["COMPONENTS"].size(); j++)
-                    {
-                        auto &CIDField = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][j]["COMPONENTID"];
-                        std::string CIDStr = (!CIDField.is_null() && CIDField.is_string()) ? std::string(CIDField) : ("Component " + std::to_string(j + 1));
-                        ComponentPicker->addItem(QString::fromStdString(CIDStr));
-                    }
-                    ComponentPicker->setProperty("JSONPath", JSONPath);
-                    if (SubgameRef.contains("LASTCOMPONENT") && !SubgameRef["LASTCOMPONENT"].is_null() && SubgameRef["LASTCOMPONENT"].is_string())
-                    {
-                        std::string Current = std::string(SubgameRef["LASTCOMPONENT"]);
-                        for (int k = 1; k < ComponentPicker->count(); k++)
-                        {
-                            if (ComponentPicker->itemText(k).toStdString() == Current)
-                            { ComponentPicker->setCurrentIndex(k); break; }
-                        }
-                    }
-                    QObject::connect(ComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
-                    Layout->addRow("LASTCOMPONENT", ComponentPicker);
                     continue;
                 }
 
@@ -633,10 +608,10 @@ bool PackageEditor::BuildUI()
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TYPE:"), 0, 0);
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(SubComponentType), 0, 1);
 
-                if (SubComponentType == "ExecutableDefinition")
+                if (SubComponentType == "VariantDefinition")
                 {
-                    //Fields: EXECUTABLE_ID, VARIANT, then the exe path (EXEPATH / ROM / DATAPATH), EXEARGS, WORKDIR.
-                    static const QStringList ExeDefFields = {"EXECUTABLE_ID", "VARIANT", "EXEPATH", "ROM", "DATAPATH", "EXEARGS", "WORKDIR"};
+                    //Fields: EXECUTABLE_ID, VARIANT_ID, then the exe path (EXEPATH / ROM / DATAPATH), EXEARGS, WORKDIR.
+                    static const QStringList ExeDefFields = {"EXECUTABLE_ID", "VARIANT_ID", "EXEPATH", "ROM", "DATAPATH", "EXEARGS", "WORKDIR"};
                     int row = 1;
                     for (const QString &Field : ExeDefFields)
                     {
@@ -927,29 +902,28 @@ void PackageEditor::ExecuteComponent()
     ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
 
-    //Collect ExecutableDefinitions from the entire component chain.
-    //Use a map keyed by (EXECUTABLE_ID|VARIANT) so that a later component overrides
-    //an earlier one with the same pair — matching the "last wins" resolution logic.
+    //Collect VariantDefinitions from the entire component chain.
+    //Use a map keyed by (EXECUTABLE_ID|VARIANT_ID) so that each unique definition is shown once.
     std::map<std::string, nlohmann::ordered_json> ExeDefMap;
     for (auto &Sub : Container.ContainerParams.SubComponentsArray)
     {
-        if (Sub.value("TYPE", std::string()) != "ExecutableDefinition") continue;
-        std::string Key = Sub.value("EXECUTABLE_ID", std::string()) + "|" + Sub.value("VARIANT", std::string());
+        if (Sub.value("TYPE", std::string()) != "VariantDefinition") continue;
+        std::string Key = Sub.value("EXECUTABLE_ID", std::string()) + "|" + Sub.value("VARIANT_ID", std::string());
         ExeDefMap[Key] = Sub;
     }
 
     std::vector<std::pair<QString, nlohmann::ordered_json>> ExeDefs;
     for (auto &[Key, Sub] : ExeDefMap)
     {
-        QString ID      = QString::fromStdString(Sub.value("EXECUTABLE_ID", std::string("(no id)")));
-        QString Variant = QString::fromStdString(Sub.value("VARIANT",       std::string()));
-        QString Label   = Variant.isEmpty() ? ID : ID + "  [" + Variant + "]";
+        QString ID        = QString::fromStdString(Sub.value("EXECUTABLE_ID", std::string("(no id)")));
+        QString VariantID = QString::fromStdString(Sub.value("VARIANT_ID",    std::string()));
+        QString Label     = VariantID.isEmpty() ? ID : ID + "  [" + VariantID + "]";
         ExeDefs.push_back({Label, Sub});
     }
 
     if (ExeDefs.empty())
     {
-        QMessageBox::warning(this, "Execute Component", "No ExecutableDefinition subcomponents found in this component chain.\nAdd an ExecutableDefinition subcomponent first.");
+        QMessageBox::warning(this, "Execute Component", "No VariantDefinition subcomponents found in this component chain.\nAdd a VariantDefinition subcomponent first.");
         return;
     }
 
@@ -1021,9 +995,8 @@ void PackageEditor::ExecuteComponent()
     //Container was already built above to populate SubComponentsArray/ExeDefs.
     //Now apply runner and resolve exe definition.
 
-    //Set ExecutableID and SelectedVariant from the chosen ExecutableDefinition, then resolve.
-    Container.ContainerParams.ExecutableID    = SelectedExeDef.value("EXECUTABLE_ID", std::string());
-    Container.ContainerParams.SelectedVariant = SelectedExeDef.value("VARIANT",       std::string());
+    //Set ExecutableID from the chosen VariantDefinition, then resolve.
+    Container.ContainerParams.ExecutableID = SelectedExeDef.value("EXECUTABLE_ID", std::string());
 
     //Override all runner fields from the user's selection.
     //Must be done after construction since DeriveContainerParams has already run.
@@ -1058,7 +1031,7 @@ void PackageEditor::ExecuteComponent()
 
     if (!ContainerWrapper::ResolveExecutableDefinition(Container.ContainerParams))
     {
-        QMessageBox::critical(this, "Execute Component", "Failed to resolve ExecutableDefinition.\nCheck EXECUTABLE_ID and VARIANT.");
+        QMessageBox::critical(this, "Execute Component", "Failed to resolve VariantDefinition.\nCheck EXECUTABLE_ID and VARIANT_ID.");
         return;
     }
 

@@ -184,11 +184,31 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
     {
         int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
-        auto &ComponentField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["LASTCOMPONENT"];
-        //Only override component_id if the subgame actually specifies one.
-        if (!ComponentField.is_null() && ComponentField != "")
+
+        //Read EXECUTABLE_ID and DEFAULT_VARIANT_ID from the subgame to find the target component.
+        auto &ExeIDField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
+        std::string ExecutableID = (!ExeIDField.is_null() && ExeIDField.is_string()) ? std::string(ExeIDField) : "";
+
+        auto &DefVarField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
+        std::string DefaultVariantID = (!DefVarField.is_null() && DefVarField.is_string()) ? std::string(DefVarField) : "";
+
+        //Use FindComponentForVariant to resolve the component that contains this variant.
+        std::string ResolvedComponentID = FindComponentForVariant(MANIFESTJSON, ExecutableID, DefaultVariantID);
+
+        if (ResolvedComponentID.empty())
         {
-            ContainerParams.component_id = ComponentField;
+            //DEFAULT_VARIANT_ID not set or not found — fall back to the first available variant.
+            std::vector<VariantInfo> Variants = GetAvailableVariants(MANIFESTJSON, ExecutableID);
+            if (!Variants.empty())
+            {
+                ResolvedComponentID = Variants.front().ComponentID;
+                LogWarn("ContainerWrapper::DecideComponent", "DEFAULT_VARIANT_ID not found for EXECUTABLE_ID='" + ExecutableID + "', falling back to first variant in component '" + ResolvedComponentID + "'");
+            }
+        }
+
+        if (!ResolvedComponentID.empty())
+        {
+            ContainerParams.component_id = ResolvedComponentID;
             LogOut("ContainerWrapper::DecideComponent", "Only subgame specified, resolved component_id: " + ContainerParams.component_id);
         }
         LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"]));
@@ -316,92 +336,102 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     return true;
 }
 
-//Returns the unique VARIANT values of all ExecutableDefinition subcomponents in
-//SubComponentsArray that match ContainerParams.ExecutableID.
-//An empty string means "no variant" — included when at least one definition has no VARIANT field.
-//Used to build the variant picker before ResolveExecutableDefinition is called.
-std::vector<std::string> ContainerWrapper::GetAvailableVariants(const struct ContainerParams &ContainerParams)
+//Scans ALL components in MANIFESTJSON for VariantDefinition subcomponents matching ExecutableID.
+//Returns one VariantInfo per matching component — the component NAME is the display label.
+//At most one VariantDefinition per component per EXECUTABLE_ID is collected (break after first match).
+std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID)
 {
-    std::vector<std::string> Variants;
-    for (auto &Sub : ContainerParams.SubComponentsArray)
+    std::vector<VariantInfo> Variants;
+    if (!MANIFESTJSON.contains("COMPONENTS")) return Variants;
+    for (auto &Comp : MANIFESTJSON["COMPONENTS"])
     {
-        if (Sub.value("TYPE", std::string()) != "ExecutableDefinition") continue;
-        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID) continue;
-        std::string Variant = Sub.value("VARIANT", std::string());
-        if (std::find(Variants.begin(), Variants.end(), Variant) == Variants.end())
-            Variants.push_back(Variant);
+        std::string CompID   = Comp.value("COMPONENTID", std::string());
+        std::string CompName = Comp.value("NAME",        std::string());
+        if (!Comp.contains("SUBCOMPONENTS")) continue;
+        for (auto &Sub : Comp["SUBCOMPONENTS"])
+        {
+            if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
+            if (Sub.value("EXECUTABLE_ID", std::string()) != ExecutableID)        continue;
+            VariantInfo Info;
+            Info.VariantID     = Sub.value("VARIANT_ID", std::string());
+            Info.ComponentName = CompName;
+            Info.ComponentID   = CompID;
+            Variants.push_back(Info);
+            break; // one VariantDefinition per component per EXECUTABLE_ID is enough
+        }
     }
     return Variants;
 }
 
-//Scans SubComponentsArray for ExecutableDefinition entries matching (ExecutableID, SelectedVariant).
-//Last match wins — a later component in the chain overrides an earlier one with the same (ID, VARIANT).
-//Populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs (and Wine-specific path variants).
-//Must be called after BuildSubComponentsArray and before BuildContainerRuntime.
+//Returns the COMPONENTID of the component containing VariantDefinition { EXECUTABLE_ID, VARIANT_ID }.
+//Returns empty string if not found.
+std::string ContainerWrapper::FindComponentForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID, const std::string &VariantID)
+{
+    if (!MANIFESTJSON.contains("COMPONENTS")) return "";
+    for (auto &Comp : MANIFESTJSON["COMPONENTS"])
+    {
+        if (!Comp.contains("SUBCOMPONENTS")) continue;
+        for (auto &Sub : Comp["SUBCOMPONENTS"])
+        {
+            if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
+            if (Sub.value("EXECUTABLE_ID", std::string()) != ExecutableID)        continue;
+            if (Sub.value("VARIANT_ID",    std::string()) != VariantID)           continue;
+            return Comp.value("COMPONENTID", std::string());
+        }
+    }
+    return "";
+}
+
+//Finds the single VariantDefinition in SubComponentsArray matching ContainerParams.ExecutableID
+//and populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
+//The chain is already constrained by the selected component, so there should be exactly one match.
+//Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
 bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.ExecutableID.empty())
     {
-        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EXECUTABLE_ID set — skipping (component-only execution).");
+        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EXECUTABLE_ID set — skipping.");
         return true;
     }
-
-    //Scan for matching definitions; last match wins.
+    // Find the VariantDefinition with matching EXECUTABLE_ID in the constrained chain.
     nlohmann::ordered_json Resolved;
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
-        if (Sub.value("TYPE",          std::string()) != "ExecutableDefinition")           continue;
-        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID)     continue;
-        std::string Variant = Sub.value("VARIANT", std::string());
-        //Accept exact variant match, or if SelectedVariant is empty accept any definition.
-        if (!ContainerParams.SelectedVariant.empty() && Variant != ContainerParams.SelectedVariant) continue;
-        Resolved = Sub; //Overwrite — last in chain wins.
+        if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
+        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID) continue;
+        Resolved = Sub;
+        break; // only one expected in the pre-constrained chain
     }
-
     if (Resolved.is_null() || Resolved.empty())
     {
-        LogErr("ContainerWrapper::ResolveExecutableDefinition",
-               "No ExecutableDefinition found for ID='" + ContainerParams.ExecutableID +
-               "' VARIANT='" + ContainerParams.SelectedVariant + "'");
+        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No VariantDefinition found for EXECUTABLE_ID='" + ContainerParams.ExecutableID + "'");
         return false;
     }
-    LogSucc("ContainerWrapper::ResolveExecutableDefinition",
-            "Resolved: ID=" + ContainerParams.ExecutableID +
-            " VARIANT=" + Resolved.value("VARIANT", std::string("(none)")));
-
-    //Pick the exe field by runner type — all three are valid keys in ExecutableDefinition.
+    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved: ID=" + ContainerParams.ExecutableID + " VARIANT_ID=" + Resolved.value("VARIANT_ID", std::string("(none)")));
+    // (rest of the body: set ExePathRelative, ExePathComplete, WorkDir, ExeArgs — same logic as before but using Resolved)
+    // Pick exe key by runner type
     std::string ExeKey = "EXEPATH";
     if      (ContainerParams.RunnerTypeEnum == RunnerType::Emulator) ExeKey = "ROM";
     else if (ContainerParams.RunnerTypeEnum == RunnerType::Custom)   ExeKey = "DATAPATH";
-
     auto &ExeVal = Resolved[ExeKey];
-    ContainerParams.ExePathRelative  = (!ExeVal.is_null() && ExeVal.is_string())
-                                       ? std::filesystem::path(std::string(ExeVal)) : std::filesystem::path();
-    ContainerParams.ExePathComplete  = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
+    ContainerParams.ExePathRelative = (!ExeVal.is_null() && ExeVal.is_string()) ? std::filesystem::path(std::string(ExeVal)) : std::filesystem::path();
+    ContainerParams.ExePathComplete = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathRelative: " + ContainerParams.ExePathRelative.string());
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathComplete: " + ContainerParams.ExePathComplete.string());
-
     if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
     {
-        ContainerParams.ExePathInPrefix       = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
+        ContainerParams.ExePathInPrefix        = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
         ContainerParams.WindowsExePathComplete = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
         LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathInPrefix: " + ContainerParams.ExePathInPrefix.string());
     }
-
-    //WorkDir defaults to ProgramPath if absent.
     auto &WorkDirVal = Resolved["WORKDIR"];
     if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
     {
         ContainerParams.WorkDirPathRelative = std::filesystem::path(std::string(WorkDirVal));
         ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
     }
-    else
-    {
-        ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
-    }
+    else ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "WorkDirPathComplete: " + ContainerParams.WorkDirPathComplete.string());
-
-    //ExeArgs: split on spaces after variable substitution.
     ContainerParams.ExeArgs.clear();
     auto &ExeArgsVal = Resolved["EXEARGS"];
     if (!ExeArgsVal.is_null() && ExeArgsVal.is_string() && !std::string(ExeArgsVal).empty())
@@ -411,7 +441,6 @@ bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &Conta
         std::istringstream iss(Args);
         for (std::string tok; std::getline(iss, tok, ' ');) ContainerParams.ExeArgs.push_back(tok);
     }
-
     return true;
 }
 
@@ -420,7 +449,7 @@ bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &Conta
 //Variable substitution is applied to each subcomponent's JSON string at this point
 //so all downstream consumers receive already-expanded values.
 //CustomVar subcomponents are skipped — they are handled by ResolveCustomVariables.
-//ExecutableDefinition subcomponents ARE included so ResolveExecutableDefinition can scan them.
+//VariantDefinition subcomponents ARE included so ResolveExecutableDefinition can scan them.
 //MANIFEST order is preserved, which determines VFS layer stacking order.
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
@@ -603,20 +632,16 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
-    //Read ExecutableID and DefaultVariant from the subgame. All exe/args/workdir resolution
+    //Read ExecutableID and DefaultVariantID from the subgame. All exe/args/workdir resolution
     //is deferred to ResolveExecutableDefinition(), which runs after BuildSubComponentsArray.
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        auto &ExeIDField      = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        ContainerParams.ExecutableID   = (!ExeIDField.is_null()      && ExeIDField.is_string())      ? std::string(ExeIDField)      : "";
-        auto &DefVarField     = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT"];
-        ContainerParams.DefaultVariant = (!DefVarField.is_null()     && DefVarField.is_string())     ? std::string(DefVarField)     : "";
-        //SelectedVariant may already be set by CLI --variant; only set from DefaultVariant if not yet set.
-        if (ContainerParams.SelectedVariant.empty())
-            ContainerParams.SelectedVariant = ContainerParams.DefaultVariant;
-        LogOut("ContainerWrapper::DeriveContainerParams", "ExecutableID: "    + ContainerParams.ExecutableID);
-        LogOut("ContainerWrapper::DeriveContainerParams", "DefaultVariant: "  + ContainerParams.DefaultVariant);
-        LogOut("ContainerWrapper::DeriveContainerParams", "SelectedVariant: " + ContainerParams.SelectedVariant);
+        auto &ExeIDField        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
+        ContainerParams.ExecutableID     = (!ExeIDField.is_null()   && ExeIDField.is_string())   ? std::string(ExeIDField)   : "";
+        auto &DefVarIDField     = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
+        ContainerParams.DefaultVariantID = (!DefVarIDField.is_null() && DefVarIDField.is_string()) ? std::string(DefVarIDField) : "";
+        LogOut("ContainerWrapper::DeriveContainerParams", "ExecutableID: "     + ContainerParams.ExecutableID);
+        LogOut("ContainerWrapper::DeriveContainerParams", "DefaultVariantID: " + ContainerParams.DefaultVariantID);
     }
     //WorkDir defaults to ProgramPath; overridden by ResolveExecutableDefinition once SubComponentsArray is built.
     {

@@ -26,6 +26,14 @@
 //  Custom   — Any other runner; DATAPATH is passed instead of EXEPATH/ROM.
 enum class RunnerType { Wine, Emulator, Native, Custom };
 
+//Describes one available variant for a given EXECUTABLE_ID.
+//Selecting a variant = selecting the component whose chain to build up to.
+struct VariantInfo {
+    std::string VariantID;     // VARIANT_ID field on the VariantDefinition
+    std::string ComponentName; // NAME field of the component that contains it
+    std::string ComponentID;   // COMPONENTID of that component
+};
+
 //All resolved parameters needed to build and launch a single container session.
 //Populated in two stages:
 //  1. ContainerParams constructor — stores only the PASSED values (PackagePath, IDs).
@@ -69,8 +77,7 @@ public:
 
     //ExecutableDefinition resolution:
     std::string ExecutableID;                                        //PASSED from SUBGAMES["EXECUTABLE_ID"]
-    std::string DefaultVariant;                                      //PASSED from SUBGAMES["DEFAULT_VARIANT"]
-    std::string SelectedVariant;                                     //SET before ResolveExecutableDefinition (CLI --variant or user picker; falls back to DefaultVariant)
+    std::string DefaultVariantID;                                    //PASSED from SUBGAMES["DEFAULT_VARIANT_ID"]
 
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
@@ -148,17 +155,20 @@ public:
 
     //Container initialization:
     //Resolves which component_id to use given the provided subgame_id / component_id combination.
-    //If only subgame_id is set, reads COMPONENT from that subgame to resolve component_id.
+    //If only subgame_id is set, uses DEFAULT_VARIANT_ID + EXECUTABLE_ID to resolve component_id via FindComponentForVariant.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
-    //Scans SubComponentsArray for all ExecutableDefinition entries matching ContainerParams.ExecutableID.
-    //Returns the unique VARIANT values found — used to build the variant picker before launch.
-    //Empty string means "no variant specified" for that definition.
-    static std::vector<std::string> GetAvailableVariants(const struct ContainerParams &ContainerParams);
+    //Scans ALL components in MANIFESTJSON for VariantDefinition subcomponents matching ExecutableID.
+    //Returns one VariantInfo per matching component — the component NAME is the display label.
+    static std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID);
 
-    //Picks the ExecutableDefinition matching (ExecutableID, SelectedVariant) from SubComponentsArray
+    //Returns the COMPONENTID of the component containing VariantDefinition { EXECUTABLE_ID, VARIANT_ID }.
+    //Returns empty string if not found.
+    static std::string FindComponentForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID, const std::string &VariantID);
+
+    //Finds the single VariantDefinition in SubComponentsArray matching ContainerParams.ExecutableID
     //and populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
-    //Last match in SubComponentsArray wins — later components in the chain override earlier ones.
+    //The chain is already constrained by the selected component, so there should be exactly one match.
     //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
     static bool ResolveExecutableDefinition(struct ContainerParams &ContainerParams);
     //Walks the PARENTCOMPONENT chain from component_id up to the root component,
