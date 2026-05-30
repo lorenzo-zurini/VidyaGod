@@ -1490,11 +1490,23 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
 void ContainerWrapper::KillGame()
 {
     QMutexLocker Locker(&ActiveRunMutex);
-    if (ActiveRunProcess)
+    if (!ActiveRunProcess) return;
+    LogOut("ContainerWrapper::KillGame", "Killing game process tree.");
+
+    qint64 Pid = ActiveRunProcess->processId();
+    if (Pid > 0)
     {
-        LogOut("ContainerWrapper::KillGame", "Killing active game process.");
-        ActiveRunProcess->kill();
+        //Kill the entire process group (wine, wineserver, game children) in one shot.
+        //SIGKILL the group first, then the direct process as a fallback.
+        QProcess::execute("kill", {"-9", "--", "-" + QString::number(Pid)});
+
+        //Also walk /proc to kill any stragglers that escaped the group.
+        QProcess::execute("bash", {"-c",
+            "pgrep -P " + QString::number(Pid) + " | xargs -r kill -9 2>/dev/null; "
+            "kill -9 " + QString::number(Pid) + " 2>/dev/null"});
     }
+
+    ActiveRunProcess->kill(); // Qt-level cleanup in case process didn't die
 }
 
 //Unmounts all FUSE filesystems registered in CleanupUnmountPaths (in registration order),
