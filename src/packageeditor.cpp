@@ -125,6 +125,7 @@ bool PackageEditor::BuildUI()
 
     //JSON TAB
     ui->PackageEditorTabWidget->clear();
+    SubGamesTabWidget = nullptr; // Reset stale pointer — widgets are orphaned but alive until parent dies
 
     PackageEditor::JSONTabWidget = new QWidget(ui->PackageEditorTabWidget);
     QVBoxLayout * JSONTabWidgetLayout = new QVBoxLayout(JSONTabWidget);
@@ -232,7 +233,7 @@ bool PackageEditor::BuildUI()
                     if (!CurrentPlatform.empty())
                     {
                         int idx = PlatformPicker->findText(QString::fromStdString(CurrentPlatform));
-                        if (idx >= 0) PlatformPicker->setCurrentIndex(idx);
+                        if (idx >= 0) { QSignalBlocker Blocker(PlatformPicker); PlatformPicker->setCurrentIndex(idx); }
                     }
                     QObject::connect(PlatformPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::PlatformChanged);
                     Layout->addRow("PLATFORM", PlatformPicker);
@@ -684,9 +685,10 @@ bool PackageEditor::BuildUI()
                         QLineEdit * FieldEdit = new QLineEdit(IndividualSubComponentGroupBox);
                         QString FieldPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field);
                         FieldEdit->setProperty("JSONPath", FieldPath);
-                        auto &Val = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j][Field.toStdString()];
-                        if (!Val.is_null() && Val.is_string())
-                            FieldEdit->setText(QString::fromStdString(std::string(Val)));
+                        //Use contains() to avoid operator[] creating null keys for absent optional fields.
+                        auto &Sub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                        if (Sub.contains(Field.toStdString()) && Sub[Field.toStdString()].is_string())
+                            FieldEdit->setText(QString::fromStdString(std::string(Sub[Field.toStdString()])));
                         QObject::connect(FieldEdit, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                         IndividualSubComponentGroupBoxLayout->addWidget(FieldEdit, row, 1);
                         row++;
@@ -889,7 +891,10 @@ bool PackageEditor::BuildUI()
                             QLineEdit * KeyValueField = new QLineEdit(RegKeysGroupBox);
                             QString KeyValueJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/KEYVALUES/%3").arg(i).arg(j).arg(QString::fromStdString(Object.key()));
                             KeyValueField->setProperty("JSONPath", KeyValueJSONPath);
-                            KeyValueField->setText(QString::fromStdString(Object.value()));
+                            if (Object.value().is_string())
+                                KeyValueField->setText(QString::fromStdString(std::string(Object.value())));
+                            else if (!Object.value().is_null())
+                                KeyValueField->setText(QString::fromStdString(Object.value().dump()));
                             QObject::connect(KeyValueField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                             RegKeysGroupBoxLayout->addWidget(KeyValueField, k, 1);
                             k++;
@@ -907,12 +912,40 @@ bool PackageEditor::BuildUI()
                         QLineEdit * FieldEdit = new QLineEdit(IndividualSubComponentGroupBox);
                         QString FieldPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field);
                         FieldEdit->setProperty("JSONPath", FieldPath);
-                        auto &Val = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j][Field.toStdString()];
-                        if (!Val.is_null() && Val.is_string())
-                            FieldEdit->setText(QString::fromStdString(std::string(Val)));
+                        //Use contains() to avoid operator[] creating null keys for absent optional fields.
+                        auto &Sub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                        if (Sub.contains(Field.toStdString()) && Sub[Field.toStdString()].is_string())
+                            FieldEdit->setText(QString::fromStdString(std::string(Sub[Field.toStdString()])));
                         QObject::connect(FieldEdit, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                         IndividualSubComponentGroupBoxLayout->addWidget(FieldEdit, row, 1);
                         row++;
+                    }
+                }
+                else if (SubComponentType == "DllOverride")
+                {
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("DLLOVERRIDE:"), 1, 0);
+                    QLineEdit * DLLField = new QLineEdit(IndividualSubComponentGroupBox);
+                    QString DLLPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/DLLOVERRIDE").arg(i).arg(j);
+                    DLLField->setProperty("JSONPath", DLLPath);
+                    auto &Sub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                    if (Sub.contains("DLLOVERRIDE") && Sub["DLLOVERRIDE"].is_string())
+                        DLLField->setText(QString::fromStdString(std::string(Sub["DLLOVERRIDE"])));
+                    QObject::connect(DLLField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(DLLField, 1, 1);
+                }
+                else if (SubComponentType == "FileEdit")
+                {
+                    for (const QString &Field : QStringList{"MODE", "FILE", "KEY", "VALUE"})
+                    {
+                        int row = 1 + QStringList{"MODE","FILE","KEY","VALUE"}.indexOf(Field);
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(Field + ":"), row, 0);
+                        QLineEdit * FEField = new QLineEdit(IndividualSubComponentGroupBox);
+                        FEField->setProperty("JSONPath", QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field));
+                        auto &Sub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                        if (Sub.contains(Field.toStdString()) && Sub[Field.toStdString()].is_string())
+                            FEField->setText(QString::fromStdString(std::string(Sub[Field.toStdString()])));
+                        QObject::connect(FEField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        IndividualSubComponentGroupBoxLayout->addWidget(FEField, row, 1);
                     }
                 }
                 else
