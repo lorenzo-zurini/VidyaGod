@@ -282,8 +282,9 @@ PreLaunchWindow::PreLaunchWindow(
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
     if (SubgameIdx != -1)
     {
-        setWindowTitle("Launch " + QString::fromStdString(
-            std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"])));
+        auto &TitleVal = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"];
+        std::string Title = (!TitleVal.is_null() && TitleVal.is_string()) ? std::string(TitleVal) : SubgameID;
+        setWindowTitle("Launch " + QString::fromStdString(Title));
 
         auto &SubgameMeta = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["METADATA"];
         std::string CoverFile =
@@ -330,7 +331,10 @@ PreLaunchWindow::PreLaunchWindow(
         if (!Source["RUNNERS"].contains(Platform)) return;
         for (auto &Runner : Source["RUNNERS"][Platform])
         {
-            QString Label = QString::fromStdString(Runner.value("NAME", std::string("(unnamed)")));
+            //Use explicit null check — .value() throws if key exists but value is JSON null.
+            std::string Name = (Runner.contains("NAME") && Runner["NAME"].is_string())
+                               ? std::string(Runner["NAME"]) : "(unnamed)";
+            QString Label = QString::fromStdString(Name);
             Runners.push_back({Label, Runner});
             RunnerCombo->addItem(Label);
         }

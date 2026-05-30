@@ -576,7 +576,8 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         auto &Runners = Source["RUNNERS"][ContainerParams.Platform];
         for (auto &Runner : Runners)
         {
-            if (!PreferredRunner.empty() && Runner["NAME"] == PreferredRunner)
+            std::string RunnerName = (Runner.contains("NAME") && Runner["NAME"].is_string()) ? std::string(Runner["NAME"]) : "";
+            if (!PreferredRunner.empty() && RunnerName == PreferredRunner)
             {
                 SelectedRunner = Runner;
                 return;
@@ -593,17 +594,18 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
 
     if (!SelectedRunner.is_null())
     {
-        ContainerParams.RunnerName       = SelectedRunner["NAME"];
-        ContainerParams.RunnerExecutable = SelectedRunner["EXECUTABLE"];
-        std::string RunnerTypeStr        = SelectedRunner["TYPE"];
+        //Use explicit null guards — direct JSON-to-string conversion throws on null values.
+        ContainerParams.RunnerName       = (SelectedRunner.contains("NAME")       && SelectedRunner["NAME"].is_string())       ? std::string(SelectedRunner["NAME"])       : "";
+        ContainerParams.RunnerExecutable = (SelectedRunner.contains("EXECUTABLE") && SelectedRunner["EXECUTABLE"].is_string()) ? std::string(SelectedRunner["EXECUTABLE"]) : "";
+        std::string RunnerTypeStr        = (SelectedRunner.contains("TYPE")       && SelectedRunner["TYPE"].is_string())       ? std::string(SelectedRunner["TYPE"])       : "custom";
         //Map the string type to the enum so the rest of the code can branch without string comparisons.
         if (RunnerTypeStr == "wine")           ContainerParams.RunnerTypeEnum = RunnerType::Wine;
         else if (RunnerTypeStr == "emulator")  ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
         else if (RunnerTypeStr == "custom")    ContainerParams.RunnerTypeEnum = RunnerType::Custom;
         else                                   ContainerParams.RunnerTypeEnum = RunnerType::Native;
         if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
-        if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(E);
-        if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(A);
+        if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
+        if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
     }
     else
     {
