@@ -40,6 +40,9 @@ set(PROJECT_SOURCES
     src/commonutils.h
     src/commonutils.cpp
 
+    src/prelaunchwindow.h
+    src/prelaunchwindow.cpp
+
     translations/${TS_FILES}
 )
 

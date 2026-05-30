@@ -166,6 +166,34 @@ bool ContainerWrapper::BuildVirtualFilesystem()
     return true;
 }
 
+//Returns a copy of LIBRARY[i]["USERSETTINGS"] for the given PackageUID, or empty object if not found.
+nlohmann::ordered_json ContainerWrapper::GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID)
+{
+    if (!GlobalConfigJSON.contains("LIBRARY")) return nlohmann::ordered_json::object();
+    for (auto &Entry : GlobalConfigJSON["LIBRARY"])
+    {
+        if (Entry.contains("PACKAGEUID") && std::string(Entry["PACKAGEUID"]) == PackageUID)
+            return Entry.contains("USERSETTINGS") ? Entry["USERSETTINGS"] : nlohmann::ordered_json::object();
+    }
+    return nlohmann::ordered_json::object();
+}
+
+//Writes Key=Value into LIBRARY[i]["USERSETTINGS"] for the given PackageUID.
+void ContainerWrapper::SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value)
+{
+    if (!GlobalConfigJSON.contains("LIBRARY")) return;
+    for (auto &Entry : GlobalConfigJSON["LIBRARY"])
+    {
+        if (Entry.contains("PACKAGEUID") && std::string(Entry["PACKAGEUID"]) == PackageUID)
+        {
+            if (!Entry.contains("USERSETTINGS") || !Entry["USERSETTINGS"].is_object())
+                Entry["USERSETTINGS"] = nlohmann::ordered_json::object();
+            Entry["USERSETTINGS"][Key] = Value;
+            return;
+        }
+    }
+}
+
 //Resolves which component to use based on the combination of subgame_id and component_id:
 //  - Both empty:    no specific component needed (e.g. prefix-only launch).
 //  - Subgame only:  reads the subgame's COMPONENT field to resolve component_id automatically.
@@ -278,12 +306,10 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
             LogOut("ContainerWrapper::ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
             return ContainerParams.VariableOverrides.at(Key);
         }
-        if (GlobalConfigJSON.contains("USERSETTINGS") &&
-            GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
-            GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("VARIABLES") &&
-            GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"].contains(Key))
+        auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
+        if (US.contains("VARIABLES") && US["VARIABLES"].contains(Key))
         {
-            std::string Val = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"][Key];
+            std::string Val = US["VARIABLES"][Key];
             LogOut("ContainerWrapper::ResolveCustomVariables", "User setting: " + Key + " = " + Val);
             return Val;
         }
@@ -526,11 +552,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
 
     // Runner resolution: USERSETTINGS > RECOMMENDED_RUNNER > first available
     std::string PreferredRunner;
-    if (GlobalConfigJSON.contains("USERSETTINGS") &&
-        GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
-        GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("PREFERRED_RUNNER"))
     {
-        PreferredRunner = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["PREFERRED_RUNNER"];
+        auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
+        if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
+            PreferredRunner = std::string(US["PREFERRED_RUNNER"]);
     }
     if (PreferredRunner.empty() && !ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
@@ -1432,8 +1457,22 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
     RunProcess.setArguments(Arguments);
     RunProcess.setProcessEnvironment(RunProcessEnvironment);
+
+    //Register the process pointer so KillGame() can signal it while Execute() blocks.
+    {
+        QMutexLocker Locker(&ActiveRunMutex);
+        ActiveRunProcess = &RunProcess;
+    }
+
     RunProcess.start();
     RunProcess.waitForFinished(-1);
+
+    //Clear the pointer before reading output so KillGame() does not dereference a finished process.
+    {
+        QMutexLocker Locker(&ActiveRunMutex);
+        ActiveRunProcess = nullptr;
+    }
+
     std::cout << RunProcess.readAllStandardError().toStdString() << std::endl;
     std::cout << RunProcess.readAllStandardOutput().toStdString() << std::endl;
 
@@ -1444,6 +1483,18 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
     LogOut("ContainerWrapper::Execute", "Process exited normally with code " + std::to_string(RunProcess.exitCode()));
     return true;
+}
+
+//Sends SIGKILL to the active game process if one is running.
+//Called from the UI thread while Execute() blocks on the worker thread.
+void ContainerWrapper::KillGame()
+{
+    QMutexLocker Locker(&ActiveRunMutex);
+    if (ActiveRunProcess)
+    {
+        LogOut("ContainerWrapper::KillGame", "Killing active game process.");
+        ActiveRunProcess->kill();
+    }
 }
 
 //Unmounts all FUSE filesystems registered in CleanupUnmountPaths (in registration order),

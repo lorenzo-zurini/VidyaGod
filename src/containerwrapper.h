@@ -18,6 +18,8 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QProcess>
+#include <QMutex>
+#include <QMutexLocker>
 
 //Determines which execution backend is used for a subgame.
 //  Wine     — Windows executables via Wine/Proton (umu-run); needs a Wine prefix and VFS drive_c layout.
@@ -143,12 +145,23 @@ public:
     //instead of the manifest's EXEPATH/ROM. Blocks until the process exits.
     bool Execute(std::string OverrideExe = "");
 
+    //Sends SIGKILL to the game process started by Execute() if it is still running.
+    //Safe to call from any thread; no-op if no process is active.
+    void KillGame();
+
     //Unmounts all paths in CleanupUnmountPaths (fusermount -uz) and removes RUNTIME and TEMP.
     bool Cleanup();
 
     //ID lookup helpers:
     //Linear scan of MANIFEST["SUBGAMES"] for a matching SUBGAMEID. Returns index or -1.
     static int FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
+
+    //Per-package user settings helpers (settings live inside LIBRARY[i]["USERSETTINGS"]):
+    //Returns a COPY of the USERSETTINGS object for the given PackageUID, or an empty object if not found.
+    static nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID);
+    //Writes a key/value into LIBRARY[i]["USERSETTINGS"] for the given PackageUID.
+    //Creates the USERSETTINGS object if absent. No-op if the package is not in LIBRARY.
+    static void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value);
     //Linear scan of MANIFEST["COMPONENTS"] for a matching COMPONENTID. Returns index or -1.
     //Returns -1 immediately if ComponentID is empty.
     static int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID);
@@ -247,5 +260,10 @@ private:
 
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;
+
+    //Set to the running QProcess during Execute() so KillGame() can signal it.
+    //Null at all other times. Read/written only under ActiveRunMutex.
+    QProcess* ActiveRunProcess = nullptr;
+    QMutex    ActiveRunMutex;
 };
 #endif // CONTAINERWRAPPER_H

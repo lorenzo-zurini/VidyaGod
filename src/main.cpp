@@ -246,9 +246,9 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         //GlobalConfig holds an empty array here — it is never populated from the online registry.
         (*GlobalConfigJSON)["RUNNERS"]["Custom"] = nlohmann::ordered_json::array();
 
-        //Start with empty per-package user overrides and an empty library.
-        (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
-        (*GlobalConfigJSON)["LIBRARY"]      = nlohmann::ordered_json::array();
+        //Per-package user settings (PREFERRED_RUNNER, PREFERRED_VARIANT_ID, VARIABLES, etc.)
+        //now live inside each LIBRARY entry under "USERSETTINGS" — no separate top-level object.
+        (*GlobalConfigJSON)["LIBRARY"] = nlohmann::ordered_json::array();
 
         if (JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
         {

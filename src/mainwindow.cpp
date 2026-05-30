@@ -5,6 +5,7 @@
 #include "packageeditor.h"
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
+#include "prelaunchwindow.h"
 
 //TO-DO: ADD VARIABLE SUBSTITUTION WITH ENV VARS AND AUTOCALC
 //TO-DO: FIX EXE COMMAND LINE PARSING AND WORKDIR
@@ -237,47 +238,78 @@ void MainWindow::RebuildDynamicUI()
 //GlobalConfigJSON["LIBRARY"] and saves to disk before rebuilding the UI.
 void MainWindow::on_AddGameButton_clicked()
 {
-    QDir * PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select GAMEDIR..."));
+    QString SelectedPath = QFileDialog::getExistingDirectory(this, "Select package or directory...");
+    if (SelectedPath.isEmpty()) return;
 
-    if(!FSOps::CheckPackageValid(PackageDir))
+    //Collect all valid package directories: the selected dir itself and/or any direct or
+    //nested subdirectories that contain a METADATA/MANIFEST.json.
+    QStringList PackagePaths;
+    std::function<void(const QString &)> ScanDir = [&](const QString &DirPath)
     {
-        LogErr("MainWindow", "Invalid package, aborting..");
-        return;
-    }
-
-    //Catch nullptr return value of the JSON, returned if parser errorred.
-    nlohmann::ordered_json * MANIFESTJSON = new nlohmann::ordered_json;
-    if(JSONOps::LoadJSON(new QFile(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), MANIFESTJSON))
-    {
-        LogErr("MainWindow", "Parser returned nullptr.");
-        delete MANIFESTJSON;
-        return;
-    }
-
-    //Prevent adding the same package twice — compare by PACKAGEUID, not path.
-    for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
-    {
-        if ((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"] == (*MANIFESTJSON)["PACKAGEUID"])
+        QDir Dir(DirPath);
+        if (FSOps::CheckPackageValid(&Dir))
         {
-            LogErr("MainWindow", "Package already exists in library.");
-            return;
+            PackagePaths.append(DirPath);
+            return; // Don't recurse into a package directory itself
         }
+        // Not a package — recurse into immediate subdirectories
+        for (const QString &SubDir : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            ScanDir(QDir::cleanPath(DirPath + QDir::separator() + SubDir));
+    };
+    ScanDir(SelectedPath);
+
+    if (PackagePaths.isEmpty())
+    {
+        QMessageBox::warning(this, "No packages found",
+            "The selected directory does not contain any valid packages (no METADATA subdirectory found).");
+        return;
     }
 
-    //Store only the fields needed for the Packages tab and card construction;
-    //the full MANIFEST is re-read per-subgame by LibraryGameCard::InitializeClassVariables.
-    nlohmann::ordered_json SlimEntry;
-    SlimEntry["PACKAGEUID"]     = (*MANIFESTJSON)["PACKAGEUID"];
-    SlimEntry["PACKAGENAME"]    = (*MANIFESTJSON)["PACKAGENAME"];
-    SlimEntry["PACKAGEVERSION"] = (*MANIFESTJSON)["PACKAGEVERSION"];
-    SlimEntry["PATH"]           = PackageDir->path().toStdString();
-    (*GlobalConfigJSON)["LIBRARY"].push_back(SlimEntry);
-    MainWindow::SaveGlobalConfigJSON();
+    //Add each discovered package, skipping duplicates by PACKAGEUID.
+    int Added = 0, Skipped = 0;
+    for (const QString &Path : PackagePaths)
+    {
+        nlohmann::ordered_json MANIFESTJSON;
+        QFile ManifestFile(QDir::cleanPath(Path + "/METADATA/MANIFEST.json"));
+        if (JSONOps::LoadJSON(&ManifestFile, &MANIFESTJSON))
+        {
+            LogErr("MainWindow", "Could not parse MANIFEST for " + Path.toStdString() + ", skipping.");
+            Skipped++;
+            continue;
+        }
 
-    delete PackageDir;
-    delete MANIFESTJSON;
+        //Duplicate check by PACKAGEUID
+        bool Duplicate = false;
+        for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
+        {
+            if (Entry["PACKAGEUID"] == MANIFESTJSON["PACKAGEUID"])
+            {
+                LogOut("MainWindow", "Package " + std::string(MANIFESTJSON["PACKAGENAME"]) + " already in library, skipping.");
+                Duplicate = true;
+                Skipped++;
+                break;
+            }
+        }
+        if (Duplicate) continue;
 
-    this->RebuildDynamicUI();
+        nlohmann::ordered_json SlimEntry;
+        SlimEntry["PACKAGEUID"]     = MANIFESTJSON["PACKAGEUID"];
+        SlimEntry["PACKAGENAME"]    = MANIFESTJSON["PACKAGENAME"];
+        SlimEntry["PACKAGEVERSION"] = MANIFESTJSON["PACKAGEVERSION"];
+        SlimEntry["PATH"]           = Path.toStdString();
+        (*GlobalConfigJSON)["LIBRARY"].push_back(SlimEntry);
+        LogSucc("MainWindow", "Added package: " + std::string(MANIFESTJSON["PACKAGENAME"]));
+        Added++;
+    }
+
+    if (Added > 0)
+    {
+        MainWindow::SaveGlobalConfigJSON();
+        this->RebuildDynamicUI();
+    }
+
+    QMessageBox::information(this, "Done",
+        QString("Added %1 package(s). %2 skipped (already in library or invalid).").arg(Added).arg(Skipped));
 }
 
 //Serializes GlobalConfigJSON to GlobalConfig.JSON in AppDataDir.
@@ -365,192 +397,61 @@ void LibraryGameCard::InitializeClassVariables()
         this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString(CoverFile))));
 }
 
-//Builds and launches the full container stack for this card's subgame:
-//  1. Constructs ContainerParams and ContainerWrapper.
-//  2. Calls BuildContainerRuntime() — mounts VFS layers, applies registry patches, DLL overrides.
-//  3. Calls Execute() — runs the game and blocks until it exits.
-//  4. Calls Cleanup() regardless of success so mounts are always unmounted.
-//Shows a critical dialog if either build or execute fails.
+//Opens the PreLaunchWindow for this card's subgame.
+//If the user has previously checked "Remember & skip" and is NOT holding Shift,
+//the dialog is bypassed and the game launches directly with the saved settings.
 void LibraryGameCard::on_PlayGameButton_clicked()
 {
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
-    LogOut("MainWindow", "Running game " + (SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID));
+    LogOut("MainWindow", "Play clicked for " + (SubgameIdx != -1
+        ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"])
+        : this->SubgameID));
 
-    // Read the subgame's EXECUTABLE_ID and DEFAULT_VARIANT_ID
-    std::string ExecutableID = "";
-    std::string DefaultVariantID = "";
-    if (SubgameIdx != -1)
+    // Retrieve PackageUID for USERSETTINGS lookups.
+    std::string PackageUID;
+    if (this->MANIFESTJSON->contains("PACKAGEUID") && !(*this->MANIFESTJSON)["PACKAGEUID"].is_null())
+        PackageUID = std::string((*this->MANIFESTJSON)["PACKAGEUID"]);
+
+    // Check whether the user has opted to skip the dialog for this package.
+    bool SkipDialog = false;
+    if (!PackageUID.empty())
     {
-        auto &EField = (*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        if (!EField.is_null() && EField.is_string()) ExecutableID = std::string(EField);
-        auto &DField = (*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
-        if (!DField.is_null() && DField.is_string()) DefaultVariantID = std::string(DField);
+        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
+            SkipDialog = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
 
-    // Collect available variants from the full manifest
-    std::vector<VariantInfo> Variants = ContainerWrapper::GetAvailableVariants(*this->MANIFESTJSON, ExecutableID);
+    // Holding Shift forces the dialog even when "skip" is set.
+    bool ShiftHeld = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
 
-    // Determine the default component to use
-    std::string SelectedComponentID = ContainerWrapper::FindComponentForVariant(*this->MANIFESTJSON, ExecutableID, DefaultVariantID);
-    if (SelectedComponentID.empty() && !Variants.empty())
-        SelectedComponentID = Variants.front().ComponentID;
-
-    // Collect available runners (need a temporary container to resolve platform)
-    // Build a temporary ContainerParams with the resolved component to get the platform/runner info
-    struct ContainerParams TempParams = ContainerParams(this->PackagePath, this->SubgameID, SelectedComponentID);
-    class ContainerWrapper TempWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), TempParams);
-
-    std::vector<std::pair<QString, nlohmann::ordered_json>> Runners;
-    auto CollectRunners = [&](const nlohmann::ordered_json &Source)
+    if (!SkipDialog || ShiftHeld)
     {
-        if (!Source.contains("RUNNERS")) return;
-        std::string Platform = TempWrapper.ContainerParams.Platform;
-        if (!Source["RUNNERS"].contains(Platform)) return;
-        for (auto &Runner : Source["RUNNERS"][Platform])
-        {
-            QString Label = QString::fromStdString(Runner.value("NAME", std::string("(unnamed)")));
-            Runners.push_back({Label, Runner});
-        }
-    };
-    CollectRunners(*GlobalConfigJSON);
-    CollectRunners(*this->MANIFESTJSON);
-
-    //Show the launch dialog when there is a choice to make (runner or variant).
-    if (Variants.size() > 1 || Runners.size() > 1)
-    {
-        QDialog LaunchDialog(nullptr);
-        LaunchDialog.setWindowTitle("Launch " + QString::fromStdString(
-            SubgameIdx != -1 ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]) : this->SubgameID));
-        LaunchDialog.setMinimumWidth(400);
-        QVBoxLayout * VLayout = new QVBoxLayout(&LaunchDialog);
-        QFormLayout * Form = new QFormLayout();
-        VLayout->addLayout(Form);
-
-        //Runner picker — always shown when multiple runners are available.
-        QComboBox * RunnerPicker = nullptr;
-        if (Runners.size() > 1)
-        {
-            RunnerPicker = new QComboBox(&LaunchDialog);
-            for (auto &[Label, _] : Runners)
-                RunnerPicker->addItem(Label);
-            //Pre-select current runner.
-            int CurrentIdx = RunnerPicker->findText(QString::fromStdString(TempWrapper.ContainerParams.RunnerName));
-            if (CurrentIdx >= 0) RunnerPicker->setCurrentIndex(CurrentIdx);
-            Form->addRow("Runner:", RunnerPicker);
-        }
-
-        //Variant picker — shown when multiple variants exist. Label is ComponentName; value is VariantID.
-        QComboBox * VariantPicker = nullptr;
-        if (Variants.size() > 1)
-        {
-            VariantPicker = new QComboBox(&LaunchDialog);
-            for (auto &V : Variants)
-                VariantPicker->addItem(QString::fromStdString(V.ComponentName), QString::fromStdString(V.VariantID));
-            // Pre-select the default variant
-            for (int k = 0; k < VariantPicker->count(); k++)
-            {
-                if (VariantPicker->itemData(k).toString().toStdString() == DefaultVariantID)
-                { VariantPicker->setCurrentIndex(k); break; }
-            }
-            Form->addRow("Variant:", VariantPicker);
-        }
-
-        QHBoxLayout * BtnRow = new QHBoxLayout();
-        VLayout->addLayout(BtnRow);
-        BtnRow->addStretch();
-        QPushButton * CancelBtn = new QPushButton("Cancel", &LaunchDialog);
-        QPushButton * LaunchBtn = new QPushButton("Launch", &LaunchDialog);
-        LaunchBtn->setDefault(true);
-        BtnRow->addWidget(CancelBtn);
-        BtnRow->addWidget(LaunchBtn);
-        QObject::connect(CancelBtn, &QPushButton::clicked, &LaunchDialog, &QDialog::reject);
-        QObject::connect(LaunchBtn, &QPushButton::clicked, &LaunchDialog, &QDialog::accept);
-
-        if (LaunchDialog.exec() != QDialog::Accepted) return;
-
-        //Apply selected variant — find the component for the chosen VariantID.
-        if (VariantPicker)
-        {
-            std::string PickedVariantID = VariantPicker->currentData().toString().toStdString();
-            std::string NewComponentID  = ContainerWrapper::FindComponentForVariant(*this->MANIFESTJSON, ExecutableID, PickedVariantID);
-            if (!NewComponentID.empty()) SelectedComponentID = NewComponentID;
-        }
-
-        //Apply selected runner override (will be set on the final ContainerWrapper below).
-        if (RunnerPicker)
-        {
-            int Idx = RunnerPicker->currentIndex();
-            if (Idx >= 0 && Idx < (int)Runners.size())
-            {
-                auto &R = Runners[Idx].second;
-                TempWrapper.ContainerParams.RunnerName       = R.value("NAME",       std::string());
-                TempWrapper.ContainerParams.RunnerExecutable = R.value("EXECUTABLE",  std::string());
-                std::string TypeStr                          = R.value("TYPE",        std::string("wine"));
-                if      (TypeStr == "wine")      TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Wine;
-                else if (TypeStr == "emulator")  TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
-                else if (TypeStr == "custom")    TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Custom;
-                else                             TempWrapper.ContainerParams.RunnerTypeEnum = RunnerType::Native;
-                TempWrapper.ContainerParams.RunnerEnv       = R.contains("ENV")        ? R["ENV"]        : nlohmann::ordered_json::object();
-                TempWrapper.ContainerParams.RunnerRemoveEnv.clear();
-                TempWrapper.ContainerParams.RunnerArgs.clear();
-                if (R.contains("REMOVE_ENV")) for (auto &E : R["REMOVE_ENV"]) TempWrapper.ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
-                if (R.contains("ARGS"))       for (auto &A : R["ARGS"])       TempWrapper.ContainerParams.RunnerArgs.push_back(std::string(A));
-            }
-        }
-    }
-
-    // Construct the final ContainerWrapper with the resolved component_id
-    struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID, SelectedComponentID);
-    class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
-
-    // Apply runner override from dialog if one was picked
-    if (!TempWrapper.ContainerParams.RunnerName.empty() &&
-        TempWrapper.ContainerParams.RunnerName != NewContainerWrapper.ContainerParams.RunnerName)
-    {
-        NewContainerWrapper.ContainerParams.RunnerName       = TempWrapper.ContainerParams.RunnerName;
-        NewContainerWrapper.ContainerParams.RunnerExecutable = TempWrapper.ContainerParams.RunnerExecutable;
-        NewContainerWrapper.ContainerParams.RunnerTypeEnum   = TempWrapper.ContainerParams.RunnerTypeEnum;
-        NewContainerWrapper.ContainerParams.RunnerEnv        = TempWrapper.ContainerParams.RunnerEnv;
-        NewContainerWrapper.ContainerParams.RunnerRemoveEnv  = TempWrapper.ContainerParams.RunnerRemoveEnv;
-        NewContainerWrapper.ContainerParams.RunnerArgs       = TempWrapper.ContainerParams.RunnerArgs;
-    }
-
-    if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
-    {
-        QMessageBox::critical(nullptr, "Launch failed", "Could not resolve variant definition.\nCheck EXECUTABLE_ID and VARIANT_ID in the manifest.");
+        // Show PreLaunchWindow as a non-modal dialog.
+        PreLaunchWindow * Dialog = new PreLaunchWindow(
+            this->GlobalConfigJSON,
+            this->MANIFESTJSON,
+            this->PackagePath.string(),
+            this->SubgameID,
+            nullptr);
+        Dialog->show();
         return;
     }
 
-    if (!NewContainerWrapper.BuildContainerRuntime())
-    {
-        NewContainerWrapper.Cleanup();
-        QMessageBox::critical(nullptr, "Launch failed", "Failed to build container runtime.\nCheck that all components are defined and their zip files exist.");
-        return;
-    }
-    if (!NewContainerWrapper.Execute())
-    {
-        NewContainerWrapper.Cleanup();
-        QMessageBox::critical(nullptr, "Launch failed", "Failed to execute the game.\nCheck the runner configuration and file paths.");
-        return;
-    }
-    //Pause before cleanup so the user can inspect any post-exit state (e.g. crash logs).
-    QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
-    NewContainerWrapper.Cleanup();
-
-    //Runner * GameRunner = new Runner(new QDir(this->PackagePath), this->MANIFESTJSON, this->GlobalConfigJSON, this->SubGame);
-
-    //std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Executing pre-run cleanup." << std::endl;
-    //GameRunner->Cleanup();
-    //std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Building runtime." << std::endl;
-    //GameRunner->BuildRuntime();
-    //std::cout << QTime::currentTime().toString().toStdString() << "[OUT] MainWindow:" << "Running game" << (*this->MANIFESTJSON)["SUBGAMES"][this->SubGame - 1]["TITLE"] << std::endl;
-    //GameRunner->Run();
-    //QMessageBox::warning(nullptr, "Ready for cleanup...", "Press OK to start cleanup");
-    //GameRunner->Cleanup();
-
-    //delete NewContainerWrapper;
-    //delete MANIFESTJSON;
+    // ----------------------------------------------------------------
+    // Skip-dialog fast path: show the window but auto-click Launch so
+    // the user can still see progress and kill if needed.
+    // ----------------------------------------------------------------
+    PreLaunchWindow * Dialog = new PreLaunchWindow(
+        this->GlobalConfigJSON,
+        this->MANIFESTJSON,
+        this->PackagePath.string(),
+        this->SubgameID,
+        nullptr);
+    Dialog->show();
+    // Auto-click Launch after the event loop processes the show event.
+    QMetaObject::invokeMethod(Dialog, "onLaunchClicked", Qt::QueuedConnection);
 }
+
 
 void LibraryGameCard::on_GameCard_clicked()
 {
