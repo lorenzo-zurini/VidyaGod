@@ -65,7 +65,9 @@ private slots:
     void RegeditInComponent();
     void ExecuteComponent();
     void AnalyzeComponent();
-    void AddFileLayer();
+    void AddVFSDirLayer();
+    void AddVFSZipLayer();
+    void AddVFSFileLayer();
     void FinalizeComponent();
 
 private:

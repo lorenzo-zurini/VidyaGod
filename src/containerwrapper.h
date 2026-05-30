@@ -67,6 +67,11 @@ public:
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
 
+    //ExecutableDefinition resolution:
+    std::string ExecutableID;                                        //PASSED from SUBGAMES["EXECUTABLE_ID"]
+    std::string DefaultVariant;                                      //PASSED from SUBGAMES["DEFAULT_VARIANT"]
+    std::string SelectedVariant;                                     //SET before ResolveExecutableDefinition (CLI --variant or user picker; falls back to DefaultVariant)
+
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
     std::string ScreenHeight;
@@ -145,6 +150,17 @@ public:
     //Resolves which component_id to use given the provided subgame_id / component_id combination.
     //If only subgame_id is set, reads COMPONENT from that subgame to resolve component_id.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+
+    //Scans SubComponentsArray for all ExecutableDefinition entries matching ContainerParams.ExecutableID.
+    //Returns the unique VARIANT values found — used to build the variant picker before launch.
+    //Empty string means "no variant specified" for that definition.
+    static std::vector<std::string> GetAvailableVariants(const struct ContainerParams &ContainerParams);
+
+    //Picks the ExecutableDefinition matching (ExecutableID, SelectedVariant) from SubComponentsArray
+    //and populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
+    //Last match in SubComponentsArray wins — later components in the chain override earlier ones.
+    //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
+    static bool ResolveExecutableDefinition(struct ContainerParams &ContainerParams);
     //Walks the PARENTCOMPONENT chain from component_id up to the root component,
     //producing an ordered Recipe (ancestor-first).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);

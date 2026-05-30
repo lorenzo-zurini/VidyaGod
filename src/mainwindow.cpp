@@ -356,8 +356,13 @@ void LibraryGameCard::InitializeClassVariables()
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
     if (SubgameIdx == -1) return;
     this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]);
-    //Build the full cover path from PackagePath + METADATA + the relative cover filename stored in the manifest.
-    this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"]))));
+    //COVER lives under METADATA since v2 of the manifest schema; fall back to flat for old manifests.
+    auto &SubgameMeta = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["METADATA"];
+    std::string CoverFile = (SubgameMeta.is_object() && SubgameMeta.contains("COVER") && SubgameMeta["COVER"].is_string())
+                            ? std::string(SubgameMeta["COVER"])
+                            : ((*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("COVER") ? std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"]) : "");
+    if (!CoverFile.empty())
+        this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString(CoverFile))));
 }
 
 //Builds and launches the full container stack for this card's subgame:
@@ -373,6 +378,40 @@ void LibraryGameCard::on_PlayGameButton_clicked()
 
     struct ContainerParams NewContainerParams = ContainerParams(this->PackagePath, this->SubgameID);
     class ContainerWrapper NewContainerWrapper = ContainerWrapper((*GlobalConfigJSON), (*this->MANIFESTJSON), NewContainerParams);
+
+    //Show a variant picker when the component chain exposes multiple variants for this EXECUTABLE_ID.
+    std::vector<std::string> Variants = ContainerWrapper::GetAvailableVariants(NewContainerWrapper.ContainerParams);
+    if (Variants.size() > 1)
+    {
+        QDialog VariantDialog(nullptr);
+        VariantDialog.setWindowTitle("Select Variant");
+        QVBoxLayout * VLayout = new QVBoxLayout(&VariantDialog);
+        QComboBox * VariantPicker = new QComboBox(&VariantDialog);
+        for (auto &V : Variants)
+            VariantPicker->addItem(V.empty() ? "(default)" : QString::fromStdString(V));
+        //Pre-select DefaultVariant if it's in the list.
+        int DefaultIdx = VariantPicker->findText(QString::fromStdString(NewContainerWrapper.ContainerParams.DefaultVariant));
+        if (DefaultIdx >= 0) VariantPicker->setCurrentIndex(DefaultIdx);
+        VLayout->addWidget(new QLabel("Multiple variants available. Select one to launch:"));
+        VLayout->addWidget(VariantPicker);
+        QHBoxLayout * BtnRow = new QHBoxLayout();
+        VLayout->addLayout(BtnRow);
+        BtnRow->addStretch();
+        QPushButton * OkBtn = new QPushButton("Launch", &VariantDialog);
+        OkBtn->setDefault(true);
+        BtnRow->addWidget(OkBtn);
+        QObject::connect(OkBtn, &QPushButton::clicked, &VariantDialog, &QDialog::accept);
+        VariantDialog.exec();
+        std::string Picked = VariantPicker->currentText().toStdString();
+        NewContainerWrapper.ContainerParams.SelectedVariant = (Picked == "(default)") ? "" : Picked;
+    }
+
+    if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
+    {
+        QMessageBox::critical(nullptr, "Launch failed", "Could not resolve executable definition.\nCheck EXECUTABLE_ID and VARIANT in the manifest.");
+        return;
+    }
+
     if (!NewContainerWrapper.BuildContainerRuntime())
     {
         NewContainerWrapper.Cleanup();

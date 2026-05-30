@@ -63,9 +63,15 @@ int main(int argc, char *argv[])
         //Construct the container, build its runtime (mounts, prefix, registry patches),
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
         struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
-        //Pass CLI variable overrides so ResolveCustomVariables can apply them at highest priority.
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
+        //SelectedVariant set before construction so DeriveContainerParams sees it and skips DefaultVariant.
+        NewContainerParams.SelectedVariant   = LaunchParameters.SelectedVariant;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
+        if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
+        {
+            LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
+            return 1;
+        }
         NewContainerWrapper.BuildContainerRuntime();
         NewContainerWrapper.Execute();
         return 0;
@@ -202,8 +208,12 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         Snes9x["EXECUTABLE"] = "snes9x";
         Snes9x["ENV"]        = nlohmann::ordered_json::object();
         Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
-        Snes9x["ARGS"]       = nlohmann::ordered_json::array();
+        Snes9x["ARGS"]       = nlohmann::ordered_json::array({"-fullscreen"}); //TO-DO: expose via settings
         (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
+
+        //Custom platform: runner is always defined entirely inside the package MANIFEST.
+        //GlobalConfig holds an empty array here — it is never populated from the online registry.
+        (*GlobalConfigJSON)["RUNNERS"]["Custom"] = nlohmann::ordered_json::array();
 
         //Start with empty per-package user overrides and an empty library.
         (*GlobalConfigJSON)["USERSETTINGS"] = nlohmann::ordered_json::object();
@@ -283,6 +293,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             auto eq = kv.find('=');
             if (eq != std::string::npos)
                 RuntimeParameters.VariableOverrides[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+        else if (arg == "--variant" && i + 1 < argc)
+        {
+            RuntimeParameters.SelectedVariant = argv[++i];
         }
     }
     return RuntimeParameters;

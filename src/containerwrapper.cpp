@@ -184,7 +184,7 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
     {
         int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
-        auto &ComponentField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["COMPONENT"];
+        auto &ComponentField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["LASTCOMPONENT"];
         //Only override component_id if the subgame actually specifies one.
         if (!ComponentField.is_null() && ComponentField != "")
         {
@@ -238,16 +238,63 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
     return true;
 }
 
-//Scans all CustomVar subcomponents in the Recipe and resolves their values into
-//ContainerParams.CustomVariables. Must be called BEFORE BuildSubComponentsArray so that
-//custom %KEY% tokens are available in GetVariablesMap() during subcomponent substitution.
+//Resolves all configurable variables into ContainerParams.CustomVariables.
+//Two sources are merged (runner SETTINGS first, then CustomVar subcomponents —
+//CustomVar wins on key collision since it is more package-specific):
+//  1. SETTINGS array on the selected runner definition (runner-level options)
+//  2. CustomVar subcomponents in the Recipe (game-level options)
 //
-//Resolution priority (highest to lowest):
+//Resolution priority for each variable (highest to lowest):
 //  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
-//  3. DEFAULT field in the CustomVar subcomponent definition
+//  3. DEFAULT from the SETTINGS / CustomVar definition
 bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
 {
+    //Helper: resolve a single KEY/DEFAULT pair through the priority chain.
+    auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
+    {
+        if (ContainerParams.VariableOverrides.count(Key))
+        {
+            LogOut("ContainerWrapper::ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
+            return ContainerParams.VariableOverrides.at(Key);
+        }
+        if (GlobalConfigJSON.contains("USERSETTINGS") &&
+            GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
+            GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("VARIABLES") &&
+            GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"].contains(Key))
+        {
+            std::string Val = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"][Key];
+            LogOut("ContainerWrapper::ResolveCustomVariables", "User setting: " + Key + " = " + Val);
+            return Val;
+        }
+        LogOut("ContainerWrapper::ResolveCustomVariables", "Default: " + Key + " = " + DefaultValue);
+        return DefaultValue;
+    };
+
+    //--- Runner SETTINGS (runner-level configurable options) ---
+    //Find the selected runner in MANIFEST RUNNERS first, then GlobalConfig, mirroring
+    //the same lookup order used in DeriveContainerParams.
+    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving runner SETTINGS...");
+    auto ProcessRunnerSettings = [&](nlohmann::ordered_json &Source)
+    {
+        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].contains(ContainerParams.Platform)) return;
+        for (auto &Runner : Source["RUNNERS"][ContainerParams.Platform])
+        {
+            if (Runner.value("NAME", std::string()) != ContainerParams.RunnerName) continue;
+            if (!Runner.contains("SETTINGS")) return;
+            for (auto &Setting : Runner["SETTINGS"])
+            {
+                std::string Key = Setting.value("KEY", std::string());
+                if (Key.empty()) continue;
+                ContainerParams.CustomVariables[Key] = ResolveOne(Key, Setting.value("DEFAULT", std::string()));
+            }
+            return;
+        }
+    };
+    ProcessRunnerSettings(MANIFESTJSON);
+    if (!GlobalConfigJSON.is_null()) ProcessRunnerSettings(GlobalConfigJSON);
+
+    //--- CustomVar subcomponents (game-level options, override runner settings on collision) ---
     LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving CustomVar subcomponents...");
     for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
     {
@@ -260,34 +307,111 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
         for (auto &Sub : MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"])
         {
             if (Sub.value("TYPE", std::string()) != "CustomVar") continue;
-
-            std::string Key     = Sub.value("KEY",     std::string());
-            std::string Value   = Sub.value("DEFAULT", std::string());
-
-            //CLI override takes highest priority.
-            if (ContainerParams.VariableOverrides.count(Key))
-            {
-                Value = ContainerParams.VariableOverrides.at(Key);
-                LogOut("ContainerWrapper::ResolveCustomVariables", "CLI override: " + Key + " = " + Value);
-            }
-            //Persisted user setting overrides DEFAULT if present.
-            else if (GlobalConfigJSON.contains("USERSETTINGS") &&
-                     GlobalConfigJSON["USERSETTINGS"].contains(ContainerParams.PackageUID) &&
-                     GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID].contains("VARIABLES") &&
-                     GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"].contains(Key))
-            {
-                Value = GlobalConfigJSON["USERSETTINGS"][ContainerParams.PackageUID]["VARIABLES"][Key];
-                LogOut("ContainerWrapper::ResolveCustomVariables", "User setting: " + Key + " = " + Value);
-            }
-            else
-            {
-                LogOut("ContainerWrapper::ResolveCustomVariables", "Default: " + Key + " = " + Value);
-            }
-
-            ContainerParams.CustomVariables[Key] = Value;
+            std::string Key = Sub.value("KEY", std::string());
+            if (Key.empty()) continue;
+            ContainerParams.CustomVariables[Key] = ResolveOne(Key, Sub.value("DEFAULT", std::string()));
         }
     }
     LogSucc("ContainerWrapper::ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
+    return true;
+}
+
+//Returns the unique VARIANT values of all ExecutableDefinition subcomponents in
+//SubComponentsArray that match ContainerParams.ExecutableID.
+//An empty string means "no variant" — included when at least one definition has no VARIANT field.
+//Used to build the variant picker before ResolveExecutableDefinition is called.
+std::vector<std::string> ContainerWrapper::GetAvailableVariants(const struct ContainerParams &ContainerParams)
+{
+    std::vector<std::string> Variants;
+    for (auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        if (Sub.value("TYPE", std::string()) != "ExecutableDefinition") continue;
+        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID) continue;
+        std::string Variant = Sub.value("VARIANT", std::string());
+        if (std::find(Variants.begin(), Variants.end(), Variant) == Variants.end())
+            Variants.push_back(Variant);
+    }
+    return Variants;
+}
+
+//Scans SubComponentsArray for ExecutableDefinition entries matching (ExecutableID, SelectedVariant).
+//Last match wins — a later component in the chain overrides an earlier one with the same (ID, VARIANT).
+//Populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs (and Wine-specific path variants).
+//Must be called after BuildSubComponentsArray and before BuildContainerRuntime.
+bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.ExecutableID.empty())
+    {
+        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EXECUTABLE_ID set — skipping (component-only execution).");
+        return true;
+    }
+
+    //Scan for matching definitions; last match wins.
+    nlohmann::ordered_json Resolved;
+    for (auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        if (Sub.value("TYPE",          std::string()) != "ExecutableDefinition")           continue;
+        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID)     continue;
+        std::string Variant = Sub.value("VARIANT", std::string());
+        //Accept exact variant match, or if SelectedVariant is empty accept any definition.
+        if (!ContainerParams.SelectedVariant.empty() && Variant != ContainerParams.SelectedVariant) continue;
+        Resolved = Sub; //Overwrite — last in chain wins.
+    }
+
+    if (Resolved.is_null() || Resolved.empty())
+    {
+        LogErr("ContainerWrapper::ResolveExecutableDefinition",
+               "No ExecutableDefinition found for ID='" + ContainerParams.ExecutableID +
+               "' VARIANT='" + ContainerParams.SelectedVariant + "'");
+        return false;
+    }
+    LogSucc("ContainerWrapper::ResolveExecutableDefinition",
+            "Resolved: ID=" + ContainerParams.ExecutableID +
+            " VARIANT=" + Resolved.value("VARIANT", std::string("(none)")));
+
+    //Pick the exe field by runner type — all three are valid keys in ExecutableDefinition.
+    std::string ExeKey = "EXEPATH";
+    if      (ContainerParams.RunnerTypeEnum == RunnerType::Emulator) ExeKey = "ROM";
+    else if (ContainerParams.RunnerTypeEnum == RunnerType::Custom)   ExeKey = "DATAPATH";
+
+    auto &ExeVal = Resolved[ExeKey];
+    ContainerParams.ExePathRelative  = (!ExeVal.is_null() && ExeVal.is_string())
+                                       ? std::filesystem::path(std::string(ExeVal)) : std::filesystem::path();
+    ContainerParams.ExePathComplete  = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
+    LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathRelative: " + ContainerParams.ExePathRelative.string());
+    LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathComplete: " + ContainerParams.ExePathComplete.string());
+
+    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        ContainerParams.ExePathInPrefix       = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
+        ContainerParams.WindowsExePathComplete = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
+        LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathInPrefix: " + ContainerParams.ExePathInPrefix.string());
+    }
+
+    //WorkDir defaults to ProgramPath if absent.
+    auto &WorkDirVal = Resolved["WORKDIR"];
+    if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
+    {
+        ContainerParams.WorkDirPathRelative = std::filesystem::path(std::string(WorkDirVal));
+        ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
+    }
+    else
+    {
+        ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
+    }
+    LogOut("ContainerWrapper::ResolveExecutableDefinition", "WorkDirPathComplete: " + ContainerParams.WorkDirPathComplete.string());
+
+    //ExeArgs: split on spaces after variable substitution.
+    ContainerParams.ExeArgs.clear();
+    auto &ExeArgsVal = Resolved["EXEARGS"];
+    if (!ExeArgsVal.is_null() && ExeArgsVal.is_string() && !std::string(ExeArgsVal).empty())
+    {
+        std::string Args = std::string(ExeArgsVal);
+        ContainerWrapper::StringVariableSubstitution(Args, ContainerParams.GetVariablesMap());
+        std::istringstream iss(Args);
+        for (std::string tok; std::getline(iss, tok, ' ');) ContainerParams.ExeArgs.push_back(tok);
+    }
+
     return true;
 }
 
@@ -296,6 +420,7 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
 //Variable substitution is applied to each subcomponent's JSON string at this point
 //so all downstream consumers receive already-expanded values.
 //CustomVar subcomponents are skipped — they are handled by ResolveCustomVariables.
+//ExecutableDefinition subcomponents ARE included so ResolveExecutableDefinition can scan them.
 //MANIFEST order is preserved, which determines VFS layer stacking order.
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
@@ -353,7 +478,9 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
         ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"];
-        auto &UMUIDField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["UMUID"];
+        //UMUID lives under METADATA since v2 of the manifest schema.
+        auto &Meta      = MANIFESTJSON["SUBGAMES"][SubgameIdx]["METADATA"];
+        auto &UMUIDField = (Meta.is_object() && Meta.contains("UMUID")) ? Meta["UMUID"] : MANIFESTJSON["SUBGAMES"][SubgameIdx]["UMUID"];
         //UMUID "0" means no Steam AppID — umu-run accepts this as a generic Wine launch.
         ContainerParams.UMUID                           = (!UMUIDField.is_null() && UMUIDField.is_string()) ? std::string(UMUIDField) : "0";
         ContainerParams.Platform                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["PLATFORM"];
@@ -385,25 +512,30 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         }
     }
 
-    //Search GlobalConfigJSON["RUNNERS"][Platform] for the preferred runner by name.
-    //Falls back to the first runner in the list if the preferred name is not found.
+    //Search for the preferred runner by name, checking MANIFEST RUNNERS first so packages
+    //can define their own runners (e.g. bundled interpreters) that shadow GlobalConfig ones.
+    //Falls back to the first runner in the list for the platform if no name match is found.
     nlohmann::ordered_json SelectedRunner;
-    if (GlobalConfigJSON.contains("RUNNERS") && GlobalConfigJSON["RUNNERS"].contains(ContainerParams.Platform))
+    auto TrySelectFromSource = [&](nlohmann::ordered_json &Source)
     {
-        auto &Runners = GlobalConfigJSON["RUNNERS"][ContainerParams.Platform];
+        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].contains(ContainerParams.Platform)) return;
+        auto &Runners = Source["RUNNERS"][ContainerParams.Platform];
         for (auto &Runner : Runners)
         {
             if (!PreferredRunner.empty() && Runner["NAME"] == PreferredRunner)
             {
                 SelectedRunner = Runner;
-                break;
+                return;
             }
         }
         if (SelectedRunner.is_null() && !Runners.empty())
-        {
             SelectedRunner = Runners[0];
-        }
-    }
+    };
+
+    //MANIFEST RUNNERS take priority — allows packages to define self-contained runners.
+    TrySelectFromSource(MANIFESTJSON);
+    //Fall back to GlobalConfig (system-wide runners, fetched from the online registry).
+    if (SelectedRunner.is_null()) TrySelectFromSource(GlobalConfigJSON);
 
     if (!SelectedRunner.is_null())
     {
@@ -471,68 +603,23 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
-    //Subgame-specific paths and args — only valid when a subgame is specified.
-    //The "exe" concept maps differently per runner type: Wine uses EXEPATH, emulators use ROM, custom uses DATAPATH.
+    //Read ExecutableID and DefaultVariant from the subgame. All exe/args/workdir resolution
+    //is deferred to ResolveExecutableDefinition(), which runs after BuildSubComponentsArray.
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        if (ContainerParams.RunnerTypeEnum == RunnerType::Emulator)
-        {
-            auto &ROMField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["ROM"];
-            ContainerParams.ExePathRelative             = (!ROMField.is_null() && ROMField.is_string()) ? std::filesystem::path(std::string(ROMField)) : std::filesystem::path();
-        }
-        else if (ContainerParams.RunnerTypeEnum == RunnerType::Custom)
-        {
-            auto &DataField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DATAPATH"];
-            ContainerParams.ExePathRelative             = (!DataField.is_null() && DataField.is_string()) ? std::filesystem::path(std::string(DataField)) : std::filesystem::path();
-        }
-        else
-        {
-            auto &ExeField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXEPATH"];
-            ContainerParams.ExePathRelative             = (!ExeField.is_null() && ExeField.is_string()) ? std::filesystem::path(std::string(ExeField)) : std::filesystem::path();
-        }
-        LogOut("ContainerWrapper::DeriveContainerParams", "ExePathRelative: " + ContainerParams.ExePathRelative.string());
-
-        ContainerParams.ExePathComplete                 = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
-        LogOut("ContainerWrapper::DeriveContainerParams", "ExePathComplete: " + ContainerParams.ExePathComplete.string());
-
-        if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-        {
-            //ExePathInPrefix is the Windows-style path Wine receives; ExePathComplete is the host path.
-            ContainerParams.ExePathInPrefix             = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
-            ContainerParams.WindowsExePathComplete      = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
-            LogOut("ContainerWrapper::DeriveContainerParams", "ExePathInPrefix: " + ContainerParams.ExePathInPrefix.string());
-            LogOut("ContainerWrapper::DeriveContainerParams", "WindowsExePathComplete: " + ContainerParams.WindowsExePathComplete);
-        }
-
-        //WORKDIR defaults to ProgramPath if the manifest field is absent or empty.
-        auto &WorkDirField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["WORKDIR"];
-        if (!(WorkDirField.empty() || WorkDirField == "" || WorkDirField.is_null()))
-        {
-            ContainerParams.WorkDirPathRelative         = std::filesystem::path(WorkDirField);
-            ContainerParams.WorkDirPathComplete         = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
-        }
-        else
-        {
-            ContainerParams.WorkDirPathComplete         = ContainerParams.ProgramPath;
-        }
-        LogOut("ContainerWrapper::DeriveContainerParams", "WorkDirPathComplete: " + ContainerParams.WorkDirPathComplete.string());
-
-        //Split EXEARGS on spaces into a vector; substitution is applied before splitting.
-        auto &ExeArgsField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXEARGS"];
-        if (!(ExeArgsField.empty() || ExeArgsField == "" || ExeArgsField.is_null()))
-        {
-            std::string UnsplitExeArgs(ExeArgsField);
-            ContainerWrapper::StringVariableSubstitution(UnsplitExeArgs, ContainerParams.GetVariablesMap());
-            ContainerParams.ExeArgs = [](const std::string& s){std::vector<std::string> out;std::istringstream iss(s);for (std::string tok; std::getline(iss, tok, ' ');)out.push_back(tok);return out;}(UnsplitExeArgs);
-            for (int i = 0; i < (int)ContainerParams.ExeArgs.size(); i++)
-            {
-                LogOut("ContainerWrapper::DeriveContainerParams", QString("[OUT] ExeArg %1: ").arg(i).toStdString() + ContainerParams.ExeArgs.at(i));
-            }
-        }
+        auto &ExeIDField      = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
+        ContainerParams.ExecutableID   = (!ExeIDField.is_null()      && ExeIDField.is_string())      ? std::string(ExeIDField)      : "";
+        auto &DefVarField     = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT"];
+        ContainerParams.DefaultVariant = (!DefVarField.is_null()     && DefVarField.is_string())     ? std::string(DefVarField)     : "";
+        //SelectedVariant may already be set by CLI --variant; only set from DefaultVariant if not yet set.
+        if (ContainerParams.SelectedVariant.empty())
+            ContainerParams.SelectedVariant = ContainerParams.DefaultVariant;
+        LogOut("ContainerWrapper::DeriveContainerParams", "ExecutableID: "    + ContainerParams.ExecutableID);
+        LogOut("ContainerWrapper::DeriveContainerParams", "DefaultVariant: "  + ContainerParams.DefaultVariant);
+        LogOut("ContainerWrapper::DeriveContainerParams", "SelectedVariant: " + ContainerParams.SelectedVariant);
     }
-    else
+    //WorkDir defaults to ProgramPath; overridden by ResolveExecutableDefinition once SubComponentsArray is built.
     {
-        //No subgame — working directory defaults to ProgramPath.
         ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath;
     }
     LogOut("ContainerWrapper::DeriveContainerParams", "Completed ContainerParams!");
@@ -1246,6 +1333,9 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         return false;
     }
 
+    //Substitute variables in the runner executable path — manifest runners reference
+    //%ProgramPath% to point to a bundled binary mounted into RUNTIME via a VFS layer.
+    ContainerWrapper::StringVariableSubstitution(ContainerParams.RunnerExecutable, ContainerParams.GetVariablesMap());
     LogOut("ContainerWrapper::Execute", "Runner: " + ContainerParams.RunnerExecutable);
     LogOut("ContainerWrapper::Execute", "Executing: " + FinalExe);
     LogOut("ContainerWrapper::Execute", "WorkDirPath: " + ContainerParams.WorkDirPathComplete.string());

@@ -59,7 +59,7 @@ void PackageEditor::on_AddComponentButton_clicked()
     RefreshJSONView();
 
     QWidget * NewTabWidget = new QWidget(this);
-    ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component " + QString::number(ui->PackageEditorTabWidget->count() - 1)));
+    ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component %1").arg(ui->PackageEditorTabWidget->count() - 1));
     BuildUI();
     RefreshJSONView();
 }
@@ -145,7 +145,7 @@ bool PackageEditor::BuildUI()
 
         for (auto Item : (*PackageEditor::MANIFESTJSON).items())
         {
-            if ((Item.key() == "SUBGAMES") || (Item.key() == "COMPONENTS"))
+            if ((Item.key() == "SUBGAMES") || (Item.key() == "COMPONENTS") || (Item.key() == "RUNNERS"))
             {
                 continue;
             }
@@ -170,36 +170,47 @@ bool PackageEditor::BuildUI()
         QTabWidget * SubGamesTabWidget = new QTabWidget(ManifestTabWidget);
         ManifestTabWidgetLayout->addWidget(SubGamesTabWidget);
 
+        //TITLE and GAMEUID stay flat — they are the subgame's primary identifiers.
+        //Everything else lives under a nested METADATA object.
         static const std::vector<std::string> IdentityFields = {
-            "SUBGAMEID", "PLATFORM", "GAMEUID"
+            "SUBGAMEID", "TITLE", "PLATFORM", "GAMEUID"
         };
         static const std::vector<std::string> MetadataFields = {
-            "TITLE", "TGDBID", "COVER",
-            "RELEASEDATE", "EDITION", "EDITIONDATE",
+            "TGDBID", "STEAMAPPID", "GOGPRODUCTID", "UMUID",
+            "COVER", "RELEASEDATE", "EDITION", "EDITIONDATE",
             "DEVELOPER", "PUBLISHER",
             "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
+            "EDITOR", "ONLINEDRM",
             "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
             "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
         };
         static const std::vector<std::string> WineExecFields = {
-            "COMPONENT", "EXEPATH", "EXEARGS", "WORKDIR",
-            "STEAMAPPID", "UMUID", "GOGPRODUCTID",
-            "EDITOR", "ONLINEDRM",
-            "VARIANTS", "RECOMMENDED_RUNNER"
+            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT", "RECOMMENDED_RUNNER"
         };
-        static const std::vector<std::string> EmulatorExecFields = { "COMPONENT", "ROM" };
+        static const std::vector<std::string> EmulatorExecFields = {
+            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
+        };
         static const std::vector<std::string> NativeExecFields = {
-            "COMPONENT", "EXEPATH", "EXEARGS", "WORKDIR"
+            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
         };
         static const std::vector<std::string> CustomExecFields = {
-            "COMPONENT", "DATAPATH", "EXEARGS", "WORKDIR"
+            "LASTCOMPONENT", "EXECUTABLE_ID", "DEFAULT_VARIANT"
         };
 
-        auto BuildSubgameFields = [&](QFormLayout *Layout, const std::vector<std::string> &Fields, int i, auto &SubgameRef, const std::string &CurrentPlatform)
+        //SubPath: when non-empty, fields are read/written under SUBGAMES[i][SubPath][field].
+        //Used for the Metadata section which nests its fields under a METADATA object.
+        auto BuildSubgameFields = [&](QFormLayout *Layout, const std::vector<std::string> &Fields, int i, auto &SubgameRef, const std::string &CurrentPlatform, const std::string &SubPath = "")
         {
             for (const std::string &FieldKey : Fields)
             {
-                QString JSONPath = QString("/SUBGAMES/%1/%2").arg(i).arg(QString::fromStdString(FieldKey));
+                QString JSONPath = SubPath.empty()
+                    ? QString("/SUBGAMES/%1/%2").arg(i).arg(QString::fromStdString(FieldKey))
+                    : QString("/SUBGAMES/%1/%2/%3").arg(i).arg(QString::fromStdString(SubPath)).arg(QString::fromStdString(FieldKey));
+
+                //Resolve the JSON object to read current values from.
+                auto &ValSource = (SubPath.empty() || !SubgameRef.contains(SubPath))
+                                  ? SubgameRef
+                                  : SubgameRef[SubPath];
 
                 if (FieldKey == "PLATFORM")
                 {
@@ -219,7 +230,7 @@ bool PackageEditor::BuildUI()
                     continue;
                 }
 
-                if (FieldKey == "COMPONENT")
+                if (FieldKey == "LASTCOMPONENT")
                 {
                     QComboBox * ComponentPicker = new QComboBox();
                     ComponentPicker->addItem("None");
@@ -230,28 +241,25 @@ bool PackageEditor::BuildUI()
                         ComponentPicker->addItem(QString::fromStdString(CIDStr));
                     }
                     ComponentPicker->setProperty("JSONPath", JSONPath);
-                    if (SubgameRef.contains("COMPONENT") && !SubgameRef["COMPONENT"].is_null() && SubgameRef["COMPONENT"].is_string())
+                    if (SubgameRef.contains("LASTCOMPONENT") && !SubgameRef["LASTCOMPONENT"].is_null() && SubgameRef["LASTCOMPONENT"].is_string())
                     {
-                        std::string CurrentComponent = std::string(SubgameRef["COMPONENT"]);
+                        std::string Current = std::string(SubgameRef["LASTCOMPONENT"]);
                         for (int k = 1; k < ComponentPicker->count(); k++)
                         {
-                            if (ComponentPicker->itemText(k).toStdString() == CurrentComponent)
-                            {
-                                ComponentPicker->setCurrentIndex(k);
-                                break;
-                            }
+                            if (ComponentPicker->itemText(k).toStdString() == Current)
+                            { ComponentPicker->setCurrentIndex(k); break; }
                         }
                     }
                     QObject::connect(ComponentPicker, &QComboBox::currentIndexChanged, this, &PackageEditor::ParentComponentChanged);
-                    Layout->addRow("COMPONENT", ComponentPicker);
+                    Layout->addRow("LASTCOMPONENT", ComponentPicker);
                     continue;
                 }
 
                 QLineEdit * NewParamField = new QLineEdit();
                 NewParamField->setProperty("JSONPath", JSONPath);
-                if (SubgameRef.contains(FieldKey) && !SubgameRef[FieldKey].is_null())
+                if (ValSource.contains(FieldKey) && !ValSource[FieldKey].is_null())
                 {
-                    auto &Val = SubgameRef[FieldKey];
+                    auto &Val = ValSource[FieldKey];
                     NewParamField->setText(Val.is_string() ? QString::fromStdString(std::string(Val)) : QString::fromStdString(Val.dump()));
                 }
                 QObject::connect(NewParamField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
@@ -300,19 +308,163 @@ bool PackageEditor::BuildUI()
             SubGameScrollContents->setLayout(SubGameScrollLayout);
             SubGameScrollArea->setWidget(SubGameScrollContents);
 
-            auto MakeSection = [&](const QString &Title, const std::vector<std::string> &Fields)
+            auto MakeSection = [&](const QString &Title, const std::vector<std::string> &Fields, const std::string &SubPath = "")
             {
                 QGroupBox * Box = new QGroupBox(Title, SubGameScrollContents);
                 QFormLayout * Form = new QFormLayout(Box);
                 Box->setLayout(Form);
-                BuildSubgameFields(Form, Fields, i, SubgameRef, CurrentPlatform);
+                BuildSubgameFields(Form, Fields, i, SubgameRef, CurrentPlatform, SubPath);
                 SubGameScrollLayout->addWidget(Box);
             };
 
             MakeSection("Identity",  IdentityFields);
             if (!CurrentPlatform.empty())
                 MakeSection("Execution", *ExecFields);
-            MakeSection("Metadata",  MetadataFields);
+
+            //For custom-platform subgames, show an inline runner definition editor.
+            //Reads/writes MANIFEST["RUNNERS"][Platform][0].
+            if (RunnerType == "custom" && !CurrentPlatform.empty())
+            {
+                //Ensure RUNNERS[Platform][0] exists so json_pointer writes land in an array, not an object.
+                auto &RunnerArray = (*MANIFESTJSON)["RUNNERS"][CurrentPlatform];
+                if (!RunnerArray.is_array() || RunnerArray.empty())
+                    RunnerArray = nlohmann::ordered_json::array({nlohmann::ordered_json::object()});
+
+                //Ensure sub-fields exist with correct types.
+                auto &Runner0 = (*MANIFESTJSON)["RUNNERS"][CurrentPlatform][0];
+                if (!Runner0.contains("ARGS")       || !Runner0["ARGS"].is_array())       Runner0["ARGS"]       = nlohmann::ordered_json::array();
+                if (!Runner0.contains("ENV")        || !Runner0["ENV"].is_object())        Runner0["ENV"]        = nlohmann::ordered_json::object();
+                if (!Runner0.contains("REMOVE_ENV") || !Runner0["REMOVE_ENV"].is_array()) Runner0["REMOVE_ENV"] = nlohmann::ordered_json::array();
+
+                std::string Platform = CurrentPlatform; //capture by value for lambdas
+
+                QGroupBox * RunnerBox = new QGroupBox("Runner Definition", SubGameScrollContents);
+                QVBoxLayout * RunnerBoxLayout = new QVBoxLayout(RunnerBox);
+                RunnerBox->setLayout(RunnerBoxLayout);
+
+                //--- NAME and EXECUTABLE ---
+                QFormLayout * RunnerTopForm = new QFormLayout();
+                RunnerBoxLayout->addLayout(RunnerTopForm);
+
+                auto AddSimpleField = [&](const QString &Label, const QString &Key)
+                {
+                    QLineEdit * Field = new QLineEdit(RunnerBox);
+                    QString Path = QString("/RUNNERS/%1/0/%2").arg(QString::fromStdString(Platform)).arg(Key);
+                    Field->setProperty("JSONPath", Path);
+                    auto &Val = (*MANIFESTJSON)["RUNNERS"][Platform][0][Key.toStdString()];
+                    if (!Val.is_null() && Val.is_string())
+                        Field->setText(QString::fromStdString(std::string(Val)));
+                    QObject::connect(Field, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    RunnerTopForm->addRow(Label, Field);
+                };
+                AddSimpleField("NAME",       "NAME");
+                AddSimpleField("EXECUTABLE", "EXECUTABLE");
+
+                //--- ARGS (array of strings) ---
+                QGroupBox * ArgsBox = new QGroupBox("ARGS", RunnerBox);
+                QVBoxLayout * ArgsLayout = new QVBoxLayout(ArgsBox);
+                ArgsBox->setLayout(ArgsLayout);
+                auto &ArgsArr = (*MANIFESTJSON)["RUNNERS"][Platform][0]["ARGS"];
+                for (int k = 0; k < (int)ArgsArr.size(); k++)
+                {
+                    QHBoxLayout * Row = new QHBoxLayout();
+                    QLineEdit * ArgField = new QLineEdit(ArgsBox);
+                    ArgField->setProperty("JSONPath", QString("/RUNNERS/%1/0/ARGS/%2").arg(QString::fromStdString(Platform)).arg(k));
+                    if (ArgsArr[k].is_string()) ArgField->setText(QString::fromStdString(std::string(ArgsArr[k])));
+                    QObject::connect(ArgField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    QPushButton * DelBtn = new QPushButton("✕", ArgsBox);
+                    DelBtn->setFixedWidth(28);
+                    QObject::connect(DelBtn, &QPushButton::clicked, this, [this, Platform, k](){
+                        (*MANIFESTJSON)["RUNNERS"][Platform][0]["ARGS"].erase(k);
+                        SaveManifestJSON(); BuildUI();
+                    });
+                    Row->addWidget(ArgField); Row->addWidget(DelBtn);
+                    ArgsLayout->addLayout(Row);
+                }
+                QPushButton * AddArgBtn = new QPushButton("+ Add Arg", ArgsBox);
+                QObject::connect(AddArgBtn, &QPushButton::clicked, this, [this, Platform](){
+                    (*MANIFESTJSON)["RUNNERS"][Platform][0]["ARGS"].push_back("");
+                    SaveManifestJSON(); BuildUI();
+                });
+                ArgsLayout->addWidget(AddArgBtn);
+                RunnerBoxLayout->addWidget(ArgsBox);
+
+                //--- ENV (object: key → value) ---
+                QGroupBox * EnvBox = new QGroupBox("ENV", RunnerBox);
+                QVBoxLayout * EnvLayout = new QVBoxLayout(EnvBox);
+                EnvBox->setLayout(EnvLayout);
+                auto &EnvObj = (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"];
+                for (auto &[EnvKey, EnvVal] : EnvObj.items())
+                {
+                    std::string KeyCopy = EnvKey;
+                    QHBoxLayout * Row = new QHBoxLayout();
+                    QLineEdit * KeyField = new QLineEdit(EnvBox);
+                    KeyField->setText(QString::fromStdString(KeyCopy));
+                    KeyField->setPlaceholderText("KEY");
+                    QLineEdit * ValField = new QLineEdit(EnvBox);
+                    ValField->setProperty("JSONPath", QString("/RUNNERS/%1/0/ENV/%2").arg(QString::fromStdString(Platform)).arg(QString::fromStdString(KeyCopy)));
+                    if (EnvVal.is_string()) ValField->setText(QString::fromStdString(std::string(EnvVal)));
+                    QObject::connect(ValField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    //Key rename: erase old key, insert new key with same value.
+                    QObject::connect(KeyField, &QLineEdit::editingFinished, this, [this, Platform, KeyCopy, KeyField, ValField](){
+                        std::string NewKey = KeyField->text().toStdString();
+                        if (NewKey == KeyCopy || NewKey.empty()) return;
+                        auto Val = (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"][KeyCopy];
+                        (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"].erase(KeyCopy);
+                        (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"][NewKey] = Val;
+                        ValField->setProperty("JSONPath", QString("/RUNNERS/%1/0/ENV/%2").arg(QString::fromStdString(Platform)).arg(QString::fromStdString(NewKey)));
+                        SaveManifestJSON(); BuildUI();
+                    });
+                    QPushButton * DelBtn = new QPushButton("✕", EnvBox);
+                    DelBtn->setFixedWidth(28);
+                    QObject::connect(DelBtn, &QPushButton::clicked, this, [this, Platform, KeyCopy](){
+                        (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"].erase(KeyCopy);
+                        SaveManifestJSON(); BuildUI();
+                    });
+                    Row->addWidget(KeyField); Row->addWidget(ValField); Row->addWidget(DelBtn);
+                    EnvLayout->addLayout(Row);
+                }
+                QPushButton * AddEnvBtn = new QPushButton("+ Add Env Var", EnvBox);
+                QObject::connect(AddEnvBtn, &QPushButton::clicked, this, [this, Platform](){
+                    (*MANIFESTJSON)["RUNNERS"][Platform][0]["ENV"]["NEW_KEY"] = "";
+                    SaveManifestJSON(); BuildUI();
+                });
+                EnvLayout->addWidget(AddEnvBtn);
+                RunnerBoxLayout->addWidget(EnvBox);
+
+                //--- REMOVE_ENV (array of strings) ---
+                QGroupBox * RemEnvBox = new QGroupBox("REMOVE_ENV", RunnerBox);
+                QVBoxLayout * RemEnvLayout = new QVBoxLayout(RemEnvBox);
+                RemEnvBox->setLayout(RemEnvLayout);
+                auto &RemEnvArr = (*MANIFESTJSON)["RUNNERS"][Platform][0]["REMOVE_ENV"];
+                for (int k = 0; k < (int)RemEnvArr.size(); k++)
+                {
+                    QHBoxLayout * Row = new QHBoxLayout();
+                    QLineEdit * RemField = new QLineEdit(RemEnvBox);
+                    RemField->setProperty("JSONPath", QString("/RUNNERS/%1/0/REMOVE_ENV/%2").arg(QString::fromStdString(Platform)).arg(k));
+                    if (RemEnvArr[k].is_string()) RemField->setText(QString::fromStdString(std::string(RemEnvArr[k])));
+                    QObject::connect(RemField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    QPushButton * DelBtn = new QPushButton("✕", RemEnvBox);
+                    DelBtn->setFixedWidth(28);
+                    QObject::connect(DelBtn, &QPushButton::clicked, this, [this, Platform, k](){
+                        (*MANIFESTJSON)["RUNNERS"][Platform][0]["REMOVE_ENV"].erase(k);
+                        SaveManifestJSON(); BuildUI();
+                    });
+                    Row->addWidget(RemField); Row->addWidget(DelBtn);
+                    RemEnvLayout->addLayout(Row);
+                }
+                QPushButton * AddRemEnvBtn = new QPushButton("+ Add", RemEnvBox);
+                QObject::connect(AddRemEnvBtn, &QPushButton::clicked, this, [this, Platform](){
+                    (*MANIFESTJSON)["RUNNERS"][Platform][0]["REMOVE_ENV"].push_back("");
+                    SaveManifestJSON(); BuildUI();
+                });
+                RemEnvLayout->addWidget(AddRemEnvBtn);
+                RunnerBoxLayout->addWidget(RemEnvBox);
+
+                SubGameScrollLayout->addWidget(RunnerBox);
+            }
+
+            MakeSection("Metadata",  MetadataFields, "METADATA");
             SubGameScrollLayout->addStretch();
 
             QString TabLabel = SubgameIDStr.empty() ? QString("Subgame %1").arg(i + 1) : QString::fromStdString(SubgameIDStr);
@@ -432,10 +584,17 @@ bool PackageEditor::BuildUI()
                     this->CompareComponentsRegistry(oldcomponent_id, ComponentIDStr);
                 });
 
-                QPushButton * AddFileLayerButton = new QPushButton(ComponentTabWidget);
-                AddFileLayerButton->setText("Add File Layer");
-                SubComponentsToolbarLayout->addWidget(AddFileLayerButton);
-                QObject::connect(AddFileLayerButton, &QPushButton::clicked, this, &PackageEditor::AddFileLayer);
+                QPushButton * AddVFSDirLayerButton = new QPushButton("Add VFSDirLayer", ComponentTabWidget);
+                SubComponentsToolbarLayout->addWidget(AddVFSDirLayerButton);
+                QObject::connect(AddVFSDirLayerButton, &QPushButton::clicked, this, &PackageEditor::AddVFSDirLayer);
+
+                QPushButton * AddVFSZipLayerButton = new QPushButton("Add VFSZipLayer", ComponentTabWidget);
+                SubComponentsToolbarLayout->addWidget(AddVFSZipLayerButton);
+                QObject::connect(AddVFSZipLayerButton, &QPushButton::clicked, this, &PackageEditor::AddVFSZipLayer);
+
+                QPushButton * AddVFSFileLayerButton = new QPushButton("Add VFSFileLayer", ComponentTabWidget);
+                SubComponentsToolbarLayout->addWidget(AddVFSFileLayerButton);
+                QObject::connect(AddVFSFileLayerButton, &QPushButton::clicked, this, &PackageEditor::AddVFSFileLayer);
 
                 QPushButton * FinalizeButton = new QPushButton(ComponentTabWidget);
                 FinalizeButton->setText("Finalize");
@@ -474,7 +633,26 @@ bool PackageEditor::BuildUI()
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TYPE:"), 0, 0);
                 IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(SubComponentType), 0, 1);
 
-                if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer" || SubComponentType == "RawFile")
+                if (SubComponentType == "ExecutableDefinition")
+                {
+                    //Fields: EXECUTABLE_ID, VARIANT, then the exe path (EXEPATH / ROM / DATAPATH), EXEARGS, WORKDIR.
+                    static const QStringList ExeDefFields = {"EXECUTABLE_ID", "VARIANT", "EXEPATH", "ROM", "DATAPATH", "EXEARGS", "WORKDIR"};
+                    int row = 1;
+                    for (const QString &Field : ExeDefFields)
+                    {
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(Field + ":"), row, 0);
+                        QLineEdit * FieldEdit = new QLineEdit(IndividualSubComponentGroupBox);
+                        QString FieldPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field);
+                        FieldEdit->setProperty("JSONPath", FieldPath);
+                        auto &Val = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j][Field.toStdString()];
+                        if (!Val.is_null() && Val.is_string())
+                            FieldEdit->setText(QString::fromStdString(std::string(Val)));
+                        QObject::connect(FieldEdit, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        IndividualSubComponentGroupBoxLayout->addWidget(FieldEdit, row, 1);
+                        row++;
+                    }
+                }
+                else if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer" || SubComponentType == "VFSFileLayer")
                 {
                     IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
                     QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
@@ -484,6 +662,46 @@ bool PackageEditor::BuildUI()
                         PathField->setText(QString::fromStdString((*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"]));
                     QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                     IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1);
+
+                    //Convert buttons — only for Dir↔Zip since FileLayer is a single file.
+                    if (SubComponentType == "VFSDirLayer")
+                    {
+                        QPushButton * ConvertBtn = new QPushButton("→ ZIP", IndividualSubComponentGroupBox);
+                        QObject::connect(ConvertBtn, &QPushButton::clicked, this, [this, i, j]()
+                        {
+                            std::string Path = (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j].value("PATH", std::string());
+                            std::filesystem::path SrcDir  = std::filesystem::path(PackageFilesDir->path().toStdString()) / Path;
+                            std::string ZipName           = Path + ".zip";
+                            std::filesystem::path ZipFile = std::filesystem::path(PackageFilesDir->path().toStdString()) / ZipName;
+                            //zip -r archive.zip srcdir — runs from PACKAGEFILES so the zip root equals Path.
+                            ContainerWrapper::RunCommand("zip", {"-r", ZipFile.string(), SrcDir.string()});
+                            std::filesystem::remove_all(SrcDir);
+                            (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["TYPE"] = "VFSZipLayer";
+                            (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"] = ZipName;
+                            SaveManifestJSON(); BuildUI();
+                        });
+                        IndividualSubComponentGroupBoxLayout->addWidget(ConvertBtn, 1, 2);
+                    }
+                    else if (SubComponentType == "VFSZipLayer")
+                    {
+                        QPushButton * ConvertBtn = new QPushButton("→ DIR", IndividualSubComponentGroupBox);
+                        QObject::connect(ConvertBtn, &QPushButton::clicked, this, [this, i, j]()
+                        {
+                            std::string Path = (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j].value("PATH", std::string());
+                            std::filesystem::path ZipFile = std::filesystem::path(PackageFilesDir->path().toStdString()) / Path;
+                            //Strip .zip extension for the directory name.
+                            std::string DirName = (Path.size() > 4 && Path.substr(Path.size() - 4) == ".zip")
+                                                  ? Path.substr(0, Path.size() - 4) : Path + "_dir";
+                            std::filesystem::path DirPath = std::filesystem::path(PackageFilesDir->path().toStdString()) / DirName;
+                            std::filesystem::create_directories(DirPath);
+                            ContainerWrapper::RunCommand("unzip", {ZipFile.string(), "-d", DirPath.string()});
+                            std::filesystem::remove(ZipFile);
+                            (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["TYPE"] = "VFSDirLayer";
+                            (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"] = DirName;
+                            SaveManifestJSON(); BuildUI();
+                        });
+                        IndividualSubComponentGroupBoxLayout->addWidget(ConvertBtn, 1, 2);
+                    }
                 }
                 else if (SubComponentType == "RegEdit")
                 {
@@ -532,14 +750,19 @@ bool PackageEditor::BuildUI()
 
                     IndividualSubComponentGroupBoxLayout->addWidget(RegKeysGroupBox, 3, 0, 1, -1);
                 }
+                else if (SubComponentType == "CustomVar")
+                {
+                    //CustomVar subcomponents are resolved during init and don't need UI here — shown via runner/subgame fields.
+                }
                 else
                 {
-                    LogErr("PackageEditor", QString("Component %1, subcomponent %2 has invalid type (%3).").arg(i).arg(j).arg(SubComponentType).toStdString());
+                    LogErr("PackageEditor", QString("Component %1, subcomponent %2 has unrecognised type (%3).").arg(i).arg(j).arg(SubComponentType).toStdString());
                     continue;
                 }
                 SubComponentsGroupBoxLayout->addWidget(IndividualSubComponentGroupBox);
             }
-        ui->PackageEditorTabWidget->addTab(ComponentTabWidget, QString("Component %1").arg(QString::number(i + 1)));
+        QString ComponentTabLabel = ComponentIDStr.empty() ? QString("Component %1").arg(i + 1) : QString::fromStdString(ComponentIDStr);
+        ui->PackageEditorTabWidget->addTab(ComponentTabWidget, ComponentTabLabel);
     }
 
     return true;
@@ -578,8 +801,14 @@ std::string PackageEditor::GetRunnerType(const std::string &platform)
     if (platform.empty()) return "wine";
     if (!(*GlobalConfigJSON).contains("RUNNERS")) return "wine";
     auto &runners = (*GlobalConfigJSON)["RUNNERS"];
-    if (runners.contains(platform) && !runners[platform].empty())
-        return runners[platform][0].value("TYPE", std::string("wine"));
+    if (runners.contains(platform))
+    {
+        //Non-empty array: read TYPE from the first runner definition.
+        if (!runners[platform].empty())
+            return runners[platform][0].value("TYPE", std::string("wine"));
+        //Empty array: platform is reserved for manifest-defined runners (e.g. "Custom").
+        return "custom";
+    }
     return "wine";
 }
 
@@ -688,11 +917,163 @@ void PackageEditor::ExecuteComponent()
     std::string ComponentID = Button->parentWidget()->property("ComponentID").toString().toStdString();
     LogOut("PackageEditor::ExecuteComponent", "Executing component " + ComponentID);
 
+    if (ComponentID.empty())
+    {
+        QMessageBox::warning(this, "Execute Component", "This component has no COMPONENTID set.");
+        return;
+    }
+
+    //Build the container for this component to get SubComponentsArray populated.
     ContainerParams Params(PackageDir->path().toStdString(), "", ComponentID);
     ContainerWrapper Container(*GlobalConfigJSON, *MANIFESTJSON, Params);
-    Container.Cleanup();
-    Container.BuildContainerRuntime();
-    Container.Execute("cmd.exe");
+
+    //Collect ExecutableDefinitions from the entire component chain.
+    //Use a map keyed by (EXECUTABLE_ID|VARIANT) so that a later component overrides
+    //an earlier one with the same pair — matching the "last wins" resolution logic.
+    std::map<std::string, nlohmann::ordered_json> ExeDefMap;
+    for (auto &Sub : Container.ContainerParams.SubComponentsArray)
+    {
+        if (Sub.value("TYPE", std::string()) != "ExecutableDefinition") continue;
+        std::string Key = Sub.value("EXECUTABLE_ID", std::string()) + "|" + Sub.value("VARIANT", std::string());
+        ExeDefMap[Key] = Sub;
+    }
+
+    std::vector<std::pair<QString, nlohmann::ordered_json>> ExeDefs;
+    for (auto &[Key, Sub] : ExeDefMap)
+    {
+        QString ID      = QString::fromStdString(Sub.value("EXECUTABLE_ID", std::string("(no id)")));
+        QString Variant = QString::fromStdString(Sub.value("VARIANT",       std::string()));
+        QString Label   = Variant.isEmpty() ? ID : ID + "  [" + Variant + "]";
+        ExeDefs.push_back({Label, Sub});
+    }
+
+    if (ExeDefs.empty())
+    {
+        QMessageBox::warning(this, "Execute Component", "No ExecutableDefinition subcomponents found in this component chain.\nAdd an ExecutableDefinition subcomponent first.");
+        return;
+    }
+
+    //Collect all runners from GlobalConfig and MANIFEST into a flat list.
+    //Stored as (display label, runner JSON) pairs; index matches the combobox.
+    std::vector<std::pair<QString, nlohmann::ordered_json>> Runners;
+    auto CollectRunners = [&](const nlohmann::ordered_json &Source, const QString &SourceLabel)
+    {
+        if (!Source.contains("RUNNERS")) return;
+        for (auto &[Platform, PlatformRunners] : Source["RUNNERS"].items())
+        {
+            if (!PlatformRunners.is_array()) continue;
+            for (auto &Runner : PlatformRunners)
+            {
+                QString Name    = QString::fromStdString(Runner.value("NAME", std::string("(unnamed)")));
+                QString Display = Name + "  [" + QString::fromStdString(Platform) + "]  (" + SourceLabel + ")";
+                Runners.push_back({Display, Runner});
+            }
+        }
+    };
+    CollectRunners(*GlobalConfigJSON, "global");
+    CollectRunners(*MANIFESTJSON,     "manifest");
+
+    if (Runners.empty())
+    {
+        QMessageBox::warning(this, "Execute Component", "No runners defined in GlobalConfig or the manifest.");
+        return;
+    }
+
+    //Build the runner picker dialog.
+    QDialog Dialog(this);
+    Dialog.setWindowTitle(QString("Execute: %1").arg(QString::fromStdString(ComponentID)));
+    Dialog.setMinimumWidth(500);
+    QVBoxLayout * DLayout = new QVBoxLayout(&Dialog);
+    QFormLayout * Form = new QFormLayout();
+    DLayout->addLayout(Form);
+
+    QComboBox * ExeDefPicker = new QComboBox(&Dialog);
+    for (auto &[Label, _] : ExeDefs)
+        ExeDefPicker->addItem(Label);
+    Form->addRow("Executable:", ExeDefPicker);
+
+    QComboBox * RunnerPicker = new QComboBox(&Dialog);
+    for (auto &[Label, _] : Runners)
+        RunnerPicker->addItem(Label);
+    Form->addRow("Runner:", RunnerPicker);
+
+    QHBoxLayout * BtnRow = new QHBoxLayout();
+    DLayout->addLayout(BtnRow);
+    BtnRow->addStretch();
+    QPushButton * CancelBtn  = new QPushButton("Cancel",  &Dialog);
+    QPushButton * ExecuteBtn = new QPushButton("Execute", &Dialog);
+    ExecuteBtn->setDefault(true);
+    BtnRow->addWidget(CancelBtn);
+    BtnRow->addWidget(ExecuteBtn);
+    QObject::connect(CancelBtn,  &QPushButton::clicked, &Dialog, &QDialog::reject);
+    QObject::connect(ExecuteBtn, &QPushButton::clicked, &Dialog, &QDialog::accept);
+
+    if (Dialog.exec() != QDialog::Accepted) return;
+
+    int RunnerIdx = RunnerPicker->currentIndex();
+    int ExeDefIdx = ExeDefPicker->currentIndex();
+    if (RunnerIdx < 0 || RunnerIdx >= (int)Runners.size()) return;
+    if (ExeDefIdx < 0 || ExeDefIdx >= (int)ExeDefs.size()) return;
+
+    nlohmann::ordered_json SelectedRunner = Runners[RunnerIdx].second;
+    nlohmann::ordered_json SelectedExeDef = ExeDefs[ExeDefIdx].second;
+
+    //Container was already built above to populate SubComponentsArray/ExeDefs.
+    //Now apply runner and resolve exe definition.
+
+    //Set ExecutableID and SelectedVariant from the chosen ExecutableDefinition, then resolve.
+    Container.ContainerParams.ExecutableID    = SelectedExeDef.value("EXECUTABLE_ID", std::string());
+    Container.ContainerParams.SelectedVariant = SelectedExeDef.value("VARIANT",       std::string());
+
+    //Override all runner fields from the user's selection.
+    //Must be done after construction since DeriveContainerParams has already run.
+    Container.ContainerParams.RunnerName       = SelectedRunner.value("NAME",       std::string());
+    Container.ContainerParams.RunnerExecutable = SelectedRunner.value("EXECUTABLE", std::string());
+    std::string TypeStr                        = SelectedRunner.value("TYPE",        std::string("wine"));
+    if      (TypeStr == "wine")      Container.ContainerParams.RunnerTypeEnum = RunnerType::Wine;
+    else if (TypeStr == "emulator")  Container.ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
+    else if (TypeStr == "custom")    Container.ContainerParams.RunnerTypeEnum = RunnerType::Custom;
+    else                             Container.ContainerParams.RunnerTypeEnum = RunnerType::Native;
+    Container.ContainerParams.RunnerEnv       = SelectedRunner.contains("ENV")        ? SelectedRunner["ENV"]        : nlohmann::ordered_json::object();
+    Container.ContainerParams.RunnerRemoveEnv.clear();
+    Container.ContainerParams.RunnerArgs.clear();
+    if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) Container.ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
+    if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       Container.ContainerParams.RunnerArgs.push_back(std::string(A));
+
+    //Re-derive path layout — only ProgramPath, DefPrefixPath and WorkDir differ between Wine and non-Wine.
+    //RuntimePath and TempPath are already set correctly by DeriveContainerParams.
+    if (Container.ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        Container.ContainerParams.ProgramPath                        = Container.ContainerParams.RuntimePath / "drive_c" / Container.ContainerParams.PackageUID;
+        Container.ContainerParams.DefPrefixPath                      = Container.ContainerParams.TempPath / "DEFPREFIX";
+        Container.ContainerParams.WindowsProgramPath                 = "C:\\" + Container.ContainerParams.PackageUID;
+        Container.ContainerParams.WindowsProgramPathDoubleBackSlash  = "C:\\\\" + Container.ContainerParams.PackageUID;
+        Container.ContainerParams.WorkDirPathComplete                = Container.ContainerParams.ProgramPath;
+    }
+    else
+    {
+        Container.ContainerParams.ProgramPath         = Container.ContainerParams.RuntimePath;
+        Container.ContainerParams.WorkDirPathComplete = Container.ContainerParams.RuntimePath;
+    }
+
+    if (!ContainerWrapper::ResolveExecutableDefinition(Container.ContainerParams))
+    {
+        QMessageBox::critical(this, "Execute Component", "Failed to resolve ExecutableDefinition.\nCheck EXECUTABLE_ID and VARIANT.");
+        return;
+    }
+
+    Container.Cleanup(); //Remove any leftover RUNTIME/TEMP from a previous run.
+
+    if (!Container.BuildContainerRuntime())
+    {
+        QMessageBox::critical(this, "Execute Component", "Failed to build container runtime.\nCheck the log for details.");
+        Container.Cleanup();
+        return;
+    }
+
+    if (!Container.Execute())
+        QMessageBox::warning(this, "Execute Component", "Process exited with an error.\nCheck the log for details.");
+
     Container.Cleanup();
 }
 
@@ -956,25 +1337,43 @@ nlohmann::ordered_json PackageEditor::RegFileToJSON(QFile RegFile)
     return RegJSON;
 }
 
-void PackageEditor::AddFileLayer()
+void PackageEditor::AddVFSDirLayer()
 {
     QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
-    LogOut("PackageEditor", "Adding DirLayer in component " + Button->parentWidget()->property("ComponentID").toString().toStdString());
-
-    QString UserDataPath = QDir::cleanPath(PackageDir->path() + QDir::separator() + "USERDATA");
-    QString SelectedProgramDir = QFileDialog::getExistingDirectory(this, "Select ProgramDir", UserDataPath);
+    QString Selected = QFileDialog::getExistingDirectory(this, "Select directory to add as VFSDirLayer");
+    if (Selected.isEmpty()) return;
+    QString DirName = QFileInfo(Selected).fileName();
+    QString Dest = QDir::cleanPath(PackageFilesDir->path() + QDir::separator() + DirName);
+    QDir().rename(Selected, Dest);
     nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
-    QString ComponentName = QString::fromStdString((*PackageEditor::MANIFESTJSON)[JSONPointer]["NAME"]);
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSDirLayer"}, {"PATH", DirName.toStdString()}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
 
-    (*PackageEditor::MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "DirLayer"}, {"PATH", ComponentName.toStdString()}}));
+void PackageEditor::AddVFSZipLayer()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    QString Selected = QFileDialog::getOpenFileName(this, "Select ZIP file to add as VFSZipLayer", "", "ZIP files (*.zip)");
+    if (Selected.isEmpty()) return;
+    QString ZipName = QFileInfo(Selected).fileName();
+    QString Dest = QDir::cleanPath(PackageFilesDir->path() + QDir::separator() + ZipName);
+    QFile::rename(Selected, Dest);
+    nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSZipLayer"}, {"PATH", ZipName.toStdString()}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
 
-    QDir DirMover;
-    DirMover.mkdir(PackageFilesDir->path());
-    DirMover.rename(SelectedProgramDir, QDir::cleanPath(PackageFilesDir->path() + QDir::separator() + ComponentName));
-
-    PackageEditor::SaveManifestJSON();
-    PackageEditor::RefreshJSONView();
-    PackageEditor::BuildUI();
+void PackageEditor::AddVFSFileLayer()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    QString Selected = QFileDialog::getOpenFileName(this, "Select file to add as VFSFileLayer");
+    if (Selected.isEmpty()) return;
+    QString FileName = QFileInfo(Selected).fileName();
+    QString Dest = QDir::cleanPath(PackageFilesDir->path() + QDir::separator() + FileName);
+    QFile::rename(Selected, Dest);
+    nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSFileLayer"}, {"PATH", FileName.toStdString()}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 
 void PackageEditor::FinalizeComponent()
