@@ -1,4 +1,5 @@
 #include "prelaunchwindow.h"
+#include "packageeditor.h"
 
 #include <QDir>
 #include <QPixmap>
@@ -418,6 +419,15 @@ PreLaunchWindow::PreLaunchWindow(
     QHBoxLayout* BtnLayout = new QHBoxLayout(BtnWidget);
     BtnWidget->setLayout(BtnLayout);
     RootLayout->addWidget(BtnWidget);
+
+    //Package Editor button on the left — opens the editor for this specific package.
+    QPushButton * PackageEditorButton = new QPushButton("Package Editor", BtnWidget);
+    BtnLayout->addWidget(PackageEditorButton);
+    connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
+    {
+        PackageEditor * Editor = new PackageEditor(this->GlobalConfigJSON, this, QString::fromStdString(this->PackagePath));
+        Editor->show();
+    });
 
     BtnLayout->addStretch();
 

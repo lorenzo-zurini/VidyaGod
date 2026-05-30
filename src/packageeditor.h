@@ -42,7 +42,8 @@ class PackageEditor : public QDialog
     Q_OBJECT
 
 public:
-    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr);
+    //If PackagePath is non-empty, the file-picker dialog is skipped and that package is opened directly.
+    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
     static QString UnquoteString(QString InputString);
     static nlohmann::ordered_json RegFileToJSON(QFile RegFile);
     static nlohmann::ordered_json SubtractJSON(nlohmann::ordered_json OldJSON, nlohmann::ordered_json NewJSON);
@@ -68,13 +69,15 @@ private slots:
     void AddVFSDirLayer();
     void AddVFSZipLayer();
     void AddVFSFileLayer();
+    void AddVariantDefinition();
+    void AddCustomVar();
     void FinalizeComponent();
 
 private:
     bool InitMANIFESTJSON();
     void SavePackage();
     void RefreshJSONView();
-    void InitPackage();
+    void InitPackage(const QString &PreselectedPath = "");
     void CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id);
     void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();

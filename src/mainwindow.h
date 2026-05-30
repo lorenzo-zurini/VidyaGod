@@ -87,6 +87,8 @@ private slots:
     //Builds a ContainerWrapper, mounts the runtime, runs the game, waits for exit,
     //then triggers cleanup. Displays a critical dialog on launch failure.
     void on_PlayGameButton_clicked();
+    //Opens PreLaunchWindow unconditionally (ignores SKIP_LAUNCH_DIALOG) for reconfiguration.
+    void on_EditGameButton_clicked();
 };
 /////////////////////////////////////////////////////////////////////////////
 

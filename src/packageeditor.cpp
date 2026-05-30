@@ -5,7 +5,7 @@
 
 using json = nlohmann::ordered_json;
 
-PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent)
+PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
     : QDialog(parent)
     , ui(new Ui::PackageEditor)
 {
@@ -15,7 +15,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
 
     PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
 
-    InitPackage();
+    InitPackage(PreselectedPath);
     InitMANIFESTJSON();
     BuildUI();
     RefreshJSONView();
@@ -87,9 +87,12 @@ void PackageEditor::RefreshJSONView()
     JSONTextEdit->setText(QString::fromStdString(MANIFESTJSON->dump(4)));
 }
 
-void PackageEditor::InitPackage()
+void PackageEditor::InitPackage(const QString &PreselectedPath)
 {
-    this->PackageDir = new QDir(QFileDialog::getExistingDirectory(this, "Select package directory..."));
+    QString ChosenPath = PreselectedPath.isEmpty()
+        ? QFileDialog::getExistingDirectory(this, "Select package directory...")
+        : PreselectedPath;
+    this->PackageDir = new QDir(ChosenPath);
     this->MetadataDir = new QDir(FSOps::SubPath((*PackageDir).path(), "METADATA"));
     this->PackageFilesDir = new QDir(FSOps::SubPath((*PackageDir).path(), "PACKAGEFILES"));
 
@@ -571,6 +574,14 @@ bool PackageEditor::BuildUI()
                 SubComponentsToolbarLayout->addWidget(AddVFSFileLayerButton);
                 QObject::connect(AddVFSFileLayerButton, &QPushButton::clicked, this, &PackageEditor::AddVFSFileLayer);
 
+                QPushButton * AddVariantDefButton = new QPushButton("Add VariantDefinition", ComponentTabWidget);
+                SubComponentsToolbarLayout->addWidget(AddVariantDefButton);
+                QObject::connect(AddVariantDefButton, &QPushButton::clicked, this, &PackageEditor::AddVariantDefinition);
+
+                QPushButton * AddCustomVarButton = new QPushButton("Add CustomVar", ComponentTabWidget);
+                SubComponentsToolbarLayout->addWidget(AddCustomVarButton);
+                QObject::connect(AddCustomVarButton, &QPushButton::clicked, this, &PackageEditor::AddCustomVar);
+
                 QPushButton * FinalizeButton = new QPushButton(ComponentTabWidget);
                 FinalizeButton->setText("Finalize");
                 SubComponentsToolbarLayout->addWidget(FinalizeButton);
@@ -727,7 +738,21 @@ bool PackageEditor::BuildUI()
                 }
                 else if (SubComponentType == "CustomVar")
                 {
-                    //CustomVar subcomponents are resolved during init and don't need UI here — shown via runner/subgame fields.
+                    static const QStringList CustomVarFields = {"KEY", "LABEL", "DEFAULT", "VARTYPE", "OPTIONS"};
+                    int row = 1;
+                    for (const QString &Field : CustomVarFields)
+                    {
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(Field + ":"), row, 0);
+                        QLineEdit * FieldEdit = new QLineEdit(IndividualSubComponentGroupBox);
+                        QString FieldPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field);
+                        FieldEdit->setProperty("JSONPath", FieldPath);
+                        auto &Val = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j][Field.toStdString()];
+                        if (!Val.is_null() && Val.is_string())
+                            FieldEdit->setText(QString::fromStdString(std::string(Val)));
+                        QObject::connect(FieldEdit, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        IndividualSubComponentGroupBoxLayout->addWidget(FieldEdit, row, 1);
+                        row++;
+                    }
                 }
                 else
                 {
@@ -1346,6 +1371,26 @@ void PackageEditor::AddVFSFileLayer()
     QFile::rename(Selected, Dest);
     nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
     (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSFileLayer"}, {"PATH", FileName.toStdString()}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+void PackageEditor::AddVariantDefinition()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
+        {"TYPE", "VariantDefinition"}, {"EXECUTABLE_ID", "main"}, {"VARIANT_ID", ""}, {"EXEPATH", ""}
+    }));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+void PackageEditor::AddCustomVar()
+{
+    QPushButton * Button = qobject_cast<QPushButton *>(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(Button->parent()->property("JSONPath").toString().toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
+        {"TYPE", "CustomVar"}, {"KEY", ""}, {"LABEL", ""}, {"DEFAULT", ""}, {"VARTYPE", "string"}
+    }));
     SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 

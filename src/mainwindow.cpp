@@ -364,6 +364,8 @@ LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON
     EditButton->setFlat(true);
     EditButton->setText("...");
     ButtonsGroupBoxLayout->addWidget(EditButton);
+    //Opens PreLaunchWindow unconditionally (ignores SKIP_LAUNCH_DIALOG), useful for reconfiguring.
+    QObject::connect(EditButton, &QPushButton::clicked, this, &LibraryGameCard::on_EditGameButton_clicked);
     LibraryGameCardLayout->addWidget(ButtonsGroupBox);
 
     //ButtonsGroupBox->setHidden(true);
@@ -452,6 +454,15 @@ void LibraryGameCard::on_PlayGameButton_clicked()
     QMetaObject::invokeMethod(Dialog, "onLaunchClicked", Qt::QueuedConnection);
 }
 
+
+void LibraryGameCard::on_EditGameButton_clicked()
+{
+    //Always show PreLaunchWindow regardless of SKIP_LAUNCH_DIALOG — gives access to
+    //runner/variant settings, console output, and the Package Editor button.
+    PreLaunchWindow * W = new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
+                                              PackagePath.string(), SubgameID, nullptr);
+    W->show();
+}
 
 void LibraryGameCard::on_GameCard_clicked()
 {
