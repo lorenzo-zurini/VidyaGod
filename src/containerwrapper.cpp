@@ -1374,14 +1374,17 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         //Pass the Windows-style path so Wine resolves it through its own drive mappings.
         FinalExe = ContainerParams.ExePathInPrefix.string();
     }
-    else
+    else if (!ContainerParams.ExePathRelative.empty())
     {
+        //Non-Wine: only set FinalExe when the VariantDefinition specified a file (ROM, EXEPATH, DATAPATH).
+        //If ExePathRelative is empty the runner is self-contained (e.g. a bare AppImage) and
+        //needs no positional argument — passing ProgramPath would be meaningless and likely fatal.
         FinalExe = ContainerParams.ExePathComplete.string();
     }
 
-    if (FinalExe.empty())
+    if (FinalExe.empty() && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
     {
-        LogErr("ContainerWrapper::Execute", "No exe to run (no subgame and no override). Aborting.");
+        LogErr("ContainerWrapper::Execute", "No exe to run (Wine requires an EXEPATH). Aborting.");
         return false;
     }
 
@@ -1433,16 +1436,18 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     QStringList Arguments;
     if (ContainerParams.RunnerTypeEnum != RunnerType::Wine)
     {
-        //Emulator/Custom/Native: runner args (e.g. emulator flags) come before the ROM/data path.
+        //Emulator/Custom/Native: runner args first, then the exe/ROM path (if any), then ExeArgs.
         for (std::string Arg : ContainerParams.RunnerArgs)
         {
             ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
             Arguments.append(QString::fromStdString(Arg));
         }
         if (!FinalExe.empty())
-        {
             Arguments.append(QString::fromStdString(FinalExe));
-        }
+        //ExeArgs from the VariantDefinition (e.g. -c config.cfg for GemRB, or extra flags).
+        if (OverrideExe.empty())
+            for (std::string Arg : ContainerParams.ExeArgs)
+                Arguments.append(QString::fromStdString(Arg));
     }
     else
     {
@@ -1520,7 +1525,12 @@ bool ContainerWrapper::Cleanup()
     {
         ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
     }
-    std::filesystem::remove_all(this->ContainerParams.RuntimePath);
-    std::filesystem::remove_all(this->ContainerParams.TempPath);
+    //remove_all can throw filesystem_error if a path is still a FUSE mountpoint (device busy).
+    //Catch and log rather than crash — stale mounts should not bring down the launcher.
+    std::error_code ec;
+    std::filesystem::remove_all(this->ContainerParams.RuntimePath, ec);
+    if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove RUNTIME: " + ec.message() + " — may still be mounted.");
+    std::filesystem::remove_all(this->ContainerParams.TempPath, ec);
+    if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message());
     return true;
 }
