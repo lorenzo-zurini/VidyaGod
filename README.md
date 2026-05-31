@@ -43,14 +43,85 @@ VidyaGod is a game launcher built around a structured, reproducible package form
 
 ## 1. Overview
 
-A VidyaGod **package** is a directory containing a game's files in compressed or directory form, plus a `MANIFEST.json` that fully describes how to build and launch the game's runtime environment. Packages are platform-agnostic at the file level — the manifest declares the target platform, and the launcher selects an appropriate runner (Wine, an emulator, a native binary, or a custom program).
+### The Problem with Game Preservation
 
-The core data model has four main concepts:
+Most game launchers treat software the same way an operating system treats an installed program: one version, one configuration, one set of files on disk. If you want to run a different version of a game, you reinstall it. If a patch breaks something, you hope for an undo. If a game needs a specific registry configuration or a particular DLL override to function, that knowledge lives in someone's head or a forgotten forum post. When the developer's authentication servers go offline or the game is delisted, the ability to run it reliably may disappear entirely. The game files may survive, but the knowledge of how to make them run does not.
 
-- **Subgame** — A game title with metadata (cover art, TGDB ID, release date, etc.) and a list of launch configurations called entrypoints.
-- **Component** — A named layer of the runtime environment, optionally depending on a parent component. Components stack together to form the full VFS.
-- **Entrypoint** — A launch configuration under a subgame: specifies which component level to build to (`LASTCOMPONENT`), the executable path, arguments, and forced variable values.
-- **CustomVar** — A named variable defined at manifest level, resolved through a two-layer pipeline (token substitution then type translation), and substituted into any `%KEY%` token throughout the manifest.
+This problem compounds for serious preservation: a game like Warcraft III has had over a dozen meaningful patch versions across two decades, each with different behaviour, different network compatibility, and different third-party mod support. An Age of Empires II package may span the original release, the community no-CD patch, multiple unofficial patches, a fan-made FLAC soundtrack, and three separate expansion branches — all sharing the same base installation. A Resident Evil game from 1997 may require a specific dgvoodoo version, a specific DLL override combination, and a Classic REbirth compatibility layer, none of which is documented anywhere a user would easily find.
+
+Traditional launchers have no native way to express any of this. VidyaGod was built specifically to solve it.
+
+---
+
+### The Package Format as a Preservation Standard
+
+A VidyaGod **package** is a self-contained, fully declarative unit of game preservation. Everything required to reproduce a working game environment — not just the files, but the complete runtime configuration — is captured in a single directory:
+
+- The game's files and every patch, expansion, and add-on, stored as compressed archives in `PACKAGEFILES/`
+- A `MANIFEST.json` describing exactly how those files layer together, what the registry must contain, which DLLs need overrides, and how the game should be launched
+- A `USERDATA/` directory that accumulates only the player's own changes (saves, settings) via copy-on-write, leaving the original files permanently untouched
+
+The game files are **never modified**. The launcher assembles a virtual filesystem from the package's layers at launch time, runs the game inside it, and tears everything down when the game exits. The base files remain exactly as they were when the package was created, indefinitely, regardless of how many times the game is played or how many different configurations are used.
+
+This means a package created today will produce an identical runtime environment in ten years, on any compatible system, without any additional steps. The knowledge of how to run the game is not in someone's memory or a README — it is encoded in the manifest, reproducibly.
+
+---
+
+### What the Package Format Makes Possible
+
+#### Multi-version packages in a single directory
+
+Warcraft III has eight meaningful patch versions between 1.21b and 1.31.1. With VidyaGod, all eight are a single package. Each version's files are a separate ZIP archive. Each version is a separate component. A user opening the PreLaunch window sees a version picker and selects the one they want — the correct files are assembled, the correct registry configuration is applied, and the game launches. Switching versions is a single dropdown change, with no reinstallation, no file duplication, and no risk of corrupting one version while working with another.
+
+The same package also contains both Reign of Chaos and The Frozen Throne as separate subgames, each automatically configuring the game mode via a registry key on every launch — so the in-game mode switcher cannot accidentally leave the game in the wrong state for the next session.
+
+#### Base game plus expansions and DLC on demand
+
+An Age of Empires II package contains the Age of Kings, The Conquerors, and the Forgotten Empires fan expansion as separate subgames sharing a common component chain. The Conquerors builds on top of the Age of Kings component; Forgotten Empires builds on top of The Conquerors. A user can launch any of the three independently, or launch the original Age of Kings with just the no-CD patch and none of the later layers. Every combination is an entrypoint — a single click in the UI, no files extracted or reorganized.
+
+The same pattern applies naturally to any game with a series of expansions: the base game is the root component, each expansion adds a child component, and each entrypoint names how deep to build. Adding a new expansion to the package means adding one component and one entrypoint — nothing else changes.
+
+#### Immutable base files, permanent user data separation
+
+The copy-on-write layer means every modification made while playing — saves, configuration changes, user-created content — goes into `USERDATA/` automatically, with no action required from the user or the packager. The base files in `PACKAGEFILES/` are read-only and never touched. This has several consequences:
+
+- **Multiple users on the same machine** can share the same package directory and have independent save files and settings by using different `USERDATA/` paths.
+- **A fresh start** is as simple as deleting `USERDATA/`. The next launch reconstructs the original runtime state exactly.
+- **A packager can verify the base state** at any time by launching with `ReadOnlyVFS = true`, which bypasses `USERDATA/` entirely and presents the pure package state.
+
+#### Registry configuration as first-class data
+
+Games from the Windows 98–XP era are heavily registry-dependent: install paths, serial keys, version strings, CD path emulation, language settings. Getting these wrong typically means the game refuses to start, crashes immediately, or runs in a degraded state. Traditional preservation approaches involve manual registry imports, batch scripts, or pre-configured Wine bottles that become opaque and un-auditable over time.
+
+In a VidyaGod package, every registry key the game needs is declared explicitly in the manifest as a `RegEdit` subcomponent, in a human-readable format alongside the VFS layers that provide the files. The keys are applied automatically on every launch, in the correct order, with `%VAR%` substitution for paths that depend on the runtime environment. The `OVERRIDE` flag handles keys that must win over in-game registry changes — like Warcraft III's game-mode selector — ensuring the package's declared configuration is always authoritative.
+
+#### Modding without risk
+
+Because the base files are never modified, mods can be applied as additional VFS layers on top of the base game without any risk to the original installation. A mod component sits above the base in the union stack — its files take precedence where paths conflict, but the original files remain intact beneath. Removing a mod means removing a component; no uninstaller, no file restoration, no diff-and-patch dance.
+
+Multiple mod configurations can coexist as separate component branches from the same base. A user can switch between a vanilla configuration, a graphics-enhancement mod, and a total conversion mod via the entrypoint picker — each one a different `LASTCOMPONENT` selection, each one assembling a different union stack from the same underlying files.
+
+#### Capturing the complete preservation artifact
+
+When a package is created using the Package Editor's Analyze Registry workflow, the following are captured and encoded in the manifest automatically:
+
+- Every registry key the installer wrote, as `RegEdit` subcomponents
+- Every file the installer placed, as VFS layer archives
+- The DLL override configuration required by compatibility fixes
+- The runtime configuration (Wine prefix version, emulator flags)
+
+The result is not just "the game files" — it is a complete, runnable specification of the entire runtime environment, including all the knowledge that would otherwise be lost when the installer is no longer available, the compatibility layer documentation goes offline, or the person who figured out the right DLL combination is no longer around.
+
+---
+
+### The Core Data Model
+
+A VidyaGod package is organized around four concepts:
+
+- **Subgame** — A game title with metadata (cover art, TGDB ID, release date, etc.) and a list of launch configurations called entrypoints. A single package can contain multiple subgames — base game, expansions, and spin-offs — sharing the same component infrastructure.
+- **Component** — A named layer of the runtime environment, optionally depending on a parent component. Components stack together to form the full VFS. Each component adds files (VFS layers), registry configuration, DLL overrides, or config file patches — nothing else.
+- **Entrypoint** — A launch configuration under a subgame: specifies which component level to build to (`LASTCOMPONENT`), the executable path, arguments, and forced variable values. The entrypoint determines the depth of the VFS stack for a given launch.
+- **CustomVar** — A named variable defined at manifest level, resolved through a two-layer pipeline (token substitution then type translation), and substituted into any `%KEY%` token throughout the manifest. CustomVars expose game settings (resolution, language, game mode) to the user in a typed, human-readable form while handling the translation to whatever raw format the game expects.
 
 ### Key Design Principles
 
