@@ -14,6 +14,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QSpinBox>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
@@ -34,8 +36,10 @@ public:
     nlohmann::ordered_json MANIFESTJSON;
     std::string            PackagePath;
     std::string            SubgameID;
-    std::string            ComponentID;       // Pre-resolved from variant selection
-    nlohmann::ordered_json SelectedRunner;    // May be null if no override is needed
+    std::string                        ComponentID;       // Pre-resolved from entrypoint selection
+    std::string                        EntrypointID;      // ENTRYPOINT_ID of the selected entrypoint
+    nlohmann::ordered_json             SelectedRunner;    // May be null if no override is needed
+    std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / entrypoint seeds
     bool                   SkipCleanup = false;
 
     // Forcibly kills the running game process (if any).
@@ -80,6 +84,7 @@ public:
 private slots:
     void onLaunchClicked();
     void onKillClicked();
+    void onEntrypointChanged();
     void onLogLine(int level, QString context, QString message);
     void onStatusChanged(QString status);
     void onProgressChanged(int value);
@@ -89,6 +94,8 @@ private:
     // Saves PREFERRED_RUNNER / PREFERRED_VARIANT_ID / SKIP_LAUNCH_DIALOG to
     // GlobalConfigJSON and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
     void savePreferences(const std::string& runnerName, const std::string& variantID, bool skipNext);
+    // Rebuilds the CustomVar picker section based on the currently selected entrypoint.
+    void RebuildCustomVarPickers();
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
@@ -108,8 +115,11 @@ private:
     QComboBox*    VariantCombo      = nullptr;
     QProgressBar* ProgressBar       = nullptr;
     QLabel*       StatusLabel       = nullptr;
-    QCheckBox*    NoCleanupCheck    = nullptr;
-    QCheckBox*    RememberCheck     = nullptr;
+    QCheckBox*    NoCleanupCheck        = nullptr;
+    QCheckBox*    RememberCheck         = nullptr;
+    QCheckBox*    CloseAfterLaunchCheck = nullptr;
+    QGroupBox*    CustomVarGroup        = nullptr; // Rebuilt by RebuildCustomVarPickers()
+    QFormLayout*  CustomVarForm         = nullptr;
     QTextEdit*    ConsoleEdit       = nullptr;
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;

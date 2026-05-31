@@ -28,12 +28,12 @@
 //  Custom   — Any other runner; DATAPATH is passed instead of EXEPATH/ROM.
 enum class RunnerType { Wine, Emulator, Native, Custom };
 
-//Describes one available variant for a given EXECUTABLE_ID.
-//Selecting a variant = selecting the component whose chain to build up to.
-struct VariantInfo {
-    std::string VariantID;     // VARIANT_ID field on the VariantDefinition
-    std::string ComponentName; // NAME field of the component that contains it
-    std::string ComponentID;   // COMPONENTID of that component
+//Describes one available entrypoint for a given subgame.
+//Selecting an entrypoint = selecting which component chain level to build up to.
+struct EntrypointInfo {
+    std::string EntrypointID;  // ENTRYPOINT_ID field on the entrypoint
+    std::string ComponentName; // NAME of the component referenced by LASTCOMPONENT
+    std::string ComponentID;   // LASTCOMPONENT value (the component_id to build to)
 };
 
 //All resolved parameters needed to build and launch a single container session.
@@ -77,9 +77,8 @@ public:
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
 
-    //ExecutableDefinition resolution:
-    std::string ExecutableID;                                        //PASSED from SUBGAMES["EXECUTABLE_ID"]
-    std::string DefaultVariantID;                                    //PASSED from SUBGAMES["DEFAULT_VARIANT_ID"]
+    //Entrypoint resolution:
+    std::string ExecutableID;                                        //EntrypointID — set from SUBGAMES["DEFAULT_ENTRYPOINT_ID"] or overridden by caller
 
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
@@ -168,22 +167,22 @@ public:
 
     //Container initialization:
     //Resolves which component_id to use given the provided subgame_id / component_id combination.
-    //If only subgame_id is set, uses DEFAULT_VARIANT_ID + EXECUTABLE_ID to resolve component_id via FindComponentForVariant.
+    //If only subgame_id is set, reads DEFAULT_ENTRYPOINT_ID and resolves component_id via FindComponentForEntrypoint.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
-    //Scans ALL components in MANIFESTJSON for VariantDefinition subcomponents matching ExecutableID.
-    //Returns one VariantInfo per matching component — the component NAME is the display label.
-    static std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID);
+    //Returns all entrypoints defined under SUBGAMES[SubgameID].ENTRYPOINTS.
+    //ComponentName is derived by looking up LASTCOMPONENT in COMPONENTS.
+    static std::vector<EntrypointInfo> GetAvailableEntrypoints(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
 
-    //Returns the COMPONENTID of the component containing VariantDefinition { EXECUTABLE_ID, VARIANT_ID }.
+    //Returns the LASTCOMPONENT value of the entrypoint matching { SubgameID, EntrypointID }.
     //Returns empty string if not found.
-    static std::string FindComponentForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID, const std::string &VariantID);
+    static std::string FindComponentForEntrypoint(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &EntrypointID);
 
-    //Finds the single VariantDefinition in SubComponentsArray matching ContainerParams.ExecutableID
-    //and populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
-    //The chain is already constrained by the selected component, so there should be exactly one match.
+    //Finds the entrypoint in MANIFESTJSON matching ContainerParams.ExecutableID (= EntrypointID)
+    //under the subgame identified by ContainerParams.subgame_id, then populates
+    //ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
     //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
-    static bool ResolveExecutableDefinition(struct ContainerParams &ContainerParams);
+    static bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Walks the PARENTCOMPONENT chain from component_id up to the root component,
     //producing an ordered Recipe (ancestor-first).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
@@ -230,6 +229,9 @@ public:
     static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
     //Imports RegPatch32.reg and RegPatch64.reg into the prefix using `reg import` via the runner.
     static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
+    //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime after VFS is up.
+    //Writes directly into the RW USERDATA layer so values win over DEFPREFIX and prior COW state.
+    static bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
     //DLL overrides:
     //Collects DLLOVERRIDE values from all DllOverride subcomponents into DLLOverrides.
@@ -248,6 +250,8 @@ public:
     //Synchronously runs Program with Arguments in the given environment.
     //Waits indefinitely for completion. Returns the exit code, or -1 on crash/start failure.
     static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment());
+    //Translates a display-layer value to its raw storage format based on VARTYPE (dword/qword/bool).
+    static std::string TranslateCustomVarValue(const std::string &Value, const std::string &VarType);
     //Replaces all %KEY% tokens in SourceString with values from VariablesMap.
     //Leaves unrecognised tokens unchanged and logs a warning. Returns true if any replacement was made.
     static bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);

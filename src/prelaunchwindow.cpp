@@ -107,6 +107,7 @@ void LaunchThread::run()
     // Build ContainerParams and ContainerWrapper.
     // -----------------------------------------------------------------
     struct ContainerParams Params(PackagePath, SubgameID, ComponentID);
+    Params.VariableOverrides = this->VariableOverrides;
 
     ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, Params);
 
@@ -161,10 +162,14 @@ void LaunchThread::run()
         }
     }
 
+    // Override ExecutableID with the user-selected entrypoint.
+    if (!this->EntrypointID.empty())
+        LocalWrapper->ContainerParams.ExecutableID = this->EntrypointID;
+
     // -----------------------------------------------------------------
     // Step 1: Resolve executable definition.
     // -----------------------------------------------------------------
-    if (!ContainerWrapper::ResolveExecutableDefinition(LocalWrapper->ContainerParams))
+    if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, LocalWrapper->ContainerParams))
     {
         ClearLogCallback();
         {
@@ -172,7 +177,7 @@ void LaunchThread::run()
             wrapper = nullptr;
         }
         delete LocalWrapper;
-        emit launchFinished(false, "Could not resolve variant definition.\nCheck EXECUTABLE_ID and VARIANT_ID in the manifest.");
+        emit launchFinished(false, "Could not resolve entrypoint.\nCheck ENTRYPOINT_ID and LASTCOMPONENT in the manifest.");
         return;
     }
 
@@ -352,38 +357,45 @@ PreLaunchWindow::PreLaunchWindow(
         }
     }
 
-    // Variant combobox
+    // Entrypoint combobox
     VariantCombo = new QComboBox(ControlWidget);
     PickerForm->addRow("Variant:", VariantCombo);
 
-    // Collect variants via ContainerWrapper helper.
-    std::string ExecutableID;
-    std::string DefaultVariantID;
+    // Collect entrypoints via ContainerWrapper helper.
+    std::string DefaultEntrypointID;
     if (SubgameIdx != -1)
     {
-        auto &EF = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        if (!EF.is_null() && EF.is_string()) ExecutableID = std::string(EF);
-        auto &DF = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
-        if (!DF.is_null() && DF.is_string()) DefaultVariantID = std::string(DF);
+        auto &DEF = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
+        if (!DEF.is_null() && DEF.is_string()) DefaultEntrypointID = std::string(DEF);
     }
 
-    std::vector<VariantInfo> Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, ExecutableID);
-    for (auto &V : Variants)
-        VariantCombo->addItem(QString::fromStdString(V.ComponentName), QString::fromStdString(V.VariantID));
+    std::vector<EntrypointInfo> Entrypoints = ContainerWrapper::GetAvailableEntrypoints(*MANIFESTJSON, SubgameID);
+    for (auto &E : Entrypoints)
+        VariantCombo->addItem(QString::fromStdString(E.ComponentName), QString::fromStdString(E.EntrypointID));
 
-    // Pre-select variant: USERSETTINGS > DEFAULT_VARIANT_ID.
-    std::string PreselVariantID = DefaultVariantID;
+    // Pre-select entrypoint: USERSETTINGS > DEFAULT_ENTRYPOINT_ID.
+    std::string PreselEntrypointID = DefaultEntrypointID;
     {
         auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_VARIANT_ID") && US["PREFERRED_VARIANT_ID"].is_string())
-            PreselVariantID = std::string(US["PREFERRED_VARIANT_ID"]);
+            PreselEntrypointID = std::string(US["PREFERRED_VARIANT_ID"]);
     }
 
     for (int k = 0; k < VariantCombo->count(); k++)
     {
-        if (VariantCombo->itemData(k).toString().toStdString() == PreselVariantID)
+        if (VariantCombo->itemData(k).toString().toStdString() == PreselEntrypointID)
         { VariantCombo->setCurrentIndex(k); break; }
     }
+
+    // CustomVar pickers — rebuilt dynamically when the entrypoint changes.
+    CustomVarGroup = new QGroupBox("Options", ControlWidget);
+    CustomVarForm  = new QFormLayout(CustomVarGroup);
+    CustomVarGroup->setLayout(CustomVarForm);
+    CustomVarGroup->setVisible(false);
+    ControlLayout->addWidget(CustomVarGroup);
+
+    connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onEntrypointChanged);
+    RebuildCustomVarPickers();
 
     // Progress bar + status label
     ProgressBar = new QProgressBar(ControlWidget);
@@ -402,6 +414,9 @@ PreLaunchWindow::PreLaunchWindow(
 
     RememberCheck = new QCheckBox("Remember selection and skip this dialog next time", ControlWidget);
     ControlLayout->addWidget(RememberCheck);
+
+    CloseAfterLaunchCheck = new QCheckBox("Close window when game starts", ControlWidget);
+    ControlLayout->addWidget(CloseAfterLaunchCheck);
 
     ControlLayout->addStretch();
 
@@ -464,32 +479,174 @@ PreLaunchWindow::~PreLaunchWindow()
 }
 
 // ---------------------------------------------------------------------------
+// Slot: Entrypoint selection changed — rebuild CustomVar pickers.
+// ---------------------------------------------------------------------------
+void PreLaunchWindow::onEntrypointChanged()
+{
+    RebuildCustomVarPickers();
+}
+
+// ---------------------------------------------------------------------------
+// Rebuilds CustomVarGroup based on the currently selected entrypoint.
+// Shows pickers only for CustomVars that are (a) referenced via %KEY% in the
+// component chain and (b) have DISPLAY != false.
+// DISPLAY:false vars are still resolved from the entrypoint seed so they flow
+// into VariableOverrides at launch time without a picker.
+// ---------------------------------------------------------------------------
+void PreLaunchWindow::RebuildCustomVarPickers()
+{
+    // Clear existing picker rows.
+    while (CustomVarForm->rowCount() > 0)
+        CustomVarForm->removeRow(0);
+
+    if (!MANIFESTJSON || !MANIFESTJSON->contains("CUSTOMVARS") || !(*MANIFESTJSON)["CUSTOMVARS"].is_array())
+    {
+        CustomVarGroup->setVisible(false);
+        return;
+    }
+
+    // Resolve the selected entrypoint's LASTCOMPONENT.
+    std::string SelEntrypointID;
+    if (VariantCombo->currentIndex() >= 0)
+        SelEntrypointID = VariantCombo->currentData().toString().toStdString();
+
+    std::string LastComp = ContainerWrapper::FindComponentForEntrypoint(*MANIFESTJSON, SubgameID, SelEntrypointID);
+
+    // Get the recipe (ancestor chain) for that component.
+    ContainerParams TmpParams("", SubgameID, LastComp);
+    ContainerWrapper::CreateRecipe(*MANIFESTJSON, TmpParams);
+
+    // Serialise the entire subcomponent JSON of every component in the chain
+    // into one string so we can quickly scan for %KEY% token usage.
+    std::string ChainSubComponentsStr;
+    if ((*MANIFESTJSON).contains("COMPONENTS"))
+        for (auto &Comp : (*MANIFESTJSON)["COMPONENTS"])
+        {
+            std::string CID = Comp.value("COMPONENTID", std::string());
+            if (std::find(TmpParams.Recipe.begin(), TmpParams.Recipe.end(), CID) == TmpParams.Recipe.end()) continue;
+            if (Comp.contains("SUBCOMPONENTS"))
+                ChainSubComponentsStr += Comp["SUBCOMPONENTS"].dump();
+        }
+
+    // Get entrypoint-level CUSTOMVARS seed.
+    nlohmann::ordered_json EntrypointSeed = nlohmann::ordered_json::object();
+    {
+        int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
+        if (SubgameIdx != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("ENTRYPOINTS"))
+            for (auto &EP : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["ENTRYPOINTS"])
+                if (EP.value("ENTRYPOINT_ID", std::string()) == SelEntrypointID && EP.contains("FORCEVARS"))
+                    EntrypointSeed = EP["FORCEVARS"];
+    }
+
+    // Get persisted USERSETTINGS variables.
+    std::string PackageUID_local;
+    if (MANIFESTJSON->contains("PACKAGEUID") && !(*MANIFESTJSON)["PACKAGEUID"].is_null())
+        PackageUID_local = std::string((*MANIFESTJSON)["PACKAGEUID"]);
+    auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID_local);
+    nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
+                                        ? US["VARIABLES"] : nlohmann::ordered_json::object();
+
+    bool AnyVisible = false;
+
+    for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
+    {
+        std::string Key = CV.value("KEY", std::string());
+        if (Key.empty()) continue;
+
+        // Only show if this key is actually referenced in the chain.
+        std::string Token = "%" + Key + "%";
+        if (ChainSubComponentsStr.find(Token) == std::string::npos) continue;
+
+        // Resolve initial value: entrypoint seed → USERSETTINGS → DEFAULT.
+        std::string InitialValue = CV.value("DEFAULT", std::string());
+        if (SavedVars.contains(Key) && SavedVars[Key].is_string())
+            InitialValue = std::string(SavedVars[Key]);
+        if (EntrypointSeed.contains(Key) && EntrypointSeed[Key].is_string())
+            InitialValue = std::string(EntrypointSeed[Key]);
+
+        bool Display = CV.value("DISPLAY", true);
+
+        if (!Display) continue; // collected directly from entrypoint seed in onLaunchClicked
+
+        // Apply Layer 1 substitution to InitialValue so %ScreenWidth% shows as 1920 in the widget.
+        // (Layer 2 / type translation is NOT applied — widget always shows the display value.)
+        {
+            ContainerParams TmpP("", SubgameID, LastComp);
+            ContainerWrapper::StringVariableSubstitution(InitialValue, TmpP.GetVariablesMap());
+        }
+
+        AnyVisible = true;
+        std::string VarType = CV.value("VARTYPE", std::string("string"));
+        QString Label       = QString::fromStdString(CV.value("LABEL", Key));
+
+        if (VarType == "options" && CV.contains("OPTIONS") && CV["OPTIONS"].is_array())
+        {
+            QComboBox * Combo = new QComboBox(CustomVarGroup);
+            Combo->setProperty("CVKey", QString::fromStdString(Key));
+            for (auto &Opt : CV["OPTIONS"])
+            {
+                // Layer 1 on option VALUES too — they may contain tokens.
+                std::string OptVal = Opt.value("VALUE", std::string());
+                ContainerParams TmpP2("", SubgameID, LastComp);
+                ContainerWrapper::StringVariableSubstitution(OptVal, TmpP2.GetVariablesMap());
+                QString OptLabel = QString::fromStdString(Opt.value("LABEL", std::string()));
+                Combo->addItem(OptLabel, QString::fromStdString(OptVal));
+            }
+            for (int k = 0; k < Combo->count(); k++)
+                if (Combo->itemData(k).toString().toStdString() == InitialValue)
+                { Combo->setCurrentIndex(k); break; }
+            CustomVarForm->addRow(Label + ":", Combo);
+        }
+        else if (VarType == "dword" || VarType == "qword" || VarType == "number")
+        {
+            QSpinBox * Spin = new QSpinBox(CustomVarGroup);
+            Spin->setProperty("CVKey", QString::fromStdString(Key));
+            Spin->setMinimum(0);
+            // dword caps at 2^32-1; for QSpinBox (int) use INT_MAX. qword/number use INT_MAX too.
+            Spin->setMaximum(VarType == "dword" ? 2147483647 : 2147483647);
+            try { Spin->setValue(std::stoi(InitialValue)); } catch (...) { Spin->setValue(0); }
+            CustomVarForm->addRow(Label + ":", Spin);
+        }
+        else if (VarType == "bool")
+        {
+            QCheckBox * Check = new QCheckBox(CustomVarGroup);
+            Check->setProperty("CVKey", QString::fromStdString(Key));
+            std::string lower = InitialValue;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            Check->setChecked(lower == "1" || lower == "true" || lower == "yes");
+            CustomVarForm->addRow(Label + ":", Check);
+        }
+        else // string or unknown
+        {
+            QLineEdit * Field = new QLineEdit(CustomVarGroup);
+            Field->setProperty("CVKey", QString::fromStdString(Key));
+            Field->setText(QString::fromStdString(InitialValue));
+            CustomVarForm->addRow(Label + ":", Field);
+        }
+    }
+
+    CustomVarGroup->setVisible(AnyVisible);
+}
+
+// ---------------------------------------------------------------------------
 // Slot: Launch button clicked
 // ---------------------------------------------------------------------------
 void PreLaunchWindow::onLaunchClicked()
 {
-    // Resolve the selected component from the chosen variant.
-    std::string ExecutableID;
-    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
-    if (SubgameIdx != -1)
-    {
-        auto &EF = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        if (!EF.is_null() && EF.is_string()) ExecutableID = std::string(EF);
-    }
-
-    std::string SelectedVariantID;
+    // Resolve the selected component from the chosen entrypoint.
+    std::string SelectedEntrypointID;
     if (VariantCombo->currentIndex() >= 0)
-        SelectedVariantID = VariantCombo->currentData().toString().toStdString();
+        SelectedEntrypointID = VariantCombo->currentData().toString().toStdString();
 
     std::string SelectedComponentID =
-        ContainerWrapper::FindComponentForVariant(*MANIFESTJSON, ExecutableID, SelectedVariantID);
+        ContainerWrapper::FindComponentForEntrypoint(*MANIFESTJSON, SubgameID, SelectedEntrypointID);
 
-    // Fallback: first available variant's component.
+    // Fallback: first available entrypoint's component.
     if (SelectedComponentID.empty())
     {
-        auto Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, ExecutableID);
-        if (!Variants.empty())
-            SelectedComponentID = Variants.front().ComponentID;
+        auto Entrypoints = ContainerWrapper::GetAvailableEntrypoints(*MANIFESTJSON, SubgameID);
+        if (!Entrypoints.empty())
+            SelectedComponentID = Entrypoints.front().ComponentID;
     }
 
     // Resolve the selected runner JSON.
@@ -498,18 +655,64 @@ void PreLaunchWindow::onLaunchClicked()
     if (RunnerIdx >= 0 && RunnerIdx < static_cast<int>(Runners.size()))
         SelRunner = Runners[RunnerIdx].second;
 
+    // Seed CollectedVars with every CustomVar's resolved value:
+    // 1. Start from entrypoint FORCEVARS (covers DISPLAY:false vars automatically).
+    // 2. Override with visible picker selections (covers DISPLAY:true vars).
+    std::map<std::string, std::string> CollectedVars;
+
+    // Step 1: entrypoint seed for all vars (baseline, handles DISPLAY:false silently).
+    if (MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
+    {
+        // Get entrypoint FORCEVARS seed.
+        int SubgameIdx2 = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
+        if (SubgameIdx2 != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2].contains("ENTRYPOINTS"))
+            for (auto &EP : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2]["ENTRYPOINTS"])
+                if (EP.value("ENTRYPOINT_ID", std::string()) == SelectedEntrypointID && EP.contains("FORCEVARS"))
+                    for (auto &[K, V] : EP["FORCEVARS"].items())
+                        if (V.is_string()) CollectedVars[K] = std::string(V);
+
+        // Fill in DEFAULT for any key not covered by the seed.
+        for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
+        {
+            std::string K = CV.value("KEY", std::string());
+            if (K.empty() || CollectedVars.count(K)) continue;
+            CollectedVars[K] = CV.value("DEFAULT", std::string());
+        }
+    }
+
+    // Step 2: visible picker widgets override for DISPLAY:true vars.
+    for (int row = 0; row < CustomVarForm->rowCount(); row++)
+    {
+        QLayoutItem * FieldItem = CustomVarForm->itemAt(row, QFormLayout::FieldRole);
+        if (!FieldItem) continue;
+        QWidget * W = FieldItem->widget();
+        if (!W) continue;
+        QString Key = W->property("CVKey").toString();
+        if (Key.isEmpty()) continue;
+        if (auto * CB  = qobject_cast<QComboBox*>(W))
+            CollectedVars[Key.toStdString()] = CB->currentData().toString().toStdString();
+        else if (auto * SP = qobject_cast<QSpinBox*>(W))
+            CollectedVars[Key.toStdString()] = std::to_string(SP->value());
+        else if (auto * CK = qobject_cast<QCheckBox*>(W))
+            CollectedVars[Key.toStdString()] = CK->isChecked() ? "1" : "0";
+        else if (auto * LE = qobject_cast<QLineEdit*>(W))
+            CollectedVars[Key.toStdString()] = LE->text().toStdString();
+    }
+
     // Save preferences if "Remember" is checked.
     if (RememberCheck->isChecked())
     {
         std::string RunnerName = SelRunner.is_null() ? "" : SelRunner.value("NAME", std::string());
-        savePreferences(RunnerName, SelectedVariantID, true);
+        savePreferences(RunnerName, SelectedEntrypointID, true);
     }
 
     // Disable pickers and launch button; show progress bar.
     RunnerCombo->setEnabled(false);
     VariantCombo->setEnabled(false);
+    CustomVarGroup->setEnabled(false);
     NoCleanupCheck->setEnabled(false);
     RememberCheck->setEnabled(false);
+    CloseAfterLaunchCheck->setEnabled(false);
     LaunchButton->setEnabled(false);
     CloseButton->setEnabled(false);
     ProgressBar->setValue(0);
@@ -523,7 +726,9 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->PackagePath      = PackagePath;
     LaunchWorker->SubgameID        = SubgameID;
     LaunchWorker->ComponentID      = SelectedComponentID;
-    LaunchWorker->SelectedRunner   = SelRunner;
+    LaunchWorker->EntrypointID       = SelectedEntrypointID;
+    LaunchWorker->VariableOverrides  = CollectedVars;
+    LaunchWorker->SelectedRunner     = SelRunner;
     LaunchWorker->SkipCleanup      = NoCleanupCheck->isChecked();
 
     connect(LaunchWorker, &LaunchThread::logLine,        this, &PreLaunchWindow::onLogLine,        Qt::QueuedConnection);
@@ -590,7 +795,11 @@ void PreLaunchWindow::onProgressChanged(int value)
 
     // Enable Kill button once the game is actually running (progress >= 95).
     if (value >= 95)
+    {
         KillButton->setEnabled(true);
+        if (CloseAfterLaunchCheck->isChecked())
+            accept();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -602,14 +811,20 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     CloseButton->setEnabled(true);
 
     if (success)
-    {
         StatusLabel->setText("Finished.");
-        ProgressBar->setValue(100);
-    }
     else
-    {
         StatusLabel->setText("Error: " + errorMsg);
-    }
+
+    // Reset controls so the user can launch again.
+    RunnerCombo->setEnabled(true);
+    VariantCombo->setEnabled(true);
+    CustomVarGroup->setEnabled(true);
+    NoCleanupCheck->setEnabled(true);
+    RememberCheck->setEnabled(true);
+    CloseAfterLaunchCheck->setEnabled(true);
+    LaunchButton->setEnabled(true);
+    ProgressBar->setValue(0);
+    ProgressBar->setVisible(false);
 }
 
 // ---------------------------------------------------------------------------

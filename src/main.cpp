@@ -60,27 +60,22 @@ int main(int argc, char *argv[])
             LogErr("main.cpp", "Fatal error. Paring MANIFESTJSON failed, aborting.");
         }
 
-        //Resolve component_id from --variant if supplied, otherwise let DecideComponent handle it.
+        //Resolve component_id from --variant (now treated as EntrypointID) if supplied.
         std::string HeadlessComponentID = LaunchParameters.HeadlessComponentID;
         if (HeadlessComponentID.empty() && !LaunchParameters.VariantID.empty())
         {
-            //Read EXECUTABLE_ID from the subgame, then find the component for the requested variant.
-            int SubgameIdx = ContainerWrapper::FindSubgameIndex(MANIFESTJSON, LaunchParameters.HeadlessSubgameID);
-            if (SubgameIdx != -1)
-            {
-                auto &ExeIDField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-                std::string ExecutableID = (!ExeIDField.is_null() && ExeIDField.is_string()) ? std::string(ExeIDField) : "";
-                std::string ResolvedID = ContainerWrapper::FindComponentForVariant(MANIFESTJSON, ExecutableID, LaunchParameters.VariantID);
-                if (!ResolvedID.empty()) HeadlessComponentID = ResolvedID;
-            }
+            std::string ResolvedID = ContainerWrapper::FindComponentForEntrypoint(MANIFESTJSON, LaunchParameters.HeadlessSubgameID, LaunchParameters.VariantID);
+            if (!ResolvedID.empty()) HeadlessComponentID = ResolvedID;
         }
 
         //Construct the container, build its runtime (mounts, prefix, registry patches),
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
         struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, HeadlessComponentID);
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
+        if (!LaunchParameters.VariantID.empty())
+            NewContainerParams.ExecutableID = LaunchParameters.VariantID;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
-        if (!ContainerWrapper::ResolveExecutableDefinition(NewContainerWrapper.ContainerParams))
+        if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         {
             LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
             return 1;

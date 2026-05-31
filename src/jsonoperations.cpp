@@ -27,7 +27,7 @@ bool JSONOps::LoadJSON(QFile * JSONFile, nlohmann::ordered_json * JSONDocument)
         {
             LogOut("JSONOperations", "File " + JSONFile->fileName().toStdString() + " appears valid, parsing.");
             (*JSONDocument) = nlohmann::ordered_json::parse(JSONFileData);
-            std::cout << JSONDocument->dump(4) << std::endl;
+            //std::cout << JSONDocument->dump(4) << std::endl;
             JSONFile->close();
             LogOut("JSONOperations", "Parse done!");
             return 0; //success

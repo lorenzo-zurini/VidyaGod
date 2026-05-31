@@ -5,6 +5,8 @@
 #include <iostream>
 #include <QDialog>
 #include <QScreen>
+#include <QToolButton>
+#include <QMenu>
 
 #include <QDir>
 #include <QFileDialog>
@@ -21,6 +23,7 @@
 #include <QBoxLayout>
 #include <QGroupBox>
 #include <QComboBox>
+#include <QCheckBox>
 
 #include <QTextEdit>
 #include <QAbstractItemModel>
@@ -77,8 +80,10 @@ private slots:
     void AddVFSDirLayer();
     void AddVFSZipLayer();
     void AddVFSFileLayer();
-    void AddVariantDefinition();
-    void AddCustomVar();
+    void AddEntrypoint();
+    void AddRegEdit();
+    void AddDllOverride();
+    void AddFileEdit();
     void FinalizeComponent();
     void MoveComponentUp();
     void MoveComponentDown();

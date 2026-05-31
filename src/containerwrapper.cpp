@@ -147,12 +147,13 @@ bool ContainerWrapper::BuildContainerRuntime()
     this->MountVFS(this->ContainerParams);
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
-    //Wine-specific post-mount steps: DLL overrides and config file patches operate on
-    //the mounted runtime, so they must run after the VFS is in place.
+    //Wine-specific post-mount steps: DLL overrides, file edits, and override reg patches operate
+    //on the mounted runtime, so they must run after the VFS is in place.
     if (WineMode)
     {
         this->ProcessDLLOverrides(this->ContainerParams);
         this->ProcessFileEdits(this->ContainerParams);
+        this->ApplyOverrideRegEdits(this->ContainerParams);
     }
 
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
@@ -213,24 +214,21 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
         int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
 
-        //Read EXECUTABLE_ID and DEFAULT_VARIANT_ID from the subgame to find the target component.
-        auto &ExeIDField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        std::string ExecutableID = (!ExeIDField.is_null() && ExeIDField.is_string()) ? std::string(ExeIDField) : "";
+        //Read DEFAULT_ENTRYPOINT_ID from the subgame to resolve which component to build to.
+        auto &DefEPField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
+        std::string DefaultEntrypointID = (!DefEPField.is_null() && DefEPField.is_string()) ? std::string(DefEPField) : "";
 
-        auto &DefVarField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
-        std::string DefaultVariantID = (!DefVarField.is_null() && DefVarField.is_string()) ? std::string(DefVarField) : "";
-
-        //Use FindComponentForVariant to resolve the component that contains this variant.
-        std::string ResolvedComponentID = FindComponentForVariant(MANIFESTJSON, ExecutableID, DefaultVariantID);
+        //Use FindComponentForEntrypoint to get LASTCOMPONENT from the default entrypoint.
+        std::string ResolvedComponentID = FindComponentForEntrypoint(MANIFESTJSON, ContainerParams.subgame_id, DefaultEntrypointID);
 
         if (ResolvedComponentID.empty())
         {
-            //DEFAULT_VARIANT_ID not set or not found — fall back to the first available variant.
-            std::vector<VariantInfo> Variants = GetAvailableVariants(MANIFESTJSON, ExecutableID);
-            if (!Variants.empty())
+            //DEFAULT_ENTRYPOINT_ID not set or not found — fall back to the first available entrypoint.
+            std::vector<EntrypointInfo> Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
+            if (!Entrypoints.empty())
             {
-                ResolvedComponentID = Variants.front().ComponentID;
-                LogWarn("ContainerWrapper::DecideComponent", "DEFAULT_VARIANT_ID not found for EXECUTABLE_ID='" + ExecutableID + "', falling back to first variant in component '" + ResolvedComponentID + "'");
+                ResolvedComponentID = Entrypoints.front().ComponentID;
+                LogWarn("ContainerWrapper::DecideComponent", "DEFAULT_ENTRYPOINT_ID not found, falling back to first entrypoint LASTCOMPONENT '" + ResolvedComponentID + "'");
             }
         }
 
@@ -290,10 +288,10 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
 //Two sources are merged (runner SETTINGS first, then CustomVar subcomponents —
 //CustomVar wins on key collision since it is more package-specific):
 //  1. SETTINGS array on the selected runner definition (runner-level options)
-//  2. CustomVar subcomponents in the Recipe (game-level options)
+//  2. MANIFEST["CUSTOMVARS"] top-level array (game-level options)
 //
 //Resolution priority for each variable (highest to lowest):
-//  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags
+//  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
 //  3. DEFAULT from the SETTINGS / CustomVar definition
 bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
@@ -340,107 +338,118 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     ProcessRunnerSettings(MANIFESTJSON);
     if (!GlobalConfigJSON.is_null()) ProcessRunnerSettings(GlobalConfigJSON);
 
-    //--- CustomVar subcomponents (game-level options, override runner settings on collision) ---
-    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving CustomVar subcomponents...");
-    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
+    //--- MANIFEST["CUSTOMVARS"] — two-layer pipeline (per-variable, in declaration order) ---
+    //Layer 1: StringVariableSubstitution — expands %ScreenWidth%, %PackagePath%, and any
+    //          previously-resolved CustomVar (GetVariablesMap() is called per-iteration so
+    //          each resolved var is immediately available to subsequent ones).
+    //Layer 2: TranslateCustomVarValue — converts the display value to raw storage format
+    //          (e.g. "1920" + dword → "dword:00000780").
+    //DISPLAY is a UI-only flag; all vars are resolved here regardless.
+    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving MANIFEST CUSTOMVARS...");
+    if (MANIFESTJSON.contains("CUSTOMVARS") && MANIFESTJSON["CUSTOMVARS"].is_array())
     {
-        std::string ComponentID = MANIFESTJSON["COMPONENTS"][i].contains("COMPONENTID") && !MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null()
-                                  ? std::string(MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"])
-                                  : "";
-        if (std::find(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end(), ComponentID) == ContainerParams.Recipe.end())
-            continue;
-
-        for (auto &Sub : MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"])
+        for (auto &CV : MANIFESTJSON["CUSTOMVARS"])
         {
-            if (Sub.value("TYPE", std::string()) != "CustomVar") continue;
-            std::string Key = Sub.value("KEY", std::string());
+            std::string Key     = CV.value("KEY",     std::string());
+            std::string VarType = CV.value("VARTYPE",  std::string("string"));
             if (Key.empty()) continue;
-            ContainerParams.CustomVariables[Key] = ResolveOne(Key, Sub.value("DEFAULT", std::string()));
+
+            // Resolve raw display value through priority chain.
+            std::string Raw = ResolveOne(Key, CV.value("DEFAULT", std::string()));
+
+            // Layer 1 — token substitution (called per-var so prior CustomVars are available).
+            ContainerWrapper::StringVariableSubstitution(Raw, ContainerParams.GetVariablesMap());
+
+            // Layer 2 — type translation.
+            ContainerParams.CustomVariables[Key] = TranslateCustomVarValue(Raw, VarType);
+            LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = " + ContainerParams.CustomVariables[Key]);
         }
     }
     LogSucc("ContainerWrapper::ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
     return true;
 }
 
-//Scans ALL components in MANIFESTJSON for VariantDefinition subcomponents matching ExecutableID.
-//Returns one VariantInfo per matching component — the component NAME is the display label.
-//At most one VariantDefinition per component per EXECUTABLE_ID is collected (break after first match).
-std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID)
+//Returns all entrypoints listed under SUBGAMES[SubgameID].ENTRYPOINTS.
+//ComponentName is derived by looking up LASTCOMPONENT in COMPONENTS.
+std::vector<EntrypointInfo> ContainerWrapper::GetAvailableEntrypoints(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
-    std::vector<VariantInfo> Variants;
-    if (!MANIFESTJSON.contains("COMPONENTS")) return Variants;
-    for (auto &Comp : MANIFESTJSON["COMPONENTS"])
+    std::vector<EntrypointInfo> Entrypoints;
+    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
+    if (SubgameIdx == -1) return Entrypoints;
+    auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
+    if (!Subgame.contains("ENTRYPOINTS") || !Subgame["ENTRYPOINTS"].is_array()) return Entrypoints;
+    for (auto &EP : Subgame["ENTRYPOINTS"])
     {
-        std::string CompID   = Comp.value("COMPONENTID", std::string());
-        std::string CompName = Comp.value("NAME",        std::string());
-        if (!Comp.contains("SUBCOMPONENTS")) continue;
-        for (auto &Sub : Comp["SUBCOMPONENTS"])
-        {
-            if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
-            if (Sub.value("EXECUTABLE_ID", std::string()) != ExecutableID)        continue;
-            VariantInfo Info;
-            Info.VariantID     = Sub.value("VARIANT_ID", std::string());
-            Info.ComponentName = CompName;
-            Info.ComponentID   = CompID;
-            Variants.push_back(Info);
-            break; // one VariantDefinition per component per EXECUTABLE_ID is enough
-        }
+        std::string LastComp = EP.value("LASTCOMPONENT", std::string());
+        // Derive ComponentName from the LASTCOMPONENT lookup.
+        std::string CompName;
+        int CompIdx = FindComponentIndex(MANIFESTJSON, LastComp);
+        if (CompIdx != -1)
+            CompName = MANIFESTJSON["COMPONENTS"][CompIdx].value("NAME", LastComp);
+        else
+            CompName = LastComp;
+        EntrypointInfo Info;
+        Info.EntrypointID  = EP.value("ENTRYPOINT_ID", std::string());
+        Info.ComponentName = CompName;
+        Info.ComponentID   = LastComp;
+        Entrypoints.push_back(Info);
     }
-    return Variants;
+    return Entrypoints;
 }
 
-//Returns the COMPONENTID of the component containing VariantDefinition { EXECUTABLE_ID, VARIANT_ID }.
+//Returns the LASTCOMPONENT value of the entrypoint matching { SubgameID, EntrypointID }.
 //Returns empty string if not found.
-std::string ContainerWrapper::FindComponentForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ExecutableID, const std::string &VariantID)
+std::string ContainerWrapper::FindComponentForEntrypoint(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &EntrypointID)
 {
-    if (!MANIFESTJSON.contains("COMPONENTS")) return "";
-    for (auto &Comp : MANIFESTJSON["COMPONENTS"])
+    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
+    if (SubgameIdx == -1) return "";
+    auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
+    if (!Subgame.contains("ENTRYPOINTS") || !Subgame["ENTRYPOINTS"].is_array()) return "";
+    for (auto &EP : Subgame["ENTRYPOINTS"])
     {
-        if (!Comp.contains("SUBCOMPONENTS")) continue;
-        for (auto &Sub : Comp["SUBCOMPONENTS"])
-        {
-            if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
-            if (Sub.value("EXECUTABLE_ID", std::string()) != ExecutableID)        continue;
-            if (Sub.value("VARIANT_ID",    std::string()) != VariantID)           continue;
-            return Comp.value("COMPONENTID", std::string());
-        }
+        if (EP.value("ENTRYPOINT_ID", std::string()) != EntrypointID) continue;
+        return EP.value("LASTCOMPONENT", std::string());
     }
     return "";
 }
 
-//Finds the single VariantDefinition in SubComponentsArray matching ContainerParams.ExecutableID
-//and populates ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
-//The chain is already constrained by the selected component, so there should be exactly one match.
+//Finds the entrypoint in MANIFESTJSON matching ContainerParams.ExecutableID (= EntrypointID)
+//under SUBGAMES[ContainerParams.subgame_id].ENTRYPOINTS and populates exe/work-dir/args fields.
 //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
-bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &ContainerParams)
+bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.ExecutableID.empty())
     {
-        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EXECUTABLE_ID set — skipping.");
+        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EntrypointID set — skipping.");
         return true;
     }
-    // Find the VariantDefinition with matching EXECUTABLE_ID in the constrained chain.
+    // Find the entrypoint with matching ENTRYPOINT_ID in the subgame.
+    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
     nlohmann::ordered_json Resolved;
-    for (auto &Sub : ContainerParams.SubComponentsArray)
+    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("ENTRYPOINTS"))
     {
-        if (Sub.value("TYPE",          std::string()) != "VariantDefinition") continue;
-        if (Sub.value("EXECUTABLE_ID", std::string()) != ContainerParams.ExecutableID) continue;
-        Resolved = Sub;
-        break; // only one expected in the pre-constrained chain
+        for (auto &EP : MANIFESTJSON["SUBGAMES"][SubgameIdx]["ENTRYPOINTS"])
+        {
+            if (EP.value("ENTRYPOINT_ID", std::string()) == ContainerParams.ExecutableID)
+            { Resolved = EP; break; }
+        }
     }
     if (Resolved.is_null() || Resolved.empty())
     {
-        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No VariantDefinition found for EXECUTABLE_ID='" + ContainerParams.ExecutableID + "'");
+        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No entrypoint found for ENTRYPOINT_ID='" + ContainerParams.ExecutableID + "' in subgame '" + ContainerParams.subgame_id + "'");
         return false;
     }
-    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved: ID=" + ContainerParams.ExecutableID + " VARIANT_ID=" + Resolved.value("VARIANT_ID", std::string("(none)")));
-    // (rest of the body: set ExePathRelative, ExePathComplete, WorkDir, ExeArgs — same logic as before but using Resolved)
-    // Pick exe key by runner type
+    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved entrypoint: " + ContainerParams.ExecutableID);
+    // Pick exe key by runner type.
     std::string ExeKey = "EXEPATH";
     if      (ContainerParams.RunnerTypeEnum == RunnerType::Emulator) ExeKey = "ROM";
     else if (ContainerParams.RunnerTypeEnum == RunnerType::Custom)   ExeKey = "DATAPATH";
     auto &ExeVal = Resolved[ExeKey];
-    ContainerParams.ExePathRelative = (!ExeVal.is_null() && ExeVal.is_string()) ? std::filesystem::path(std::string(ExeVal)) : std::filesystem::path();
+    {
+        std::string ExeStr = (!ExeVal.is_null() && ExeVal.is_string()) ? std::string(ExeVal) : std::string();
+        ContainerWrapper::StringVariableSubstitution(ExeStr, ContainerParams.GetVariablesMap());
+        ContainerParams.ExePathRelative = std::filesystem::path(ExeStr);
+    }
     ContainerParams.ExePathComplete = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathRelative: " + ContainerParams.ExePathRelative.string());
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathComplete: " + ContainerParams.ExePathComplete.string());
@@ -453,7 +462,9 @@ bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &Conta
     auto &WorkDirVal = Resolved["WORKDIR"];
     if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
     {
-        ContainerParams.WorkDirPathRelative = std::filesystem::path(std::string(WorkDirVal));
+        std::string WorkDirStr = std::string(WorkDirVal);
+        ContainerWrapper::StringVariableSubstitution(WorkDirStr, ContainerParams.GetVariablesMap());
+        ContainerParams.WorkDirPathRelative = std::filesystem::path(WorkDirStr);
         ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
     }
     else ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
@@ -475,35 +486,28 @@ bool ContainerWrapper::ResolveExecutableDefinition(struct ContainerParams &Conta
 //Variable substitution is applied to each subcomponent's JSON string at this point
 //so all downstream consumers receive already-expanded values.
 //CustomVar subcomponents are skipped — they are handled by ResolveCustomVariables.
-//VariantDefinition subcomponents ARE included so ResolveExecutableDefinition can scan them.
 //MANIFEST order is preserved, which determines VFS layer stacking order.
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    //BUILD AN ARRAY CONTAINING ALL SUBCOMPONENTS, IN ORDER, FILTERED BY RECIPE.
-    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
+    //Iterate in Recipe order (ancestor-first) so VFS layers are stacked correctly regardless
+    //of how components are ordered in the manifest. For each Recipe entry, find the component
+    //by ID and collect its subcomponents.
+    for (const std::string &RecipeComponentID : ContainerParams.Recipe)
     {
-        std::string ComponentID = MANIFESTJSON["COMPONENTS"][i].contains("COMPONENTID") && !MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null()
-                                  ? std::string(MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"])
-                                  : "";
-        if (std::find(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end(), ComponentID) != ContainerParams.Recipe.end())
+        int Idx = FindComponentIndex(MANIFESTJSON, RecipeComponentID);
+        if (Idx == -1) continue;
+        auto &Subs = MANIFESTJSON["COMPONENTS"][Idx]["SUBCOMPONENTS"];
+        for (int j = 0; j < (int)Subs.size(); j++)
         {
-            for (int j = 0; j < (int)MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"].size(); j++)
-            {
-                //Skip CustomVar entries — they were already resolved by ResolveCustomVariables.
-                if (MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].value("TYPE", std::string()) == "CustomVar")
-                    continue;
-
-                //Serialize to string, substitute, then re-parse so every field in the
-                //subcomponent JSON has its %VARIABLE% tokens resolved before use.
-                std::string NewComponentJSONString = MANIFESTJSON["COMPONENTS"][i]["SUBCOMPONENTS"][j].dump();
-                ContainerWrapper::StringVariableSubstitution(NewComponentJSONString, ContainerParams.GetVariablesMap());
-                ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(NewComponentJSONString));
-                LogOut("ContainerWrapper::BuildSubComponentsArray", "Added COMPONENT " + ComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
-            }
+            //Serialize to string, substitute %VAR% tokens, then re-parse.
+            std::string SubJSON = Subs[j].dump();
+            ContainerWrapper::StringVariableSubstitution(SubJSON, ContainerParams.GetVariablesMap());
+            ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(SubJSON));
+            LogOut("ContainerWrapper::BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
         }
     }
-    LogOut("ContainerWrapper::BuildSubComponentsArray", "Completed SubComponentsArray:");
-    std::cout << ContainerParams.SubComponentsArray.dump(4) << std::endl;
+    LogOut("ContainerWrapper::BuildSubComponentsArray", "Completed SubComponentsArray.");
+    //std::cout << ContainerParams.SubComponentsArray.dump(4) << std::endl;
     return true;
 }
 
@@ -513,8 +517,8 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
 //Runner resolution order:
 //  1. USERSETTINGS[PackageUID]["PREFERRED_RUNNER"]  (per-package user override)
 //  2. SUBGAMES[SubgameIdx]["RECOMMENDED_RUNNER"]   (manifest recommendation)
-//  3. First runner in RUNNERS[Platform]             (any available runner)
-//  4. Hardcoded fallback: umu-run / Wine            (backwards compatibility)
+//  2. First runner in RUNNERS[Platform]             (any available runner)
+//  3. Hardcoded fallback: umu-run / Wine            (backwards compatibility)
 //
 //Path layout differs by runner type:
 //  Wine:  ProgramPath = RuntimePath/drive_c/PackageUID, prefix at TempPath/DEFPREFIX.
@@ -557,15 +561,6 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             PreferredRunner = std::string(US["PREFERRED_RUNNER"]);
     }
-    if (PreferredRunner.empty() && !ContainerParams.subgame_id.empty() && SubgameIdx != -1)
-    {
-        auto &RecommendedField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["RECOMMENDED_RUNNER"];
-        if (!RecommendedField.is_null() && RecommendedField != "")
-        {
-            PreferredRunner = RecommendedField;
-        }
-    }
-
     //Search for the preferred runner by name, checking MANIFEST RUNNERS first so packages
     //can define their own runners (e.g. bundled interpreters) that shadow GlobalConfig ones.
     //Falls back to the first runner in the list for the platform if no name match is found.
@@ -659,16 +654,13 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
-    //Read ExecutableID and DefaultVariantID from the subgame. All exe/args/workdir resolution
-    //is deferred to ResolveExecutableDefinition(), which runs after BuildSubComponentsArray.
+    //Read DEFAULT_ENTRYPOINT_ID from the subgame. Exe/args/workdir resolution is deferred to
+    //ResolveExecutableDefinition(), which runs after BuildSubComponentsArray.
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        auto &ExeIDField        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["EXECUTABLE_ID"];
-        ContainerParams.ExecutableID     = (!ExeIDField.is_null()   && ExeIDField.is_string())   ? std::string(ExeIDField)   : "";
-        auto &DefVarIDField     = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_VARIANT_ID"];
-        ContainerParams.DefaultVariantID = (!DefVarIDField.is_null() && DefVarIDField.is_string()) ? std::string(DefVarIDField) : "";
-        LogOut("ContainerWrapper::DeriveContainerParams", "ExecutableID: "     + ContainerParams.ExecutableID);
-        LogOut("ContainerWrapper::DeriveContainerParams", "DefaultVariantID: " + ContainerParams.DefaultVariantID);
+        auto &DefEPField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
+        ContainerParams.ExecutableID = (!DefEPField.is_null() && DefEPField.is_string()) ? std::string(DefEPField) : "";
+        LogOut("ContainerWrapper::DeriveContainerParams", "EntrypointID (default): " + ContainerParams.ExecutableID);
     }
     //WorkDir defaults to ProgramPath; overridden by ResolveExecutableDefinition once SubComponentsArray is built.
     {
@@ -714,6 +706,53 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
 
 //Replaces all %KEY% tokens in SourceString with values from VariablesMap.
 //Scans left-to-right looking for paired '%' delimiters; an unmatched '%' stops
+//Translates a display-layer value into its raw storage format based on VARTYPE.
+//Called after Layer-1 substitution so the value is already a concrete string.
+//  dword  : decimal integer → "dword:XXXXXXXX" (8-digit hex, 32-bit unsigned)
+//  qword  : decimal integer → "hex(b):XX,XX,...,XX" (8 bytes little-endian)
+//  bool   : "1"/"true"/"yes" → "dword:00000001"; anything else → "dword:00000000"
+//  string / number / options / unknown → returned unchanged
+std::string ContainerWrapper::TranslateCustomVarValue(const std::string &Value, const std::string &VarType)
+{
+    if (VarType == "dword")
+    {
+        try {
+            uint32_t n = static_cast<uint32_t>(std::stoul(Value));
+            std::ostringstream oss;
+            oss << "dword:" << std::hex << std::setw(8) << std::setfill('0') << n;
+            return oss.str();
+        } catch (...) {
+            LogWarn("ContainerWrapper::TranslateCustomVarValue", "Could not parse dword value: '" + Value + "', leaving unchanged.");
+            return Value;
+        }
+    }
+    else if (VarType == "qword")
+    {
+        try {
+            uint64_t n = std::stoull(Value);
+            std::ostringstream oss;
+            oss << "hex(b):";
+            for (int i = 0; i < 8; i++) {
+                if (i > 0) oss << ",";
+                oss << std::hex << std::setw(2) << std::setfill('0') << ((n >> (8 * i)) & 0xFF);
+            }
+            return oss.str();
+        } catch (...) {
+            LogWarn("ContainerWrapper::TranslateCustomVarValue", "Could not parse qword value: '" + Value + "', leaving unchanged.");
+            return Value;
+        }
+    }
+    else if (VarType == "bool")
+    {
+        std::string lower = Value;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        bool isTrue = (lower == "1" || lower == "true" || lower == "yes");
+        return isTrue ? "dword:00000001" : "dword:00000000";
+    }
+    // string, number, options — no translation
+    return Value;
+}
+
 //further substitution and logs a warning (the remainder is appended unchanged).
 //Unknown keys are left as %KEY% and logged as warnings.
 //Returns true if at least one replacement was made.
@@ -834,7 +873,7 @@ bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerP
     for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
-        if (SubComponentJSON["TYPE"] == "RegEdit")
+        if (SubComponentJSON["TYPE"] == "RegEdit" && !SubComponentJSON.value("OVERRIDE", false))
         {
             if (SubComponentJSON.contains("KEYVALUES"))
             {
@@ -858,8 +897,8 @@ bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerP
             }
         }
     }
-    LogSucc("ContainerWrapper::CreateFlatRegPatchJSON", "Successfully created FlatRegPatch:");
-    std::cout << ContainerParams.FlatRegPatch.dump(4) << std::endl;
+    LogSucc("ContainerWrapper::CreateFlatRegPatchJSON", "Successfully created FlatRegPatch.");
+    //std::cout << ContainerParams.FlatRegPatch.dump(4) << std::endl;
     return true;
 }
 
@@ -972,6 +1011,83 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
     LogOut("ContainerWrapper::MergeRegPatchFiles", "Merged RegPatch32.reg. EXIT CODE: " + std::to_string(Merge32Complete));
     int Merge64Complete = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
     LogOut("ContainerWrapper::MergeRegPatchFiles", "Merged RegPatch64.reg. EXIT CODE: " + std::to_string(Merge64Complete));
+    return true;
+}
+
+//Applies OVERRIDE:true RegEdit subcomponents directly into the mounted runtime.
+//Called post-MountVFS so the values land in the RW USERDATA layer, taking precedence over
+//both DEFPREFIX and any previously COW'd registry state from prior game sessions.
+bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerParams)
+{
+    //Collect OVERRIDE:true RegEdit entries into a temporary flat patch.
+    nlohmann::ordered_json OverridePatch = nlohmann::ordered_json::object();
+    bool AnyOverride = false;
+
+    auto normalizeRootKey = [](std::string path) {
+        if (path.rfind("HKLM", 0) == 0) path.replace(0, 4, "HKEY_LOCAL_MACHINE");
+        else if (path.rfind("HKCU", 0) == 0) path.replace(0, 4, "HKEY_CURRENT_USER");
+        return path;
+    };
+
+    for (auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        if (Sub.value("TYPE", std::string()) != "RegEdit") continue;
+        if (!Sub.value("OVERRIDE", false)) continue;
+        AnyOverride = true;
+        std::string Arch    = Sub.value("ARCHITECTURE", std::string("32"));
+        std::string RegPath = Sub.value("REGPATH", std::string());
+        if (RegPath.empty()) continue;
+        if (Sub.contains("KEYVALUES") && Sub["KEYVALUES"].is_object())
+            for (auto &[K, V] : Sub["KEYVALUES"].items())
+                OverridePatch[Arch][RegPath][K] = V;
+        else
+            OverridePatch[Arch][RegPath] = nullptr;
+    }
+
+    if (!AnyOverride) return true;
+    LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Applying OVERRIDE RegEdits to runtime...");
+
+    //Write and import one .reg file per architecture.
+    for (const std::string &Arch : {"32", "64"})
+    {
+        if (!OverridePatch.contains(Arch)) continue;
+        std::filesystem::path RegFile = ContainerParams.RuntimePath / "drive_c" / ("OverridePatch" + Arch + ".reg");
+        {
+            std::ofstream Out(RegFile, std::ios::out | std::ios::trunc);
+            if (!Out) { LogErr("ContainerWrapper::ApplyOverrideRegEdits", "Could not write " + RegFile.string()); continue; }
+            Out << "Windows Registry Editor Version 5.00\n\n";
+            for (auto &[RawPath, KeySet] : OverridePatch[Arch].items())
+            {
+                Out << "[" << normalizeRootKey(RawPath) << "]\n";
+                if (KeySet.is_object())
+                    for (auto &[Key, Value] : KeySet.items())
+                    {
+                        Out << "\"" << Key << "\"=";
+                        if      (Value.is_null())    Out << "\"\"";
+                        else if (Value.is_boolean()) Out << "dword:" << (Value.get<bool>() ? "00000001" : "00000000");
+                        else if (Value.is_number_integer() || Value.is_number_unsigned())
+                            Out << "dword:" << std::hex << std::setw(8) << std::setfill('0') << Value.get<uint32_t>() << std::dec;
+                        else if (Value.is_string())
+                        {
+                            std::string S = Value.get<std::string>();
+                            if (S.rfind("dword:", 0) == 0 || S.rfind("hex:", 0) == 0) Out << S;
+                            else { std::string Esc; for (char c : S) Esc += (c == '\\') ? "\\\\" : std::string(1,c); Out << "\"" << Esc << "\""; }
+                        }
+                        Out << "\n";
+                    }
+                Out << "\n";
+            }
+        }
+
+        QProcessEnvironment Env = QProcessEnvironment::systemEnvironment();
+        Env.insert("WINEPREFIX", QString::fromStdString(ContainerParams.RuntimePath));
+        Env.insert("GAMEID", "0");
+        Env.remove("LD_LIBRARY_PATH");
+        int ExitCode = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", RegFile}, Env);
+        LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Imported OverridePatch" + Arch + ".reg, exit=" + std::to_string(ExitCode));
+        std::filesystem::remove(RegFile);
+    }
+
     return true;
 }
 
