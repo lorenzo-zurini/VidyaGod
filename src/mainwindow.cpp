@@ -1,505 +1,623 @@
 #include "mainwindow.h"
 #include "commonutils.h"
-
 #include "packageeditor.h"
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
 #include "prelaunchwindow.h"
 
-//TO-DO: ADD VARIABLE SUBSTITUTION WITH ENV VARS AND AUTOCALC
-//TO-DO: FIX EXE COMMAND LINE PARSING AND WORKDIR
-//IMPLEMENT WINEDLLOVERRIDES
-//IMPLEMENT MIRRORFS COMPONENTS
-//ADD MORE RUNNERS BASED ON PLATFORM
+#include <QPainter>
+#include <QApplication>
+#include <QButtonGroup>
+#include <algorithm>
+#include <QGuiApplication>
+#include <QFrame>
+#include <QPaintEvent>
 
-//Constructs the main window, wires up the UI file, and runs all three build phases
-//(static skeleton, game card population, dynamic layout) so the window is fully
-//populated before show() is called by main().
-MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * PassedAppDataDir, QWidget * parent)
-    : GlobalConfigJSON(PassedGlobalConfigJSON), AppDataDir(PassedAppDataDir), QMainWindow(parent)
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LibraryGameCard
+// ═════════════════════════════════════════════════════════════════════════════
+
+LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, int game, std::string subgameId)
+    : GlobalConfigJSON(gc), Game(game), SubgameID(subgameId)
+{
+    MANIFESTJSON = new nlohmann::ordered_json;
+}
+
+LibraryGameCard::~LibraryGameCard() { delete MANIFESTJSON; }
+
+void LibraryGameCard::InitializeClassVariables()
+{
+    PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
+    QFile f(QString::fromStdString(PackagePath.string() + "/METADATA/MANIFEST.json"));
+    if (JSONOps::LoadJSON(&f, MANIFESTJSON)) return;
+
+    int idx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
+    if (idx == -1) return;
+
+    GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][idx]["TITLE"]);
+
+    // Sort keys
+    SortTitle = GameTitle.toLower();
+    if (SortTitle.startsWith("the ")) SortTitle = SortTitle.mid(4);
+
+    auto & Meta = (*MANIFESTJSON)["SUBGAMES"][idx]["METADATA"];
+
+    SortDate = (Meta.is_object() && Meta.contains("RELEASEDATE") && Meta["RELEASEDATE"].is_string())
+               ? QString::fromStdString(std::string(Meta["RELEASEDATE"])) : "9999";
+
+    auto strOrEmpty = [&](const char * key) -> QString {
+        return (Meta.is_object() && Meta.contains(key) && Meta[key].is_string())
+               ? QString::fromStdString(std::string(Meta[key])) : "";
+    };
+    auto numPad = [&](const char * key) -> QString {
+        if (!Meta.is_object() || !Meta.contains(key)) return "999";
+        auto & v = Meta[key];
+        int n = v.is_number() ? int(v) : (v.is_string() ? QString::fromStdString(std::string(v)).toInt() : 999);
+        return QString("%1").arg(n, 5, 10, QChar('0'));
+    };
+    SeriesName    = strOrEmpty("SERIES");
+    SortSeriesKey = SeriesName + "|" + numPad("SERIESSORTNUMBER") + "|"
+                  + strOrEmpty("SUBSERIES") + "|" + numPad("SUBSERIESSORTNUMBER")
+                  + "|" + SortTitle;
+
+    std::string cov =
+        (Meta.is_object() && Meta.contains("COVER") && Meta["COVER"].is_string())
+        ? std::string(Meta["COVER"])
+        : ((*MANIFESTJSON)["SUBGAMES"][idx].contains("COVER")
+           ? std::string((*MANIFESTJSON)["SUBGAMES"][idx]["COVER"]) : "");
+    if (!cov.empty())
+        CoverOriginal.load(QDir::cleanPath(
+            QString::fromStdString(PackagePath.string()) + "/METADATA/" +
+            QString::fromStdString(cov)));
+}
+
+void LibraryGameCard::play()
+{
+    std::string uid;
+    if (MANIFESTJSON->contains("PACKAGEUID") && !(*MANIFESTJSON)["PACKAGEUID"].is_null())
+        uid = std::string((*MANIFESTJSON)["PACKAGEUID"]);
+    bool skip = false;
+    if (!uid.empty()) {
+        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, uid);
+        if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
+            skip = bool(US["SKIP_LAUNCH_DIALOG"]);
+    }
+    bool shift = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
+    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
+                                     PackagePath.string(), SubgameID, nullptr);
+    dlg->show();
+    if (skip && !shift)
+        QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
+}
+
+void LibraryGameCard::edit()
+{
+    (new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
+                         PackagePath.string(), SubgameID, nullptr))->show();
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LibraryView
+// ═════════════════════════════════════════════════════════════════════════════
+
+LibraryView::LibraryView(QWidget * parent)
+    : QAbstractScrollArea(parent), TitleFM(QApplication::font())
+{
+
+    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setFrameShape(QFrame::NoFrame);
+    setStyleSheet(
+        "QScrollBar:vertical{width:12px;border:none;}"
+        "QScrollBar::handle:vertical{border-radius:6px;min-height:32px;}"
+        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}");
+
+    viewport()->setMouseTracking(true);
+    // WA_OpaquePaintEvent: skip the background clear before our paintEvent.
+    viewport()->setAttribute(Qt::WA_OpaquePaintEvent);
+
+    TitleFont = QApplication::font();
+    TitleFont.setPointSize(9);
+    TitleFM   = QFontMetrics(TitleFont);
+
+    PlayFont = TitleFont;
+    PlayFont.setBold(true);
+    PlayFont.setPointSize(10);
+}
+
+void LibraryView::setCards(QList<LibraryGameCard *> * cards)
+{
+    Cards        = cards;
+    HoveredIdx   = -1;
+    LastCols     = 0;
+    CardW        = 0;
+    SeriesGroups.clear();
+    Rects.clear();
+    if (Cards) Rects.resize(Cards->count());
+}
+
+void LibraryView::setSeriesGroups(const QVector<SeriesGroup> & groups)
+{
+    SeriesGroups = groups;
+    viewport()->update();
+}
+
+void LibraryView::prescaleCovers(int cardW)
+{
+    const int cardH = cardW * 3 / 2;
+    const int textW = cardW - EditW - 12;
+    if (!Cards) return;
+    for (auto * c : *Cards) {
+        c->CoverScaled = c->CoverOriginal.isNull() ? QPixmap()
+            : c->CoverOriginal.scaled(cardW, cardH,
+                Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        c->ElidedTitle = TitleFM.elidedText(c->GameTitle, Qt::ElideRight, textW);
+    }
+}
+
+// Adaptive spacing: gap = (vW - cols*cardW) / (cols+1) grows as window widens.
+// Because gap is integer division, it changes only every (cols+1) pixels of drag
+// (~5-6px for a typical column count). Full repaint fires only when cols or the
+// integer gap actually changes — not on every pixel.
+void LibraryView::layoutCards(int cardW)
+{
+    const int vW    = viewport()->width();
+    const int vH    = viewport()->height();
+    const int count = Cards ? Cards->count() : 0;
+    const int cardH = cardW * 3 / 2;
+    const int cols  = qMax(1, (vW + MinGap) / (cardW + MinGap));
+    const int hGap  = qMax(MinGap, (vW - cols * cardW) / (cols + 1));
+    const int rows  = (count + cols - 1) / cols;
+    const int totalH = VPad + rows * cardH + (rows - 1) * MinGap + VPad;
+
+    verticalScrollBar()->setRange(0, qMax(0, totalH - vH));
+    verticalScrollBar()->setPageStep(vH);
+
+    // Skip repaint when layout is identical — covers most resize events.
+    if (cols == LastCols && hGap == LastHGap && cardW == CardW) return;
+
+    CardW = cardW; CardH = cardH;
+    LastCols = cols; LastHGap = hGap;
+
+    Rects.resize(count);
+    for (int i = 0; i < count; i++) {
+        Rects[i] = QRect(
+            hGap + (i % cols) * (cardW + hGap),
+            VPad + (i / cols) * (cardH  + MinGap),
+            cardW, cardH);
+    }
+
+    viewport()->update();
+}
+
+void LibraryView::scrollContentsBy(int, int)
+{
+    viewport()->update();
+}
+
+void LibraryView::wheelEvent(QWheelEvent * e)
+{
+    const int delta = e->angleDelta().y();
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta * 3 / 4);
+    e->accept();
+}
+
+// resizeEvent fires after QAbstractScrollArea has already resized the viewport.
+// viewport()->width() is the new value here.
+void LibraryView::resizeEvent(QResizeEvent * e)
+{
+    QAbstractScrollArea::resizeEvent(e);
+    layoutCards(CardW);
+    // For horizontal expand within the same column band, layoutCards() returns
+    // without calling update(). Qt marks only the newly exposed right strip as
+    // dirty — onPaint fills it with background + any cards that intersect it.
+}
+
+bool LibraryView::viewportEvent(QEvent * e)
+{
+    switch (e->type()) {
+    case QEvent::Paint:            onPaint(static_cast<QPaintEvent *>(e));   return true;
+    case QEvent::MouseMove:        onMouseMove(static_cast<QMouseEvent *>(e)); return true;
+    case QEvent::MouseButtonPress: onMousePress(static_cast<QMouseEvent *>(e)); return true;
+    case QEvent::Leave:            onLeave(); return true;
+    default: return QAbstractScrollArea::viewportEvent(e);
+    }
+}
+
+void LibraryView::onPaint(QPaintEvent * e)
+{
+    if (!Cards) return;
+
+    const int   scrollY = verticalScrollBar()->value();
+    const QRect vRect   = e->rect();
+    const QRect cRect   = vRect.translated(0, scrollY);
+
+    QPainter p(viewport());
+    p.setClipRect(vRect);
+    p.fillRect(vRect, QApplication::palette().color(QPalette::Window));
+    p.translate(0, -scrollY);
+
+    // Series group backgrounds — drawn in content coordinates before cards
+    for (auto & g : SeriesGroups) {
+        const int topY = Rects[g.first].top()    - MinGap;
+        const int botY = Rects[g.last].bottom()  + MinGap;
+        const QRect bgR(0, topY, viewport()->width(), botY - topY);
+        if (bgR.intersects(cRect)) p.fillRect(bgR, g.color);
+    }
+
+    p.setFont(TitleFont);
+    const int count = Cards->count();
+    for (int i = 0; i < count; i++) {
+        const QRect & r = Rects[i];
+        if (!r.intersects(cRect)) continue;
+
+        auto * card = Cards->at(i);
+
+        // Cover — GPU texture path if viewport is QOpenGLWidget
+        if (!card->CoverScaled.isNull())
+            p.drawPixmap(r, card->CoverScaled);
+        else {
+            p.fillRect(r, QApplication::palette().color(QPalette::Mid));
+            p.setPen(QColor(0x8f, 0x98, 0xa0));
+            p.drawText(r.adjusted(6,6,-6,-6),
+                       Qt::AlignCenter | Qt::TextWordWrap, card->GameTitle);
+        }
+
+        if (i != HoveredIdx) continue;
+
+        // Hover: darken + play button + title strip
+        p.fillRect(r, QColor(0,0,0,110));
+
+        const QRect btn(r.left()+(r.width()-90)/2, r.top()+(r.height()-32)/2-16, 90, 32);
+        p.setBrush(QColor(0x4a,0x90,0xd9,230));
+        p.setPen(Qt::NoPen);
+        p.drawRoundedRect(btn, 4, 4);
+        p.setFont(PlayFont);
+        p.setPen(Qt::white);
+        p.drawText(btn, Qt::AlignCenter, "▶  Play");
+
+        p.setFont(TitleFont);
+        const QRect line(r.left(), r.bottom()-LineH, r.width(), LineH);
+        p.fillRect(line, QColor(0,0,0,160));
+        p.setPen(QColor(0xff,0xff,0xff,220));
+        p.drawText(line.adjusted(8,0,-(EditW+4),0),
+                   Qt::AlignVCenter|Qt::AlignLeft|Qt::TextSingleLine,
+                   card->ElidedTitle);
+        p.setPen(QColor(0xc6,0xd4,0xdf,200));
+        p.drawText(QRect(r.right()-EditW, r.bottom()-LineH, EditW, LineH),
+                   Qt::AlignCenter, "···");
+    }
+}
+
+void LibraryView::onMouseMove(QMouseEvent * e)
+{
+    if (!Cards) return;
+    const QPoint pos = e->pos() + QPoint(0, verticalScrollBar()->value());
+    int newHover = -1;
+    const int count = Cards->count();
+    for (int i = 0; i < count; i++)
+        if (Rects[i].contains(pos)) { newHover = i; break; }
+    if (newHover == HoveredIdx) return;
+
+    const int sy = verticalScrollBar()->value();
+    if (HoveredIdx >= 0) viewport()->update(Rects[HoveredIdx].translated(0,-sy));
+    HoveredIdx = newHover;
+    if (HoveredIdx >= 0) viewport()->update(Rects[HoveredIdx].translated(0,-sy));
+}
+
+void LibraryView::onMousePress(QMouseEvent * e)
+{
+    if (!Cards || e->button() != Qt::LeftButton) return;
+    const QPoint pos = e->pos() + QPoint(0, verticalScrollBar()->value());
+    const int count = Cards->count();
+    for (int i = 0; i < count; i++) {
+        if (!Rects[i].contains(pos)) continue;
+        QRect editR(Rects[i].right()-EditW, Rects[i].bottom()-LineH, EditW, LineH);
+        if (editR.contains(pos)) Cards->at(i)->edit();
+        else                     Cards->at(i)->play();
+        return;
+    }
+}
+
+void LibraryView::onLeave()
+{
+    if (HoveredIdx < 0) return;
+    const int old = HoveredIdx; HoveredIdx = -1;
+    viewport()->update(Rects[old].translated(0, -verticalScrollBar()->value()));
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MainWindow
+// ═════════════════════════════════════════════════════════════════════════════
+
+MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent)
+    : GlobalConfigJSON(gc), AppDataDir(appData), QMainWindow(parent)
 {
     setWindowTitle("Vidya God");
-    QWidget * Central = new QWidget(this);
-    QVBoxLayout * CentralLayout = new QVBoxLayout(Central);
-    CentralLayout->setContentsMargins(0, 0, 0, 0);
-    CentralLayout->setSpacing(0);
-    Central->setLayout(CentralLayout);
-    setCentralWidget(Central);
+    setMinimumSize(640, 480);
+    {
+        QRect screen = QGuiApplication::primaryScreen()->geometry();
+        int w = screen.width()  / 2;
+        int h = screen.height() / 2;
+        int x = (screen.width()  - w) / 2;
+        int y = (screen.height() - h) / 2;
+        // Restore last saved geometry if present
+        if ((*GlobalConfigJSON)["Settings"].contains("CardPixelWidth"))
+            CardPixelWidth = int((*GlobalConfigJSON)["Settings"]["CardPixelWidth"]);
+        if ((*GlobalConfigJSON)["Settings"].contains("SortMode"))
+            CurrentSort = static_cast<SortMode>(int((*GlobalConfigJSON)["Settings"]["SortMode"]));
+        if ((*GlobalConfigJSON)["Settings"].contains("WindowW"))
+            w = int((*GlobalConfigJSON)["Settings"]["WindowW"]);
+        if ((*GlobalConfigJSON)["Settings"].contains("WindowH"))
+            h = int((*GlobalConfigJSON)["Settings"]["WindowH"]);
+        if ((*GlobalConfigJSON)["Settings"].contains("WindowX"))
+            x = int((*GlobalConfigJSON)["Settings"]["WindowX"]);
+        if ((*GlobalConfigJSON)["Settings"].contains("WindowY"))
+            y = int((*GlobalConfigJSON)["Settings"]["WindowY"]);
+        setGeometry(x, y, w, h);
+    }
+    QWidget * cw = new QWidget(this);
+    QVBoxLayout * cl = new QVBoxLayout(cw);
+    cl->setContentsMargins(0,0,0,0); cl->setSpacing(0);
+    cw->setLayout(cl);
+    setCentralWidget(cw);
     BuildStaticUI();
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
     BuildPackagesDynamicUI();
-    //this->setFixedWidth(1280); //Fixed Steam Deck resolution.
-    //this->setFixedHeight(800);
 }
 
-MainWindow::~MainWindow() = default;
-
-void MainWindow::resizeEvent(QResizeEvent *event)
+MainWindow::~MainWindow()
 {
-    //if (LibraryScrollArea->widget())
-    //    LibraryScrollArea->widget()->setFixedWidth(LibraryScrollArea->viewport()->width());
-
-    QMainWindow::resizeEvent(event);
+    qDeleteAll(*LibraryGameCards);
+    delete LibraryGameCards;
 }
 
-//Creates the fixed structural widgets that exist for the lifetime of the window:
-//the tab widget, Library tab with its scroll area, and Packages tab with its toolbar.
-//Dynamic content (game cards, package rows) is added separately in the Build*DynamicUI methods.
 void MainWindow::BuildStaticUI()
 {
     MainWindowTabWidget = new QTabWidget(centralWidget());
     centralWidget()->layout()->addWidget(MainWindowTabWidget);
 
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    //Library tab: a scroll area that will hold the game card grid.
-    //Zero margins so the cards fill the full tab area.
+    // ── Library tab ──────────────────────────────────────────────────────────
     LibraryTabWidget = new QWidget(MainWindowTabWidget);
     LibraryTabWidgetLayout = new QVBoxLayout(LibraryTabWidget);
-    LibraryTabWidgetLayout->setContentsMargins(0, 0, 0, 0);
+    LibraryTabWidgetLayout->setContentsMargins(0,0,0,0);
+    LibraryTabWidgetLayout->setSpacing(0);
     LibraryTabWidget->setLayout(LibraryTabWidgetLayout);
-
     MainWindowTabWidget->addTab(LibraryTabWidget, "Library");
 
-    LibraryScrollArea = new QScrollArea(LibraryTabWidget);
-    LibraryScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    LibraryScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff); //Cards reflow to fit width; horizontal scroll is never needed
-    LibraryTabWidgetLayout->addWidget(LibraryScrollArea);
-    LibraryScrollArea->setWidgetResizable(1);
+    // Size picker toolbar
+    QWidget * toolbar = new QWidget(LibraryTabWidget);
+    QHBoxLayout * tl = new QHBoxLayout(toolbar);
+    tl->setContentsMargins(8,4,8,4);
 
-    //Grid size slider — disabled for now, hardcoded to 4 columns in BuildLibraryDynamicUI.
-    //QSlider * GridSizeSlider = new QSlider(Qt::Horizontal, LibraryTabWidget);
-    //GridSizeSlider->setValue((*GlobalConfigJSON)["Settings"]["LibraryGridSize"]);
-    //GridSizeSlider->setMinimum(3);
-    //GridSizeSlider->setMaximum(7);
-    //GridSizeSlider->setSingleStep(1);
-    //LibraryTabWidgetLayout->addWidget(GridSizeSlider);
-    //QObject::connect(GridSizeSlider, &QSlider::sliderReleased, this, &MainWindow::MainWindowGridSizeChanged);
+    // Sort buttons — left side
+    const QString sortBtnStyle =
+        "QPushButton{background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
+        "QPushButton:checked{border-bottom:2px solid palette(highlight);font-weight:bold;}"
+        "QPushButton:hover{color:palette(highlighted-text);}";
 
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    //Packages tab: toolbar (add / open editor buttons) above a scroll area for the package list.
+    QButtonGroup * sortGroup = new QButtonGroup(toolbar);
+    sortGroup->setExclusive(true);
+    auto makeSortBtn = [&](const QString & lbl, SortMode mode) {
+        QPushButton * b = new QPushButton(lbl, toolbar);
+        b->setCheckable(true);
+        b->setChecked(CurrentSort == mode);
+        b->setStyleSheet(sortBtnStyle);
+        sortGroup->addButton(b);
+        QObject::connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
+            if (!checked) return;
+            CurrentSort = mode;
+            sortCards();
+            View->layoutCards(CardPixelWidth);
+        });
+        tl->addWidget(b);
+    };
+    makeSortBtn("Name",   SortMode::Name);
+    makeSortBtn("Date",   SortMode::Date);
+    makeSortBtn("Series", SortMode::Series);
+
+    tl->addStretch();
+
+    // Size buttons — right side
+    auto makeBtn = [&](const QString & lbl, int w) {
+        QPushButton * b = new QPushButton(lbl, toolbar);
+        b->setCheckable(true); b->setChecked(CardPixelWidth == w);
+        b->setStyleSheet(
+            "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
+            "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
+            "QPushButton:hover{color:#c6d4df;}");
+        QObject::connect(b, &QPushButton::clicked, this, [this,w,lbl,toolbar](){
+            CardPixelWidth = w;
+            for (auto * x : toolbar->findChildren<QPushButton*>()) x->setChecked(x->text()==lbl);
+            View->prescaleCovers(CardPixelWidth);
+            View->layoutCards(CardPixelWidth);
+        });
+        tl->addWidget(b);
+    };
+    makeBtn("Large",250); makeBtn("Medium",185); makeBtn("Small",120);
+    LibraryTabWidgetLayout->addWidget(toolbar);
+
+    View = new LibraryView(LibraryTabWidget);
+    LibraryTabWidgetLayout->addWidget(View);
+
+    // ── Packages tab ──────────────────────────────────────────────────────────
     PackagesTabWidget = new QWidget(MainWindowTabWidget);
     PackagesTabWidgetLayout = new QVBoxLayout(PackagesTabWidget);
     PackagesTabWidget->setLayout(PackagesTabWidgetLayout);
-
     MainWindowTabWidget->addTab(PackagesTabWidget, "Packages");
 
-    QGroupBox * PackagesToolbarGroupBox = new QGroupBox(PackagesTabWidget);
-    QHBoxLayout * PackagesToolbarGroupBoxLayout = new QHBoxLayout(PackagesToolbarGroupBox);
-    PackagesToolbarGroupBox->setLayout(PackagesToolbarGroupBoxLayout);
-    PackagesTabWidgetLayout->addWidget(PackagesToolbarGroupBox);
+    QGroupBox * ptb = new QGroupBox(PackagesTabWidget);
+    QHBoxLayout * ptbl = new QHBoxLayout(ptb); ptb->setLayout(ptbl);
+    PackagesTabWidgetLayout->addWidget(ptb);
 
-    QPushButton * AddPackageButton = new QPushButton("+", PackagesToolbarGroupBox);
-    AddPackageButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    PackagesToolbarGroupBoxLayout->addWidget(AddPackageButton);
-    QObject::connect(AddPackageButton, &QPushButton::clicked, this, &MainWindow::on_AddGameButton_clicked);
+    QPushButton * addBtn = new QPushButton("+", ptb);
+    addBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    ptbl->addWidget(addBtn);
+    QObject::connect(addBtn, &QPushButton::clicked, this, &MainWindow::on_AddGameButton_clicked);
 
-    QPushButton * OpenPackageEditorButton = new QPushButton("Package Editor", PackagesToolbarGroupBox);
-    OpenPackageEditorButton->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    PackagesToolbarGroupBoxLayout->addWidget(OpenPackageEditorButton);
-    //Lambda opens a PackageEditor dialog without blocking the main window.
-    QObject::connect(OpenPackageEditorButton, &QPushButton::clicked, this, [this]{PackageEditor * NewPackageEditor = new PackageEditor(this->GlobalConfigJSON, this); NewPackageEditor->show();});
+    QPushButton * edBtn = new QPushButton("Package Editor", ptb);
+    edBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    ptbl->addWidget(edBtn);
+    QObject::connect(edBtn, &QPushButton::clicked, this,
+        [this]{ (new PackageEditor(GlobalConfigJSON, this))->show(); });
 
     PackagesScrollArea = new QScrollArea(PackagesTabWidget);
-    PackagesScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    PackagesScrollArea->setWidgetResizable(1);
+    PackagesScrollArea->setWidgetResizable(true);
     PackagesTabWidgetLayout->addWidget(PackagesScrollArea);
-
-
-    ///////////////////////////////////////////////////////////////////////////////////////////////
 }
 
-//Iterates GlobalConfigJSON["LIBRARY"], loads each package's MANIFEST.json, and creates
-//one LibraryGameCard per SUBGAMES entry. Skips packages whose MANIFEST cannot be parsed.
-//Must be called before BuildLibraryDynamicUI so LibraryGameCards is populated.
 void MainWindow::BuildLibraryGameCards()
 {
-    LibraryGameCards->clear();
-    for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
-    {
-        std::string PackagePath = (*GlobalConfigJSON)["LIBRARY"][i]["PATH"];
-        nlohmann::ordered_json PackageManifest;
-        QFile ManifestFile(QString::fromStdString(PackagePath + "/METADATA/MANIFEST.json"));
-        if (JSONOps::LoadJSON(&ManifestFile, &PackageManifest))
-        {
-            LogErr("MainWindow", "Could not load MANIFEST for " + PackagePath + ", skipping.");
-            continue;
-        }
-
-        //One card per subgame — a multi-game package produces multiple cards in the grid.
-        for (int j = 0; j < (int)PackageManifest["SUBGAMES"].size(); j++)
-        {
-            std::string SubgameID = PackageManifest["SUBGAMES"][j].contains("SUBGAMEID") && !PackageManifest["SUBGAMES"][j]["SUBGAMEID"].is_null()
-                                    ? std::string(PackageManifest["SUBGAMES"][j]["SUBGAMEID"]) : "";
-            LibraryGameCard * NewGameCard = new LibraryGameCard(GlobalConfigJSON, i, SubgameID, nullptr);
-            NewGameCard->InitializeClassVariables();
-            LibraryGameCards->append(NewGameCard);
+    qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
+    for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
+        nlohmann::ordered_json pm;
+        QFile f(QString::fromStdString(
+            std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"]) + "/METADATA/MANIFEST.json"));
+        if (JSONOps::LoadJSON(&f, &pm)) continue;
+        for (int j = 0; j < (int)pm["SUBGAMES"].size(); j++) {
+            std::string sid = pm["SUBGAMES"][j].contains("SUBGAMEID") &&
+                !pm["SUBGAMES"][j]["SUBGAMEID"].is_null()
+                ? std::string(pm["SUBGAMES"][j]["SUBGAMEID"]) : "";
+            auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
+            c->InitializeClassVariables();
+            LibraryGameCards->append(c);
         }
     }
 }
 
-//Tears down the old LibraryWidget (if any) and rebuilds the game card grid.
-//Cards are reparented to nullptr before the old widget is deleted so they are not
-//destroyed prematurely — they are then re-parented into the new LibraryWidget.
-//Currently hardcoded to 4 columns; the slider-based GridSize path is disabled.
+void MainWindow::sortCards()
+{
+    auto & cards = *LibraryGameCards;
+    switch (CurrentSort) {
+    case SortMode::Name:
+        std::sort(cards.begin(), cards.end(),
+            [](auto * a, auto * b){ return a->SortTitle < b->SortTitle; });
+        View->setSeriesGroups({});
+        break;
+
+    case SortMode::Date:
+        std::sort(cards.begin(), cards.end(),
+            [](auto * a, auto * b){ return a->SortDate < b->SortDate; });
+        View->setSeriesGroups({});
+        break;
+
+    case SortMode::Series: {
+        // Games without a series sort last, alphabetically by title within series
+        std::sort(cards.begin(), cards.end(), [](auto * a, auto * b) {
+            bool aNoSeries = a->SeriesName.isEmpty();
+            bool bNoSeries = b->SeriesName.isEmpty();
+            if (aNoSeries != bNoSeries) return bNoSeries; // series before no-series
+            if (aNoSeries && bNoSeries) return a->SortTitle < b->SortTitle;
+            return a->SortSeriesKey < b->SortSeriesKey;
+        });
+
+        // Build series groups with deterministic colors from the series name hash
+        QVector<LibraryView::SeriesGroup> groups;
+        const int n = cards.count();
+        int start = 0;
+        while (start < n) {
+            const QString & sName = cards[start]->SeriesName;
+            int end = start;
+            while (end + 1 < n && cards[end + 1]->SeriesName == sName) ++end;
+            if (!sName.isEmpty()) {
+                uint h = qHash(sName);
+                LibraryView::SeriesGroup g;
+                g.first = start; g.last = end; g.name = sName;
+                g.color = QColor::fromHsv(static_cast<int>(h % 360), 55, 90, 55);
+                groups.append(g);
+            }
+            start = end + 1;
+        }
+        View->setSeriesGroups(groups);
+        break;
+    }
+    }
+}
+
 void MainWindow::BuildLibraryDynamicUI()
 {
-    LogOut("MainWindow", "Building LibraryDynamicUI");
-    if (LibraryScrollArea->widget() != nullptr)
-    {
-        //Reparent all LibraryGameCards so they survive LibraryWidget being deleted.
-        for (int i = 0; i < LibraryGameCards->count(); i++)
-        {
-            LibraryGameCards->at(i)->setParent(nullptr);
-        }
-        LibraryScrollArea->widget()->deleteLater();
-    }
-
-    QWidget * LibraryWidget = new QWidget(LibraryScrollArea);
-    QGridLayout * LibraryWidgetLayout = new QGridLayout(LibraryWidget);
-    LibraryWidget->setLayout(LibraryWidgetLayout);
-
-    LibraryScrollArea->setWidget(LibraryWidget);
-    LibraryScrollArea->setWidgetResizable(true);
-
-    LibraryWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    LibraryWidgetLayout->setContentsMargins(5, 5, 5, 5);
-    LibraryWidgetLayout->setAlignment(Qt::AlignTop); //Cards stick to the top; empty rows don't expand upward
-    LibraryWidgetLayout->setSpacing(10);
-
-    if (LibraryGameCards->empty())
-    {
-        LogErr("MainWindow", "GameCard array is empty, aborting building LibraryDynamicUI");
-        return;
-    }
-
-    int GridSize = 4;
-    //int GridSize = (*GlobalConfigJSON)["Settings"]["LibraryGridSize"];
-    for (int i = 0; i < LibraryGameCards->count(); i++)
-    {
-        LibraryGameCards->at(i)->setParent(LibraryWidget);
-        LibraryGameCards->at(i)->GridSize = GridSize;
-        //Row = i / GridSize, column = i % GridSize — fills left-to-right, top-to-bottom.
-        LibraryWidgetLayout->addWidget(LibraryGameCards->at(i), i / GridSize, i % GridSize);
-    }
-
-    //Equal stretch on every column so cards share available width uniformly.
-    for (int column = 0; column < GridSize; ++column)
-    {
-        LibraryWidgetLayout->setColumnStretch(column, 1);
-    }
-
-    //Add a stretching empty row after the last card row so cards don't stretch vertically.
-    LibraryWidgetLayout->setRowStretch((LibraryGameCards->count() + GridSize - 1) / GridSize, 1);
+    sortCards();
+    View->setCards(LibraryGameCards);
+    View->prescaleCovers(CardPixelWidth);
+    View->layoutCards(CardPixelWidth);
 }
 
-//Rebuilds the Packages tab content from GlobalConfigJSON["LIBRARY"].
-//Each row shows package name, UID, version, and a Remove button.
-//The Remove button erases the entry by index and immediately calls RebuildDynamicUI
-//to keep the view consistent, then persists the change to disk.
 void MainWindow::BuildPackagesDynamicUI()
 {
-    if (PackagesScrollArea->widget() != nullptr)
-    {
-        PackagesScrollArea->widget()->deleteLater();
+    if (PackagesScrollArea->widget()) PackagesScrollArea->widget()->deleteLater();
+    QWidget * w = new QWidget(PackagesScrollArea);
+    PackagesScrollArea->setWidget(w);
+    QGridLayout * g = new QGridLayout(w); w->setLayout(g);
+    for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGENAME"]),w),i,0);
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"]),w),i,1);
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEVERSION"]),w),i,2);
+        QPushButton * rb = new QPushButton("Remove", w);
+        QObject::connect(rb, &QPushButton::clicked, this, [this,i]{
+            (*GlobalConfigJSON)["LIBRARY"].erase(i); RebuildDynamicUI(); SaveGlobalConfigJSON();
+        });
+        g->addWidget(rb, i, 3);
     }
-
-    QWidget * PackagesWidget = new QWidget(PackagesScrollArea);
-    PackagesScrollArea->setWidget(PackagesWidget);
-    QGridLayout * PackagesWidgetLayout = new QGridLayout(PackagesWidget);
-    PackagesWidget->setLayout(PackagesWidgetLayout);
-
-    for (int i = 0; i < (*GlobalConfigJSON)["LIBRARY"].size(); i++)
-    {
-        PackagesWidgetLayout->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGENAME"]), PackagesWidget), i, 0);
-        PackagesWidgetLayout->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"]), PackagesWidget), i, 1);
-        PackagesWidgetLayout->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEVERSION"]), PackagesWidget), i, 2);
-
-        QPushButton * RemovePackageButton = new QPushButton("Remove", PackagesWidget);
-        //Capture i by value so each lambda removes the correct entry even after the loop ends.
-        QObject::connect(RemovePackageButton, &QPushButton::clicked, this, [this, i]{(*GlobalConfigJSON)["LIBRARY"].erase(i); this->RebuildDynamicUI(); this->SaveGlobalConfigJSON();});
-        PackagesWidgetLayout->addWidget(RemovePackageButton, i, 3);
-    }
-
-    //Stretching row at the end prevents the last real row from expanding to fill the scroll area.
-    PackagesWidgetLayout->setRowStretch(PackagesWidgetLayout->rowCount(), 1);
+    g->setRowStretch(g->rowCount(), 1);
 }
 
-//Rebuilds the complete dynamic UI (game cards + library grid + packages list).
-//Called after any library mutation (add / remove package).
 void MainWindow::RebuildDynamicUI()
 {
-    this->BuildLibraryGameCards();
-    this->BuildLibraryDynamicUI();
-    this->BuildPackagesDynamicUI();
-    return;
+    BuildLibraryGameCards(); BuildLibraryDynamicUI(); BuildPackagesDynamicUI();
 }
 
-//Opens a native directory picker, validates the selection as a VidyaGod package,
-//guards against duplicate entries by PACKAGEUID, then appends a slim record to
-//GlobalConfigJSON["LIBRARY"] and saves to disk before rebuilding the UI.
 void MainWindow::on_AddGameButton_clicked()
 {
-    QString SelectedPath = QFileDialog::getExistingDirectory(this, "Select package or directory...");
-    if (SelectedPath.isEmpty()) return;
-
-    //Collect all valid package directories: the selected dir itself and/or any direct or
-    //nested subdirectories that contain a METADATA/MANIFEST.json.
-    QStringList PackagePaths;
-    std::function<void(const QString &)> ScanDir = [&](const QString &DirPath)
-    {
-        QDir Dir(DirPath);
-        if (FSOps::CheckPackageValid(&Dir))
-        {
-            PackagePaths.append(DirPath);
-            return; // Don't recurse into a package directory itself
-        }
-        // Not a package — recurse into immediate subdirectories
-        for (const QString &SubDir : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            ScanDir(QDir::cleanPath(DirPath + QDir::separator() + SubDir));
+    QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory...");
+    if (sel.isEmpty()) return;
+    QStringList paths;
+    std::function<void(const QString &)> scan = [&](const QString & d) {
+        QDir dir(d);
+        if (FSOps::CheckPackageValid(&dir)) { paths.append(d); return; }
+        for (const QString & s : dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot))
+            scan(QDir::cleanPath(d + QDir::separator() + s));
     };
-    ScanDir(SelectedPath);
-
-    if (PackagePaths.isEmpty())
-    {
-        QMessageBox::warning(this, "No packages found",
-            "The selected directory does not contain any valid packages (no METADATA subdirectory found).");
-        return;
+    scan(sel);
+    if (paths.isEmpty()) { QMessageBox::warning(this,"No packages found","No valid packages found."); return; }
+    int added=0, skipped=0;
+    for (const QString & path : paths) {
+        nlohmann::ordered_json m;
+        QFile f(QDir::cleanPath(path + "/METADATA/MANIFEST.json"));
+        if (JSONOps::LoadJSON(&f, &m)) { skipped++; continue; }
+        bool dup=false;
+        for (auto & e : (*GlobalConfigJSON)["LIBRARY"])
+            if (e["PACKAGEUID"]==m["PACKAGEUID"]) { dup=true; skipped++; break; }
+        if (dup) continue;
+        nlohmann::ordered_json slim;
+        slim["PACKAGEUID"]=m["PACKAGEUID"]; slim["PACKAGENAME"]=m["PACKAGENAME"];
+        slim["PACKAGEVERSION"]=m["PACKAGEVERSION"]; slim["PATH"]=path.toStdString();
+        (*GlobalConfigJSON)["LIBRARY"].push_back(slim);
+        added++;
     }
-
-    //Add each discovered package, skipping duplicates by PACKAGEUID.
-    int Added = 0, Skipped = 0;
-    for (const QString &Path : PackagePaths)
-    {
-        nlohmann::ordered_json MANIFESTJSON;
-        QFile ManifestFile(QDir::cleanPath(Path + "/METADATA/MANIFEST.json"));
-        if (JSONOps::LoadJSON(&ManifestFile, &MANIFESTJSON))
-        {
-            LogErr("MainWindow", "Could not parse MANIFEST for " + Path.toStdString() + ", skipping.");
-            Skipped++;
-            continue;
-        }
-
-        //Duplicate check by PACKAGEUID
-        bool Duplicate = false;
-        for (auto &Entry : (*GlobalConfigJSON)["LIBRARY"])
-        {
-            if (Entry["PACKAGEUID"] == MANIFESTJSON["PACKAGEUID"])
-            {
-                LogOut("MainWindow", "Package " + std::string(MANIFESTJSON["PACKAGENAME"]) + " already in library, skipping.");
-                Duplicate = true;
-                Skipped++;
-                break;
-            }
-        }
-        if (Duplicate) continue;
-
-        nlohmann::ordered_json SlimEntry;
-        SlimEntry["PACKAGEUID"]     = MANIFESTJSON["PACKAGEUID"];
-        SlimEntry["PACKAGENAME"]    = MANIFESTJSON["PACKAGENAME"];
-        SlimEntry["PACKAGEVERSION"] = MANIFESTJSON["PACKAGEVERSION"];
-        SlimEntry["PATH"]           = Path.toStdString();
-        (*GlobalConfigJSON)["LIBRARY"].push_back(SlimEntry);
-        LogSucc("MainWindow", "Added package: " + std::string(MANIFESTJSON["PACKAGENAME"]));
-        Added++;
-    }
-
-    if (Added > 0)
-    {
-        MainWindow::SaveGlobalConfigJSON();
-        this->RebuildDynamicUI();
-    }
-
-    QMessageBox::information(this, "Done",
-        QString("Added %1 package(s). %2 skipped (already in library or invalid).").arg(Added).arg(Skipped));
+    if (added>0) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
+    QMessageBox::information(this,"Done",
+        QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
 }
 
-//Serializes GlobalConfigJSON to GlobalConfig.JSON in AppDataDir.
 bool MainWindow::SaveGlobalConfigJSON()
 {
-    return JSONOps::SaveJSON(MainWindow::GlobalConfigJSON, new QFile(AppDataDir->filePath("GlobalConfig.JSON")));
+    return JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir->filePath("GlobalConfig.JSON")));
 }
 
-//Reads the new grid size from the slider that emitted the signal, persists it to
-//GlobalConfigJSON, saves to disk, and redraws the library grid at the new column count.
-void MainWindow::MainWindowGridSizeChanged()
+void MainWindow::closeEvent(QCloseEvent * e)
 {
-    QSlider * Slider = qobject_cast<QSlider *>(QObject::sender());
-    LogOut("MainWindow", "Set GridSize " + std::to_string(Slider->value()));
-    (*GlobalConfigJSON)["Settings"]["LibraryGridSize"] = Slider->value();
-    MainWindow::SaveGlobalConfigJSON();
-    BuildLibraryDynamicUI();
+    (*GlobalConfigJSON)["Settings"]["WindowW"]        = width();
+    (*GlobalConfigJSON)["Settings"]["WindowH"]        = height();
+    (*GlobalConfigJSON)["Settings"]["WindowX"]        = x();
+    (*GlobalConfigJSON)["Settings"]["WindowY"]        = y();
+    (*GlobalConfigJSON)["Settings"]["CardPixelWidth"] = CardPixelWidth;
+    (*GlobalConfigJSON)["Settings"]["SortMode"]        = static_cast<int>(CurrentSort);
+    SaveGlobalConfigJSON();
+    QMainWindow::closeEvent(e);
 }
 
-//Constructs the card widget with a cover label and Play/"..." button row.
-//Cover and title are NOT loaded here — call InitializeClassVariables() afterwards
-//so the widget tree exists before any file I/O or subgame index lookups occur.
-LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent)
-    : GlobalConfigJSON(PassedGlogalConfigJSON), Game(PassedGame), SubgameID(PassedSubgameID), QWidget(parent)
-{
-    LibraryGameCardLayout = new QVBoxLayout(this);
-    this->setLayout(LibraryGameCardLayout);
-    LibraryGameCardLayout->setSpacing(0);
-    LibraryGameCardLayout->setContentsMargins(0, 0, 0, 0);
-
-    //Cover label fills all available space; aspect ratio is enforced in resizeEvent.
-    CoverLabel = new QLabel(this);
-    CoverLabel->setAlignment(Qt::AlignCenter);
-    CoverLabel->setScaledContents(true);
-    CoverLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored); //Ignored so the label shrinks below its pixmap's natural size
-    LibraryGameCardLayout->addWidget(CoverLabel);
-
-    //Fixed-height button row beneath the cover.
-    ButtonsGroupBox = new QWidget(this);
-    ButtonsGroupBoxLayout = new QHBoxLayout(ButtonsGroupBox);
-    ButtonsGroupBox->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    ButtonsGroupBoxLayout->setSpacing(0);
-    ButtonsGroupBoxLayout->setContentsMargins(0, 0, 0, 0);
-
-    PlayButton = new QPushButton(ButtonsGroupBox);
-    PlayButton->setFlat(true);
-    PlayButton->setText("Play");
-    ButtonsGroupBoxLayout->addWidget(PlayButton);
-    QObject::connect(PlayButton, &QPushButton::clicked, this, &LibraryGameCard::on_PlayGameButton_clicked);
-
-    EditButton = new QPushButton(ButtonsGroupBox);
-    EditButton->setFlat(true);
-    EditButton->setText("...");
-    ButtonsGroupBoxLayout->addWidget(EditButton);
-    //Opens PreLaunchWindow unconditionally (ignores SKIP_LAUNCH_DIALOG), useful for reconfiguring.
-    QObject::connect(EditButton, &QPushButton::clicked, this, &LibraryGameCard::on_EditGameButton_clicked);
-    LibraryGameCardLayout->addWidget(ButtonsGroupBox);
-
-    //ButtonsGroupBox->setHidden(true);
-    //QObject::connect(this, &QGroupBox::clicked, this, &LibraryGameCard::on_GameCard_clicked);
-}
-
-//Loads PackagePath from the library entry, reads MANIFEST.json, and sets the cover
-//pixmap and game title for the resolved SubgameID.
-//Safe to call only after the card widget has been fully constructed.
-void LibraryGameCard::InitializeClassVariables()
-{
-    this->PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
-
-    this->MANIFESTJSON = new nlohmann::ordered_json;
-    QFile ManifestFile(QString::fromStdString(this->PackagePath.string() + "/METADATA/MANIFEST.json"));
-    if (JSONOps::LoadJSON(&ManifestFile, this->MANIFESTJSON))
-    {
-        LogErr("LibraryGameCard", "Could not load MANIFEST from " + this->PackagePath.string());
-        return;
-    }
-
-    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
-    if (SubgameIdx == -1) return;
-    this->GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"]);
-    //COVER lives under METADATA since v2 of the manifest schema; fall back to flat for old manifests.
-    auto &SubgameMeta = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["METADATA"];
-    std::string CoverFile = (SubgameMeta.is_object() && SubgameMeta.contains("COVER") && SubgameMeta["COVER"].is_string())
-                            ? std::string(SubgameMeta["COVER"])
-                            : ((*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("COVER") ? std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"]) : "");
-    if (!CoverFile.empty())
-        this->CoverLabel->setPixmap(QPixmap(QDir::cleanPath(QString::fromStdString(this->PackagePath.string()) + QDir::separator() + "METADATA" + QDir::separator() + QString::fromStdString(CoverFile))));
-}
-
-//Opens the PreLaunchWindow for this card's subgame.
-//If the user has previously checked "Remember & skip" and is NOT holding Shift,
-//the dialog is bypassed and the game launches directly with the saved settings.
-void LibraryGameCard::on_PlayGameButton_clicked()
-{
-    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, this->SubgameID);
-    LogOut("MainWindow", "Play clicked for " + (SubgameIdx != -1
-        ? std::string((*this->MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"])
-        : this->SubgameID));
-
-    // Retrieve PackageUID for USERSETTINGS lookups.
-    std::string PackageUID;
-    if (this->MANIFESTJSON->contains("PACKAGEUID") && !(*this->MANIFESTJSON)["PACKAGEUID"].is_null())
-        PackageUID = std::string((*this->MANIFESTJSON)["PACKAGEUID"]);
-
-    // Check whether the user has opted to skip the dialog for this package.
-    bool SkipDialog = false;
-    if (!PackageUID.empty())
-    {
-        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-        if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
-            SkipDialog = bool(US["SKIP_LAUNCH_DIALOG"]);
-    }
-
-    // Holding Shift forces the dialog even when "skip" is set.
-    bool ShiftHeld = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
-
-    if (!SkipDialog || ShiftHeld)
-    {
-        // Show PreLaunchWindow as a non-modal dialog.
-        PreLaunchWindow * Dialog = new PreLaunchWindow(
-            this->GlobalConfigJSON,
-            this->MANIFESTJSON,
-            this->PackagePath.string(),
-            this->SubgameID,
-            nullptr);
-        Dialog->show();
-        return;
-    }
-
-    // ----------------------------------------------------------------
-    // Skip-dialog fast path: show the window but auto-click Launch so
-    // the user can still see progress and kill if needed.
-    // ----------------------------------------------------------------
-    PreLaunchWindow * Dialog = new PreLaunchWindow(
-        this->GlobalConfigJSON,
-        this->MANIFESTJSON,
-        this->PackagePath.string(),
-        this->SubgameID,
-        nullptr);
-    Dialog->show();
-    // Auto-click Launch after the event loop processes the show event.
-    QMetaObject::invokeMethod(Dialog, "onLaunchClicked", Qt::QueuedConnection);
-}
-
-
-void LibraryGameCard::on_EditGameButton_clicked()
-{
-    //Always show PreLaunchWindow regardless of SKIP_LAUNCH_DIALOG — gives access to
-    //runner/variant settings, console output, and the Package Editor button.
-    PreLaunchWindow * W = new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
-                                              PackagePath.string(), SubgameID, nullptr);
-    W->show();
-}
-
-void LibraryGameCard::on_GameCard_clicked()
-{
-    //qDebug() << "CLICKED GAME CARD" << this->GameTitle;
-}
-
-//Enforces a 2:3 cover aspect ratio (portrait) by fixing the label height to width * 3/2
-//whenever the card is resized. This keeps cover art proportional at any grid column width.
-void LibraryGameCard::resizeEvent(QResizeEvent * event) {
-    QWidget::resizeEvent(event);
-    this->CoverLabel->setFixedHeight(this->CoverLabel->width() * 3 / 2);
-    //this->ButtonsGroupBox->setAlignment(Qt::AlignBottom);
-    //this->setFixedHeight(this->width() * 1.8);
-    //float CoverAspectRatio = this->CoverPixmap->height() / width();
-    //if (!this->CoverPixmap->isNull())
-    //{
-    //    CoverLabel->setPixmap(CoverPixmap->scaled(CoverLabel->width(), CoverLabel->width() * CoverAspectRatio, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    //}
-    //this->TitleLabel->setFixedWidth(this->width());
-    //this->TitleLabel->setFixedHeight(this->TitleLabel->width() * 0.2);
-    //emit Resized(event->size());
-}
-
-void LibraryGameCard::enterEvent(QEnterEvent * event)
-{
-    QWidget::enterEvent(event);
-    //this->ButtonsGroupBox->setVisible(true);
-
-    //this->CoverLabel->setFixedHeight(this->CoverLabel->width() * 3 / 2);
-}
-
-void LibraryGameCard::leaveEvent(QEvent * event)
-{
-    QWidget::leaveEvent(event);
-    //this->ButtonsGroupBox->setVisible(false);
-
-    //this->CoverLabel->setFixedHeight(this->CoverLabel->width() * 3 / 2);
-}
+void MainWindow::MainWindowGridSizeChanged() {}

@@ -2,151 +2,154 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
-#include <iostream>
-
+#include <QAbstractScrollArea>
 #include <QFile>
 #include <QDir>
 #include <QDirIterator>
-
-#include <QStandardItemModel>
-#include <QProcess>
-
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QTableView>
 #include <QPushButton>
 #include <QBoxLayout>
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QResizeEvent>
+#include <QLabel>
+#include <QPixmap>
+#include <QFont>
+#include <QFontMetrics>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QVector>
+#include <QScrollBar>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LibraryGameCard — plain data class, NOT a widget.
+// ─────────────────────────────────────────────────────────────────────────────
+class LibraryGameCard
+{
+public:
+    LibraryGameCard(nlohmann::ordered_json * globalConfig, int game, std::string subgameId);
+    ~LibraryGameCard();
 
-//A single card in the library grid, representing one subgame within a package.
-//Each card shows the cover art and a Play button; one LibraryGameCard is created
-//per SUBGAMES entry, so a package with multiple subgames produces multiple cards.
-class LibraryGameCard : public QWidget
+    void InitializeClassVariables();
+    void play();
+    void edit();
+
+    int                    Game;
+    std::string            SubgameID;
+    QString                GameTitle;
+    std::filesystem::path  PackagePath;
+    QPixmap                CoverOriginal;
+    QPixmap                CoverScaled;
+    QString                ElidedTitle;   // cached — recomputed only when card width changes
+
+    // Sort keys — populated in InitializeClassVariables()
+    QString                SortTitle;     // title with leading "The " stripped, lowercased
+    QString                SortDate;      // RELEASEDATE string (ISO → lexicographic = chronological)
+    QString                SortSeriesKey; // "SeriesName|##|SubseriesName|##" zero-padded
+    QString                SeriesName;    // raw series name for grouping (empty if none)
+
+    nlohmann::ordered_json * GlobalConfigJSON = nullptr;
+    nlohmann::ordered_json * MANIFESTJSON     = nullptr;
+};
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LibraryView — QAbstractScrollArea, software-rendered viewport.
+// Adaptive spacing: gap = (vW - cols*cardW) / (cols+1), grows as window widens.
+// Integer gap changes every ~(cols+1) pixels of drag, so full repaints are rare.
+// ─────────────────────────────────────────────────────────────────────────────
+class LibraryView : public QAbstractScrollArea
 {
     Q_OBJECT
 public:
-    explicit LibraryGameCard(nlohmann::ordered_json * PassedGlogalConfigJSON, int PassedGame, std::string PassedSubgameID, QWidget * parent);
+    explicit LibraryView(QWidget * parent = nullptr);
 
-    //Loads the subgame title and cover art from the package MANIFEST.json.
-    //Must be called after construction — separated from the constructor so the
-    //card widget exists before any file I/O is attempted.
-    void InitializeClassVariables();
+    struct SeriesGroup { int first, last; QColor color; QString name; };
 
-    //////HANDLE GRIDSIZE!
-    int GridSize = 0; //Number of columns in the library grid; set by BuildLibraryDynamicUI before layout
-
-signals:
-    void Resized(QSize NewSize); //Emitted on resize so parent can reflow if needed
+    void setCards(QList<LibraryGameCard *> * cards);
+    void prescaleCovers(int cardW);
+    void layoutCards(int cardW);
+    void setSeriesGroups(const QVector<SeriesGroup> & groups);
 
 protected:
-    //Keeps the cover label at a 2:3 aspect ratio (width * 3/2) as the card resizes.
-    void resizeEvent(QResizeEvent * event) override;
-    void enterEvent(QEnterEvent * event) override;
-    void leaveEvent(QEvent * event) override;
+    void resizeEvent(QResizeEvent * e) override;
+    void scrollContentsBy(int, int) override;
+    void wheelEvent(QWheelEvent * e) override;
+    bool viewportEvent(QEvent * e) override;
 
 private:
-    //Package location on disk — needed to load cover art and build ContainerParams.
-    std::filesystem::path PackagePath;
-    QString GameTitle;
+    void onPaint(QPaintEvent * e);
+    void onMouseMove(QMouseEvent * e);
+    void onMousePress(QMouseEvent * e);
+    void onLeave();
 
-    int Game;             //Index into GlobalConfigJSON["LIBRARY"] — identifies the parent package
-    std::string SubgameID; //SUBGAMEID string from MANIFEST.json["SUBGAMES"]
+    QList<LibraryGameCard *> * Cards = nullptr;
+    QVector<QRect>             Rects;
+    QVector<SeriesGroup>       SeriesGroups;
+    int HoveredIdx = -1;
+    int CardW = 0, CardH = 0;
+    int LastCols = 0, LastHGap = 0;
 
-    //Cover art label; scaled to fill the card width at a fixed 2:3 ratio.
-    QPixmap * CoverPixmap;
-    QLabel * CoverLabel;
-    QLabel * TitleLabel;
+    static constexpr int MinGap = 16;
+    static constexpr int VPad   = 16;
+    static constexpr int EditW  = 30;
+    static constexpr int LineH  = 30;
 
-    QVBoxLayout * LibraryGameCardLayout;
-
-    //Button row at the bottom of the card.
-    QWidget * ButtonsGroupBox;
-    QHBoxLayout * ButtonsGroupBoxLayout;
-
-    QPushButton * PlayButton; //Launches the subgame via ContainerWrapper
-    QPushButton * EditButton; //Reserved for future per-game settings ("...")
-
-    //Pointers into the application-level JSON stores — not owned by this class.
-    nlohmann::ordered_json * GlobalConfigJSON;
-    nlohmann::ordered_json * MANIFESTJSON; //Loaded from PackagePath/METADATA/MANIFEST.json during InitializeClassVariables
-
-private slots:
-    void on_GameCard_clicked();
-    //Builds a ContainerWrapper, mounts the runtime, runs the game, waits for exit,
-    //then triggers cleanup. Displays a critical dialog on launch failure.
-    void on_PlayGameButton_clicked();
-    //Opens PreLaunchWindow unconditionally (ignores SKIP_LAUNCH_DIALOG) for reconfiguration.
-    void on_EditGameButton_clicked();
+    QFont        TitleFont, PlayFont;
+    QFontMetrics TitleFM;
 };
-/////////////////////////////////////////////////////////////////////////////
 
-//The application's main window. Owns the two-tab layout (Library / Packages),
-//the list of LibraryGameCards, and the GlobalConfigJSON pointer used for persistence.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MainWindow
+// ─────────────────────────────────────────────────────────────────────────────
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
-
 public:
-    MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * AppDataDir, QWidget *parent = nullptr);
+    MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
     ~MainWindow();
 
-    QDir * AppDataDir;       //~/.VidyaGod — where GlobalConfig.JSON lives
+    QDir  * AppDataDir;
     QFile * GlobalConfigFile;
-
-    //Rebuilds both the Library and Packages dynamic UI from scratch.
-    //Called after adding or removing a package to keep the view in sync.
     void RebuildDynamicUI();
 
 private slots:
-    //Opens a directory picker, validates the selected package, and adds a slim
-    //entry (UID, name, version, path) to GlobalConfigJSON["LIBRARY"].
     void on_AddGameButton_clicked();
-    //Updates LibraryGridSize in GlobalConfigJSON and redraws the library grid.
     void MainWindowGridSizeChanged();
 
 private:
-    QString ApplicationPath;
-    QString ProtonPath;
-    nlohmann::ordered_json * GlobalConfigJSON; //Shared with LibraryGameCards — not owned here
+    nlohmann::ordered_json * GlobalConfigJSON;
 
-    QTabWidget * MainWindowTabWidget; //Top-level tab container (Library | Packages)
-
-    //Library tab — scrollable grid of LibraryGameCards.
-    QWidget * LibraryTabWidget;
+    QTabWidget  * MainWindowTabWidget;
+    QWidget     * LibraryTabWidget;
     QVBoxLayout * LibraryTabWidgetLayout;
-    QScrollArea * LibraryScrollArea;
-    QList<LibraryGameCard *> * LibraryGameCards = new QList<LibraryGameCard *>({}); //All cards, rebuilt on RebuildDynamicUI
+    enum class SortMode { Name = 0, Date = 1, Series = 2 };
 
-    //Packages tab — tabular list of installed packages with remove buttons.
-    QWidget * PackagesTabWidget;
+    LibraryView * View           = nullptr;
+    int           CardPixelWidth = 185;
+    SortMode      CurrentSort    = SortMode::Name;
+
+    QList<LibraryGameCard *> * LibraryGameCards = new QList<LibraryGameCard *>();
+
+    QWidget     * PackagesTabWidget;
     QVBoxLayout * PackagesTabWidgetLayout;
     QScrollArea * PackagesScrollArea;
 
-    //QSlider * GridSizeSlider; //Grid size control — currently disabled
-
-    //Builds the static skeleton (tab widget, scroll areas, toolbar buttons).
-    //Must run before any dynamic UI methods.
     void BuildStaticUI();
-    //Creates one LibraryGameCard per subgame across all library entries.
-    //Populates LibraryGameCards; must run before BuildLibraryDynamicUI.
     void BuildLibraryGameCards();
-    //Lays out LibraryGameCards into a QGridLayout inside the LibraryScrollArea.
-    //Safe to call repeatedly — reparents existing cards before deleting the old widget.
     void BuildLibraryDynamicUI();
-    //Populates the Packages tab with one row per library entry (name, UID, version, remove button).
     void BuildPackagesDynamicUI();
-    //Persists GlobalConfigJSON to GlobalConfig.JSON on disk.
+    void sortCards();
     bool SaveGlobalConfigJSON();
 
 protected:
-    void resizeEvent(QResizeEvent *event) override;
+    void closeEvent(QCloseEvent * e) override;
 };
 
 #endif // MAINWINDOW_H

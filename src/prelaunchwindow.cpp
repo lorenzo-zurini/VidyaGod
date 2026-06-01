@@ -260,38 +260,24 @@ PreLaunchWindow::PreLaunchWindow(
         PackageUID = std::string((*MANIFESTJSON)["PACKAGEUID"]);
 
     // ----------------------------------------------------------------
-    // Top-level layout:
-    //   QSplitter (top half)
-    //     Left pane:  cover art
-    //     Right pane: runner/variant pickers + progress + checkboxes
-    //   Console (bottom, inside the splitter)
-    //   Button row
+    // Top-level layout (horizontal):
+    //   Left:  cover art — fixed width, spans full dialog height
+    //   Right: QVBoxLayout
+    //            VSplitter: controls (top) / console (bottom)
+    //            Button row
     // ----------------------------------------------------------------
-    QVBoxLayout* RootLayout = new QVBoxLayout(this);
+    QHBoxLayout* RootLayout = new QHBoxLayout(this);
+    RootLayout->setContentsMargins(0, 0, 0, 0);
+    RootLayout->setSpacing(0);
     setLayout(RootLayout);
 
-    // Vertical splitter: top section / console.
-    QSplitter* VSplitter = new QSplitter(Qt::Vertical, this);
-    RootLayout->addWidget(VSplitter, 1);
-
-    // ---- Top section (horizontal splitter: cover | controls) ----
-    QSplitter* HSplitter = new QSplitter(Qt::Horizontal, VSplitter);
-    VSplitter->addWidget(HSplitter);
-
-    // ----- Left pane: cover art -----
-    QWidget*    CoverWidget = new QWidget(HSplitter);
-    QVBoxLayout* CoverLayout = new QVBoxLayout(CoverWidget);
-    CoverLayout->setContentsMargins(4, 4, 4, 4);
-    CoverWidget->setLayout(CoverLayout);
-    CoverWidget->setFixedWidth(210);
-
-    CoverLabel = new QLabel(CoverWidget);
-    CoverLabel->setAlignment(Qt::AlignCenter);
-    CoverLabel->setScaledContents(false);
-    CoverLabel->setMinimumHeight(280);
-    CoverLayout->addWidget(CoverLabel);
-    CoverLayout->addStretch();
-    HSplitter->addWidget(CoverWidget);
+    // ----- Left: cover art (full height) -----
+    CoverLabel = new QLabel(this);
+    CoverLabel->setFixedWidth(200);
+    CoverLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    CoverLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
+    CoverLabel->setContentsMargins(6, 6, 6, 6);
+    RootLayout->addWidget(CoverLabel);
 
     // Load cover from MANIFEST SUBGAMES[idx].METADATA.COVER
     int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
@@ -315,17 +301,25 @@ PreLaunchWindow::PreLaunchWindow(
                 "METADATA" + QDir::separator() +
                 QString::fromStdString(CoverFile)));
             if (!Pix.isNull())
-                CoverLabel->setPixmap(Pix.scaledToWidth(200, Qt::SmoothTransformation));
+                CoverLabel->setPixmap(Pix.scaledToWidth(188, Qt::SmoothTransformation));
         }
     }
 
-    // ----- Right pane: pickers + progress + checkboxes -----
-    QWidget*    ControlWidget = new QWidget(HSplitter);
+    // ----- Right: VSplitter (controls | console) + button row -----
+    QWidget*     RightWidget = new QWidget(this);
+    QVBoxLayout* RightLayout = new QVBoxLayout(RightWidget);
+    RightLayout->setContentsMargins(0, 0, 0, 0);
+    RightWidget->setLayout(RightLayout);
+    RootLayout->addWidget(RightWidget, 1);
+
+    QSplitter* VSplitter = new QSplitter(Qt::Vertical, RightWidget);
+    RightLayout->addWidget(VSplitter, 1);
+
+    // ----- Controls pane (top of VSplitter) -----
+    QWidget*    ControlWidget = new QWidget(VSplitter);
     QVBoxLayout* ControlLayout = new QVBoxLayout(ControlWidget);
     ControlWidget->setLayout(ControlLayout);
-    HSplitter->addWidget(ControlWidget);
-    HSplitter->setStretchFactor(0, 0);
-    HSplitter->setStretchFactor(1, 1);
+    VSplitter->addWidget(ControlWidget);
 
     QFormLayout* PickerForm = new QFormLayout();
     ControlLayout->addLayout(PickerForm);
@@ -396,17 +390,42 @@ PreLaunchWindow::PreLaunchWindow(
         { VariantCombo->setCurrentIndex(k); break; }
     }
 
-    // CustomVar pickers — rebuilt dynamically when the entrypoint changes.
-    CustomVarGroup = new QGroupBox("Options", ControlWidget);
+    // Scrollable section: CustomVar pickers + checkboxes, all in one scroll area.
+    QScrollArea * CVScrollArea = new QScrollArea(ControlWidget);
+    CVScrollArea->setWidgetResizable(true);
+    CVScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    CVScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    CVScrollArea->setFrameShape(QFrame::NoFrame);
+
+    QWidget     * CVContainer     = new QWidget();
+    QVBoxLayout * CVContainerLayout = new QVBoxLayout(CVContainer);
+    CVContainerLayout->setContentsMargins(0, 0, 0, 0);
+    CVContainer->setLayout(CVContainerLayout);
+    CVScrollArea->setWidget(CVContainer);
+    ControlLayout->addWidget(CVScrollArea);
+
+    CustomVarGroup = new QGroupBox("Options", CVContainer);
     CustomVarForm  = new QFormLayout(CustomVarGroup);
     CustomVarGroup->setLayout(CustomVarForm);
     CustomVarGroup->setVisible(false);
-    ControlLayout->addWidget(CustomVarGroup);
+    CVContainerLayout->addWidget(CustomVarGroup);
+
+    NoCleanupCheck     = new QCheckBox("No cleanup (keep mounts after exit)", CVContainer);
+    RememberCheck      = new QCheckBox("Hide this dialog next time",          CVContainer);
+    CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",    CVContainer);
+    DryRunCheck        = new QCheckBox("Dry test run (delete USERDATA on cleanup)", CVContainer);
+    CVContainerLayout->addWidget(NoCleanupCheck);
+    CVContainerLayout->addWidget(RememberCheck);
+    CVContainerLayout->addWidget(CloseAfterLaunchCheck);
+    CVContainerLayout->addWidget(DryRunCheck);
+    CVContainerLayout->addStretch();
+
+    CustomVarGroup->setProperty("ScrollArea", QVariant::fromValue<QWidget*>(CVScrollArea));
 
     connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onEntrypointChanged);
     RebuildCustomVarPickers();
 
-    // Progress bar + status label
+    // Progress bar + status label (outside the scroll area — always visible)
     ProgressBar = new QProgressBar(ControlWidget);
     ProgressBar->setRange(0, 100);
     ProgressBar->setValue(0);
@@ -416,19 +435,6 @@ PreLaunchWindow::PreLaunchWindow(
     StatusLabel = new QLabel(ControlWidget);
     StatusLabel->setText("");
     ControlLayout->addWidget(StatusLabel);
-
-    // Checkboxes
-    NoCleanupCheck = new QCheckBox("No cleanup (keep mounts after exit)", ControlWidget);
-    ControlLayout->addWidget(NoCleanupCheck);
-
-    RememberCheck = new QCheckBox("Hide this dialog next time", ControlWidget);
-    ControlLayout->addWidget(RememberCheck);
-
-    CloseAfterLaunchCheck = new QCheckBox("Close window when game starts", ControlWidget);
-    ControlLayout->addWidget(CloseAfterLaunchCheck);
-
-    DryRunCheck = new QCheckBox("Dry test run (delete USERDATA on cleanup)", ControlWidget);
-    ControlLayout->addWidget(DryRunCheck);
 
     ControlLayout->addStretch();
 
@@ -446,10 +452,10 @@ PreLaunchWindow::PreLaunchWindow(
     VSplitter->setStretchFactor(1, 2);
 
     // ---- Button row ----
-    QWidget*    BtnWidget = new QWidget(this);
+    QWidget*    BtnWidget = new QWidget(RightWidget);
     QHBoxLayout* BtnLayout = new QHBoxLayout(BtnWidget);
     BtnWidget->setLayout(BtnLayout);
-    RootLayout->addWidget(BtnWidget);
+    RightLayout->addWidget(BtnWidget);
 
     //Package Editor button on the left — opens the editor for this specific package.
     QPushButton * PackageEditorButton = new QPushButton("Package Editor", BtnWidget);
