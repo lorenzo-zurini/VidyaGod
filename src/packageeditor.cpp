@@ -1,6 +1,6 @@
 #include "packageeditor.h"
-#include "ui_packageeditor.h"
 #include "commonutils.h"
+#include <QPushButton>
 #include <iostream>
 #include <QBuffer>
 #include <QImage>
@@ -9,11 +9,36 @@ using json = nlohmann::ordered_json;
 
 PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
     : QDialog(parent)
-    , ui(new Ui::PackageEditor)
 {
-    ui->setupUi(this);
-    this->setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
-    this->setWindowState(Qt::WindowMaximized);
+    setWindowTitle("VidyaGod Package Editor");
+    setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
+    setWindowState(Qt::WindowMaximized);
+
+    // Main layout: toolbar on top, tab widget below.
+    QVBoxLayout * MainLayout = new QVBoxLayout(this);
+    MainLayout->setSpacing(1);
+    MainLayout->setContentsMargins(0, 0, 0, 0);
+    setLayout(MainLayout);
+
+    // Toolbar
+    QHBoxLayout * Toolbar = new QHBoxLayout();
+    Toolbar->setSpacing(1);
+    QPushButton * AddSubGameBtn   = new QPushButton("Add SubGame",   this);
+    QPushButton * AddComponentBtn = new QPushButton("Add Component", this);
+    QPushButton * SaveBtn         = new QPushButton("Save",          this);
+    Toolbar->addWidget(AddSubGameBtn);
+    Toolbar->addWidget(AddComponentBtn);
+    Toolbar->addStretch();
+    Toolbar->addWidget(SaveBtn);
+    MainLayout->addLayout(Toolbar);
+
+    connect(AddSubGameBtn,   &QPushButton::clicked, this, &PackageEditor::on_AddSubGameButton_clicked);
+    connect(AddComponentBtn, &QPushButton::clicked, this, &PackageEditor::on_AddComponentButton_clicked);
+    connect(SaveBtn,         &QPushButton::clicked, this, &PackageEditor::on_SaveButton_clicked);
+
+    // Tab widget (populated by BuildUI)
+    PackageEditorTabWidget = new QTabWidget(this);
+    MainLayout->addWidget(PackageEditorTabWidget);
 
     PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
 
@@ -23,10 +48,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     RefreshJSONView();
 }
 
-PackageEditor::~PackageEditor()
-{
-    delete ui;
-}
+PackageEditor::~PackageEditor() = default;
 
 bool PackageEditor::InitMANIFESTJSON()
 {
@@ -61,7 +83,7 @@ void PackageEditor::on_AddComponentButton_clicked()
     RefreshJSONView();
 
     QWidget * NewTabWidget = new QWidget(this);
-    ui->PackageEditorTabWidget->addTab(NewTabWidget, QString("Component %1").arg(ui->PackageEditorTabWidget->count() - 1));
+    PackageEditorTabWidget->addTab(NewTabWidget, QString("Component %1").arg(PackageEditorTabWidget->count() - 1));
     BuildUI();
     RefreshJSONView();
 }
@@ -120,14 +142,14 @@ void PackageEditor::InitPackage(const QString &PreselectedPath)
 bool PackageEditor::BuildUI()
 {
     //Save current tab positions so we can restore them after the UI is rebuilt.
-    SavedMainTab    = ui->PackageEditorTabWidget->currentIndex();
+    SavedMainTab    = PackageEditorTabWidget->currentIndex();
     SavedSubgameTab = SubGamesTabWidget ? SubGamesTabWidget->currentIndex() : 0;
 
     //JSON TAB
-    ui->PackageEditorTabWidget->clear();
+    PackageEditorTabWidget->clear();
     SubGamesTabWidget = nullptr; // Reset stale pointer — widgets are orphaned but alive until parent dies
 
-    PackageEditor::JSONTabWidget = new QWidget(ui->PackageEditorTabWidget);
+    PackageEditor::JSONTabWidget = new QWidget(PackageEditorTabWidget);
     QVBoxLayout * JSONTabWidgetLayout = new QVBoxLayout(JSONTabWidget);
     JSONTabWidget->setLayout(JSONTabWidgetLayout);
 
@@ -141,10 +163,10 @@ bool PackageEditor::BuildUI()
         JSONTabWidgetLayout->addWidget(SaveJSONButton);
         QObject::connect(SaveJSONButton, &QPushButton::clicked, this, &PackageEditor::SaveJSONButtonPressed);
 
-    ui->PackageEditorTabWidget->addTab(JSONTabWidget, "JSON");
+    PackageEditorTabWidget->addTab(JSONTabWidget, "JSON");
 
     //MANIFEST TAB
-    PackageEditor::ManifestTabWidget = new QWidget(ui->PackageEditorTabWidget);
+    PackageEditor::ManifestTabWidget = new QWidget(PackageEditorTabWidget);
     QVBoxLayout * ManifestTabWidgetLayout = new QVBoxLayout(ManifestTabWidget);
     ManifestTabWidget->setLayout(ManifestTabWidgetLayout);
 
@@ -194,9 +216,7 @@ bool PackageEditor::BuildUI()
             "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
             "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
         };
-        static const std::vector<std::string> ExecFields = {
-            "DEFAULT_ENTRYPOINT_ID"
-        };
+        // Execution section removed — the recommended entrypoint is now marked per-entrypoint.
 
         //SubPath: when non-empty, fields are read/written under SUBGAMES[i][SubPath][field].
         //Used for the Metadata section which nests its fields under a METADATA object.
@@ -322,9 +342,7 @@ bool PackageEditor::BuildUI()
                 SubGameScrollLayout->addWidget(Box);
             };
 
-            MakeSection("Identity",  IdentityFields);
-            if (!CurrentPlatform.empty())
-                MakeSection("Execution", ExecFields);
+            MakeSection("Identity", IdentityFields);
 
             //For custom-platform subgames, show an inline runner definition editor.
             //Reads/writes MANIFEST["RUNNERS"][Platform][0].
@@ -508,6 +526,29 @@ bool PackageEditor::BuildUI()
                     });
                     EPCardLayout->addWidget(EPRemBtn, eprow, 2);
                     eprow++;
+
+                    // RECOMMENDED checkbox — marks this as the default entrypoint (mutually exclusive).
+                    {
+                        bool IsRec = EP.value("RECOMMENDED", false);
+                        QCheckBox * RecCheck = new QCheckBox("Recommended (default)", EPCard);
+                        RecCheck->setChecked(IsRec);
+                        QObject::connect(RecCheck, &QCheckBox::toggled, this, [this, i, epj, RecCheck](){
+                            if (RecCheck->isChecked())
+                            {
+                                // Clear RECOMMENDED on all other entrypoints in this subgame.
+                                auto &EPArr = (*MANIFESTJSON)["SUBGAMES"][i]["ENTRYPOINTS"];
+                                for (int k = 0; k < (int)EPArr.size(); k++)
+                                    EPArr[k]["RECOMMENDED"] = (k == epj);
+                            }
+                            else
+                            {
+                                (*MANIFESTJSON)["SUBGAMES"][i]["ENTRYPOINTS"][epj]["RECOMMENDED"] = false;
+                            }
+                            SaveManifestJSON(); RefreshJSONView();
+                        });
+                        EPCardLayout->addWidget(RecCheck, eprow, 0, 1, 3);
+                        eprow++;
+                    }
 
                     // LASTCOMPONENT — combobox from all components
                     EPCardLayout->addWidget(new QLabel("LASTCOMPONENT:"), eprow, 0);
@@ -709,11 +750,11 @@ bool PackageEditor::BuildUI()
             QString TabLabel = SubgameIDStr.empty() ? QString("Subgame %1").arg(i + 1) : QString::fromStdString(SubgameIDStr);
             SubGamesTabWidget->addTab(SubGameTabWidget, TabLabel);
         }
-        ui->PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
+        PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
 
     // CUSTOMVARS TAB
     {
-        QWidget * CVTabWidget = new QWidget(ui->PackageEditorTabWidget);
+        QWidget * CVTabWidget = new QWidget(PackageEditorTabWidget);
         QVBoxLayout * CVTabLayout = new QVBoxLayout(CVTabWidget);
         CVTabWidget->setLayout(CVTabLayout);
 
@@ -769,7 +810,7 @@ bool PackageEditor::BuildUI()
             // VARTYPE combobox
             CVCardLayout->addWidget(new QLabel("VARTYPE:"), cvrow, 0);
             QComboBox * VTCombo = new QComboBox(CVCard);
-            VTCombo->addItems({"string", "number", "dword", "qword", "bool", "options"});
+            VTCombo->addItems({"string", "number", "dword", "qword", "bool", "options", "random"});
             VTCombo->setCurrentText(QString::fromStdString(VarType));
             QObject::connect(VTCombo, &QComboBox::currentIndexChanged, this, [this, cvi, VTCombo](){
                 nlohmann::ordered_json::json_pointer P(QString("/CUSTOMVARS/%1/VARTYPE").arg(cvi).toStdString());
@@ -791,13 +832,15 @@ bool PackageEditor::BuildUI()
             CVCardLayout->addWidget(DisplayCheck, cvrow, 1, 1, 2);
             cvrow++;
 
-            // OPTIONS section (only when VARTYPE == "options")
-            if (VarType == "options")
+            // OPTIONS section — shown for "options" (label+value pairs) and "random" (value-only pool)
+            if (VarType == "options" || VarType == "random")
             {
                 if (!CV.contains("OPTIONS") || !CV["OPTIONS"].is_array())
                     (*MANIFESTJSON)["CUSTOMVARS"][cvi]["OPTIONS"] = nlohmann::ordered_json::array();
 
-                QGroupBox * OptsBox = new QGroupBox("OPTIONS", CVCard);
+                bool IsRandom = (VarType == "random");
+                QString BoxTitle = IsRandom ? "Value Pool (random pick on launch)" : "OPTIONS";
+                QGroupBox * OptsBox = new QGroupBox(BoxTitle, CVCard);
                 QVBoxLayout * OptsLayout = new QVBoxLayout(OptsBox);
                 OptsBox->setLayout(OptsLayout);
 
@@ -805,15 +848,22 @@ bool PackageEditor::BuildUI()
                 for (int oi = 0; oi < (int)Opts.size(); oi++)
                 {
                     QHBoxLayout * OptRow = new QHBoxLayout();
-                    QLineEdit * OptLabel = new QLineEdit(OptsBox);
-                    OptLabel->setPlaceholderText("Label");
-                    OptLabel->setProperty("JSONPath", QString("/CUSTOMVARS/%1/OPTIONS/%2/LABEL").arg(cvi).arg(oi));
-                    if (Opts[oi].contains("LABEL") && Opts[oi]["LABEL"].is_string())
-                        OptLabel->setText(QString::fromStdString(std::string(Opts[oi]["LABEL"])));
-                    QObject::connect(OptLabel, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
 
+                    if (!IsRandom)
+                    {
+                        // options type: show Label + Value
+                        QLineEdit * OptLabel = new QLineEdit(OptsBox);
+                        OptLabel->setPlaceholderText("Label");
+                        OptLabel->setProperty("JSONPath", QString("/CUSTOMVARS/%1/OPTIONS/%2/LABEL").arg(cvi).arg(oi));
+                        if (Opts[oi].contains("LABEL") && Opts[oi]["LABEL"].is_string())
+                            OptLabel->setText(QString::fromStdString(std::string(Opts[oi]["LABEL"])));
+                        QObject::connect(OptLabel, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        OptRow->addWidget(OptLabel);
+                    }
+
+                    // Both types: show Value field
                     QLineEdit * OptValue = new QLineEdit(OptsBox);
-                    OptValue->setPlaceholderText("Value");
+                    OptValue->setPlaceholderText(IsRandom ? "Key / Value" : "Value");
                     OptValue->setProperty("JSONPath", QString("/CUSTOMVARS/%1/OPTIONS/%2/VALUE").arg(cvi).arg(oi));
                     if (Opts[oi].contains("VALUE") && Opts[oi]["VALUE"].is_string())
                         OptValue->setText(QString::fromStdString(std::string(Opts[oi]["VALUE"])));
@@ -825,12 +875,16 @@ bool PackageEditor::BuildUI()
                         (*MANIFESTJSON)["CUSTOMVARS"][cvi]["OPTIONS"].erase(oi);
                         SaveManifestJSON(); BuildUI();
                     });
-                    OptRow->addWidget(OptLabel); OptRow->addWidget(OptValue); OptRow->addWidget(OptDel);
+                    OptRow->addWidget(OptValue); OptRow->addWidget(OptDel);
                     OptsLayout->addLayout(OptRow);
                 }
-                QPushButton * AddOptBtn = new QPushButton("+ Add Option", OptsBox);
-                QObject::connect(AddOptBtn, &QPushButton::clicked, this, [this, cvi](){
-                    (*MANIFESTJSON)["CUSTOMVARS"][cvi]["OPTIONS"].push_back(json::object({{"LABEL", ""}, {"VALUE", ""}}));
+                QString AddBtnLabel = IsRandom ? "+ Add Value" : "+ Add Option";
+                QPushButton * AddOptBtn = new QPushButton(AddBtnLabel, OptsBox);
+                QObject::connect(AddOptBtn, &QPushButton::clicked, this, [this, cvi, IsRandom](){
+                    if (IsRandom)
+                        (*MANIFESTJSON)["CUSTOMVARS"][cvi]["OPTIONS"].push_back(json::object({{"VALUE", ""}}));
+                    else
+                        (*MANIFESTJSON)["CUSTOMVARS"][cvi]["OPTIONS"].push_back(json::object({{"LABEL", ""}, {"VALUE", ""}}));
                     SaveManifestJSON(); BuildUI();
                 });
                 OptsLayout->addWidget(AddOptBtn);
@@ -851,7 +905,7 @@ bool PackageEditor::BuildUI()
         CVScrollLayout->addWidget(AddCVBtn);
         CVScrollLayout->addStretch();
 
-        ui->PackageEditorTabWidget->addTab(CVTabWidget, "CUSTOMVARS");
+        PackageEditorTabWidget->addTab(CVTabWidget, "CUSTOMVARS");
     }
 
     //INDIVIDUAL COMPONENTS TABS
@@ -863,7 +917,7 @@ bool PackageEditor::BuildUI()
         if (!CIDField.is_null() && CIDField.is_string())
             ComponentIDStr = std::string(CIDField);
 
-        QWidget * ComponentTabWidget = new QWidget(ui->PackageEditorTabWidget);
+        QWidget * ComponentTabWidget = new QWidget(PackageEditorTabWidget);
         ComponentTabWidget->setProperty("JSONPath", QString("/COMPONENTS/%1").arg(QString::number(i)));
         ComponentTabWidget->setProperty("Index", i);
         ComponentTabWidget->setProperty("ComponentID", QString::fromStdString(ComponentIDStr));
@@ -1213,17 +1267,23 @@ bool PackageEditor::BuildUI()
                 }
                 else if (SubComponentType == "FileEdit")
                 {
-                    for (const QString &Field : QStringList{"MODE", "FILE", "KEY", "VALUE"})
+                    auto &FESub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                    std::string FEMode = FESub.value("MODE", std::string("ConfigWrite"));
+                    // Overwrite mode has no KEY field — only MODE, FILE, VALUE.
+                    QStringList FEFields = (FEMode == "Overwrite")
+                        ? QStringList{"MODE", "FILE", "VALUE"}
+                        : QStringList{"MODE", "FILE", "KEY", "VALUE"};
+                    int ferow = 1;
+                    for (const QString &Field : FEFields)
                     {
-                        int row = 1 + QStringList{"MODE","FILE","KEY","VALUE"}.indexOf(Field);
-                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(Field + ":"), row, 0);
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel(Field + ":"), ferow, 0);
                         QLineEdit * FEField = new QLineEdit(IndividualSubComponentGroupBox);
                         FEField->setProperty("JSONPath", QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/%3").arg(i).arg(j).arg(Field));
-                        auto &Sub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
-                        if (Sub.contains(Field.toStdString()) && Sub[Field.toStdString()].is_string())
-                            FEField->setText(QString::fromStdString(std::string(Sub[Field.toStdString()])));
+                        if (FESub.contains(Field.toStdString()) && FESub[Field.toStdString()].is_string())
+                            FEField->setText(QString::fromStdString(std::string(FESub[Field.toStdString()])));
                         QObject::connect(FEField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
-                        IndividualSubComponentGroupBoxLayout->addWidget(FEField, row, 1);
+                        IndividualSubComponentGroupBoxLayout->addWidget(FEField, ferow, 1);
+                        ferow++;
                     }
                 }
                 else
@@ -1234,12 +1294,12 @@ bool PackageEditor::BuildUI()
                 SubComponentsGroupBoxLayout->addWidget(IndividualSubComponentGroupBox);
             }
         QString ComponentTabLabel = ComponentIDStr.empty() ? QString("Component %1").arg(i + 1) : QString::fromStdString(ComponentIDStr);
-        ui->PackageEditorTabWidget->addTab(ComponentTabWidget, ComponentTabLabel);
+        PackageEditorTabWidget->addTab(ComponentTabWidget, ComponentTabLabel);
     }
 
     //Restore saved tab positions (clamped to valid range).
-    int MainCount = ui->PackageEditorTabWidget->count();
-    ui->PackageEditorTabWidget->setCurrentIndex(qBound(0, SavedMainTab, MainCount - 1));
+    int MainCount = PackageEditorTabWidget->count();
+    PackageEditorTabWidget->setCurrentIndex(qBound(0, SavedMainTab, MainCount - 1));
     if (SubGamesTabWidget && SubGamesTabWidget->count() > 0)
         SubGamesTabWidget->setCurrentIndex(qBound(0, SavedSubgameTab, SubGamesTabWidget->count() - 1));
 

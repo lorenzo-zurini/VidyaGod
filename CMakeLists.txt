@@ -22,11 +22,9 @@ set(PROJECT_SOURCES
 
     src/mainwindow.cpp
     src/mainwindow.h
-    src/mainwindow.ui
 
     src/packageeditor.h
     src/packageeditor.cpp
-    src/packageeditor.ui
 
     src/filesystemoperations.h
     src/filesystemoperations.cpp

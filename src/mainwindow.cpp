@@ -1,5 +1,4 @@
 #include "mainwindow.h"
-#include "ui_mainwindow.h"
 #include "commonutils.h"
 
 #include "packageeditor.h"
@@ -17,9 +16,15 @@
 //(static skeleton, game card population, dynamic layout) so the window is fully
 //populated before show() is called by main().
 MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * PassedAppDataDir, QWidget * parent)
-    : GlobalConfigJSON(PassedGlobalConfigJSON), AppDataDir(PassedAppDataDir), QMainWindow(parent), ui(new Ui::MainWindow)
+    : GlobalConfigJSON(PassedGlobalConfigJSON), AppDataDir(PassedAppDataDir), QMainWindow(parent)
 {
-    ui->setupUi(this);
+    setWindowTitle("Vidya God");
+    QWidget * Central = new QWidget(this);
+    QVBoxLayout * CentralLayout = new QVBoxLayout(Central);
+    CentralLayout->setContentsMargins(0, 0, 0, 0);
+    CentralLayout->setSpacing(0);
+    Central->setLayout(CentralLayout);
+    setCentralWidget(Central);
     BuildStaticUI();
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
@@ -28,10 +33,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * PassedGlobalConfigJSON, QDir * P
     //this->setFixedHeight(800);
 }
 
-MainWindow::~MainWindow()
-{
-    delete ui;
-}
+MainWindow::~MainWindow() = default;
 
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
@@ -46,8 +48,8 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 //Dynamic content (game cards, package rows) is added separately in the Build*DynamicUI methods.
 void MainWindow::BuildStaticUI()
 {
-    MainWindowTabWidget = new QTabWidget(ui->MainWidget);
-    ui->MainWidget->layout()->addWidget(MainWindowTabWidget);
+    MainWindowTabWidget = new QTabWidget(centralWidget());
+    centralWidget()->layout()->addWidget(MainWindowTabWidget);
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //Library tab: a scroll area that will hold the game card grid.

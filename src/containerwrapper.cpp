@@ -1,5 +1,6 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
+#include <random>
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -131,14 +132,15 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
 
     //Wine-specific pre-VFS steps: the prefix must exist before layers are stacked on top.
-    //Registry patches are written and imported into the prefix before the VFS is finalized
-    //so the patched registry is visible inside the union mount.
+    //Registry patches and pre-VFS FileEdits are applied here so they land in DefPrefixPath —
+    //the lowest-priority VFS layer — and USERDATA can shadow them if the user has their own values.
     if (WineMode)
     {
         this->InitializeDefPrefix(this->ContainerParams);
         this->CreateFlatRegPatchJSON(this->ContainerParams);
         this->CreateRegPatchFiles(this->ContainerParams);
         this->MergeRegPatchFiles(this->ContainerParams);
+        this->ProcessFileEdits(this->ContainerParams, false);
     }
 
     //Mount all filesystem subcomponents into TEMP, then assemble and mount the final union.
@@ -147,12 +149,12 @@ bool ContainerWrapper::BuildContainerRuntime()
     this->MountVFS(this->ContainerParams);
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
-    //Wine-specific post-mount steps: DLL overrides, file edits, and override reg patches operate
-    //on the mounted runtime, so they must run after the VFS is in place.
+    //Wine-specific post-mount steps: DLL overrides, OVERRIDE FileEdits, and OVERRIDE reg patches
+    //operate on the mounted runtime (COW directly to USERDATA) — they win unconditionally.
     if (WineMode)
     {
         this->ProcessDLLOverrides(this->ContainerParams);
-        this->ProcessFileEdits(this->ContainerParams);
+        this->ProcessFileEdits(this->ContainerParams, true);
         this->ApplyOverrideRegEdits(this->ContainerParams);
     }
 
@@ -214,22 +216,15 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
         int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
 
-        //Read DEFAULT_ENTRYPOINT_ID from the subgame to resolve which component to build to.
-        auto &DefEPField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
-        std::string DefaultEntrypointID = (!DefEPField.is_null() && DefEPField.is_string()) ? std::string(DefEPField) : "";
-
-        //Use FindComponentForEntrypoint to get LASTCOMPONENT from the default entrypoint.
-        std::string ResolvedComponentID = FindComponentForEntrypoint(MANIFESTJSON, ContainerParams.subgame_id, DefaultEntrypointID);
-
-        if (ResolvedComponentID.empty())
+        //Find the RECOMMENDED entrypoint; fall back to the first one.
+        std::string ResolvedComponentID;
+        std::vector<EntrypointInfo> Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
+        for (auto &EP : Entrypoints)
+            if (EP.IsRecommended) { ResolvedComponentID = EP.ComponentID; break; }
+        if (ResolvedComponentID.empty() && !Entrypoints.empty())
         {
-            //DEFAULT_ENTRYPOINT_ID not set or not found — fall back to the first available entrypoint.
-            std::vector<EntrypointInfo> Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
-            if (!Entrypoints.empty())
-            {
-                ResolvedComponentID = Entrypoints.front().ComponentID;
-                LogWarn("ContainerWrapper::DecideComponent", "DEFAULT_ENTRYPOINT_ID not found, falling back to first entrypoint LASTCOMPONENT '" + ResolvedComponentID + "'");
-            }
+            ResolvedComponentID = Entrypoints.front().ComponentID;
+            LogWarn("ContainerWrapper::DecideComponent", "No RECOMMENDED entrypoint found, falling back to first: '" + ResolvedComponentID + "'");
         }
 
         if (!ResolvedComponentID.empty())
@@ -354,6 +349,34 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
             std::string VarType = CV.value("VARTYPE",  std::string("string"));
             if (Key.empty()) continue;
 
+            // --- random type: pick one value from OPTIONS on every launch ---
+            // Skips USERSETTINGS so the selection is fresh each time.
+            // CLI VariableOverrides still take highest priority (useful for debugging).
+            if (VarType == "random")
+            {
+                if (ContainerParams.VariableOverrides.count(Key))
+                {
+                    ContainerParams.CustomVariables[Key] = ContainerParams.VariableOverrides.at(Key);
+                    LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = [random:override] " + ContainerParams.CustomVariables[Key]);
+                }
+                else if (CV.contains("OPTIONS") && CV["OPTIONS"].is_array() && !CV["OPTIONS"].empty())
+                {
+                    auto &Opts = CV["OPTIONS"];
+                    static std::mt19937 Rng(std::random_device{}());
+                    std::uniform_int_distribution<size_t> Dist(0, Opts.size() - 1);
+                    std::string Picked = Opts[Dist(Rng)].value("VALUE", std::string());
+                    ContainerWrapper::StringVariableSubstitution(Picked, ContainerParams.GetVariablesMap());
+                    ContainerParams.CustomVariables[Key] = Picked;
+                    LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = [random] " + ContainerParams.CustomVariables[Key]);
+                }
+                else
+                {
+                    LogWarn("ContainerWrapper::ResolveCustomVariables", "  " + Key + ": random type has no OPTIONS, leaving empty.");
+                    ContainerParams.CustomVariables[Key] = "";
+                }
+                continue;
+            }
+
             // Resolve raw display value through priority chain.
             std::string Raw = ResolveOne(Key, CV.value("DEFAULT", std::string()));
 
@@ -389,9 +412,10 @@ std::vector<EntrypointInfo> ContainerWrapper::GetAvailableEntrypoints(const nloh
         else
             CompName = LastComp;
         EntrypointInfo Info;
-        Info.EntrypointID  = EP.value("ENTRYPOINT_ID", std::string());
-        Info.ComponentName = CompName;
-        Info.ComponentID   = LastComp;
+        Info.EntrypointID   = EP.value("ENTRYPOINT_ID", std::string());
+        Info.ComponentName  = CompName;
+        Info.ComponentID    = LastComp;
+        Info.IsRecommended  = EP.value("RECOMMENDED", false);
         Entrypoints.push_back(Info);
     }
     return Entrypoints;
@@ -654,13 +678,16 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
-    //Read DEFAULT_ENTRYPOINT_ID from the subgame. Exe/args/workdir resolution is deferred to
-    //ResolveExecutableDefinition(), which runs after BuildSubComponentsArray.
+    //Resolve the default EntrypointID from the RECOMMENDED entrypoint; fall back to first.
+    //Exe/args/workdir resolution is deferred to ResolveExecutableDefinition().
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        auto &DefEPField = MANIFESTJSON["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
-        ContainerParams.ExecutableID = (!DefEPField.is_null() && DefEPField.is_string()) ? std::string(DefEPField) : "";
-        LogOut("ContainerWrapper::DeriveContainerParams", "EntrypointID (default): " + ContainerParams.ExecutableID);
+        auto Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
+        for (auto &EP : Entrypoints)
+            if (EP.IsRecommended) { ContainerParams.ExecutableID = EP.EntrypointID; break; }
+        if (ContainerParams.ExecutableID.empty() && !Entrypoints.empty())
+            ContainerParams.ExecutableID = Entrypoints.front().EntrypointID;
+        LogOut("ContainerWrapper::DeriveContainerParams", "EntrypointID (recommended): " + ContainerParams.ExecutableID);
     }
     //WorkDir defaults to ProgramPath; overridden by ResolveExecutableDefinition once SubComponentsArray is built.
     {
@@ -1159,7 +1186,8 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
 //Layer type behavior:
 //  VFSZipLayer  — fuse-zip mounts the zip read-only; the mount point goes into CleanupUnmountPaths.
 //  VFSDirLayer  — bindfs bind-mounts the directory read-only; same cleanup registration.
-//  VFSFileLayer — hard-linked into the staging dir (no FUSE mount needed, no cleanup entry).
+//  VFSFileLayer — hard-linked into the staging dir (no FUSE mount); falls back to copy if
+//                 cross-device. The staging dir is registered in CleanupDeletePaths.
 bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &ContainerParams, bool WineMode)
 {
     LogOut("ContainerWrapper::PreMountFilesystemComponents", "Processing filesystem Subcomponents.");
@@ -1221,20 +1249,34 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
         else if (Type == "VFSFileLayer")
         {
             std::filesystem::create_directories(TargetPath);
-            //Hard links avoid duplicating data and don't require FUSE, so no mount-point cleanup.
-            std::filesystem::path HardlinkPath = TargetPath / SourcePath.filename();
-            LogOut("ContainerWrapper::PreMountFilesystemComponents", "Hardlinking VFSFileLayer " + SourcePath.string() + " -> " + HardlinkPath.string());
+            std::filesystem::path DestPath = TargetPath / SourcePath.filename();
             std::error_code ec;
-            std::filesystem::create_hard_link(SourcePath, HardlinkPath, ec);
+            std::filesystem::create_hard_link(SourcePath, DestPath, ec);
             if (ec)
             {
-                LogErr("ContainerWrapper::PreMountFilesystemComponents", "Hardlink failed: " + ec.message());
+                if (ec.value() == EXDEV)
+                {
+                    // Cross-device — fall back to a full copy.
+                    LogWarn("ContainerWrapper::PreMountFilesystemComponents",
+                            "Hardlink failed (cross-device), copying VFSFileLayer: " + SourcePath.filename().string());
+                    std::filesystem::copy_file(SourcePath, DestPath, std::filesystem::copy_options::overwrite_existing, ec);
+                }
+                if (ec)
+                {
+                    LogErr("ContainerWrapper::PreMountFilesystemComponents",
+                           "VFSFileLayer failed: " + ec.message() + " — " + SourcePath.string());
+                    continue;
+                }
             }
             else
             {
-                if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
-                    return false;
+                LogOut("ContainerWrapper::PreMountFilesystemComponents",
+                       "Hardlinked VFSFileLayer: " + SourcePath.filename().string());
             }
+            // Register the staging dir for cleanup regardless of hard-link vs copy.
+            ContainerParams.CleanupDeletePaths.push_back(PreMountPath);
+            if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
+                return false;
         }
     }
     LogOut("ContainerWrapper::PreMountFilesystemComponents", "Filesystem subcomponent pre-mount complete.");
@@ -1385,23 +1427,35 @@ bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerPara
     return true;
 }
 
-//Processes FileEdit subcomponents to patch configuration files inside the mounted runtime.
-//MUST BE RUN AFTER VARIABLE SUBSTITUTION — subcomponent paths and values must already be expanded.
-//Currently supports only MODE="ConfigWrite" (prefix-based line replacement in text files).
-bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams)
+//Processes FileEdit subcomponents in two passes, mirroring the RegEdit pre/post-VFS split.
+//  OverridePass=false (pre-VFS): writes to DefPrefixPath. DefPrefixPath is the lowest-priority
+//    VFS layer, so USERDATA (the RW top layer) naturally shadows it if the user already has the
+//    file — their value sticks without any explicit logic.
+//  OverridePass=true  (post-VFS): writes to RuntimePath via the union, COW-ing directly into
+//    USERDATA — wins unconditionally over any previous state.
+//MUST BE RUN AFTER VARIABLE SUBSTITUTION (already done in BuildSubComponentsArray).
+bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass)
 {
-    //MUST BE RUN AFTER VARIABLE SUBSTITUTION!
-    LogOut("ContainerWrapper::PreMountFilesystemComponents", "Processing FileEdit Subcomponents.");
-    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    std::filesystem::path BasePath = OverridePass ? ContainerParams.RuntimePath : ContainerParams.DefPrefixPath;
+    LogOut("ContainerWrapper::ProcessFileEdits",
+           std::string(OverridePass ? "Post-VFS" : "Pre-VFS") + " FileEdit pass. Base: " + BasePath.string());
+
+    for (auto &Sub : ContainerParams.SubComponentsArray)
     {
-        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
-        if (SubComponentJSON["TYPE"] == "FileEdit")
-        {
-            if (SubComponentJSON["MODE"] == "ConfigWrite")
-            {
-                ContainerWrapper::ConfigWrite(SubComponentJSON["KEY"], SubComponentJSON["VALUE"], SubComponentJSON["FILE"]);
-            }
-        }
+        if (Sub.value("TYPE", std::string()) != "FileEdit") continue;
+        if (Sub.value("OVERRIDE", false) != OverridePass) continue;
+
+        std::string Mode  = Sub.value("MODE",  std::string());
+        std::string File  = Sub.value("FILE",  std::string());
+        std::string Value = Sub.value("VALUE", std::string());
+        std::filesystem::path FilePath = BasePath / File;
+
+        if (Mode == "ConfigWrite")
+            ContainerWrapper::ConfigWrite(Sub.value("KEY", std::string()), Value, FilePath);
+        else if (Mode == "Overwrite")
+            ContainerWrapper::FileOverwrite(Value, FilePath);
+        else
+            LogWarn("ContainerWrapper::ProcessFileEdits", "Unknown MODE: '" + Mode + "' — skipping.");
     }
     return true;
 }
@@ -1456,6 +1510,19 @@ bool ContainerWrapper::ConfigWrite(std::string Key, std::string Value, std::file
     return true;
 }
 
+//Writes Value as the complete content of FilePath, creating parent directories if needed.
+//Used for files whose entire content is the value (e.g. Warcraft III .w3k CD key files).
+bool ContainerWrapper::FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath)
+{
+    LogOut("ContainerWrapper::FileOverwrite", "Writing: " + FilePath.string());
+    std::error_code ec;
+    std::filesystem::create_directories(FilePath.parent_path(), ec);
+    if (ec) { LogErr("ContainerWrapper::FileOverwrite", "Could not create parent dirs: " + ec.message()); return false; }
+    std::ofstream Out(FilePath, std::ios::out | std::ios::trunc);
+    if (!Out) { LogErr("ContainerWrapper::FileOverwrite", "Could not open for writing: " + FilePath.string()); return false; }
+    Out << Value;
+    return true;
+}
 
 
 //=====================================================================================================================================================================
@@ -1641,9 +1708,15 @@ bool ContainerWrapper::Cleanup()
     {
         ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
     }
+    //Explicitly remove VFSFileLayer staging directories (hard-link or copy; no FUSE involved).
+    std::error_code ec;
+    for (const std::filesystem::path &DeletePath : ContainerParams.CleanupDeletePaths)
+    {
+        std::filesystem::remove_all(DeletePath, ec);
+        if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove staging dir: " + DeletePath.string() + " — " + ec.message());
+    }
     //remove_all can throw filesystem_error if a path is still a FUSE mountpoint (device busy).
     //Catch and log rather than crash — stale mounts should not bring down the launcher.
-    std::error_code ec;
     std::filesystem::remove_all(this->ContainerParams.RuntimePath, ec);
     if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove RUNTIME: " + ec.message() + " — may still be mounted.");
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);

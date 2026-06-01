@@ -31,9 +31,10 @@ enum class RunnerType { Wine, Emulator, Native, Custom };
 //Describes one available entrypoint for a given subgame.
 //Selecting an entrypoint = selecting which component chain level to build up to.
 struct EntrypointInfo {
-    std::string EntrypointID;  // ENTRYPOINT_ID field on the entrypoint
-    std::string ComponentName; // NAME of the component referenced by LASTCOMPONENT
-    std::string ComponentID;   // LASTCOMPONENT value (the component_id to build to)
+    std::string EntrypointID;   // ENTRYPOINT_ID field on the entrypoint
+    std::string ComponentName;  // NAME of the component referenced by LASTCOMPONENT
+    std::string ComponentID;    // LASTCOMPONENT value (the component_id to build to)
+    bool        IsRecommended = false; // RECOMMENDED:true on the entrypoint — shown with ⭐ in picker
 };
 
 //All resolved parameters needed to build and launch a single container session.
@@ -115,7 +116,7 @@ public:
     //VFSWRAPPER CLASS
     std::string VFSString;                                //Colon-separated unionfs branch string (built up incrementally)
     std::vector<std::filesystem::path> CleanupUnmountPaths; //All FUSE mount points that must be unmounted on Cleanup()
-    //std::vector<std::filesystem::path> CleanupDeletePaths;
+    std::vector<std::filesystem::path> CleanupDeletePaths;  //Staging dirs to remove on Cleanup() (VFSFileLayer hard-link/copy dirs)
 
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
     //Used by StringVariableSubstitution to expand tokens in runner ENV, args, and subcomponent paths.
@@ -239,12 +240,15 @@ public:
     static bool ProcessDLLOverrides(struct ContainerParams &ContainerParams);
 
     //FileEdits:
-    //Processes FileEdit subcomponents. Currently supports MODE="ConfigWrite" only.
-    //MUST BE RUN AFTER VARIABLE SUBSTITUTION (already done in BuildSubComponentsArray).
-    static bool ProcessFileEdits(struct ContainerParams &ContainerParams);
+    //Processes FileEdit subcomponents. MUST BE RUN AFTER VARIABLE SUBSTITUTION.
+    //OverridePass=false: writes to DefPrefixPath (pre-VFS, USERDATA can shadow it).
+    //OverridePass=true:  writes to RuntimePath  (post-VFS, goes directly to USERDATA — wins unconditionally).
+    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false);
     //Reads FilePath line by line and replaces any line starting with Key with Key+Value.
     //Useful for patching INI-style config files that use prefix-based key matching.
     static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);
+    //Writes Value as the complete content of FilePath, creating parent dirs if needed.
+    static bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
 
     //Misc
     //Synchronously runs Program with Arguments in the given environment.

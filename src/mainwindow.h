@@ -23,12 +23,7 @@
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
 
-QT_BEGIN_NAMESPACE
-namespace Ui
-{
-    class MainWindow;
-}
-QT_END_NAMESPACE
+
 
 //A single card in the library grid, representing one subgame within a package.
 //Each card shows the cover art and a Play button; one LibraryGameCard is created
@@ -117,7 +112,6 @@ private slots:
     void MainWindowGridSizeChanged();
 
 private:
-    Ui::MainWindow *ui;
     QString ApplicationPath;
     QString ProtonPath;
     nlohmann::ordered_json * GlobalConfigJSON; //Shared with LibraryGameCards — not owned here

@@ -196,28 +196,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PATH"]                     = "";
         (*GlobalConfigJSON)["Settings"]["LibraryGridSize"]                                      = 5;
 
-        //Default runners per platform.
-        //wine is listed first so it is the default — it runs on the host and sees FUSE mounts directly.
-        //umu-proton (Proton/pressure-vessel) is available as an option but sandboxes FUSE mounts away.
-        nlohmann::ordered_json Wine;
-        Wine["NAME"]       = "wine";
-        Wine["TYPE"]       = "wine";
-        Wine["EXECUTABLE"] = "wine";
-        Wine["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"} };
-        Wine["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(Wine);
-
-        nlohmann::ordered_json UmuProton;
-        UmuProton["NAME"]       = "umu-proton";
-        UmuProton["TYPE"]       = "wine";
-        UmuProton["EXECUTABLE"] = "umu-run";
-        //ENV keys use %VARIABLE% tokens that are expanded by StringVariableSubstitution at runtime.
-        UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
-        //LD_LIBRARY_PATH must be removed to prevent system libraries from conflicting with Proton's.
-        UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
-
-        //GE-Proton10-30 — community Proton build with additional patches; path hardcoded to AUR install location.
+        //Default runners per platform. GE-Proton is listed first so it is the default.
         //TO-DO: make runner paths configurable via settings rather than hardcoded.
         nlohmann::ordered_json GeProton;
         GeProton["NAME"]       = "GE-Proton10-30";
@@ -226,6 +205,22 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         GeProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"}, {"PROTONPATH", "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30"} };
         GeProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
         (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(GeProton);
+
+        nlohmann::ordered_json UmuProton;
+        UmuProton["NAME"]       = "umu-proton";
+        UmuProton["TYPE"]       = "wine";
+        UmuProton["EXECUTABLE"] = "umu-run";
+        UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
+        UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
+        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
+
+        nlohmann::ordered_json Wine;
+        Wine["NAME"]       = "wine";
+        Wine["TYPE"]       = "wine";
+        Wine["EXECUTABLE"] = "wine";
+        Wine["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"} };
+        Wine["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
+        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(Wine);
 
         //snes9x handles SNES ROMs; the ROM path is passed as the sole argument.
         nlohmann::ordered_json Snes9x;

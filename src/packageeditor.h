@@ -44,9 +44,6 @@
 #include "containerwrapper.h"
 #include "nlohmann/json.hpp"
 
-namespace Ui {
-class PackageEditor;
-}
 
 class PackageEditor : public QDialog
 {
@@ -119,7 +116,7 @@ private:
     QDir * MetadataDir;
     QDir * PackageFilesDir;
 
-    Ui::PackageEditor * ui;
+    QTabWidget * PackageEditorTabWidget = nullptr;
     nlohmann::ordered_json * MANIFESTJSON;
     nlohmann::ordered_json * GlobalConfigJSON;
     QNetworkAccessManager * NetMgr = nullptr;

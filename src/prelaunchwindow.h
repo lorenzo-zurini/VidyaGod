@@ -40,6 +40,7 @@ public:
     std::string                        EntrypointID;      // ENTRYPOINT_ID of the selected entrypoint
     nlohmann::ordered_json             SelectedRunner;    // May be null if no override is needed
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / entrypoint seeds
+    bool                               DryRun = false;    // If true, USERDATA is deleted after cleanup
     bool                   SkipCleanup = false;
 
     // Forcibly kills the running game process (if any).
@@ -118,6 +119,7 @@ private:
     QCheckBox*    NoCleanupCheck        = nullptr;
     QCheckBox*    RememberCheck         = nullptr;
     QCheckBox*    CloseAfterLaunchCheck = nullptr;
+    QCheckBox*    DryRunCheck           = nullptr;
     QGroupBox*    CustomVarGroup        = nullptr; // Rebuilt by RebuildCustomVarPickers()
     QFormLayout*  CustomVarForm         = nullptr;
     QTextEdit*    ConsoleEdit       = nullptr;

@@ -1,5 +1,6 @@
 #include "prelaunchwindow.h"
 #include "packageeditor.h"
+#include <random>
 
 #include <QDir>
 #include <QPixmap>
@@ -205,8 +206,17 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 4: Cleanup (unless the user opted out).
     // -----------------------------------------------------------------
+    std::filesystem::path UserDataPath = LocalWrapper->ContainerParams.UserDataPath;
     if (!SkipCleanup)
         LocalWrapper->Cleanup();
+
+    if (this->DryRun)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(UserDataPath, ec);
+        if (ec) LogWarn("LaunchThread", "Dry run: could not remove USERDATA: " + ec.message());
+        else    LogSucc("LaunchThread", "Dry run: USERDATA deleted.");
+    }
 
     ClearLogCallback();
 
@@ -359,22 +369,21 @@ PreLaunchWindow::PreLaunchWindow(
 
     // Entrypoint combobox
     VariantCombo = new QComboBox(ControlWidget);
-    PickerForm->addRow("Variant:", VariantCombo);
+    PickerForm->addRow("Entrypoint:", VariantCombo);
 
     // Collect entrypoints via ContainerWrapper helper.
-    std::string DefaultEntrypointID;
-    if (SubgameIdx != -1)
-    {
-        auto &DEF = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["DEFAULT_ENTRYPOINT_ID"];
-        if (!DEF.is_null() && DEF.is_string()) DefaultEntrypointID = std::string(DEF);
-    }
 
     std::vector<EntrypointInfo> Entrypoints = ContainerWrapper::GetAvailableEntrypoints(*MANIFESTJSON, SubgameID);
+    std::string RecommendedID;
     for (auto &E : Entrypoints)
-        VariantCombo->addItem(QString::fromStdString(E.ComponentName), QString::fromStdString(E.EntrypointID));
+    {
+        QString Label = QString::fromStdString(E.EntrypointID);
+        if (E.IsRecommended) { Label = "⭐ " + Label; RecommendedID = E.EntrypointID; }
+        VariantCombo->addItem(Label, QString::fromStdString(E.EntrypointID));
+    }
 
-    // Pre-select entrypoint: USERSETTINGS > DEFAULT_ENTRYPOINT_ID.
-    std::string PreselEntrypointID = DefaultEntrypointID;
+    // Pre-select: USERSETTINGS > RECOMMENDED entrypoint > first.
+    std::string PreselEntrypointID = RecommendedID;
     {
         auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_VARIANT_ID") && US["PREFERRED_VARIANT_ID"].is_string())
@@ -412,11 +421,14 @@ PreLaunchWindow::PreLaunchWindow(
     NoCleanupCheck = new QCheckBox("No cleanup (keep mounts after exit)", ControlWidget);
     ControlLayout->addWidget(NoCleanupCheck);
 
-    RememberCheck = new QCheckBox("Remember selection and skip this dialog next time", ControlWidget);
+    RememberCheck = new QCheckBox("Hide this dialog next time", ControlWidget);
     ControlLayout->addWidget(RememberCheck);
 
     CloseAfterLaunchCheck = new QCheckBox("Close window when game starts", ControlWidget);
     ControlLayout->addWidget(CloseAfterLaunchCheck);
+
+    DryRunCheck = new QCheckBox("Dry test run (delete USERDATA on cleanup)", ControlWidget);
+    ControlLayout->addWidget(DryRunCheck);
 
     ControlLayout->addStretch();
 
@@ -579,7 +591,24 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         std::string VarType = CV.value("VARTYPE", std::string("string"));
         QString Label       = QString::fromStdString(CV.value("LABEL", Key));
 
-        if (VarType == "options" && CV.contains("OPTIONS") && CV["OPTIONS"].is_array())
+        if (VarType == "random")
+        {
+            // For display:true random vars, pre-populate with a random pick so the user
+            // can see and optionally override it. The widget value flows into VariableOverrides,
+            // bypassing the ResolveCustomVariables random-pick path cleanly.
+            if (InitialValue.empty() && CV.contains("OPTIONS") && CV["OPTIONS"].is_array() && !CV["OPTIONS"].empty())
+            {
+                auto &Opts = CV["OPTIONS"];
+                static std::mt19937 UiRng(std::random_device{}());
+                std::uniform_int_distribution<size_t> D(0, Opts.size() - 1);
+                InitialValue = Opts[D(UiRng)].value("VALUE", std::string());
+            }
+            QLineEdit * Field = new QLineEdit(CustomVarGroup);
+            Field->setProperty("CVKey", QString::fromStdString(Key));
+            Field->setText(QString::fromStdString(InitialValue));
+            CustomVarForm->addRow(Label + ":", Field);
+        }
+        else if (VarType == "options" && CV.contains("OPTIONS") && CV["OPTIONS"].is_array())
         {
             QComboBox * Combo = new QComboBox(CustomVarGroup);
             Combo->setProperty("CVKey", QString::fromStdString(Key));
@@ -672,10 +701,13 @@ void PreLaunchWindow::onLaunchClicked()
                         if (V.is_string()) CollectedVars[K] = std::string(V);
 
         // Fill in DEFAULT for any key not covered by the seed.
+        // Skip random vars — they must not enter VariableOverrides at all so
+        // ResolveCustomVariables can perform the random pick unconditionally.
         for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
         {
             std::string K = CV.value("KEY", std::string());
             if (K.empty() || CollectedVars.count(K)) continue;
+            if (CV.value("VARTYPE", std::string()) == "random") continue;
             CollectedVars[K] = CV.value("DEFAULT", std::string());
         }
     }
@@ -699,11 +731,37 @@ void PreLaunchWindow::onLaunchClicked()
             CollectedVars[Key.toStdString()] = LE->text().toStdString();
     }
 
-    // Save preferences if "Remember" is checked.
-    if (RememberCheck->isChecked())
+    // Auto-save displayed CustomVar picker values to USERSETTINGS["VARIABLES"] unconditionally.
+    // This persists the user's (or randomly pre-populated) selection so it is pre-filled on
+    // the next launch, taking precedence over DEFAULT and random picks.
+    if (!PackageUID.empty() && MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
+    {
+        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
+                                       ? US["VARIABLES"] : nlohmann::ordered_json::object();
+        for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
+        {
+            if (!CV.value("DISPLAY", true)) continue;
+            std::string K = CV.value("KEY", std::string());
+            if (K.empty() || !CollectedVars.count(K)) continue;
+            Vars[K] = CollectedVars.at(K);
+        }
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
+        QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
+        JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
+    }
+
+    // Always persist runner and entrypoint so next launch pre-selects them.
+    if (!PackageUID.empty())
     {
         std::string RunnerName = SelRunner.is_null() ? "" : SelRunner.value("NAME", std::string());
-        savePreferences(RunnerName, SelectedEntrypointID, true);
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",     RunnerName);
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", SelectedEntrypointID);
+        // "Hide dialog next time" only when explicitly checked.
+        if (RememberCheck->isChecked())
+            ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
+        QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
+        JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
     }
 
     // Disable pickers and launch button; show progress bar.
@@ -713,6 +771,7 @@ void PreLaunchWindow::onLaunchClicked()
     NoCleanupCheck->setEnabled(false);
     RememberCheck->setEnabled(false);
     CloseAfterLaunchCheck->setEnabled(false);
+    DryRunCheck->setEnabled(false);
     LaunchButton->setEnabled(false);
     CloseButton->setEnabled(false);
     ProgressBar->setValue(0);
@@ -730,6 +789,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->VariableOverrides  = CollectedVars;
     LaunchWorker->SelectedRunner     = SelRunner;
     LaunchWorker->SkipCleanup      = NoCleanupCheck->isChecked();
+    LaunchWorker->DryRun           = DryRunCheck->isChecked();
 
     connect(LaunchWorker, &LaunchThread::logLine,        this, &PreLaunchWindow::onLogLine,        Qt::QueuedConnection);
     connect(LaunchWorker, &LaunchThread::statusChanged,  this, &PreLaunchWindow::onStatusChanged,  Qt::QueuedConnection);
@@ -822,6 +882,7 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     NoCleanupCheck->setEnabled(true);
     RememberCheck->setEnabled(true);
     CloseAfterLaunchCheck->setEnabled(true);
+    DryRunCheck->setEnabled(true);
     LaunchButton->setEnabled(true);
     ProgressBar->setValue(0);
     ProgressBar->setVisible(false);
