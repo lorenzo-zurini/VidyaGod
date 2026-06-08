@@ -123,11 +123,6 @@ public:
     std::vector<std::string> ExeArgs;                               //DERIVED FROM MANIFESTJSON — split from EXEARGS string
     std::vector<std::string> DLLOverrides;                          //DERIVED FROM MANIFESTJSON — fed into WINEDLLOVERRIDES
 
-    //REGISTRYWRAPPER CLASS
-    //Structured registry data built by CreateFlatRegPatchJSON:
-    //  FlatRegPatch["32"|"64"][regPath][valueName] = value
-    nlohmann::ordered_json FlatRegPatch;
-
     //VFSWRAPPER CLASS
     std::string VFSString;                                //Colon-separated unionfs branch string (built up incrementally)
     std::vector<std::filesystem::path> CleanupUnmountPaths; //All FUSE mount points that must be unmounted on Cleanup()
@@ -279,16 +274,13 @@ public:
     //then adds DefPrefixPath to VFSString as the base layer.
     //Must run before any VFS layers are added so the prefix sits at the bottom of the stack.
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
-    //Flattens all RegEdit subcomponents into FlatRegPatch, keyed by architecture then registry path.
-    static bool CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams);
-    //Writes RegPatch32.reg and RegPatch64.reg from FlatRegPatch into DefPrefixPath/drive_c.
-    //Handles bool→dword, int→dword:hex, and string (with backslash escaping) value types.
-    //Strings that already start with "dword:" or "hex:" are written verbatim.
-    static bool CreateRegPatchFiles(struct ContainerParams &ContainerParams);
-    //Imports RegPatch32.reg and RegPatch64.reg into the prefix using `reg import` via the runner.
-    static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
-    //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime after VFS is up.
-    //Writes directly into the RW WRITELAYER so values win over DEFPREFIX and prior COW state.
+    //Applies all non-OVERRIDE RegEdit subcomponents directly into the DEFPREFIX hive files via
+    //RegistryWrapper (no .reg generation, no `reg import`). Quiesces any wineserver left by wineboot
+    //first so it cannot flush and clobber the edits. Pre-VFS, so DEFPREFIX stays the lowest layer.
+    static bool ApplyBaseRegEdits(struct ContainerParams &ContainerParams);
+    //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime hives via RegistryWrapper,
+    //after VFS is up. Saving RuntimePath/*.reg COWs the whole file into the RW WRITELAYER, so the
+    //values win over DEFPREFIX and prior COW state. No wine runs on RuntimePath yet, so no quiesce.
     static bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
     //DLL overrides:

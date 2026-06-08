@@ -58,14 +58,14 @@ void LaunchThread::run()
                 emit statusChanged("Prefix ready.");
             }
         }
-        else if (ctx.find("MergeRegPatchFiles") != std::string::npos)
+        else if (ctx.find("ApplyBaseRegEdits") != std::string::npos)
         {
-            if (msg.find("RegPatch32") != std::string::npos)
+            if (msg.find("Applying base RegEdits") != std::string::npos)
             {
                 emit progressChanged(35);
                 emit statusChanged("Applying registry patches...");
             }
-            else if (msg.find("RegPatch64") != std::string::npos)
+            else if (msg.find("applied to DEFPREFIX") != std::string::npos)
             {
                 emit progressChanged(45);
             }

@@ -1,6 +1,7 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
+#include "registrywrapper.h"
 #include <random>
 #include <fstream>
 #include <sstream>
@@ -166,9 +167,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     if (WineMode)
     {
         this->InitializeDefPrefix(this->ContainerParams);
-        this->CreateFlatRegPatchJSON(this->ContainerParams);
-        this->CreateRegPatchFiles(this->ContainerParams);
-        this->MergeRegPatchFiles(this->ContainerParams);
+        this->ApplyBaseRegEdits(this->ContainerParams);
         this->ProcessFileEdits(this->ContainerParams, false);
     }
 
@@ -1090,232 +1089,61 @@ int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> A
 //                                                                    REGISTRYWRAPPER CLASS
 //=====================================================================================================================================================================
 
-//Flattens all RegEdit subcomponents from SubComponentsArray into FlatRegPatch.
-//Structure: FlatRegPatch[architecture]["32"|"64"][regPath][valueName] = value
-//Null values are stored as nullptr so CreateRegPatchFiles can emit an empty string entry.
-//If a subcomponent has no KEYVALUES, the registry key is created with no values (key-only).
-bool ContainerWrapper::CreateFlatRegPatchJSON(struct ContainerParams &ContainerParams)
+//Returns true if SubComponentsArray contains at least one RegEdit whose OVERRIDE flag == WantOverride.
+static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool WantOverride)
 {
-    ContainerParams.FlatRegPatch.clear();
-    LogOut("ContainerWrapper::CreateFlatRegPatchJSON", "Creating registry patch.");
-    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    for (const auto &Sub : ContainerParams.SubComponentsArray)
+        if (Sub.value("TYPE", std::string()) == "RegEdit" && Sub.value("OVERRIDE", false) == WantOverride)
+            return true;
+    return false;
+}
+
+//Applies all non-OVERRIDE RegEdit subcomponents directly into the DEFPREFIX hive files. Replaces the
+//former CreateFlatRegPatchJSON → CreateRegPatchFiles → `reg import` pipeline: no .reg generation, no
+//runner shell-out. Runs pre-VFS so DEFPREFIX remains the lowest union layer.
+bool ContainerWrapper::ApplyBaseRegEdits(struct ContainerParams &ContainerParams)
+{
+    if (!HasRegEdits(ContainerParams, /*WantOverride=*/false)) return true; // nothing to apply
+
+    LogOut("ContainerWrapper::ApplyBaseRegEdits", "Applying base RegEdits directly to DEFPREFIX hives.");
+
+    //No wineserver quiesce is needed: InitializeDefPrefix runs `umu-run wineboot` with
+    //PROTON_VERB=waitforexitandrun, so Proton tears the prefix's wineserver down as part of session
+    //cleanup before that call returns. The prefix is therefore quiescent here and our direct edits to
+    //the hive files survive (verified: a known RegEdit value persists in DEFPREFIX/system.reg after a
+    //real launch). (Proton also doesn't expose `wineserver` as an umu-run target anyway.)
+    RegistryWrapper RW;
+    RW.LoadPrefix(ContainerParams.DefPrefixPath);
+    RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
+    if (!RW.SavePrefix(ContainerParams.DefPrefixPath))
     {
-        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
-        if (SubComponentJSON["TYPE"] == "RegEdit" && !SubComponentJSON.value("OVERRIDE", false))
-        {
-            if (SubComponentJSON.contains("KEYVALUES"))
-            {
-                for (auto Item : SubComponentJSON["KEYVALUES"].items())
-                {
-                    if (!SubComponentJSON["KEYVALUES"][Item.key()].is_null())
-                    {
-                        ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = Item.value();
-                    }
-                    else
-                    {
-                        //Explicit null means "write an empty string" in the .reg file.
-                        ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])][Item.key()] = nullptr;
-                    }
-                }
-            }
-            else
-            {
-                //No KEYVALUES — store nullptr so the key header is written but no values follow.
-                ContainerParams.FlatRegPatch[std::string(SubComponentJSON["ARCHITECTURE"])][std::string(SubComponentJSON["REGPATH"])] = nullptr;
-            }
-        }
+        LogErr("ContainerWrapper::ApplyBaseRegEdits", "Failed to write DEFPREFIX hives.");
+        return false;
     }
-    LogSucc("ContainerWrapper::CreateFlatRegPatchJSON", "Successfully created FlatRegPatch.");
-    //std::cout << ContainerParams.FlatRegPatch.dump(4) << std::endl;
+    LogSucc("ContainerWrapper::ApplyBaseRegEdits", "Base RegEdits applied to DEFPREFIX.");
     return true;
 }
 
-//Writes RegPatch32.reg and RegPatch64.reg to DefPrefixPath/drive_c/ from FlatRegPatch.
-//
-//Value type mapping:
-//  null    → ""              (empty string, deletes value if already present in Wine)
-//  bool    → dword:00000001 / dword:00000000
-//  int     → dword:XXXXXXXX  (8-digit hex)
-//  string starting with "dword:" or "hex:" → written verbatim (pre-formatted by caller)
-//  other string → double-quoted with backslashes escaped as \\
-//
-//Root key abbreviations (HKLM, HKCU) are expanded to full names for .reg file compatibility.
-bool ContainerWrapper::CreateRegPatchFiles(struct ContainerParams &ContainerParams)
-{
-    //Expands HKLM/HKCU short forms to the full registry root key names required by regedit.
-    auto normalizeRootKey = [](std::string path) {
-        if (path.rfind("HKLM", 0) == 0) path.replace(0, 4, "HKEY_LOCAL_MACHINE");
-        else if (path.rfind("HKCU", 0) == 0) path.replace(0, 4, "HKEY_CURRENT_USER");
-        return path;
-    };
-
-    auto writeArch = [&](const std::string& arch) -> bool
-    {
-        const std::filesystem::path filePath = ContainerParams.TempPath / "DEFPREFIX" / "drive_c" / ("RegPatch" + arch + ".reg");
-        std::filesystem::create_directories(filePath.parent_path());
-
-        std::ofstream out(filePath, std::ios::out | std::ios::trunc);
-        if (!out) return false;
-
-        // Header
-        out << "Windows Registry Editor Version 5.00\n\n";
-
-        // Iterate all registry paths
-        for (const auto& [rawPath, keySet] :
-             ContainerParams.FlatRegPatch[arch].items())
-        {
-            std::string regPath = normalizeRootKey(rawPath);
-            out << "[" << regPath << "]\n";
-
-            // If keySet is null, just create the key (no values)
-            if (keySet.is_object())
-            {
-                for (const auto& [key, value] : keySet.items())
-                {
-                    out << "\"" << key << "\"=";
-
-                    if (value.is_null())
-                    {
-                        out << "\"\""; // empty string for null
-                    }
-                    else if (value.is_boolean())
-                    {
-                        out << "dword:" << (value.get<bool>() ? "00000001" : "00000000");
-                    }
-                    else if (value.is_number_integer() || value.is_number_unsigned())
-                    {
-                        out << "dword:"
-                            << std::hex << std::setw(8) << std::setfill('0')
-                            << value.get<uint32_t>()
-                            << std::dec;
-                    }
-                    else if (value.is_string())
-                    {
-                        std::string s = value.get<std::string>();
-
-                        // Already a literal (dword: or hex:) → write as-is
-                        if (s.rfind("dword:", 0) == 0 || s.rfind("hex:", 0) == 0)
-                        {
-                            out << s;
-                        }
-                        else
-                        {
-                            //Escape backslashes so the .reg parser sees single backslashes.
-                            std::string escaped;
-                            for (char c : s)
-                                escaped += (c == '\\') ? "\\\\" : std::string(1, c);
-                            out << "\"" << escaped << "\"";
-                        }
-                    }
-
-                    out << "\n";
-                }
-            }
-
-            out << "\n"; // blank line between keys
-        }
-
-        return true;
-    };
-
-    // Write both 32-bit and 64-bit patches
-    return writeArch("32") && writeArch("64");
-}
-
-//Imports the two generated .reg files into the Wine prefix using `reg import`.
-//LD_LIBRARY_PATH is removed to prevent system libraries from shadowing Wine's own;
-//GAMEID=0 tells umu-run to use a generic (non-Steam) Wine session for the import.
-bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParams)
-{
-    LogOut("ContainerWrapper::MergeRegPatchFiles", "Merging RegPatchFiles.");
-
-    // Prepare environment
-    QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment();
-    ProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.DefPrefixPath));
-    ProcessEnvironment.insert("GAMEID", "0");
-    ProcessEnvironment.remove("LD_LIBRARY_PATH");
-
-    int Merge32Complete = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch32.reg"}, ProcessEnvironment);
-    LogOut("ContainerWrapper::MergeRegPatchFiles", "Merged RegPatch32.reg. EXIT CODE: " + std::to_string(Merge32Complete));
-    int Merge64Complete = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", ContainerParams.DefPrefixPath / "drive_c" / "RegPatch64.reg"}, ProcessEnvironment);
-    LogOut("ContainerWrapper::MergeRegPatchFiles", "Merged RegPatch64.reg. EXIT CODE: " + std::to_string(Merge64Complete));
-    return true;
-}
-
-//Applies OVERRIDE:true RegEdit subcomponents directly into the mounted runtime.
-//Called post-MountVFS so the values land in the RW WRITELAYER, taking precedence over
-//both DEFPREFIX and any previously COW'd registry state from prior game sessions.
+//Applies OVERRIDE:true RegEdit subcomponents into the mounted runtime hives, post-MountVFS. Loading
+//RuntimePath reads the effective union view (DEFPREFIX shadowed by any persisted seed); saving it
+//back COWs the whole hive file into the RW WRITELAYER (file-level union shadowing), so the override
+//values win over DEFPREFIX and prior COW state — matching the former `reg import` outcome. No wine
+//runs on RuntimePath before launch, so no wineserver quiesce is needed here.
 bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerParams)
 {
-    //Collect OVERRIDE:true RegEdit entries into a temporary flat patch.
-    nlohmann::ordered_json OverridePatch = nlohmann::ordered_json::object();
-    bool AnyOverride = false;
+    if (!HasRegEdits(ContainerParams, /*WantOverride=*/true)) return true; // no overrides → leave hives untouched
 
-    auto normalizeRootKey = [](std::string path) {
-        if (path.rfind("HKLM", 0) == 0) path.replace(0, 4, "HKEY_LOCAL_MACHINE");
-        else if (path.rfind("HKCU", 0) == 0) path.replace(0, 4, "HKEY_CURRENT_USER");
-        return path;
-    };
+    LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Applying OVERRIDE RegEdits to mounted runtime hives.");
 
-    for (auto &Sub : ContainerParams.SubComponentsArray)
+    RegistryWrapper RW;
+    RW.LoadPrefix(ContainerParams.RuntimePath);
+    RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/true);
+    if (!RW.SavePrefix(ContainerParams.RuntimePath))
     {
-        if (Sub.value("TYPE", std::string()) != "RegEdit") continue;
-        if (!Sub.value("OVERRIDE", false)) continue;
-        AnyOverride = true;
-        std::string Arch    = Sub.value("ARCHITECTURE", std::string("32"));
-        std::string RegPath = Sub.value("REGPATH", std::string());
-        if (RegPath.empty()) continue;
-        if (Sub.contains("KEYVALUES") && Sub["KEYVALUES"].is_object())
-            for (auto &[K, V] : Sub["KEYVALUES"].items())
-                OverridePatch[Arch][RegPath][K] = V;
-        else
-            OverridePatch[Arch][RegPath] = nullptr;
+        LogErr("ContainerWrapper::ApplyOverrideRegEdits", "Failed to write runtime hives.");
+        return false;
     }
-
-    if (!AnyOverride) return true;
-    LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Applying OVERRIDE RegEdits to runtime...");
-
-    //Write and import one .reg file per architecture.
-    for (const std::string &Arch : {"32", "64"})
-    {
-        if (!OverridePatch.contains(Arch)) continue;
-        std::filesystem::path RegFile = ContainerParams.RuntimePath / "drive_c" / ("OverridePatch" + Arch + ".reg");
-        {
-            std::ofstream Out(RegFile, std::ios::out | std::ios::trunc);
-            if (!Out) { LogErr("ContainerWrapper::ApplyOverrideRegEdits", "Could not write " + RegFile.string()); continue; }
-            Out << "Windows Registry Editor Version 5.00\n\n";
-            for (auto &[RawPath, KeySet] : OverridePatch[Arch].items())
-            {
-                Out << "[" << normalizeRootKey(RawPath) << "]\n";
-                if (KeySet.is_object())
-                    for (auto &[Key, Value] : KeySet.items())
-                    {
-                        Out << "\"" << Key << "\"=";
-                        if      (Value.is_null())    Out << "\"\"";
-                        else if (Value.is_boolean()) Out << "dword:" << (Value.get<bool>() ? "00000001" : "00000000");
-                        else if (Value.is_number_integer() || Value.is_number_unsigned())
-                            Out << "dword:" << std::hex << std::setw(8) << std::setfill('0') << Value.get<uint32_t>() << std::dec;
-                        else if (Value.is_string())
-                        {
-                            std::string S = Value.get<std::string>();
-                            if (S.rfind("dword:", 0) == 0 || S.rfind("hex:", 0) == 0) Out << S;
-                            else { std::string Esc; for (char c : S) Esc += (c == '\\') ? "\\\\" : std::string(1,c); Out << "\"" << Esc << "\""; }
-                        }
-                        Out << "\n";
-                    }
-                Out << "\n";
-            }
-        }
-
-        QProcessEnvironment Env = QProcessEnvironment::systemEnvironment();
-        Env.insert("WINEPREFIX", QString::fromStdString(ContainerParams.RuntimePath));
-        Env.insert("GAMEID", "0");
-        Env.remove("LD_LIBRARY_PATH");
-        int ExitCode = RunCommand(ContainerParams.RunnerExecutable, {"reg", "import", RegFile}, Env);
-        LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Imported OverridePatch" + Arch + ".reg, exit=" + std::to_string(ExitCode));
-        std::filesystem::remove(RegFile);
-    }
-
+    LogSucc("ContainerWrapper::ApplyOverrideRegEdits", "OVERRIDE RegEdits applied to runtime.");
     return true;
 }
 
