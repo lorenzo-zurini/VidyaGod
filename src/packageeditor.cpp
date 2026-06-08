@@ -114,7 +114,8 @@ void PackageEditor::on_SaveButton_clicked()
 
 //Decomposes the tagged assembled MANIFESTJSON back into one document per fragment file.
 //Routing: each subgame/component/customvar/runner and each variant carries a "__FILE__" tag.
-//Top-level identity (PACKAGE*) and PERSIST go to IdentityFile.
+//Top-level identity (PACKAGE* + HOST_PLATFORM) goes to IdentityFile. (Persistence is no longer a
+//top-level object — it lives in PersistDir/PersistFile/RegPersist subcomponents.)
 std::map<QString, nlohmann::ordered_json> PackageEditor::DecomposeByFile()
 {
     auto Strip = [](nlohmann::ordered_json E) { E.erase("__FILE__"); return E; };
@@ -131,8 +132,8 @@ std::map<QString, nlohmann::ordered_json> PackageEditor::DecomposeByFile()
 
     auto &M = *MANIFESTJSON;
 
-    // Identity (incl. HOST_PLATFORM) + PERSIST → identity file.
-    for (const char *Key : {"PACKAGENAME", "PACKAGEUID", "PACKAGEVERSION", "HOST_PLATFORM", "PERSIST"})
+    // Identity (incl. HOST_PLATFORM) → identity file.
+    for (const char *Key : {"PACKAGENAME", "PACKAGEUID", "PACKAGEVERSION", "HOST_PLATFORM"})
         if (M.contains(Key)) Docs[Ident][Key] = M[Key];
 
     // RUNNERS (flat array of runner objects, each tagged).
@@ -463,7 +464,7 @@ bool PackageEditor::BuildUI()
         for (auto Item : (*PackageEditor::MANIFESTJSON).items())
         {
             //This section edits only top-level SCALAR fields (identity). Structured keys
-            //(GAMES/COMPONENTS/RUNNERS/PERSIST) have their own tabs, and internal markers
+            //(GAMES/COMPONENTS/RUNNERS) have their own tabs, and internal markers
             //(e.g. __VG_ERRORS__) are hidden — skip all of them.
             if (Item.value().is_structured()) continue;
             if (Item.key().rfind("__", 0) == 0) continue;
@@ -957,92 +958,9 @@ bool PackageEditor::BuildUI()
         PackageEditorTabWidget->addTab(ManifestTabWidget, "MANIFEST");
 
 
-    // PERSIST TAB
-    {
-        QWidget * PTabWidget = new QWidget(PackageEditorTabWidget);
-        QVBoxLayout * PTabLayout = new QVBoxLayout(PTabWidget);
-        PTabWidget->setLayout(PTabLayout);
-
-        QScrollArea * PScroll = new QScrollArea(PTabWidget);
-        PScroll->setWidgetResizable(true);
-        PScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-        PTabLayout->addWidget(PScroll);
-
-        QWidget * PContents = new QWidget();
-        QVBoxLayout * PLayout = new QVBoxLayout(PContents);
-        PContents->setLayout(PLayout);
-        PScroll->setWidget(PContents);
-
-        if (!(*MANIFESTJSON).contains("PERSIST") || !(*MANIFESTJSON)["PERSIST"].is_object())
-            (*MANIFESTJSON)["PERSIST"] = nlohmann::ordered_json::object();
-        auto &P = (*MANIFESTJSON)["PERSIST"];
-        bool PAll = P.value("ALL", false);
-        bool PReg = P.value("REGISTRY", false);
-
-        // ALL — whole-overlay persistence (subsumes the rest)
-        QCheckBox * AllCheck = new QCheckBox("Persist the ENTIRE runtime overlay (everything survives — old behavior)", PContents);
-        AllCheck->setChecked(PAll);
-        QObject::connect(AllCheck, &QCheckBox::toggled, this, [this, AllCheck](){
-            (*MANIFESTJSON)["PERSIST"]["ALL"] = AllCheck->isChecked();
-            SaveManifestJSON(); BuildUI();
-        });
-        PLayout->addWidget(AllCheck);
-
-        // REGISTRY — persist the 3 reg files
-        QCheckBox * RegCheck = new QCheckBox("Persist registry (user.reg / system.reg / userdef.reg)", PContents);
-        RegCheck->setChecked(PReg);
-        RegCheck->setEnabled(!PAll);
-        QObject::connect(RegCheck, &QCheckBox::toggled, this, [this, RegCheck](){
-            (*MANIFESTJSON)["PERSIST"]["REGISTRY"] = RegCheck->isChecked();
-            SaveManifestJSON(); RefreshJSONView();
-        });
-        PLayout->addWidget(RegCheck);
-
-        // DIRS — bind-mounted leaf save folders
-        QGroupBox * DirsBox = new QGroupBox("Persist Directories — game-created leaf save folders, relative to the runtime root", PContents);
-        DirsBox->setEnabled(!PAll);
-        QVBoxLayout * DirsLayout = new QVBoxLayout(DirsBox);
-        DirsBox->setLayout(DirsLayout);
-
-        if (!P.contains("DIRS") || !P["DIRS"].is_array())
-            (*MANIFESTJSON)["PERSIST"]["DIRS"] = nlohmann::ordered_json::array();
-        auto &Dirs = (*MANIFESTJSON)["PERSIST"]["DIRS"];
-        for (int di = 0; di < (int)Dirs.size(); di++)
-        {
-            QHBoxLayout * DirRow = new QHBoxLayout();
-            QLineEdit * DirEdit = new QLineEdit(DirsBox);
-            DirEdit->setPlaceholderText("drive_c/users/steamuser/Saved Games/<game>");
-            DirEdit->setProperty("JSONPath", QString("/PERSIST/DIRS/%1").arg(di));
-            if (Dirs[di].is_string())
-                DirEdit->setText(QString::fromStdString(std::string(Dirs[di])));
-            QObject::connect(DirEdit, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
-
-            QPushButton * DirDel = new QPushButton("✕", DirsBox);
-            DirDel->setFixedWidth(28);
-            QObject::connect(DirDel, &QPushButton::clicked, this, [this, di](){
-                (*MANIFESTJSON)["PERSIST"]["DIRS"].erase(di);
-                SaveManifestJSON(); BuildUI();
-            });
-            DirRow->addWidget(DirEdit); DirRow->addWidget(DirDel);
-            DirsLayout->addLayout(DirRow);
-        }
-        QPushButton * AddDirBtn = new QPushButton("+ Add Directory", DirsBox);
-        QObject::connect(AddDirBtn, &QPushButton::clicked, this, [this](){
-            (*MANIFESTJSON)["PERSIST"]["DIRS"].push_back("");
-            SaveManifestJSON(); BuildUI();
-        });
-        DirsLayout->addWidget(AddDirBtn);
-        PLayout->addWidget(DirsBox);
-
-        // FILES / KEYS — reserved for the future routing FUSE
-        QLabel * SoonLabel = new QLabel("PERSIST.FILES (regex) and PERSIST.KEYS (registry keys) — coming soon (custom routing FUSE).", PContents);
-        SoonLabel->setEnabled(false);
-        SoonLabel->setWordWrap(true);
-        PLayout->addWidget(SoonLabel);
-
-        PLayout->addStretch();
-        PackageEditorTabWidget->addTab(PTabWidget, "PERSIST");
-    }
+    // Persistence is no longer a top-level tab — it is declared at specific points as
+    // PersistDir / PersistFile / RegPersist subcomponents inside components (see the component
+    // "+ Subcomponent" menu). When a package declares none, the whole runtime overlay persists.
 
     // RUNNERS TAB — flat array of first-class runners (each routed to its fragment file).
     {
@@ -1357,6 +1275,10 @@ bool PackageEditor::BuildUI()
                 AddSubComponentMenu->addAction("DllOverride",        this, &PackageEditor::AddDllOverride);
                 AddSubComponentMenu->addAction("FileEdit",           this, &PackageEditor::AddFileEdit);
                 AddSubComponentMenu->addSeparator();
+                AddSubComponentMenu->addAction("PersistDir",         this, &PackageEditor::AddPersistDir);
+                AddSubComponentMenu->addAction("PersistFile",        this, &PackageEditor::AddPersistFile);
+                AddSubComponentMenu->addAction("RegPersist",         this, &PackageEditor::AddRegPersist);
+                AddSubComponentMenu->addSeparator();
                 AddSubComponentMenu->addAction("CustomVar",          this, &PackageEditor::AddCustomVar);
                 AddSubComponentButton->setMenu(AddSubComponentMenu);
                 SubComponentsToolbarLayout->addWidget(AddSubComponentButton);
@@ -1597,6 +1519,38 @@ bool PackageEditor::BuildUI()
                         IndividualSubComponentGroupBoxLayout->addWidget(FEField, ferow, 1);
                         ferow++;
                     }
+                }
+                else if (SubComponentType == "PersistDir" || SubComponentType == "PersistFile")
+                {
+                    // Runtime-root-relative PATH of the directory / file that should survive a session.
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("PATH:"), 1, 0);
+                    QLineEdit * PathField = new QLineEdit(IndividualSubComponentGroupBox);
+                    PathField->setPlaceholderText(SubComponentType == "PersistDir"
+                        ? "drive_c/users/steamuser/Saved Games/<game>"
+                        : "drive_c/users/steamuser/Documents/<game>/config.ini");
+                    PathField->setProperty("JSONPath", QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/PATH").arg(i).arg(j));
+                    auto &PSub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                    if (PSub.contains("PATH") && PSub["PATH"].is_string())
+                        PathField->setText(QString::fromStdString(std::string(PSub["PATH"])));
+                    QObject::connect(PathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(PathField, 1, 1, 1, 2);
+
+                    QLabel * Hint = new QLabel(SubComponentType == "PersistDir"
+                        ? "Bind-mounted live from the package's USERDATA store."
+                        : "Seeded before launch and captured on exit (copy, like the registry).",
+                        IndividualSubComponentGroupBox);
+                    Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
+                    Hint->setWordWrap(true);
+                    IndividualSubComponentGroupBoxLayout->addWidget(Hint, 2, 1, 1, 2);
+                }
+                else if (SubComponentType == "RegPersist")
+                {
+                    // No fields — its mere presence in the recipe makes the Wine registry persist.
+                    // (Per-key scoping is planned once the registry class is rewritten.)
+                    QLabel * Hint = new QLabel("Persists the whole prefix registry (user/system/userdef.reg). Per-key scoping coming with the registry rewrite.", IndividualSubComponentGroupBox);
+                    Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
+                    Hint->setWordWrap(true);
+                    IndividualSubComponentGroupBoxLayout->addWidget(Hint, 1, 1, 1, 2);
                 }
                 else if (SubComponentType == "CustomVar")
                 {
@@ -2390,6 +2344,33 @@ void PackageEditor::AddCustomVar()
     (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
         {"TYPE", "CustomVar"}, {"KEY", ""}, {"LABEL", ""}, {"DEFAULT", ""}, {"VARTYPE", "string"}, {"DISPLAY", true}
     }));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+//Persistence subcomponents — declared at the point where a component introduces the state that
+//should survive. Any one of these switches the package from whole-runtime persist (the default when
+//none are present) to selective persistence (see ContainerWrapper::DerivePersistence).
+void PackageEditor::AddPersistDir()
+{
+    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "PersistDir"}, {"PATH", ""}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+void PackageEditor::AddPersistFile()
+{
+    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "PersistFile"}, {"PATH", ""}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+void PackageEditor::AddRegPersist()
+{
+    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "RegPersist"}}));
     SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 

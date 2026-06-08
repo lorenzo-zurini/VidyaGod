@@ -475,15 +475,11 @@ void PreLaunchWindow::onVariantChanged()
 // ---------------------------------------------------------------------------
 void PreLaunchWindow::RebuildCustomVarPickers()
 {
-    // Clear existing picker rows.
+    // Clear existing picker rows (each row is now a per-component group box).
     while (CustomVarForm->rowCount() > 0)
         CustomVarForm->removeRow(0);
 
-    if (!MANIFESTJSON || !MANIFESTJSON->contains("CUSTOMVARS") || !(*MANIFESTJSON)["CUSTOMVARS"].is_array())
-    {
-        CustomVarGroup->setVisible(false);
-        return;
-    }
+    if (!MANIFESTJSON) { CustomVarGroup->setVisible(false); return; }
 
     // Resolve the selected variant's ENDPOINTS.
     std::string SelVariantID;
@@ -531,12 +527,25 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
     // CustomVars are subcomponents (TYPE:"CustomVar"), namespaced %COMPONENTID.KEY%. Walk the recipe
     // components and surface each displayable var that is actually referenced elsewhere in the chain.
+    // Pickers are grouped into a box per owning component (created lazily, only if it has a var).
     for (const std::string &CompID : TmpParams.Recipe)
     {
         int CIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, CompID);
         if (CIdx == -1) continue;
         auto &Comp = (*MANIFESTJSON)["COMPONENTS"][CIdx];
         if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+
+        QGroupBox *  CompBox  = nullptr;
+        QFormLayout * CompForm = nullptr;
+        std::string CompTitle = Comp.contains("NAME") && Comp["NAME"].is_string() && !std::string(Comp["NAME"]).empty()
+                                ? std::string(Comp["NAME"]) : CompID;
+        auto EnsureCompBox = [&]() {
+            if (CompBox) return;
+            CompBox  = new QGroupBox(QString::fromStdString(CompTitle), CustomVarGroup);
+            CompForm = new QFormLayout(CompBox);
+            CompBox->setLayout(CompForm);
+        };
+
         for (auto &CV : Comp["SUBCOMPONENTS"])
         {
         if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
@@ -567,6 +576,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         }
 
         AnyVisible = true;
+        EnsureCompBox();
         std::string VarType = CV.value("VARTYPE", std::string("string"));
         QString Label       = QString::fromStdString(CV.value("LABEL", Key));
 
@@ -585,7 +595,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             QLineEdit * Field = new QLineEdit(CustomVarGroup);
             Field->setProperty("CVKey", QString::fromStdString(Key));
             Field->setText(QString::fromStdString(InitialValue));
-            CustomVarForm->addRow(Label + ":", Field);
+            CompForm->addRow(Label + ":", Field);
         }
         else if (VarType == "options" && CV.contains("OPTIONS") && CV["OPTIONS"].is_array())
         {
@@ -603,7 +613,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             for (int k = 0; k < Combo->count(); k++)
                 if (Combo->itemData(k).toString().toStdString() == InitialValue)
                 { Combo->setCurrentIndex(k); break; }
-            CustomVarForm->addRow(Label + ":", Combo);
+            CompForm->addRow(Label + ":", Combo);
         }
         else if (VarType == "dword" || VarType == "qword" || VarType == "number")
         {
@@ -613,7 +623,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             // dword caps at 2^32-1; for QSpinBox (int) use INT_MAX. qword/number use INT_MAX too.
             Spin->setMaximum(VarType == "dword" ? 2147483647 : 2147483647);
             try { Spin->setValue(std::stoi(InitialValue)); } catch (...) { Spin->setValue(0); }
-            CustomVarForm->addRow(Label + ":", Spin);
+            CompForm->addRow(Label + ":", Spin);
         }
         else if (VarType == "bool")
         {
@@ -622,16 +632,19 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             std::string lower = InitialValue;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
             Check->setChecked(lower == "1" || lower == "true" || lower == "yes");
-            CustomVarForm->addRow(Label + ":", Check);
+            CompForm->addRow(Label + ":", Check);
         }
         else // string or unknown
         {
             QLineEdit * Field = new QLineEdit(CustomVarGroup);
             Field->setProperty("CVKey", QString::fromStdString(Key));
             Field->setText(QString::fromStdString(InitialValue));
-            CustomVarForm->addRow(Label + ":", Field);
+            CompForm->addRow(Label + ":", Field);
         }
         } // for each CustomVar subcomponent
+
+        // Add the component's box only if it ended up with at least one visible var.
+        if (CompBox) CustomVarForm->addRow(CompBox);
     } // for each recipe component
 
     CustomVarGroup->setVisible(AnyVisible);
@@ -666,63 +679,43 @@ void PreLaunchWindow::onLaunchClicked()
     // 2. Override with visible picker selections (covers DISPLAY:true vars).
     std::map<std::string, std::string> CollectedVars;
 
-    // Step 1: entrypoint seed for all vars (baseline, handles DISPLAY:false silently).
-    if (MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
+    // Step 1: variant FORCEVARS seed (keys are namespaced %COMPONENTID.KEY%). Everything not seeded
+    // or picked is left to the container to resolve (DEFAULT / random / USERSETTINGS).
+    if (MANIFESTJSON)
     {
-        // Get variant FORCEVARS seed.
         int SubgameIdx2 = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
         if (SubgameIdx2 != -1 && (*MANIFESTJSON)["GAMES"][SubgameIdx2].contains("VARIANTS"))
             for (auto &Var : (*MANIFESTJSON)["GAMES"][SubgameIdx2]["VARIANTS"])
                 if (Var.value("VARIANT_ID", std::string()) == SelectedVariantID && Var.contains("FORCEVARS"))
                     for (auto &[K, V] : Var["FORCEVARS"].items())
                         if (V.is_string()) CollectedVars[K] = std::string(V);
-
-        // Fill in DEFAULT for any key not covered by the seed.
-        // Skip random vars — they must not enter VariableOverrides at all so
-        // ResolveCustomVariables can perform the random pick unconditionally.
-        for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
-        {
-            std::string K = CV.value("KEY", std::string());
-            if (K.empty() || CollectedVars.count(K)) continue;
-            if (CV.value("VARTYPE", std::string()) == "random") continue;
-            CollectedVars[K] = CV.value("DEFAULT", std::string());
-        }
     }
 
-    // Step 2: visible picker widgets override for DISPLAY:true vars.
-    for (int row = 0; row < CustomVarForm->rowCount(); row++)
+    // Step 2: visible picker widgets (DISPLAY:true) override. Collected via findChildren since the
+    // pickers are nested in per-component group boxes. Each widget carries its namespaced CVKey.
+    std::map<std::string, std::string> PickerVars;
+    for (QWidget * W : CustomVarGroup->findChildren<QWidget*>())
     {
-        QLayoutItem * FieldItem = CustomVarForm->itemAt(row, QFormLayout::FieldRole);
-        if (!FieldItem) continue;
-        QWidget * W = FieldItem->widget();
-        if (!W) continue;
         QString Key = W->property("CVKey").toString();
         if (Key.isEmpty()) continue;
-        if (auto * CB  = qobject_cast<QComboBox*>(W))
-            CollectedVars[Key.toStdString()] = CB->currentData().toString().toStdString();
-        else if (auto * SP = qobject_cast<QSpinBox*>(W))
-            CollectedVars[Key.toStdString()] = std::to_string(SP->value());
-        else if (auto * CK = qobject_cast<QCheckBox*>(W))
-            CollectedVars[Key.toStdString()] = CK->isChecked() ? "1" : "0";
-        else if (auto * LE = qobject_cast<QLineEdit*>(W))
-            CollectedVars[Key.toStdString()] = LE->text().toStdString();
+        std::string Val;
+        if (auto * CB  = qobject_cast<QComboBox*>(W))      Val = CB->currentData().toString().toStdString();
+        else if (auto * SP = qobject_cast<QSpinBox*>(W))   Val = std::to_string(SP->value());
+        else if (auto * CK = qobject_cast<QCheckBox*>(W))  Val = CK->isChecked() ? "1" : "0";
+        else if (auto * LE = qobject_cast<QLineEdit*>(W))  Val = LE->text().toStdString();
+        else continue;
+        PickerVars[Key.toStdString()] = Val;
+        CollectedVars[Key.toStdString()] = Val;
     }
 
-    // Auto-save displayed CustomVar picker values to USERSETTINGS["VARIABLES"] unconditionally.
-    // This persists the user's (or randomly pre-populated) selection so it is pre-filled on
-    // the next launch, taking precedence over DEFAULT and random picks.
-    if (!PackageUID.empty() && MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
+    // Auto-save the displayed picker values to USERSETTINGS["VARIABLES"] (namespaced keys) so they
+    // pre-fill on the next launch, taking precedence over DEFAULT and random picks.
+    if (!PackageUID.empty() && !PickerVars.empty())
     {
         auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
                                        ? US["VARIABLES"] : nlohmann::ordered_json::object();
-        for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
-        {
-            if (!CV.value("DISPLAY", true)) continue;
-            std::string K = CV.value("KEY", std::string());
-            if (K.empty() || !CollectedVars.count(K)) continue;
-            Vars[K] = CollectedVars.at(K);
-        }
+        for (const auto &[K, V] : PickerVars) Vars[K] = V;
         ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
         QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
         JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));

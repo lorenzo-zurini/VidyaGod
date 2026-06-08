@@ -82,6 +82,9 @@ private slots:
     void AddDllOverride();
     void AddFileEdit();
     void AddCustomVar();
+    void AddPersistDir();
+    void AddPersistFile();
+    void AddRegPersist();
     void FinalizeComponent();
     void MoveComponentUp();
     void MoveComponentDown();

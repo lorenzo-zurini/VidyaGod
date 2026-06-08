@@ -79,10 +79,11 @@ public:
     bool ReadOnlyVFS = false;                                       //SET — if true, WRITELAYER is not prepended to VFSString
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
-    //Persistence (from the top-level PERSIST manifest object — see DeriveContainerParams):
-    bool PersistAll = false;                                        //PERSIST.ALL — RW union branch IS the durable UserDataPath (everything persists)
-    bool PersistRegistry = false;                                   //PERSIST.REGISTRY — persist user.reg/system.reg/userdef.reg
-    std::vector<std::string> PersistDirs;                           //PERSIST.DIRS — runtime-root-relative leaf dirs bind-mounted from UserDataPath
+    //Persistence (derived from PersistDir/PersistFile/RegPersist subcomponents — see DerivePersistence):
+    bool PersistAll = false;                                        //DEFAULT — no persist subcomponents declared: RW union branch IS the durable UserDataPath (whole-runtime persist)
+    bool PersistRegistry = false;                                   //a RegPersist subcomponent is present — persist user.reg/system.reg/userdef.reg
+    std::vector<std::string> PersistDirs;                           //PersistDir subcomponents — runtime-root-relative leaf dirs bind-mounted from UserDataPath
+    std::vector<std::string> PersistFiles;                          //PersistFile subcomponents — runtime-root-relative single files seeded/captured via UserDataPath
 
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
@@ -226,8 +227,14 @@ public:
     static bool ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
     //Collects all SUBCOMPONENTS from components in the Recipe into SubComponentsArray.
     //Performs %VARIABLE% substitution on each subcomponent's JSON at collection time.
-    //CustomVar subcomponents are skipped here — they are resolved by ResolveCustomVariables.
+    //CustomVar and Persist* subcomponents are skipped here (handled by ResolveCustomVariables /
+    //DerivePersistence respectively).
     static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    //Walks the Recipe and derives persistence from PersistDir/PersistFile/RegPersist subcomponents
+    //into PersistDirs/PersistFiles/PersistRegistry. When NONE are declared, sets PersistAll=true
+    //(whole-runtime persist — the durable UserDataPath becomes the union's RW branch). PATH strings
+    //are %VARIABLE%-substituted. Must run after ResolveCustomVariables and before BuildContainerRuntime.
+    static bool DerivePersistence(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Fills all derived ContainerParams fields from MANIFEST and GlobalConfigJSON.
     //Must run after DecideComponent so platform and subgame index are known.
     //Resolves runner via USERSETTINGS > RECOMMENDED_RUNNER > first available fallback.
@@ -246,7 +253,7 @@ public:
     static bool FinalizeVFSString(struct ContainerParams &ContainerParams);
     //Mounts the finalized VFSString onto RuntimePath using unionfs with cow + uid=1000.
     static bool MountVFS(struct ContainerParams &ContainerParams);
-    //Bind-mounts each PERSIST.DIRS entry from UserDataPath onto its runtime-root-relative path,
+    //Bind-mounts each PersistDir entry from UserDataPath onto its runtime-root-relative path,
     //so writes to those subtrees land directly in the durable package store (copy-free).
     //Mountpoints are registered in CleanupPersistPaths for the non-lazy unmount safeguard.
     //Must run AFTER MountVFS. No-op when PersistAll (the whole overlay is already durable).
@@ -257,6 +264,12 @@ public:
     //Copies RuntimePath/{system,user,userdef}.reg into UserDataPath/__REGISTRY__/ on Cleanup,
     //capturing the session's registry. Must run BEFORE the runtime is unmounted/wiped.
     static bool CapturePersistRegistry(struct ContainerParams &ContainerParams);
+    //Seeds each previously-persisted PersistFile (UserDataPath/<rel>) into WriteLayerPath/<rel>
+    //before MountVFS so it shadows the lower layers. No-op when PersistAll or none persisted yet.
+    static bool SeedPersistFiles(struct ContainerParams &ContainerParams);
+    //Copies each PersistFile from RuntimePath/<rel> into UserDataPath/<rel> on Cleanup, capturing
+    //the session's writes. Must run BEFORE the runtime is unmounted/wiped. No-op when PersistAll.
+    static bool CapturePersistFiles(struct ContainerParams &ContainerParams);
     //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths
     //differ only in case — these cause unpredictable behavior under Wine.
     static bool CheckCaseConflicts(std::filesystem::path RuntimePath);

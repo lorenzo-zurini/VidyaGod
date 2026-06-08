@@ -111,6 +111,13 @@ bool ContainerWrapper::InitializeContainer()
         return false;
     }
     LogSucc("ContainerWrapper::InitializeContainer", "ContainerWrapper::BuildSubComponentsArray successful.");
+
+    if(!this->DerivePersistence(this->MANIFESTJSON, this->ContainerParams))
+    {
+        LogErr("ContainerWrapper::InitializeContainer", "ContainerWrapper::DerivePersistence failed, aborting....");
+        return false;
+    }
+    LogSucc("ContainerWrapper::InitializeContainer", "ContainerWrapper::DerivePersistence successful.");
     /*
     MOVE HERE: VARIABLE SUBSTITUTION FOR ARGS
     VARIABLE SUBSTITUTUION FOR SUBCOMPONENTSARRAY
@@ -166,9 +173,14 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
 
     //Seed any persisted registry into the ephemeral WRITELAYER so it shadows DEFPREFIX.
-    //No-op under PERSIST.ALL (durable RW branch already holds the reg files).
+    //No-op under PersistAll (durable RW branch already holds the reg files).
     if (ContainerParams.PersistRegistry)
         this->SeedPersistRegistry(this->ContainerParams);
+
+    //Seed any persisted PersistFiles into the WRITELAYER so they shadow their lower layers.
+    //No-op under PersistAll or when none are declared.
+    if (!ContainerParams.PersistFiles.empty())
+        this->SeedPersistFiles(this->ContainerParams);
 
     //Mount all filesystem subcomponents into TEMP, then assemble and mount the final union.
     this->PreMountFilesystemComponents(this->ContainerParams, WineMode);
@@ -413,6 +425,68 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     return true;
 }
 
+//Derives the persistence policy from the Recipe's PersistDir/PersistFile/RegPersist subcomponents.
+//Persistence is declared "at specific points" — a component that introduces a save folder, a config
+//file, or registry state also declares that it should survive a session by carrying the matching
+//Persist* subcomponent.
+//
+//  PersistDir   { "TYPE":"PersistDir",  "PATH":"<runtime-root-relative dir>"  } → bind-mounted live
+//  PersistFile  { "TYPE":"PersistFile", "PATH":"<runtime-root-relative file>" } → seeded/captured by copy
+//  RegPersist   { "TYPE":"RegPersist" }                                        → user.reg/system.reg/userdef.reg
+//
+//DEFAULT (no Persist* subcomponent anywhere in the Recipe): PersistAll=true — the durable
+//UserDataPath becomes the union's RW branch and the entire overlay survives. Declaring ANY Persist*
+//subcomponent switches to selective persistence (ephemeral WRITELAYER + only the declared targets).
+//PATH strings are %VARIABLE%-substituted, so resolved CustomVars / system tokens are available.
+bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+{
+    ContainerParams.PersistDirs.clear();
+    ContainerParams.PersistFiles.clear();
+    ContainerParams.PersistRegistry = false;
+    bool AnyDeclared = false;
+
+    LogOut("ContainerWrapper::DerivePersistence", "Scanning Recipe for Persist* subcomponents...");
+    for (const std::string &CompID : ContainerParams.Recipe)
+    {
+        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
+        if (Idx == -1) continue;
+        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
+        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : Comp["SUBCOMPONENTS"])
+        {
+            if (!S.is_object()) continue;
+            std::string Type = S.value("TYPE", std::string());
+            if (Type == "PersistDir" || Type == "PersistFile")
+            {
+                std::string Path = S.value("PATH", std::string());
+                ContainerWrapper::StringVariableSubstitution(Path, ContainerParams.GetVariablesMap());
+                if (Path.empty()) { LogWarn("ContainerWrapper::DerivePersistence", "  " + Type + " with empty PATH (skipped)."); continue; }
+                AnyDeclared = true;
+                if (Type == "PersistDir") { ContainerParams.PersistDirs.push_back(Path);  LogOut("ContainerWrapper::DerivePersistence", "  PersistDir  " + Path); }
+                else                      { ContainerParams.PersistFiles.push_back(Path); LogOut("ContainerWrapper::DerivePersistence", "  PersistFile " + Path); }
+            }
+            else if (Type == "RegPersist")
+            {
+                AnyDeclared = true;
+                ContainerParams.PersistRegistry = true;
+                //FUTURE: once the registry class is rewritten to address individual keys, an optional
+                //"KEY" field here will scope persistence to that subtree. For now RegPersist always
+                //persists the whole prefix registry (user/system/userdef.reg).
+                LogOut("ContainerWrapper::DerivePersistence", "  RegPersist (whole-registry persist)");
+            }
+        }
+    }
+
+    //No selective persist points declared → persist the whole runtime overlay (durable RW branch).
+    ContainerParams.PersistAll = !AnyDeclared;
+    LogSucc("ContainerWrapper::DerivePersistence",
+            "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
+            " REGISTRY=" + std::string(ContainerParams.PersistRegistry ? "true" : "false") +
+            " DIRS=" + std::to_string(ContainerParams.PersistDirs.size()) +
+            " FILES=" + std::to_string(ContainerParams.PersistFiles.size()));
+    return true;
+}
+
 //Returns all variants listed under SUBGAMES[SubgameID].VARIANTS.
 std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
@@ -527,8 +601,8 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
 //COMPONENTID appears in Recipe, and appends them to SubComponentsArray.
 //Variable substitution is applied to each subcomponent's JSON string at this point
 //so all downstream consumers receive already-expanded values.
-//CustomVar subcomponents are skipped — they are handled by ResolveCustomVariables.
-//MANIFEST order is preserved, which determines VFS layer stacking order.
+//CustomVar and Persist* subcomponents are skipped — they are handled by ResolveCustomVariables and
+//DerivePersistence. MANIFEST order is preserved, which determines VFS layer stacking order.
 bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     //Iterate in Recipe order (ancestor-first) so VFS layers are stacked correctly regardless
@@ -541,9 +615,14 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
         auto &Subs = MANIFESTJSON["COMPONENTS"][Idx]["SUBCOMPONENTS"];
         for (int j = 0; j < (int)Subs.size(); j++)
         {
-            //CustomVar subcomponents are not filesystem/registry ops — they were resolved into
-            //CustomVariables by ResolveCustomVariables. Skip them here.
-            if (Subs[j].is_object() && Subs[j].value("TYPE", std::string()) == "CustomVar") continue;
+            //CustomVar and Persist* subcomponents are not VFS/registry ops applied here — CustomVar
+            //is resolved by ResolveCustomVariables; PersistDir/PersistFile/RegPersist are consumed by
+            //DerivePersistence and the seed/capture/bind steps. Skip them all.
+            if (Subs[j].is_object())
+            {
+                std::string T = Subs[j].value("TYPE", std::string());
+                if (T == "CustomVar" || T == "PersistDir" || T == "PersistFile" || T == "RegPersist") continue;
+            }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
             ContainerWrapper::StringVariableSubstitution(SubJSON, ContainerParams.GetVariablesMap());
@@ -787,29 +866,8 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.UserDataPath                        = ContainerParams.PackagePath / "USERDATA";
     LogOut("ContainerWrapper::DeriveContainerParams", "UserDataPath: " + ContainerParams.UserDataPath.string());
 
-    //Parse the optional top-level PERSIST object. Absent → ALL/REGISTRY false, DIRS defaults below.
-    {
-        const nlohmann::ordered_json Persist = MANIFESTJSON.value("PERSIST", nlohmann::ordered_json::object());
-        ContainerParams.PersistAll      = Persist.value("ALL", false);
-        ContainerParams.PersistRegistry = Persist.value("REGISTRY", false);
-        ContainerParams.PersistDirs.clear();
-        if (Persist.contains("DIRS") && Persist["DIRS"].is_array())
-        {
-            for (const auto &D : Persist["DIRS"])
-                if (D.is_string() && !std::string(D).empty())
-                    ContainerParams.PersistDirs.push_back(D);
-        }
-        else
-        {
-            //Sane implicit default: a game-created leaf save folder that does not shadow the
-            //Wine user-profile skeleton (Documents/AppData) the way bind-mounting drive_c/users would.
-            ContainerParams.PersistDirs.push_back("drive_c/users/steamuser/Saved Games");
-        }
-        LogOut("ContainerWrapper::DeriveContainerParams",
-               "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
-               " REGISTRY=" + std::string(ContainerParams.PersistRegistry ? "true" : "false") +
-               " DIRS=" + std::to_string(ContainerParams.PersistDirs.size()));
-    }
+    //Persistence is no longer a top-level object — it is derived from PersistDir/PersistFile/
+    //RegPersist subcomponents in DerivePersistence (called after the Recipe is built).
 
     // Wine-specific: prefix lives under TEMP/DEFPREFIX, programs under drive_c/PackageUID
     // Other runners: ProgramPath is the root of the RUNTIME mount
@@ -1595,6 +1653,47 @@ bool ContainerWrapper::CapturePersistRegistry(struct ContainerParams &ContainerP
     return true;
 }
 
+//Seeds each PersistFile from its durable home (UserDataPath/<rel>) into WriteLayerPath/<rel> before
+//the union mounts, so the persisted file shadows the lower read-only layers. Single files are
+//copied (not bind-mounted): bindfs operates on directories, and copy mirrors the registry model.
+//No-op under PersistAll (the durable RW branch already holds everything) or when nothing is stored yet.
+bool ContainerWrapper::SeedPersistFiles(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll) return true; //durable RW branch already holds the files
+    std::error_code ec;
+    for (const std::string &Rel : ContainerParams.PersistFiles)
+    {
+        const std::filesystem::path SrcFile = ContainerParams.UserDataPath  / Rel; //durable source (in package)
+        if (!std::filesystem::exists(SrcFile)) continue;                            //nothing persisted yet
+        const std::filesystem::path DstFile = ContainerParams.WriteLayerPath / Rel; //shadow in the RW top layer
+        std::filesystem::create_directories(DstFile.parent_path(), ec);
+        std::filesystem::copy_file(SrcFile, DstFile, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) LogWarn("ContainerWrapper::SeedPersistFiles", "Could not seed " + Rel + ": " + ec.message());
+        else    LogOut("ContainerWrapper::SeedPersistFiles", "Seeded persisted file " + Rel);
+    }
+    return true;
+}
+
+//Captures each PersistFile by copying RuntimePath/<rel> into its durable home UserDataPath/<rel>.
+//Runs during Cleanup BEFORE the runtime is unmounted/wiped, mirroring CapturePersistRegistry.
+//No-op under PersistAll.
+bool ContainerWrapper::CapturePersistFiles(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll) return true; //already durable
+    std::error_code ec;
+    for (const std::string &Rel : ContainerParams.PersistFiles)
+    {
+        const std::filesystem::path SrcFile = ContainerParams.RuntimePath  / Rel; //session result in the mounted union
+        if (!std::filesystem::exists(SrcFile)) continue;                          //game never created it
+        const std::filesystem::path DstFile = ContainerParams.UserDataPath / Rel; //durable home (in package)
+        std::filesystem::create_directories(DstFile.parent_path(), ec);
+        std::filesystem::copy_file(SrcFile, DstFile, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) LogWarn("ContainerWrapper::CapturePersistFiles", "Could not capture " + Rel + ": " + ec.message());
+        else    LogOut("ContainerWrapper::CapturePersistFiles", "Captured file " + Rel);
+    }
+    return true;
+}
+
 //Walks DirectoryPath recursively, lowercasing every path and checking for duplicates.
 //Collisions mean two files differ only in case — problematic under Wine because its
 //filesystem emulation may resolve to the wrong file depending on access order.
@@ -1941,9 +2040,11 @@ bool ContainerWrapper::Cleanup()
 {
     std::error_code ec;
 
-    //1. Registry capture must read RUNTIME/*.reg before anything is unmounted.
+    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted.
     if (ContainerParams.PersistRegistry && !ContainerParams.PersistAll)
         CapturePersistRegistry(this->ContainerParams);
+    if (!ContainerParams.PersistFiles.empty() && !ContainerParams.PersistAll)
+        CapturePersistFiles(this->ContainerParams);
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
     bool DurableUnmountOk = true;

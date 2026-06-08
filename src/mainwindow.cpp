@@ -641,6 +641,9 @@ void MainWindow::BuildLibraryGameCards()
         std::vector<std::string> AsmWarn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(
                 std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"])), pm, AsmWarn)) continue;
+        //Only packages with games show in the library (the archetype). A pure-dependency or
+        //runner-only package contributes no cards.
+        if (!JSONOps::HasGames(pm)) continue;
         for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
             std::string sid = pm["GAMES"][j].contains("GAMEID") &&
                 !pm["GAMES"][j]["GAMEID"].is_null()
@@ -753,6 +756,10 @@ void MainWindow::on_AddGameButton_clicked()
         if (!JSONOps::AssembleManifest(path, m, AsmWarn)) { skipped++; continue; }
         if (m.contains("__VG_ERRORS__")) { // conflicting identities — not a single valid package
             LogWarn("MainWindow", "Skipping " + path.toStdString() + ": conflicting package identities.");
+            skipped++; continue;
+        }
+        if (!JSONOps::HasGames(m)) { // runner-only / pure-dependency package — not a library entry
+            LogWarn("MainWindow", "Skipping " + path.toStdString() + ": no games (not a library package).");
             skipped++; continue;
         }
         bool dup=false;

@@ -258,13 +258,20 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             std::unordered_set<std::string> VarKeys;
             if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
                 for (const auto &S : C["SUBCOMPONENTS"])
-                    if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
+                {
+                    if (!S.is_object()) continue;
+                    std::string T = S.value("TYPE", std::string());
+                    if (T == "CustomVar")
                     {
                         std::string K = S.value("KEY", std::string());
                         if (K.empty()) Warnings.push_back("Component '" + Id + "' has a CustomVar with no KEY");
                         else if (!VarKeys.insert(K).second)
                             Warnings.push_back("Component '" + Id + "' has duplicate CustomVar KEY '" + K + "'");
                     }
+                    // PersistDir/PersistFile need a runtime-root-relative PATH; RegPersist takes no fields.
+                    else if ((T == "PersistDir" || T == "PersistFile") && S.value("PATH", std::string()).empty())
+                        Warnings.push_back("Component '" + Id + "' has a " + T + " with an empty PATH");
+                }
         }
 
     // Dangling parents.
