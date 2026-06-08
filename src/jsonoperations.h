@@ -28,15 +28,28 @@ public:
     //Returns true on success, false if the file cannot be opened for writing.
     static bool SaveJSON(nlohmann::ordered_json * JSONDocument, QFile * JSONFile);
 
-    //LEGACY: Builds a flat SubComponentsArray from MANIFEST.json filtered by integer Recipe indices.
-    //Superseded by ContainerWrapper::BuildSubComponentsArray which uses string ComponentIDs.
-    //Kept for compatibility with older tooling.
-    static nlohmann::ordered_json GetSubComponents(QString MetaDataPath, QList<int> Recipe);
+    //MODULAR MANIFESTS
+    //Assembles a package's manifest from EVERY *.json file in PackageDir. Files are parsed and
+    //merged (alphabetical filename order) via MergeManifestInto. No file is privileged — identity
+    //and cross-file dependencies resolve in the merged result. Invalid/unreadable files are
+    //skipped with a warning. Returns true if at least one usable JSON was found.
+    static bool AssembleManifest(const QString &PackageDir, nlohmann::ordered_json &Out, std::vector<std::string> &Warnings);
 
-    //LEGACY: Performs %VARIABLE% substitution on all string values in OriginalArray
-    //using the Qt-based VariableValues map.
-    //Superseded by ContainerWrapper::StringVariableSubstitution which operates on raw strings.
-    static nlohmann::ordered_json ReplaceVariables(nlohmann::ordered_json OriginalArray, QMap<QString, QString> VariableValues);
+    //Recursively merges Overlay into Base. Objects merge key-by-key; arrays go through MergeArrays;
+    //differing scalars keep Base's value and append a "conflict" warning. Ctx is a dotted path used
+    //in warning messages.
+    static void MergeManifestInto(nlohmann::ordered_json &Base, const nlohmann::ordered_json &Overlay, const std::string &Ctx, std::vector<std::string> &Warnings);
+
+    //Merges two arrays. If ArrayKey has a known ID field (SUBGAMES→SUBGAMEID, COMPONENTS→COMPONENTID,
+    //VARIANTS→VARIANT_ID, CUSTOMVARS→KEY, RUNNERS platform arrays→NAME) and every element is an
+    //object carrying it, merges by ID (same ID → MergeManifestInto, new ID → append). Otherwise
+    //concatenates. Returns the merged array.
+    static nlohmann::ordered_json MergeArrays(const nlohmann::ordered_json &Base, const nlohmann::ordered_json &Overlay, const std::string &ArrayKey, const std::string &Ctx, std::vector<std::string> &Warnings);
+
+    //Validates an assembled manifest. Errors block launch (missing identity, dangling/cyclic
+    //PARENTCOMPONENT, dangling variant ENDPOINTS, conflicting duplicate COMPONENTIDs). Warnings are
+    //advisory (empty subgames/variants, multiple RECOMMENDED, etc.).
+    static void ValidateManifest(const nlohmann::ordered_json &Assembled, std::vector<std::string> &Errors, std::vector<std::string> &Warnings);
 };
 
 #endif // JSONOPERATIONS_H

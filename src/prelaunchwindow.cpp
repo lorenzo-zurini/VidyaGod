@@ -109,6 +109,14 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     struct ContainerParams Params(PackagePath, SubgameID, ComponentID);
     Params.VariableOverrides = this->VariableOverrides;
+    //Set the chosen variant AND runner BEFORE construction so DeriveContainerParams resolves the
+    //runner (and its ENDPOINTS) and CreateRecipe mounts them. No post-construction override needed.
+    Params.VariantID = this->VariantID;
+    Params.RunnerID  = this->RunnerID;
+    //Screen geometry was captured on the main thread (see onLaunchClicked) — DeriveContainerParams
+    //uses these instead of querying QGuiApplication from this worker thread.
+    Params.ScreenWidth  = this->ScreenWidth;
+    Params.ScreenHeight = this->ScreenHeight;
 
     ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, Params);
 
@@ -118,57 +126,8 @@ void LaunchThread::run()
         wrapper = LocalWrapper;
     }
 
-    // Apply runner override if one was selected by the user.
-    if (!SelectedRunner.is_null() && !SelectedRunner.empty())
-    {
-        LocalWrapper->ContainerParams.RunnerName       = SelectedRunner.value("NAME",      std::string());
-        LocalWrapper->ContainerParams.RunnerExecutable = SelectedRunner.value("EXECUTABLE", std::string());
-        std::string TypeStr                            = SelectedRunner.value("TYPE",       std::string("wine"));
-        if      (TypeStr == "wine")      LocalWrapper->ContainerParams.RunnerTypeEnum = RunnerType::Wine;
-        else if (TypeStr == "emulator")  LocalWrapper->ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
-        else if (TypeStr == "custom")    LocalWrapper->ContainerParams.RunnerTypeEnum = RunnerType::Custom;
-        else                             LocalWrapper->ContainerParams.RunnerTypeEnum = RunnerType::Native;
-
-        LocalWrapper->ContainerParams.RunnerEnv = SelectedRunner.contains("ENV")
-            ? SelectedRunner["ENV"] : nlohmann::ordered_json::object();
-        LocalWrapper->ContainerParams.RunnerRemoveEnv.clear();
-        LocalWrapper->ContainerParams.RunnerArgs.clear();
-        if (SelectedRunner.contains("REMOVE_ENV"))
-            for (auto &E : SelectedRunner["REMOVE_ENV"])
-                LocalWrapper->ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
-        if (SelectedRunner.contains("ARGS"))
-            for (auto &A : SelectedRunner["ARGS"])
-                LocalWrapper->ContainerParams.RunnerArgs.push_back(std::string(A));
-
-        // Re-derive path layout when runner type was changed.
-        if (LocalWrapper->ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-        {
-            LocalWrapper->ContainerParams.ProgramPath =
-                LocalWrapper->ContainerParams.RuntimePath / "drive_c" / LocalWrapper->ContainerParams.PackageUID;
-            LocalWrapper->ContainerParams.DefPrefixPath =
-                LocalWrapper->ContainerParams.TempPath / "DEFPREFIX";
-            LocalWrapper->ContainerParams.WindowsProgramPath =
-                "C:\\" + LocalWrapper->ContainerParams.PackageUID;
-            LocalWrapper->ContainerParams.WindowsProgramPathDoubleBackSlash =
-                "C:\\\\" + LocalWrapper->ContainerParams.PackageUID;
-            LocalWrapper->ContainerParams.WorkDirPathComplete =
-                LocalWrapper->ContainerParams.ProgramPath;
-        }
-        else
-        {
-            LocalWrapper->ContainerParams.ProgramPath =
-                LocalWrapper->ContainerParams.RuntimePath;
-            LocalWrapper->ContainerParams.WorkDirPathComplete =
-                LocalWrapper->ContainerParams.ProgramPath;
-        }
-    }
-
-    // Override ExecutableID with the user-selected entrypoint.
-    if (!this->EntrypointID.empty())
-        LocalWrapper->ContainerParams.ExecutableID = this->EntrypointID;
-
     // -----------------------------------------------------------------
-    // Step 1: Resolve executable definition.
+    // Step 1: Resolve executable definition (VariantID was set pre-construction).
     // -----------------------------------------------------------------
     if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, LocalWrapper->ContainerParams))
     {
@@ -178,7 +137,7 @@ void LaunchThread::run()
             wrapper = nullptr;
         }
         delete LocalWrapper;
-        emit launchFinished(false, "Could not resolve entrypoint.\nCheck ENTRYPOINT_ID and LASTCOMPONENT in the manifest.");
+        emit launchFinished(false, "Could not resolve variant.\nCheck VARIANT_ID and ENDPOINTS in the manifest.");
         return;
     }
 
@@ -206,16 +165,18 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 4: Cleanup (unless the user opted out).
     // -----------------------------------------------------------------
-    std::filesystem::path UserDataPath = LocalWrapper->ContainerParams.UserDataPath;
+    std::filesystem::path WriteLayerPath = LocalWrapper->ContainerParams.WriteLayerPath;
     if (!SkipCleanup)
         LocalWrapper->Cleanup();
 
     if (this->DryRun)
     {
+        //WRITELAYER is ephemeral and normally already removed by Cleanup(); this also covers
+        //the SkipCleanup case so a dry run never leaves write-layer state behind.
         std::error_code ec;
-        std::filesystem::remove_all(UserDataPath, ec);
-        if (ec) LogWarn("LaunchThread", "Dry run: could not remove USERDATA: " + ec.message());
-        else    LogSucc("LaunchThread", "Dry run: USERDATA deleted.");
+        std::filesystem::remove_all(WriteLayerPath, ec);
+        if (ec) LogWarn("LaunchThread", "Dry run: could not remove WRITELAYER: " + ec.message());
+        else    LogSucc("LaunchThread", "Dry run: WRITELAYER deleted.");
     }
 
     ClearLogCallback();
@@ -298,7 +259,6 @@ PreLaunchWindow::PreLaunchWindow(
         {
             QPixmap Pix(QDir::cleanPath(
                 QString::fromStdString(PackagePath) + QDir::separator() +
-                "METADATA" + QDir::separator() +
                 QString::fromStdString(CoverFile)));
             if (!Pix.isNull())
                 CoverLabel->setPixmap(Pix.scaledToWidth(188, Qt::SmoothTransformation));
@@ -334,59 +294,65 @@ PreLaunchWindow::PreLaunchWindow(
         !(*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["PLATFORM"].is_null())
         Platform = std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["PLATFORM"]);
 
+    // Flat RUNNERS arrays; a runner is a candidate when its PLATFORMS contains the subgame platform.
+    // Combo userData holds the RUNNER_ID; dedup by RUNNER_ID (MANIFEST shadows GlobalConfig).
+    std::set<QString> SeenRunnerIds;
     auto CollectRunners = [&](const nlohmann::ordered_json &Source)
     {
-        if (!Source.contains("RUNNERS")) return;
-        if (!Source["RUNNERS"].contains(Platform)) return;
-        for (auto &Runner : Source["RUNNERS"][Platform])
+        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
+        for (auto &Runner : Source["RUNNERS"])
         {
-            //Use explicit null check — .value() throws if key exists but value is JSON null.
+            bool Match = false;
+            if (Runner.contains("PLATFORMS") && Runner["PLATFORMS"].is_array())
+                for (auto &P : Runner["PLATFORMS"])
+                    if (P.is_string() && std::string(P) == Platform) { Match = true; break; }
+            if (!Match) continue;
+            QString RID = QString::fromStdString(Runner.value("RUNNER_ID", std::string()));
+            if (SeenRunnerIds.count(RID)) continue;
+            SeenRunnerIds.insert(RID);
             std::string Name = (Runner.contains("NAME") && Runner["NAME"].is_string())
-                               ? std::string(Runner["NAME"]) : "(unnamed)";
-            QString Label = QString::fromStdString(Name);
-            Runners.push_back({Label, Runner});
-            RunnerCombo->addItem(Label);
+                               ? std::string(Runner["NAME"]) : Runner.value("RUNNER_ID", std::string("(unnamed)"));
+            RunnerCombo->addItem(QString::fromStdString(Name), RID);
         }
     };
-    CollectRunners(*GlobalConfigJSON);
     CollectRunners(*MANIFESTJSON);
+    CollectRunners(*GlobalConfigJSON);
 
-    // Pre-select preferred runner from USERSETTINGS if stored.
+    // Pre-select: variant pin > USERSETTINGS PREFERRED_RUNNER > first. (Helper reads a variant's RUNNER_ID.)
     {
+        std::string Pref;
         auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
-        {
-            int Idx = RunnerCombo->findText(QString::fromStdString(std::string(US["PREFERRED_RUNNER"])));
-            if (Idx >= 0) RunnerCombo->setCurrentIndex(Idx);
-        }
+            Pref = std::string(US["PREFERRED_RUNNER"]);
+        int Idx = Pref.empty() ? -1 : RunnerCombo->findData(QString::fromStdString(Pref));
+        if (Idx >= 0) RunnerCombo->setCurrentIndex(Idx);
     }
 
-    // Entrypoint combobox
+    // Variant combobox
     VariantCombo = new QComboBox(ControlWidget);
-    PickerForm->addRow("Entrypoint:", VariantCombo);
+    PickerForm->addRow("Variant:", VariantCombo);
 
-    // Collect entrypoints via ContainerWrapper helper.
-
-    std::vector<EntrypointInfo> Entrypoints = ContainerWrapper::GetAvailableEntrypoints(*MANIFESTJSON, SubgameID);
+    // Collect variants via ContainerWrapper helper.
+    std::vector<VariantInfo> Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID);
     std::string RecommendedID;
-    for (auto &E : Entrypoints)
+    for (auto &V : Variants)
     {
-        QString Label = QString::fromStdString(E.EntrypointID);
-        if (E.IsRecommended) { Label = "⭐ " + Label; RecommendedID = E.EntrypointID; }
-        VariantCombo->addItem(Label, QString::fromStdString(E.EntrypointID));
+        QString Label = QString::fromStdString(V.Name.empty() ? V.VariantID : V.Name);
+        if (V.IsRecommended) { Label = "⭐ " + Label; RecommendedID = V.VariantID; }
+        VariantCombo->addItem(Label, QString::fromStdString(V.VariantID));
     }
 
-    // Pre-select: USERSETTINGS > RECOMMENDED entrypoint > first.
-    std::string PreselEntrypointID = RecommendedID;
+    // Pre-select: USERSETTINGS > RECOMMENDED variant > first.
+    std::string PreselVariantID = RecommendedID;
     {
         auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_VARIANT_ID") && US["PREFERRED_VARIANT_ID"].is_string())
-            PreselEntrypointID = std::string(US["PREFERRED_VARIANT_ID"]);
+            PreselVariantID = std::string(US["PREFERRED_VARIANT_ID"]);
     }
 
     for (int k = 0; k < VariantCombo->count(); k++)
     {
-        if (VariantCombo->itemData(k).toString().toStdString() == PreselEntrypointID)
+        if (VariantCombo->itemData(k).toString().toStdString() == PreselVariantID)
         { VariantCombo->setCurrentIndex(k); break; }
     }
 
@@ -413,7 +379,7 @@ PreLaunchWindow::PreLaunchWindow(
     NoCleanupCheck     = new QCheckBox("No cleanup (keep mounts after exit)", CVContainer);
     RememberCheck      = new QCheckBox("Hide this dialog next time",          CVContainer);
     CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",    CVContainer);
-    DryRunCheck        = new QCheckBox("Dry test run (delete USERDATA on cleanup)", CVContainer);
+    DryRunCheck        = new QCheckBox("Dry test run (delete WRITELAYER on cleanup)", CVContainer);
     CVContainerLayout->addWidget(NoCleanupCheck);
     CVContainerLayout->addWidget(RememberCheck);
     CVContainerLayout->addWidget(CloseAfterLaunchCheck);
@@ -422,7 +388,7 @@ PreLaunchWindow::PreLaunchWindow(
 
     CustomVarGroup->setProperty("ScrollArea", QVariant::fromValue<QWidget*>(CVScrollArea));
 
-    connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onEntrypointChanged);
+    connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onVariantChanged);
     RebuildCustomVarPickers();
 
     // Progress bar + status label (outside the scroll area — always visible)
@@ -499,7 +465,7 @@ PreLaunchWindow::~PreLaunchWindow()
 // ---------------------------------------------------------------------------
 // Slot: Entrypoint selection changed — rebuild CustomVar pickers.
 // ---------------------------------------------------------------------------
-void PreLaunchWindow::onEntrypointChanged()
+void PreLaunchWindow::onVariantChanged()
 {
     RebuildCustomVarPickers();
 }
@@ -523,15 +489,16 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         return;
     }
 
-    // Resolve the selected entrypoint's LASTCOMPONENT.
-    std::string SelEntrypointID;
+    // Resolve the selected variant's ENDPOINTS.
+    std::string SelVariantID;
     if (VariantCombo->currentIndex() >= 0)
-        SelEntrypointID = VariantCombo->currentData().toString().toStdString();
+        SelVariantID = VariantCombo->currentData().toString().toStdString();
 
-    std::string LastComp = ContainerWrapper::FindComponentForEntrypoint(*MANIFESTJSON, SubgameID, SelEntrypointID);
+    std::vector<std::string> SelEndpoints = ContainerWrapper::FindEndpointsForVariant(*MANIFESTJSON, SubgameID, SelVariantID);
 
-    // Get the recipe (ancestor chain) for that component.
-    ContainerParams TmpParams("", SubgameID, LastComp);
+    // Get the union recipe (all endpoint chains) so CustomVars referenced anywhere are in scope.
+    ContainerParams TmpParams("", SubgameID, "");
+    TmpParams.Endpoints = SelEndpoints;
     ContainerWrapper::CreateRecipe(*MANIFESTJSON, TmpParams);
 
     // Serialise the entire subcomponent JSON of every component in the chain
@@ -547,13 +514,13 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         }
 
     // Get entrypoint-level CUSTOMVARS seed.
-    nlohmann::ordered_json EntrypointSeed = nlohmann::ordered_json::object();
+    nlohmann::ordered_json VariantSeed = nlohmann::ordered_json::object();
     {
         int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
-        if (SubgameIdx != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("ENTRYPOINTS"))
-            for (auto &EP : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["ENTRYPOINTS"])
-                if (EP.value("ENTRYPOINT_ID", std::string()) == SelEntrypointID && EP.contains("FORCEVARS"))
-                    EntrypointSeed = EP["FORCEVARS"];
+        if (SubgameIdx != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
+            for (auto &V : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["VARIANTS"])
+                if (V.value("VARIANT_ID", std::string()) == SelVariantID && V.contains("FORCEVARS"))
+                    VariantSeed = V["FORCEVARS"];
     }
 
     // Get persisted USERSETTINGS variables.
@@ -579,8 +546,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         std::string InitialValue = CV.value("DEFAULT", std::string());
         if (SavedVars.contains(Key) && SavedVars[Key].is_string())
             InitialValue = std::string(SavedVars[Key]);
-        if (EntrypointSeed.contains(Key) && EntrypointSeed[Key].is_string())
-            InitialValue = std::string(EntrypointSeed[Key]);
+        if (VariantSeed.contains(Key) && VariantSeed[Key].is_string())
+            InitialValue = std::string(VariantSeed[Key]);
 
         bool Display = CV.value("DISPLAY", true);
 
@@ -589,7 +556,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         // Apply Layer 1 substitution to InitialValue so %ScreenWidth% shows as 1920 in the widget.
         // (Layer 2 / type translation is NOT applied — widget always shows the display value.)
         {
-            ContainerParams TmpP("", SubgameID, LastComp);
+            ContainerParams TmpP("", SubgameID, "");
             ContainerWrapper::StringVariableSubstitution(InitialValue, TmpP.GetVariablesMap());
         }
 
@@ -622,7 +589,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             {
                 // Layer 1 on option VALUES too — they may contain tokens.
                 std::string OptVal = Opt.value("VALUE", std::string());
-                ContainerParams TmpP2("", SubgameID, LastComp);
+                ContainerParams TmpP2("", SubgameID, "");
                 ContainerWrapper::StringVariableSubstitution(OptVal, TmpP2.GetVariablesMap());
                 QString OptLabel = QString::fromStdString(Opt.value("LABEL", std::string()));
                 Combo->addItem(OptLabel, QString::fromStdString(OptVal));
@@ -668,27 +635,24 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 // ---------------------------------------------------------------------------
 void PreLaunchWindow::onLaunchClicked()
 {
-    // Resolve the selected component from the chosen entrypoint.
-    std::string SelectedEntrypointID;
+    // Resolve the chosen variant. Endpoint resolution + recipe happen in the worker
+    // (DecideComponent/CreateRecipe) once VariantID is set on the params.
+    std::string SelectedVariantID;
     if (VariantCombo->currentIndex() >= 0)
-        SelectedEntrypointID = VariantCombo->currentData().toString().toStdString();
+        SelectedVariantID = VariantCombo->currentData().toString().toStdString();
 
-    std::string SelectedComponentID =
-        ContainerWrapper::FindComponentForEntrypoint(*MANIFESTJSON, SubgameID, SelectedEntrypointID);
-
-    // Fallback: first available entrypoint's component.
-    if (SelectedComponentID.empty())
+    // Fallback: first available variant.
+    if (SelectedVariantID.empty())
     {
-        auto Entrypoints = ContainerWrapper::GetAvailableEntrypoints(*MANIFESTJSON, SubgameID);
-        if (!Entrypoints.empty())
-            SelectedComponentID = Entrypoints.front().ComponentID;
+        auto Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID);
+        if (!Variants.empty())
+            SelectedVariantID = Variants.front().VariantID;
     }
 
-    // Resolve the selected runner JSON.
-    nlohmann::ordered_json SelRunner;
-    int RunnerIdx = RunnerCombo->currentIndex();
-    if (RunnerIdx >= 0 && RunnerIdx < static_cast<int>(Runners.size()))
-        SelRunner = Runners[RunnerIdx].second;
+    // Resolve the selected runner by RUNNER_ID (combo userData).
+    std::string SelectedRunnerID;
+    if (RunnerCombo->currentIndex() >= 0)
+        SelectedRunnerID = RunnerCombo->currentData().toString().toStdString();
 
     // Seed CollectedVars with every CustomVar's resolved value:
     // 1. Start from entrypoint FORCEVARS (covers DISPLAY:false vars automatically).
@@ -698,12 +662,12 @@ void PreLaunchWindow::onLaunchClicked()
     // Step 1: entrypoint seed for all vars (baseline, handles DISPLAY:false silently).
     if (MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
     {
-        // Get entrypoint FORCEVARS seed.
+        // Get variant FORCEVARS seed.
         int SubgameIdx2 = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
-        if (SubgameIdx2 != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2].contains("ENTRYPOINTS"))
-            for (auto &EP : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2]["ENTRYPOINTS"])
-                if (EP.value("ENTRYPOINT_ID", std::string()) == SelectedEntrypointID && EP.contains("FORCEVARS"))
-                    for (auto &[K, V] : EP["FORCEVARS"].items())
+        if (SubgameIdx2 != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2].contains("VARIANTS"))
+            for (auto &Var : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2]["VARIANTS"])
+                if (Var.value("VARIANT_ID", std::string()) == SelectedVariantID && Var.contains("FORCEVARS"))
+                    for (auto &[K, V] : Var["FORCEVARS"].items())
                         if (V.is_string()) CollectedVars[K] = std::string(V);
 
         // Fill in DEFAULT for any key not covered by the seed.
@@ -760,9 +724,8 @@ void PreLaunchWindow::onLaunchClicked()
     // Always persist runner and entrypoint so next launch pre-selects them.
     if (!PackageUID.empty())
     {
-        std::string RunnerName = SelRunner.is_null() ? "" : SelRunner.value("NAME", std::string());
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",     RunnerName);
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", SelectedEntrypointID);
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",     SelectedRunnerID);
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", SelectedVariantID);
         // "Hide dialog next time" only when explicitly checked.
         if (RememberCheck->isChecked())
             ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
@@ -790,12 +753,19 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->MANIFESTJSON     = *MANIFESTJSON;
     LaunchWorker->PackagePath      = PackagePath;
     LaunchWorker->SubgameID        = SubgameID;
-    LaunchWorker->ComponentID      = SelectedComponentID;
-    LaunchWorker->EntrypointID       = SelectedEntrypointID;
+    LaunchWorker->ComponentID      = "";   // variant-driven; endpoints resolved in the worker
+    LaunchWorker->VariantID          = SelectedVariantID;
     LaunchWorker->VariableOverrides  = CollectedVars;
-    LaunchWorker->SelectedRunner     = SelRunner;
+    LaunchWorker->RunnerID           = SelectedRunnerID;
     LaunchWorker->SkipCleanup      = NoCleanupCheck->isChecked();
     LaunchWorker->DryRun           = DryRunCheck->isChecked();
+    //Capture the display geometry HERE, on the main thread. The worker must never touch
+    //QGuiApplication (screen access off the GUI thread is undefined behaviour and can crash).
+    if (QScreen * Scr = QGuiApplication::primaryScreen())
+    {
+        LaunchWorker->ScreenWidth  = std::to_string(Scr->geometry().width());
+        LaunchWorker->ScreenHeight = std::to_string(Scr->geometry().height());
+    }
 
     connect(LaunchWorker, &LaunchThread::logLine,        this, &PreLaunchWindow::onLogLine,        Qt::QueuedConnection);
     connect(LaunchWorker, &LaunchThread::statusChanged,  this, &PreLaunchWindow::onStatusChanged,  Qt::QueuedConnection);

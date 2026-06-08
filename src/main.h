@@ -35,7 +35,8 @@ struct LaunchParameters
     std::string HeadlessSubgameID;                                        //Subgame to launch (empty = use default)
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from subgame)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
-    std::string VariantID;                                                //Variant override from --variant (selects which component to stop the chain at)
+    std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
+    std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)
 };
 
 int main(int argc, char *argv[]);
@@ -44,9 +45,9 @@ int main(int argc, char *argv[]);
 //Logs any that are missing. Returns true if any dependency is absent, false if all found.
 bool CheckExecutableDependencies();
 
-//Loads or creates the GlobalConfigJSON file in AppDataDir.
-//If the config does not exist yet, it is seeded with default table schemas,
-//default runners (umu-proton for Windows, snes9x for SNES), and an empty library.
+//Loads GlobalConfig.JSON from AppDataDir (or starts empty), then guarantees the used shape via
+//EnsureGlobalConfigDefaults: RUNNERS (built-in defaults), an empty LIBRARY, and a Settings object.
+//The file is written when created or when a missing key had to be seeded.
 //Returns true on failure, false on success (shell exit-code convention).
 bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir);
 

@@ -28,13 +28,14 @@
 //  Custom   — Any other runner; DATAPATH is passed instead of EXEPATH/ROM.
 enum class RunnerType { Wine, Emulator, Native, Custom };
 
-//Describes one available entrypoint for a given subgame.
-//Selecting an entrypoint = selecting which component chain level to build up to.
-struct EntrypointInfo {
-    std::string EntrypointID;   // ENTRYPOINT_ID field on the entrypoint
-    std::string ComponentName;  // NAME of the component referenced by LASTCOMPONENT
-    std::string ComponentID;    // LASTCOMPONENT value (the component_id to build to)
-    bool        IsRecommended = false; // RECOMMENDED:true on the entrypoint — shown with ⭐ in picker
+//Describes one available variant for a given subgame.
+//Selecting a variant = selecting which set of ENDPOINTS (terminal components) to build.
+//Each endpoint walks its own PARENTCOMPONENT chain; the union of all chains forms the recipe.
+struct VariantInfo {
+    std::string VariantID;      // VARIANT_ID field on the variant
+    std::string Name;           // optional NAME; falls back to VARIANT_ID for display
+    bool        IsRecommended = false; // RECOMMENDED:true on the variant — shown with ⭐ in picker
+    std::vector<std::string> Endpoints; // ENDPOINTS array (terminal component ids, load order)
 };
 
 //All resolved parameters needed to build and launch a single container session.
@@ -60,37 +61,49 @@ public:
     std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
     nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
 
-    //Runner config (resolved from GlobalConfig RUNNERS by platform):
+    //Runner config (resolved from the flat RUNNERS arrays by PLATFORMS membership):
+    std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
     std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
     std::string RunnerExecutable;        //Binary to exec (e.g. "umu-run", "snes9x")
     RunnerType RunnerTypeEnum = RunnerType::Wine; //Determines argument order and Wine-specific steps
     nlohmann::ordered_json RunnerEnv;    //Key/value env vars to set; values may contain %VARIABLE% tokens
     std::vector<std::string> RunnerRemoveEnv; //Env keys to remove before launch (e.g. LD_LIBRARY_PATH)
     std::vector<std::string> RunnerArgs; //Arguments prepended before the exe for emulator/custom runners
+    std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
 
     //Flags
     std::string subgame_id;                                         //PASSED
-    std::string component_id;                                       //PASSED
-    bool ReadOnlyVFS = false;                                       //SET — if true, USERDATA is not prepended to VFSString
+    std::string component_id;                                       //PASSED (direct/editor mode — single endpoint)
+    std::vector<std::string> Endpoints;                             //RESOLVED — terminal component ids (the selected variant's ENDPOINTS, load order)
+    bool ReadOnlyVFS = false;                                       //SET — if true, WRITELAYER is not prepended to VFSString
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
+
+    //Persistence (from the top-level PERSIST manifest object — see DeriveContainerParams):
+    bool PersistAll = false;                                        //PERSIST.ALL — RW union branch IS the durable UserDataPath (everything persists)
+    bool PersistRegistry = false;                                   //PERSIST.REGISTRY — persist user.reg/system.reg/userdef.reg
+    std::vector<std::string> PersistDirs;                           //PERSIST.DIRS — runtime-root-relative leaf dirs bind-mounted from UserDataPath
 
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
 
-    //Entrypoint resolution:
-    std::string ExecutableID;                                        //EntrypointID — set from SUBGAMES["DEFAULT_ENTRYPOINT_ID"] or overridden by caller
+    //Variant resolution:
+    std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
     std::string ScreenHeight;
 
     //Paths (that need to be created before use)
-    std::filesystem::path RuntimePath;       //Where the final unionfs VFS is mounted (PackagePath/RUNTIME)
-    std::filesystem::path MetaDataPath;      //PackagePath/METADATA
-    std::filesystem::path PackageFilesPath;  //PackagePath/PACKAGEFILES — source archives and directories
-    std::filesystem::path UserDataPath;      //PackagePath/USERDATA — copy-on-write layer at the top of the VFS stack
-    std::filesystem::path TempPath;          //PackagePath/TEMP — prefix, per-layer pre-mount dirs, reg patches
+    //Two storage tiers:
+    //  EPHEMERAL — everything under TempPath = ~/.VidyaGod/TEMP/PackageUID; wiped by Cleanup().
+    //              RuntimePath, WriteLayerPath and DefPrefixPath are all nested inside it.
+    //  DURABLE   — UserDataPath = PackagePath/USERDATA; survives Cleanup(), travels with the package.
+    //              Holds only the persisted state declared by the PERSIST manifest object.
+    std::filesystem::path RuntimePath;       //TempPath/RUNTIME — where the final unionfs VFS is mounted
+    std::filesystem::path WriteLayerPath;    //TempPath/WRITELAYER — ephemeral copy-on-write layer at the top of the VFS stack
+    std::filesystem::path TempPath;          //~/.VidyaGod/TEMP/PackageUID — prefix, per-layer pre-mount dirs, reg patches
+    std::filesystem::path UserDataPath;      //PackagePath/USERDATA — durable persist store (PERSIST.ALL / DIRS / REGISTRY)
     std::filesystem::path ProgramPath;       //Wine: RuntimePath/drive_c/PackageUID; others: RuntimePath
     std::filesystem::path DefPrefixPath;     //TempPath/DEFPREFIX — the Wine prefix directory
     std::filesystem::path ExePathRelative;   //Exe/ROM/data path relative to ProgramPath, from MANIFEST
@@ -117,6 +130,10 @@ public:
     std::string VFSString;                                //Colon-separated unionfs branch string (built up incrementally)
     std::vector<std::filesystem::path> CleanupUnmountPaths; //All FUSE mount points that must be unmounted on Cleanup()
     std::vector<std::filesystem::path> CleanupDeletePaths;  //Staging dirs to remove on Cleanup() (VFSFileLayer hard-link/copy dirs)
+    //Durable-backed mounts (persist binds + the union itself in PERSIST.ALL mode). These expose
+    //PackagePath/USERDATA through a mountpoint under TempPath, so they MUST be non-lazily unmounted
+    //and verified before Cleanup() wipes TempPath — otherwise remove_all could delete real saves.
+    std::vector<std::filesystem::path> CleanupPersistPaths;
 
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
     //Used by StringVariableSubstitution to expand tokens in runner ENV, args, and subcomponent paths.
@@ -152,6 +169,14 @@ public:
     //Unmounts all paths in CleanupUnmountPaths (fusermount -uz) and removes RUNTIME and TEMP.
     bool Cleanup();
 
+    //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete
+    //run. A fresh ContainerWrapper has empty Cleanup*Paths and cannot know about a prior process's
+    //mounts, so this discovers them from /proc/self/mountinfo, unmounts deepest-first, and only then
+    //removes TempPath. Mirrors Cleanup()'s save-safety gate: if any mount under TempPath refuses to
+    //detach, TempPath is LEFT IN PLACE (a lingering PERSIST bind could otherwise let remove_all
+    //recurse into USERDATA). Run at the start of BuildContainerRuntime, before any mounting.
+    static void CleanStaleRuntime(const std::filesystem::path &TempPath);
+
     //ID lookup helpers:
     //Linear scan of MANIFEST["SUBGAMES"] for a matching SUBGAMEID. Returns index or -1.
     static int FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
@@ -167,25 +192,25 @@ public:
     static int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID);
 
     //Container initialization:
-    //Resolves which component_id to use given the provided subgame_id / component_id combination.
-    //If only subgame_id is set, reads DEFAULT_ENTRYPOINT_ID and resolves component_id via FindComponentForEntrypoint.
+    //Resolves which variant + endpoints to build given the subgame_id / VariantID / component_id combo.
+    //If only subgame_id is set, picks the RECOMMENDED variant (else first) and fills VariantID + Endpoints.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
-    //Returns all entrypoints defined under SUBGAMES[SubgameID].ENTRYPOINTS.
-    //ComponentName is derived by looking up LASTCOMPONENT in COMPONENTS.
-    static std::vector<EntrypointInfo> GetAvailableEntrypoints(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
+    //Returns all variants defined under SUBGAMES[SubgameID].VARIANTS.
+    static std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
 
-    //Returns the LASTCOMPONENT value of the entrypoint matching { SubgameID, EntrypointID }.
-    //Returns empty string if not found.
-    static std::string FindComponentForEntrypoint(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &EntrypointID);
+    //Returns the ENDPOINTS array of the variant matching { SubgameID, VariantID }.
+    //Returns an empty vector if not found.
+    static std::vector<std::string> FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
 
-    //Finds the entrypoint in MANIFESTJSON matching ContainerParams.ExecutableID (= EntrypointID)
-    //under the subgame identified by ContainerParams.subgame_id, then populates
-    //ExePathRelative, ExePathComplete, WorkDir, ExeArgs.
-    //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
+    //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID under the subgame
+    //identified by ContainerParams.subgame_id, then populates ExePathRelative, ExePathComplete,
+    //WorkDir, ExeArgs from it. Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
     static bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Walks the PARENTCOMPONENT chain from component_id up to the root component,
-    //producing an ordered Recipe (ancestor-first).
+    //Builds the ordered Recipe as the UNION of every endpoint's PARENTCOMPONENT chain.
+    //Each endpoint chain is appended root-first; later endpoints (array order) stack higher
+    //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
+    //{component_id} when Endpoints is empty (direct/editor mode).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
@@ -208,11 +233,22 @@ public:
     static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
     //Appends NewPath=RO to the front of VFSString (newer entries are higher priority in unionfs).
     static bool AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath);
-    //Prepends USERDATA=RW to VFSString to form the final writable-top union.
+    //Prepends WRITELAYER=RW to VFSString to form the final writable-top union.
     //Returns false if VFSString is empty (no layers were added).
     static bool FinalizeVFSString(struct ContainerParams &ContainerParams);
     //Mounts the finalized VFSString onto RuntimePath using unionfs with cow + uid=1000.
     static bool MountVFS(struct ContainerParams &ContainerParams);
+    //Bind-mounts each PERSIST.DIRS entry from UserDataPath onto its runtime-root-relative path,
+    //so writes to those subtrees land directly in the durable package store (copy-free).
+    //Mountpoints are registered in CleanupPersistPaths for the non-lazy unmount safeguard.
+    //Must run AFTER MountVFS. No-op when PersistAll (the whole overlay is already durable).
+    static bool MountPersistDirs(struct ContainerParams &ContainerParams);
+    //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
+    //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
+    static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
+    //Copies RuntimePath/{system,user,userdef}.reg into UserDataPath/__REGISTRY__/ on Cleanup,
+    //capturing the session's registry. Must run BEFORE the runtime is unmounted/wiped.
+    static bool CapturePersistRegistry(struct ContainerParams &ContainerParams);
     //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths
     //differ only in case — these cause unpredictable behavior under Wine.
     static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
@@ -231,7 +267,7 @@ public:
     //Imports RegPatch32.reg and RegPatch64.reg into the prefix using `reg import` via the runner.
     static bool MergeRegPatchFiles(struct ContainerParams &ContainerParams);
     //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime after VFS is up.
-    //Writes directly into the RW USERDATA layer so values win over DEFPREFIX and prior COW state.
+    //Writes directly into the RW WRITELAYER so values win over DEFPREFIX and prior COW state.
     static bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
     //DLL overrides:
@@ -241,8 +277,8 @@ public:
 
     //FileEdits:
     //Processes FileEdit subcomponents. MUST BE RUN AFTER VARIABLE SUBSTITUTION.
-    //OverridePass=false: writes to DefPrefixPath (pre-VFS, USERDATA can shadow it).
-    //OverridePass=true:  writes to RuntimePath  (post-VFS, goes directly to USERDATA — wins unconditionally).
+    //OverridePass=false: writes to DefPrefixPath (pre-VFS, WRITELAYER can shadow it).
+    //OverridePass=true:  writes to RuntimePath  (post-VFS, goes directly to WRITELAYER — wins unconditionally).
     static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false);
     //Reads FilePath line by line and replaces any line starting with Key with Key+Value.
     //Useful for patching INI-style config files that use prefix-based key matching.
@@ -265,6 +301,10 @@ private:
     //in the required order. Called from the constructor.
     bool InitializeContainer();
     bool BuildVirtualFilesystem(); //STUB — not yet implemented
+
+    //Returns every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first
+    //so children unmount before parents. Mountinfo octal escapes (\040 etc.) are decoded.
+    static std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
 
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;

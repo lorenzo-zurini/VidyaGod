@@ -21,6 +21,11 @@
 #include <QWheelEvent>
 #include <QVector>
 #include <QScrollBar>
+#include <QListWidget>
+#include <QStackedWidget>
+#include <QComboBox>
+#include <QLineEdit>
+#include <QFormLayout>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
@@ -141,10 +146,19 @@ private:
     QVBoxLayout * PackagesTabWidgetLayout;
     QScrollArea * PackagesScrollArea;
 
+    // ── Settings tab (global configurator: sidebar + stacked category forms) ──
+    QWidget        * SettingsTabWidget     = nullptr;
+    QListWidget    * SettingsCategoryList  = nullptr;
+    QStackedWidget * SettingsStack         = nullptr;
+    QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
+
     void BuildStaticUI();
     void BuildLibraryGameCards();
     void BuildLibraryDynamicUI();
     void BuildPackagesDynamicUI();
+    void BuildSettingsTab();
+    void RebuildSettingsRunnersPage();
+    QWidget * BuildPathsSettingsPage();
     void sortCards();
     bool SaveGlobalConfigJSON();
 

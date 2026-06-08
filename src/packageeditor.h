@@ -94,7 +94,26 @@ private:
     void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
     bool SaveManifestJSON();
-    std::string GetRunnerType(const std::string &platform);
+    //Returns the PLATFORM of the subgame with the given SUBGAMEID in the assembled manifest ("" if none).
+    std::string SubgamePlatform(const std::string &SubgameID);
+
+    //MODULAR MANIFESTS (fragment-aware editing)
+    //Loads every *.json fragment in the package into the assembled MANIFESTJSON, tagging each
+    //routable element (subgames, components, customvars, variants, runners) with a hidden
+    //"__FILE__" provenance key. Tracks FragmentFiles and IdentityFile.
+    void LoadFragmentsAndAssemble();
+    //Decomposes the tagged MANIFESTJSON back into one document per fragment file (by "__FILE__"),
+    //stripping the tags. Returns filename -> document.
+    std::map<QString, nlohmann::ordered_json> DecomposeByFile();
+    //Prompts the user to choose which fragment file a new element should live in (dropdown of
+    //existing files + "New file…"). Returns the chosen filename, or empty on cancel.
+    QString PromptTargetFile(const QString &Title);
+    //Runs JSONOps::ValidateManifest on a tag-stripped copy of MANIFESTJSON into ValErrors/ValWarnings.
+    void RevalidateManifest();
+    //Builds a "File: [dropdown]" row bound to the "__FILE__" tag of the element at ElementPointer
+    //(a json_pointer string into MANIFESTJSON, e.g. "/COMPONENTS/1" or "/SUBGAMES/0/VARIANTS/2").
+    //Changing it re-routes that element to another fragment file.
+    QWidget * MakeFileTagWidget(const std::string &ElementPointer);
     bool eventFilter(QObject *obj, QEvent *event) override;
     void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int SubgameIndex);
 
@@ -111,10 +130,14 @@ private:
 
     QPushButton * SaveJSONButton;
     QTextEdit * JSONTextEdit;
+    QComboBox * JSONFileCombo = nullptr; // selects which fragment file the raw JSON tab edits
 
     QDir * PackageDir;
-    QDir * MetadataDir;
-    QDir * PackageFilesDir;
+
+    //Fragment files present in the package (filenames, no path). IdentityFile holds PACKAGE*/PERSIST.
+    QStringList FragmentFiles;
+    QString IdentityFile;
+    std::vector<std::string> ValErrors, ValWarnings;
 
     QTabWidget * PackageEditorTabWidget = nullptr;
     nlohmann::ordered_json * MANIFESTJSON;

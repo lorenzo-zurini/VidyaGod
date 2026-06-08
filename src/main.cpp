@@ -1,6 +1,41 @@
 #include "main.h"
 #include "commonutils.h"
 
+#include <QComboBox>
+#include <QAbstractScrollArea>
+#include <QWheelEvent>
+
+//Application-wide event filter that stops a QComboBox from changing its value when the mouse
+//wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
+//QComboBox::wheelEvent cycles the selection on hover-scroll regardless of focus, so the wheel is
+//blocked on the (closed) combo control unconditionally — the value is still changed by clicking or
+//by arrow keys. The open dropdown LIST is a separate widget, so scrolling an actually-open list
+//still works. To keep scrollable pages usable, the swallowed wheel is redirected to the nearest
+//enclosing scroll area so the page still scrolls past the combo. Installed once on the
+//QApplication, so it covers every combo, including ones created dynamically.
+class WheelGuard : public QObject
+{
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject * Obj, QEvent * Event) override
+    {
+        if (Event->type() == QEvent::Wheel)
+            if (QComboBox * Combo = qobject_cast<QComboBox *>(Obj))
+            {
+                //Forward the scroll to the surrounding scroll area (if any) instead of the combo.
+                for (QWidget * W = Combo->parentWidget(); W; W = W->parentWidget())
+                    if (QAbstractScrollArea * SA = qobject_cast<QAbstractScrollArea *>(W))
+                    {
+                        QCoreApplication::sendEvent(SA->viewport(), Event);
+                        break;
+                    }
+                return true; //never let the hovered combo consume the wheel
+            }
+        return QObject::eventFilter(Obj, Event);
+    }
+};
+
 int main(int argc, char *argv[])
 {
     //Parse command line arguments and initialize RuntimeParameters struct.
@@ -53,27 +88,31 @@ int main(int argc, char *argv[])
     {
         LogOut("main.cpp", "Running package " + LaunchParameters.HeadlessPackagePath.string() + " in HEADLESS mode.");
         nlohmann::ordered_json MANIFESTJSON;
-        //CLEAN THIS CRAP BELOW
-        //Load the package's MANIFEST.json — required before constructing ContainerParams.
-        if (JSONOps::LoadJSON(new QFile(QDir::cleanPath(QString::fromStdString(LaunchParameters.HeadlessPackagePath) + QDir::separator() + "METADATA" + QDir::separator() + "MANIFEST.json")), &MANIFESTJSON))
+        //Assemble the manifest from every *.json in the package dir, then validate.
+        std::vector<std::string> AsmWarn, ValErr, ValWarn;
+        if (!JSONOps::AssembleManifest(QString::fromStdString(LaunchParameters.HeadlessPackagePath), MANIFESTJSON, AsmWarn))
         {
-            LogErr("main.cpp", "Fatal error. Paring MANIFESTJSON failed, aborting.");
+            LogErr("main.cpp", "Fatal error: no usable JSON manifest in package, aborting.");
+            return 1;
         }
-
-        //Resolve component_id from --variant (now treated as EntrypointID) if supplied.
-        std::string HeadlessComponentID = LaunchParameters.HeadlessComponentID;
-        if (HeadlessComponentID.empty() && !LaunchParameters.VariantID.empty())
+        for (const auto &W : AsmWarn) LogWarn("main.cpp", "Manifest: " + W);
+        JSONOps::ValidateManifest(MANIFESTJSON, ValErr, ValWarn);
+        for (const auto &W : ValWarn) LogWarn("main.cpp", "Manifest: " + W);
+        if (!ValErr.empty())
         {
-            std::string ResolvedID = ContainerWrapper::FindComponentForEntrypoint(MANIFESTJSON, LaunchParameters.HeadlessSubgameID, LaunchParameters.VariantID);
-            if (!ResolvedID.empty()) HeadlessComponentID = ResolvedID;
+            for (const auto &E : ValErr) LogErr("main.cpp", "Manifest error: " + E);
+            LogErr("main.cpp", "Aborting due to manifest validation errors.");
+            return 1;
         }
 
         //Construct the container, build its runtime (mounts, prefix, registry patches),
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
-        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, HeadlessComponentID);
+        //VariantID is set BEFORE construction so DecideComponent/CreateRecipe resolve the
+        //selected variant's ENDPOINTS. A direct --component still works via HeadlessComponentID.
+        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
-        if (!LaunchParameters.VariantID.empty())
-            NewContainerParams.ExecutableID = LaunchParameters.VariantID;
+        NewContainerParams.VariantID = LaunchParameters.VariantID;
+        NewContainerParams.RunnerID  = LaunchParameters.RunnerID;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         {
@@ -96,6 +135,9 @@ int main(int argc, char *argv[])
 
     //Set a default font to ensure consistent spacing across desktop environments.
     Application.setFont(QFont("DejaVu Sans", 10));
+
+    //Block accidental hover-scroll from mutating combo boxes app-wide (see WheelGuard).
+    Application.installEventFilter(new WheelGuard(&Application));
 
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
@@ -138,133 +180,83 @@ bool CheckExecutableDependencies()
     return false;
 }
 
-//Loads GlobalConfig.JSON from AppDataDir, or creates it with defaults if it does not exist.
-//The defaults define the database table schemas (LIBRARY/PACKAGES column layouts),
-//the built-in runner definitions (umu-proton for Windows, snes9x for SNES), and an
-//empty LIBRARY array and USERSETTINGS object.
+//The four built-in runners as a single readable JSON literal (flat first-class schema).
+//GE-Proton is first so it is the default candidate for Microsoft Windows.
+//TO-DO: make runner paths (PROTONPATH) configurable via settings rather than hardcoded.
+static nlohmann::ordered_json DefaultRunners()
+{
+    return nlohmann::ordered_json::parse(R"JSON([
+        {
+            "RUNNER_ID": "ge-proton10-30", "NAME": "GE-Proton10-30", "TYPE": "wine",
+            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "umu-run",
+            "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun",
+                     "PROTONPATH": "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30" },
+            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        },
+        {
+            "RUNNER_ID": "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
+            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "umu-run",
+            "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
+            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        },
+        {
+            "RUNNER_ID": "wine", "NAME": "wine", "TYPE": "wine",
+            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "wine",
+            "ENV": { "WINEPREFIX": "%RuntimePath%" },
+            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        },
+        {
+            "RUNNER_ID": "snes9x", "NAME": "snes9x", "TYPE": "emulator",
+            "PLATFORMS": ["SNES"], "EXECUTABLE": "snes9x",
+            "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "ENDPOINTS": []
+        }
+    ])JSON");
+}
+
+//Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
+//  RUNNERS (array of runners), LIBRARY (array of packages), Settings (object of UI prefs).
+//Returns true if it added anything, so the caller can persist a freshly-seeded config.
+static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
+{
+    bool Changed = false;
+    if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
+    if (!gc.contains("RUNNERS")  || !gc["RUNNERS"].is_array())  { gc["RUNNERS"]  = DefaultRunners();                 Changed = true; }
+    if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
+    if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
+    return Changed;
+}
+
+//Loads GlobalConfig.JSON from AppDataDir (or starts empty if it does not exist), then ensures the
+//config has the shape the app uses via EnsureGlobalConfigDefaults. The file is (re)written when it
+//was freshly created or when a missing top-level key had to be seeded.
 //Returns true on FAILURE, false on SUCCESS — matches shell exit-code convention so
 //callers can write `if (InitializeGlobalConfigJSON(...)) { /* handle error */ }`.
 bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir)
 {
-    //Handle GlobalConfigJSON.
     QFile GlobalConfigFile(AppDataDir->filePath("GlobalConfig.JSON"));
-    if (!GlobalConfigFile.exists())
+    const bool Existed = GlobalConfigFile.exists();
+
+    if (Existed && JSONOps::LoadJSON(&GlobalConfigFile, GlobalConfigJSON))
     {
-        LogOut("main.cpp", "Config flie not deteced. Creating... ");
-
-        //Populate the schema for the LIBRARY table — each key is a column name and its
-        //value is the default / type sentinel for that column.
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TITLE"]                     = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PARENTPACKAGE"]             = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PLATFORM"]                  = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["GAMEUID"]                   = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EXEPATH"]                   = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EXEARGS"]                   = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["WORKDIR"]                   = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["TGDBID"]                    = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["STEAMAPPID"]                = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["UMUID"]                     = "0";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["GOGPRODUCTID"]              = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["COVER"]                     = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["RELEASEDATE"]               = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITION"]                   = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITIONDATE"]               = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["DEVELOPER"]                 = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["PUBLISHER"]                 = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SERIES"]                    = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SERIESSORTNUMBER"]          = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SUBSERIES"]                 = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["SUBSERIESSORTNUMBER"]       = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["EDITOR"]                    = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["ONLINEDRM"]                 = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["NETWORKMULTIPLAYER"]        = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["DIRECTCONNECT"]             = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LANMULTIPLAYER"]            = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["ONLINEMULTIPLAYER"]         = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["NETWORKCOOP"]               = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LOCALMULTIPLAYER"]          = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["LOCALCOOP"]                 = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["OTHERONLINEFEATURES"]       = false;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["COMPONENT"]                 = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["VARIANTS"]                  = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["COLUMNS"]["RECOMMENDED_RUNNER"]        = "";
-        (*GlobalConfigJSON)["DefaultTables"]["LIBRARY"]["PRIMARY KEY"]                          = "GAMEUID";
-        //Schema for the PACKAGES table (slim package registry, not per-subgame).
-        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEUID"]               = 0;
-        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGENAME"]              = "";
-        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PACKAGEVERSION"]           = "";
-        (*GlobalConfigJSON)["DefaultTables"]["PACKAGES"]["COLUMNS"]["PATH"]                     = "";
-        (*GlobalConfigJSON)["Settings"]["LibraryGridSize"]                                      = 5;
-
-        //Default runners per platform. GE-Proton is listed first so it is the default.
-        //TO-DO: make runner paths configurable via settings rather than hardcoded.
-        nlohmann::ordered_json GeProton;
-        GeProton["NAME"]       = "GE-Proton10-30";
-        GeProton["TYPE"]       = "wine";
-        GeProton["EXECUTABLE"] = "umu-run";
-        GeProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"}, {"PROTONPATH", "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30"} };
-        GeProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(GeProton);
-
-        nlohmann::ordered_json UmuProton;
-        UmuProton["NAME"]       = "umu-proton";
-        UmuProton["TYPE"]       = "wine";
-        UmuProton["EXECUTABLE"] = "umu-run";
-        UmuProton["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"}, {"GAMEID", "%UMUID%"}, {"PROTON_VERB", "waitforexitandrun"} };
-        UmuProton["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(UmuProton);
-
-        nlohmann::ordered_json Wine;
-        Wine["NAME"]       = "wine";
-        Wine["TYPE"]       = "wine";
-        Wine["EXECUTABLE"] = "wine";
-        Wine["ENV"]        = { {"WINEPREFIX", "%RuntimePath%"} };
-        Wine["REMOVE_ENV"] = nlohmann::ordered_json::array({"LD_LIBRARY_PATH"});
-        (*GlobalConfigJSON)["RUNNERS"]["Microsoft Windows"].push_back(Wine);
-
-        //snes9x handles SNES ROMs; the ROM path is passed as the sole argument.
-        nlohmann::ordered_json Snes9x;
-        Snes9x["NAME"]       = "snes9x";
-        Snes9x["TYPE"]       = "emulator";
-        Snes9x["EXECUTABLE"] = "snes9x";
-        Snes9x["ENV"]        = nlohmann::ordered_json::object();
-        Snes9x["REMOVE_ENV"] = nlohmann::ordered_json::array();
-        Snes9x["ARGS"]       = nlohmann::ordered_json::array({"-fullscreen"}); //TO-DO: expose via settings
-        (*GlobalConfigJSON)["RUNNERS"]["SNES"].push_back(Snes9x);
-
-        //Custom platform: runner is always defined entirely inside the package MANIFEST.
-        //GlobalConfig holds an empty array here — it is never populated from the online registry.
-        (*GlobalConfigJSON)["RUNNERS"]["Custom"] = nlohmann::ordered_json::array();
-
-        //Per-package user settings (PREFERRED_RUNNER, PREFERRED_VARIANT_ID, VARIABLES, etc.)
-        //now live inside each LIBRARY entry under "USERSETTINGS" — no separate top-level object.
-        (*GlobalConfigJSON)["LIBRARY"] = nlohmann::ordered_json::array();
-
-        if (JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
-        {
-            return false; //success
-        }
-        else
-        {
-            LogErr("main.cpp", "DefaultConfig.JSON could not be initialised.");
-            return true; //fail
-        }
-    }
-    else if (JSONOps::LoadJSON(&GlobalConfigFile, GlobalConfigJSON))
-    {
-        //LoadJSON returns non-zero on failure.
+        //LoadJSON returns non-zero on failure — don't silently overwrite a corrupt config.
         LogErr("main.cpp", "Failed to parse GlobalConfig.JSON, aborting.");
-        return true; //Fail
+        return true; //fail
     }
-    else
+    if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
+
+    const bool Changed = EnsureGlobalConfigDefaults(*GlobalConfigJSON);
+
+    if ((!Existed || Changed) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
-        LogSucc("main.cpp", "GlobalConfigJSON initialized successfully.");
-        return false; //Success
+        LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
+        return true; //fail
     }
+
+    LogSucc("main.cpp", "GlobalConfigJSON initialized successfully.");
+    return false; //success
 }
 
-//Delegates to FSOps::CheckPackageValid to test whether CurrentPath contains a METADATA
-//subdirectory — the minimum criterion for a valid package.
+//Delegates to FSOps::CheckPackageValid to test whether CurrentPath contains MANIFEST.json.
 bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
 {
     if (FSOps::CheckPackageValid(new QDir(CurrentPath))) //Convert FSOPS to stdlib! Remove unnecessary heap variable!
@@ -318,6 +310,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--variant" && i + 1 < argc)
         {
             RuntimeParameters.VariantID = argv[++i];
+        }
+        else if (arg == "--runner" && i + 1 < argc)
+        {
+            RuntimeParameters.RunnerID = argv[++i];
         }
     }
     return RuntimeParameters;

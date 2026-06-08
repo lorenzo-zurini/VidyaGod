@@ -1,6 +1,10 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include <random>
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <QThread>
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -111,6 +115,11 @@ bool ContainerWrapper::InitializeContainer()
 //Must be called after InitializeContainer() (done in constructor).
 bool ContainerWrapper::BuildContainerRuntime()
 {
+    //Clear any runtime left under TempPath by a previously crashed/incomplete run BEFORE mounting.
+    //Stale union/zip/bind mounts and leftover RUNTIME/DEFPREFIX/staging dirs would otherwise corrupt
+    //this build (or cause spurious "already mounted"/EEXIST failures).
+    ContainerWrapper::CleanStaleRuntime(ContainerParams.TempPath);
+
     //AUTO-DETECT whether any subcomponent requires a VFS mount.
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
@@ -133,7 +142,7 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     //Wine-specific pre-VFS steps: the prefix must exist before layers are stacked on top.
     //Registry patches and pre-VFS FileEdits are applied here so they land in DefPrefixPath —
-    //the lowest-priority VFS layer — and USERDATA can shadow them if the user has their own values.
+    //the lowest-priority VFS layer — and WRITELAYER can shadow them if the user has their own values.
     if (WineMode)
     {
         this->InitializeDefPrefix(this->ContainerParams);
@@ -143,14 +152,23 @@ bool ContainerWrapper::BuildContainerRuntime()
         this->ProcessFileEdits(this->ContainerParams, false);
     }
 
+    //Seed any persisted registry into the ephemeral WRITELAYER so it shadows DEFPREFIX.
+    //No-op under PERSIST.ALL (durable RW branch already holds the reg files).
+    if (ContainerParams.PersistRegistry)
+        this->SeedPersistRegistry(this->ContainerParams);
+
     //Mount all filesystem subcomponents into TEMP, then assemble and mount the final union.
     this->PreMountFilesystemComponents(this->ContainerParams, WineMode);
     if (!this->FinalizeVFSString(this->ContainerParams)) return false;
     this->MountVFS(this->ContainerParams);
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
+    //Bind durable PERSIST.DIRS over the mounted runtime so their writes land in the package store.
+    //Done before the OVERRIDE steps so overrides targeting a persisted path land durably too.
+    this->MountPersistDirs(this->ContainerParams);
+
     //Wine-specific post-mount steps: DLL overrides, OVERRIDE FileEdits, and OVERRIDE reg patches
-    //operate on the mounted runtime (COW directly to USERDATA) — they win unconditionally.
+    //operate on the mounted runtime (COW directly to WRITELAYER) — they win unconditionally.
     if (WineMode)
     {
         this->ProcessDLLOverrides(this->ContainerParams);
@@ -204,77 +222,96 @@ void ContainerWrapper::SetPackageUserSetting(nlohmann::ordered_json &GlobalConfi
 //  - Both set:      both are used as-is (component_id overrides the subgame's default).
 bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    LogOut("ContainerWrapper::DecideComponent", "Deciding component: subgame_id: " + ContainerParams.subgame_id + " component_id: " + ContainerParams.component_id);
+    LogOut("ContainerWrapper::DecideComponent", "Deciding: subgame_id: " + ContainerParams.subgame_id + " VariantID: " + ContainerParams.VariantID + " component_id: " + ContainerParams.component_id);
 
-    if (ContainerParams.subgame_id.empty() && ContainerParams.component_id.empty())
-    {
-        LogOut("ContainerWrapper::DecideComponent", "Neither subgame nor component specified, mounting defprefix.");
-        return true;
-    }
-    else if (!ContainerParams.subgame_id.empty() && ContainerParams.component_id.empty())
+    //Subgame path: resolve the variant (its ENDPOINTS become the build targets).
+    if (!ContainerParams.subgame_id.empty())
     {
         int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
 
-        //Find the RECOMMENDED entrypoint; fall back to the first one.
-        std::string ResolvedComponentID;
-        std::vector<EntrypointInfo> Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
-        for (auto &EP : Entrypoints)
-            if (EP.IsRecommended) { ResolvedComponentID = EP.ComponentID; break; }
-        if (ResolvedComponentID.empty() && !Entrypoints.empty())
+        //A directly-supplied component_id (with no variant chosen) overrides variant selection —
+        //it becomes the single endpoint (CLI --component, direct-launch testing).
+        if (ContainerParams.VariantID.empty() && !ContainerParams.component_id.empty())
         {
-            ResolvedComponentID = Entrypoints.front().ComponentID;
-            LogWarn("ContainerWrapper::DecideComponent", "No RECOMMENDED entrypoint found, falling back to first: '" + ResolvedComponentID + "'");
+            ContainerParams.Endpoints = { ContainerParams.component_id };
+            LogOut("ContainerWrapper::DecideComponent", "Direct component override: " + ContainerParams.component_id);
+            return true;
         }
 
-        if (!ResolvedComponentID.empty())
+        std::vector<VariantInfo> Variants = GetAvailableVariants(MANIFESTJSON, ContainerParams.subgame_id);
+
+        //If no VariantID was supplied by the caller, pick the RECOMMENDED variant (else first).
+        if (ContainerParams.VariantID.empty())
         {
-            ContainerParams.component_id = ResolvedComponentID;
-            LogOut("ContainerWrapper::DecideComponent", "Only subgame specified, resolved component_id: " + ContainerParams.component_id);
+            for (auto &V : Variants)
+                if (V.IsRecommended) { ContainerParams.VariantID = V.VariantID; break; }
+            if (ContainerParams.VariantID.empty() && !Variants.empty())
+            {
+                ContainerParams.VariantID = Variants.front().VariantID;
+                LogWarn("ContainerWrapper::DecideComponent", "No RECOMMENDED variant found, falling back to first: '" + ContainerParams.VariantID + "'");
+            }
         }
-        LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"]));
+
+        //Resolve the chosen variant's ENDPOINTS into the build target list.
+        ContainerParams.Endpoints = FindEndpointsForVariant(MANIFESTJSON, ContainerParams.subgame_id, ContainerParams.VariantID);
+        LogOut("ContainerWrapper::DecideComponent", "Variant '" + ContainerParams.VariantID + "' resolved to " + std::to_string(ContainerParams.Endpoints.size()) + " endpoint(s).");
+        LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["SUBGAMES"][SubgameIdx].value("TITLE", ContainerParams.subgame_id)));
         return true;
     }
-    else if (ContainerParams.subgame_id.empty() && !ContainerParams.component_id.empty())
+    //Direct component path (editor / comparator): a single component_id is the only endpoint.
+    else if (!ContainerParams.component_id.empty())
     {
         int ComponentIdx = FindComponentIndex(MANIFESTJSON, ContainerParams.component_id);
         if (ComponentIdx == -1) return false;
-        LogOut("ContainerWrapper::DecideComponent", "Running component " + std::string(MANIFESTJSON["COMPONENTS"][ComponentIdx]["NAME"]));
+        ContainerParams.Endpoints = { ContainerParams.component_id };
+        LogOut("ContainerWrapper::DecideComponent", "Running component " + std::string(MANIFESTJSON["COMPONENTS"][ComponentIdx].value("NAME", ContainerParams.component_id)));
         return true;
     }
-    else
-    {
-        LogOut("ContainerWrapper::DecideComponent", "Running subgame " + ContainerParams.subgame_id + " component " + ContainerParams.component_id);
-        return true;
-    }
-    return false;
+    //Neither: bare defprefix.
+    LogOut("ContainerWrapper::DecideComponent", "Neither subgame nor component specified, mounting defprefix.");
+    return true;
 }
 
-//Builds the ordered Recipe by walking the PARENTCOMPONENT chain upward from component_id.
-//The chain is collected leaf-first then reversed, so Recipe[0] is the root ancestor
-//and the last entry is component_id itself. This ensures layers are applied base-first.
+//Builds the ordered Recipe as the UNION of every endpoint's PARENTCOMPONENT chain.
+//For each endpoint (in array order), its leaf-to-root chain is collected and reversed to
+//root-first, then appended to the Recipe skipping any component already present. This yields:
+//  * parent-before-child (each chain is appended root-first),
+//  * shared ancestors mounted exactly once (at their first appearance),
+//  * independent branches ordered by endpoint array order — and because later-in-Recipe means
+//    higher unionfs priority downstream, later endpoints override earlier ones (load order).
 bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    //CREATE RECIPE BY RESOLVING COMPONENT DEPENDENCY CHAIN
     ContainerParams.Recipe.clear();
-    std::string CurrentID = ContainerParams.component_id;
-    while (!CurrentID.empty())
+
+    //Runner-provided components mount first (base layer), then the variant's endpoints on top.
+    std::vector<std::string> Endpoints = ContainerParams.RunnerEndpoints;
+    for (const auto &E : ContainerParams.Endpoints) Endpoints.push_back(E);
+    //Fall back to a single endpoint from component_id if Endpoints wasn't populated (direct mode).
+    if (Endpoints.empty() && !ContainerParams.component_id.empty())
+        Endpoints = { ContainerParams.component_id };
+
+    std::unordered_set<std::string> Seen;
+    for (const std::string &Endpoint : Endpoints)
     {
-        int Idx = FindComponentIndex(MANIFESTJSON, CurrentID);
-        if (Idx == -1) break;
-
-        ContainerParams.Recipe.push_back(CurrentID);
-
-        auto &ParentField = MANIFESTJSON["COMPONENTS"][Idx]["PARENTCOMPONENT"];
-        if (ParentField.is_null() || ParentField == "")
+        //Walk this endpoint's chain leaf-first.
+        std::vector<std::string> Chain;
+        std::string CurrentID = Endpoint;
+        while (!CurrentID.empty())
         {
-            LogOut("ContainerWrapper::CreateRecipe", "No parent, ending recipe.");
-            break;
+            int Idx = FindComponentIndex(MANIFESTJSON, CurrentID);
+            if (Idx == -1) break;
+            Chain.push_back(CurrentID);
+            auto &ParentField = MANIFESTJSON["COMPONENTS"][Idx]["PARENTCOMPONENT"];
+            if (ParentField.is_null() || ParentField == "") break;
+            CurrentID = ParentField;
         }
-        CurrentID = ParentField;
+        //Append root-first, skipping components already pulled in by an earlier endpoint.
+        for (auto It = Chain.rbegin(); It != Chain.rend(); ++It)
+            if (Seen.insert(*It).second)
+                ContainerParams.Recipe.push_back(*It);
     }
-    //Reverse so the root component's subcomponents are mounted first (lowest VFS priority).
-    std::reverse(ContainerParams.Recipe.begin(), ContainerParams.Recipe.end());
+
     LogOut("ContainerWrapper::CreateRecipe", "Recipe: " + [&](const std::vector<std::string>& v){ std::string r; for (const auto &x : v) r += x + " "; return r;}(ContainerParams.Recipe));
     return true;
 }
@@ -316,10 +353,11 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving runner SETTINGS...");
     auto ProcessRunnerSettings = [&](nlohmann::ordered_json &Source)
     {
-        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].contains(ContainerParams.Platform)) return;
-        for (auto &Runner : Source["RUNNERS"][ContainerParams.Platform])
+        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
+        for (auto &Runner : Source["RUNNERS"])
         {
-            if (Runner.value("NAME", std::string()) != ContainerParams.RunnerName) continue;
+            //Match the selected runner by RUNNER_ID.
+            if (Runner.value("RUNNER_ID", std::string()) != ContainerParams.RunnerID) continue;
             if (!Runner.contains("SETTINGS")) return;
             for (auto &Setting : Runner["SETTINGS"])
             {
@@ -392,78 +430,75 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     return true;
 }
 
-//Returns all entrypoints listed under SUBGAMES[SubgameID].ENTRYPOINTS.
-//ComponentName is derived by looking up LASTCOMPONENT in COMPONENTS.
-std::vector<EntrypointInfo> ContainerWrapper::GetAvailableEntrypoints(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
+//Returns all variants listed under SUBGAMES[SubgameID].VARIANTS.
+std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
-    std::vector<EntrypointInfo> Entrypoints;
+    std::vector<VariantInfo> Variants;
     int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
-    if (SubgameIdx == -1) return Entrypoints;
+    if (SubgameIdx == -1) return Variants;
     auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
-    if (!Subgame.contains("ENTRYPOINTS") || !Subgame["ENTRYPOINTS"].is_array()) return Entrypoints;
-    for (auto &EP : Subgame["ENTRYPOINTS"])
+    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Variants;
+    for (auto &V : Subgame["VARIANTS"])
     {
-        std::string LastComp = EP.value("LASTCOMPONENT", std::string());
-        // Derive ComponentName from the LASTCOMPONENT lookup.
-        std::string CompName;
-        int CompIdx = FindComponentIndex(MANIFESTJSON, LastComp);
-        if (CompIdx != -1)
-            CompName = MANIFESTJSON["COMPONENTS"][CompIdx].value("NAME", LastComp);
-        else
-            CompName = LastComp;
-        EntrypointInfo Info;
-        Info.EntrypointID   = EP.value("ENTRYPOINT_ID", std::string());
-        Info.ComponentName  = CompName;
-        Info.ComponentID    = LastComp;
-        Info.IsRecommended  = EP.value("RECOMMENDED", false);
-        Entrypoints.push_back(Info);
+        VariantInfo Info;
+        Info.VariantID     = V.value("VARIANT_ID", std::string());
+        Info.Name          = V.value("NAME", Info.VariantID);
+        Info.IsRecommended = V.value("RECOMMENDED", false);
+        if (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array())
+            for (auto &E : V["ENDPOINTS"])
+                if (E.is_string()) Info.Endpoints.push_back(std::string(E));
+        Variants.push_back(Info);
     }
-    return Entrypoints;
+    return Variants;
 }
 
-//Returns the LASTCOMPONENT value of the entrypoint matching { SubgameID, EntrypointID }.
-//Returns empty string if not found.
-std::string ContainerWrapper::FindComponentForEntrypoint(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &EntrypointID)
+//Returns the ENDPOINTS array of the variant matching { SubgameID, VariantID }.
+//Returns an empty vector if not found.
+std::vector<std::string> ContainerWrapper::FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
 {
+    std::vector<std::string> Endpoints;
     int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
-    if (SubgameIdx == -1) return "";
+    if (SubgameIdx == -1) return Endpoints;
     auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
-    if (!Subgame.contains("ENTRYPOINTS") || !Subgame["ENTRYPOINTS"].is_array()) return "";
-    for (auto &EP : Subgame["ENTRYPOINTS"])
+    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Endpoints;
+    for (auto &V : Subgame["VARIANTS"])
     {
-        if (EP.value("ENTRYPOINT_ID", std::string()) != EntrypointID) continue;
-        return EP.value("LASTCOMPONENT", std::string());
+        if (V.value("VARIANT_ID", std::string()) != VariantID) continue;
+        if (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array())
+            for (auto &E : V["ENDPOINTS"])
+                if (E.is_string()) Endpoints.push_back(std::string(E));
+        break;
     }
-    return "";
+    return Endpoints;
 }
 
-//Finds the entrypoint in MANIFESTJSON matching ContainerParams.ExecutableID (= EntrypointID)
-//under SUBGAMES[ContainerParams.subgame_id].ENTRYPOINTS and populates exe/work-dir/args fields.
+//Finds the variant in MANIFESTJSON matching ContainerParams.VariantID
+//under SUBGAMES[ContainerParams.subgame_id].VARIANTS and populates exe/work-dir/args fields.
 //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
 bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    if (ContainerParams.ExecutableID.empty())
+    if (ContainerParams.VariantID.empty())
     {
-        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No EntrypointID set — skipping.");
+        LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No VariantID set — skipping.");
         return true;
     }
-    // Find the entrypoint with matching ENTRYPOINT_ID in the subgame.
+    // Find the variant with matching VARIANT_ID in the subgame.
     int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
     nlohmann::ordered_json Resolved;
-    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("ENTRYPOINTS"))
+    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
     {
-        for (auto &EP : MANIFESTJSON["SUBGAMES"][SubgameIdx]["ENTRYPOINTS"])
+        for (auto &V : MANIFESTJSON["SUBGAMES"][SubgameIdx]["VARIANTS"])
         {
-            if (EP.value("ENTRYPOINT_ID", std::string()) == ContainerParams.ExecutableID)
-            { Resolved = EP; break; }
+            if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
+            { Resolved = V; break; }
         }
     }
     if (Resolved.is_null() || Resolved.empty())
     {
-        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No entrypoint found for ENTRYPOINT_ID='" + ContainerParams.ExecutableID + "' in subgame '" + ContainerParams.subgame_id + "'");
+        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No variant found for VARIANT_ID='" + ContainerParams.VariantID + "' in subgame '" + ContainerParams.subgame_id + "'");
         return false;
     }
-    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved entrypoint: " + ContainerParams.ExecutableID);
+    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved variant: " + ContainerParams.VariantID);
     // Pick exe key by runner type.
     std::string ExeKey = "EXEPATH";
     if      (ContainerParams.RunnerTypeEnum == RunnerType::Emulator) ExeKey = "ROM";
@@ -538,11 +573,12 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
 //Fills all derived fields in ContainerParams from MANIFEST and GlobalConfigJSON.
 //Must be called after DecideComponent so ContainerParams.subgame_id and platform are set.
 //
-//Runner resolution order:
-//  1. USERSETTINGS[PackageUID]["PREFERRED_RUNNER"]  (per-package user override)
-//  2. SUBGAMES[SubgameIdx]["RECOMMENDED_RUNNER"]   (manifest recommendation)
-//  2. First runner in RUNNERS[Platform]             (any available runner)
-//  3. Hardcoded fallback: umu-run / Wine            (backwards compatibility)
+//Runner resolution: candidates are runners whose PLATFORMS contains the subgame Platform
+//(MANIFEST runners shadow GlobalConfig by RUNNER_ID). The chosen one, in priority order:
+//  1. ContainerParams.RunnerID            (explicit pick from the picker / --runner)
+//  2. the selected variant's RUNNER_ID    (variant pin)
+//  3. USERSETTINGS[PackageUID].PREFERRED_RUNNER
+//  4. the first candidate
 //
 //Path layout differs by runner type:
 //  Wine:  ProgramPath = RuntimePath/drive_c/PackageUID, prefix at TempPath/DEFPREFIX.
@@ -561,11 +597,11 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
         ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"];
-        //UMUID lives under METADATA since v2 of the manifest schema.
+        //UMUID lives under the subgame's METADATA. "0" means no Steam AppID — umu-run treats that
+        //as a generic Wine launch.
         auto &Meta      = MANIFESTJSON["SUBGAMES"][SubgameIdx]["METADATA"];
-        auto &UMUIDField = (Meta.is_object() && Meta.contains("UMUID")) ? Meta["UMUID"] : MANIFESTJSON["SUBGAMES"][SubgameIdx]["UMUID"];
-        //UMUID "0" means no Steam AppID — umu-run accepts this as a generic Wine launch.
-        ContainerParams.UMUID                           = (!UMUIDField.is_null() && UMUIDField.is_string()) ? std::string(UMUIDField) : "0";
+        ContainerParams.UMUID                           = (Meta.is_object() && Meta.contains("UMUID") && Meta["UMUID"].is_string())
+                                                          ? std::string(Meta["UMUID"]) : "0";
         ContainerParams.Platform                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["PLATFORM"];
     }
     else
@@ -578,42 +614,60 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "UMUID: " + ContainerParams.UMUID);
     LogOut("ContainerWrapper::DeriveContainerParams", "Platform: " + ContainerParams.Platform);
 
-    // Runner resolution: USERSETTINGS > RECOMMENDED_RUNNER > first available
+    // Runner resolution — flat RUNNERS arrays filtered by PLATFORMS membership.
+    // Precedence: explicit RunnerID (picker/CLI) > variant pin (VARIANT.RUNNER_ID) > PREFERRED_RUNNER > first candidate.
     std::string PreferredRunner;
     {
         auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             PreferredRunner = std::string(US["PREFERRED_RUNNER"]);
     }
-    //Search for the preferred runner by name, checking MANIFEST RUNNERS first so packages
-    //can define their own runners (e.g. bundled interpreters) that shadow GlobalConfig ones.
-    //Falls back to the first runner in the list for the platform if no name match is found.
-    nlohmann::ordered_json SelectedRunner;
-    auto TrySelectFromSource = [&](nlohmann::ordered_json &Source)
-    {
-        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].contains(ContainerParams.Platform)) return;
-        auto &Runners = Source["RUNNERS"][ContainerParams.Platform];
-        for (auto &Runner : Runners)
-        {
-            std::string RunnerName = (Runner.contains("NAME") && Runner["NAME"].is_string()) ? std::string(Runner["NAME"]) : "";
-            if (!PreferredRunner.empty() && RunnerName == PreferredRunner)
-            {
-                SelectedRunner = Runner;
-                return;
-            }
-        }
-        if (SelectedRunner.is_null() && !Runners.empty())
-            SelectedRunner = Runners[0];
-    };
+    //Variant pin: the selected variant may force a specific runner.
+    std::string VariantPin;
+    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
+        for (auto &V : MANIFESTJSON["SUBGAMES"][SubgameIdx]["VARIANTS"])
+            if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
+            { VariantPin = V.value("RUNNER_ID", std::string()); break; }
 
-    //MANIFEST RUNNERS take priority — allows packages to define self-contained runners.
-    TrySelectFromSource(MANIFESTJSON);
-    //Fall back to GlobalConfig (system-wide runners, fetched from the online registry).
-    if (SelectedRunner.is_null()) TrySelectFromSource(GlobalConfigJSON);
+    //Candidate runners = MANIFEST then GlobalConfig, filtered by PLATFORMS, dedup by RUNNER_ID
+    //(MANIFEST shadows GlobalConfig so a package can override a global runner).
+    std::vector<nlohmann::ordered_json> Candidates;
+    std::unordered_set<std::string> SeenRunnerIds;
+    auto GatherRunners = [&](nlohmann::ordered_json &Source)
+    {
+        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
+        for (auto &R : Source["RUNNERS"])
+        {
+            bool Match = false;
+            if (R.contains("PLATFORMS") && R["PLATFORMS"].is_array())
+                for (auto &P : R["PLATFORMS"])
+                    if (P.is_string() && std::string(P) == ContainerParams.Platform) { Match = true; break; }
+            if (!Match) continue;
+            std::string RID = R.value("RUNNER_ID", std::string());
+            if (!RID.empty() && SeenRunnerIds.count(RID)) continue;
+            SeenRunnerIds.insert(RID);
+            Candidates.push_back(R);
+        }
+    };
+    GatherRunners(MANIFESTJSON);
+    GatherRunners(GlobalConfigJSON);
+
+    nlohmann::ordered_json SelectedRunner;
+    auto PickById = [&](const std::string &Id) -> bool
+    {
+        if (Id.empty()) return false;
+        for (auto &R : Candidates) if (R.value("RUNNER_ID", std::string()) == Id) { SelectedRunner = R; return true; }
+        return false;
+    };
+    //Explicit pick > variant pin > preferred; otherwise the first candidate for the platform.
+    if (!PickById(ContainerParams.RunnerID) && !PickById(VariantPin) && !PickById(PreferredRunner)
+        && !Candidates.empty())
+        SelectedRunner = Candidates.front();
 
     if (!SelectedRunner.is_null())
     {
         //Use explicit null guards — direct JSON-to-string conversion throws on null values.
+        ContainerParams.RunnerID         = SelectedRunner.value("RUNNER_ID", std::string());
         ContainerParams.RunnerName       = (SelectedRunner.contains("NAME")       && SelectedRunner["NAME"].is_string())       ? std::string(SelectedRunner["NAME"])       : "";
         ContainerParams.RunnerExecutable = (SelectedRunner.contains("EXECUTABLE") && SelectedRunner["EXECUTABLE"].is_string()) ? std::string(SelectedRunner["EXECUTABLE"]) : "";
         std::string RunnerTypeStr        = (SelectedRunner.contains("TYPE")       && SelectedRunner["TYPE"].is_string())       ? std::string(SelectedRunner["TYPE"])       : "custom";
@@ -625,38 +679,85 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
         if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
         if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
+        //The runner's own components join the recipe (mounted as base) — see CreateRecipe.
+        if (SelectedRunner.contains("ENDPOINTS") && SelectedRunner["ENDPOINTS"].is_array())
+            for (auto &E : SelectedRunner["ENDPOINTS"]) if (E.is_string()) ContainerParams.RunnerEndpoints.push_back(std::string(E));
     }
     else
     {
-        // No runner found — fall back to umu-run/Wine for backwards compatibility
-        ContainerParams.RunnerExecutable = "umu-run";
-        ContainerParams.RunnerTypeEnum   = RunnerType::Wine;
-        LogWarn("ContainerWrapper::DeriveContainerParams", "No runner found for platform '" + ContainerParams.Platform + "', falling back to umu-run.");
+        //No runner serves this platform — a malformed/incomplete package. Fail loudly rather than
+        //guessing; the launch will abort with an empty runner.
+        LogErr("ContainerWrapper::DeriveContainerParams", "No runner found for platform '" + ContainerParams.Platform + "'.");
     }
     LogOut("ContainerWrapper::DeriveContainerParams", "Runner: " + ContainerParams.RunnerName + " (" + ContainerParams.RunnerExecutable + ")");
 
-    //System Variables — queried live from Qt so they reflect the actual display at launch time.
-    ContainerParams.ScreenWidth                         = std::to_string(QGuiApplication::primaryScreen()->geometry().width());
+    //System Variables — screen geometry. QGuiApplication screen access is only valid on the main
+    //(GUI) thread; the GUI pre-populates ScreenWidth/Height before launching on its worker thread.
+    //We only query live when we are actually on the main thread with a valid primary screen (so the
+    //values stay accurate for direct main-thread callers), and otherwise trust what was passed in.
+    if (ContainerParams.ScreenWidth.empty() || ContainerParams.ScreenHeight.empty())
+    {
+        if (qApp && QThread::currentThread() == qApp->thread())
+            if (QScreen * Scr = QGuiApplication::primaryScreen())
+            {
+                ContainerParams.ScreenWidth  = std::to_string(Scr->geometry().width());
+                ContainerParams.ScreenHeight = std::to_string(Scr->geometry().height());
+            }
+        if (ContainerParams.ScreenWidth.empty())  ContainerParams.ScreenWidth  = "0";
+        if (ContainerParams.ScreenHeight.empty()) ContainerParams.ScreenHeight = "0";
+    }
     LogOut("ContainerWrapper::DeriveContainerParams", "ScreenWidth: " + ContainerParams.ScreenWidth);
-
-    ContainerParams.ScreenHeight                        = std::to_string(QGuiApplication::primaryScreen()->geometry().height());
     LogOut("ContainerWrapper::DeriveContainerParams", "ScreenHeight: " + ContainerParams.ScreenHeight);
 
-    //All paths are derived from PackagePath so packages are fully self-contained and relocatable.
-    ContainerParams.RuntimePath                         = ContainerParams.PackagePath / "RUNTIME";
+    //All ephemeral session state lives outside the package, under <TempRoot>/PackageUID,
+    //so the package directory itself stays pristine. RUNTIME, WRITELAYER, DEFPREFIX and the
+    //per-layer pre-mount dirs are all nested inside TempPath and wiped together by Cleanup().
+    //TempRoot is configurable via Settings > Storage & Paths; default is ~/.VidyaGod/TEMP.
+    std::filesystem::path TempRoot = std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod" / "TEMP";
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+    {
+        const auto &S = GlobalConfigJSON["Settings"];
+        if (S.contains("Paths") && S["Paths"].is_object()
+            && S["Paths"].contains("TempRoot") && S["Paths"]["TempRoot"].is_string()
+            && !std::string(S["Paths"]["TempRoot"]).empty())
+            TempRoot = std::filesystem::path(std::string(S["Paths"]["TempRoot"]));
+    }
+    ContainerParams.TempPath                            = TempRoot / ContainerParams.PackageUID;
+    LogOut("ContainerWrapper::DeriveContainerParams", "TempPath: " + ContainerParams.TempPath.string());
+
+    ContainerParams.RuntimePath                         = ContainerParams.TempPath / "RUNTIME";
     LogOut("ContainerWrapper::DeriveContainerParams", "RuntimePath: " + ContainerParams.RuntimePath.string());
 
-    ContainerParams.MetaDataPath                        = ContainerParams.PackagePath / "METADATA";
-    LogOut("ContainerWrapper::DeriveContainerParams", "MetaDataPath: " + ContainerParams.MetaDataPath.string());
+    ContainerParams.WriteLayerPath                      = ContainerParams.TempPath / "WRITELAYER";
+    LogOut("ContainerWrapper::DeriveContainerParams", "WriteLayerPath: " + ContainerParams.WriteLayerPath.string());
 
-    ContainerParams.PackageFilesPath                    = ContainerParams.PackagePath / "PACKAGEFILES";
-    LogOut("ContainerWrapper::DeriveContainerParams", "PackageFilesPath: " + ContainerParams.PackageFilesPath.string());
-
+    //Durable persist store stays inside the package so saves travel with it.
     ContainerParams.UserDataPath                        = ContainerParams.PackagePath / "USERDATA";
     LogOut("ContainerWrapper::DeriveContainerParams", "UserDataPath: " + ContainerParams.UserDataPath.string());
 
-    ContainerParams.TempPath                            = ContainerParams.PackagePath / "TEMP";
-    LogOut("ContainerWrapper::DeriveContainerParams", "TempPath: " + ContainerParams.TempPath.string());
+    //Parse the optional top-level PERSIST object. Absent → ALL/REGISTRY false, DIRS defaults below.
+    {
+        const nlohmann::ordered_json Persist = MANIFESTJSON.value("PERSIST", nlohmann::ordered_json::object());
+        ContainerParams.PersistAll      = Persist.value("ALL", false);
+        ContainerParams.PersistRegistry = Persist.value("REGISTRY", false);
+        ContainerParams.PersistDirs.clear();
+        if (Persist.contains("DIRS") && Persist["DIRS"].is_array())
+        {
+            for (const auto &D : Persist["DIRS"])
+                if (D.is_string() && !std::string(D).empty())
+                    ContainerParams.PersistDirs.push_back(D);
+        }
+        else
+        {
+            //Sane implicit default: a game-created leaf save folder that does not shadow the
+            //Wine user-profile skeleton (Documents/AppData) the way bind-mounting drive_c/users would.
+            ContainerParams.PersistDirs.push_back("drive_c/users/steamuser/Saved Games");
+        }
+        LogOut("ContainerWrapper::DeriveContainerParams",
+               "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
+               " REGISTRY=" + std::string(ContainerParams.PersistRegistry ? "true" : "false") +
+               " DIRS=" + std::to_string(ContainerParams.PersistDirs.size()));
+    }
 
     // Wine-specific: prefix lives under TEMP/DEFPREFIX, programs under drive_c/PackageUID
     // Other runners: ProgramPath is the root of the RUNTIME mount
@@ -678,17 +779,8 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
     LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
-    //Resolve the default EntrypointID from the RECOMMENDED entrypoint; fall back to first.
+    //VariantID (and its Endpoints) are already resolved in DecideComponent.
     //Exe/args/workdir resolution is deferred to ResolveExecutableDefinition().
-    if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
-    {
-        auto Entrypoints = GetAvailableEntrypoints(MANIFESTJSON, ContainerParams.subgame_id);
-        for (auto &EP : Entrypoints)
-            if (EP.IsRecommended) { ContainerParams.ExecutableID = EP.EntrypointID; break; }
-        if (ContainerParams.ExecutableID.empty() && !Entrypoints.empty())
-            ContainerParams.ExecutableID = Entrypoints.front().EntrypointID;
-        LogOut("ContainerWrapper::DeriveContainerParams", "EntrypointID (recommended): " + ContainerParams.ExecutableID);
-    }
     //WorkDir defaults to ProgramPath; overridden by ResolveExecutableDefinition once SubComponentsArray is built.
     {
         ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath;
@@ -711,8 +803,7 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["ScreenWidth"] = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
     VariablesMap["RuntimePath"] = this->RuntimePath;
-    VariablesMap["MetaDataPath"] = this->MetaDataPath;
-    VariablesMap["PackageFilesPath"] = this->PackageFilesPath;
+    VariablesMap["WriteLayerPath"] = this->WriteLayerPath;
     VariablesMap["UserDataPath"] = this->UserDataPath;
     VariablesMap["TempPath"] = this->TempPath;
     VariablesMap["ProgramPath"] = this->ProgramPath;
@@ -1042,7 +1133,7 @@ bool ContainerWrapper::MergeRegPatchFiles(struct ContainerParams &ContainerParam
 }
 
 //Applies OVERRIDE:true RegEdit subcomponents directly into the mounted runtime.
-//Called post-MountVFS so the values land in the RW USERDATA layer, taking precedence over
+//Called post-MountVFS so the values land in the RW WRITELAYER, taking precedence over
 //both DEFPREFIX and any previously COW'd registry state from prior game sessions.
 bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerParams)
 {
@@ -1213,7 +1304,7 @@ bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &Cont
         if (SubComponentJSON.contains("TARGET") && !SubComponentJSON["TARGET"].is_null() && !SubComponentJSON["TARGET"].empty())
             TargetPath = TargetPath / std::string(SubComponentJSON["TARGET"]);
 
-        std::filesystem::path SourcePath = ContainerParams.PackageFilesPath / std::string(SubComponentJSON["PATH"]);
+        std::filesystem::path SourcePath = ContainerParams.PackagePath / std::string(SubComponentJSON["PATH"]);
 
         if (Type == "VFSZipLayer")
         {
@@ -1303,9 +1394,13 @@ bool ContainerWrapper::AddToVFSString(struct ContainerParams &ContainerParams, s
     }
 }
 
-//Prepends USERDATA=RW as the writable top layer of the union stack.
-//This gives the copy-on-write semantics: reads fall through to read-only layers,
-//writes go to USERDATA and persist across sessions.
+//Prepends the writable top layer of the union stack, giving copy-on-write semantics:
+//reads fall through to read-only layers; writes go to the RW branch.
+//  Default      → ephemeral WRITELAYER (wiped by Cleanup). Selective persistence is layered on
+//                 afterwards via PERSIST.DIRS bind-mounts and PERSIST.REGISTRY.
+//  PERSIST.ALL  → the durable UserDataPath IS the RW branch, so the entire overlay persists
+//                 (old behavior). The RUNTIME union then exposes durable data and is registered
+//                 in CleanupPersistPaths for the non-lazy unmount safeguard (done in MountVFS).
 //Returns false if VFSString is empty (no read-only layers were added first).
 bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams)
 {
@@ -1323,10 +1418,14 @@ bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams
         }
         else
         {
-            //Ensure USERDATA exists before it is used as a unionfs branch.
-            std::filesystem::create_directories(ContainerParams.UserDataPath);
-            ContainerParams.VFSString = ContainerParams.UserDataPath.string() + "=RW:" + ContainerParams.VFSString;
-            LogOut("ContainerWrapper::FinalizeVFSString", "Finalized VFSString. Final VFSSTRING:");
+            const std::filesystem::path RWBranch = ContainerParams.PersistAll
+                ? ContainerParams.UserDataPath        //durable — whole overlay persists
+                : ContainerParams.WriteLayerPath;     //ephemeral — wiped on Cleanup
+            //Ensure the RW branch exists before it is used as a unionfs branch.
+            std::filesystem::create_directories(RWBranch);
+            ContainerParams.VFSString = RWBranch.string() + "=RW:" + ContainerParams.VFSString;
+            LogOut("ContainerWrapper::FinalizeVFSString",
+                   std::string("Finalized VFSString (RW branch ") + (ContainerParams.PersistAll ? "DURABLE USERDATA" : "ephemeral WRITELAYER") + "). Final VFSSTRING:");
             std::cout << ContainerParams.VFSString << std::endl;
             return true;
         }
@@ -1353,8 +1452,13 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 
     if (!result)
     {
-        //Success
-        ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
+        //Success. In PERSIST.ALL mode the union's RW branch is the durable UserDataPath, so the
+        //RUNTIME mount exposes real saves — it must be unmounted via the non-lazy safeguard
+        //(CleanupPersistPaths) rather than the lazy CleanupUnmountPaths path.
+        if (ContainerParams.PersistAll)
+            ContainerParams.CleanupPersistPaths.push_back(ContainerParams.RuntimePath);
+        else
+            ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
         LogSucc("ContainerWrapper::MountVFS", "Successfully mounted VFS.");
         return true;
     }
@@ -1364,6 +1468,79 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
         LogErr("ContainerWrapper::MountVFS", "Failed to mount VFS.");
         return false;
     }
+}
+
+//Bind-mounts each PERSIST.DIRS entry from the durable UserDataPath onto its runtime-root-relative
+//path, so the game writes straight into the package's persistent store (no copy). The bind hides
+//whatever lower layers had at that exact path, which is why DIRS must name game-created leaf save
+//folders rather than skeleton dirs. Each mountpoint is registered in CleanupPersistPaths so the
+//Cleanup safeguard unmounts it non-lazily before TempPath is wiped.
+bool ContainerWrapper::MountPersistDirs(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll) return true; //whole overlay already durable
+    for (const std::string &Rel : ContainerParams.PersistDirs)
+    {
+        std::filesystem::path Src = ContainerParams.UserDataPath / Rel; //durable source (in package)
+        std::filesystem::path Dst = ContainerParams.RuntimePath  / Rel; //mountpoint inside the union
+        std::error_code ec;
+        std::filesystem::create_directories(Src, ec);
+        std::filesystem::create_directories(Dst, ec); //COWs the mountpoint into the RW branch
+        LogOut("ContainerWrapper::MountPersistDirs", "Binding persist dir " + Src.string() + " -> " + Dst.string());
+        //bindfs RW (no -r): writes pass through to the durable source.
+        if (!ContainerWrapper::RunCommand("bindfs", {Src, Dst}))
+        {
+            ContainerParams.CleanupPersistPaths.push_back(Dst);
+        }
+        else
+        {
+            LogErr("ContainerWrapper::MountPersistDirs", "FAILED to bind persist dir " + Src.string());
+        }
+    }
+    return true;
+}
+
+//The 3 Wine registry files that hold per-prefix state.
+static const char *const kRegFiles[] = { "system.reg", "user.reg", "userdef.reg" };
+
+//Seeds previously-persisted reg files from UserDataPath/__REGISTRY__/ into the ephemeral
+//WRITELAYER before the union mounts, so they shadow the DEFPREFIX base. Wine always writes the
+//complete file, so a whole persisted reg file is correct (no stripped-delta shadowing).
+bool ContainerWrapper::SeedPersistRegistry(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll) return true; //durable RW branch already holds the reg files
+    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
+    std::error_code ec;
+    std::filesystem::create_directories(ContainerParams.WriteLayerPath, ec);
+    for (const char *const Name : kRegFiles)
+    {
+        const std::filesystem::path SrcReg = RegStore / Name;
+        if (!std::filesystem::exists(SrcReg)) continue;
+        const std::filesystem::path DstReg = ContainerParams.WriteLayerPath / Name;
+        std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) LogWarn("ContainerWrapper::SeedPersistRegistry", "Could not seed " + std::string(Name) + ": " + ec.message());
+        else    LogOut("ContainerWrapper::SeedPersistRegistry", "Seeded persisted " + std::string(Name));
+    }
+    return true;
+}
+
+//Captures the session's registry by copying RuntimePath/*.reg into UserDataPath/__REGISTRY__/.
+//Runs during Cleanup BEFORE the runtime is unmounted/wiped. Bounded copy of small metadata files.
+bool ContainerWrapper::CapturePersistRegistry(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll) return true; //already durable
+    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
+    std::error_code ec;
+    std::filesystem::create_directories(RegStore, ec);
+    for (const char *const Name : kRegFiles)
+    {
+        const std::filesystem::path SrcReg = ContainerParams.RuntimePath / Name;
+        if (!std::filesystem::exists(SrcReg)) continue;
+        const std::filesystem::path DstReg = RegStore / Name;
+        std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec) LogWarn("ContainerWrapper::CapturePersistRegistry", "Could not capture " + std::string(Name) + ": " + ec.message());
+        else    LogOut("ContainerWrapper::CapturePersistRegistry", "Captured " + std::string(Name));
+    }
+    return true;
 }
 
 //Walks DirectoryPath recursively, lowercasing every path and checking for duplicates.
@@ -1429,10 +1606,10 @@ bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerPara
 
 //Processes FileEdit subcomponents in two passes, mirroring the RegEdit pre/post-VFS split.
 //  OverridePass=false (pre-VFS): writes to DefPrefixPath. DefPrefixPath is the lowest-priority
-//    VFS layer, so USERDATA (the RW top layer) naturally shadows it if the user already has the
+//    VFS layer, so WRITELAYER (the RW top layer) naturally shadows it if the user already has the
 //    file — their value sticks without any explicit logic.
 //  OverridePass=true  (post-VFS): writes to RuntimePath via the union, COW-ing directly into
-//    USERDATA — wins unconditionally over any previous state.
+//    WRITELAYER — wins unconditionally over any previous state.
 //MUST BE RUN AFTER VARIABLE SUBSTITUTION (already done in BuildSubComponentsArray).
 bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass)
 {
@@ -1543,7 +1720,7 @@ bool ContainerWrapper::FileOverwrite(const std::string &Value, const std::filesy
 //Runner ENV values undergo %VARIABLE% substitution before being inserted into the
 //process environment, so tokens like %WINEPREFIX% are expanded at launch time.
 //
-//WorkDir falls back to RuntimePath (VFS) or PackageFilesPath if the configured path
+//WorkDir falls back to RuntimePath (VFS) or PackagePath if the configured path
 //does not exist in the mounted runtime.
 bool ContainerWrapper::Execute(std::string OverrideExe)
 {
@@ -1602,11 +1779,11 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
 
     //If the configured working directory doesn't exist in the mounted runtime, fall back
-    //gracefully: prefer the RuntimePath (VFS root) if VFS was used, otherwise PackageFilesPath.
+    //gracefully: prefer the RuntimePath (VFS root) if VFS was used, otherwise PackagePath.
     std::filesystem::path FinalWorkDir = ContainerParams.WorkDirPathComplete;
     if (!std::filesystem::exists(FinalWorkDir))
     {
-        FinalWorkDir = ContainerParams.UsesVFS ? ContainerParams.RuntimePath : ContainerParams.PackageFilesPath;
+        FinalWorkDir = ContainerParams.UsesVFS ? ContainerParams.RuntimePath : ContainerParams.PackagePath;
         LogOut("ContainerWrapper::Execute", "WorkDirPath does not exist, falling back to " + FinalWorkDir.string());
     }
 
@@ -1699,27 +1876,158 @@ void ContainerWrapper::KillGame()
     ActiveRunProcess->kill(); // Qt-level cleanup in case process didn't die
 }
 
-//Unmounts all FUSE filesystems registered in CleanupUnmountPaths (in registration order),
-//then removes the RUNTIME and TEMP directory trees.
-//fusermount -uz: lazy unmount (-z) so the call succeeds even if the mount is still busy.
+//Tears the session down in a deliberately ordered, save-safe sequence:
+//  1. Capture the session registry (PERSIST.REGISTRY) while RUNTIME is still mounted.
+//  2. Non-lazily unmount every DURABLE-backed mount (persist binds + the union in PERSIST.ALL),
+//     innermost-first, retrying briefly for a lingering wineserver. These expose
+//     PackagePath/USERDATA through a mountpoint under TempPath.
+//  3. Lazy-unmount the purely ephemeral VFS layers and remove the staging dirs.
+//  4. ONLY IF every durable mount detached cleanly, wipe TempPath. If any is still live, the wipe
+//     is ABORTED — remove_all could otherwise recurse through a live mount into USERDATA and
+//     delete real saves. Leaving TEMP behind is the safe failure mode.
 bool ContainerWrapper::Cleanup()
 {
-    for (std::filesystem::path UnmountPath : ContainerParams.CleanupUnmountPaths)
-    {
-        ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
-    }
-    //Explicitly remove VFSFileLayer staging directories (hard-link or copy; no FUSE involved).
     std::error_code ec;
+
+    //1. Registry capture must read RUNTIME/*.reg before anything is unmounted.
+    if (ContainerParams.PersistRegistry && !ContainerParams.PersistAll)
+        CapturePersistRegistry(this->ContainerParams);
+
+    //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
+    bool DurableUnmountOk = true;
+    for (auto It = ContainerParams.CleanupPersistPaths.rbegin(); It != ContainerParams.CleanupPersistPaths.rend(); ++It)
+    {
+        bool Unmounted = false;
+        for (int Attempt = 0; Attempt < 5 && !Unmounted; ++Attempt)
+        {
+            if (Attempt > 0) QThread::msleep(200); //give a lingering wineserver time to release
+            if (ContainerWrapper::RunCommand("fusermount", {"-u", *It}) == 0)
+                Unmounted = true;
+        }
+        if (!Unmounted)
+        {
+            LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries: " + It->string());
+            //Lazy-detach so it eventually clears, but mark the wipe unsafe for this run.
+            ContainerWrapper::RunCommand("fusermount", {"-uz", *It});
+            DurableUnmountOk = false;
+        }
+    }
+
+    //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
+    for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
+        ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
+
+    //Explicitly remove VFSFileLayer staging directories (hard-link or copy; no FUSE involved).
     for (const std::filesystem::path &DeletePath : ContainerParams.CleanupDeletePaths)
     {
         std::filesystem::remove_all(DeletePath, ec);
         if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove staging dir: " + DeletePath.string() + " — " + ec.message());
     }
-    //remove_all can throw filesystem_error if a path is still a FUSE mountpoint (device busy).
-    //Catch and log rather than crash — stale mounts should not bring down the launcher.
-    std::filesystem::remove_all(this->ContainerParams.RuntimePath, ec);
-    if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove RUNTIME: " + ec.message() + " — may still be mounted.");
+
+    //4. Save-safety gate: never wipe while a durable mount could still be traversed.
+    if (!DurableUnmountOk)
+    {
+        LogErr("ContainerWrapper::Cleanup", "Aborting TEMP wipe to protect USERDATA — a durable-backed mount is still live. TEMP left in place.");
+        return false;
+    }
+
+    //RUNTIME/WRITELAYER/DEFPREFIX all live inside TempPath, so this single removal wipes them all.
     std::filesystem::remove_all(this->ContainerParams.TempPath, ec);
-    if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message());
+    if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove TEMP: " + ec.message() + " — may still be mounted.");
     return true;
+}
+
+//Returns every mountpoint at or under Prefix from /proc/self/mountinfo, deepest-first.
+std::vector<std::string> ContainerWrapper::MountpointsUnder(const std::filesystem::path &Prefix)
+{
+    std::vector<std::string> Result;
+    if (Prefix.empty()) return Result;
+
+    std::ifstream Mounts("/proc/self/mountinfo");
+    if (!Mounts.is_open()) return Result;
+
+    //mountinfo escapes space/tab/newline/backslash as 3-digit octal (\040 etc.); decode them.
+    auto Unescape = [](const std::string &In) -> std::string
+    {
+        std::string Out; Out.reserve(In.size());
+        for (size_t i = 0; i < In.size(); ++i)
+        {
+            if (In[i] == '\\' && i + 3 < In.size()
+                && In[i+1] >= '0' && In[i+1] <= '7'
+                && In[i+2] >= '0' && In[i+2] <= '7'
+                && In[i+3] >= '0' && In[i+3] <= '7')
+            {
+                Out.push_back(static_cast<char>((In[i+1]-'0')*64 + (In[i+2]-'0')*8 + (In[i+3]-'0')));
+                i += 3;
+            }
+            else Out.push_back(In[i]);
+        }
+        return Out;
+    };
+
+    const std::string PrefixStr = Prefix.string();
+    std::string Line;
+    while (std::getline(Mounts, Line))
+    {
+        //Field 5 (0-indexed 4) of a mountinfo line is the mount point.
+        std::istringstream Iss(Line);
+        std::string Field, MountPoint;
+        for (int Idx = 0; Iss >> Field; ++Idx) { if (Idx == 4) { MountPoint = Field; break; } }
+        if (MountPoint.empty()) continue;
+        MountPoint = Unescape(MountPoint);
+
+        if (MountPoint == PrefixStr || MountPoint.rfind(PrefixStr + "/", 0) == 0)
+            Result.push_back(MountPoint);
+    }
+
+    //Deepest-first (longest path first) so children unmount before their parents.
+    std::sort(Result.begin(), Result.end(),
+              [](const std::string &A, const std::string &B){ return A.size() > B.size(); });
+    return Result;
+}
+
+//Clears a previous run's leftovers under TempPath before a new build. See header for the
+//save-safety contract (never wipe while a mount under TempPath is still live).
+void ContainerWrapper::CleanStaleRuntime(const std::filesystem::path &TempPath)
+{
+    if (TempPath.empty()) return;
+
+    std::vector<std::string> StaleMounts = MountpointsUnder(TempPath);
+    const bool Exists = std::filesystem::exists(TempPath);
+    if (StaleMounts.empty() && !Exists) return; //nothing left over — clean slate
+
+    if (!StaleMounts.empty())
+        LogWarn("ContainerWrapper::CleanStaleRuntime",
+                "Found " + std::to_string(StaleMounts.size()) + " stale mount(s) under " +
+                TempPath.string() + " from a previous run; clearing before mount.");
+
+    //Lazy-detach every stale mount (deepest-first). Lazy avoids the "target is busy" errors a
+    //non-lazy unmount spews while a lingering wineserver still holds handles; the actual teardown
+    //then finishes in the background, so we VERIFY it has fully cleared below before touching disk.
+    for (const std::string &Mount : StaleMounts)
+        ContainerWrapper::RunCommand("fusermount", {"-uz", Mount});
+
+    //Save-safety gate (mirrors Cleanup): poll until nothing under TempPath is mounted, so remove_all
+    //can never traverse a still-live PERSIST bind into PackagePath/USERDATA. Wait, don't assume.
+    bool Clear = StaleMounts.empty();
+    for (int Attempt = 0; !Clear && Attempt < 30; ++Attempt) //~6s max for lazy unmounts to settle
+    {
+        QThread::msleep(200);
+        Clear = MountpointsUnder(TempPath).empty();
+    }
+    if (!Clear)
+    {
+        LogErr("ContainerWrapper::CleanStaleRuntime",
+               "Stale mounts under TEMP did not clear in time; leaving it in place to protect USERDATA.");
+        return;
+    }
+
+    if (Exists)
+    {
+        std::error_code Ec;
+        std::filesystem::remove_all(TempPath, Ec);
+        if (Ec) LogWarn("ContainerWrapper::CleanStaleRuntime", "Could not remove stale TEMP: " + Ec.message());
+        else if (!StaleMounts.empty() || Exists)
+            LogSucc("ContainerWrapper::CleanStaleRuntime", "Stale runtime cleared.");
+    }
 }

@@ -14,13 +14,14 @@ VidyaGod is a game launcher built around a structured, reproducible package form
    - [Headless Mode (CLI)](#headless-mode-cli)
 5. [Package Directory Structure](#5-package-directory-structure)
 6. [MANIFEST.json — Complete Schema Reference](#6-manifestjson--complete-schema-reference)
+   - [Modular Manifests](#modular-manifests)
    - [Top-Level Fields](#top-level-fields)
    - [SUBGAMES](#subgames)
-   - [ENTRYPOINTS](#entrypoints)
+   - [VARIANTS](#variants)
    - [COMPONENTS](#components)
    - [SUBCOMPONENT Types](#subcomponent-types)
    - [CUSTOMVARS](#customvars)
-   - [RUNNERS (Package-Level)](#runners-package-level)
+   - [RUNNERS](#runners)
 7. [Component Dependency Chain](#7-component-dependency-chain)
 8. [Variable Substitution](#8-variable-substitution)
 9. [CustomVar Type System](#9-customvar-type-system)
@@ -77,9 +78,9 @@ The same package also contains both Reign of Chaos and The Frozen Throne as sepa
 
 #### Base game plus expansions and DLC on demand
 
-An Age of Empires II package contains the Age of Kings, The Conquerors, and the Forgotten Empires fan expansion as separate subgames sharing a common component chain. The Conquerors builds on top of the Age of Kings component; Forgotten Empires builds on top of The Conquerors. A user can launch any of the three independently, or launch the original Age of Kings with just the no-CD patch and none of the later layers. Every combination is an entrypoint — a single click in the UI, no files extracted or reorganized.
+An Age of Empires II package contains the Age of Kings, The Conquerors, and the Forgotten Empires fan expansion as separate subgames sharing a common component chain. The Conquerors builds on top of the Age of Kings component; Forgotten Empires builds on top of The Conquerors. A user can launch any of the three independently, or launch the original Age of Kings with just the no-CD patch and none of the later layers. Every combination is a variant — a single click in the UI, no files extracted or reorganized.
 
-The same pattern applies naturally to any game with a series of expansions: the base game is the root component, each expansion adds a child component, and each entrypoint names how deep to build. Adding a new expansion to the package means adding one component and one entrypoint — nothing else changes.
+The same pattern applies naturally to any game with a series of expansions: the base game is the root component, each expansion adds a child component, and each variant names which endpoints to build. Adding a new expansion to the package means adding one component and one variant — nothing else changes.
 
 #### Immutable base files, permanent user data separation
 
@@ -99,7 +100,7 @@ In a VidyaGod package, every registry key the game needs is declared explicitly 
 
 Because the base files are never modified, mods can be applied as additional VFS layers on top of the base game without any risk to the original installation. A mod component sits above the base in the union stack — its files take precedence where paths conflict, but the original files remain intact beneath. Removing a mod means removing a component; no uninstaller, no file restoration, no diff-and-patch dance.
 
-Multiple mod configurations can coexist as separate component branches from the same base. A user can switch between a vanilla configuration, a graphics-enhancement mod, and a total conversion mod via the entrypoint picker — each one a different `LASTCOMPONENT` selection, each one assembling a different union stack from the same underlying files.
+Multiple mod configurations can coexist as separate component branches from the same base. A user can switch between a vanilla configuration, a graphics-enhancement mod, and a total conversion mod via the variant picker — each variant naming a set of `ENDPOINTS` (terminal components), each assembling a different union stack from the same underlying files. Because a variant can name *several* endpoints, side branches combine: a base game and an independently-rooted mod can be stacked together in one launch, with array order setting the mod load order.
 
 #### Capturing the complete preservation artifact
 
@@ -118,16 +119,16 @@ The result is not just "the game files" — it is a complete, runnable specifica
 
 A VidyaGod package is organized around four concepts:
 
-- **Subgame** — A game title with metadata (cover art, TGDB ID, release date, etc.) and a list of launch configurations called entrypoints. A single package can contain multiple subgames — base game, expansions, and spin-offs — sharing the same component infrastructure.
+- **Subgame** — A game title with metadata (cover art, TGDB ID, release date, etc.) and a list of launch configurations called variants. A single package can contain multiple subgames — base game, expansions, and spin-offs — sharing the same component infrastructure.
 - **Component** — A named layer of the runtime environment, optionally depending on a parent component. Components stack together to form the full VFS. Each component adds files (VFS layers), registry configuration, DLL overrides, or config file patches — nothing else.
-- **Entrypoint** — A launch configuration under a subgame: specifies which component level to build to (`LASTCOMPONENT`), the executable path, arguments, and forced variable values. The entrypoint determines the depth of the VFS stack for a given launch.
+- **Variant** — A launch configuration under a subgame: specifies the executable (path, arguments, working dir), forced variable values, and an `ENDPOINTS` array. Each **endpoint** is a terminal component; the variant's recipe is the union of every endpoint's ancestor chain, so a variant can assemble non-linear, multi-branch stacks (mods + base) in one launch. Array order sets load order (later overrides earlier).
 - **CustomVar** — A named variable defined at manifest level, resolved through a two-layer pipeline (token substitution then type translation), and substituted into any `%KEY%` token throughout the manifest. CustomVars expose game settings (resolution, language, game mode) to the user in a typed, human-readable form while handling the translation to whatever raw format the game expects.
 
 ### Key Design Principles
 
 **Components exclusively construct the runtime.** They contain VFS layers, registry patches, DLL overrides, and config file edits — no execution logic.
 
-**Entrypoints exclusively describe what to run.** They reference a component chain depth and carry execution parameters.
+**Variants exclusively describe what to run.** They reference a set of endpoints (terminal components) and carry execution parameters.
 
 **CustomVars are manifest-wide configuration.** They are not owned by any component; any subcomponent in any component can reference `%KEY%` and the variable will be resolved.
 
@@ -189,45 +190,62 @@ See [CLI Reference](#14-cli-reference) for all flags.
 
 ## 5. Package Directory Structure
 
+The package directory is **flat** and stays **pristine** — only `MANIFEST.json`, cover images,
+game archives, and the durable `USERDATA/` store live in it. All ephemeral session state lives
+*outside* the package, under `~/.VidyaGod/TEMP/[PACKAGEUID]/`.
+
 ```
-[PACKAGEUID][vPACKAGEVERSION] Package Name/
-├── METADATA/
-│   ├── MANIFEST.json          ← All package configuration (required)
-│   └── [cover images]         ← PNG/JPG files referenced in METADATA.COVER
-│
-├── PACKAGEFILES/              ← Source archives and directories for VFS layers
-│   ├── game.zip               ← Mounted read-only via fuse-zip (VFSZipLayer)
-│   ├── patch/                 ← Bind-mounted read-only via bindfs (VFSDirLayer)
-│   └── config.ini             ← Hard-linked into staging dir (VFSFileLayer)
-│
-├── USERDATA/                  ← Writable copy-on-write top layer (persistent)
-│   └── ...                    ← Game saves, config changes, COW'd registry files
-│
-├── RUNTIME/                   ← Final mounted union filesystem (ephemeral)
+[PACKAGEUID][vPACKAGEVERSION] Package Name/   ← THE PACKAGE (pristine, relocatable)
+├── MANIFEST.json              ← All package configuration (required)
+├── [cover images]             ← PNG/JPG files referenced in METADATA.COVER
+├── game.zip                   ← Source archive, mounted read-only via fuse-zip (VFSZipLayer)
+├── patch/                     ← Source dir, bind-mounted read-only via bindfs (VFSDirLayer)
+└── USERDATA/                  ← DURABLE persist store (survives Cleanup, travels with the package)
+    ├── drive_c/.../Saved Games/  ← PERSIST.DIRS subtrees, bind-mounted into the runtime
+    └── __REGISTRY__/             ← PERSIST.REGISTRY captures of user/system/userdef.reg
+
+~/.VidyaGod/TEMP/[PACKAGEUID]/  ← EPHEMERAL session state (wiped by Cleanup after exit)
+├── RUNTIME/                   ← Final mounted union filesystem
 │   ├── drive_c/               ← Wine only: Windows filesystem root
 │   │   └── [PACKAGEUID]/      ← Game files visible at C:\[PACKAGEUID]\
 │   └── ...                    ← Other runner types: files at root
-│
-└── TEMP/                      ← Temporary staging (ephemeral)
-    ├── 0/                     ← Staging dir for first VFS layer
-    │   └── drive_c/           ← Wine mode: layer wrapped at drive_c/[PACKAGEUID]/
-    ├── 1/                     ← Staging dir for second VFS layer
-    ├── ...
-    └── DEFPREFIX/             ← Wine prefix (created by wineboot)
-        ├── drive_c/
-        ├── system.reg
-        ├── user.reg
-        ├── RegPatch32.reg     ← Generated; imported then left in prefix
-        └── RegPatch64.reg
+├── WRITELAYER/                ← Writable copy-on-write top layer (catch-all for NON-persisted writes)
+├── DEFPREFIX/                 ← Wine prefix (created by wineboot)
+│   ├── system.reg
+│   ├── user.reg
+│   └── RegPatch32.reg / RegPatch64.reg  ← Generated; imported then left in prefix
+└── [0] [1] ...                ← Numbered pre-mount staging dirs (one per VFS layer)
 ```
 
-`RUNTIME/` and `TEMP/` are created at launch and removed by `Cleanup()` after the game exits. `USERDATA/` accumulates across sessions.
+Everything under `~/.VidyaGod/TEMP/[PACKAGEUID]/` is created at launch and removed by `Cleanup()`
+after the game exits. The in-package `USERDATA/` accumulates across sessions and holds only what the
+`PERSIST` manifest object declares (see [PERSIST](#persist)). In `PERSIST.ALL` mode the union's RW
+branch *is* `USERDATA/` directly, so the entire overlay persists (the classic copy-on-write behavior).
 
 ---
 
 ## 6. MANIFEST.json — Complete Schema Reference
 
-The manifest is a single JSON file at `METADATA/MANIFEST.json`. All fields use `UPPER_SNAKE_CASE` keys. Comments are not valid JSON — they are shown here for documentation purposes only.
+The manifest is conventionally a single JSON file at the package root (`MANIFEST.json`), but a package may **split its manifest across multiple `*.json` files** (see [Modular Manifests](#modular-manifests) below). All fields use `UPPER_SNAKE_CASE` keys. Comments are not valid JSON — they are shown here for documentation purposes only.
+
+### Modular Manifests
+
+At load time VidyaGod **merges every `*.json` file** in the package directory into one assembled manifest. No file is privileged — identity (`PACKAGEUID`/`PACKAGENAME`/`PACKAGEVERSION`) and cross-file dependencies resolve in the merged result. This makes packages modular: a mod, an expansion, or an embedded custom runner ships as its own `.json` dropped into the package dir.
+
+**Merge rules (ID-aware recursive merge):**
+- Objects merge key-by-key.
+- Arrays of objects with a known **ID field** merge by that ID — same ID deep-merges, new ID appends:
+  - `SUBGAMES`→`SUBGAMEID`, `COMPONENTS`→`COMPONENTID`, `VARIANTS`→`VARIANT_ID`, `CUSTOMVARS`→`KEY`, `RUNNERS`→`RUNNER_ID`.
+- Plain arrays (e.g. `ENDPOINTS`, `SUBCOMPONENTS`) concatenate.
+- Conflicting scalars keep the first value and emit a warning.
+
+So a fragment can **inject a variant into an existing subgame** (matched by `SUBGAMEID`) or add a component whose `PARENTCOMPONENT` / a variant `ENDPOINT` points at a component defined in another file. Example: `base.json` defines subgame `bg1` with the vanilla variant and `c_base`; `scs_mod.json` adds `c_scs` (parent `c_base`) and a new `scs` variant under `bg1` — at launch the assembled `bg1` offers both variants.
+
+**One identity per directory.** A package directory is exactly one package: the identity fields (`PACKAGEUID`/`PACKAGENAME`/`PACKAGEVERSION`) may be declared in any single fragment, but if two files declare *different* values it is a hard error — fragments add content (subgames, variants, components, runners), they do not introduce a second package.
+
+**Validation guards.** After assembly the manifest is validated. **Errors block launch**: missing identity, conflicting identities across fragments, a `PARENTCOMPONENT` or variant `ENDPOINT` that references an unknown component, or a `PARENTCOMPONENT` cycle. **Warnings** are advisory (subgames with no variants, variants with no endpoints, multiple `RECOMMENDED`, scalar conflicts). The Package Editor surfaces these in a **Validation** tab.
+
+**Fragment-aware editor.** The Package Editor shows the fully assembled package; each subgame, component, variant, and custom-var carries a **File:** selector showing which fragment owns it, and editing routes the change back to that file (reference pickers list items from all files). Adding an element prompts for a target file. The **JSON** tab edits one fragment file's raw text at a time, with **+ New File** / **Delete File** controls.
 
 ### Top-Level Fields
 
@@ -239,7 +257,8 @@ The manifest is a single JSON file at `METADATA/MANIFEST.json`. All fields use `
     "CUSTOMVARS":     [...],
     "SUBGAMES":       [...],
     "COMPONENTS":     [...],
-    "RUNNERS":        {...}
+    "RUNNERS":        [...],
+    "PERSIST":        {...}
 }
 ```
 
@@ -251,7 +270,8 @@ The manifest is a single JSON file at `METADATA/MANIFEST.json`. All fields use `
 | `CUSTOMVARS` | array | no | Manifest-wide configurable variables |
 | `SUBGAMES` | array | yes | One or more game titles in this package |
 | `COMPONENTS` | array | yes | Runtime layers that build the VFS environment |
-| `RUNNERS` | object | no | Custom runner definitions (platform → array of runner objects) |
+| `RUNNERS` | array | no | First-class runner definitions (flat array, merged by `RUNNER_ID`); same schema as GlobalConfig |
+| `PERSIST` | object | no | Declares which runtime state survives into the durable `USERDATA/` store (see below) |
 
 ---
 
@@ -265,8 +285,7 @@ Each entry in `SUBGAMES` represents a distinct game title (or edition) within th
     "TITLE":                "Age of Empires II - The Conquerors",
     "PLATFORM":             "Microsoft Windows",
     "GAMEUID":              "13006",
-    "DEFAULT_ENTRYPOINT_ID":"UserPatch v1.5 Build 6268",
-    "ENTRYPOINTS":          [...],
+    "VARIANTS":             [...],
     "METADATA": {
         "TGDBID":           "13006",
         "STEAMAPPID":       null,
@@ -302,10 +321,9 @@ Each entry in `SUBGAMES` represents a distinct game title (or edition) within th
 |---|---|---|---|
 | `SUBGAMEID` | string | yes | Unique identifier within the package |
 | `TITLE` | string | yes | Display title |
-| `PLATFORM` | string | yes | Key into the `RUNNERS` lookup table (e.g. `"Microsoft Windows"`, `"SNES"`, `"Custom"`) |
+| `PLATFORM` | string | yes | Selects candidate runners (those whose `PLATFORMS` contains it), e.g. `"Microsoft Windows"`, `"SNES"`, `"Infinity Engine"` |
 | `GAMEUID` | string | yes | External database identifier (e.g. TGDB game ID) |
-| `DEFAULT_ENTRYPOINT_ID` | string | yes | `ENTRYPOINT_ID` to select when no user preference is saved |
-| `ENTRYPOINTS` | array | yes | Launch configurations for this subgame |
+| `VARIANTS` | array | yes | Launch configurations for this subgame (see below) |
 | `METADATA` | object | yes | Descriptive metadata (see below) |
 
 #### METADATA Fields
@@ -316,7 +334,7 @@ Each entry in `SUBGAMES` represents a distinct game title (or edition) within th
 | `STEAMAPPID` | Steam App ID (null if not on Steam) |
 | `UMUID` | UMU/Steam compatibility ID for umu-run. `"0"` means generic Wine launch |
 | `GOGPRODUCTID` | GOG Product ID |
-| `COVER` | Filename of the cover image, relative to `METADATA/` |
+| `COVER` | Filename of the cover image, relative to the package root |
 | `RELEASEDATE` | ISO 8601 date of original release |
 | `EDITION` | Edition name (e.g. `"Original Release"`, `"GOG Version"`) |
 | `EDITIONDATE` | ISO 8601 date of this specific edition |
@@ -341,33 +359,42 @@ All multiplayer/feature fields accept `"Yes"`, `"No"`, `"NA"`, or `null`.
 
 ---
 
-### ENTRYPOINTS
+### VARIANTS
 
-Entrypoints live inside their subgame and describe a specific way to launch it. Each entrypoint references a component (its `LASTCOMPONENT`) to determine how deep the VFS stack is built.
+Variants live inside their subgame and describe a specific way to launch it. A variant carries the executable definition **and** an `ENDPOINTS` array — the set of terminal components to build. Each endpoint walks its own `PARENTCOMPONENT` chain; the **union** of all those chains (deduplicated) is the recipe. This is what lets a launch pull in **non-linear / side-branch** assemblies (e.g. a base game plus a mod that hangs off the base via its own subtree), not just a single linear chain.
 
 ```json
 {
-    "ENTRYPOINT_ID": "UserPatch v1.5 Build 6268",
-    "LASTCOMPONENT": "aoe2_tc_userpatch",
-    "EXEPATH":       "age2_x1/age2_x1.exe",
-    "EXEARGS":       "",
-    "WORKDIR":       "",
-    "FORCEVARS":     { "MY_VAR": "value" }
+    "VARIANT_ID":  "UserPatch + HD Mod",
+    "ENDPOINTS":   ["aoe2_tc_userpatch", "aoe2_tc_hdmod"],
+    "EXEPATH":     "age2_x1/age2_x1.exe",
+    "EXEARGS":     "",
+    "WORKDIR":     "",
+    "FORCEVARS":   { "MY_VAR": "value" },
+    "RECOMMENDED": true
 }
 ```
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `ENTRYPOINT_ID` | string | yes | Unique identifier within the subgame's entrypoint list |
-| `LASTCOMPONENT` | string | yes | `COMPONENTID` of the deepest component to include in the recipe. The runtime is built from this component's root ancestor down to here. |
+| `VARIANT_ID` | string | yes | Unique identifier within the subgame's variant list; the value stored in `USERSETTINGS.PREFERRED_VARIANT_ID` |
+| `ENDPOINTS` | array&lt;string&gt; | yes | `COMPONENTID`s of the terminal components to build. Each walks its own ancestor chain; the union is the recipe. **Array order = load order** (see below). |
 | `EXEPATH` | string | Wine/Native | Executable path relative to `ProgramPath` (game directory). For Wine: passed as Windows path inside prefix. |
 | `ROM` | string | Emulator | ROM or disc image path relative to `ProgramPath`. Passed as the runner's primary argument. |
 | `DATAPATH` | string | Custom | Data path relative to `ProgramPath`. Passed as the runner's primary argument for custom runners. |
 | `EXEARGS` | string | no | Additional arguments appended after the executable. Supports `%VAR%` substitution. |
 | `WORKDIR` | string | no | Working directory relative to `ProgramPath`. Defaults to `ProgramPath` if absent. Supports `%VAR%` substitution. |
-| `FORCEVARS` | object | no | Key→value pairs that seed CustomVar values for this entrypoint. Applied before USERSETTINGS, used to wire entrypoint-specific behaviour (e.g. game mode selection) without user interaction. |
+| `FORCEVARS` | object | no | Key→value pairs that seed CustomVar values for this variant. Applied before USERSETTINGS, used to wire variant-specific behaviour (e.g. game mode selection) without user interaction. |
+| `RECOMMENDED` | bool | no | Marks the default variant (shown with ⭐ and pre-selected when no user preference is saved). At most one per subgame. |
+| `RUNNER_ID` | string | no | Optional runner pin — forces/defaults a specific runner for this variant (see [RUNNERS](#runners)). |
 
-**The LASTCOMPONENT concept**: This field is the key to the VFS layering model. Given `LASTCOMPONENT: "aoe2_tc_userpatch"`, the system walks the PARENTCOMPONENT chain upward from `aoe2_tc_userpatch` to the root component, collects all components in ancestor-first order (the Recipe), and builds the VFS by stacking their subcomponents in that order. An entrypoint that wants a shallower stack simply names an earlier component in the chain.
+**The ENDPOINTS / recipe model**: For each endpoint, the system walks the `PARENTCOMPONENT` chain upward to its root, then assembles the recipe by appending each chain **root-first**, skipping components already pulled in by an earlier endpoint. Result:
+
+- shared ancestors are mounted exactly **once** (at their first appearance);
+- every component's parent is mounted before it (correct base-first layering);
+- independent branches are ordered by **endpoint array order**.
+
+**Load order — later wins.** Because later-in-recipe means higher unionfs priority, an endpoint listed **later** in the `ENDPOINTS` array overrides files from earlier endpoints on conflict. So `["base_mod", "override_mod"]` lets `override_mod`'s files win. A single-endpoint variant reproduces the classic linear chain exactly.
 
 ---
 
@@ -591,41 +618,91 @@ Defined at the top level of the manifest. CustomVars are manifest-wide variables
 
 ---
 
-### RUNNERS (Package-Level)
+### RUNNERS
 
-A package can define its own runners in addition to (or instead of) the global runners. Package-level runners take precedence over GlobalConfig runners for the same platform.
-
-This is primarily used for packages that bundle a custom interpreter or emulator as a `VFSFileLayer`.
+`RUNNERS` is a **flat array of first-class runner objects**, with the **same schema** in
+`GlobalConfig.JSON` (global runners) and in a package's manifest (embedded runners). A global runner
+is simply one that lives in GlobalConfig and ships no components; an embedded runner ships its own
+components via `ENDPOINTS`. Runners merge by `RUNNER_ID` (a package runner shadows a global one with
+the same id).
 
 ```json
-{
-    "RUNNERS": {
-        "Custom": [
-            {
-                "NAME":       "gemrb",
-                "TYPE":       "custom",
-                "EXECUTABLE": "%RuntimePath%/gemrb-linux-v0.9.5.appimage",
-                "ARGS":       [],
-                "ENV":        {},
-                "REMOVE_ENV": []
-            }
-        ]
-    }
-}
-```
+"RUNNERS": [
+  { "RUNNER_ID": "ge-proton10-30", "NAME": "GE-Proton10-30", "TYPE": "wine",
+    "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "umu-run",
+    "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%" },
+    "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] },
 
-Runner object fields:
+  { "RUNNER_ID": "gemrb", "NAME": "GemRB", "TYPE": "custom",
+    "PLATFORMS": ["Infinity Engine"], "EXECUTABLE": "%RuntimePath%/runner/gemrb",
+    "ARGS": ["-c", "%RuntimePath%/runner/GemRB.cfg"],
+    "ENDPOINTS": ["gemrb_engine"] }
+]
+```
 
 | Field | Required | Description |
 |---|---|---|
-| `NAME` | yes | Human-readable runner name (shown in the picker) |
-| `TYPE` | yes | `"wine"`, `"emulator"`, `"native"`, or `"custom"`. Determines argument order and Wine-specific initialization. |
-| `EXECUTABLE` | yes | Path to the runner binary. Supports `%VAR%` substitution (e.g. `%RuntimePath%`). |
-| `ARGS` | no | Arguments prepended before the game executable (for emulator/custom runners). Support `%VAR%` substitution. |
-| `ENV` | no | Environment variables set before launch. Values support `%VAR%` substitution. |
-| `REMOVE_ENV` | no | Environment variable names to unset before launch. |
+| `RUNNER_ID` | yes | Unique id; merge key; the value stored in `USERSETTINGS.PREFERRED_RUNNER` and accepted by `--runner`. |
+| `NAME` | yes | Human-readable name (shown in the picker). |
+| `TYPE` | yes | `"wine"`, `"emulator"`, `"native"`, or `"custom"`. Determines argument order and Wine-specific init. |
+| `PLATFORMS` | yes | Subgame `PLATFORM` values this runner serves (one runner can serve several). |
+| `EXECUTABLE` | yes | Runner binary. Supports `%VAR%` (e.g. `%RuntimePath%/runner/gemrb` for a bundled engine). |
+| `ENDPOINTS` | no | Components this runner ships. When the runner is selected they are **prepended to the recipe (base layer)** and mounted, so `EXECUTABLE`/`ARGS` can reference the mounted binary via `%RuntimePath%`. Empty for global/system runners. |
+| `ARGS` | no | Arguments prepended before the game exe/data path. Supports `%VAR%`. |
+| `ENV` / `REMOVE_ENV` | no | Environment to set / unset before launch. `ENV` values support `%VAR%`. |
+| `SETTINGS` | no | Runner-level CustomVars (KEY/DEFAULT), resolved like manifest CustomVars. |
 
-Package runners for the `Custom` platform key are matched to subgames whose `PLATFORM` field equals `"Custom"`. The runner selection at launch time still comes from the PreLaunch picker, subject to USERSETTINGS overrides.
+**Selection.** A subgame's `PLATFORM` selects candidate runners (those whose `PLATFORMS` contains it).
+Precedence: explicit choice (PreLaunch picker / `--runner`) > variant pin (`VARIANT.RUNNER_ID`) >
+`USERSETTINGS.PREFERRED_RUNNER` > first candidate. A `VARIANT` may set `"RUNNER_ID"` to force/default a
+specific runner for that build.
+
+---
+
+### PERSIST
+
+By default the writable top layer of the VFS (the **WRITELAYER**) is *ephemeral* — it lives under
+`~/.VidyaGod/TEMP/[PACKAGEUID]/` and is wiped by `Cleanup()` after every session. The optional
+top-level `PERSIST` object declares what should instead survive into the durable, in-package
+`USERDATA/` store.
+
+```json
+"PERSIST": {
+    "ALL":      false,
+    "REGISTRY": true,
+    "DIRS":     ["drive_c/users/steamuser/Saved Games/Warcraft III"],
+    "FILES":    [],
+    "KEYS":     []
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `ALL` | bool | If `true`, the union's **RW branch is `USERDATA/` directly** — the *entire* overlay persists (classic copy-on-write behavior). Subsumes and ignores `REGISTRY`/`DIRS`. |
+| `REGISTRY` | bool | Persist the three Wine registry files (`user.reg`, `system.reg`, `userdef.reg`). They are captured to `USERDATA/__REGISTRY__/` on exit and seeded back over `DEFPREFIX` next launch. |
+| `DIRS` | array&lt;string&gt; | Directories (relative to the runtime/prefix root) bind-mounted from `USERDATA/` into the runtime, so writes land **directly** in the durable store — no copy. |
+| `FILES` | array | **Reserved** — regex-matched files. Not yet implemented (awaits the custom routing FUSE). |
+| `KEYS` | array | **Reserved** — individual registry keys. Not yet implemented. |
+
+**How it works (non-`ALL` modes):**
+- **DIRS** are `bindfs`-mounted (RW) from `USERDATA/<dir>` onto `RUNTIME/<dir>` after the union
+  mounts. The game writes straight through to the package — there is never a copy step.
+- **REGISTRY** is the one bounded exception to "no copy": the reg files sit at the prefix root
+  (no subtree to bind) and Wine rewrites them atomically, so they are seeded in / captured out as
+  whole files. This is safe because Wine always writes the complete file (a whole persisted reg
+  file correctly shadows the `DEFPREFIX` base).
+
+**Bind-hide caveat — declare *leaf* folders.** A bind mount hides whatever lower layers
+(`DEFPREFIX` skeleton, VFS layers) had at that exact path. So a `DIRS` entry must be a
+game-created leaf save folder (e.g. `drive_c/users/steamuser/Saved Games/<Game>`), **not** a broad
+skeleton dir like `drive_c/users` — which would hide Wine's user-profile skeleton (Documents,
+AppData, …). If `PERSIST` (or its `DIRS`) is omitted, a sane default of
+`drive_c/users/steamuser/Saved Games` is used.
+
+**Safety.** Because persisted mounts expose real `USERDATA/` through a mountpoint nested under the
+ephemeral TEMP tree, `Cleanup()` unmounts every durable-backed mount **non-lazily and verified**
+before wiping TEMP, and *aborts the wipe* if any is still busy — so a stuck mount can never cause
+`remove_all` to delete real saves.
 
 ---
 
@@ -633,13 +710,13 @@ Package runners for the `Custom` platform key are matched to subgames whose `PLA
 
 Components form a directed acyclic tree via `PARENTCOMPONENT`. A root component has `PARENTCOMPONENT: null`. A component can have only one parent but any number of siblings.
 
-**Building the Recipe**: Given a `LASTCOMPONENT` (e.g. `"patch_v1_2"`), the system walks upward:
+**Building the Recipe**: A variant's `ENDPOINTS` array drives recipe construction. Given a single endpoint (e.g. `"patch_v1_2"`), the system walks upward:
 
 ```
 patch_v1_2  →  base_install  →  null (root)
 ```
 
-The collected chain is reversed so it runs ancestor-first:
+The collected chain is appended ancestor-first:
 
 ```
 Recipe = [ "base_install", "patch_v1_2" ]
@@ -647,18 +724,17 @@ Recipe = [ "base_install", "patch_v1_2" ]
 
 **BuildSubComponentsArray** then iterates the Recipe and collects all SUBCOMPONENTS in that order. This means `base_install`'s VFS layers are stacked below `patch_v1_2`'s layers in the union, so `patch_v1_2`'s files take precedence when paths conflict.
 
-**Branching**: Multiple components can share the same parent, creating parallel branches. An entrypoint from one branch does not include subcomponents from sibling branches.
+**Branching & multiple endpoints**: Multiple components can share the same parent, creating parallel branches. A single endpoint includes only its own chain — not sibling branches. But a variant may list **several** endpoints, and the recipe is the **union** of all their chains: each chain is appended root-first, skipping components already added by an earlier endpoint.
 
 ```
 base_install
 ├── tc_base         ← Conquerors branch (parent: base_install)
 │   └── tc_patch
-└── aok_patch       ← AoK branch (parent: base_install)
-    └── aok_nocd
+└── hd_mod          ← HD-mod branch (parent: base_install)
 ```
 
-Launching with `LASTCOMPONENT: "tc_patch"` builds:
-`Recipe = [base_install, tc_base, tc_patch]` — AoK-specific layers not included.
+- `ENDPOINTS: ["tc_patch"]` → `Recipe = [base_install, tc_base, tc_patch]` (linear, sibling branches excluded).
+- `ENDPOINTS: ["tc_patch", "hd_mod"]` → `Recipe = [base_install, tc_base, tc_patch, hd_mod]` — both branches, shared `base_install` once, and `hd_mod` (listed last) overrides on conflict.
 
 ---
 
@@ -681,11 +757,11 @@ Any string value in the manifest can contain `%VARIABLE_NAME%` tokens. These are
 | `%UMUID%` | UMU/Steam App ID (`"0"` if not set) |
 | `%ScreenWidth%` | Width of the primary display in pixels (queried at runtime) |
 | `%ScreenHeight%` | Height of the primary display in pixels |
-| `%RuntimePath%` | Absolute path to the mounted union filesystem (`PACKAGEFILES/../RUNTIME/`) |
-| `%MetaDataPath%` | Absolute path to `METADATA/` |
-| `%PackageFilesPath%` | Absolute path to `PACKAGEFILES/` |
-| `%UserDataPath%` | Absolute path to `USERDATA/` |
-| `%TempPath%` | Absolute path to `TEMP/` |
+| `%PackagePath%` | Absolute path to the (flat, pristine) package directory |
+| `%RuntimePath%` | Absolute path to the mounted union filesystem (`~/.VidyaGod/TEMP/[PACKAGEUID]/RUNTIME/`) |
+| `%WriteLayerPath%` | Absolute path to the ephemeral RW top layer (`~/.VidyaGod/TEMP/[PACKAGEUID]/WRITELAYER/`) |
+| `%UserDataPath%` | Absolute path to the durable in-package persist store (`PackagePath/USERDATA/`) |
+| `%TempPath%` | Absolute path to the per-package ephemeral root (`~/.VidyaGod/TEMP/[PACKAGEUID]/`) |
 | `%ProgramPath%` | Wine: `RUNTIME/drive_c/[PACKAGEUID]`; others: `RUNTIME/` |
 | `%DefPrefixPath%` | Absolute path to the Wine prefix (`TEMP/DEFPREFIX/`) |
 | `%ExePathRelative%` | Executable path relative to ProgramPath |
@@ -790,38 +866,19 @@ Stored at `~/.VidyaGod/GlobalConfig.JSON`. Created automatically on first launch
 ```json
 {
     "DefaultTables": { ... },
-    "RUNNERS": {
-        "Microsoft Windows": [
-            {
-                "NAME":        "wine",
-                "TYPE":        "wine",
-                "EXECUTABLE":  "wine",
-                "ENV":         { "WINEPREFIX": "%RuntimePath%" },
-                "REMOVE_ENV":  ["LD_LIBRARY_PATH"]
-            },
-            {
-                "NAME":        "umu-proton",
-                "TYPE":        "wine",
-                "EXECUTABLE":  "umu-run",
-                "ENV": {
-                    "WINEPREFIX":  "%RuntimePath%",
-                    "GAMEID":      "%UMUID%",
-                    "PROTON_VERB": "waitforexitandrun"
-                },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"]
-            }
-        ],
-        "SNES": [
-            {
-                "NAME":       "snes9x",
-                "TYPE":       "emulator",
-                "EXECUTABLE": "snes9x",
-                "ARGS":       ["-fullscreen"],
-                "ENV":        {},
-                "REMOVE_ENV": []
-            }
-        ]
-    },
+    "RUNNERS": [
+        {
+            "RUNNER_ID":  "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
+            "PLATFORMS":  ["Microsoft Windows"], "EXECUTABLE": "umu-run",
+            "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
+            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        },
+        {
+            "RUNNER_ID":  "snes9x", "NAME": "snes9x", "TYPE": "emulator",
+            "PLATFORMS":  ["SNES"], "EXECUTABLE": "snes9x",
+            "ARGS":       ["-fullscreen"], "ENV": {}, "REMOVE_ENV": [], "ENDPOINTS": []
+        }
+    ],
     "LIBRARY": [
         {
             "PATH": "/path/to/package",
@@ -840,14 +897,16 @@ Stored at `~/.VidyaGod/GlobalConfig.JSON`. Created automatically on first launch
 
 ### Runner Resolution Order
 
-When launching, the runner is selected by priority:
+Candidate runners = every runner (MANIFEST then GlobalConfig, deduped by `RUNNER_ID`, MANIFEST
+shadowing) whose `PLATFORMS` contains the subgame's `PLATFORM`. The selected one is chosen by priority:
 
-1. `LIBRARY[i].USERSETTINGS.PREFERRED_RUNNER` — User's persisted choice for this package
-2. First runner in `GlobalConfig.RUNNERS[Platform]` that matches by name, if none saved
-3. First runner in `GlobalConfig.RUNNERS[Platform]` — default for the platform
-4. Hardcoded fallback: `umu-run` / Wine — if no runners defined for the platform
+1. Explicit choice — PreLaunch picker or `--runner <RUNNER_ID>`
+2. Variant pin — the selected variant's `RUNNER_ID`
+3. `USERSETTINGS.PREFERRED_RUNNER` (a `RUNNER_ID`; legacy NAME also matched)
+4. First candidate for the platform
+5. Hardcoded fallback: `umu-run` / Wine — if no candidates
 
-Package-level `RUNNERS` in `MANIFEST.json` are checked before GlobalConfig runners.
+The selected runner's `ENDPOINTS` are mounted (recipe base layer) so a bundled engine binary is present.
 
 ### USERSETTINGS
 
@@ -855,8 +914,8 @@ Per-package preferences stored inside the library entry:
 
 | Key | Description |
 |---|---|
-| `PREFERRED_RUNNER` | Runner name to pre-select in the picker |
-| `PREFERRED_VARIANT_ID` | Entrypoint ID to pre-select |
+| `PREFERRED_RUNNER` | `RUNNER_ID` to pre-select in the picker |
+| `PREFERRED_VARIANT_ID` | Variant ID to pre-select |
 | `SKIP_LAUNCH_DIALOG` | If `true`, skip the PreLaunch window and launch immediately with saved settings |
 | `VARIABLES` | Saved CustomVar values (KEY → display value); used as priority-2 source in resolution |
 
@@ -867,20 +926,21 @@ Per-package preferences stored inside the library entry:
 ### Phase 1: Initialization (Constructor)
 
 ```
-ContainerParams constructed with (PackagePath, subgame_id, component_id)
+ContainerParams constructed with (PackagePath, subgame_id, component_id) + VariantID
     │
     ├─ DecideComponent()
-    │   Resolves which component_id to use from the subgame's DEFAULT_ENTRYPOINT_ID
-    │   if component_id was not explicitly provided.
+    │   Resolves the variant (RECOMMENDED, else first, unless VariantID was set) and
+    │   fills Endpoints from its ENDPOINTS array. A direct component_id becomes the
+    │   sole endpoint.
     │
     ├─ DeriveContainerParams()
     │   Fills all derived fields: PackageName, PackageUID, GameName, UMUID, Platform,
     │   runner config (RunnerName, RunnerExecutable, RunnerTypeEnum, RunnerEnv, ...),
-    │   all path fields, EntrypointID (from DEFAULT_ENTRYPOINT_ID).
+    │   and all path fields.
     │
     ├─ CreateRecipe()
-    │   Walks PARENTCOMPONENT chain from component_id to root.
-    │   Result: Recipe = [root, ..., component_id]  (ancestor-first)
+    │   Builds the union of every endpoint's PARENTCOMPONENT chain (root-first, deduped).
+    │   Result: Recipe = [root, ..., endpoints]  (ancestor-first; later endpoints win)
     │
     ├─ ResolveCustomVariables()
     │   For each CustomVar in MANIFEST["CUSTOMVARS"]:
@@ -1002,17 +1062,17 @@ VidyaGod [OPTIONS]
 |---|---|---|
 | `--package <path>` | Directory path | Path to the package directory. Activates headless mode. |
 | `--subgame <id>` | SUBGAMEID | Subgame to launch. If omitted with `--package`, the first subgame is used. |
-| `--component <id>` | COMPONENTID | Override which component to use as LASTCOMPONENT, bypassing the entrypoint system. |
-| `--variant <id>` | ENTRYPOINT_ID | Select a specific entrypoint by ID. |
+| `--component <id>` | COMPONENTID | Override: build directly from this single component as the sole endpoint, bypassing the variant system. |
+| `--variant <id>` | VARIANT_ID | Select a specific variant by ID (its ENDPOINTS are built). |
 | `--var KEY=VALUE` | KEY=VALUE | Set a CustomVar override. May be repeated. VALUE is in display format (e.g. `1920` for a `dword` variable, not `dword:00000780`). |
 
 ### Examples
 
 ```bash
-# Launch a Windows game at its default entrypoint
+# Launch a Windows game at its recommended variant
 VidyaGod --package "/The Vidya/[749][v1.0] Age of Empires II" --subgame aoe2_tc
 
-# Launch with a specific entrypoint (patch level)
+# Launch with a specific variant (patch level)
 VidyaGod --package "/The Vidya/[749][v1.0] Age of Empires II" \
          --subgame aoe2_tc \
          --variant "Patch v1.0c"
@@ -1058,7 +1118,7 @@ The editor presents a tab strip across the top. Tabs are built from the current 
 ```
 
 - **JSON** — Raw JSON editor and save
-- **MANIFEST** — Visual editor for package fields, subgames, and entrypoints
+- **MANIFEST** — Visual editor for package fields, subgames, and variants
 - **CUSTOMVARS** — Manifest-level variable definitions
 - **One tab per Component** — VFS layers, registry patches, and other subcomponents for that component
 
@@ -1118,34 +1178,29 @@ The top of each subgame tab shows a 150×225 px drop target (2:3 aspect ratio, m
 
 **PLATFORM** is a dropdown populated from the runners defined in `GlobalConfig.JSON`. Changing the platform triggers a UI rebuild since it affects which runner-type-specific fields are shown.
 
-##### Execution Section
+##### Variants Section
 
-| Field | Description |
-|---|---|
-| `DEFAULT_ENTRYPOINT_ID` | ID of the entrypoint to select by default when no user preference exists |
+Below the subgame fields is the **Variants** group. Each variant is shown as a card:
 
-##### Entrypoints Section
-
-Below the Execution section is the **Entrypoints** group. Each entrypoint is shown as a collapsible card:
-
-**Entrypoint card fields**:
+**Variant card fields**:
 
 | Field | Control | Description |
 |---|---|---|
-| `ENTRYPOINT_ID` | QLineEdit | Unique ID within this subgame |
-| `LASTCOMPONENT` | QComboBox | Dropdown of all components in the package. Select which component level the VFS is built to. |
+| `VARIANT_ID` | QLineEdit | Unique ID within this subgame |
+| `RECOMMENDED` | QCheckBox | Marks this as the default variant (⭐, mutually exclusive within the subgame) |
+| `ENDPOINTS` | List of component pickers | Ordered list of terminal components. Each row is a dropdown of all components, with ▲▼ to reorder and ✕ to remove. **Order = load order** (later overrides earlier). "+ Add Endpoint" appends a row. The recipe is the union of all endpoints' ancestor chains. |
 | `EXEPATH` | QLineEdit | Executable path relative to ProgramPath. Supports `%VAR%` tokens. |
 | `EXEARGS` | QLineEdit | Additional arguments. Supports `%VAR%` tokens. |
 | `WORKDIR` | QLineEdit | Working directory. Supports `%VAR%` tokens. |
-| `FORCEVARS` | Key/value list | Variable seeds for this entrypoint (see FORCEVARS). |
+| `FORCEVARS` | Key/value list | Variable seeds for this variant (see FORCEVARS). |
 
-**FORCEVARS editor**: Below the main fields, a key→value list with ✕ remove buttons and a "+ Add Force Var" button. Each row has an editable key field and a value field. Used to wire entrypoint-specific CustomVar values that should not be exposed as user-facing options (e.g. setting game mode to RoC or TFT automatically based on which subgame/entrypoint is selected).
+**FORCEVARS editor**: Below the main fields, a key→value list with ✕ remove buttons and a "+ Add Force Var" button. Each row has an editable key field and a value field. Used to wire variant-specific CustomVar values that should not be exposed as user-facing options (e.g. setting game mode to RoC or TFT automatically based on which subgame/variant is selected).
 
-**▶ Execute button**: Runs this specific entrypoint immediately. Presents a runner picker dialog, then builds the full container runtime for this entrypoint's component chain and launches the game. Useful for testing before packaging is complete.
+**▶ Execute button**: Runs this specific variant immediately. Presents a runner picker dialog, then builds the full container runtime for this variant's endpoints and launches the game. Useful for testing before packaging is complete.
 
-**✕ Remove button**: Deletes the entrypoint from the manifest.
+**✕ Remove button**: Deletes the variant from the manifest.
 
-**+ Add Entrypoint button**: Adds a new entrypoint with placeholder values at the bottom of the list.
+**+ Add Variant button**: Adds a new variant with placeholder values at the bottom of the list.
 
 ##### Metadata Section
 
@@ -1199,7 +1254,7 @@ Each component tab has a toolbar, a name/parent section, and a scrollable subcom
 | **Run EXE** | Opens a file picker to select any executable, then runs it inside this component's full VFS runtime (built up the component's ancestor chain). Use this to run game installers or setup tools. Registry changes and file writes go to `USERDATA/`. |
 | **Browse** | Opens `explorer.exe` inside this component's runtime. Use this to inspect what files are visible in the mounted VFS, verify paths, and check the Wine filesystem layout. |
 | **Edit Registry** | Opens `regedit.exe` inside this component's runtime. Use this to browse the current registry state, check what keys were written by an installer, and verify registry patches. |
-| **Execute Component** | Shows a picker listing all entrypoints whose `LASTCOMPONENT` is within this component's ancestor chain. Select an entrypoint and a runner, then launches the game. Useful for testing a specific configuration level. |
+| **Execute Component** | Shows a picker listing all variants with any endpoint within this component's ancestor chain. Select a variant and a runner, then launches the game. Useful for testing a specific configuration level. |
 | **Analyze Registry** | Captures registry changes since the last session. See [The Analyze Registry Workflow](#the-analyze-registry-workflow). |
 | **+ Subcomponent** | Dropdown menu for adding subcomponent entries (see below). |
 | **Finalize** | Reserved for future use. |
@@ -1292,13 +1347,13 @@ For each patch or add-on:
 2. Add the patch files as a VFSZipLayer or VFSDirLayer.
 3. If the patch writes registry changes (version strings, etc.), add them as RegEdit subcomponents manually.
 
-#### 10. Create entrypoints
+#### 10. Create variants
 
-In the subgame tab, click **+ Add Entrypoint**. Set:
-- `ENTRYPOINT_ID` — a descriptive name (e.g. `"Vanilla"`, `"Patch v1.2"`)
-- `LASTCOMPONENT` — the deepest component to include for this launch option
+In the subgame tab, click **+ Add Variant**. Set:
+- `VARIANT_ID` — a descriptive name (e.g. `"Vanilla"`, `"Patch v1.2"`, `"Patch + HD Mod"`)
+- `ENDPOINTS` — add one or more terminal components for this launch option. Multiple endpoints union their chains; order = load order (later overrides earlier).
 - `EXEPATH` — the game's main executable, relative to `C:\[PACKAGEUID]\` (e.g. `game.exe`)
-- `DEFAULT_ENTRYPOINT_ID` — set this on the subgame to the entrypoint you want to be the default
+- `RECOMMENDED` — check this on the variant you want pre-selected by default
 
 #### 11. Set cover art
 

@@ -36,11 +36,13 @@ public:
     nlohmann::ordered_json MANIFESTJSON;
     std::string            PackagePath;
     std::string            SubgameID;
-    std::string                        ComponentID;       // Pre-resolved from entrypoint selection
-    std::string                        EntrypointID;      // ENTRYPOINT_ID of the selected entrypoint
-    nlohmann::ordered_json             SelectedRunner;    // May be null if no override is needed
-    std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / entrypoint seeds
-    bool                               DryRun = false;    // If true, USERDATA is deleted after cleanup
+    std::string                        ComponentID;       // Optional direct component (editor/CLI); usually empty
+    std::string                        VariantID;         // VARIANT_ID of the selected variant
+    std::string                        RunnerID;          // RUNNER_ID chosen in the picker (resolved before construction)
+    std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
+    std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()
+    std::string                        ScreenHeight;      // (QGuiApplication screen access off the main thread is undefined behaviour)
+    bool                               DryRun = false;    // If true, WRITELAYER is deleted after cleanup
     bool                   SkipCleanup = false;
 
     // Forcibly kills the running game process (if any).
@@ -85,7 +87,7 @@ public:
 private slots:
     void onLaunchClicked();
     void onKillClicked();
-    void onEntrypointChanged();
+    void onVariantChanged();
     void onLogLine(int level, QString context, QString message);
     void onStatusChanged(QString status);
     void onProgressChanged(int value);

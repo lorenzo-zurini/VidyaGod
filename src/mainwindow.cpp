@@ -29,8 +29,8 @@ LibraryGameCard::~LibraryGameCard() { delete MANIFESTJSON; }
 void LibraryGameCard::InitializeClassVariables()
 {
     PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
-    QFile f(QString::fromStdString(PackagePath.string() + "/METADATA/MANIFEST.json"));
-    if (JSONOps::LoadJSON(&f, MANIFESTJSON)) return;
+    std::vector<std::string> AsmWarn;
+    if (!JSONOps::AssembleManifest(QString::fromStdString(PackagePath.string()), *MANIFESTJSON, AsmWarn)) return;
 
     int idx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
     if (idx == -1) return;
@@ -68,12 +68,26 @@ void LibraryGameCard::InitializeClassVariables()
            ? std::string((*MANIFESTJSON)["SUBGAMES"][idx]["COVER"]) : "");
     if (!cov.empty())
         CoverOriginal.load(QDir::cleanPath(
-            QString::fromStdString(PackagePath.string()) + "/METADATA/" +
+            QString::fromStdString(PackagePath.string()) + "/" +
             QString::fromStdString(cov)));
 }
 
 void LibraryGameCard::play()
 {
+    //Validate the assembled manifest before launching; hard errors block launch.
+    {
+        std::vector<std::string> ValErr, ValWarn;
+        JSONOps::ValidateManifest(*MANIFESTJSON, ValErr, ValWarn);
+        for (const auto &W : ValWarn) LogWarn("LibraryGameCard", "Manifest: " + W);
+        if (!ValErr.empty())
+        {
+            QString Msg = "This package's manifest has errors and cannot be launched:\n\n";
+            for (const auto &E : ValErr) Msg += "• " + QString::fromStdString(E) + "\n";
+            QMessageBox::critical(nullptr, "Manifest Error", Msg);
+            return;
+        }
+    }
+
     std::string uid;
     if (MANIFESTJSON->contains("PACKAGEUID") && !(*MANIFESTJSON)["PACKAGEUID"].is_null())
         uid = std::string((*MANIFESTJSON)["PACKAGEUID"]);
@@ -468,6 +482,215 @@ void MainWindow::BuildStaticUI()
     PackagesScrollArea = new QScrollArea(PackagesTabWidget);
     PackagesScrollArea->setWidgetResizable(true);
     PackagesTabWidgetLayout->addWidget(PackagesScrollArea);
+
+    // ── Settings tab ───────────────────────────────────────────────────────────
+    BuildSettingsTab();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Settings tab — global configurator (category sidebar + stacked forms).
+// Only GLOBAL settings live here; per-game settings stay in the PreLaunchWindow.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void MainWindow::BuildSettingsTab()
+{
+    SettingsTabWidget = new QWidget(MainWindowTabWidget);
+    QHBoxLayout * outer = new QHBoxLayout(SettingsTabWidget);
+    outer->setContentsMargins(0,0,0,0); outer->setSpacing(0);
+    SettingsTabWidget->setLayout(outer);
+    MainWindowTabWidget->addTab(SettingsTabWidget, "Settings");
+
+    // Left: category sidebar.
+    SettingsCategoryList = new QListWidget(SettingsTabWidget);
+    SettingsCategoryList->setFixedWidth(170);
+    SettingsCategoryList->setFrameShape(QFrame::NoFrame);
+    SettingsCategoryList->addItem("Runners");
+    SettingsCategoryList->addItem("Storage & Paths");
+    outer->addWidget(SettingsCategoryList);
+
+    // Right: stacked category forms.
+    SettingsStack = new QStackedWidget(SettingsTabWidget);
+    outer->addWidget(SettingsStack, 1);
+
+    // Page 0 — Runners (a scroll area we rebuild in place on structural edits).
+    {
+        QWidget * page = new QWidget(SettingsStack);
+        QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
+        pl->setContentsMargins(8,8,8,8);
+        SettingsRunnersScroll = new QScrollArea(page);
+        SettingsRunnersScroll->setWidgetResizable(true);
+        SettingsRunnersScroll->setFrameShape(QFrame::NoFrame);
+        pl->addWidget(SettingsRunnersScroll);
+        SettingsStack->addWidget(page);
+        RebuildSettingsRunnersPage();
+    }
+
+    // Page 1 — Storage & Paths.
+    SettingsStack->addWidget(BuildPathsSettingsPage());
+
+    QObject::connect(SettingsCategoryList, &QListWidget::currentRowChanged,
+                     SettingsStack, &QStackedWidget::setCurrentIndex);
+    SettingsCategoryList->setCurrentRow(0);
+}
+
+void MainWindow::RebuildSettingsRunnersPage()
+{
+    if (!SettingsRunnersScroll) return;
+    if (SettingsRunnersScroll->widget()) SettingsRunnersScroll->widget()->deleteLater();
+
+    QWidget * contents = new QWidget(SettingsRunnersScroll);
+    QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
+    SettingsRunnersScroll->setWidget(contents);
+
+    if (!(*GlobalConfigJSON).contains("RUNNERS") || !(*GlobalConfigJSON)["RUNNERS"].is_array())
+        (*GlobalConfigJSON)["RUNNERS"] = nlohmann::ordered_json::array();
+    auto & Runners = (*GlobalConfigJSON)["RUNNERS"];
+
+    for (int i = 0; i < (int)Runners.size(); i++)
+    {
+        auto & R = Runners[i];
+        std::string rid = R.value("RUNNER_ID", std::string());
+        QGroupBox * card = new QGroupBox(rid.empty() ? QString("Runner %1").arg(i+1)
+                                                     : QString::fromStdString(rid), contents);
+        QGridLayout * g = new QGridLayout(card); card->setLayout(g);
+        int row = 0;
+
+        QPushButton * rem = new QPushButton("✕  Remove runner", card);
+        QObject::connect(rem, &QPushButton::clicked, this, [this,i]{
+            (*GlobalConfigJSON)["RUNNERS"].erase(i);
+            SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
+        });
+        g->addWidget(rem, row, 0, 1, 2); row++;
+
+        // Core text fields — write the single key on edit, leaving all other keys intact.
+        for (const std::string & key : {std::string("RUNNER_ID"), std::string("NAME"), std::string("EXECUTABLE")})
+        {
+            g->addWidget(new QLabel(QString::fromStdString(key) + ":", card), row, 0);
+            QLineEdit * le = new QLineEdit(card);
+            if (R.contains(key) && R[key].is_string()) le->setText(QString::fromStdString(std::string(R[key])));
+            QObject::connect(le, &QLineEdit::editingFinished, this, [this,i,key,le]{
+                (*GlobalConfigJSON)["RUNNERS"][i][key] = le->text().toStdString();
+                SaveGlobalConfigJSON();
+            });
+            g->addWidget(le, row, 1); row++;
+        }
+
+        // TYPE combo.
+        g->addWidget(new QLabel("TYPE:", card), row, 0);
+        QComboBox * type = new QComboBox(card);
+        type->addItems({"wine", "emulator", "native", "custom"});
+        type->setCurrentText(QString::fromStdString(R.value("TYPE", std::string("custom"))));
+        QObject::connect(type, &QComboBox::currentTextChanged, this, [this,i](const QString & t){
+            (*GlobalConfigJSON)["RUNNERS"][i]["TYPE"] = t.toStdString();
+            SaveGlobalConfigJSON();
+        });
+        g->addWidget(type, row, 1); row++;
+
+        // PLATFORMS — string-list sub-editor (structural edits rebuild the page).
+        {
+            if (!R.contains("PLATFORMS") || !R["PLATFORMS"].is_array())
+                (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"] = nlohmann::ordered_json::array();
+            auto & Plats = (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"];
+            QGroupBox * box = new QGroupBox("PLATFORMS", card);
+            QVBoxLayout * bl = new QVBoxLayout(box); box->setLayout(bl);
+            for (int k = 0; k < (int)Plats.size(); k++)
+            {
+                QHBoxLayout * pr = new QHBoxLayout();
+                QLineEdit * le = new QLineEdit(box);
+                if (Plats[k].is_string()) le->setText(QString::fromStdString(std::string(Plats[k])));
+                QObject::connect(le, &QLineEdit::editingFinished, this, [this,i,k,le]{
+                    (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"][k] = le->text().toStdString();
+                    SaveGlobalConfigJSON();
+                });
+                pr->addWidget(le, 1);
+                QPushButton * del = new QPushButton("✕", box); del->setFixedWidth(28);
+                QObject::connect(del, &QPushButton::clicked, this, [this,i,k]{
+                    (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"].erase(k);
+                    SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
+                });
+                pr->addWidget(del);
+                bl->addLayout(pr);
+            }
+            QPushButton * add = new QPushButton("+ Add platform", box);
+            QObject::connect(add, &QPushButton::clicked, this, [this,i]{
+                (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"].push_back("");
+                SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
+            });
+            bl->addWidget(add);
+            g->addWidget(box, row, 0, 1, 2); row++;
+        }
+
+        v->addWidget(card);
+    }
+
+    QPushButton * addRunner = new QPushButton("+ Add runner", contents);
+    QObject::connect(addRunner, &QPushButton::clicked, this, [this]{
+        (*GlobalConfigJSON)["RUNNERS"].push_back(nlohmann::ordered_json{
+            {"RUNNER_ID", ""}, {"NAME", ""}, {"TYPE", "wine"},
+            {"PLATFORMS", nlohmann::ordered_json::array()}, {"EXECUTABLE", ""},
+            {"ENV", nlohmann::ordered_json::object()},
+            {"REMOVE_ENV", nlohmann::ordered_json::array()},
+            {"ARGS", nlohmann::ordered_json::array()},
+            {"ENDPOINTS", nlohmann::ordered_json::array()}});
+        SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
+    });
+    v->addWidget(addRunner);
+    v->addStretch(1);
+}
+
+QWidget * MainWindow::BuildPathsSettingsPage()
+{
+    QWidget * page = new QWidget(SettingsStack);
+    QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
+    pl->setContentsMargins(12,12,12,12);
+    QFormLayout * form = new QFormLayout();
+    pl->addLayout(form);
+
+    const QString defaultTempRoot = QDir::cleanPath(QDir::homePath() + "/.VidyaGod/TEMP");
+
+    // Temporary / runtime root — Settings.Paths.TempRoot (empty = default).
+    QWidget * rootRow = new QWidget(page);
+    QHBoxLayout * rl = new QHBoxLayout(rootRow); rl->setContentsMargins(0,0,0,0);
+    rootRow->setLayout(rl);
+    QLineEdit * rootEdit = new QLineEdit(rootRow);
+    rootEdit->setPlaceholderText(defaultTempRoot + "  (default)");
+    {
+        auto & S = (*GlobalConfigJSON)["Settings"];
+        if (S.contains("Paths") && S["Paths"].is_object()
+            && S["Paths"].contains("TempRoot") && S["Paths"]["TempRoot"].is_string())
+            rootEdit->setText(QString::fromStdString(std::string(S["Paths"]["TempRoot"])));
+    }
+    auto writeTempRoot = [this,rootEdit]{
+        auto & S = (*GlobalConfigJSON)["Settings"];
+        QString t = rootEdit->text().trimmed();
+        if (t.isEmpty()) {
+            if (S.contains("Paths") && S["Paths"].is_object()) S["Paths"].erase("TempRoot");
+        } else {
+            if (!S.contains("Paths") || !S["Paths"].is_object()) S["Paths"] = nlohmann::ordered_json::object();
+            S["Paths"]["TempRoot"] = t.toStdString();
+        }
+        SaveGlobalConfigJSON();
+    };
+    QObject::connect(rootEdit, &QLineEdit::editingFinished, this, writeTempRoot);
+    rl->addWidget(rootEdit, 1);
+    QPushButton * browse = new QPushButton("Browse…", rootRow);
+    QObject::connect(browse, &QPushButton::clicked, this, [this,rootEdit,writeTempRoot]{
+        QString d = QFileDialog::getExistingDirectory(this, "Select temporary / runtime root");
+        if (!d.isEmpty()) { rootEdit->setText(d); writeTempRoot(); }
+    });
+    rl->addWidget(browse);
+    form->addRow("Temporary / runtime root:", rootRow);
+
+    // AppData dir (read-only, informational).
+    QLineEdit * appDataLbl = new QLineEdit(AppDataDir->path(), page);
+    appDataLbl->setReadOnly(true);
+    form->addRow("App data directory:", appDataLbl);
+
+    QLabel * note = new QLabel("Path changes apply to future launches.", page);
+    note->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    pl->addWidget(note);
+    pl->addStretch(1);
+    return page;
 }
 
 void MainWindow::BuildLibraryGameCards()
@@ -475,9 +698,9 @@ void MainWindow::BuildLibraryGameCards()
     qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
     for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
         nlohmann::ordered_json pm;
-        QFile f(QString::fromStdString(
-            std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"]) + "/METADATA/MANIFEST.json"));
-        if (JSONOps::LoadJSON(&f, &pm)) continue;
+        std::vector<std::string> AsmWarn;
+        if (!JSONOps::AssembleManifest(QString::fromStdString(
+                std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"])), pm, AsmWarn)) continue;
         for (int j = 0; j < (int)pm["SUBGAMES"].size(); j++) {
             std::string sid = pm["SUBGAMES"][j].contains("SUBGAMEID") &&
                 !pm["SUBGAMES"][j]["SUBGAMEID"].is_null()
@@ -586,8 +809,12 @@ void MainWindow::on_AddGameButton_clicked()
     int added=0, skipped=0;
     for (const QString & path : paths) {
         nlohmann::ordered_json m;
-        QFile f(QDir::cleanPath(path + "/METADATA/MANIFEST.json"));
-        if (JSONOps::LoadJSON(&f, &m)) { skipped++; continue; }
+        std::vector<std::string> AsmWarn;
+        if (!JSONOps::AssembleManifest(path, m, AsmWarn)) { skipped++; continue; }
+        if (m.contains("__VG_ERRORS__")) { // conflicting identities — not a single valid package
+            LogWarn("MainWindow", "Skipping " + path.toStdString() + ": conflicting package identities.");
+            skipped++; continue;
+        }
         bool dup=false;
         for (auto & e : (*GlobalConfigJSON)["LIBRARY"])
             if (e["PACKAGEUID"]==m["PACKAGEUID"]) { dup=true; skipped++; break; }

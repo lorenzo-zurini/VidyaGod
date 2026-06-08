@@ -1,15 +1,15 @@
 #include "filesystemoperations.h"
 #include "commonutils.h"
+#include "jsonoperations.h"
 
 FSOps::FSOps() {}
 
 //Checks that PackageDir points to a valid VidyaGod package.
-//A package is considered valid when it contains a METADATA subdirectory;
-//the actual MANIFEST.json inside it is validated separately by JSONOps::LoadJSON.
-//Returns false (invalid) if the path is empty or the METADATA directory does not exist.
+//A package is valid when its directory contains at least one *.json file whose assembled,
+//merged manifest yields a PACKAGEUID (modular manifests — no single MANIFEST.json required).
+//Returns false if the path is empty or no usable manifest with identity is found.
 bool FSOps::CheckPackageValid(QDir * PackageDir)
 {
-    //Check if the path is empty, such as when the file picker was canceled.
     if (PackageDir->path().isEmpty())
     {
         LogErr("FSOperations", "Path is empty. Canceled?");
@@ -18,11 +18,17 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
 
     LogOut("FSOperations", "Scanning " + PackageDir->path().toStdString());
 
-    //Check if the directory contains a METADATA subdirectory.
-    //Without METADATA there is no MANIFEST.json, so the package cannot be launched.
-    if (!QDir(QDir::cleanPath(PackageDir->path() + QDir::separator() + "METADATA")).exists())
+    nlohmann::ordered_json Assembled;
+    std::vector<std::string> AsmWarn;
+    if (!JSONOps::AssembleManifest(PackageDir->path(), Assembled, AsmWarn) ||
+        !Assembled.contains("PACKAGEUID") || Assembled["PACKAGEUID"].is_null())
     {
-        LogErr("FSOperations", "Selected directory does not contain METADATA subdirectory.");
+        LogErr("FSOperations", "Selected directory has no usable JSON manifest (PACKAGEUID).");
+        return false;
+    }
+    if (Assembled.contains("__VG_ERRORS__"))
+    {
+        LogErr("FSOperations", "Directory holds conflicting package identities (one package per directory).");
         return false;
     }
 
