@@ -1,6 +1,8 @@
 #include "prelaunchwindow.h"
 #include "packageeditor.h"
 #include <random>
+#include <set>
+#include <algorithm>
 
 #include <QDir>
 #include <QPixmap>

@@ -6,6 +6,7 @@
 #include <QImage>
 #include <QInputDialog>
 #include <functional>
+#include <set>
 
 using json = nlohmann::ordered_json;
 
