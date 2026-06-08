@@ -81,6 +81,7 @@ private slots:
     void AddRegEdit();
     void AddDllOverride();
     void AddFileEdit();
+    void AddCustomVar();
     void FinalizeComponent();
     void MoveComponentUp();
     void MoveComponentDown();
@@ -94,6 +95,8 @@ private:
     void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
     bool SaveManifestJSON();
+    //Refreshes the persistent validation box (below the tabs) from ValErrors/ValWarnings.
+    void UpdateValidationBox();
     //Returns the PLATFORM of the subgame with the given SUBGAMEID in the assembled manifest ("" if none).
     std::string SubgamePlatform(const std::string &SubgameID);
 
@@ -140,6 +143,9 @@ private:
     std::vector<std::string> ValErrors, ValWarnings;
 
     QTabWidget * PackageEditorTabWidget = nullptr;
+    //Persistent validation panel docked below the tabs (always visible), refreshed by UpdateValidationBox().
+    QGroupBox * ValidationBox  = nullptr;
+    QTextEdit * ValidationView = nullptr;
     nlohmann::ordered_json * MANIFESTJSON;
     nlohmann::ordered_json * GlobalConfigJSON;
     QNetworkAccessManager * NetMgr = nullptr;

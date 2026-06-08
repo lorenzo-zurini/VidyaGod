@@ -54,14 +54,14 @@ public:
     std::string PackageName;             //Human-readable name from MANIFEST["PACKAGENAME"]
     std::string PackageUID;              //Unique package identifier from MANIFEST["PACKAGEUID"]
 
-    //(Sub)game specific:
-    std::string GameName;                //Title of the selected subgame
+    //Game specific:
+    std::string GameName;                //Title of the selected game
     std::string UMUID;                   //UMU/Steam App ID used by umu-run for Proton compatibility; "0" if absent
-    std::string Platform;                //Platform string (e.g. "Microsoft Windows", "SNES") — drives runner selection
+    std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM
     std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
     nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
 
-    //Runner config (resolved from the flat RUNNERS arrays by PLATFORMS membership):
+    //Runner config (resolved from RUNNERS arrays — package's own + global registry — by GUEST_PLATFORM membership):
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
     std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
     std::string RunnerExecutable;        //Binary to exec (e.g. "umu-run", "snes9x")
@@ -70,6 +70,7 @@ public:
     std::vector<std::string> RunnerRemoveEnv; //Env keys to remove before launch (e.g. LD_LIBRARY_PATH)
     std::vector<std::string> RunnerArgs; //Arguments prepended before the exe for emulator/custom runners
     std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
+    nlohmann::ordered_json RunnerComponents = nlohmann::ordered_json::array(); //RESOLVED — COMPONENTS of the selected runner's registry package (empty for an embedded/PATH runner); folded into the component pool
 
     //Flags
     std::string subgame_id;                                         //PASSED
@@ -178,8 +179,8 @@ public:
     static void CleanStaleRuntime(const std::filesystem::path &TempPath);
 
     //ID lookup helpers:
-    //Linear scan of MANIFEST["SUBGAMES"] for a matching SUBGAMEID. Returns index or -1.
-    static int FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
+    //Linear scan of MANIFEST["GAMES"] for a matching SUBGAMEID. Returns index or -1.
+    static int FindGameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
 
     //Per-package user settings helpers (settings live inside LIBRARY[i]["USERSETTINGS"]):
     //Returns a COPY of the USERSETTINGS object for the given PackageUID, or an empty object if not found.
@@ -212,6 +213,13 @@ public:
     //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
     //{component_id} when Endpoints is empty (direct/editor mode).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    //Returns the platform token the HOST runs as (e.g. "linux64"). Phase-1 stub — later real
+    //detection. Used to reason about which guest platforms run natively vs. need a translation runner.
+    static std::string HostPlatform();
+    //Returns every runner object across the GLOBAL_RUNNERS registry packages (Settings.GlobalRunners).
+    //Used by the UI (runner picker, settings list). The launch resolver scans the registry itself
+    //(it also needs each runner's owning components).
+    static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
     //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.

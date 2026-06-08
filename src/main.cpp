@@ -43,7 +43,7 @@ int main(int argc, char *argv[])
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
     LogOut("main.cpp", "Running VidyaGod in " + LaunchParameters.CurrentPath.string());
     LogOut("main.cpp", "Headless PackagePath: " + LaunchParameters.HeadlessPackagePath.string());
-    LogOut("main.cpp", "Headless SubgameID: " + LaunchParameters.HeadlessSubgameID);
+    LogOut("main.cpp", "Headless GameID: " + LaunchParameters.HeadlessGameID);
     LogOut("main.cpp", "Headless ComponentID: " + LaunchParameters.HeadlessComponentID);
 
     //Check if dependencies exist in the system.
@@ -109,7 +109,7 @@ int main(int argc, char *argv[])
         //execute the game, then return — cleanup happens inside Execute/Cleanup.
         //VariantID is set BEFORE construction so DecideComponent/CreateRecipe resolve the
         //selected variant's ENDPOINTS. A direct --component still works via HeadlessComponentID.
-        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessSubgameID, LaunchParameters.HeadlessComponentID);
+        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessGameID, LaunchParameters.HeadlessComponentID);
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.VariantID = LaunchParameters.VariantID;
         NewContainerParams.RunnerID  = LaunchParameters.RunnerID;
@@ -180,49 +180,91 @@ bool CheckExecutableDependencies()
     return false;
 }
 
-//The four built-in runners as a single readable JSON literal (flat first-class schema).
-//GE-Proton is first so it is the default candidate for Microsoft Windows.
-//TO-DO: make runner paths (PROTONPATH) configurable via settings rather than hardcoded.
-static nlohmann::ordered_json DefaultRunners()
+// ─── BUILT-IN RUNNER REGISTRY — TO BE REMOVED ─────────────────────────────────────────────────
+// Phase 1 ships a hardcoded set of runner *packages*. Each becomes its own directory under
+// ~/.VidyaGod/GLOBAL_RUNNERS/<id>/MANIFEST.json — a pure-runner package (HOST_PLATFORM "linux64",
+// one RUNNERS entry, no GAMES) that the resolver discovers like any other package. Existing files
+// are never clobbered, so user edits survive. The native-passthrough runner runs a host-native
+// (linux64) target with no translation layer.
+//
+// TO BE REMOVED: runners will later be fetched from a remote runner repository; this whole block is
+// temporary scaffolding (note the hardcoded GE-Proton PROTONPATH).
+static void SeedDefaultRegistry(QDir * AppDataDir)
 {
-    return nlohmann::ordered_json::parse(R"JSON([
-        {
-            "RUNNER_ID": "ge-proton10-30", "NAME": "GE-Proton10-30", "TYPE": "wine",
-            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "umu-run",
-            "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun",
-                     "PROTONPATH": "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30" },
-            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+    QDir Reg(AppDataDir->filePath("GLOBAL_RUNNERS"));
+    Reg.mkpath(".");
+
+    nlohmann::ordered_json Packages = nlohmann::ordered_json::parse(R"JSON({
+        "ge-proton10-30": {
+            "PACKAGEUID": "runner-ge-proton10-30", "PACKAGENAME": "GE-Proton 10-30", "PACKAGEVERSION": "10-30",
+            "HOST_PLATFORM": "linux64",
+            "RUNNERS": [ {
+                "RUNNER_ID": "ge-proton10-30", "NAME": "GE-Proton10-30", "TYPE": "wine",
+                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
+                "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun",
+                         "PROTONPATH": "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30" },
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
         },
-        {
-            "RUNNER_ID": "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
-            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "umu-run",
-            "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
-            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        "umu-proton": {
+            "PACKAGEUID": "runner-umu-proton", "PACKAGENAME": "umu-proton", "PACKAGEVERSION": "1.0",
+            "HOST_PLATFORM": "linux64",
+            "RUNNERS": [ {
+                "RUNNER_ID": "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
+                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
+                "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
         },
-        {
-            "RUNNER_ID": "wine", "NAME": "wine", "TYPE": "wine",
-            "PLATFORMS": ["Microsoft Windows"], "EXECUTABLE": "wine",
-            "ENV": { "WINEPREFIX": "%RuntimePath%" },
-            "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": []
+        "wine": {
+            "PACKAGEUID": "runner-wine", "PACKAGENAME": "Wine", "PACKAGEVERSION": "1.0",
+            "HOST_PLATFORM": "linux64",
+            "RUNNERS": [ {
+                "RUNNER_ID": "wine", "NAME": "wine", "TYPE": "wine",
+                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "wine",
+                "ENV": { "WINEPREFIX": "%RuntimePath%" },
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
         },
-        {
-            "RUNNER_ID": "snes9x", "NAME": "snes9x", "TYPE": "emulator",
-            "PLATFORMS": ["SNES"], "EXECUTABLE": "snes9x",
-            "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "ENDPOINTS": []
+        "snes9x": {
+            "PACKAGEUID": "runner-snes9x", "PACKAGENAME": "Snes9x", "PACKAGEVERSION": "1.0",
+            "HOST_PLATFORM": "linux64",
+            "RUNNERS": [ {
+                "RUNNER_ID": "snes9x", "NAME": "snes9x", "TYPE": "emulator",
+                "GUEST_PLATFORM": ["snes"], "EXECUTABLE": "snes9x",
+                "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "ENDPOINTS": [] } ]
+        },
+        "native-passthrough": {
+            "PACKAGEUID": "runner-native-passthrough", "PACKAGENAME": "Native (passthrough)", "PACKAGEVERSION": "1.0",
+            "HOST_PLATFORM": "linux64",
+            "RUNNERS": [ {
+                "RUNNER_ID": "native-passthrough", "NAME": "Native (passthrough)", "TYPE": "native",
+                "GUEST_PLATFORM": ["linux64"], "EXECUTABLE": "",
+                "ENV": {}, "REMOVE_ENV": [], "ARGS": [], "ENDPOINTS": [] } ]
         }
-    ])JSON");
+    })JSON");
+
+    for (auto It = Packages.begin(); It != Packages.end(); ++It)
+    {
+        QDir PkgDir(Reg.filePath(QString::fromStdString(It.key())));
+        PkgDir.mkpath(".");
+        QFile Mf(PkgDir.filePath("MANIFEST.json"));
+        if (Mf.exists()) continue; //never clobber an existing (possibly user-edited) runner package
+        nlohmann::ordered_json M = It.value();
+        if (JSONOps::SaveJSON(&M, &Mf))
+            LogOut("main.cpp", "Seeded built-in runner package: " + It.key());
+    }
 }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
-//  RUNNERS (array of runners), LIBRARY (array of packages), Settings (object of UI prefs).
+//  LIBRARY (array of packages), Settings (object), Settings.GlobalRunners (registry directory index).
+//Runners are NO LONGER stored here — they live as packages in the GLOBAL_RUNNERS registry.
 //Returns true if it added anything, so the caller can persist a freshly-seeded config.
 static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
 {
     bool Changed = false;
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
-    if (!gc.contains("RUNNERS")  || !gc["RUNNERS"].is_array())  { gc["RUNNERS"]  = DefaultRunners();                 Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
+    if (!gc["Settings"].contains("GlobalRunners") || !gc["Settings"]["GlobalRunners"].is_array())
+    { gc["Settings"]["GlobalRunners"] = nlohmann::ordered_json::array({ "~/.VidyaGod/GLOBAL_RUNNERS" }); Changed = true; }
     return Changed;
 }
 
@@ -243,6 +285,9 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
         return true; //fail
     }
     if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
+
+    //Ensure the built-in runner registry exists (idempotent — never clobbers existing packages).
+    SeedDefaultRegistry(AppDataDir);
 
     const bool Changed = EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
@@ -274,8 +319,8 @@ bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
 //Parses argc/argv sequentially.
 //Recognized arguments:
 //  --package <path>      : path to the package to run headlessly
-//  --subgame <id>        : SUBGAMEID string from the package's MANIFEST.json
-//  --component <id>      : COMPONENTID override (bypasses subgame's default component)
+//  --game <id>           : GAMEID string from the package's manifest
+//  --component <id>      : COMPONENTID override (bypasses the game's default component)
 //  --var KEY=VALUE       : override a CustomVar variable; may be repeated for multiple vars
 //Unknown arguments are silently ignored.
 LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
@@ -291,9 +336,9 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.HasHeadlessPackagePath = true;
             RuntimeParameters.RunningHeadless = true;
         }
-        else if (arg == "--subgame" && i + 1 < argc)
+        else if (arg == "--game" && i + 1 < argc)
         {
-            RuntimeParameters.HeadlessSubgameID = argv[++i];
+            RuntimeParameters.HeadlessGameID = argv[++i];
         }
         else if (arg == "--component" && i + 1 < argc)
         {

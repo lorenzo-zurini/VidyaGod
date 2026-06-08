@@ -10,11 +10,11 @@ JSONOps::JSONOps() {}
 //RUNNERS) are keyed by NAME, detected via the context path.
 static std::string ManifestArrayIdField(const std::string &ArrayKey, const std::string &Ctx)
 {
-    if (ArrayKey == "SUBGAMES")   return "SUBGAMEID";
+    if (ArrayKey == "GAMES")      return "GAMEID";
     if (ArrayKey == "COMPONENTS") return "COMPONENTID";
     if (ArrayKey == "VARIANTS")   return "VARIANT_ID";
-    if (ArrayKey == "CUSTOMVARS") return "KEY";
     if (ArrayKey == "RUNNERS")    return "RUNNER_ID"; // flat top-level runner array
+    //CustomVars are SUBCOMPONENTS now (TYPE:"CustomVar"); SUBCOMPONENTS concatenate, no id-merge.
     (void)Ctx;
     return "";
 }
@@ -233,7 +233,13 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             Errors.push_back(std::string("Missing identity field: ") + Key);
     }
 
-    // Component id set + parent map.
+    // HOST_PLATFORM — the platform this package runs as (matched against runner GUEST_PLATFORM).
+    // Advisory: a pure-dependency package (no GAMES/RUNNERS) legitimately omits it.
+    if (!Assembled.contains("HOST_PLATFORM") ||
+        !Assembled["HOST_PLATFORM"].is_string() || std::string(Assembled["HOST_PLATFORM"]).empty())
+        Warnings.push_back("No HOST_PLATFORM declared (needed to resolve a runner for a game)");
+
+    // Component id set + parent map. Also flag duplicate CustomVar KEYs within one component.
     std::unordered_set<std::string> ComponentIds;
     std::unordered_map<std::string, std::string> ParentOf;
     if (Assembled.contains("COMPONENTS") && Assembled["COMPONENTS"].is_array())
@@ -246,6 +252,19 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             if (C.contains("PARENTCOMPONENT") && C["PARENTCOMPONENT"].is_string())
                 Parent = std::string(C["PARENTCOMPONENT"]);
             ParentOf[Id] = Parent;
+
+            // CustomVar subcomponents: KEYs must be unique within the component (they namespace as
+            // %COMPONENTID.KEY%).
+            std::unordered_set<std::string> VarKeys;
+            if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
+                for (const auto &S : C["SUBCOMPONENTS"])
+                    if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
+                    {
+                        std::string K = S.value("KEY", std::string());
+                        if (K.empty()) Warnings.push_back("Component '" + Id + "' has a CustomVar with no KEY");
+                        else if (!VarKeys.insert(K).second)
+                            Warnings.push_back("Component '" + Id + "' has duplicate CustomVar KEY '" + K + "'");
+                    }
         }
 
     // Dangling parents.
@@ -267,36 +286,51 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
         }
     }
 
-    // Subgame / variant / endpoint checks.
-    if (Assembled.contains("SUBGAMES") && Assembled["SUBGAMES"].is_array())
-        for (const auto &SG : Assembled["SUBGAMES"])
+    // Game / variant / endpoint checks.
+    if (Assembled.contains("GAMES") && Assembled["GAMES"].is_array())
+        for (const auto &G : Assembled["GAMES"])
         {
-            std::string SGID = SG.value("SUBGAMEID", std::string("?"));
-            const auto Variants = (SG.contains("VARIANTS") && SG["VARIANTS"].is_array()) ? SG["VARIANTS"] : nlohmann::ordered_json::array();
-            if (Variants.empty()) Warnings.push_back("Subgame '" + SGID + "' has no variants");
+            std::string GID = G.value("GAMEID", std::string("?"));
+            const auto Variants = (G.contains("VARIANTS") && G["VARIANTS"].is_array()) ? G["VARIANTS"] : nlohmann::ordered_json::array();
+            if (Variants.empty()) Warnings.push_back("Game '" + GID + "' has no variants");
             int RecCount = 0;
             for (const auto &V : Variants)
             {
                 std::string VID = V.value("VARIANT_ID", std::string("?"));
                 if (V.value("RECOMMENDED", false)) RecCount++;
                 const auto Endpoints = (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array()) ? V["ENDPOINTS"] : nlohmann::ordered_json::array();
-                if (Endpoints.empty()) Warnings.push_back("Variant '" + VID + "' in subgame '" + SGID + "' has no endpoints");
+                if (Endpoints.empty()) Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no endpoints");
                 for (const auto &E : Endpoints)
                     if (E.is_string() && !ComponentIds.count(std::string(E)))
-                        Errors.push_back("Variant '" + VID + "' (subgame '" + SGID + "') endpoint '" + std::string(E) + "' is not a known component");
+                        Errors.push_back("Variant '" + VID + "' (game '" + GID + "') endpoint '" + std::string(E) + "' is not a known component");
             }
-            if (RecCount > 1) Warnings.push_back("Subgame '" + SGID + "' has " + std::to_string(RecCount) + " RECOMMENDED variants");
+            if (RecCount > 1) Warnings.push_back("Game '" + GID + "' has " + std::to_string(RecCount) + " RECOMMENDED variants");
         }
 
-    // Runner checks (flat RUNNERS array). A runner's ENDPOINTS must resolve to known components.
+    // Runner checks (RUNNERS array). Each runner needs a GUEST_PLATFORM. A runner's ENDPOINTS often
+    // reference its OWN package's components — but a registry runner is validated in isolation, so an
+    // endpoint not present in this doc is only a warning (it may resolve in the runner's own package).
     if (Assembled.contains("RUNNERS") && Assembled["RUNNERS"].is_array())
         for (const auto &R : Assembled["RUNNERS"])
         {
             std::string RID = R.value("RUNNER_ID", std::string());
             if (RID.empty()) Warnings.push_back("A runner has no RUNNER_ID");
+            if (!R.contains("GUEST_PLATFORM") || !R["GUEST_PLATFORM"].is_array() || R["GUEST_PLATFORM"].empty())
+                Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' has no GUEST_PLATFORM");
             const auto Endpoints = (R.contains("ENDPOINTS") && R["ENDPOINTS"].is_array()) ? R["ENDPOINTS"] : nlohmann::ordered_json::array();
             for (const auto &E : Endpoints)
                 if (E.is_string() && !ComponentIds.count(std::string(E)))
-                    Errors.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' endpoint '" + std::string(E) + "' is not a known component");
+                    Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' endpoint '" + std::string(E) + "' is not a component in this package (may resolve in the runner's own package)");
         }
+}
+
+//Archetype tests — a package shows in the library if it has games, and is offered to the resolver
+//if it has runners. Both/neither give the bundle / pure-dependency archetypes.
+bool JSONOps::HasGames(const nlohmann::ordered_json &Doc)
+{
+    return Doc.contains("GAMES") && Doc["GAMES"].is_array() && !Doc["GAMES"].empty();
+}
+bool JSONOps::HasRunners(const nlohmann::ordered_json &Doc)
+{
+    return Doc.contains("RUNNERS") && Doc["RUNNERS"].is_array() && !Doc["RUNNERS"].empty();
 }

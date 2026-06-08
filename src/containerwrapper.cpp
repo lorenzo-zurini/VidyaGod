@@ -1,5 +1,6 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
+#include "jsonoperations.h"
 #include <random>
 #include <fstream>
 #include <sstream>
@@ -23,17 +24,17 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::
 }
 
 //Linear scan for a subgame by its SUBGAMEID string.
-//Returns the array index into MANIFEST["SUBGAMES"], or -1 if not found.
-int ContainerWrapper::FindSubgameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
+//Returns the array index into MANIFEST["GAMES"], or -1 if not found.
+int ContainerWrapper::FindGameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
-    for (int i = 0; i < (int)MANIFESTJSON["SUBGAMES"].size(); i++)
+    for (int i = 0; i < (int)MANIFESTJSON["GAMES"].size(); i++)
     {
-        if (!MANIFESTJSON["SUBGAMES"][i]["SUBGAMEID"].is_null() && MANIFESTJSON["SUBGAMES"][i]["SUBGAMEID"] == SubgameID)
+        if (!MANIFESTJSON["GAMES"][i]["GAMEID"].is_null() && MANIFESTJSON["GAMES"][i]["GAMEID"] == SubgameID)
         {
             return i;
         }
     }
-    LogErr("ContainerWrapper::FindSubgameIndex", "Subgame ID not found: " + SubgameID);
+    LogErr("ContainerWrapper::FindGameIndex", "Subgame ID not found: " + SubgameID);
     return -1;
 }
 
@@ -77,6 +78,18 @@ bool ContainerWrapper::InitializeContainer()
         return false;
     }
     LogSucc("ContainerWrapper::InitializeContainer", "ContainerWrapper::DeriveContainerParams successful.");
+
+    //Fold the selected runner's own components (from its registry package, if any) into the component
+    //pool so its ENDPOINTS resolve and its CustomVar subcomponents are visible to the steps below.
+    //(Empty for an embedded/PATH runner whose components already live in MANIFESTJSON.)
+    if (this->ContainerParams.RunnerComponents.is_array() && !this->ContainerParams.RunnerComponents.empty())
+    {
+        if (!this->MANIFESTJSON.contains("COMPONENTS") || !this->MANIFESTJSON["COMPONENTS"].is_array())
+            this->MANIFESTJSON["COMPONENTS"] = nlohmann::ordered_json::array();
+        for (auto &C : this->ContainerParams.RunnerComponents)
+            this->MANIFESTJSON["COMPONENTS"].push_back(C);
+        LogOut("ContainerWrapper::InitializeContainer", "Folded " + std::to_string(this->ContainerParams.RunnerComponents.size()) + " runner component(s) into the pool.");
+    }
 
     if(!this->CreateRecipe(this->MANIFESTJSON, this->ContainerParams))
     {
@@ -227,7 +240,7 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
     //Subgame path: resolve the variant (its ENDPOINTS become the build targets).
     if (!ContainerParams.subgame_id.empty())
     {
-        int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+        int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
         if (SubgameIdx == -1) return false;
 
         //A directly-supplied component_id (with no variant chosen) overrides variant selection —
@@ -256,7 +269,7 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
         //Resolve the chosen variant's ENDPOINTS into the build target list.
         ContainerParams.Endpoints = FindEndpointsForVariant(MANIFESTJSON, ContainerParams.subgame_id, ContainerParams.VariantID);
         LogOut("ContainerWrapper::DecideComponent", "Variant '" + ContainerParams.VariantID + "' resolved to " + std::to_string(ContainerParams.Endpoints.size()) + " endpoint(s).");
-        LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["SUBGAMES"][SubgameIdx].value("TITLE", ContainerParams.subgame_id)));
+        LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["GAMES"][SubgameIdx].value("TITLE", ContainerParams.subgame_id)));
         return true;
     }
     //Direct component path (editor / comparator): a single component_id is the only endpoint.
@@ -316,19 +329,17 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
     return true;
 }
 
-//Resolves all configurable variables into ContainerParams.CustomVariables.
-//Two sources are merged (runner SETTINGS first, then CustomVar subcomponents —
-//CustomVar wins on key collision since it is more package-specific):
-//  1. SETTINGS array on the selected runner definition (runner-level options)
-//  2. MANIFEST["CUSTOMVARS"] top-level array (game-level options)
+//Resolves every CustomVar SUBCOMPONENT (TYPE:"CustomVar") of the components in the Recipe into
+//ContainerParams.CustomVariables, keyed by the namespaced token "COMPONENTID.KEY". Components are
+//walked in Recipe order, so a later component's var overrides an earlier identical namespaced token.
 //
 //Resolution priority for each variable (highest to lowest):
-//  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
+//  1. ContainerParams.VariableOverrides — set from --var COMP.KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
-//  3. DEFAULT from the SETTINGS / CustomVar definition
+//  3. DEFAULT from the CustomVar definition
 bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
 {
-    //Helper: resolve a single KEY/DEFAULT pair through the priority chain.
+    //Helper: resolve a single namespaced KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
     {
         if (ContainerParams.VariableOverrides.count(Key))
@@ -347,84 +358,56 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
         return DefaultValue;
     };
 
-    //--- Runner SETTINGS (runner-level configurable options) ---
-    //Find the selected runner in MANIFEST RUNNERS first, then GlobalConfig, mirroring
-    //the same lookup order used in DeriveContainerParams.
-    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving runner SETTINGS...");
-    auto ProcessRunnerSettings = [&](nlohmann::ordered_json &Source)
+    //Resolve a single CustomVar subcomponent under namespace NS = "COMPONENTID." — two-layer pipeline:
+    //  Layer 1: StringVariableSubstitution expands %ScreenWidth%, %PackagePath%, and any
+    //           already-resolved CustomVar (GetVariablesMap() is rebuilt per-var).
+    //  Layer 2: TranslateCustomVarValue converts the display value to raw storage (e.g. dword).
+    //DISPLAY is a UI-only flag; all vars resolve here regardless.
+    auto ResolveCustomVar = [&](const nlohmann::ordered_json &CV, const std::string &NS)
     {
-        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
-        for (auto &Runner : Source["RUNNERS"])
+        std::string Bare = CV.value("KEY", std::string());
+        if (Bare.empty()) return;
+        std::string Key     = NS + Bare;                            // namespaced token name
+        std::string VarType = CV.value("VARTYPE", std::string("string"));
+
+        // random: pick a fresh value from OPTIONS each launch (CLI override still wins).
+        if (VarType == "random")
         {
-            //Match the selected runner by RUNNER_ID.
-            if (Runner.value("RUNNER_ID", std::string()) != ContainerParams.RunnerID) continue;
-            if (!Runner.contains("SETTINGS")) return;
-            for (auto &Setting : Runner["SETTINGS"])
+            if (ContainerParams.VariableOverrides.count(Key))
+                ContainerParams.CustomVariables[Key] = ContainerParams.VariableOverrides.at(Key);
+            else if (CV.contains("OPTIONS") && CV["OPTIONS"].is_array() && !CV["OPTIONS"].empty())
             {
-                std::string Key = Setting.value("KEY", std::string());
-                if (Key.empty()) continue;
-                ContainerParams.CustomVariables[Key] = ResolveOne(Key, Setting.value("DEFAULT", std::string()));
+                const auto &Opts = CV["OPTIONS"];
+                static std::mt19937 Rng(std::random_device{}());
+                std::uniform_int_distribution<size_t> Dist(0, Opts.size() - 1);
+                std::string Picked = Opts[Dist(Rng)].value("VALUE", std::string());
+                ContainerWrapper::StringVariableSubstitution(Picked, ContainerParams.GetVariablesMap());
+                ContainerParams.CustomVariables[Key] = Picked;
             }
+            else { LogWarn("ContainerWrapper::ResolveCustomVariables", "  " + Key + ": random has no OPTIONS."); ContainerParams.CustomVariables[Key] = ""; }
+            LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = [random] " + ContainerParams.CustomVariables[Key]);
             return;
         }
+
+        std::string Raw = ResolveOne(Key, CV.value("DEFAULT", std::string()));
+        ContainerWrapper::StringVariableSubstitution(Raw, ContainerParams.GetVariablesMap());
+        ContainerParams.CustomVariables[Key] = TranslateCustomVarValue(Raw, VarType);
+        LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = " + ContainerParams.CustomVariables[Key]);
     };
-    ProcessRunnerSettings(MANIFESTJSON);
-    if (!GlobalConfigJSON.is_null()) ProcessRunnerSettings(GlobalConfigJSON);
 
-    //--- MANIFEST["CUSTOMVARS"] — two-layer pipeline (per-variable, in declaration order) ---
-    //Layer 1: StringVariableSubstitution — expands %ScreenWidth%, %PackagePath%, and any
-    //          previously-resolved CustomVar (GetVariablesMap() is called per-iteration so
-    //          each resolved var is immediately available to subsequent ones).
-    //Layer 2: TranslateCustomVarValue — converts the display value to raw storage format
-    //          (e.g. "1920" + dword → "dword:00000780").
-    //DISPLAY is a UI-only flag; all vars are resolved here regardless.
-    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving MANIFEST CUSTOMVARS...");
-    if (MANIFESTJSON.contains("CUSTOMVARS") && MANIFESTJSON["CUSTOMVARS"].is_array())
+    //Walk the Recipe in order; for each component, resolve its CustomVar subcomponents. Later
+    //components win (they re-assign the same namespaced key).
+    LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving CustomVar subcomponents...");
+    for (const std::string &CompID : ContainerParams.Recipe)
     {
-        for (auto &CV : MANIFESTJSON["CUSTOMVARS"])
-        {
-            std::string Key     = CV.value("KEY",     std::string());
-            std::string VarType = CV.value("VARTYPE",  std::string("string"));
-            if (Key.empty()) continue;
-
-            // --- random type: pick one value from OPTIONS on every launch ---
-            // Skips USERSETTINGS so the selection is fresh each time.
-            // CLI VariableOverrides still take highest priority (useful for debugging).
-            if (VarType == "random")
-            {
-                if (ContainerParams.VariableOverrides.count(Key))
-                {
-                    ContainerParams.CustomVariables[Key] = ContainerParams.VariableOverrides.at(Key);
-                    LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = [random:override] " + ContainerParams.CustomVariables[Key]);
-                }
-                else if (CV.contains("OPTIONS") && CV["OPTIONS"].is_array() && !CV["OPTIONS"].empty())
-                {
-                    auto &Opts = CV["OPTIONS"];
-                    static std::mt19937 Rng(std::random_device{}());
-                    std::uniform_int_distribution<size_t> Dist(0, Opts.size() - 1);
-                    std::string Picked = Opts[Dist(Rng)].value("VALUE", std::string());
-                    ContainerWrapper::StringVariableSubstitution(Picked, ContainerParams.GetVariablesMap());
-                    ContainerParams.CustomVariables[Key] = Picked;
-                    LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = [random] " + ContainerParams.CustomVariables[Key]);
-                }
-                else
-                {
-                    LogWarn("ContainerWrapper::ResolveCustomVariables", "  " + Key + ": random type has no OPTIONS, leaving empty.");
-                    ContainerParams.CustomVariables[Key] = "";
-                }
-                continue;
-            }
-
-            // Resolve raw display value through priority chain.
-            std::string Raw = ResolveOne(Key, CV.value("DEFAULT", std::string()));
-
-            // Layer 1 — token substitution (called per-var so prior CustomVars are available).
-            ContainerWrapper::StringVariableSubstitution(Raw, ContainerParams.GetVariablesMap());
-
-            // Layer 2 — type translation.
-            ContainerParams.CustomVariables[Key] = TranslateCustomVarValue(Raw, VarType);
-            LogOut("ContainerWrapper::ResolveCustomVariables", "  " + Key + " = " + ContainerParams.CustomVariables[Key]);
-        }
+        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
+        if (Idx == -1) continue;
+        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
+        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+        const std::string NS = CompID + ".";
+        for (const auto &S : Comp["SUBCOMPONENTS"])
+            if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
+                ResolveCustomVar(S, NS);
     }
     LogSucc("ContainerWrapper::ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
     return true;
@@ -434,9 +417,9 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
 std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
     std::vector<VariantInfo> Variants;
-    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
+    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
     if (SubgameIdx == -1) return Variants;
-    auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
+    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
     if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Variants;
     for (auto &V : Subgame["VARIANTS"])
     {
@@ -457,9 +440,9 @@ std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::
 std::vector<std::string> ContainerWrapper::FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
 {
     std::vector<std::string> Endpoints;
-    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, SubgameID);
+    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
     if (SubgameIdx == -1) return Endpoints;
-    auto &Subgame = MANIFESTJSON["SUBGAMES"][SubgameIdx];
+    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
     if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Endpoints;
     for (auto &V : Subgame["VARIANTS"])
     {
@@ -483,11 +466,11 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
         return true;
     }
     // Find the variant with matching VARIANT_ID in the subgame.
-    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+    int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
     nlohmann::ordered_json Resolved;
-    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
+    if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS"))
     {
-        for (auto &V : MANIFESTJSON["SUBGAMES"][SubgameIdx]["VARIANTS"])
+        for (auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
         {
             if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
             { Resolved = V; break; }
@@ -558,6 +541,9 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
         auto &Subs = MANIFESTJSON["COMPONENTS"][Idx]["SUBCOMPONENTS"];
         for (int j = 0; j < (int)Subs.size(); j++)
         {
+            //CustomVar subcomponents are not filesystem/registry ops — they were resolved into
+            //CustomVariables by ResolveCustomVariables. Skip them here.
+            if (Subs[j].is_object() && Subs[j].value("TYPE", std::string()) == "CustomVar") continue;
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
             ContainerWrapper::StringVariableSubstitution(SubJSON, ContainerParams.GetVariablesMap());
@@ -570,11 +556,56 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
     return true;
 }
 
+//The platform the HOST runs as. Phase-1 stub — only Linux is supported, so this is constant.
+//TO BE REPLACED by real OS/arch detection when VidyaGod runs on other hosts (e.g. Windows).
+std::string ContainerWrapper::HostPlatform()
+{
+    return "linux64";
+}
+
+//Returns the configured GLOBAL_RUNNERS registry directories (Settings.GlobalRunners), with a leading
+//"~" expanded to $HOME. Defaults to ~/.VidyaGod/GLOBAL_RUNNERS when unset.
+static std::vector<std::string> GatherRegistryDirs(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    auto Expand = [](std::string P) -> std::string {
+        if (!P.empty() && P[0] == '~') P = QDir::homePath().toStdString() + P.substr(1);
+        return P;
+    };
+    std::vector<std::string> Dirs;
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object()
+        && GlobalConfigJSON["Settings"].contains("GlobalRunners") && GlobalConfigJSON["Settings"]["GlobalRunners"].is_array())
+        for (const auto &D : GlobalConfigJSON["Settings"]["GlobalRunners"])
+            if (D.is_string()) Dirs.push_back(Expand(std::string(D)));
+    if (Dirs.empty())
+        Dirs.push_back(QDir::cleanPath(QDir::homePath() + "/.VidyaGod/GLOBAL_RUNNERS").toStdString());
+    return Dirs;
+}
+
+//Gathers every runner object from every package in every configured registry directory.
+std::vector<nlohmann::ordered_json> ContainerWrapper::RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<nlohmann::ordered_json> Runners;
+    for (const auto &RegDir : GatherRegistryDirs(GlobalConfigJSON))
+    {
+        QDir Dir(QString::fromStdString(RegDir));
+        if (!Dir.exists()) continue;
+        for (const QString &Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        {
+            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+            if (!JSONOps::AssembleManifest(Dir.filePath(Sub), Pkg, Warn)) continue;
+            if (!JSONOps::HasRunners(Pkg)) continue;
+            for (const auto &R : Pkg["RUNNERS"]) Runners.push_back(R);
+        }
+    }
+    return Runners;
+}
+
 //Fills all derived fields in ContainerParams from MANIFEST and GlobalConfigJSON.
 //Must be called after DecideComponent so ContainerParams.subgame_id and platform are set.
 //
-//Runner resolution: candidates are runners whose PLATFORMS contains the subgame Platform
-//(MANIFEST runners shadow GlobalConfig by RUNNER_ID). The chosen one, in priority order:
+//Runner resolution: candidates are runners (the package's own + every GLOBAL_RUNNERS registry
+//package) whose GUEST_PLATFORM contains the package's HOST_PLATFORM (the package's own runners shadow
+//registry runners by RUNNER_ID). The chosen one, in priority order:
 //  1. ContainerParams.RunnerID            (explicit pick from the picker / --runner)
 //  2. the selected variant's RUNNER_ID    (variant pin)
 //  3. USERSETTINGS[PackageUID].PREFERRED_RUNNER
@@ -592,29 +623,31 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.PackageUID                          = MANIFESTJSON["PACKAGEUID"];
     LogOut("ContainerWrapper::DeriveContainerParams", "PackageUID: " + ContainerParams.PackageUID);
 
-    //(Sub)game specific — only populated when a subgame_id was specified.
-    int SubgameIdx = FindSubgameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+    //HOST_PLATFORM is package identity — the platform this package runs AS, matched against each
+    //runner's GUEST_PLATFORM. (Free-form: "win32", "snes", "custom", …)
+    ContainerParams.Platform = MANIFESTJSON.value("HOST_PLATFORM", std::string());
+
+    //Game specific — only populated when a game was specified.
+    int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        ContainerParams.GameName                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["TITLE"];
-        //UMUID lives under the subgame's METADATA. "0" means no Steam AppID — umu-run treats that
+        ContainerParams.GameName                        = MANIFESTJSON["GAMES"][SubgameIdx]["TITLE"];
+        //UMUID lives under the game's METADATA. "0" means no Steam AppID — umu-run treats that
         //as a generic Wine launch.
-        auto &Meta      = MANIFESTJSON["SUBGAMES"][SubgameIdx]["METADATA"];
+        auto &Meta      = MANIFESTJSON["GAMES"][SubgameIdx]["METADATA"];
         ContainerParams.UMUID                           = (Meta.is_object() && Meta.contains("UMUID") && Meta["UMUID"].is_string())
                                                           ? std::string(Meta["UMUID"]) : "0";
-        ContainerParams.Platform                        = MANIFESTJSON["SUBGAMES"][SubgameIdx]["PLATFORM"];
     }
     else
     {
-        //No subgame specified — default to Windows platform so a Wine prefix can still be initialised.
         ContainerParams.UMUID                           = "0";
-        ContainerParams.Platform                        = "Microsoft Windows";
     }
     LogOut("ContainerWrapper::DeriveContainerParams", "GameName: " + ContainerParams.GameName);
     LogOut("ContainerWrapper::DeriveContainerParams", "UMUID: " + ContainerParams.UMUID);
-    LogOut("ContainerWrapper::DeriveContainerParams", "Platform: " + ContainerParams.Platform);
+    LogOut("ContainerWrapper::DeriveContainerParams", "HOST_PLATFORM: " + ContainerParams.Platform);
 
-    // Runner resolution — flat RUNNERS arrays filtered by PLATFORMS membership.
+    // Runner resolution — the package's own RUNNERS (embedded bundle) plus every runner package in the
+    // GLOBAL_RUNNERS registry, filtered by GUEST_PLATFORM ∋ HOST_PLATFORM.
     // Precedence: explicit RunnerID (picker/CLI) > variant pin (VARIANT.RUNNER_ID) > PREFERRED_RUNNER > first candidate.
     std::string PreferredRunner;
     {
@@ -624,48 +657,67 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     }
     //Variant pin: the selected variant may force a specific runner.
     std::string VariantPin;
-    if (SubgameIdx != -1 && MANIFESTJSON["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
-        for (auto &V : MANIFESTJSON["SUBGAMES"][SubgameIdx]["VARIANTS"])
+    if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS"))
+        for (auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
             if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
             { VariantPin = V.value("RUNNER_ID", std::string()); break; }
 
-    //Candidate runners = MANIFEST then GlobalConfig, filtered by PLATFORMS, dedup by RUNNER_ID
-    //(MANIFEST shadows GlobalConfig so a package can override a global runner).
-    std::vector<nlohmann::ordered_json> Candidates;
+    //A candidate carries its runner json plus its owning package's COMPONENTS (so a registry runner's
+    //ENDPOINTS / CustomVar subcomponents resolve). The launching package's own runners carry no extra
+    //components — those already live in MANIFESTJSON.
+    struct RunnerCandidate { nlohmann::ordered_json Runner; nlohmann::ordered_json Components; };
+    std::vector<RunnerCandidate> Candidates;
     std::unordered_set<std::string> SeenRunnerIds;
-    auto GatherRunners = [&](nlohmann::ordered_json &Source)
+    auto GatherRunners = [&](const nlohmann::ordered_json &Source, const nlohmann::ordered_json &Components)
     {
         if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
-        for (auto &R : Source["RUNNERS"])
+        for (const auto &R : Source["RUNNERS"])
         {
             bool Match = false;
-            if (R.contains("PLATFORMS") && R["PLATFORMS"].is_array())
-                for (auto &P : R["PLATFORMS"])
+            if (R.contains("GUEST_PLATFORM") && R["GUEST_PLATFORM"].is_array())
+                for (const auto &P : R["GUEST_PLATFORM"])
                     if (P.is_string() && std::string(P) == ContainerParams.Platform) { Match = true; break; }
             if (!Match) continue;
             std::string RID = R.value("RUNNER_ID", std::string());
             if (!RID.empty() && SeenRunnerIds.count(RID)) continue;
             SeenRunnerIds.insert(RID);
-            Candidates.push_back(R);
+            Candidates.push_back({ R, Components });
         }
     };
-    GatherRunners(MANIFESTJSON);
-    GatherRunners(GlobalConfigJSON);
+    //1. The launching package's own runners first (a bundle shadows a registry runner of the same id).
+    GatherRunners(MANIFESTJSON, nlohmann::ordered_json::array());
+    //2. Every runner package in each configured registry directory.
+    for (const auto &RegDir : GatherRegistryDirs(GlobalConfigJSON))
+    {
+        QDir Dir(QString::fromStdString(RegDir));
+        if (!Dir.exists()) continue;
+        for (const QString &Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        {
+            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+            if (!JSONOps::AssembleManifest(Dir.filePath(Sub), Pkg, Warn)) continue;
+            if (!JSONOps::HasRunners(Pkg)) continue;
+            nlohmann::ordered_json Comps = (Pkg.contains("COMPONENTS") && Pkg["COMPONENTS"].is_array())
+                                           ? Pkg["COMPONENTS"] : nlohmann::ordered_json::array();
+            GatherRunners(Pkg, Comps);
+        }
+    }
 
-    nlohmann::ordered_json SelectedRunner;
+    const RunnerCandidate * Selected = nullptr;
     auto PickById = [&](const std::string &Id) -> bool
     {
         if (Id.empty()) return false;
-        for (auto &R : Candidates) if (R.value("RUNNER_ID", std::string()) == Id) { SelectedRunner = R; return true; }
+        for (const auto &C : Candidates) if (C.Runner.value("RUNNER_ID", std::string()) == Id) { Selected = &C; return true; }
         return false;
     };
     //Explicit pick > variant pin > preferred; otherwise the first candidate for the platform.
     if (!PickById(ContainerParams.RunnerID) && !PickById(VariantPin) && !PickById(PreferredRunner)
         && !Candidates.empty())
-        SelectedRunner = Candidates.front();
+        Selected = &Candidates.front();
 
-    if (!SelectedRunner.is_null())
+    if (Selected)
     {
+        const nlohmann::ordered_json &SelectedRunner = Selected->Runner;
+        ContainerParams.RunnerComponents = Selected->Components; //folded into the pool by InitializeContainer
         //Use explicit null guards — direct JSON-to-string conversion throws on null values.
         ContainerParams.RunnerID         = SelectedRunner.value("RUNNER_ID", std::string());
         ContainerParams.RunnerName       = (SelectedRunner.contains("NAME")       && SelectedRunner["NAME"].is_string())       ? std::string(SelectedRunner["NAME"])       : "";

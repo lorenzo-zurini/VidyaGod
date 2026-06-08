@@ -243,19 +243,19 @@ PreLaunchWindow::PreLaunchWindow(
     RootLayout->addWidget(CoverLabel);
 
     // Load cover from MANIFEST SUBGAMES[idx].METADATA.COVER
-    int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
+    int SubgameIdx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
     if (SubgameIdx != -1)
     {
-        auto &TitleVal = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["TITLE"];
+        auto &TitleVal = (*MANIFESTJSON)["GAMES"][SubgameIdx]["TITLE"];
         std::string Title = (!TitleVal.is_null() && TitleVal.is_string()) ? std::string(TitleVal) : SubgameID;
         setWindowTitle("Launch " + QString::fromStdString(Title));
 
-        auto &SubgameMeta = (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["METADATA"];
+        auto &SubgameMeta = (*MANIFESTJSON)["GAMES"][SubgameIdx]["METADATA"];
         std::string CoverFile =
             (SubgameMeta.is_object() && SubgameMeta.contains("COVER") && SubgameMeta["COVER"].is_string())
             ? std::string(SubgameMeta["COVER"])
-            : ((*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("COVER")
-               ? std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["COVER"])
+            : ((*MANIFESTJSON)["GAMES"][SubgameIdx].contains("COVER")
+               ? std::string((*MANIFESTJSON)["GAMES"][SubgameIdx]["COVER"])
                : "");
         if (!CoverFile.empty())
         {
@@ -290,35 +290,29 @@ PreLaunchWindow::PreLaunchWindow(
     RunnerCombo = new QComboBox(ControlWidget);
     PickerForm->addRow("Runner:", RunnerCombo);
 
-    // Collect runners from GlobalConfig and MANIFEST.
-    std::string Platform = "Microsoft Windows";
-    if (SubgameIdx != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("PLATFORM") &&
-        !(*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["PLATFORM"].is_null())
-        Platform = std::string((*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["PLATFORM"]);
-
-    // Flat RUNNERS arrays; a runner is a candidate when its PLATFORMS contains the subgame platform.
-    // Combo userData holds the RUNNER_ID; dedup by RUNNER_ID (MANIFEST shadows GlobalConfig).
+    // Candidate runners = the package's own RUNNERS (bundle) + every GLOBAL_RUNNERS registry runner,
+    // filtered by GUEST_PLATFORM ∋ the package's HOST_PLATFORM. Combo userData holds the RUNNER_ID;
+    // dedup by RUNNER_ID (the package's own runners shadow registry runners).
+    (void)SubgameIdx;
+    std::string Platform = (*MANIFESTJSON).value("HOST_PLATFORM", std::string());
     std::set<QString> SeenRunnerIds;
-    auto CollectRunners = [&](const nlohmann::ordered_json &Source)
+    auto CollectRunner = [&](const nlohmann::ordered_json &Runner)
     {
-        if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
-        for (auto &Runner : Source["RUNNERS"])
-        {
-            bool Match = false;
-            if (Runner.contains("PLATFORMS") && Runner["PLATFORMS"].is_array())
-                for (auto &P : Runner["PLATFORMS"])
-                    if (P.is_string() && std::string(P) == Platform) { Match = true; break; }
-            if (!Match) continue;
-            QString RID = QString::fromStdString(Runner.value("RUNNER_ID", std::string()));
-            if (SeenRunnerIds.count(RID)) continue;
-            SeenRunnerIds.insert(RID);
-            std::string Name = (Runner.contains("NAME") && Runner["NAME"].is_string())
-                               ? std::string(Runner["NAME"]) : Runner.value("RUNNER_ID", std::string("(unnamed)"));
-            RunnerCombo->addItem(QString::fromStdString(Name), RID);
-        }
+        bool Match = false;
+        if (Runner.contains("GUEST_PLATFORM") && Runner["GUEST_PLATFORM"].is_array())
+            for (auto &P : Runner["GUEST_PLATFORM"])
+                if (P.is_string() && std::string(P) == Platform) { Match = true; break; }
+        if (!Match) return;
+        QString RID = QString::fromStdString(Runner.value("RUNNER_ID", std::string()));
+        if (SeenRunnerIds.count(RID)) return;
+        SeenRunnerIds.insert(RID);
+        std::string Name = (Runner.contains("NAME") && Runner["NAME"].is_string())
+                           ? std::string(Runner["NAME"]) : Runner.value("RUNNER_ID", std::string("(unnamed)"));
+        RunnerCombo->addItem(QString::fromStdString(Name), RID);
     };
-    CollectRunners(*MANIFESTJSON);
-    CollectRunners(*GlobalConfigJSON);
+    if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array())
+        for (auto &R : (*MANIFESTJSON)["RUNNERS"]) CollectRunner(R);
+    for (auto &R : ContainerWrapper::RegistryRunners(*GlobalConfigJSON)) CollectRunner(R);
 
     // Pre-select: variant pin > USERSETTINGS PREFERRED_RUNNER > first. (Helper reads a variant's RUNNER_ID.)
     {
@@ -518,9 +512,9 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     // Get entrypoint-level CUSTOMVARS seed.
     nlohmann::ordered_json VariantSeed = nlohmann::ordered_json::object();
     {
-        int SubgameIdx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
-        if (SubgameIdx != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx].contains("VARIANTS"))
-            for (auto &V : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx]["VARIANTS"])
+        int SubgameIdx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+        if (SubgameIdx != -1 && (*MANIFESTJSON)["GAMES"][SubgameIdx].contains("VARIANTS"))
+            for (auto &V : (*MANIFESTJSON)["GAMES"][SubgameIdx]["VARIANTS"])
                 if (V.value("VARIANT_ID", std::string()) == SelVariantID && V.contains("FORCEVARS"))
                     VariantSeed = V["FORCEVARS"];
     }
@@ -535,10 +529,20 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
     bool AnyVisible = false;
 
-    for (auto &CV : (*MANIFESTJSON)["CUSTOMVARS"])
+    // CustomVars are subcomponents (TYPE:"CustomVar"), namespaced %COMPONENTID.KEY%. Walk the recipe
+    // components and surface each displayable var that is actually referenced elsewhere in the chain.
+    for (const std::string &CompID : TmpParams.Recipe)
     {
-        std::string Key = CV.value("KEY", std::string());
-        if (Key.empty()) continue;
+        int CIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, CompID);
+        if (CIdx == -1) continue;
+        auto &Comp = (*MANIFESTJSON)["COMPONENTS"][CIdx];
+        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+        for (auto &CV : Comp["SUBCOMPONENTS"])
+        {
+        if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
+        std::string BareKey = CV.value("KEY", std::string());
+        if (BareKey.empty()) continue;
+        std::string Key = CompID + "." + BareKey;   // namespaced token name
 
         // Only show if this key is actually referenced in the chain.
         std::string Token = "%" + Key + "%";
@@ -627,7 +631,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             Field->setText(QString::fromStdString(InitialValue));
             CustomVarForm->addRow(Label + ":", Field);
         }
-    }
+        } // for each CustomVar subcomponent
+    } // for each recipe component
 
     CustomVarGroup->setVisible(AnyVisible);
 }
@@ -665,9 +670,9 @@ void PreLaunchWindow::onLaunchClicked()
     if (MANIFESTJSON && (*MANIFESTJSON).contains("CUSTOMVARS"))
     {
         // Get variant FORCEVARS seed.
-        int SubgameIdx2 = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
-        if (SubgameIdx2 != -1 && (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2].contains("VARIANTS"))
-            for (auto &Var : (*MANIFESTJSON)["SUBGAMES"][SubgameIdx2]["VARIANTS"])
+        int SubgameIdx2 = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+        if (SubgameIdx2 != -1 && (*MANIFESTJSON)["GAMES"][SubgameIdx2].contains("VARIANTS"))
+            for (auto &Var : (*MANIFESTJSON)["GAMES"][SubgameIdx2]["VARIANTS"])
                 if (Var.value("VARIANT_ID", std::string()) == SelectedVariantID && Var.contains("FORCEVARS"))
                     for (auto &[K, V] : Var["FORCEVARS"].items())
                         if (V.is_string()) CollectedVars[K] = std::string(V);

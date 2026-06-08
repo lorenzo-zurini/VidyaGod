@@ -32,8 +32,8 @@ struct LaunchParameters
     bool RunningInPackageDir = false;                                     //True when auto-detected as running inside a package directory
     bool HasHeadlessPackagePath = false;                                  //True when a package path has been resolved (CLI or auto-detect)
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
-    std::string HeadlessSubgameID;                                        //Subgame to launch (empty = use default)
-    std::string HeadlessComponentID;                                      //Component override (empty = resolved from subgame)
+    std::string HeadlessGameID;                                           //Game to launch (empty = use default)
+    std::string HeadlessComponentID;                                      //Component override (empty = resolved from game)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)

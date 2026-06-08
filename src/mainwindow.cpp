@@ -32,16 +32,16 @@ void LibraryGameCard::InitializeClassVariables()
     std::vector<std::string> AsmWarn;
     if (!JSONOps::AssembleManifest(QString::fromStdString(PackagePath.string()), *MANIFESTJSON, AsmWarn)) return;
 
-    int idx = ContainerWrapper::FindSubgameIndex(*MANIFESTJSON, SubgameID);
+    int idx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
     if (idx == -1) return;
 
-    GameTitle = QString::fromStdString((*MANIFESTJSON)["SUBGAMES"][idx]["TITLE"]);
+    GameTitle = QString::fromStdString((*MANIFESTJSON)["GAMES"][idx]["TITLE"]);
 
     // Sort keys
     SortTitle = GameTitle.toLower();
     if (SortTitle.startsWith("the ")) SortTitle = SortTitle.mid(4);
 
-    auto & Meta = (*MANIFESTJSON)["SUBGAMES"][idx]["METADATA"];
+    auto & Meta = (*MANIFESTJSON)["GAMES"][idx]["METADATA"];
 
     SortDate = (Meta.is_object() && Meta.contains("RELEASEDATE") && Meta["RELEASEDATE"].is_string())
                ? QString::fromStdString(std::string(Meta["RELEASEDATE"])) : "9999";
@@ -64,8 +64,8 @@ void LibraryGameCard::InitializeClassVariables()
     std::string cov =
         (Meta.is_object() && Meta.contains("COVER") && Meta["COVER"].is_string())
         ? std::string(Meta["COVER"])
-        : ((*MANIFESTJSON)["SUBGAMES"][idx].contains("COVER")
-           ? std::string((*MANIFESTJSON)["SUBGAMES"][idx]["COVER"]) : "");
+        : ((*MANIFESTJSON)["GAMES"][idx].contains("COVER")
+           ? std::string((*MANIFESTJSON)["GAMES"][idx]["COVER"]) : "");
     if (!cov.empty())
         CoverOriginal.load(QDir::cleanPath(
             QString::fromStdString(PackagePath.string()) + "/" +
@@ -542,99 +542,39 @@ void MainWindow::RebuildSettingsRunnersPage()
     QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
     SettingsRunnersScroll->setWidget(contents);
 
-    if (!(*GlobalConfigJSON).contains("RUNNERS") || !(*GlobalConfigJSON)["RUNNERS"].is_array())
-        (*GlobalConfigJSON)["RUNNERS"] = nlohmann::ordered_json::array();
-    auto & Runners = (*GlobalConfigJSON)["RUNNERS"];
+    // Runners now live as packages in the GLOBAL_RUNNERS registry. List them read-only here; editing
+    // them (and managing registry directories) is part of the upcoming runner-management UI.
+    QLabel * intro = new QLabel(
+        "Runners are packages in the GLOBAL_RUNNERS registry. Add one by dropping its folder into a "
+        "registry directory (Storage & Paths). Editing is coming soon.", contents);
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    v->addWidget(intro);
 
-    for (int i = 0; i < (int)Runners.size(); i++)
+    std::vector<nlohmann::ordered_json> Runners = ContainerWrapper::RegistryRunners(*GlobalConfigJSON);
+    if (Runners.empty())
     {
-        auto & R = Runners[i];
-        std::string rid = R.value("RUNNER_ID", std::string());
-        QGroupBox * card = new QGroupBox(rid.empty() ? QString("Runner %1").arg(i+1)
-                                                     : QString::fromStdString(rid), contents);
-        QGridLayout * g = new QGridLayout(card); card->setLayout(g);
-        int row = 0;
+        QLabel * none = new QLabel("No registry runners found.", contents);
+        none->setStyleSheet("color:#8f98a0;");
+        v->addWidget(none);
+    }
+    for (const auto & R : Runners)
+    {
+        std::string rid = R.value("RUNNER_ID", std::string("(unnamed)"));
+        QGroupBox * card = new QGroupBox(QString::fromStdString(rid), contents);
+        QFormLayout * f = new QFormLayout(card); card->setLayout(f);
 
-        QPushButton * rem = new QPushButton("✕  Remove runner", card);
-        QObject::connect(rem, &QPushButton::clicked, this, [this,i]{
-            (*GlobalConfigJSON)["RUNNERS"].erase(i);
-            SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
-        });
-        g->addWidget(rem, row, 0, 1, 2); row++;
+        QString guest;
+        if (R.contains("GUEST_PLATFORM") && R["GUEST_PLATFORM"].is_array())
+            for (const auto & P : R["GUEST_PLATFORM"])
+                if (P.is_string()) guest += (guest.isEmpty() ? "" : ", ") + QString::fromStdString(std::string(P));
 
-        // Core text fields — write the single key on edit, leaving all other keys intact.
-        for (const std::string & key : {std::string("RUNNER_ID"), std::string("NAME"), std::string("EXECUTABLE")})
-        {
-            g->addWidget(new QLabel(QString::fromStdString(key) + ":", card), row, 0);
-            QLineEdit * le = new QLineEdit(card);
-            if (R.contains(key) && R[key].is_string()) le->setText(QString::fromStdString(std::string(R[key])));
-            QObject::connect(le, &QLineEdit::editingFinished, this, [this,i,key,le]{
-                (*GlobalConfigJSON)["RUNNERS"][i][key] = le->text().toStdString();
-                SaveGlobalConfigJSON();
-            });
-            g->addWidget(le, row, 1); row++;
-        }
-
-        // TYPE combo.
-        g->addWidget(new QLabel("TYPE:", card), row, 0);
-        QComboBox * type = new QComboBox(card);
-        type->addItems({"wine", "emulator", "native", "custom"});
-        type->setCurrentText(QString::fromStdString(R.value("TYPE", std::string("custom"))));
-        QObject::connect(type, &QComboBox::currentTextChanged, this, [this,i](const QString & t){
-            (*GlobalConfigJSON)["RUNNERS"][i]["TYPE"] = t.toStdString();
-            SaveGlobalConfigJSON();
-        });
-        g->addWidget(type, row, 1); row++;
-
-        // PLATFORMS — string-list sub-editor (structural edits rebuild the page).
-        {
-            if (!R.contains("PLATFORMS") || !R["PLATFORMS"].is_array())
-                (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"] = nlohmann::ordered_json::array();
-            auto & Plats = (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"];
-            QGroupBox * box = new QGroupBox("PLATFORMS", card);
-            QVBoxLayout * bl = new QVBoxLayout(box); box->setLayout(bl);
-            for (int k = 0; k < (int)Plats.size(); k++)
-            {
-                QHBoxLayout * pr = new QHBoxLayout();
-                QLineEdit * le = new QLineEdit(box);
-                if (Plats[k].is_string()) le->setText(QString::fromStdString(std::string(Plats[k])));
-                QObject::connect(le, &QLineEdit::editingFinished, this, [this,i,k,le]{
-                    (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"][k] = le->text().toStdString();
-                    SaveGlobalConfigJSON();
-                });
-                pr->addWidget(le, 1);
-                QPushButton * del = new QPushButton("✕", box); del->setFixedWidth(28);
-                QObject::connect(del, &QPushButton::clicked, this, [this,i,k]{
-                    (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"].erase(k);
-                    SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
-                });
-                pr->addWidget(del);
-                bl->addLayout(pr);
-            }
-            QPushButton * add = new QPushButton("+ Add platform", box);
-            QObject::connect(add, &QPushButton::clicked, this, [this,i]{
-                (*GlobalConfigJSON)["RUNNERS"][i]["PLATFORMS"].push_back("");
-                SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
-            });
-            bl->addWidget(add);
-            g->addWidget(box, row, 0, 1, 2); row++;
-        }
-
+        f->addRow("NAME:",       new QLabel(QString::fromStdString(R.value("NAME", std::string())), card));
+        f->addRow("TYPE:",       new QLabel(QString::fromStdString(R.value("TYPE", std::string())), card));
+        f->addRow("GUEST_PLATFORM:", new QLabel(guest, card));
+        f->addRow("EXECUTABLE:", new QLabel(QString::fromStdString(R.value("EXECUTABLE", std::string())), card));
         v->addWidget(card);
     }
-
-    QPushButton * addRunner = new QPushButton("+ Add runner", contents);
-    QObject::connect(addRunner, &QPushButton::clicked, this, [this]{
-        (*GlobalConfigJSON)["RUNNERS"].push_back(nlohmann::ordered_json{
-            {"RUNNER_ID", ""}, {"NAME", ""}, {"TYPE", "wine"},
-            {"PLATFORMS", nlohmann::ordered_json::array()}, {"EXECUTABLE", ""},
-            {"ENV", nlohmann::ordered_json::object()},
-            {"REMOVE_ENV", nlohmann::ordered_json::array()},
-            {"ARGS", nlohmann::ordered_json::array()},
-            {"ENDPOINTS", nlohmann::ordered_json::array()}});
-        SaveGlobalConfigJSON(); RebuildSettingsRunnersPage();
-    });
-    v->addWidget(addRunner);
     v->addStretch(1);
 }
 
@@ -701,10 +641,10 @@ void MainWindow::BuildLibraryGameCards()
         std::vector<std::string> AsmWarn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(
                 std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"])), pm, AsmWarn)) continue;
-        for (int j = 0; j < (int)pm["SUBGAMES"].size(); j++) {
-            std::string sid = pm["SUBGAMES"][j].contains("SUBGAMEID") &&
-                !pm["SUBGAMES"][j]["SUBGAMEID"].is_null()
-                ? std::string(pm["SUBGAMES"][j]["SUBGAMEID"]) : "";
+        for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
+            std::string sid = pm["GAMES"][j].contains("GAMEID") &&
+                !pm["GAMES"][j]["GAMEID"].is_null()
+                ? std::string(pm["GAMES"][j]["GAMEID"]) : "";
             auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
             c->InitializeClassVariables();
             LibraryGameCards->append(c);
