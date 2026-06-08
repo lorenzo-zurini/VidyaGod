@@ -91,6 +91,10 @@ public:
     RegistryKey *        GetKey(const std::string &FullPath);
     RegistryKey *        EnsureKey(const std::string &FullPath);
     bool                 DeleteKey(const std::string &FullPath);
+    //Deep-copies the key subtree at FullPath from Src into this wrapper (creating the path, replacing
+    //any existing key at that location). Returns false if Src has no such key. Used for per-key
+    //persistence: extract a subtree from one hive set and merge it into another.
+    bool                 MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath);
     const RegistryValue *GetValue(const std::string &FullPath, const std::string &Name) const;
     void                 SetValue(const std::string &FullPath, const std::string &Name, const RegistryValue &V);
     bool                 DeleteValue(const std::string &FullPath, const std::string &Name);

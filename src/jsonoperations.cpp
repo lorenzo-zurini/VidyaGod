@@ -271,6 +271,9 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                     // PersistDir/PersistFile need a runtime-root-relative PATH; RegPersist takes no fields.
                     else if ((T == "PersistDir" || T == "PersistFile") && S.value("PATH", std::string()).empty())
                         Warnings.push_back("Component '" + Id + "' has a " + T + " with an empty PATH");
+                    // RegKeyPersist needs a registry key REGPATH (HKLM\.. / HKCU\..).
+                    else if (T == "RegKeyPersist" && S.value("REGPATH", std::string()).empty())
+                        Warnings.push_back("Component '" + Id + "' has a RegKeyPersist with an empty REGPATH");
                 }
         }
 

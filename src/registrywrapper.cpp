@@ -490,6 +490,36 @@ bool RegistryWrapper::DeleteKey(const std::string &FullPath)
     return false;
 }
 
+//Deep-clones a key node (values/metadata/timestamp/explicit-flag and all descendants).
+static std::unique_ptr<RegistryKey> CloneKey(const RegistryKey &Src)
+{
+    auto K = std::make_unique<RegistryKey>();
+    K->Name = Src.Name;
+    K->RawSegment = Src.RawSegment;
+    K->Explicit = Src.Explicit;
+    K->Timestamp = Src.Timestamp;
+    K->RawMetaLines = Src.RawMetaLines;
+    K->Values = Src.Values;
+    for (const auto &C : Src.Children) K->Children.push_back(CloneKey(*C));
+    return K;
+}
+
+bool RegistryWrapper::MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath)
+{
+    const RegistryKey *SrcKey = const_cast<RegistryWrapper &>(Src).GetKey(FullPath);
+    if (!SrcKey) return false;
+    RegistryKey *Dst = EnsureKey(FullPath); // creates the path, marks the target Explicit
+    // Replace the destination's content with a deep copy of the source subtree. The copied values
+    // keep their verbatim RawName/RawPayload, so they re-serialize faithfully (no Dirty needed).
+    Dst->Values       = SrcKey->Values;
+    Dst->Timestamp    = SrcKey->Timestamp;
+    Dst->RawMetaLines = SrcKey->RawMetaLines;
+    Dst->Explicit     = true;
+    Dst->Children.clear();
+    for (const auto &C : SrcKey->Children) Dst->Children.push_back(CloneKey(*C));
+    return true;
+}
+
 const RegistryValue *RegistryWrapper::GetValue(const std::string &FullPath, const std::string &Name) const
 {
     RegistryKey *K = const_cast<RegistryWrapper *>(this)->GetKey(FullPath);

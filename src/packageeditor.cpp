@@ -1279,6 +1279,7 @@ bool PackageEditor::BuildUI()
                 AddSubComponentMenu->addAction("PersistDir",         this, &PackageEditor::AddPersistDir);
                 AddSubComponentMenu->addAction("PersistFile",        this, &PackageEditor::AddPersistFile);
                 AddSubComponentMenu->addAction("RegPersist",         this, &PackageEditor::AddRegPersist);
+                AddSubComponentMenu->addAction("RegKeyPersist",      this, &PackageEditor::AddRegKeyPersist);
                 AddSubComponentMenu->addSeparator();
                 AddSubComponentMenu->addAction("CustomVar",          this, &PackageEditor::AddCustomVar);
                 AddSubComponentButton->setMenu(AddSubComponentMenu);
@@ -1546,12 +1547,29 @@ bool PackageEditor::BuildUI()
                 }
                 else if (SubComponentType == "RegPersist")
                 {
-                    // No fields — its mere presence in the recipe makes the Wine registry persist.
-                    // (Per-key scoping is planned once the registry class is rewritten.)
-                    QLabel * Hint = new QLabel("Persists the whole prefix registry (user/system/userdef.reg). Per-key scoping coming with the registry rewrite.", IndividualSubComponentGroupBox);
+                    // No fields — its mere presence in the recipe makes the whole Wine registry persist.
+                    QLabel * Hint = new QLabel("Persists the whole prefix registry (user/system/userdef.reg). For a single key, use RegKeyPersist instead.", IndividualSubComponentGroupBox);
                     Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
                     Hint->setWordWrap(true);
                     IndividualSubComponentGroupBoxLayout->addWidget(Hint, 1, 1, 1, 2);
+                }
+                else if (SubComponentType == "RegKeyPersist")
+                {
+                    // REGPATH of the registry key whose subtree should survive a session.
+                    IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("REGPATH:"), 1, 0);
+                    QLineEdit * RegPathField = new QLineEdit(IndividualSubComponentGroupBox);
+                    RegPathField->setPlaceholderText("HKCU\\Software\\<vendor>\\<game>\\Saves");
+                    RegPathField->setProperty("JSONPath", QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/REGPATH").arg(i).arg(j));
+                    auto &RSub = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+                    if (RSub.contains("REGPATH") && RSub["REGPATH"].is_string())
+                        RegPathField->setText(QString::fromStdString(std::string(RSub["REGPATH"])));
+                    QObject::connect(RegPathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                    IndividualSubComponentGroupBoxLayout->addWidget(RegPathField, 1, 1, 1, 2);
+
+                    QLabel * Hint = new QLabel("Persists just this key's subtree across sessions (seeded into the prefix at launch, captured on exit).", IndividualSubComponentGroupBox);
+                    Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
+                    Hint->setWordWrap(true);
+                    IndividualSubComponentGroupBoxLayout->addWidget(Hint, 2, 1, 1, 2);
                 }
                 else if (SubComponentType == "CustomVar")
                 {
@@ -2202,6 +2220,14 @@ void PackageEditor::AddRegPersist()
     QString JSONPath = ResolveComponentJSONPath(QObject::sender());
     nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
     (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "RegPersist"}}));
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
+void PackageEditor::AddRegKeyPersist()
+{
+    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "RegKeyPersist"}, {"REGPATH", ""}}));
     SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 

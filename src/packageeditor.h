@@ -81,6 +81,7 @@ private slots:
     void AddPersistDir();
     void AddPersistFile();
     void AddRegPersist();
+    void AddRegKeyPersist();
     void FinalizeComponent();
     void MoveComponentUp();
     void MoveComponentDown();

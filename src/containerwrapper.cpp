@@ -168,6 +168,9 @@ bool ContainerWrapper::BuildContainerRuntime()
     {
         this->InitializeDefPrefix(this->ContainerParams);
         this->ApplyBaseRegEdits(this->ContainerParams);
+        //Seed persisted registry-key subtrees into DEFPREFIX AFTER base RegEdits, so the user's saved
+        //state wins over the package defaults. No-op unless RegKeyPersist subcomponents are declared.
+        this->SeedPersistRegKeys(this->ContainerParams);
         this->ProcessFileEdits(this->ContainerParams, false);
     }
 
@@ -429,9 +432,10 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
 //file, or registry state also declares that it should survive a session by carrying the matching
 //Persist* subcomponent.
 //
-//  PersistDir   { "TYPE":"PersistDir",  "PATH":"<runtime-root-relative dir>"  } → bind-mounted live
-//  PersistFile  { "TYPE":"PersistFile", "PATH":"<runtime-root-relative file>" } → seeded/captured by copy
-//  RegPersist   { "TYPE":"RegPersist" }                                        → user.reg/system.reg/userdef.reg
+//  PersistDir    { "TYPE":"PersistDir",   "PATH":"<runtime-root-relative dir>"  } → bind-mounted live
+//  PersistFile   { "TYPE":"PersistFile",  "PATH":"<runtime-root-relative file>" } → seeded/captured by copy
+//  RegPersist    { "TYPE":"RegPersist" }                                         → whole user/system/userdef.reg
+//  RegKeyPersist { "TYPE":"RegKeyPersist","REGPATH":"HKCU\\Software\\..." }       → just that key's subtree
 //
 //DEFAULT (no Persist* subcomponent anywhere in the Recipe): PersistAll=true — the durable
 //UserDataPath becomes the union's RW branch and the entire overlay survives. Declaring ANY Persist*
@@ -441,6 +445,7 @@ bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, st
 {
     ContainerParams.PersistDirs.clear();
     ContainerParams.PersistFiles.clear();
+    ContainerParams.PersistRegKeys.clear();
     ContainerParams.PersistRegistry = false;
     bool AnyDeclared = false;
 
@@ -468,10 +473,16 @@ bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, st
             {
                 AnyDeclared = true;
                 ContainerParams.PersistRegistry = true;
-                //FUTURE: once the registry class is rewritten to address individual keys, an optional
-                //"KEY" field here will scope persistence to that subtree. For now RegPersist always
-                //persists the whole prefix registry (user/system/userdef.reg).
                 LogOut("ContainerWrapper::DerivePersistence", "  RegPersist (whole-registry persist)");
+            }
+            else if (Type == "RegKeyPersist")
+            {
+                std::string RegPath = S.value("REGPATH", std::string());
+                ContainerWrapper::StringVariableSubstitution(RegPath, ContainerParams.GetVariablesMap());
+                if (RegPath.empty()) { LogWarn("ContainerWrapper::DerivePersistence", "  RegKeyPersist with empty REGPATH (skipped)."); continue; }
+                AnyDeclared = true;
+                ContainerParams.PersistRegKeys.push_back(RegPath);
+                LogOut("ContainerWrapper::DerivePersistence", "  RegKeyPersist " + RegPath);
             }
         }
     }
@@ -482,7 +493,8 @@ bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, st
             "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
             " REGISTRY=" + std::string(ContainerParams.PersistRegistry ? "true" : "false") +
             " DIRS=" + std::to_string(ContainerParams.PersistDirs.size()) +
-            " FILES=" + std::to_string(ContainerParams.PersistFiles.size()));
+            " FILES=" + std::to_string(ContainerParams.PersistFiles.size()) +
+            " REGKEYS=" + std::to_string(ContainerParams.PersistRegKeys.size()));
     return true;
 }
 
@@ -620,7 +632,7 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
             if (Subs[j].is_object())
             {
                 std::string T = Subs[j].value("TYPE", std::string());
-                if (T == "CustomVar" || T == "PersistDir" || T == "PersistFile" || T == "RegPersist") continue;
+                if (T == "CustomVar" || T == "PersistDir" || T == "PersistFile" || T == "RegPersist" || T == "RegKeyPersist") continue;
             }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
@@ -1522,6 +1534,62 @@ bool ContainerWrapper::CapturePersistFiles(struct ContainerParams &ContainerPara
     return true;
 }
 
+//Merges each previously-persisted RegKeyPersist subtree from the durable store
+//(UserDataPath/__REGKEYS__) directly into the DEFPREFIX hives, so the durable key shadows the
+//default the game would otherwise see. Done in place on DEFPREFIX (the lowest, regenerated-each-launch
+//union layer) rather than copying a whole hive into WRITELAYER — only the one key is touched.
+//Wine-only, pre-VFS. No-op under PersistAll, with no declared keys, or before anything is persisted.
+bool ContainerWrapper::SeedPersistRegKeys(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll || ContainerParams.PersistRegKeys.empty()) return true;
+    const std::filesystem::path Store = ContainerParams.UserDataPath / "__REGKEYS__";
+    if (!std::filesystem::exists(Store)) return true; // nothing persisted yet
+
+    RegistryWrapper Durable;
+    Durable.LoadPrefix(Store);
+
+    RegistryWrapper Prefix;
+    Prefix.LoadPrefix(ContainerParams.DefPrefixPath);
+
+    int Seeded = 0;
+    for (const std::string &RegPath : ContainerParams.PersistRegKeys)
+        if (Prefix.MergeKeyFrom(Durable, RegPath)) { LogOut("ContainerWrapper::SeedPersistRegKeys", "Seeded " + RegPath); ++Seeded; }
+
+    if (Seeded > 0 && !Prefix.SavePrefix(ContainerParams.DefPrefixPath))
+        LogWarn("ContainerWrapper::SeedPersistRegKeys", "Failed to write seeded DEFPREFIX hives.");
+    return true;
+}
+
+//Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the
+//durable store UserDataPath/__REGKEYS__ (partial hive files holding only the persisted keys). Runs
+//during Cleanup BEFORE unmount. A key absent from the session (never created) is left as-is in the
+//store rather than dropped. No-op under PersistAll.
+bool ContainerWrapper::CapturePersistRegKeys(struct ContainerParams &ContainerParams)
+{
+    if (ContainerParams.PersistAll || ContainerParams.PersistRegKeys.empty()) return true;
+    const std::filesystem::path Store = ContainerParams.UserDataPath / "__REGKEYS__";
+
+    RegistryWrapper Session;
+    Session.LoadPrefix(ContainerParams.RuntimePath);
+
+    RegistryWrapper Durable;
+    if (std::filesystem::exists(Store)) Durable.LoadPrefix(Store); // accumulate across sessions
+
+    int Captured = 0;
+    for (const std::string &RegPath : ContainerParams.PersistRegKeys)
+        if (Durable.MergeKeyFrom(Session, RegPath)) { LogOut("ContainerWrapper::CapturePersistRegKeys", "Captured " + RegPath); ++Captured; }
+        else LogOut("ContainerWrapper::CapturePersistRegKeys", "Key absent in session (kept prior): " + RegPath);
+
+    if (Captured > 0)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(Store, ec);
+        if (!Durable.SavePrefix(Store))
+            LogWarn("ContainerWrapper::CapturePersistRegKeys", "Failed to write durable __REGKEYS__ store.");
+    }
+    return true;
+}
+
 //Walks DirectoryPath recursively, lowercasing every path and checking for duplicates.
 //Collisions mean two files differ only in case — problematic under Wine because its
 //filesystem emulation may resolve to the wrong file depending on access order.
@@ -1873,6 +1941,8 @@ bool ContainerWrapper::Cleanup()
         CapturePersistRegistry(this->ContainerParams);
     if (!ContainerParams.PersistFiles.empty() && !ContainerParams.PersistAll)
         CapturePersistFiles(this->ContainerParams);
+    if (!ContainerParams.PersistRegKeys.empty() && !ContainerParams.PersistAll)
+        CapturePersistRegKeys(this->ContainerParams);
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
     bool DurableUnmountOk = true;

@@ -84,6 +84,7 @@ public:
     bool PersistRegistry = false;                                   //a RegPersist subcomponent is present — persist user.reg/system.reg/userdef.reg
     std::vector<std::string> PersistDirs;                           //PersistDir subcomponents — runtime-root-relative leaf dirs bind-mounted from UserDataPath
     std::vector<std::string> PersistFiles;                          //PersistFile subcomponents — runtime-root-relative single files seeded/captured via UserDataPath
+    std::vector<std::string> PersistRegKeys;                        //RegKeyPersist subcomponents — registry key paths (HKLM\.., HKCU\..) whose subtree is seeded/captured
 
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
@@ -265,6 +266,13 @@ public:
     //Copies each PersistFile from RuntimePath/<rel> into UserDataPath/<rel> on Cleanup, capturing
     //the session's writes. Must run BEFORE the runtime is unmounted/wiped. No-op when PersistAll.
     static bool CapturePersistFiles(struct ContainerParams &ContainerParams);
+    //Merges each previously-persisted RegKeyPersist subtree (from UserDataPath/__REGKEYS__/*.reg)
+    //directly into the DEFPREFIX hives before the union mounts, so the durable key shadows the
+    //default. Wine-only, pre-VFS. No-op when PersistAll or nothing persisted yet.
+    static bool SeedPersistRegKeys(struct ContainerParams &ContainerParams);
+    //Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the
+    //durable store UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op PersistAll.
+    static bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
     //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths
     //differ only in case — these cause unpredictable behavior under Wine.
     static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
