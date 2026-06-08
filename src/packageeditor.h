@@ -52,10 +52,6 @@ class PackageEditor : public QDialog
 public:
     //If PackagePath is non-empty, the file-picker dialog is skipped and that package is opened directly.
     explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
-    static QString UnquoteString(QString InputString);
-    static nlohmann::ordered_json RegFileToJSON(QFile RegFile);
-    static nlohmann::ordered_json SubtractJSON(nlohmann::ordered_json OldJSON, nlohmann::ordered_json NewJSON);
-    static nlohmann::ordered_json RegDeltaToSubComponentArray(nlohmann::ordered_json RegDeltaJSON, QString Hive);
     ~PackageEditor();
 
 private slots:
