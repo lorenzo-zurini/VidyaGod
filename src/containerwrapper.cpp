@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <set>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -188,6 +189,13 @@ bool ContainerWrapper::BuildContainerRuntime()
     //No-op under PersistAll or when none are declared.
     if (!ContainerParams.PersistFiles.empty())
         this->SeedPersistFiles(this->ContainerParams);
+
+    //Verify every layer's locator resolves before mounting — a missing source (e.g. a moved local file,
+    //or a remote SOURCE not yet fetched) is surfaced now rather than silently mounting nothing.
+    //TODO(sharing): block / offer to fetch when a remote SOURCE is missing; check runner + cross-package deps.
+    if (std::vector<std::string> Missing = VerifyDependencies(this->ContainerParams); !Missing.empty())
+        LogWarn("ContainerWrapper::BuildContainerRuntime",
+                std::to_string(Missing.size()) + " layer source(s) missing — the runtime may be incomplete.");
 
     //Build the layer-spec (DEFPREFIX + VFS subcomponents target-rooted + PERSIST dirs as RW
     //passthrough) and mount it as a single vidyagodfs filesystem at RuntimePath.
@@ -653,41 +661,79 @@ std::string ContainerWrapper::HostPlatform()
     return "linux64";
 }
 
-//Returns the configured GLOBAL_RUNNERS registry directories (Settings.GlobalRunners), with a leading
-//"~" expanded to $HOME. Defaults to ~/.VidyaGod/GLOBAL_RUNNERS when unset.
-static std::vector<std::string> GatherRegistryDirs(const nlohmann::ordered_json &GlobalConfigJSON)
+//Returns the configured Repository directories (Settings.Repositories[].PATH), with a leading "~"
+//expanded to $HOME. Back-compat: a legacy Settings.GlobalRunners string array is read as local repos.
+//Defaults to ~/.VidyaGod/GLOBAL_RUNNERS when neither is configured.
+//TODO(sharing): a TYPE:"git" repository resolves to its DOWNLOADS clone path once SyncRepositories pulls it.
+static std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     auto Expand = [](std::string P) -> std::string {
         if (!P.empty() && P[0] == '~') P = QDir::homePath().toStdString() + P.substr(1);
         return P;
     };
     std::vector<std::string> Dirs;
-    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object()
-        && GlobalConfigJSON["Settings"].contains("GlobalRunners") && GlobalConfigJSON["Settings"]["GlobalRunners"].is_array())
-        for (const auto &D : GlobalConfigJSON["Settings"]["GlobalRunners"])
+    const nlohmann::ordered_json *Settings = (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+                                             ? &GlobalConfigJSON["Settings"] : nullptr;
+    if (Settings && Settings->contains("Repositories") && (*Settings)["Repositories"].is_array())
+        for (const auto &R : (*Settings)["Repositories"])
+        {
+            if (R.is_object() && R.contains("PATH") && R["PATH"].is_string()) Dirs.push_back(Expand(std::string(R["PATH"])));
+            else if (R.is_string()) Dirs.push_back(Expand(std::string(R))); // tolerate a bare path string
+        }
+    else if (Settings && Settings->contains("GlobalRunners") && (*Settings)["GlobalRunners"].is_array()) // legacy
+        for (const auto &D : (*Settings)["GlobalRunners"])
             if (D.is_string()) Dirs.push_back(Expand(std::string(D)));
     if (Dirs.empty())
         Dirs.push_back(QDir::cleanPath(QDir::homePath() + "/.VidyaGod/GLOBAL_RUNNERS").toStdString());
     return Dirs;
 }
 
-//Gathers every runner object from every package in every configured registry directory.
-std::vector<nlohmann::ordered_json> ContainerWrapper::RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON)
+//Every package manifest known across all Repositories — the catalog. Kind-agnostic (games, runners,
+//libraries) and globally cross-referenceable.
+//TODO(sharing): also fold in LIBRARY entries + DOWNLOADS, dedupe by PACKAGEUID, and persist the index
+//rather than rescanning every call.
+std::vector<nlohmann::ordered_json> ContainerWrapper::CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    std::vector<nlohmann::ordered_json> Runners;
-    for (const auto &RegDir : GatherRegistryDirs(GlobalConfigJSON))
+    std::vector<nlohmann::ordered_json> Packages;
+    std::set<std::string> SeenUID; // first occurrence wins → earlier repository shadows later ones
+    for (const auto &RepoDir : RepositoryDirs(GlobalConfigJSON))
     {
-        QDir Dir(QString::fromStdString(RegDir));
+        QDir Dir(QString::fromStdString(RepoDir));
         if (!Dir.exists()) continue;
         for (const QString &Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
         {
             nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
             if (!JSONOps::AssembleManifest(Dir.filePath(Sub), Pkg, Warn)) continue;
-            if (!JSONOps::HasRunners(Pkg)) continue;
-            for (const auto &R : Pkg["RUNNERS"]) Runners.push_back(R);
+            std::string Uid = Pkg.value("PACKAGEUID", std::string());
+            if (!Uid.empty() && !SeenUID.insert(Uid).second) continue; // already provided by a higher-priority repo
+            Packages.push_back(std::move(Pkg));
         }
     }
+    return Packages;
+}
+
+//Gathers every runner object from every catalog package that HasRunners (a filtered view of the catalog).
+std::vector<nlohmann::ordered_json> ContainerWrapper::RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<nlohmann::ordered_json> Runners;
+    for (const auto &Pkg : CatalogPackages(GlobalConfigJSON))
+        if (JSONOps::HasRunners(Pkg))
+            for (const auto &R : Pkg["RUNNERS"]) Runners.push_back(R);
     return Runners;
+}
+
+//Indexes the configured Repositories at startup (logs what was found).
+//TODO(sharing): for a TYPE:"git" repository, clone/pull into ~/.VidyaGod/DOWNLOADS first, then index;
+//persist a catalog index here instead of rescanning on demand.
+void ContainerWrapper::SyncRepositories(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    for (const auto &RepoDir : RepositoryDirs(GlobalConfigJSON))
+    {
+        QDir Dir(QString::fromStdString(RepoDir));
+        if (!Dir.exists()) { LogWarn("ContainerWrapper::SyncRepositories", "Repository missing (skipped): " + RepoDir); continue; }
+        int Count = Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot).size();
+        LogOut("ContainerWrapper::SyncRepositories", "Indexed repository " + RepoDir + " (" + std::to_string(Count) + " package(s)).");
+    }
 }
 
 //Fills all derived fields in ContainerParams from MANIFEST and GlobalConfigJSON.
@@ -776,8 +822,9 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     };
     //1. The launching package's own runners first (a bundle shadows a registry runner of the same id).
     GatherRunners(MANIFESTJSON, nlohmann::ordered_json::array());
-    //2. Every runner package in each configured registry directory.
-    for (const auto &RegDir : GatherRegistryDirs(GlobalConfigJSON))
+    //2. Every runner package in each configured repository.
+    //TODO(sharing): resolve from CatalogPackages once it carries each package's owning dir for components.
+    for (const auto &RegDir : RepositoryDirs(GlobalConfigJSON))
     {
         QDir Dir(QString::fromStdString(RegDir));
         if (!Dir.exists()) continue;
@@ -1289,6 +1336,47 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
     return result;
 }
 
+//Resolves a File/Dir/Zip layer's content to an absolute host path — its "locator". A relative PATH is
+//joined to the package; an absolute PATH is used verbatim (the local-added-in-place locator, which
+//mirrors a URL/CID). Pure resolution; existence is verified separately by VerifyDependencies.
+//TODO(sharing): when SOURCE.TYPE is github-release/url/ipfs, fetch+cache into ~/.VidyaGod/DOWNLOADS and
+//return that path; the local PATH stays the bundled offline fallback. SOURCE.TYPE "path" overrides PATH.
+static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
+{
+    std::string PathStr = Sub.value("PATH", std::string());
+    if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object())
+    {
+        const auto &Src = Sub["SOURCE"];
+        const std::string SType = Src.value("TYPE", std::string("path"));
+        if (SType == "path") PathStr = Src.value("PATH", PathStr);
+        // else: github-release / url / ipfs — TODO(sharing) fetch; fall back to the bundled PATH for now.
+    }
+    std::filesystem::path P(PathStr);
+    return (P.is_absolute() ? P : (PackagePath / P)).string();
+}
+
+//Returns the unresolved dependency locators for a built container — drives the portable/standalone
+//readiness warning. Iteration 1 verifies every VFS layer's resolved source exists.
+//TODO(sharing): also verify the resolved runner + its RUNTIME + cross-package component references, and
+//distinguish a fully-bundled (portable) chain from one needing external/global packages.
+std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct ContainerParams &ContainerParams)
+{
+    std::vector<std::string> Missing;
+    for (const auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        const std::string Type = Sub.value("TYPE", std::string());
+        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        const std::string Resolved = ResolveLayerSource(Sub, ContainerParams.PackagePath);
+        std::error_code Ec;
+        if (Resolved.empty() || !std::filesystem::exists(Resolved, Ec))
+        {
+            LogErr("ContainerWrapper::VerifyDependencies", "Layer source missing: " + Resolved);
+            Missing.push_back(Resolved);
+        }
+    }
+    return Missing;
+}
+
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (Wine), every
 //VFS subcomponent rooted at its TARGET (logically — no staging dirs), the PERSIST dirs as RW
 //passthrough layers, and the writable top branch. Array order is union priority (lowest first).
@@ -1326,7 +1414,7 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
         else if (Type == "VFSFileLayer") LType = "file";
         else continue;
 
-        std::filesystem::path Source = ContainerParams.PackagePath / Sub.value("PATH", std::string());
+        std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
         std::string Target = WineRoot;
         if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
         {

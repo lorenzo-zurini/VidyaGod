@@ -212,10 +212,18 @@ public:
     //Returns the platform token the HOST runs as (e.g. "linux64"). Phase-1 stub — later real
     //detection. Used to reason about which guest platforms run natively vs. need a translation runner.
     static std::string HostPlatform();
-    //Returns every runner object across the GLOBAL_RUNNERS registry packages (Settings.GlobalRunners).
-    //Used by the UI (runner picker, settings list). The launch resolver scans the registry itself
-    //(it also needs each runner's owning components).
+    //Every package manifest known across all configured Repositories (Settings.Repositories) — the
+    //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + LIBRARY/DOWNLOADS, persisted.
+    static std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
+    //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
+    //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
+    //owning components).
     static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
+    //Indexes the configured Repositories at startup. TODO(sharing): git clone/pull + persisted catalog.
+    static void SyncRepositories(const nlohmann::ordered_json &GlobalConfigJSON);
+    //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
+    //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
+    static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
     //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.

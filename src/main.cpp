@@ -282,10 +282,19 @@ static QString DependencyInstallHint(const std::string &Dep)
 //
 // TO BE REMOVED: runners will later be fetched from a remote runner repository; this whole block is
 // temporary scaffolding (note the hardcoded GE-Proton PROTONPATH).
+// TODO(sharing): the "pretend repo" stands in for a real HOSTED git repository of package JSONs. For
+// now it is a local directory; later a Repository of TYPE:"git" is cloned/pulled into ~/.VidyaGod/DOWNLOADS
+// and indexed like any local repo. The user supplied this dev path.
+static std::string PretendRepoPath() { return "/home/lorenzo-zurini/PRETENDRERPO"; }
+
 static void SeedDefaultRegistry(QDir * AppDataDir)
 {
-    QDir Reg(AppDataDir->filePath("GLOBAL_RUNNERS"));
+    // TODO(sharing): seeding hardcoded runner packages is dev scaffolding — the real flow pulls these
+    // from the hosted repository. They now live in the pretend repo (not ~/.VidyaGod/GLOBAL_RUNNERS).
+    QDir Reg(QString::fromStdString(PretendRepoPath()));
     Reg.mkpath(".");
+    // DOWNLOADS: cache for repo-fetched packages + remote SOURCE artifacts. // TODO(sharing): populate it.
+    AppDataDir->mkpath("DOWNLOADS");
 
     nlohmann::ordered_json Packages = nlohmann::ordered_json::parse(R"JSON({
         "ge-proton10-30": {
@@ -347,17 +356,37 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
 }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
-//  LIBRARY (array of packages), Settings (object), Settings.GlobalRunners (registry directory index).
-//Runners are NO LONGER stored here — they live as packages in the GLOBAL_RUNNERS registry.
+//  LIBRARY (array of packages), Settings (object), Settings.Repositories (the package catalog sources).
+//Runners (and every other shared package) live as packages in the configured Repositories.
 //Returns true if it added anything, so the caller can persist a freshly-seeded config.
+//TODO(sharing): the LIBRARY is just the games-view of the catalog; the catalog itself is the union of
+//every package across all Repositories (+ locally-added, + DOWNLOADS), globally cross-referenceable.
 static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
 {
     bool Changed = false;
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
-    if (!gc["Settings"].contains("GlobalRunners") || !gc["Settings"]["GlobalRunners"].is_array())
-    { gc["Settings"]["GlobalRunners"] = nlohmann::ordered_json::array({ "~/.VidyaGod/GLOBAL_RUNNERS" }); Changed = true; }
+    //Repositories: ordered list of catalog sources. Each: { NAME, PATH, TYPE:"local" }.
+    //TODO(sharing): TYPE:"git" with a URL, synced into DOWNLOADS. RepositoryDirs() still reads the legacy
+    //Settings.GlobalRunners string array, so old configs keep working until they're migrated here.
+    if (!gc["Settings"].contains("Repositories") || !gc["Settings"]["Repositories"].is_array())
+    {
+        nlohmann::ordered_json Repos = nlohmann::ordered_json::array();
+        //Always include the pretend repo (dev scaffolding for hosted runners). TODO(sharing): drop this.
+        Repos.push_back(nlohmann::ordered_json{ {"NAME", "pretend"}, {"PATH", PretendRepoPath()}, {"TYPE", "local"} });
+        //Migrate any legacy Settings.GlobalRunners dirs so user-configured registries survive the upgrade.
+        if (gc["Settings"].contains("GlobalRunners") && gc["Settings"]["GlobalRunners"].is_array() && !gc["Settings"]["GlobalRunners"].empty())
+        {
+            for (const auto &D : gc["Settings"]["GlobalRunners"])
+                if (D.is_string())
+                    Repos.push_back(nlohmann::ordered_json{ {"NAME", "legacy"}, {"PATH", std::string(D)}, {"TYPE", "local"} });
+        }
+        else
+            Repos.push_back(nlohmann::ordered_json{ {"NAME", "global-runners"}, {"PATH", "~/.VidyaGod/GLOBAL_RUNNERS"}, {"TYPE", "local"} });
+        gc["Settings"]["Repositories"] = Repos;
+        Changed = true;
+    }
     return Changed;
 }
 
@@ -383,6 +412,10 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     SeedDefaultRegistry(AppDataDir);
 
     const bool Changed = EnsureGlobalConfigDefaults(*GlobalConfigJSON);
+
+    //Index the configured Repositories into the catalog. // TODO(sharing): for TYPE:"git" repos this is
+    //where a clone/pull into DOWNLOADS happens; for now it indexes local repos in place + logs them.
+    ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
 
     if ((!Existed || Changed) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
