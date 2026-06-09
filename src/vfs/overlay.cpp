@@ -46,11 +46,7 @@ bool VfsState::Init(const Spec &S, std::string &Err)
     uid        = S.uid;
     gid        = S.gid;
 
-    // zip-extraction temp dir lives beside the mount (under TempPath).
-    zipCacheDir = fs::path(S.mountpoint).parent_path() / ".zipcache";
     std::error_code ec;
-    fs::create_directories(zipCacheDir, ec);
-
     if (!writelayer.empty()) fs::create_directories(writelayer, ec);
 
     int prio = 0;
@@ -258,7 +254,7 @@ int CopyUp(VfsState &S, const std::string &vrel, const ResolveResult &rr)
     if (rr.kind == HitKind::ZipEntry && rr.zipEntry)
     {
         ZipReader zr;
-        rc = OpenZipEntry(*const_cast<ZipIndex *>(rr.layer->zip.get()), *rr.zipEntry, S.zipCacheDir, zr);
+        rc = OpenZipEntry(*const_cast<ZipIndex *>(rr.layer->zip.get()), *rr.zipEntry, zr);
         if (rc == 0)
         {
             char buf[256 * 1024];

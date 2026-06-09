@@ -6,7 +6,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <QThread>
+#include <QMetaObject>
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -1220,6 +1224,69 @@ static std::string VidyagodfsPath()
     return "vidyagodfs";
 }
 
+//Returns the name of the first COMPRESSED (non-STORE) entry in the zip at Path, or "" if every entry
+//is STORED (or the archive can't be parsed). Self-contained (no libzip): walks the zip central
+//directory (ZIP64-aware) and checks each record's compression-method field (offset 10; 0 == STORE).
+//Used to block compressed zip layers before mounting — vidyagodfs serves zip layers zero-copy, which
+//requires STORE.
+static std::string ZipFirstCompressedEntry(const std::string &Path)
+{
+    auto rd16 = [](const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); };
+    auto rd32 = [](const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); };
+    auto rd64 = [](const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = (v << 8) | p[i]; return v; };
+
+    int fd = ::open(Path.c_str(), O_RDONLY);
+    if (fd < 0) return "";
+    struct stat stt; if (::fstat(fd, &stt) != 0) { ::close(fd); return ""; }
+    uint64_t fsize = (uint64_t)stt.st_size;
+    auto preadAll = [&](void *b, size_t n, uint64_t off) -> bool {
+        uint8_t *p = (uint8_t *)b; size_t d = 0;
+        while (d < n) { ssize_t r = ::pread(fd, p + d, n - d, (off_t)(off + d)); if (r <= 0) return false; d += (size_t)r; }
+        return true;
+    };
+
+    std::string result;
+    if (fsize >= 22)
+    {
+        uint64_t tail = std::min<uint64_t>(fsize, 22 + 65535);
+        std::vector<uint8_t> buf(tail);
+        if (preadAll(buf.data(), tail, fsize - tail))
+        {
+            long eocd = -1;
+            for (long i = (long)tail - 22; i >= 0; --i) if (rd32(&buf[i]) == 0x06054b50u) { eocd = i; break; }
+            if (eocd >= 0)
+            {
+                const uint8_t *E = &buf[eocd];
+                uint64_t total = rd16(E + 10), cdoff = rd32(E + 16), eocdOff = fsize - tail + (uint64_t)eocd;
+                if (cdoff == 0xFFFFFFFFu || total == 0xFFFFu) // ZIP64
+                {
+                    uint8_t loc[20], z64[56];
+                    if (eocdOff >= 20 && preadAll(loc, 20, eocdOff - 20) && rd32(loc) == 0x07064b50u)
+                    {
+                        uint64_t z = rd64(loc + 8);
+                        if (preadAll(z64, 56, z) && rd32(z64) == 0x06064b50u) { total = rd64(z64 + 32); cdoff = rd64(z64 + 48); }
+                    }
+                }
+                uint64_t pos = cdoff;
+                for (uint64_t i = 0; i < total && result.empty(); ++i)
+                {
+                    uint8_t rec[46];
+                    if (!preadAll(rec, 46, pos) || rd32(rec) != 0x02014b50u) break;
+                    uint16_t method = rd16(rec + 10), nl = rd16(rec + 28), el = rd16(rec + 30), cl = rd16(rec + 32);
+                    if (method != 0) // not STORE
+                    {
+                        std::vector<uint8_t> nm(nl);
+                        result = (nl && preadAll(nm.data(), nl, pos + 46)) ? std::string((const char *)nm.data(), nl) : "(entry)";
+                    }
+                    pos += 46u + nl + el + cl;
+                }
+            }
+        }
+    }
+    ::close(fd);
+    return result;
+}
+
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (Wine), every
 //VFS subcomponent rooted at its TARGET (logically — no staging dirs), the PERSIST dirs as RW
 //passthrough layers, and the writable top branch. Array order is union priority (lowest first).
@@ -1290,6 +1357,30 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 {
     const bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
     nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams, WineMode);
+
+    //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
+    //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
+    for (const auto &L : Spec.value("layers", nlohmann::ordered_json::array()))
+    {
+        if (L.value("type", std::string()) != "zip") continue;
+        std::string Src = L.value("source", std::string());
+        std::string Bad = ZipFirstCompressedEntry(Src);
+        if (Bad.empty()) continue;
+
+        LogErr("ContainerWrapper::MountVFS", "Compressed zip layer (not STORE): " + Src + " — entry '" + Bad + "'");
+        if (qApp)
+        {
+            QString T = "Compressed zip layer — re-zip as STORE";
+            QString M = QString::fromStdString(
+                "This package contains a COMPRESSED zip layer, which is no longer supported.\n\n"
+                + Src + "\n\nfirst compressed entry:  " + Bad + "\n\n"
+                "VidyaGod serves zip layers zero-copy, which requires STORED (uncompressed) archives. "
+                "Re-create the archive with STORE:\n\n    zip -0 -r <archive.zip> <files>\n\n"
+                "or run tools/store-zips.sh on your library to convert everything at once.");
+            QMetaObject::invokeMethod(qApp, [T, M]() { QMessageBox::critical(nullptr, T, M); }, Qt::QueuedConnection);
+        }
+        return false;
+    }
 
     std::filesystem::create_directories(ContainerParams.RuntimePath);
     std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";

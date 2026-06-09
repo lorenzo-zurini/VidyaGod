@@ -33,7 +33,6 @@ struct VfsState {
     gid_t                 gid = 1000;
     std::vector<Layer>    layers;        // ascending priority (index 0 lowest)
     std::set<std::string> implicitDirs;  // synthesized structural dirs (target parents)
-    std::string           zipCacheDir;   // temp dir for large DEFLATE extraction
 
     std::mutex                                         copyUpMapMtx;
     std::map<std::string, std::shared_ptr<std::mutex>> copyUpLocks;

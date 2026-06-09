@@ -9,19 +9,10 @@
 #include <sys/stat.h>
 #include <iostream>
 
-static constexpr uint64_t kMemThreshold = 64ull * 1024 * 1024; // DEFLATE entries above this go to a temp file
-
 ZipIndex::~ZipIndex()
 {
     if (archive) zip_close(archive);
     if (rawFd >= 0) ::close(rawFd);
-}
-
-ZipReader::~ZipReader()
-{
-    // storedFd is the shared ZipIndex::rawFd — never closed here.
-    if (tmpFd >= 0) { ::close(tmpFd); }
-    if (!tmpPath.empty()) { ::unlink(tmpPath.c_str()); }
 }
 
 // ---- little-endian readers + pread helper --------------------------------
@@ -213,11 +204,11 @@ std::shared_ptr<ZipIndex> BuildZipIndex(const std::string &ArchivePath)
 
 // ---- open / read ---------------------------------------------------------
 
-int OpenZipEntry(ZipIndex &Z, const ZipEntry &E, const std::string &TempDir, ZipReader &Out)
+int OpenZipEntry(ZipIndex &Z, const ZipEntry &E, ZipReader &Out)
 {
     Out.size = E.size;
 
-    // Zero-copy: STORED entries are served by pread directly on the archive — no materialization.
+    // Only STORED entries are servable — zero-copy pread directly on the archive (no materialization).
     if (E.stored)
     {
         Out.stored = true;
@@ -226,64 +217,21 @@ int OpenZipEntry(ZipIndex &Z, const ZipEntry &E, const std::string &TempDir, Zip
         return 0;
     }
 
-    if (E.size == 0) { Out.mem.clear(); return 0; } // empty file
-
-    std::lock_guard<std::mutex> Lock(Z.mtx); // zip_fopen_index on a shared zip_t is not concurrent-safe
-
-    zip_file_t *zf = zip_fopen_index(Z.archive, E.index, 0);
-    if (!zf) return -EIO;
-
-    const bool large = E.size > kMemThreshold;
-    if (large)
-    {
-        std::string tmpl = TempDir + "/zipcacheXXXXXX";
-        std::vector<char> path(tmpl.begin(), tmpl.end()); path.push_back('\0');
-        int fd = ::mkstemp(path.data());
-        if (fd < 0) { zip_fclose(zf); return -errno; }
-        Out.tmpFd = fd;
-        Out.tmpPath = path.data();
-    }
-
-    char buf[256 * 1024];
-    uint64_t total = 0;
-    int rc = 0;
-    while (total < E.size)
-    {
-        zip_int64_t got = zip_fread(zf, buf, sizeof buf);
-        if (got < 0) { rc = -EIO; break; }
-        if (got == 0) break;
-        if (large)
-        {
-            ssize_t w = ::write(Out.tmpFd, buf, (size_t)got);
-            if (w != got) { rc = -EIO; break; }
-        }
-        else
-        {
-            Out.mem.insert(Out.mem.end(), buf, buf + got);
-        }
-        total += (uint64_t)got;
-    }
-    zip_fclose(zf);
-    return rc;
+    // Compressed entry: unsupported. The app blocks non-STORE zips before mounting (with a re-zip
+    // dialog); this only fires if one slips through.
+    std::cerr << "[vidyagodfs] refusing compressed zip entry '" << E.name << "' in " << Z.archivePath
+              << " — re-zip the package with 'zip -0' (STORE)\n";
+    return -EIO;
 }
 
 int ReadZipEntry(ZipReader &R, char *Buf, size_t Size, off_t Off)
 {
     if (Off < 0) return -EINVAL;
+    if (!R.stored) return -EIO;
     if ((uint64_t)Off >= R.size) return 0;
     size_t avail = (size_t)(R.size - (uint64_t)Off);
     size_t want = Size < avail ? Size : avail;
 
-    if (R.stored)
-    {
-        ssize_t got = ::pread(R.storedFd, Buf, want, (off_t)(R.dataOffset + (uint64_t)Off));
-        return got < 0 ? -errno : (int)got;
-    }
-    if (R.tmpFd >= 0)
-    {
-        ssize_t got = ::pread(R.tmpFd, Buf, want, Off);
-        return got < 0 ? -errno : (int)got;
-    }
-    std::memcpy(Buf, R.mem.data() + Off, want);
-    return (int)want;
+    ssize_t got = ::pread(R.storedFd, Buf, want, (off_t)(R.dataOffset + (uint64_t)Off));
+    return got < 0 ? -errno : (int)got;
 }

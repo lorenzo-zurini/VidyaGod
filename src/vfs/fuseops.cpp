@@ -176,7 +176,7 @@ static int op_open(const char *path, struct fuse_file_info *fi)
     if (!wantWrite && rr.kind == HitKind::ZipEntry && rr.zipEntry)
     {
         auto *zr = new ZipReader;
-        int e = OpenZipEntry(*const_cast<ZipIndex *>(rr.layer->zip.get()), *rr.zipEntry, S->zipCacheDir, *zr);
+        int e = OpenZipEntry(*const_cast<ZipIndex *>(rr.layer->zip.get()), *rr.zipEntry, *zr);
         if (e != 0) { delete zr; return e; }
         auto *of = new OpenFile; of->zip = zr; fi->fh = (uint64_t)(uintptr_t)of;
         return 0;
