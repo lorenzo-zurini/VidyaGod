@@ -41,9 +41,9 @@ struct LaunchParameters
 
 int main(int argc, char *argv[]);
 
-//Checks for required external binaries (unionfs, fuse-zip, fusermount, umu-run, bindfs).
-//Logs any that are missing. Returns true if any dependency is absent, false if all found.
-bool CheckExecutableDependencies();
+//Checks for required external binaries (fusermount3, umu-run) and the bundled vidyagodfs helper.
+//Logs any that are missing and returns the list of missing names (empty if all present).
+std::list<std::string> CheckExecutableDependencies();
 
 //Loads GlobalConfig.JSON from AppDataDir (or starts empty), then guarantees the used shape via
 //EnsureGlobalConfigDefaults: RUNNERS (built-in defaults), an empty LIBRARY, and a Settings object.

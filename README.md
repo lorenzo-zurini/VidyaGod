@@ -151,12 +151,22 @@ Optional: `wine` (alternative to umu-run), `snes9x` or other emulators for their
 
 ## 3. Building
 
+The custom FUSE filesystem (`vidyagodfs`) lives in a separate repo pulled in as a git submodule, so
+clone with `--recursive` (or initialise it after a plain clone):
+
+```bash
+git clone --recursive https://github.com/lorenzo-zurini/VidyaGod.git
+# already cloned without --recursive?
+git submodule update --init --recursive
+```
+
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-The resulting binary is `build/VidyaGod`.
+This builds two binaries: `build/VidyaGod` (the app) and `build/vidyagodfs` (the FUSE helper, from the
+submodule). The helper must sit next to `VidyaGod` at runtime — the app locates it via `/proc/self/exe`.
 
 ---
 

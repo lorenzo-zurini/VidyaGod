@@ -22,6 +22,8 @@ static int AcquireSingleInstanceLock(const std::string &LockPath)
     return Fd;
 }
 
+static QString DependencyInstallHint(const std::string &Dep); // defined after main()
+
 //Application-wide event filter that stops a QComboBox from changing its value when the mouse
 //wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
 //QComboBox::wheelEvent cycles the selection on hover-scroll regardless of focus, so the wheel is
@@ -64,8 +66,9 @@ int main(int argc, char *argv[])
     LogOut("main.cpp", "Headless ComponentID: " + LaunchParameters.HeadlessComponentID);
 
     //Check if dependencies exist in the system.
-    //Non-fatal: warns but continues so the GUI still opens when VFS is not needed.
-    CheckExecutableDependencies();
+    //Non-fatal: warns but continues so the GUI still opens when VFS is not needed. In GUI mode a dialog
+    //(below, once QApplication exists) lists anything missing with install instructions.
+    std::list<std::string> MissingDeps = CheckExecutableDependencies();
 
     //Auto-detect package-directory mode: if no --package flag was passed, check whether
     //the current working directory itself is a package. This lets users simply cd into a
@@ -84,10 +87,39 @@ int main(int argc, char *argv[])
         }
     }
 
-    //TO-DO: Add support for portable mode.
-    //Find and create AppDataDir (~/.VidyaGod). mkpath is a no-op if it already exists.
-    QDir AppDataDir(QDir::homePath() +  "/.VidyaGod");
+    //Data dir: normally ~/.VidyaGod, but PORTABLE mode keeps everything beside the app so the whole
+    //thing travels on a USB stick. The "app location" the user sees is the AppImage file ($APPIMAGE) when
+    //running as one, else the binary's own directory. Portable is enabled by placing either a "portable"
+    //marker file or a "VidyaGod_data" directory next to the app.
+    std::filesystem::path AppLocation;
+    if (const char *AppImagePath = ::getenv("APPIMAGE"))
+        AppLocation = std::filesystem::path(AppImagePath).parent_path();
+    else
+    {
+        std::error_code SelfEc;
+        std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", SelfEc);
+        if (!SelfEc) AppLocation = Self.parent_path();
+    }
+
+    QString AppDataPath = QDir::homePath() + "/.VidyaGod";
+    bool Portable = false;
+    if (!AppLocation.empty())
+    {
+        std::error_code Ec;
+        std::filesystem::path PortableData = AppLocation / "VidyaGod_data";
+        if (std::filesystem::exists(AppLocation / "portable", Ec) ||
+            std::filesystem::exists(AppLocation / "portable.txt", Ec) ||
+            std::filesystem::is_directory(PortableData, Ec))
+        {
+            AppDataPath = QString::fromStdString(PortableData.string());
+            Portable = true;
+        }
+    }
+
+    //Find and create AppDataDir. mkpath is a no-op if it already exists.
+    QDir AppDataDir(AppDataPath);
     AppDataDir.mkpath(".");
+    LogOut("main.cpp", (Portable ? "Portable mode — data dir: " : "Data dir: ") + AppDataPath.toStdString());
 
     //Single-instance guard (GUI and headless alike): VidyaGod may only run once at a time. This both
     //prevents two instances from fighting over the same runtime/TEMP and makes the stale-mount sweep
@@ -178,6 +210,17 @@ int main(int argc, char *argv[])
     //Block accidental hover-scroll from mutating combo boxes app-wide (see WheelGuard).
     Application.installEventFilter(new WheelGuard(&Application));
 
+    //Surface any missing dependencies now that we can show a dialog — with concrete install steps.
+    //Non-blocking to the app: the user dismisses it and the library still opens (launching games fails
+    //until the deps are present).
+    if (!MissingDeps.empty())
+    {
+        QString Msg = "VidyaGod needs the following to launch games, but couldn't find them:\n\n";
+        for (const std::string &Dep : MissingDeps) Msg += "•  " + DependencyInstallHint(Dep) + "\n\n";
+        Msg += "You can still browse and manage your library; launching a game will fail until these are installed.";
+        QMessageBox::warning(nullptr, "Missing dependencies", Msg);
+    }
+
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
     MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
@@ -188,24 +231,20 @@ int main(int argc, char *argv[])
 //Checks for all external binaries that the VFS and runner subsystems depend on.
 //Uses `which` via std::system() rather than QProcess to keep this path dependency-free.
 //Returns true if any binary is missing, false if everything is present.
-bool CheckExecutableDependencies()
+std::list<std::string> CheckExecutableDependencies()
 {
     //The custom vidyagodfs FUSE filesystem replaces unionfs/fuse-zip/bindfs. fusermount(3) (part of
     //libfuse) still tears mounts down; umu-run is the default Wine runner.
     std::list<std::string> ExecutableDependencies = {"fusermount3", "umu-run"};
-    std::string MissingDependencies;
-    bool error = 0;
+    std::list<std::string> Missing;
     for (const std::string& Binary : ExecutableDependencies) {
         std::string Command = "which " + Binary + " > /dev/null 2>&1";
         if (std::system(Command.c_str()) == 0)
-        {
             LogOut("main.cpp", Binary + " found on the system.");
-        }
         else
         {
             LogErr("main.cpp", Binary + " NOT FOUND ON THE SYSTEM, VFS WILL NOT WORK.");
-            MissingDependencies = MissingDependencies + Binary + " \n";
-            error = 1;
+            Missing.push_back(Binary);
         }
     }
 
@@ -214,18 +253,24 @@ bool CheckExecutableDependencies()
     std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", SelfEc);
     std::filesystem::path Helper = SelfEc ? std::filesystem::path() : (Self.parent_path() / "vidyagodfs");
     if (!Helper.empty() && std::filesystem::exists(Helper)) LogOut("main.cpp", "vidyagodfs found at " + Helper.string());
-    else { LogErr("main.cpp", "vidyagodfs NOT FOUND beside the binary, VFS WILL NOT WORK."); MissingDependencies += "vidyagodfs \n"; error = 1; }
+    else { LogErr("main.cpp", "vidyagodfs NOT FOUND beside the binary, VFS WILL NOT WORK."); Missing.push_back("vidyagodfs"); }
 
-    if (error)
-    {
-        //Warning dialog is currently disabled to avoid blocking headless runs.
-        //Re-enable the QMessageBox below when a non-blocking notification is desired.
-        //QMessageBox::warning(nullptr, "Missing dependencies", QString::fromStdString("The following required dependencies have not been detected on your system:\n\n" +
-        //                                                                             MissingDependencies + "\nPlease install them to ensure full program functionality!"));
-        return true;
-    }
+    return Missing;
+}
 
-    return false;
+//Human-friendly install guidance for a missing dependency, shown in the GUI startup dialog.
+static QString DependencyInstallHint(const std::string &Dep)
+{
+    if (Dep == "fusermount3")
+        return "fusermount3 — part of FUSE 3 (needed to mount game runtimes).\n"
+               "    Arch: sudo pacman -S fuse3   •   Debian/Ubuntu: sudo apt install fuse3   •   Fedora: sudo dnf install fuse3";
+    if (Dep == "umu-run")
+        return "umu-run — the Wine/Proton game runner (umu-launcher).\n"
+               "    Arch (AUR): umu-launcher   •   others: https://github.com/Open-Wine-Components/umu-launcher";
+    if (Dep == "vidyagodfs")
+        return "vidyagodfs — ships with VidyaGod, so your install looks incomplete.\n"
+               "    Reinstall the AppImage (or rebuild — it must sit next to the VidyaGod binary).";
+    return QString::fromStdString(Dep);
 }
 
 // ─── BUILT-IN RUNNER REGISTRY — TO BE REMOVED ─────────────────────────────────────────────────

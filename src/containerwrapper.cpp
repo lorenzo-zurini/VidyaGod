@@ -59,9 +59,10 @@ int ContainerWrapper::FindComponentIndex(const nlohmann::ordered_json &MANIFESTJ
     return -1;
 }
 
-//TO-DO:
-//CREATE SEPARATE CLASS FOR VFS
-//CREATE WRAPPER CLASS FOR REGISTRY
+//NOTE: the registry is now its own class (RegistryWrapper) and the filesystem is its own binary
+//(vidyagodfs, the VidyaGodFS submodule). The remaining refactor would be to lift the VFS orchestration
+//(BuildLayerSpec / MountVFS / CleanStaleRuntime / Cleanup) out of ContainerWrapper into a dedicated
+//class, but it's not blocking — left as a future cleanup.
 
 //Runs the initialization steps in the required order:
 //  DecideComponent → DeriveContainerParams → CreateRecipe → ResolveCustomVariables → BuildSubComponentsArray
