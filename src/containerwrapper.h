@@ -298,7 +298,7 @@ public:
     //Misc
     //Synchronously runs Program with Arguments in the given environment.
     //Waits indefinitely for completion. Returns the exit code, or -1 on crash/start failure.
-    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment());
+    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment(), const std::string &WorkingDirectory = "");
     //Translates a display-layer value to its raw storage format based on VARTYPE (dword/qword/bool).
     static std::string TranslateCustomVarValue(const std::string &Value, const std::string &VarType);
     //Replaces all %KEY% tokens in SourceString with values from VariablesMap.

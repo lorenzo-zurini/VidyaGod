@@ -1061,7 +1061,7 @@ bool ContainerWrapper::StringVariableSubstitution(
 //Waits indefinitely (timeout = -1) so long-running installers and wine boots don't time out.
 //Dumps stderr and stdout after completion so output appears in the application log.
 //Returns the process exit code, or -1 if the process failed to start or crashed.
-int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment)
+int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment, const std::string &WorkingDirectory)
 {
     auto toQStringList = [](const std::vector<std::string>& v)
     {
@@ -1073,6 +1073,7 @@ int ContainerWrapper::RunCommand(std::string Program, std::vector<std::string> A
 
     QProcess Process;
     Process.setProcessEnvironment(ProcessEnvironment);
+    if (!WorkingDirectory.empty()) Process.setWorkingDirectory(QString::fromStdString(WorkingDirectory));
     Process.setProgram(QString::fromStdString(Program));
     Process.setArguments(ArgumentsQList);
 
