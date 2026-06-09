@@ -3,7 +3,8 @@
 # them zero-copy (direct pread, no RAM/scratch — required for very large packages). Already-stored
 # archives are skipped. Each conversion is staged in a temp file and integrity-checked (entry count +
 # total uncompressed bytes) before atomically replacing the original; on any mismatch the original is
-# kept. Symlinks and timestamps are preserved.
+# kept. Symlinks are deliberately NOT preserved (-y is absent): their real content is stored instead so
+# packages remain self-contained (a symlink pointing outside the archive would break on another machine).
 #
 # Usage: tools/store-zips.sh [LIBRARY_DIR]   (default: "$HOME/The Vidya")
 set -uo pipefail
@@ -29,7 +30,7 @@ while IFS= read -r -d '' zip; do
   tmpd=$(mktemp -d -p "$(dirname "$zip")") || { fail=$((fail+1)); continue; }
   tmpz=$(mktemp -p "$(dirname "$zip")" --suffix=.zip) || { rm -rf "$tmpd"; fail=$((fail+1)); continue; }
   rm -f "$tmpz"   # zip wants to create it
-  if unzip -qq "$zip" -d "$tmpd" && ( cd "$tmpd" && zip -q -0 -r -y -X "$tmpz" . ); then
+  if unzip -qq "$zip" -d "$tmpd" && ( cd "$tmpd" && zip -q -0 -r -X "$tmpz" . ); then
     if [ "$(zip_count "$zip")" = "$(zip_count "$tmpz")" ] && [ "$(zip_len "$zip")" = "$(zip_len "$tmpz")" ]; then
       mv -f "$tmpz" "$zip" && conv=$((conv+1)) || { echo "  replace FAILED" >&2; rm -f "$tmpz"; fail=$((fail+1)); }
     else
