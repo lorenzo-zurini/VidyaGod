@@ -1919,21 +1919,21 @@ bool ContainerWrapper::Cleanup()
         for (int Attempt = 0; Attempt < 5 && !Unmounted; ++Attempt)
         {
             if (Attempt > 0) QThread::msleep(200); //give a lingering wineserver time to release
-            if (ContainerWrapper::RunCommand("fusermount", {"-u", *It}) == 0)
+            if (ContainerWrapper::RunCommand("fusermount3", {"-u", *It}) == 0)
                 Unmounted = true;
         }
         if (!Unmounted)
         {
             LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries: " + It->string());
             //Lazy-detach so it eventually clears, but mark the wipe unsafe for this run.
-            ContainerWrapper::RunCommand("fusermount", {"-uz", *It});
+            ContainerWrapper::RunCommand("fusermount3", {"-uz", *It});
             DurableUnmountOk = false;
         }
     }
 
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
-        ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
+        ContainerWrapper::RunCommand("fusermount3", {"-uz", UnmountPath});
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)
@@ -2016,7 +2016,7 @@ void ContainerWrapper::CleanStaleRuntime(const std::filesystem::path &TempPath)
     //non-lazy unmount spews while a lingering wineserver still holds handles; the actual teardown
     //then finishes in the background, so we VERIFY it has fully cleared below before touching disk.
     for (const std::string &Mount : StaleMounts)
-        ContainerWrapper::RunCommand("fusermount", {"-uz", Mount});
+        ContainerWrapper::RunCommand("fusermount3", {"-uz", Mount});
 
     //Save-safety gate (mirrors Cleanup): poll until nothing under TempPath is mounted, so remove_all
     //can never traverse a still-live PERSIST bind into PackagePath/USERDATA. Wait, don't assume.

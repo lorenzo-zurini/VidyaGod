@@ -18,8 +18,8 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
-            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 libfuse3-dev  tree \
-            libxkbcommon-dev nlohmann-json3-dev wget fuse-zip autoconf automake libtool pkg-config
+            libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 libfuse3-dev tree \
+            libxkbcommon-dev nlohmann-json3-dev libzip-dev wget pkg-config
 
           # Make Qt6 binaries available in PATH
           export PATH=/usr/lib/qt6/bin:$PATH
@@ -27,35 +27,11 @@ jobs:
 
       - name: Build VidyaGod
         run: |
+          # Builds both targets: the GUI app (VidyaGod) and the FUSE helper (vidyagodfs).
           mkdir -p build
           cd build
           cmake ..
           make -j$(nproc)
-
-      - name: Build unionfs-fuse
-        run: |
-          git clone https://github.com/rpodgorny/unionfs-fuse.git
-          cd unionfs-fuse
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          make -j$(nproc)
-
-      - name: Build bindfs
-        run: |
-          # Clone the repo
-          git clone https://github.com/mpartel/bindfs.git
-          cd bindfs
-          
-          # Prepare build system
-          ./autogen.sh
-          
-          # Configure build to install in a local folder
-          mkdir -p build/bindfs
-          ./configure --prefix=$PWD/build/bindfs
-          
-          # Build and install
-          make -j$(nproc)
-          make install
 
       - name: Prepare AppDir
         run: |
@@ -64,8 +40,10 @@ jobs:
           mkdir -p AppDir/usr/bin
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
-          # Copy your app binary
+          # Copy the app binary AND the FUSE helper. vidyagodfs MUST sit beside VidyaGod in
+          # usr/bin — the app locates it via /proc/self/exe (the binary's own directory).
           cp build/VidyaGod AppDir/usr/bin/
+          cp build/vidyagodfs AppDir/usr/bin/
 
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
@@ -77,25 +55,14 @@ jobs:
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
-          # Copy unionfs-fuse binary
-          cp unionfs-fuse/build/src/unionfs AppDir/usr/bin/unionfs
-
-          # Copy bindfs into AppDir
-          cp bindfs/build/bindfs/bin/bindfs AppDir/usr/bin/
-          
-          # Copy fuse-zip binary
-          cp /usr/bin/fuse-zip AppDir/usr/bin/
-
       - name: Download linuxdeploy
         run: |
           wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
 
-      - name: Bundle unionfs-fuse and fuse-zip
+      - name: Bundle vidyagodfs (pulls in libzip + libfuse3)
         run: |
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/unionfs
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/fuse-zip
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/bindfs
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/vidyagodfs
 
       - name: Download linuxdeployqt
         run: |
