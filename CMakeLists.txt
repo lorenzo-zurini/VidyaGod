@@ -12,11 +12,6 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets)
 find_package(nlohmann_json REQUIRED)
 
-# vidyagodfs (the custom FUSE filesystem helper) links these; the GUI app does not.
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FUSE3 REQUIRED IMPORTED_TARGET fuse3)
-pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)
-
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
 
@@ -57,22 +52,8 @@ add_executable(VidyaGod ${PROJECT_SOURCES})
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 
-# ---- vidyagodfs: manifest-aware overlay/zip/file FUSE filesystem (no Qt) ----
-set(VIDYAGODFS_SOURCES
-    src/vfs/main.cpp
-    src/vfs/layerspec.h
-    src/vfs/layerspec.cpp
-    src/vfs/ziplayer.h
-    src/vfs/ziplayer.cpp
-    src/vfs/overlay.h
-    src/vfs/overlay.cpp
-    src/vfs/fuseops.h
-    src/vfs/fuseops.cpp
-)
-add_executable(vidyagodfs ${VIDYAGODFS_SOURCES})
-# No Qt in the helper — skip the Qt autogen steps.
-set_target_properties(vidyagodfs PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-# FUSE_USE_VERSION=31 (FUSE 3.1 high-level API) — only the 3.0/3.1 ops are used, so this builds
-# against any libfuse 3.x (CI ships 3.10; requesting a newer API than the lib provides would fail).
-target_compile_definitions(vidyagodfs PRIVATE FUSE_USE_VERSION=31 _FILE_OFFSET_BITS=64)
-target_link_libraries(vidyagodfs PRIVATE PkgConfig::FUSE3 PkgConfig::LIBZIP nlohmann_json::nlohmann_json)
+# ---- vidyagodfs: the custom FUSE filesystem, built from its own repo (git submodule) ----
+# It defines the `vidyagodfs` target (links libfuse3 + libzip). Place its binary next to VidyaGod in
+# the build root so the app finds it via /proc/self/exe and the AppImage step can bundle it.
+add_subdirectory(external/VidyaGodFS)
+set_target_properties(vidyagodfs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})

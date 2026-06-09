@@ -1,0 +1,3 @@
+[submodule "external/VidyaGodFS"]
+	path = external/VidyaGodFS
+	url = https://github.com/lorenzo-zurini/VidyaGodFS.git
