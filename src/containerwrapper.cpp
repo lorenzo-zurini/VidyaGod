@@ -184,15 +184,10 @@ bool ContainerWrapper::BuildContainerRuntime()
     if (!ContainerParams.PersistFiles.empty())
         this->SeedPersistFiles(this->ContainerParams);
 
-    //Mount all filesystem subcomponents into TEMP, then assemble and mount the final union.
-    this->PreMountFilesystemComponents(this->ContainerParams, WineMode);
-    if (!this->FinalizeVFSString(this->ContainerParams)) return false;
-    this->MountVFS(this->ContainerParams);
+    //Build the layer-spec (DEFPREFIX + VFS subcomponents target-rooted + PERSIST dirs as RW
+    //passthrough) and mount it as a single vidyagodfs filesystem at RuntimePath.
+    if (!this->MountVFS(this->ContainerParams)) return false;
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
-
-    //Bind durable PERSIST.DIRS over the mounted runtime so their writes land in the package store.
-    //Done before the OVERRIDE steps so overrides targeting a persisted path land durably too.
-    this->MountPersistDirs(this->ContainerParams);
 
     //Wine-specific post-mount steps: DLL overrides, OVERRIDE FileEdits, and OVERRIDE reg patches
     //operate on the mounted runtime (COW directly to WRITELAYER) — they win unconditionally.
@@ -1167,8 +1162,8 @@ bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerPa
 //Exclusive for wine / proton runners.
 //Must be made to work with any runner, not just UMU...
 //
-//After a successful wineboot, DefPrefixPath is added to VFSString as the base (lowest-priority)
-//read-only layer so the prefix's drive_c structure is visible in the final union mount.
+//After a successful wineboot, DefPrefixPath becomes the base (lowest-priority) read-only layer of the
+//vidyagodfs spec (see BuildLayerSpec), so the prefix's drive_c structure shows at the runtime root.
 //The prefix must be initialized before any game layers are stacked on top.
 bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerParams)
 {
@@ -1199,11 +1194,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     if (RunProcess->exitCode() == 0)
     {
         delete RunProcess;
-        //Add the freshly created prefix as the lowest-priority VFS layer (base of the stack).
-        if (!ContainerWrapper::AddToVFSString(ContainerParams, ContainerParams.DefPrefixPath))
-        {
-            return false;
-        }
+        //The prefix is added to the layer-spec as the base (root) layer by BuildLayerSpec.
         LogSucc("ContainerWrapper::InitializeDefPrefix", "Prefix initialisation successful!");
         return true;
     }
@@ -1215,237 +1206,122 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     }
 }
 
-//Pre-mounts each VFS subcomponent into an isolated TEMP/[i] staging directory,
-//then adds that directory to VFSString.
-//
-//Staging in numbered directories keeps layers independent — each gets its own
-//mount point so fuse-zip/bindfs don't share or conflict.
-//
-//WineMode=true wraps each layer's target inside drive_c/PackageUID so the game
-//files appear at the correct Windows path when Wine accesses drive_c.
-//
-//Layer type behavior:
-//  VFSZipLayer  — fuse-zip mounts the zip read-only; the mount point goes into CleanupUnmountPaths.
-//  VFSDirLayer  — bindfs bind-mounts the directory read-only; same cleanup registration.
-//  VFSFileLayer — hard-linked into the staging dir (no FUSE mount); falls back to copy if
-//                 cross-device. The staging dir is registered in CleanupDeletePaths.
-bool ContainerWrapper::PreMountFilesystemComponents(struct ContainerParams &ContainerParams, bool WineMode)
+//Locates the vidyagodfs helper: next to the running binary first (via /proc/self/exe, which works
+//in headless mode before any QApplication exists), else on PATH.
+static std::string VidyagodfsPath()
 {
-    LogOut("ContainerWrapper::PreMountFilesystemComponents", "Processing filesystem Subcomponents.");
-    for (int i = 0; i < (int)ContainerParams.SubComponentsArray.size(); i++)
+    std::error_code ec;
+    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec)
     {
-        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
-        std::string Type = SubComponentJSON.value("TYPE", std::string());
-
-        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer")
-            continue;
-
-        //Each layer gets its own numbered staging directory under TEMP.
-        std::filesystem::path PreMountPath = ContainerParams.TempPath / ("[" + std::to_string(i) + "]");
-        std::filesystem::create_directories(PreMountPath);
-
-        //In Wine mode the game content must land under drive_c/PackageUID so that
-        //Wine's C: drive maps to the correct location inside the union mount.
-        std::filesystem::path TargetPath = WineMode
-            ? PreMountPath / "drive_c" / ContainerParams.PackageUID
-            : PreMountPath;
-
-        //Optional TARGET subpath lets a layer be mounted into a subdirectory of the program dir.
-        if (SubComponentJSON.contains("TARGET") && !SubComponentJSON["TARGET"].is_null() && !SubComponentJSON["TARGET"].empty())
-            TargetPath = TargetPath / std::string(SubComponentJSON["TARGET"]);
-
-        std::filesystem::path SourcePath = ContainerParams.PackagePath / std::string(SubComponentJSON["PATH"]);
-
-        if (Type == "VFSZipLayer")
-        {
-            std::filesystem::create_directories(TargetPath);
-            LogOut("ContainerWrapper::PreMountFilesystemComponents", "Mounting VFSZipLayer " + SourcePath.string() + " at " + TargetPath.string());
-            //fuse-zip exit code 0 = success; non-zero = mount failed.
-            if (!ContainerWrapper::RunCommand("fuse-zip", {"-r", SourcePath, TargetPath}))
-            {
-                ContainerParams.CleanupUnmountPaths.push_back(TargetPath);
-                if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
-                    return false;
-            }
-            else
-            {
-                LogErr("ContainerWrapper::PreMountFilesystemComponents", "FAILED TO MOUNT VFSZipLayer " + SourcePath.string());
-            }
-        }
-        else if (Type == "VFSDirLayer")
-        {
-            std::filesystem::create_directories(TargetPath);
-            LogOut("ContainerWrapper::PreMountFilesystemComponents", "Mounting VFSDirLayer " + SourcePath.string() + " at " + TargetPath.string());
-            if (!ContainerWrapper::RunCommand("bindfs", {"-r", SourcePath, TargetPath}))
-            {
-                ContainerParams.CleanupUnmountPaths.push_back(TargetPath);
-                if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
-                    return false;
-            }
-            else
-            {
-                LogErr("ContainerWrapper::PreMountFilesystemComponents", "FAILED TO MOUNT VFSDirLayer " + SourcePath.string());
-            }
-        }
-        else if (Type == "VFSFileLayer")
-        {
-            std::filesystem::create_directories(TargetPath);
-            std::filesystem::path DestPath = TargetPath / SourcePath.filename();
-            std::error_code ec;
-            std::filesystem::create_hard_link(SourcePath, DestPath, ec);
-            if (ec)
-            {
-                if (ec.value() == EXDEV)
-                {
-                    // Cross-device — fall back to a full copy.
-                    LogWarn("ContainerWrapper::PreMountFilesystemComponents",
-                            "Hardlink failed (cross-device), copying VFSFileLayer: " + SourcePath.filename().string());
-                    std::filesystem::copy_file(SourcePath, DestPath, std::filesystem::copy_options::overwrite_existing, ec);
-                }
-                if (ec)
-                {
-                    LogErr("ContainerWrapper::PreMountFilesystemComponents",
-                           "VFSFileLayer failed: " + ec.message() + " — " + SourcePath.string());
-                    continue;
-                }
-            }
-            else
-            {
-                LogOut("ContainerWrapper::PreMountFilesystemComponents",
-                       "Hardlinked VFSFileLayer: " + SourcePath.filename().string());
-            }
-            // Register the staging dir for cleanup regardless of hard-link vs copy.
-            ContainerParams.CleanupDeletePaths.push_back(PreMountPath);
-            if (!ContainerWrapper::AddToVFSString(ContainerParams, PreMountPath))
-                return false;
-        }
+        std::filesystem::path CoLocated = Self.parent_path() / "vidyagodfs";
+        if (std::filesystem::exists(CoLocated, ec)) return CoLocated.string();
     }
-    LogOut("ContainerWrapper::PreMountFilesystemComponents", "Filesystem subcomponent pre-mount complete.");
-    return true;
+    return "vidyagodfs";
 }
 
-//Adds NewPath=RO to the front of VFSString so it has higher union priority than existing layers.
-//unionfs resolves conflicts by reading from the leftmost (first) branch, so layers added
-//later via this function take precedence over earlier ones.
-bool ContainerWrapper::AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath)
+//Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (Wine), every
+//VFS subcomponent rooted at its TARGET (logically — no staging dirs), the PERSIST dirs as RW
+//passthrough layers, and the writable top branch. Array order is union priority (lowest first).
+nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &ContainerParams, bool WineMode)
 {
-    if (ContainerParams.VFSString.empty())
-    {
-        ContainerParams.VFSString = NewPath + "=RO";
-        LogOut("ContainerWrapper::AddToVFSString", "Initialized VFSString with " + NewPath);
-        return true;
-    }
-    else
-    {
-        //Prepend so the newest layer sits at the top of the union stack.
-        ContainerParams.VFSString = NewPath + "=RO:" + ContainerParams.VFSString;
-        LogOut("ContainerWrapper::AddToVFSString", "Added " + NewPath + " to VFSString");
-        return true;
-    }
-}
-
-//Prepends the writable top layer of the union stack, giving copy-on-write semantics:
-//reads fall through to read-only layers; writes go to the RW branch.
-//  Default      → ephemeral WRITELAYER (wiped by Cleanup). Selective persistence is layered on
-//                 afterwards via PERSIST.DIRS bind-mounts and PERSIST.REGISTRY.
-//  PERSIST.ALL  → the durable UserDataPath IS the RW branch, so the entire overlay persists
-//                 (old behavior). The RUNTIME union then exposes durable data and is registered
-//                 in CleanupPersistPaths for the non-lazy unmount safeguard (done in MountVFS).
-//Returns false if VFSString is empty (no read-only layers were added first).
-bool ContainerWrapper::FinalizeVFSString(struct ContainerParams &ContainerParams)
-{
+    nlohmann::ordered_json Spec;
+    Spec["mountpoint"] = ContainerParams.RuntimePath.string();
+    Spec["uid"] = 1000;
+    Spec["gid"] = 1000;
+    Spec["readonly"] = ContainerParams.ReadOnlyVFS;
     if (ContainerParams.ReadOnlyVFS)
-    {
-        //ReadOnly mode: no writable layer is prepended; the entire runtime is read-only.
-        LogOut("ContainerWrapper::FinalizeVFSString", "UnionFSString: RUNTIME IS READONLY!");
-    }
+        Spec["writelayer"] = nullptr;
     else
     {
-        if (ContainerParams.VFSString.empty())
-        {
-            LogErr("ContainerWrapper::FinalizeVFSString", "VFSString is null or empty...");
-            return false;
-        }
-        else
-        {
-            const std::filesystem::path RWBranch = ContainerParams.PersistAll
-                ? ContainerParams.UserDataPath        //durable — whole overlay persists
-                : ContainerParams.WriteLayerPath;     //ephemeral — wiped on Cleanup
-            //Ensure the RW branch exists before it is used as a unionfs branch.
-            std::filesystem::create_directories(RWBranch);
-            ContainerParams.VFSString = RWBranch.string() + "=RW:" + ContainerParams.VFSString;
-            LogOut("ContainerWrapper::FinalizeVFSString",
-                   std::string("Finalized VFSString (RW branch ") + (ContainerParams.PersistAll ? "DURABLE USERDATA" : "ephemeral WRITELAYER") + "). Final VFSSTRING:");
-            std::cout << ContainerParams.VFSString << std::endl;
-            return true;
-        }
+        const std::filesystem::path RW = ContainerParams.PersistAll ? ContainerParams.UserDataPath : ContainerParams.WriteLayerPath;
+        std::filesystem::create_directories(RW);
+        Spec["writelayer"] = RW.string();
     }
-    return true;
+
+    nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
+
+    //DEFPREFIX base (Wine) — lowest priority, at the runtime root.
+    if (WineMode && !ContainerParams.DefPrefixPath.empty())
+        Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefPrefixPath.string()}, {"target", ""}, {"rw", false}});
+
+    //In Wine mode game content lives under drive_c/PackageUID so Wine's C: maps correctly.
+    const std::string WineRoot = WineMode ? ("drive_c/" + ContainerParams.PackageUID) : std::string();
+
+    for (auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        std::string Type = Sub.value("TYPE", std::string());
+        std::string LType;
+        if      (Type == "VFSZipLayer")  LType = "zip";
+        else if (Type == "VFSDirLayer")  LType = "dir";
+        else if (Type == "VFSFileLayer") LType = "file";
+        else continue;
+
+        std::filesystem::path Source = ContainerParams.PackagePath / Sub.value("PATH", std::string());
+        std::string Target = WineRoot;
+        if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
+        {
+            std::string T = Sub["TARGET"];
+            Target = Target.empty() ? T : (Target + "/" + T);
+        }
+        Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target}, {"rw", false}});
+    }
+
+    //PERSIST dirs → RW passthrough layers (highest priority, appended last). Root-relative target,
+    //matching the old MountPersistDirs bind of UserDataPath/<rel> onto RuntimePath/<rel>.
+    if (!ContainerParams.PersistAll)
+        for (const std::string &Rel : ContainerParams.PersistDirs)
+        {
+            std::filesystem::path Src = ContainerParams.UserDataPath / Rel;
+            std::filesystem::create_directories(Src);
+            Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
+        }
+
+    Spec["layers"] = Layers;
+    return Spec;
 }
 
-
-//Mounts the finalized VFSString onto RuntimePath using unionfs.
-//Options: cow (copy-on-write) and uid=1000 (ensures the mounted files are accessible
-//to the default non-root user even if the source archives are owned differently).
-//RuntimePath is added to CleanupUnmountPaths so Cleanup() will unmount it.
+//Writes the layer-spec and mounts it by spawning vidyagodfs onto RuntimePath, replacing the former
+//unionfs+fuse-zip+bindfs+staging pipeline with a single FUSE mount. The helper daemonizes once the
+//mount is live, so the spawn returns; we then poll mountinfo to confirm readiness before proceeding.
+//RuntimePath registers for the non-lazy save-safe unmount whenever durable data is reachable through
+//the mount (PersistAll writelayer or any RW passthrough persist dir), else the lazy path.
 bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 {
-    if (ContainerParams.VFSString.empty())
-    {
-        LogErr("ContainerWrapper::MountVFS", "VFSString is null or empty...");
-        return false;
-    }
-    LogOut("ContainerWrapper::MountVFS", "Proceeding with VFS mount.....");
+    const bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
+    nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams, WineMode);
+
     std::filesystem::create_directories(ContainerParams.RuntimePath);
-    int result = ContainerWrapper::RunCommand("unionfs", {"-o", "cow", "-o", "uid=1000", ContainerParams.VFSString, ContainerParams.RuntimePath});
-    LogOut("ContainerWrapper::MountVFS", "EXIT CODE: " + std::to_string(result));
-
-    if (!result)
+    std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";
     {
-        //Success. In PERSIST.ALL mode the union's RW branch is the durable UserDataPath, so the
-        //RUNTIME mount exposes real saves — it must be unmounted via the non-lazy safeguard
-        //(CleanupPersistPaths) rather than the lazy CleanupUnmountPaths path.
-        if (ContainerParams.PersistAll)
-            ContainerParams.CleanupPersistPaths.push_back(ContainerParams.RuntimePath);
-        else
-            ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
-        LogSucc("ContainerWrapper::MountVFS", "Successfully mounted VFS.");
-        return true;
+        std::ofstream Out(SpecPath);
+        if (!Out) { LogErr("ContainerWrapper::MountVFS", "Cannot write spec " + SpecPath.string()); return false; }
+        Out << Spec.dump(2);
     }
-    else
+
+    const std::string Helper = VidyagodfsPath();
+    LogOut("ContainerWrapper::MountVFS", "Mounting via " + Helper + " (spec " + SpecPath.string() + ")");
+    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, ContainerParams.RuntimePath, "-o", "auto_cache"});
+    LogOut("ContainerWrapper::MountVFS", "vidyagodfs spawn exit: " + std::to_string(result));
+
+    //The helper forks after the mount is established; poll until RuntimePath shows as a mount.
+    bool Mounted = false;
+    for (int i = 0; i < 50; ++i)
     {
-        //Failiure
-        LogErr("ContainerWrapper::MountVFS", "Failed to mount VFS.");
+        if (!ContainerWrapper::MountpointsUnder(ContainerParams.RuntimePath).empty()) { Mounted = true; break; }
+        QThread::msleep(100);
+    }
+    if (!Mounted)
+    {
+        LogErr("ContainerWrapper::MountVFS", "vidyagodfs mount did not appear at " + ContainerParams.RuntimePath.string());
         return false;
     }
-}
 
-//Bind-mounts each PERSIST.DIRS entry from the durable UserDataPath onto its runtime-root-relative
-//path, so the game writes straight into the package's persistent store (no copy). The bind hides
-//whatever lower layers had at that exact path, which is why DIRS must name game-created leaf save
-//folders rather than skeleton dirs. Each mountpoint is registered in CleanupPersistPaths so the
-//Cleanup safeguard unmounts it non-lazily before TempPath is wiped.
-bool ContainerWrapper::MountPersistDirs(struct ContainerParams &ContainerParams)
-{
-    if (ContainerParams.PersistAll) return true; //whole overlay already durable
-    for (const std::string &Rel : ContainerParams.PersistDirs)
-    {
-        std::filesystem::path Src = ContainerParams.UserDataPath / Rel; //durable source (in package)
-        std::filesystem::path Dst = ContainerParams.RuntimePath  / Rel; //mountpoint inside the union
-        std::error_code ec;
-        std::filesystem::create_directories(Src, ec);
-        std::filesystem::create_directories(Dst, ec); //COWs the mountpoint into the RW branch
-        LogOut("ContainerWrapper::MountPersistDirs", "Binding persist dir " + Src.string() + " -> " + Dst.string());
-        //bindfs RW (no -r): writes pass through to the durable source.
-        if (!ContainerWrapper::RunCommand("bindfs", {Src, Dst}))
-        {
-            ContainerParams.CleanupPersistPaths.push_back(Dst);
-        }
-        else
-        {
-            LogErr("ContainerWrapper::MountPersistDirs", "FAILED to bind persist dir " + Src.string());
-        }
-    }
+    if (ContainerParams.PersistAll || !ContainerParams.PersistDirs.empty())
+        ContainerParams.CleanupPersistPaths.push_back(ContainerParams.RuntimePath);
+    else
+        ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
+    LogSucc("ContainerWrapper::MountVFS", "Successfully mounted VFS.");
     return true;
 }
 
@@ -1967,13 +1843,6 @@ bool ContainerWrapper::Cleanup()
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
         ContainerWrapper::RunCommand("fusermount", {"-uz", UnmountPath});
-
-    //Explicitly remove VFSFileLayer staging directories (hard-link or copy; no FUSE involved).
-    for (const std::filesystem::path &DeletePath : ContainerParams.CleanupDeletePaths)
-    {
-        std::filesystem::remove_all(DeletePath, ec);
-        if (ec) LogWarn("ContainerWrapper::Cleanup", "Could not remove staging dir: " + DeletePath.string() + " — " + ec.message());
-    }
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)

@@ -151,7 +151,9 @@ int main(int argc, char *argv[])
 //Returns true if any binary is missing, false if everything is present.
 bool CheckExecutableDependencies()
 {
-    std::list<std::string> ExecutableDependencies = {"unionfs", "fuse-zip", "fusermount", "umu-run", "bindfs"};
+    //The custom vidyagodfs FUSE filesystem replaces unionfs/fuse-zip/bindfs. fusermount(3) (part of
+    //libfuse) still tears mounts down; umu-run is the default Wine runner.
+    std::list<std::string> ExecutableDependencies = {"fusermount3", "umu-run"};
     std::string MissingDependencies;
     bool error = 0;
     for (const std::string& Binary : ExecutableDependencies) {
@@ -167,6 +169,13 @@ bool CheckExecutableDependencies()
             error = 1;
         }
     }
+
+    //vidyagodfs ships beside the binary (not on PATH); resolve via /proc/self/exe (no QApplication needed).
+    std::error_code SelfEc;
+    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", SelfEc);
+    std::filesystem::path Helper = SelfEc ? std::filesystem::path() : (Self.parent_path() / "vidyagodfs");
+    if (!Helper.empty() && std::filesystem::exists(Helper)) LogOut("main.cpp", "vidyagodfs found at " + Helper.string());
+    else { LogErr("main.cpp", "vidyagodfs NOT FOUND beside the binary, VFS WILL NOT WORK."); MissingDependencies += "vidyagodfs \n"; error = 1; }
 
     if (error)
     {

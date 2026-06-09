@@ -76,7 +76,7 @@ public:
     std::string subgame_id;                                         //PASSED
     std::string component_id;                                       //PASSED (direct/editor mode — single endpoint)
     std::vector<std::string> Endpoints;                             //RESOLVED — terminal component ids (the selected variant's ENDPOINTS, load order)
-    bool ReadOnlyVFS = false;                                       //SET — if true, WRITELAYER is not prepended to VFSString
+    bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
     //Persistence (derived from PersistDir/PersistFile/RegPersist subcomponents — see DerivePersistence):
@@ -124,13 +124,12 @@ public:
     std::vector<std::string> ExeArgs;                               //DERIVED FROM MANIFESTJSON — split from EXEARGS string
     std::vector<std::string> DLLOverrides;                          //DERIVED FROM MANIFESTJSON — fed into WINEDLLOVERRIDES
 
-    //VFSWRAPPER CLASS
-    std::string VFSString;                                //Colon-separated unionfs branch string (built up incrementally)
-    std::vector<std::filesystem::path> CleanupUnmountPaths; //All FUSE mount points that must be unmounted on Cleanup()
-    std::vector<std::filesystem::path> CleanupDeletePaths;  //Staging dirs to remove on Cleanup() (VFSFileLayer hard-link/copy dirs)
-    //Durable-backed mounts (persist binds + the union itself in PERSIST.ALL mode). These expose
-    //PackagePath/USERDATA through a mountpoint under TempPath, so they MUST be non-lazily unmounted
-    //and verified before Cleanup() wipes TempPath — otherwise remove_all could delete real saves.
+    //VFSWRAPPER CLASS — the runtime is one vidyagodfs FUSE mount at RuntimePath (see BuildLayerSpec/MountVFS).
+    std::vector<std::filesystem::path> CleanupUnmountPaths; //Purely-ephemeral FUSE mount(s) — lazy-unmounted on Cleanup()
+    //Durable-backed mount: the vidyagodfs RUNTIME mount whenever durable data is reachable through it
+    //(PersistAll writelayer or any RW passthrough persist dir). It exposes PackagePath/USERDATA, so it
+    //MUST be non-lazily unmounted and verified before Cleanup() wipes TempPath — else remove_all could
+    //recurse into real saves.
     std::vector<std::filesystem::path> CleanupPersistPaths;
 
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
@@ -236,24 +235,14 @@ public:
     //Resolves runner via USERSETTINGS > RECOMMENDED_RUNNER > first available fallback.
     static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
 
-    //Filesystem management:
-    //Iterates SubComponentsArray and pre-mounts each VFSZipLayer/VFSDirLayer/VFSFileLayer
-    //into a numbered TEMP/[i] directory, then adds each to VFSString.
-    //WineMode=true wraps each layer inside drive_c/PackageUID to match Wine's prefix layout.
-    static bool PreMountFilesystemComponents(struct ContainerParams &ContainerParams, bool WineMode = false);
-    static bool BuildUnionFS(const nlohmann::ordered_json ContainerVariablesJSON);
-    //Appends NewPath=RO to the front of VFSString (newer entries are higher priority in unionfs).
-    static bool AddToVFSString(struct ContainerParams &ContainerParams, std::string NewPath);
-    //Prepends WRITELAYER=RW to VFSString to form the final writable-top union.
-    //Returns false if VFSString is empty (no layers were added).
-    static bool FinalizeVFSString(struct ContainerParams &ContainerParams);
-    //Mounts the finalized VFSString onto RuntimePath using unionfs with cow + uid=1000.
+    //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):
+    //Builds the JSON layer-spec from the resolved container: DEFPREFIX base (Wine), each
+    //VFSZipLayer/VFSDirLayer/VFSFileLayer rooted at its TARGET (logically, no staging dirs), PERSIST
+    //dirs as RW passthrough layers, and the writable top branch (WriteLayerPath or UserDataPath).
+    static nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams, bool WineMode);
+    //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, then polls mountinfo for readiness.
+    //Registers RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
     static bool MountVFS(struct ContainerParams &ContainerParams);
-    //Bind-mounts each PersistDir entry from UserDataPath onto its runtime-root-relative path,
-    //so writes to those subtrees land directly in the durable package store (copy-free).
-    //Mountpoints are registered in CleanupPersistPaths for the non-lazy unmount safeguard.
-    //Must run AFTER MountVFS. No-op when PersistAll (the whole overlay is already durable).
-    static bool MountPersistDirs(struct ContainerParams &ContainerParams);
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
     static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
@@ -278,9 +267,8 @@ public:
     static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
 
     //Registry handling:
-    //Initializes the Wine prefix at DefPrefixPath by running `wineboot` via the runner,
-    //then adds DefPrefixPath to VFSString as the base layer.
-    //Must run before any VFS layers are added so the prefix sits at the bottom of the stack.
+    //Initializes the Wine prefix at DefPrefixPath by running `wineboot` via the runner.
+    //DefPrefixPath becomes the base (root) layer of the spec built by BuildLayerSpec.
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
     //Applies all non-OVERRIDE RegEdit subcomponents directly into the DEFPREFIX hive files via
     //RegistryWrapper (no .reg generation, no `reg import`). Quiesces any wineserver left by wineboot

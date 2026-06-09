@@ -140,10 +140,8 @@ A VidyaGod package is organized around four concepts:
 
 | Tool | Purpose |
 |---|---|
-| `unionfs-fuse` | Assembles the final union filesystem |
-| `fuse-zip` | Mounts `.zip` archives as read-only FUSE filesystems |
-| `bindfs` | Bind-mounts directories read-only |
-| `fusermount` | Unmounts FUSE filesystems on cleanup |
+| `vidyagodfs` | The custom FUSE filesystem (built alongside the app) — assembles the whole runtime in one mount: writable COW top layer, read-only zip/dir/file under-layers rooted at their TARGET, RW persist passthrough. Replaces unionfs-fuse + fuse-zip + bindfs. |
+| `libfuse3`, `libzip` | Linked by `vidyagodfs` (build-time). `fusermount3` (from libfuse) unmounts on cleanup. |
 | `umu-run` | Launches Wine/Proton (used as the default Wine runner) |
 | Qt6 (Core, Widgets, Network) | GUI framework |
 
@@ -198,10 +196,10 @@ game archives, and the durable `USERDATA/` store live in it. All ephemeral sessi
 [PACKAGEUID][vPACKAGEVERSION] Package Name/   ← THE PACKAGE (pristine, relocatable)
 ├── MANIFEST.json              ← All package configuration (required)
 ├── [cover images]             ← PNG/JPG files referenced in METADATA.COVER
-├── game.zip                   ← Source archive, mounted read-only via fuse-zip (VFSZipLayer)
-├── patch/                     ← Source dir, bind-mounted read-only via bindfs (VFSDirLayer)
+├── game.zip                   ← Source archive, read-only zip layer in vidyagodfs (VFSZipLayer)
+├── patch/                     ← Source dir, read-only dir layer in vidyagodfs (VFSDirLayer)
 └── USERDATA/                  ← DURABLE persist store (survives Cleanup, travels with the package)
-    ├── drive_c/.../Saved Games/  ← PERSIST.DIRS subtrees, bind-mounted into the runtime
+    ├── drive_c/.../Saved Games/  ← PERSIST.DIRS subtrees, RW passthrough layers in vidyagodfs
     └── __REGISTRY__/             ← PERSIST.REGISTRY captures of user/system/userdef.reg
 
 ~/.VidyaGod/TEMP/[PACKAGEUID]/  ← EPHEMERAL session state (wiped by Cleanup after exit)
@@ -394,7 +392,7 @@ Variants live inside their subgame and describe a specific way to launch it. A v
 - every component's parent is mounted before it (correct base-first layering);
 - independent branches are ordered by **endpoint array order**.
 
-**Load order — later wins.** Because later-in-recipe means higher unionfs priority, an endpoint listed **later** in the `ENDPOINTS` array overrides files from earlier endpoints on conflict. So `["base_mod", "override_mod"]` lets `override_mod`'s files win. A single-endpoint variant reproduces the classic linear chain exactly.
+**Load order — later wins.** Because later-in-recipe means higher layer priority, an endpoint listed **later** in the `ENDPOINTS` array overrides files from earlier endpoints on conflict. So `["base_mod", "override_mod"]` lets `override_mod`'s files win. A single-endpoint variant reproduces the classic linear chain exactly.
 
 ---
 
@@ -445,7 +443,7 @@ Mounts a ZIP archive as a read-only layer in the union filesystem.
 | `PATH` | yes | Filename of the ZIP archive in `PACKAGEFILES/` |
 | `TARGET` | no | Subdirectory within the staging area where the archive contents are mounted. If absent, the archive is mounted at the root of the staging area. In Wine mode the staging area is `drive_c/[PACKAGEUID]/`; TARGET is relative to that. |
 
-**Implementation**: Uses `fuse-zip -r` (read-only). The mount point is registered for cleanup.
+**Implementation**: A read-only `zip` layer in vidyagodfs — entries are indexed at mount and read in-process via libzip (no separate fuse-zip mount).
 
 ---
 
@@ -466,7 +464,7 @@ Bind-mounts a directory from `PACKAGEFILES/` as a read-only layer.
 | `PATH` | yes | Directory name within `PACKAGEFILES/` |
 | `TARGET` | no | Same semantics as VFSZipLayer |
 
-**Implementation**: Uses `bindfs -r`. The mount point is registered for cleanup. Can be converted to/from VFSZipLayer via the PackageEditor.
+**Implementation**: A read-only `dir` layer in vidyagodfs (the source directory is served directly, no bind mount). Can be converted to/from VFSZipLayer via the PackageEditor.
 
 ---
 
@@ -685,7 +683,7 @@ top-level `PERSIST` object declares what should instead survive into the durable
 | `KEYS` | array | **Reserved** — individual registry keys. Not yet implemented. |
 
 **How it works (non-`ALL` modes):**
-- **DIRS** are `bindfs`-mounted (RW) from `USERDATA/<dir>` onto `RUNTIME/<dir>` after the union
+- **DIRS** are RW passthrough layers in vidyagodfs from `USERDATA/<dir>` onto `RUNTIME/<dir>` (writes go straight to the durable source)
   mounts. The game writes straight through to the package — there is never a copy step.
 - **REGISTRY** is the one bounded exception to "no copy": the reg files sit at the prefix root
   (no subtree to bind) and Wine rewrites them atomically, so they are seeded in / captured out as
@@ -964,23 +962,15 @@ BuildContainerRuntime()
     │   Run wineboot → create TEMP/DEFPREFIX/ (Wine prefix)
     │   Add DefPrefixPath to VFSString as base (lowest-priority) layer
     │
-    ├─ [Wine only] CreateFlatRegPatchJSON()
-    │   Collect all RegEdit subcomponents with OVERRIDE=false
-    │   Build FlatRegPatch["32"|"64"][regPath][valueName] = value
-    │
-    ├─ [Wine only] CreateRegPatchFiles() + MergeRegPatchFiles()
-    │   Write RegPatch32.reg and RegPatch64.reg → import into Wine prefix
-    │
-    ├─ PreMountFilesystemComponents()
-    │   For each VFSZipLayer / VFSDirLayer / VFSFileLayer in SubComponentsArray:
-    │     Mount/link into numbered TEMP/[i]/ staging directory
-    │     Add staging dir to VFSString (higher priority than earlier layers)
-    │
-    ├─ FinalizeVFSString()
-    │   Prepend USERDATA=RW to VFSString (highest priority, writable layer)
+    ├─ [Wine only] ApplyBaseRegEdits()
+    │   Apply every OVERRIDE=false RegEdit subcomponent directly into the
+    │   DEFPREFIX hive files via RegistryWrapper (no reg import)
     │
     ├─ MountVFS()
-    │   unionfs -o cow -o uid=1000 [VFSString] [RUNTIME/]
+    │   BuildLayerSpec(): DEFPREFIX base + each VFSZipLayer/VFSDirLayer/VFSFileLayer
+    │     rooted at its TARGET (logical, no staging dirs) + PERSIST dirs as RW
+    │     passthrough + the writable top branch (USERDATA or WRITELAYER)
+    │   Spawn vidyagodfs [spec.json] [RUNTIME/]  → one FUSE mount; poll readiness
     │
     ├─ [Wine only] ProcessDLLOverrides()
     │   Collect DLLOVERRIDE values → joined as WINEDLLOVERRIDES for Execute()

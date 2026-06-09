@@ -70,17 +70,10 @@ void LaunchThread::run()
                 emit progressChanged(45);
             }
         }
-        else if (ctx.find("PreMountFilesystemComponents") != std::string::npos &&
-                 msg.find("Mounting") != std::string::npos)
+        else if (ctx.find("MountVFS") != std::string::npos && msg.find("Mounting via") != std::string::npos)
         {
-            // Extract a short layer name from the message for the status label.
-            // Messages look like: "Mounting VFSZipLayer /path/to/archive.zip at /tmp/..."
-            QString Layer = QString::fromStdString(msg);
-            int SlashPos = Layer.lastIndexOf('/');
-            if (SlashPos >= 0)
-                Layer = Layer.mid(SlashPos + 1).split(' ').first();
             emit progressChanged(55);
-            emit statusChanged("Mounting " + Layer);
+            emit statusChanged("Assembling filesystem...");
         }
         else if (ctx.find("MountVFS") != std::string::npos &&
                  (msg.find("Successfully") != std::string::npos || msg.find("mounted VFS") != std::string::npos))
