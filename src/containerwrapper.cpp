@@ -1567,20 +1567,31 @@ bool ContainerWrapper::CheckCaseConflicts(std::filesystem::path DirectoryPath)
     std::unordered_set<std::string> FilePathList;
     std::unordered_set<std::string> CaseConflictList;
     bool NoConflict = true;
-    for (const auto& FilePath : std::filesystem::recursive_directory_iterator(DirectoryPath))
+    //Walking a freshly-mounted FUSE tree can throw filesystem_error (a transient entry, a permission
+    //issue) — catch it so the launch worker thread never dies here. skip_permission_denied avoids the
+    //most common throw outright.
+    try
     {
-        std::string FilePathLowercase = FilePath.path().string();
-        std::transform(FilePathLowercase.begin(), FilePathLowercase.end(),FilePathLowercase.begin(),[](unsigned char c){ return std::tolower(c); });
+        for (const auto& FilePath : std::filesystem::recursive_directory_iterator(
+                 DirectoryPath, std::filesystem::directory_options::skip_permission_denied))
+        {
+            std::string FilePathLowercase = FilePath.path().string();
+            std::transform(FilePathLowercase.begin(), FilePathLowercase.end(),FilePathLowercase.begin(),[](unsigned char c){ return std::tolower(c); });
 
-        if (FilePathList.find(FilePathLowercase) != FilePathList.end())
-        {
-            NoConflict = false;
-            CaseConflictList.insert(FilePathLowercase);
+            if (FilePathList.find(FilePathLowercase) != FilePathList.end())
+            {
+                NoConflict = false;
+                CaseConflictList.insert(FilePathLowercase);
+            }
+            else
+            {
+                FilePathList.insert(FilePathLowercase);
+            }
         }
-        else
-        {
-            FilePathList.insert(FilePathLowercase);
-        }
+    }
+    catch (const std::exception &e)
+    {
+        LogWarn("ContainerWrapper::CheckCaseConflicts", std::string("Stopped scanning early: ") + e.what());
     }
 
     if(!NoConflict)
@@ -1588,7 +1599,17 @@ bool ContainerWrapper::CheckCaseConflicts(std::filesystem::path DirectoryPath)
         std::ostringstream oss;
         std::for_each(CaseConflictList.begin(), CaseConflictList.end(),[&oss](const std::string& s){ oss << s << '\n'; });
         std::cerr << "CASE CONFLICTS:\n" << oss.str() << std::endl;
-        QMessageBox::warning(nullptr, "CASE CONFLICTS!", QString::fromStdString(oss.str()));
+        LogWarn("ContainerWrapper::CheckCaseConflicts", "Case conflicts detected in the runtime (see above).");
+        //This runs on the launch worker thread; a QWidget dialog must be created on the GUI thread.
+        //Marshal it there (and skip entirely when headless — no QApplication). It's only a warning;
+        //the launch is not aborted (caller ignores the return).
+        if (qApp)
+        {
+            QString Msg = "Files differing only in case were found in the runtime — Windows games are\n"
+                          "case-insensitive, so Wine may open the wrong one. The game will still launch.\n\n"
+                          + QString::fromStdString(oss.str());
+            QMetaObject::invokeMethod(qApp, [Msg]() { QMessageBox::warning(nullptr, "Case conflicts", Msg); }, Qt::QueuedConnection);
+        }
         return false;
     }
     return true;
