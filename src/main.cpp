@@ -5,6 +5,23 @@
 #include <QAbstractScrollArea>
 #include <QWheelEvent>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
+//Single-instance guard. Opens (creating if needed) a lock file under ~/.VidyaGod and takes an
+//exclusive, non-blocking flock on it. Returns the held fd on success, or -1 if another live instance
+//already holds it. The lock is owned by the open fd, so the kernel releases it automatically when this
+//process exits OR crashes — a previous crashed instance never blocks a new one, and no stale-lock
+//bookkeeping is needed. The returned fd is intentionally kept open for the whole process lifetime.
+static int AcquireSingleInstanceLock(const std::string &LockPath)
+{
+    int Fd = ::open(LockPath.c_str(), O_CREAT | O_RDWR, 0644);
+    if (Fd < 0) return -1;
+    if (::flock(Fd, LOCK_EX | LOCK_NB) != 0) { ::close(Fd); return -1; }
+    return Fd;
+}
+
 //Application-wide event filter that stops a QComboBox from changing its value when the mouse
 //wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
 //QComboBox::wheelEvent cycles the selection on hover-scroll regardless of focus, so the wheel is
@@ -71,6 +88,28 @@ int main(int argc, char *argv[])
     //Find and create AppDataDir (~/.VidyaGod). mkpath is a no-op if it already exists.
     QDir AppDataDir(QDir::homePath() +  "/.VidyaGod");
     AppDataDir.mkpath(".");
+
+    //Single-instance guard (GUI and headless alike): VidyaGod may only run once at a time. This both
+    //prevents two instances from fighting over the same runtime/TEMP and makes the stale-mount sweep
+    //below safe — since we hold the lock, any leftover mounts must be from a crashed run, never a live
+    //sibling. The fd is held for the whole process lifetime (released by the kernel on exit/crash).
+    int InstanceLockFd = AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
+    if (InstanceLockFd < 0)
+    {
+        LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting.");
+        if (!LaunchParameters.RunningHeadless)
+        {
+            QApplication ErrApp(argc, argv);
+            QMessageBox::warning(nullptr, "VidyaGod is already running",
+                                 "Another instance of VidyaGod is already running.\n\n"
+                                 "Only one instance can run at a time.");
+        }
+        return 1;
+    }
+
+    //We are the sole instance, so every mount still present under TEMP is a leftover from a crash.
+    //Sweep them all now (the per-launch CleanStaleRuntime only covers the one game about to run).
+    ContainerWrapper::CleanStaleRuntime((AppDataDir.absolutePath() + "/TEMP").toStdString());
 
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     //All runner definitions, library entries, and user settings live here.
