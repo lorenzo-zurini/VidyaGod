@@ -1354,8 +1354,10 @@ bool PackageEditor::BuildUI()
                             std::filesystem::path SrcDir  = std::filesystem::path(PackageDir->path().toStdString()) / Path;
                             std::string ZipName           = Path + ".zip";
                             std::filesystem::path ZipFile = std::filesystem::path(PackageDir->path().toStdString()) / ZipName;
-                            //zip -r archive.zip srcdir — runs from PACKAGEFILES so the zip root equals Path.
-                            ContainerWrapper::RunCommand("zip", {"-r", ZipFile.string(), SrcDir.string()});
+                            //zip -0 -r: STORE (no compression) so vidyagodfs serves the layer zero-copy
+                            //(direct pread, no RAM/scratch) — required for very large packages. `zip` adds
+                            //ZIP64 automatically past 4 GB.
+                            ContainerWrapper::RunCommand("zip", {"-0", "-r", ZipFile.string(), SrcDir.string()});
                             std::filesystem::remove_all(SrcDir);
                             (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["TYPE"] = "VFSZipLayer";
                             (*MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j]["PATH"] = ZipName;

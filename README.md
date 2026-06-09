@@ -443,7 +443,7 @@ Mounts a ZIP archive as a read-only layer in the union filesystem.
 | `PATH` | yes | Filename of the ZIP archive in `PACKAGEFILES/` |
 | `TARGET` | no | Subdirectory within the staging area where the archive contents are mounted. If absent, the archive is mounted at the root of the staging area. In Wine mode the staging area is `drive_c/[PACKAGEUID]/`; TARGET is relative to that. |
 
-**Implementation**: A read-only `zip` layer in vidyagodfs — entries are indexed at mount and read in-process via libzip (no separate fuse-zip mount).
+**Implementation**: A read-only `zip` layer in vidyagodfs — entries are indexed at mount (ZIP64-aware) and read in-process (no separate fuse-zip mount). **STORED (uncompressed) entries are served zero-copy**: their bytes are contiguous in the archive, so reads are a direct `pread` at the entry offset — no decompression, no RAM, no scratch storage, any size (100 GB+), mmap-native. So package large/already-compressed assets with `zip -0` (the editor's dir→ZIP convert does this by default; `zip` adds ZIP64 automatically past 4 GB). DEFLATE entries still work — they're materialized on open (memory ≤64 MiB, else a temp file) — which is fine for small compressible files.
 
 ---
 

@@ -72,5 +72,5 @@ set(VIDYAGODFS_SOURCES
 add_executable(vidyagodfs ${VIDYAGODFS_SOURCES})
 # No Qt in the helper — skip the Qt autogen steps.
 set_target_properties(vidyagodfs PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
-target_compile_definitions(vidyagodfs PRIVATE FUSE_USE_VERSION=312)
+target_compile_definitions(vidyagodfs PRIVATE FUSE_USE_VERSION=312 _FILE_OFFSET_BITS=64)
 target_link_libraries(vidyagodfs PRIVATE PkgConfig::FUSE3 PkgConfig::LIBZIP nlohmann_json::nlohmann_json)
