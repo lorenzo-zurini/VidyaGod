@@ -1393,7 +1393,11 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 
     const std::string Helper = VidyagodfsPath();
     LogOut("ContainerWrapper::MountVFS", "Mounting via " + Helper + " (spec " + SpecPath.string() + ")");
-    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, ContainerParams.RuntimePath, "-o", "auto_cache"});
+    //--watch-pid lets the helper's watchdog auto-unmount if this process dies (crash/kill) instead of
+    //leaving a dangling mount for CleanStaleRuntime to reap on the next launch.
+    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, ContainerParams.RuntimePath,
+                                                       "--watch-pid", std::to_string(getpid()),
+                                                       "-o", "auto_cache"});
     LogOut("ContainerWrapper::MountVFS", "vidyagodfs spawn exit: " + std::to_string(result));
 
     //The helper forks after the mount is established; poll until RuntimePath shows as a mount.
