@@ -182,6 +182,7 @@ int main(int argc, char *argv[])
         //selected variant's ENDPOINTS. A direct --component still works via HeadlessComponentID.
         struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessGameID, LaunchParameters.HeadlessComponentID);
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
+        NewContainerParams.ModuleStates = LaunchParameters.ModuleStates;
         NewContainerParams.VariantID = LaunchParameters.VariantID;
         NewContainerParams.RunnerID  = LaunchParameters.RunnerID;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
@@ -305,7 +306,7 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
                 "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
                 "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun",
                          "PROTONPATH": "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
         },
         "umu-proton": {
             "PACKAGEUID": "runner-umu-proton", "PACKAGENAME": "umu-proton", "PACKAGEVERSION": "1.0",
@@ -314,7 +315,7 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
                 "RUNNER_ID": "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
                 "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
                 "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
         },
         "wine": {
             "PACKAGEUID": "runner-wine", "PACKAGENAME": "Wine", "PACKAGEVERSION": "1.0",
@@ -323,7 +324,7 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
                 "RUNNER_ID": "wine", "NAME": "wine", "TYPE": "wine",
                 "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "wine",
                 "ENV": { "WINEPREFIX": "%RuntimePath%" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "ENDPOINTS": [] } ]
+                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
         },
         "snes9x": {
             "PACKAGEUID": "runner-snes9x", "PACKAGENAME": "Snes9x", "PACKAGEVERSION": "1.0",
@@ -331,7 +332,7 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
             "RUNNERS": [ {
                 "RUNNER_ID": "snes9x", "NAME": "snes9x", "TYPE": "emulator",
                 "GUEST_PLATFORM": ["snes"], "EXECUTABLE": "snes9x",
-                "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "ENDPOINTS": [] } ]
+                "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "MODULES": [] } ]
         },
         "native-passthrough": {
             "PACKAGEUID": "runner-native-passthrough", "PACKAGENAME": "Native (passthrough)", "PACKAGEVERSION": "1.0",
@@ -339,7 +340,7 @@ static void SeedDefaultRegistry(QDir * AppDataDir)
             "RUNNERS": [ {
                 "RUNNER_ID": "native-passthrough", "NAME": "Native (passthrough)", "TYPE": "native",
                 "GUEST_PLATFORM": ["linux64"], "EXECUTABLE": "",
-                "ENV": {}, "REMOVE_ENV": [], "ARGS": [], "ENDPOINTS": [] } ]
+                "ENV": {}, "REMOVE_ENV": [], "ARGS": [], "MODULES": [] } ]
         }
     })JSON");
 
@@ -477,6 +478,18 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             auto eq = kv.find('=');
             if (eq != std::string::npos)
                 RuntimeParameters.VariableOverrides[kv.substr(0, eq)] = kv.substr(eq + 1);
+        }
+        else if (arg == "--module" && i + 1 < argc)
+        {
+            //Expects COMPONENT=on|off (also true|false / 1|0); toggles one optional module. Malformed skipped.
+            std::string kv = argv[++i];
+            auto eq = kv.find('=');
+            if (eq != std::string::npos)
+            {
+                std::string val = kv.substr(eq + 1);
+                bool on = (val == "on" || val == "true" || val == "1" || val == "yes");
+                RuntimeParameters.ModuleStates[kv.substr(0, eq)] = on;
+            }
         }
         else if (arg == "--variant" && i + 1 < argc)
         {

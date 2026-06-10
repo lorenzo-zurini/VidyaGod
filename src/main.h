@@ -35,6 +35,7 @@ struct LaunchParameters
     std::string HeadlessGameID;                                           //Game to launch (empty = use default)
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from game)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
+    std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)
 };

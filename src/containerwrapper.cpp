@@ -288,9 +288,12 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
             }
         }
 
-        //Resolve the chosen variant's ENDPOINTS into the build target list.
-        ContainerParams.Endpoints = FindEndpointsForVariant(MANIFESTJSON, ContainerParams.subgame_id, ContainerParams.VariantID);
-        LogOut("ContainerWrapper::DecideComponent", "Variant '" + ContainerParams.VariantID + "' resolved to " + std::to_string(ContainerParams.Endpoints.size()) + " endpoint(s).");
+        //Resolve the chosen variant's MODULES into the enabled build-target list (REQUIRED + user-enabled,
+        //hierarchy-gated). ModuleStates carries the user's toggles (UI tree / --module); absent = REQUIRED||DEFAULT.
+        ContainerParams.Endpoints = ResolveEnabledModules(
+            GetVariantModules(MANIFESTJSON, ContainerParams.subgame_id, ContainerParams.VariantID),
+            ContainerParams.ModuleStates, MANIFESTJSON);
+        LogOut("ContainerWrapper::DecideComponent", "Variant '" + ContainerParams.VariantID + "' resolved to " + std::to_string(ContainerParams.Endpoints.size()) + " enabled module(s).");
         LogOut("ContainerWrapper::DecideComponent", "Running subgame " + std::string(MANIFESTJSON["GAMES"][SubgameIdx].value("TITLE", ContainerParams.subgame_id)));
         return true;
     }
@@ -506,7 +509,27 @@ bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, st
     return true;
 }
 
-//Returns all variants listed under SUBGAMES[SubgameID].VARIANTS.
+//Reads a MODULES json array (objects: COMPONENT/REQUIRED/DEFAULT/LABEL) into ModuleInfo entries.
+//MODULES-only: non-object entries and entries without a COMPONENT are skipped (no legacy tolerance).
+std::vector<ModuleInfo> ContainerWrapper::ParseModules(const nlohmann::ordered_json &ModulesArray)
+{
+    std::vector<ModuleInfo> Modules;
+    if (!ModulesArray.is_array()) return Modules;
+    for (const auto &M : ModulesArray)
+    {
+        if (!M.is_object()) continue;
+        ModuleInfo Info;
+        Info.Component = M.value("COMPONENT", std::string());
+        if (Info.Component.empty()) continue;
+        Info.Label    = M.value("LABEL", std::string());
+        Info.Required = M.value("REQUIRED", true);
+        Info.Default  = M.value("DEFAULT", true);
+        Modules.push_back(std::move(Info));
+    }
+    return Modules;
+}
+
+//Returns all variants listed under SUBGAMES[SubgameID].VARIANTS (each with its parsed MODULES).
 std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
 {
     std::vector<VariantInfo> Variants;
@@ -520,32 +543,79 @@ std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::
         Info.VariantID     = V.value("VARIANT_ID", std::string());
         Info.Name          = V.value("NAME", Info.VariantID);
         Info.IsRecommended = V.value("RECOMMENDED", false);
-        if (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array())
-            for (auto &E : V["ENDPOINTS"])
-                if (E.is_string()) Info.Endpoints.push_back(std::string(E));
-        Variants.push_back(Info);
+        Info.Modules       = ParseModules(V.value("MODULES", nlohmann::ordered_json::array()));
+        Variants.push_back(std::move(Info));
     }
     return Variants;
 }
 
-//Returns the ENDPOINTS array of the variant matching { SubgameID, VariantID }.
-//Returns an empty vector if not found.
+//Returns the MODULES of the variant matching { SubgameID, VariantID } (empty if not found).
+std::vector<ModuleInfo> ContainerWrapper::GetVariantModules(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
+{
+    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
+    if (SubgameIdx == -1) return {};
+    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
+    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return {};
+    for (auto &V : Subgame["VARIANTS"])
+        if (V.value("VARIANT_ID", std::string()) == VariantID)
+            return ParseModules(V.value("MODULES", nlohmann::ordered_json::array()));
+    return {};
+}
+
+//Resolves the enabled subset of `Modules` to component ids (in load order). See header for the rules:
+//raw enable (REQUIRED || (state ? : DEFAULT)), REQUIRED propagated up the PARENTCOMPONENT chain, then
+//the hierarchy gate (a disabled module-ancestor force-disables descendants).
+std::vector<std::string> ContainerWrapper::ResolveEnabledModules(const std::vector<ModuleInfo> &Modules,
+                                                                 const std::map<std::string, bool> &ModuleStates,
+                                                                 const nlohmann::ordered_json &MANIFESTJSON)
+{
+    std::map<std::string, bool> InModules; // component → is a module here
+    for (const auto &M : Modules) InModules[M.Component] = true;
+
+    //All module-ancestors of a component (PARENTCOMPONENT chain entries that are themselves modules).
+    auto ModuleAncestors = [&](const std::string &Component) {
+        std::vector<std::string> Ancestors;
+        int Idx = FindComponentIndex(MANIFESTJSON, Component);
+        while (Idx != -1)
+        {
+            auto &ParentField = MANIFESTJSON["COMPONENTS"][Idx]["PARENTCOMPONENT"];
+            if (ParentField.is_null() || ParentField == "") break;
+            std::string Parent = ParentField;
+            if (InModules.count(Parent)) Ancestors.push_back(Parent);
+            Idx = FindComponentIndex(MANIFESTJSON, Parent);
+        }
+        return Ancestors;
+    };
+
+    //Step 1: raw enable.
+    std::map<std::string, bool> Enabled;
+    for (const auto &M : Modules)
+        Enabled[M.Component] = M.Required ? true
+                             : (ModuleStates.count(M.Component) ? ModuleStates.at(M.Component) : M.Default);
+
+    //Step 2: a REQUIRED module forces all its module-ancestors enabled (a required child keeps its parents).
+    for (const auto &M : Modules)
+        if (M.Required)
+            for (const auto &A : ModuleAncestors(M.Component)) Enabled[A] = true;
+
+    //Step 3: hierarchy gate — drop any module with a disabled module-ancestor (full chain).
+    std::vector<std::string> EnabledComponents;
+    for (const auto &M : Modules)
+    {
+        if (!Enabled[M.Component]) continue;
+        bool AncestorsOk = true;
+        for (const auto &A : ModuleAncestors(M.Component))
+            if (!Enabled[A]) { AncestorsOk = false; break; }
+        if (AncestorsOk) EnabledComponents.push_back(M.Component);
+    }
+    return EnabledComponents;
+}
+
+//Convenience: the default-enabled module components of a variant (REQUIRED||DEFAULT, no user overrides).
+//Used where a representative recipe scope is needed (e.g. the prelaunch CustomVar picker rebuild).
 std::vector<std::string> ContainerWrapper::FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
 {
-    std::vector<std::string> Endpoints;
-    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
-    if (SubgameIdx == -1) return Endpoints;
-    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
-    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Endpoints;
-    for (auto &V : Subgame["VARIANTS"])
-    {
-        if (V.value("VARIANT_ID", std::string()) != VariantID) continue;
-        if (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array())
-            for (auto &E : V["ENDPOINTS"])
-                if (E.is_string()) Endpoints.push_back(std::string(E));
-        break;
-    }
-    return Endpoints;
+    return ResolveEnabledModules(GetVariantModules(MANIFESTJSON, SubgameID, VariantID), {}, MANIFESTJSON);
 }
 
 //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID
@@ -868,9 +938,11 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
         if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
         if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
-        //The runner's own components join the recipe (mounted as base) — see CreateRecipe.
-        if (SelectedRunner.contains("ENDPOINTS") && SelectedRunner["ENDPOINTS"].is_array())
-            for (auto &E : SelectedRunner["ENDPOINTS"]) if (E.is_string()) ContainerParams.RunnerEndpoints.push_back(std::string(E));
+        //The runner's own enabled modules join the recipe (mounted as base) — see CreateRecipe. Same
+        //universal MODULES schema + resolution as variants (runner module toggles also via ModuleStates).
+        ContainerParams.RunnerEndpoints = ResolveEnabledModules(
+            ParseModules(SelectedRunner.value("MODULES", nlohmann::ordered_json::array())),
+            ContainerParams.ModuleStates, MANIFESTJSON);
     }
     else
     {

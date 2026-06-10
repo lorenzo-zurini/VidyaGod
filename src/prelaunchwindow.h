@@ -16,6 +16,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QSpinBox>
+#include <QTreeWidget>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
@@ -40,6 +41,7 @@ public:
     std::string                        VariantID;         // VARIANT_ID of the selected variant
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (resolved before construction)
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
+    std::map<std::string, bool>        ModuleStates;      // Optional-module toggles from the prelaunch tree (component → enabled)
     std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()
     std::string                        ScreenHeight;      // (QGuiApplication screen access off the main thread is undefined behaviour)
     bool                               DryRun = false;    // If true, WRITELAYER is deleted after cleanup
@@ -99,6 +101,16 @@ private:
     void savePreferences(const std::string& runnerName, const std::string& variantID, bool skipNext);
     // Rebuilds the CustomVar picker section based on the currently selected entrypoint.
     void RebuildCustomVarPickers();
+    // Rebuilds the Modules tree from the selected variant's + runner's MODULES (nested by PARENTCOMPONENT).
+    void RebuildModuleTree();
+    // Reacts to a tree checkbox change: records the new desired state (ignored for locked items) then
+    // recomputes the whole tree's locks.
+    void PropagateModuleItem(QTreeWidgetItem* Item);
+    // Recomputes every item's checkbox + locked/greyed state top-down: required → locked-on; an optional
+    // item under a disabled ancestor → locked-off; otherwise its own desired state.
+    void RefreshModuleLocks();
+    // Collects the tree's current optional-module checkbox states into a component→enabled map.
+    std::map<std::string, bool> CollectModuleStates() const;
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
@@ -124,6 +136,8 @@ private:
     QCheckBox*    DryRunCheck           = nullptr;
     QGroupBox*    CustomVarGroup        = nullptr; // Rebuilt by RebuildCustomVarPickers()
     QFormLayout*  CustomVarForm         = nullptr;
+    QGroupBox*    ModuleGroup           = nullptr; // Rebuilt by RebuildModuleTree()
+    QTreeWidget*  ModuleTree            = nullptr;
     QTextEdit*    ConsoleEdit       = nullptr;
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;

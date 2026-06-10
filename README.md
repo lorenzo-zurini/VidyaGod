@@ -718,7 +718,17 @@ before wiping TEMP, and *aborts the wipe* if any is still busy — so a stuck mo
 
 Components form a directed acyclic tree via `PARENTCOMPONENT`. A root component has `PARENTCOMPONENT: null`. A component can have only one parent but any number of siblings.
 
-**Building the Recipe**: A variant's `ENDPOINTS` array drives recipe construction. Given a single endpoint (e.g. `"patch_v1_2"`), the system walks upward:
+**Building the Recipe**: A variant's `MODULES` array drives recipe construction. Each module is an object
+`{ "COMPONENT": "<id>", "REQUIRED": true, "DEFAULT": true, "LABEL": "..." }` referencing a component (leaf
+**or** internal node). `REQUIRED` (default `true`) modules are always included and shown locked in the
+launch dialog; `REQUIRED: false` modules are user-toggleable (initial state = `DEFAULT`, default `true`),
+exposed as a checkbox **tree** in the prelaunch window — nested by `PARENTCOMPONENT`, so disabling a parent
+module force-disables its whole subtree (and a `REQUIRED` module keeps its ancestors enabled). Choices
+persist per-package in `USERSETTINGS[uid].MODULES`; headless launches use `REQUIRED || DEFAULT` plus an
+optional `--module COMPONENT=on|off`. The same `MODULES` schema is used by runners (`RUNNERS[].MODULES`).
+
+The recipe is built from the **enabled** modules: given a single enabled module (e.g. `"patch_v1_2"`), the
+system walks upward:
 
 ```
 patch_v1_2  →  base_install  →  null (root)
@@ -732,7 +742,7 @@ Recipe = [ "base_install", "patch_v1_2" ]
 
 **BuildSubComponentsArray** then iterates the Recipe and collects all SUBCOMPONENTS in that order. This means `base_install`'s VFS layers are stacked below `patch_v1_2`'s layers in the union, so `patch_v1_2`'s files take precedence when paths conflict.
 
-**Branching & multiple endpoints**: Multiple components can share the same parent, creating parallel branches. A single endpoint includes only its own chain — not sibling branches. But a variant may list **several** endpoints, and the recipe is the **union** of all their chains: each chain is appended root-first, skipping components already added by an earlier endpoint.
+**Branching & multiple modules**: Multiple components can share the same parent, creating parallel branches. A single module includes only its own chain — not sibling branches. But a variant may list **several** modules, and the recipe is the **union** of all their *enabled* chains: each chain is appended root-first, skipping components already added by an earlier module.
 
 ```
 base_install
@@ -741,8 +751,9 @@ base_install
 └── hd_mod          ← HD-mod branch (parent: base_install)
 ```
 
-- `ENDPOINTS: ["tc_patch"]` → `Recipe = [base_install, tc_base, tc_patch]` (linear, sibling branches excluded).
-- `ENDPOINTS: ["tc_patch", "hd_mod"]` → `Recipe = [base_install, tc_base, tc_patch, hd_mod]` — both branches, shared `base_install` once, and `hd_mod` (listed last) overrides on conflict.
+- enabled `{tc_patch}` → `Recipe = [base_install, tc_base, tc_patch]` (linear, sibling branches excluded).
+- enabled `{tc_patch, hd_mod}` → `Recipe = [base_install, tc_base, tc_patch, hd_mod]` — both branches, shared `base_install` once, and `hd_mod` (listed last) overrides on conflict.
+- if `tc_base` is an optional module and the user disables it, `tc_patch` (its child) is force-disabled too, leaving `Recipe = [base_install]` (+ any other enabled branch).
 
 ---
 

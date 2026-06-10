@@ -296,7 +296,17 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
         }
     }
 
-    // Game / variant / endpoint checks.
+    // Helper: a MODULES array's COMPONENT id at index — checks each entry is an object with COMPONENT.
+    auto ModuleComponents = [](const nlohmann::ordered_json &Owner) {
+        std::vector<std::string> Comps;
+        if (Owner.contains("MODULES") && Owner["MODULES"].is_array())
+            for (const auto &M : Owner["MODULES"])
+                if (M.is_object() && M.contains("COMPONENT") && M["COMPONENT"].is_string())
+                    Comps.push_back(std::string(M["COMPONENT"]));
+        return Comps;
+    };
+
+    // Game / variant / module checks.
     if (Assembled.contains("GAMES") && Assembled["GAMES"].is_array())
         for (const auto &G : Assembled["GAMES"])
         {
@@ -308,18 +318,18 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             {
                 std::string VID = V.value("VARIANT_ID", std::string("?"));
                 if (V.value("RECOMMENDED", false)) RecCount++;
-                const auto Endpoints = (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array()) ? V["ENDPOINTS"] : nlohmann::ordered_json::array();
-                if (Endpoints.empty()) Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no endpoints");
-                for (const auto &E : Endpoints)
-                    if (E.is_string() && !ComponentIds.count(std::string(E)))
-                        Errors.push_back("Variant '" + VID + "' (game '" + GID + "') endpoint '" + std::string(E) + "' is not a known component");
+                const auto Comps = ModuleComponents(V);
+                if (Comps.empty()) Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no modules");
+                for (const auto &C : Comps)
+                    if (!ComponentIds.count(C))
+                        Errors.push_back("Variant '" + VID + "' (game '" + GID + "') module '" + C + "' is not a known component");
             }
             if (RecCount > 1) Warnings.push_back("Game '" + GID + "' has " + std::to_string(RecCount) + " RECOMMENDED variants");
         }
 
-    // Runner checks (RUNNERS array). Each runner needs a GUEST_PLATFORM. A runner's ENDPOINTS often
-    // reference its OWN package's components — but a registry runner is validated in isolation, so an
-    // endpoint not present in this doc is only a warning (it may resolve in the runner's own package).
+    // Runner checks (RUNNERS array). Each runner needs a GUEST_PLATFORM. A runner's MODULES often
+    // reference its OWN package's components — but a registry runner is validated in isolation, so a
+    // module component not present in this doc is only a warning (it may resolve in the runner's own package).
     if (Assembled.contains("RUNNERS") && Assembled["RUNNERS"].is_array())
         for (const auto &R : Assembled["RUNNERS"])
         {
@@ -327,10 +337,9 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             if (RID.empty()) Warnings.push_back("A runner has no RUNNER_ID");
             if (!R.contains("GUEST_PLATFORM") || !R["GUEST_PLATFORM"].is_array() || R["GUEST_PLATFORM"].empty())
                 Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' has no GUEST_PLATFORM");
-            const auto Endpoints = (R.contains("ENDPOINTS") && R["ENDPOINTS"].is_array()) ? R["ENDPOINTS"] : nlohmann::ordered_json::array();
-            for (const auto &E : Endpoints)
-                if (E.is_string() && !ComponentIds.count(std::string(E)))
-                    Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' endpoint '" + std::string(E) + "' is not a component in this package (may resolve in the runner's own package)");
+            for (const auto &C : ModuleComponents(R))
+                if (!ComponentIds.count(C))
+                    Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' module '" + C + "' is not a component in this package (may resolve in the runner's own package)");
         }
 }
 

@@ -716,21 +716,27 @@ bool PackageEditor::BuildUI()
                         eprow++;
                     }
 
-                    // ENDPOINTS — ordered list of terminal components (array order = load order, later wins).
+                    // MODULES — ordered list of toggleable component modules (array order = load order, later
+                    // wins). Each: { COMPONENT, REQUIRED (default true), DEFAULT (default true), LABEL }.
                     {
-                        if (!EP.contains("ENDPOINTS") || !EP["ENDPOINTS"].is_array())
-                            (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"] = nlohmann::ordered_json::array();
-                        auto &EndpArr = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"];
+                        if (!EP.contains("MODULES") || !EP["MODULES"].is_array())
+                            (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"] = nlohmann::ordered_json::array();
+                        auto &ModArr = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"];
 
-                        QGroupBox * EndpBox = new QGroupBox("ENDPOINTS (load order — later overrides earlier)", EPCard);
-                        QVBoxLayout * EndpLayout = new QVBoxLayout(EndpBox);
-                        EndpBox->setLayout(EndpLayout);
+                        QGroupBox * ModBox = new QGroupBox("MODULES (toggleable; load order — later overrides earlier)", EPCard);
+                        QVBoxLayout * ModLayout = new QVBoxLayout(ModBox);
+                        ModBox->setLayout(ModLayout);
 
-                        for (int ek = 0; ek < (int)EndpArr.size(); ek++)
+                        for (int ek = 0; ek < (int)ModArr.size(); ek++)
                         {
-                            std::string CurEndp = EndpArr[ek].is_string() ? std::string(EndpArr[ek]) : "";
+                            const auto &M = ModArr[ek];
+                            std::string CurComp  = M.is_object() ? M.value("COMPONENT", std::string()) : std::string();
+                            bool        CurReq   = M.is_object() ? M.value("REQUIRED", true) : true;
+                            bool        CurDef   = M.is_object() ? M.value("DEFAULT", true)  : true;
+                            std::string CurLabel = M.is_object() ? M.value("LABEL", std::string()) : std::string();
+
                             QHBoxLayout * Row = new QHBoxLayout();
-                            QComboBox * CompPicker = new QComboBox(EndpBox);
+                            QComboBox * CompPicker = new QComboBox(ModBox);
                             CompPicker->addItem("(none)", QString());
                             if ((*MANIFESTJSON).contains("COMPONENTS"))
                                 for (auto &Comp : (*MANIFESTJSON)["COMPONENTS"])
@@ -742,40 +748,60 @@ bool PackageEditor::BuildUI()
                                         : QString::fromStdString(CName + " (" + CID + ")");
                                     CompPicker->addItem(Label, QString::fromStdString(CID));
                                 }
-                            { int idx = CompPicker->findData(QString::fromStdString(CurEndp));
+                            { int idx = CompPicker->findData(QString::fromStdString(CurComp));
                               if (idx >= 0) { QSignalBlocker B(CompPicker); CompPicker->setCurrentIndex(idx); } }
                             QObject::connect(CompPicker, &QComboBox::currentIndexChanged, this, [this, i, epj, ek, CompPicker](){
-                                QString Sel = CompPicker->currentData().toString();
-                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"][ek] = Sel.toStdString();
+                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"][ek]["COMPONENT"] = CompPicker->currentData().toString().toStdString();
                                 SaveManifestJSON(); RefreshJSONView();
                             });
-                            QPushButton * UpBtn = new QPushButton("▲", EndpBox); UpBtn->setFixedWidth(28);
-                            QPushButton * DnBtn = new QPushButton("▼", EndpBox); DnBtn->setFixedWidth(28);
-                            QPushButton * DelBtn = new QPushButton("✕", EndpBox); DelBtn->setFixedWidth(28);
+
+                            QCheckBox * ReqChk = new QCheckBox("Required", ModBox); ReqChk->setChecked(CurReq);
+                            ReqChk->setToolTip("Always included and locked in the launch dialog");
+                            QObject::connect(ReqChk, &QCheckBox::toggled, this, [this, i, epj, ek](bool On){
+                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"][ek]["REQUIRED"] = On;
+                                SaveManifestJSON(); RefreshJSONView();
+                            });
+                            QCheckBox * DefChk = new QCheckBox("Default", ModBox); DefChk->setChecked(CurDef);
+                            DefChk->setToolTip("Default on/off state when the module is optional");
+                            QObject::connect(DefChk, &QCheckBox::toggled, this, [this, i, epj, ek](bool On){
+                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"][ek]["DEFAULT"] = On;
+                                SaveManifestJSON(); RefreshJSONView();
+                            });
+                            QLineEdit * LabelField = new QLineEdit(QString::fromStdString(CurLabel), ModBox);
+                            LabelField->setPlaceholderText("Label (optional)");
+                            QObject::connect(LabelField, &QLineEdit::editingFinished, this, [this, i, epj, ek, LabelField](){
+                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"][ek]["LABEL"] = LabelField->text().toStdString();
+                                SaveManifestJSON(); RefreshJSONView();
+                            });
+
+                            QPushButton * UpBtn = new QPushButton("▲", ModBox); UpBtn->setFixedWidth(28);
+                            QPushButton * DnBtn = new QPushButton("▼", ModBox); DnBtn->setFixedWidth(28);
+                            QPushButton * DelBtn = new QPushButton("✕", ModBox); DelBtn->setFixedWidth(28);
                             QObject::connect(UpBtn, &QPushButton::clicked, this, [this, i, epj, ek](){
                                 if (ek <= 0) return;
-                                auto &A = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"];
+                                auto &A = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"];
                                 std::swap(A[ek - 1], A[ek]); SaveManifestJSON(); BuildUI();
                             });
                             QObject::connect(DnBtn, &QPushButton::clicked, this, [this, i, epj, ek](){
-                                auto &A = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"];
+                                auto &A = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"];
                                 if (ek + 1 >= (int)A.size()) return;
                                 std::swap(A[ek], A[ek + 1]); SaveManifestJSON(); BuildUI();
                             });
                             QObject::connect(DelBtn, &QPushButton::clicked, this, [this, i, epj, ek](){
-                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"].erase(ek);
+                                (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"].erase(ek);
                                 SaveManifestJSON(); BuildUI();
                             });
-                            Row->addWidget(CompPicker, 1); Row->addWidget(UpBtn); Row->addWidget(DnBtn); Row->addWidget(DelBtn);
-                            EndpLayout->addLayout(Row);
+                            Row->addWidget(CompPicker, 1); Row->addWidget(ReqChk); Row->addWidget(DefChk);
+                            Row->addWidget(LabelField, 1); Row->addWidget(UpBtn); Row->addWidget(DnBtn); Row->addWidget(DelBtn);
+                            ModLayout->addLayout(Row);
                         }
-                        QPushButton * AddEndpBtn = new QPushButton("+ Add Endpoint", EndpBox);
-                        QObject::connect(AddEndpBtn, &QPushButton::clicked, this, [this, i, epj](){
-                            (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["ENDPOINTS"].push_back("");
+                        QPushButton * AddModBtn = new QPushButton("+ Add Module", ModBox);
+                        QObject::connect(AddModBtn, &QPushButton::clicked, this, [this, i, epj](){
+                            (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["MODULES"].push_back(nlohmann::ordered_json{{"COMPONENT", ""}});
                             SaveManifestJSON(); BuildUI();
                         });
-                        EndpLayout->addWidget(AddEndpBtn);
-                        EPCardLayout->addWidget(EndpBox, eprow, 0, 1, -1);
+                        ModLayout->addWidget(AddModBtn);
+                        EPCardLayout->addWidget(ModBox, eprow, 0, 1, -1);
                         eprow++;
                     }
 
@@ -870,12 +896,12 @@ bool PackageEditor::BuildUI()
                     EPCardLayout->addWidget(EPExecBtn, eprow, 0, 1, -1);
                     std::string EPSubgameID  = SubgameIDStr;
                     std::string EPEntryID    = CurEPID;
-                    bool         EPHasEndpoints = EP.contains("ENDPOINTS") && EP["ENDPOINTS"].is_array() && !EP["ENDPOINTS"].empty();
+                    bool         EPHasEndpoints = EP.contains("MODULES") && EP["MODULES"].is_array() && !EP["MODULES"].empty();
                     QObject::connect(EPExecBtn, &QPushButton::clicked, this,
                     [this, EPSubgameID, EPEntryID, EPHasEndpoints]()
                     {
                         if (!EPHasEndpoints)
-                        { QMessageBox::warning(this, "Execute", "Variant has no ENDPOINTS set."); return; }
+                        { QMessageBox::warning(this, "Execute", "Variant has no MODULES set."); return; }
                         if (EPEntryID.empty())
                         { QMessageBox::warning(this, "Execute", "Variant has no VARIANT_ID set."); return; }
 
@@ -942,7 +968,7 @@ bool PackageEditor::BuildUI()
                     QString File = PromptTargetFile("Add Variant");
                     if (File.isEmpty()) return;
                     (*MANIFESTJSON)["GAMES"][i]["VARIANTS"].push_back(json::object({
-                        {"VARIANT_ID", "main"}, {"ENDPOINTS", json::array()}, {"EXEPATH", ""}, {"EXEARGS", ""}, {"WORKDIR", ""}, {"__FILE__", File.toStdString()}
+                        {"VARIANT_ID", "main"}, {"MODULES", json::array()}, {"EXEPATH", ""}, {"EXEARGS", ""}, {"WORKDIR", ""}, {"__FILE__", File.toStdString()}
                     }));
                     SaveManifestJSON(); BuildUI();
                 });
@@ -1074,7 +1100,8 @@ bool PackageEditor::BuildUI()
                 RG->addWidget(Box, rrow, 0, 1, -1); rrow++;
             };
             AddStringList("GUEST_PLATFORM", "GUEST_PLATFORM", false);
-            AddStringList("ENDPOINTS (runner's own components)", "ENDPOINTS", true);
+            // TODO(modules): a runner's MODULES are objects (universal schema) — a dedicated editor like the
+            // variant MODULES one is needed. Current runners carry empty MODULES, so this is omitted for now.
             AddStringList("ARGS", "ARGS", false);
 
             // ENV (key/value).
@@ -1124,7 +1151,7 @@ bool PackageEditor::BuildUI()
             if (File.isEmpty()) return;
             (*MANIFESTJSON)["RUNNERS"].push_back(json::object({
                 {"RUNNER_ID", "runner"}, {"NAME", ""}, {"TYPE", "custom"}, {"GUEST_PLATFORM", json::array()},
-                {"EXECUTABLE", ""}, {"ENDPOINTS", json::array()}, {"ARGS", json::array()}, {"ENV", json::object()},
+                {"EXECUTABLE", ""}, {"MODULES", json::array()}, {"ARGS", json::array()}, {"ENV", json::object()},
                 {"__FILE__", File.toStdString()}
             }));
             SaveManifestJSON(); BuildUI();
@@ -1888,8 +1915,10 @@ void PackageEditor::ExecuteComponent()
             for (auto &V : SG["VARIANTS"])
             {
                 std::vector<std::string> Endpoints;
-                if (V.contains("ENDPOINTS") && V["ENDPOINTS"].is_array())
-                    for (auto &E : V["ENDPOINTS"]) if (E.is_string()) Endpoints.push_back(std::string(E));
+                if (V.contains("MODULES") && V["MODULES"].is_array())
+                    for (auto &M : V["MODULES"])
+                        if (M.is_object() && M.contains("COMPONENT") && M["COMPONENT"].is_string())
+                            Endpoints.push_back(std::string(M["COMPONENT"]));
                 bool Matches = false;
                 for (const auto &E : Endpoints) if (RecipeSet.count(E)) { Matches = true; break; }
                 if (!Matches) continue;
@@ -1979,7 +2008,7 @@ void PackageEditor::ExecuteComponent()
 
     if (!ContainerWrapper::ResolveExecutableDefinition(*MANIFESTJSON, Container.ContainerParams))
     {
-        QMessageBox::critical(this, "Execute Component", "Failed to resolve variant.\nCheck VARIANT_ID and ENDPOINTS.");
+        QMessageBox::critical(this, "Execute Component", "Failed to resolve variant.\nCheck VARIANT_ID and MODULES.");
         return;
     }
 

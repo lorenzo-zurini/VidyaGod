@@ -3,6 +3,8 @@
 #include <random>
 #include <set>
 #include <algorithm>
+#include <functional>
+#include <QBrush>
 
 #include <QDir>
 #include <QPixmap>
@@ -104,8 +106,9 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     struct ContainerParams Params(PackagePath, SubgameID, ComponentID);
     Params.VariableOverrides = this->VariableOverrides;
+    Params.ModuleStates      = this->ModuleStates;
     //Set the chosen variant AND runner BEFORE construction so DeriveContainerParams resolves the
-    //runner (and its ENDPOINTS) and CreateRecipe mounts them. No post-construction override needed.
+    //runner (and its MODULES) and CreateRecipe mounts the enabled modules. No post-construction override needed.
     Params.VariantID = this->VariantID;
     Params.RunnerID  = this->RunnerID;
     //Screen geometry was captured on the main thread (see onLaunchClicked) — DeriveContainerParams
@@ -132,7 +135,7 @@ void LaunchThread::run()
             wrapper = nullptr;
         }
         delete LocalWrapper;
-        emit launchFinished(false, "Could not resolve variant.\nCheck VARIANT_ID and ENDPOINTS in the manifest.");
+        emit launchFinished(false, "Could not resolve variant.\nCheck VARIANT_ID and MODULES in the manifest.");
         return;
     }
 
@@ -359,6 +362,20 @@ PreLaunchWindow::PreLaunchWindow(
     CVScrollArea->setWidget(CVContainer);
     ControlLayout->addWidget(CVScrollArea);
 
+    // Modules tree: enable/disable optional build modules (REQUIRED ones shown locked-on). Nested by
+    // PARENTCOMPONENT — disabling a parent disables+locks its subtree.
+    ModuleGroup = new QGroupBox("Modules", CVContainer);
+    QVBoxLayout * ModuleLayout = new QVBoxLayout(ModuleGroup);
+    ModuleTree = new QTreeWidget(ModuleGroup);
+    ModuleTree->setHeaderHidden(true);
+    ModuleTree->setRootIsDecorated(true);
+    ModuleTree->setSelectionMode(QAbstractItemView::NoSelection);
+    ModuleLayout->addWidget(ModuleTree);
+    ModuleGroup->setLayout(ModuleLayout);
+    ModuleGroup->setVisible(false);
+    CVContainerLayout->addWidget(ModuleGroup);
+    connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){ PropagateModuleItem(It); });
+
     CustomVarGroup = new QGroupBox("Options", CVContainer);
     CustomVarForm  = new QFormLayout(CustomVarGroup);
     CustomVarGroup->setLayout(CustomVarForm);
@@ -378,7 +395,10 @@ PreLaunchWindow::PreLaunchWindow(
     CustomVarGroup->setProperty("ScrollArea", QVariant::fromValue<QWidget*>(CVScrollArea));
 
     connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onVariantChanged);
+    //The module tree also depends on the selected runner (runner MODULES join the recipe).
+    connect(RunnerCombo, &QComboBox::currentIndexChanged, this, [this](int){ RebuildModuleTree(); });
     RebuildCustomVarPickers();
+    RebuildModuleTree();
 
     // Progress bar + status label (outside the scroll area — always visible)
     ProgressBar = new QProgressBar(ControlWidget);
@@ -457,6 +477,7 @@ PreLaunchWindow::~PreLaunchWindow()
 void PreLaunchWindow::onVariantChanged()
 {
     RebuildCustomVarPickers();
+    RebuildModuleTree();
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +665,132 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 }
 
 // ---------------------------------------------------------------------------
+// Module tree: the selected variant's + runner's MODULES, nested by PARENTCOMPONENT, as toggle boxes.
+// REQUIRED modules (and the ancestors a required module forces on) are shown locked-on/greyed.
+// ---------------------------------------------------------------------------
+void PreLaunchWindow::RebuildModuleTree()
+{
+    if (!ModuleTree || !MANIFESTJSON) { if (ModuleGroup) ModuleGroup->setVisible(false); return; }
+    ModuleTree->blockSignals(true);
+    ModuleTree->clear();
+
+    const std::string VariantID = VariantCombo ? VariantCombo->currentData().toString().toStdString() : std::string();
+
+    // Universal MODULES: variant's + the selected runner's, deduped by component (first wins).
+    std::vector<ModuleInfo> Modules = ContainerWrapper::GetVariantModules(*MANIFESTJSON, SubgameID, VariantID);
+    if (RunnerCombo && RunnerCombo->currentIndex() >= 0 && RunnerCombo->currentIndex() < (int)Runners.size())
+        for (auto &M : ContainerWrapper::ParseModules(Runners[RunnerCombo->currentIndex()].second.value("MODULES", nlohmann::ordered_json::array())))
+            Modules.push_back(M);
+    {
+        std::set<std::string> Seen; std::vector<ModuleInfo> Uniq;
+        for (auto &M : Modules) if (Seen.insert(M.Component).second) Uniq.push_back(M);
+        Modules.swap(Uniq);
+    }
+    if (Modules.empty()) { ModuleGroup->setVisible(false); ModuleTree->blockSignals(false); return; }
+
+    std::map<std::string, ModuleInfo> ByComp;
+    for (auto &M : Modules) ByComp[M.Component] = M;
+
+    auto ParentComponentOf = [&](const std::string &Comp) -> std::string {
+        if (!MANIFESTJSON->contains("COMPONENTS")) return "";
+        for (const auto &C : (*MANIFESTJSON)["COMPONENTS"])
+            if (C.value("COMPONENTID", std::string()) == Comp)
+            {
+                const auto &PF = C.contains("PARENTCOMPONENT") ? C["PARENTCOMPONENT"] : nlohmann::ordered_json();
+                return PF.is_string() ? std::string(PF) : std::string();
+            }
+        return "";
+    };
+    auto NearestModuleAncestor = [&](const std::string &Comp) -> std::string {
+        for (std::string C = ParentComponentOf(Comp); !C.empty(); C = ParentComponentOf(C))
+            if (ByComp.count(C)) return C;
+        return "";
+    };
+
+    // Locked-on set: required modules + (REQUIRED-propagates-up) all their module-ancestors.
+    std::set<std::string> LockedOn;
+    for (auto &M : Modules)
+        if (M.Required)
+        {
+            LockedOn.insert(M.Component);
+            for (std::string C = NearestModuleAncestor(M.Component); !C.empty(); C = NearestModuleAncestor(C))
+                LockedOn.insert(C);
+        }
+
+    auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    const nlohmann::ordered_json Saved = (US.contains("MODULES") && US["MODULES"].is_object()) ? US["MODULES"] : nlohmann::ordered_json::object();
+
+    std::map<std::string, QTreeWidgetItem*> Items;
+    for (auto &M : Modules)
+    {
+        bool UiReq   = LockedOn.count(M.Component) > 0;
+        bool Desired = UiReq ? true
+                     : (Saved.contains(M.Component) && Saved[M.Component].is_boolean() ? (bool)Saved[M.Component] : M.Default);
+        QTreeWidgetItem* It = new QTreeWidgetItem();
+        It->setText(0, QString::fromStdString(M.Label.empty() ? M.Component : M.Label));
+        It->setData(0, Qt::UserRole,     QString::fromStdString(M.Component));
+        It->setData(0, Qt::UserRole + 1, UiReq);
+        It->setData(0, Qt::UserRole + 2, Desired);
+        Items[M.Component] = It;
+    }
+    for (auto &M : Modules)
+    {
+        std::string P = NearestModuleAncestor(M.Component);
+        if (!P.empty() && Items.count(P)) Items[P]->addChild(Items[M.Component]);
+        else                              ModuleTree->addTopLevelItem(Items[M.Component]);
+    }
+    ModuleTree->expandAll();
+    ModuleGroup->setVisible(true);
+    ModuleTree->blockSignals(false);
+    RefreshModuleLocks();
+}
+
+void PreLaunchWindow::RefreshModuleLocks()
+{
+    if (!ModuleTree) return;
+    ModuleTree->blockSignals(true);
+    std::function<void(QTreeWidgetItem*, bool)> Apply = [&](QTreeWidgetItem* It, bool ParentEnabled)
+    {
+        bool Required  = It->data(0, Qt::UserRole + 1).toBool();
+        bool Desired   = It->data(0, Qt::UserRole + 2).toBool();
+        bool Effective = Required ? true : (ParentEnabled && Desired);
+        bool Locked    = Required || !ParentEnabled;
+        It->setFlags(Locked ? Qt::ItemFlags(Qt::ItemIsEnabled)
+                            : Qt::ItemFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable));
+        It->setCheckState(0, Effective ? Qt::Checked : Qt::Unchecked);
+        It->setForeground(0, Locked ? QBrush(Qt::gray) : QBrush());
+        It->setData(0, Qt::UserRole + 3, Locked);
+        for (int i = 0; i < It->childCount(); ++i) Apply(It->child(i), Effective);
+    };
+    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i) Apply(ModuleTree->topLevelItem(i), true);
+    ModuleTree->blockSignals(false);
+}
+
+void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
+{
+    if (!Item) return;
+    //Record the user's intent for an unlocked optional item; locked items are snapped back by the refresh.
+    if (!Item->data(0, Qt::UserRole + 3).toBool())
+        Item->setData(0, Qt::UserRole + 2, Item->checkState(0) == Qt::Checked);
+    RefreshModuleLocks();
+}
+
+std::map<std::string, bool> PreLaunchWindow::CollectModuleStates() const
+{
+    std::map<std::string, bool> States;
+    if (!ModuleTree) return States;
+    std::function<void(QTreeWidgetItem*)> Walk = [&](QTreeWidgetItem* It)
+    {
+        //Only optional modules carry a meaningful toggle; REQUIRED are always-on and not stored.
+        if (!It->data(0, Qt::UserRole + 1).toBool())
+            States[It->data(0, Qt::UserRole).toString().toStdString()] = It->data(0, Qt::UserRole + 2).toBool();
+        for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
+    };
+    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i) Walk(ModuleTree->topLevelItem(i));
+    return States;
+}
+
+// ---------------------------------------------------------------------------
 // Slot: Launch button clicked
 // ---------------------------------------------------------------------------
 void PreLaunchWindow::onLaunchClicked()
@@ -714,6 +861,17 @@ void PreLaunchWindow::onLaunchClicked()
         JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
     }
 
+    // Persist the optional-module toggles to USERSETTINGS["MODULES"] (component → enabled) so they
+    // pre-tick next launch. (REQUIRED modules are always-on and not stored.)
+    if (!PackageUID.empty())
+    {
+        nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
+        for (const auto &[Comp, On] : CollectModuleStates()) Mods[Comp] = On;
+        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
+        QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
+        JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
+    }
+
     // Always persist runner and entrypoint so next launch pre-selects them.
     if (!PackageUID.empty())
     {
@@ -749,6 +907,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->ComponentID      = "";   // variant-driven; endpoints resolved in the worker
     LaunchWorker->VariantID          = SelectedVariantID;
     LaunchWorker->VariableOverrides  = CollectedVars;
+    LaunchWorker->ModuleStates       = CollectModuleStates();
     LaunchWorker->RunnerID           = SelectedRunnerID;
     LaunchWorker->SkipCleanup      = NoCleanupCheck->isChecked();
     LaunchWorker->DryRun           = DryRunCheck->isChecked();

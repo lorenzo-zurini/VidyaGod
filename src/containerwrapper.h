@@ -30,12 +30,22 @@ enum class RunnerType { Wine, Emulator, Native, Custom };
 
 //Describes one available variant for a given subgame.
 //Selecting a variant = selecting which set of ENDPOINTS (terminal components) to build.
-//Each endpoint walks its own PARENTCOMPONENT chain; the union of all chains forms the recipe.
+//A toggleable build module: a reference to a component (leaf OR internal node) the user can enable or
+//disable. REQUIRED modules are always in the recipe and locked in the UI; optional ones (REQUIRED:false)
+//are user-toggled, starting at DEFAULT. Used identically by variants and runners (universal schema).
+struct ModuleInfo {
+    std::string Component;       // COMPONENT — the component id this module pulls in
+    std::string Label;           // optional LABEL for the tree (falls back to component NAME/id)
+    bool        Required = true;  // REQUIRED — defaults true (modules are required unless opted out)
+    bool        Default  = true;  // DEFAULT — initial enabled state when optional; defaults true
+};
+
+//Each module walks its component's PARENTCOMPONENT chain; the union of enabled chains forms the recipe.
 struct VariantInfo {
     std::string VariantID;      // VARIANT_ID field on the variant
     std::string Name;           // optional NAME; falls back to VARIANT_ID for display
     bool        IsRecommended = false; // RECOMMENDED:true on the variant — shown with ⭐ in picker
-    std::vector<std::string> Endpoints; // ENDPOINTS array (terminal component ids, load order)
+    std::vector<ModuleInfo> Modules; // MODULES array (toggleable component references, load order)
 };
 
 //All resolved parameters needed to build and launch a single container session.
@@ -89,6 +99,9 @@ public:
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
+
+    //Module toggles (optional modules only; REQUIRED modules ignore this):
+    std::map<std::string, bool> ModuleStates;                       //PASSED (UI tree / --module COMP=on|off); component → enabled. Absent → REQUIRED||DEFAULT
 
     //Variant resolution:
     std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
@@ -193,11 +206,23 @@ public:
     //If only subgame_id is set, picks the RECOMMENDED variant (else first) and fills VariantID + Endpoints.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
 
-    //Returns all variants defined under SUBGAMES[SubgameID].VARIANTS.
+    //Returns all variants defined under SUBGAMES[SubgameID].VARIANTS (with their MODULES).
     static std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
 
-    //Returns the ENDPOINTS array of the variant matching { SubgameID, VariantID }.
-    //Returns an empty vector if not found.
+    //Returns the MODULES of the variant matching { SubgameID, VariantID } (empty if not found).
+    static std::vector<ModuleInfo> GetVariantModules(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
+
+    //Reads a MODULES json array (objects: COMPONENT/REQUIRED/DEFAULT/LABEL) into ModuleInfo entries.
+    static std::vector<ModuleInfo> ParseModules(const nlohmann::ordered_json &ModulesArray);
+
+    //Resolves which of `Modules` are enabled into a list of component ids (load order), applying:
+    //REQUIRED||(ModuleStates? : DEFAULT), REQUIRED propagating up the PARENTCOMPONENT chain, and the
+    //hierarchy gate (a disabled module-ancestor force-disables its descendants). Used for variants AND runners.
+    static std::vector<std::string> ResolveEnabledModules(const std::vector<ModuleInfo> &Modules,
+                                                          const std::map<std::string, bool> &ModuleStates,
+                                                          const nlohmann::ordered_json &MANIFESTJSON);
+
+    //Convenience: the default-enabled module component ids of a variant (REQUIRED||DEFAULT, no overrides).
     static std::vector<std::string> FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
 
     //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID under the subgame
