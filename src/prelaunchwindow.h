@@ -86,6 +86,12 @@ public:
 
     ~PreLaunchWindow() override;
 
+    //The package this dialog is for (used by MainWindow::RefreshPackage to target the right dialog).
+    const std::string & packagePath() const { return PackagePath; }
+    //Re-assembles the manifest from disk and rebuilds the variant combo + module tree + CustomVar pickers
+    //after the package was edited. Safe to call on the shared manifest pointer (in-place re-assemble).
+    void ReloadAndRebuild();
+
 private slots:
     void onLaunchClicked();
     void onKillClicked();

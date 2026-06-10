@@ -124,6 +124,11 @@ public:
     QFile * GlobalConfigFile;
     void RebuildDynamicUI();
 
+    //Reacts to a package being saved in the editor: re-renders the matching game card(s) in place (no
+    //delete, so a borrowing prelaunch's manifest pointer stays valid) and reloads any open prelaunch
+    //dialog for that package. Static + self-locating so any editor (wherever opened) can drive it.
+    static void RefreshPackage(const QString & PackagePath);
+
 private slots:
     void on_AddGameButton_clicked();
     void MainWindowGridSizeChanged();

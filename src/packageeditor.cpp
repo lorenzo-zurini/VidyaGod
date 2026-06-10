@@ -188,6 +188,8 @@ bool PackageEditor::SaveManifestJSON()
         QFile F(PackageDir->filePath(FileName));
         if (!JSONOps::SaveJSON(&Doc, &F)) Ok = false;
     }
+    //Notify open game cards / prelaunch dialogs to reload and re-render from the freshly-written files.
+    if (PackageDir) emit packageSaved(PackageDir->path());
     return Ok;
 }
 

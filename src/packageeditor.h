@@ -54,6 +54,11 @@ public:
     explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
     ~PackageEditor();
 
+signals:
+    //Emitted whenever the package's manifest is written to disk, so open game cards / prelaunch dialogs
+    //can reload and re-render. Carries the package directory path.
+    void packageSaved(const QString &PackagePath);
+
 private slots:
     void on_AddSubGameButton_clicked();
     void on_AddComponentButton_clicked();

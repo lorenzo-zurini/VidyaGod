@@ -477,7 +477,8 @@ void MainWindow::BuildStaticUI()
     edBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     ptbl->addWidget(edBtn);
     QObject::connect(edBtn, &QPushButton::clicked, this,
-        [this]{ (new PackageEditor(GlobalConfigJSON, this))->show(); });
+        [this]{ auto * Ed = new PackageEditor(GlobalConfigJSON, this);
+                connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage); Ed->show(); });
 
     PackagesScrollArea = new QScrollArea(PackagesTabWidget);
     PackagesScrollArea->setWidgetResizable(true);
@@ -734,6 +735,33 @@ void MainWindow::BuildPackagesDynamicUI()
 void MainWindow::RebuildDynamicUI()
 {
     BuildLibraryGameCards(); BuildLibraryDynamicUI(); BuildPackagesDynamicUI();
+}
+
+void MainWindow::RefreshPackage(const QString & PackagePath)
+{
+    const QString Want = QDir::cleanPath(PackagePath);
+
+    // Locate the live MainWindow (the editor that emitted may have been opened from anywhere).
+    MainWindow * Self = nullptr;
+    for (QWidget * W : QApplication::topLevelWidgets())
+        if (auto * MW = qobject_cast<MainWindow *>(W)) { Self = MW; break; }
+
+    // Re-render every game card for this package IN PLACE (re-assemble manifest + re-derive title/cover).
+    // Never delete cards here — an open prelaunch borrows a card's MANIFESTJSON pointer.
+    if (Self && Self->LibraryGameCards)
+    {
+        bool Any = false;
+        for (LibraryGameCard * Card : *Self->LibraryGameCards)
+            if (Card && QDir::cleanPath(QString::fromStdString(Card->PackagePath.string())) == Want)
+            { Card->InitializeClassVariables(); Any = true; }
+        if (Any && Self->View) Self->View->setCards(Self->LibraryGameCards); // relayout + repaint, no delete
+    }
+
+    // Reload any open prelaunch dialog(s) for this package.
+    for (QWidget * W : QApplication::topLevelWidgets())
+        if (auto * PL = qobject_cast<PreLaunchWindow *>(W))
+            if (QDir::cleanPath(QString::fromStdString(PL->packagePath())) == Want)
+                PL->ReloadAndRebuild();
 }
 
 void MainWindow::on_AddGameButton_clicked()

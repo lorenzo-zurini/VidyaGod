@@ -1,5 +1,6 @@
 #include "prelaunchwindow.h"
 #include "packageeditor.h"
+#include "mainwindow.h"
 #include <random>
 #include <set>
 #include <algorithm>
@@ -438,6 +439,7 @@ PreLaunchWindow::PreLaunchWindow(
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
     {
         PackageEditor * Editor = new PackageEditor(this->GlobalConfigJSON, this, QString::fromStdString(this->PackagePath));
+        connect(Editor, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
         Editor->show();
     });
 
@@ -788,6 +790,40 @@ std::map<std::string, bool> PreLaunchWindow::CollectModuleStates() const
     };
     for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i) Walk(ModuleTree->topLevelItem(i));
     return States;
+}
+
+// ---------------------------------------------------------------------------
+// Re-assemble the (just-edited) manifest from disk and rebuild the dynamic pickers.
+// ---------------------------------------------------------------------------
+void PreLaunchWindow::ReloadAndRebuild()
+{
+    if (!MANIFESTJSON) return;
+    // Re-assemble in place into the shared pointer (the card that owns it sees the fresh data too).
+    std::vector<std::string> Warn;
+    JSONOps::AssembleManifest(QString::fromStdString(PackagePath), *MANIFESTJSON, Warn);
+    PackageUID = MANIFESTJSON->value("PACKAGEUID", PackageUID);
+
+    // Repopulate the variant combo (preserve the current selection if it still exists).
+    if (VariantCombo)
+    {
+        QString Cur = VariantCombo->currentData().toString();
+        QSignalBlocker B(VariantCombo);
+        VariantCombo->clear();
+        std::string RecommendedID;
+        for (auto & V : ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID))
+        {
+            QString Label = QString::fromStdString(V.Name.empty() ? V.VariantID : V.Name);
+            if (V.IsRecommended) { Label = "⭐ " + Label; RecommendedID = V.VariantID; }
+            VariantCombo->addItem(Label, QString::fromStdString(V.VariantID));
+        }
+        int Idx = VariantCombo->findData(Cur);
+        if (Idx < 0 && !RecommendedID.empty()) Idx = VariantCombo->findData(QString::fromStdString(RecommendedID));
+        if (Idx >= 0) VariantCombo->setCurrentIndex(Idx);
+    }
+
+    // Rebuild the dependent sections from the fresh manifest.
+    RebuildCustomVarPickers();
+    RebuildModuleTree();
 }
 
 // ---------------------------------------------------------------------------
