@@ -62,7 +62,6 @@ signals:
 private slots:
     void on_AddSubGameButton_clicked();
     void on_AddComponentButton_clicked();
-    void on_SaveButton_clicked();
     void JSONQTextEditChanged();
     void JSONQLineEditChanged();
     void SaveJSONButtonPressed();

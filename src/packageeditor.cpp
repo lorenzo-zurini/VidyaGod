@@ -29,16 +29,28 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     Toolbar->setSpacing(1);
     QPushButton * AddSubGameBtn   = new QPushButton("Add SubGame",   this);
     QPushButton * AddComponentBtn = new QPushButton("Add Component", this);
-    QPushButton * SaveBtn         = new QPushButton("Save",          this);
+    QPushButton * AddRunnerBtn    = new QPushButton("Add Runner",    this);
     Toolbar->addWidget(AddSubGameBtn);
     Toolbar->addWidget(AddComponentBtn);
+    Toolbar->addWidget(AddRunnerBtn);
     Toolbar->addStretch();
-    Toolbar->addWidget(SaveBtn);
     MainLayout->addLayout(Toolbar);
 
     connect(AddSubGameBtn,   &QPushButton::clicked, this, &PackageEditor::on_AddSubGameButton_clicked);
     connect(AddComponentBtn, &QPushButton::clicked, this, &PackageEditor::on_AddComponentButton_clicked);
-    connect(SaveBtn,         &QPushButton::clicked, this, &PackageEditor::on_SaveButton_clicked);
+    //Add Runner lives on the top toolbar (the RUNNERS tab only appears once runners exist).
+    connect(AddRunnerBtn, &QPushButton::clicked, this, [this](){
+        QString File = PromptTargetFile("Add Runner");
+        if (File.isEmpty()) return;
+        if (!(*MANIFESTJSON).contains("RUNNERS") || !(*MANIFESTJSON)["RUNNERS"].is_array())
+            (*MANIFESTJSON)["RUNNERS"] = json::array();
+        (*MANIFESTJSON)["RUNNERS"].push_back(json::object({
+            {"RUNNER_ID", "runner"}, {"NAME", ""}, {"TYPE", "custom"}, {"GUEST_PLATFORM", json::array()},
+            {"EXECUTABLE", ""}, {"MODULES", json::array()}, {"ARGS", json::array()}, {"ENV", json::object()},
+            {"__FILE__", File.toStdString()}
+        }));
+        SaveManifestJSON(); BuildUI();
+    });
 
     // Tab widget (populated by BuildUI)
     PackageEditorTabWidget = new QTabWidget(this);
@@ -98,18 +110,6 @@ void PackageEditor::on_AddComponentButton_clicked()
     SaveManifestJSON();
     BuildUI();
     RefreshJSONView();
-}
-
-void PackageEditor::on_SaveButton_clicked()
-{
-    if (PackageEditor::SaveManifestJSON())
-    {
-        LogSucc("PackageEditor", "Save successful.");
-    }
-    else
-    {
-        LogErr("PackageEditor", "Save failed.");
-    }
 }
 
 
@@ -992,6 +992,8 @@ bool PackageEditor::BuildUI()
     // "+ Subcomponent" menu). When a package declares none, the whole runtime overlay persists.
 
     // RUNNERS TAB — flat array of first-class runners (each routed to its fragment file).
+    // Only shown when the package actually defines runners; add new ones from the top toolbar.
+    if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array() && !(*MANIFESTJSON)["RUNNERS"].empty())
     {
         QWidget * RTabWidget = new QWidget(PackageEditorTabWidget);
         QVBoxLayout * RTabLayout = new QVBoxLayout(RTabWidget);
@@ -1004,8 +1006,6 @@ bool PackageEditor::BuildUI()
         RContents->setLayout(RLayout);
         RScroll->setWidget(RContents);
 
-        if (!(*MANIFESTJSON).contains("RUNNERS") || !(*MANIFESTJSON)["RUNNERS"].is_array())
-            (*MANIFESTJSON)["RUNNERS"] = nlohmann::ordered_json::array();
         auto &RunnerArr = (*MANIFESTJSON)["RUNNERS"];
 
         for (int ri = 0; ri < (int)RunnerArr.size(); ri++)
@@ -1147,18 +1147,6 @@ bool PackageEditor::BuildUI()
             RLayout->addWidget(RCard);
         }
 
-        QPushButton * AddRunnerBtn = new QPushButton("+ Add Runner", RContents);
-        QObject::connect(AddRunnerBtn, &QPushButton::clicked, this, [this](){
-            QString File = PromptTargetFile("Add Runner");
-            if (File.isEmpty()) return;
-            (*MANIFESTJSON)["RUNNERS"].push_back(json::object({
-                {"RUNNER_ID", "runner"}, {"NAME", ""}, {"TYPE", "custom"}, {"GUEST_PLATFORM", json::array()},
-                {"EXECUTABLE", ""}, {"MODULES", json::array()}, {"ARGS", json::array()}, {"ENV", json::object()},
-                {"__FILE__", File.toStdString()}
-            }));
-            SaveManifestJSON(); BuildUI();
-        });
-        RLayout->addWidget(AddRunnerBtn);
         RLayout->addStretch();
         PackageEditorTabWidget->addTab(RTabWidget, "RUNNERS");
     }

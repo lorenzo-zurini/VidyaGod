@@ -349,6 +349,14 @@ PreLaunchWindow::PreLaunchWindow(
         { VariantCombo->setCurrentIndex(k); break; }
     }
 
+    // Only show the variant picker when there's an actual choice (more than one variant).
+    VariantLabel = PickerForm->labelForField(VariantCombo);
+    {
+        bool MultiVariant = VariantCombo->count() > 1;
+        VariantCombo->setVisible(MultiVariant);
+        if (VariantLabel) VariantLabel->setVisible(MultiVariant);
+    }
+
     // Scrollable section: CustomVar pickers + checkboxes, all in one scroll area.
     QScrollArea * CVScrollArea = new QScrollArea(ControlWidget);
     CVScrollArea->setWidgetResizable(true);
@@ -819,6 +827,11 @@ void PreLaunchWindow::ReloadAndRebuild()
         int Idx = VariantCombo->findData(Cur);
         if (Idx < 0 && !RecommendedID.empty()) Idx = VariantCombo->findData(QString::fromStdString(RecommendedID));
         if (Idx >= 0) VariantCombo->setCurrentIndex(Idx);
+
+        // Show the picker only when there's a real choice.
+        bool MultiVariant = VariantCombo->count() > 1;
+        VariantCombo->setVisible(MultiVariant);
+        if (VariantLabel) VariantLabel->setVisible(MultiVariant);
     }
 
     // Rebuild the dependent sections from the fresh manifest.

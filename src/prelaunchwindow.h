@@ -134,6 +134,7 @@ private:
     QLabel*       CoverLabel        = nullptr;
     QComboBox*    RunnerCombo       = nullptr;
     QComboBox*    VariantCombo      = nullptr;
+    QWidget*      VariantLabel      = nullptr; // the "Variant:" form label — hidden alongside the combo when <2 variants
     QProgressBar* ProgressBar       = nullptr;
     QLabel*       StatusLabel       = nullptr;
     QCheckBox*    NoCleanupCheck        = nullptr;
