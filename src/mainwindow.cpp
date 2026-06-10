@@ -158,6 +158,12 @@ void LibraryView::setSeriesGroups(const QVector<SeriesGroup> & groups)
     viewport()->update();
 }
 
+void LibraryView::refreshVisuals()
+{
+    if (CardW > 0) prescaleCovers(CardW); // recompute CoverScaled + ElidedTitle from the (changed) data
+    viewport()->update();                 // repaint in place — Rects/SeriesGroups/CardW are untouched
+}
+
 void LibraryView::prescaleCovers(int cardW)
 {
     const int cardH = cardW * 3 / 2;
@@ -754,7 +760,7 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
         for (LibraryGameCard * Card : *Self->LibraryGameCards)
             if (Card && QDir::cleanPath(QString::fromStdString(Card->PackagePath.string())) == Want)
             { Card->InitializeClassVariables(); Any = true; }
-        if (Any && Self->View) Self->View->setCards(Self->LibraryGameCards); // relayout + repaint, no delete
+        if (Any && Self->View) Self->View->refreshVisuals(); // re-scale + repaint in place (keeps layout)
     }
 
     // Reload any open prelaunch dialog(s) for this package.

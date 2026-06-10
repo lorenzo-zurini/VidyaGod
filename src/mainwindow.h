@@ -80,6 +80,9 @@ public:
     void prescaleCovers(int cardW);
     void layoutCards(int cardW);
     void setSeriesGroups(const QVector<SeriesGroup> & groups);
+    //Re-scale covers/titles at the CURRENT width and repaint, WITHOUT resetting the layout (used when a
+    //card's data changed in place — e.g. after a package edit). No-op if the view hasn't been laid out yet.
+    void refreshVisuals();
 
 protected:
     void resizeEvent(QResizeEvent * e) override;
