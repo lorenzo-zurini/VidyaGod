@@ -274,87 +274,9 @@ static QString DependencyInstallHint(const std::string &Dep)
     return QString::fromStdString(Dep);
 }
 
-// ─── BUILT-IN RUNNER REGISTRY — TO BE REMOVED ─────────────────────────────────────────────────
-// Phase 1 ships a hardcoded set of runner *packages*. Each becomes its own directory under
-// ~/.VidyaGod/GLOBAL_RUNNERS/<id>/MANIFEST.json — a pure-runner package (HOST_PLATFORM "linux64",
-// one RUNNERS entry, no GAMES) that the resolver discovers like any other package. Existing files
-// are never clobbered, so user edits survive. The native-passthrough runner runs a host-native
-// (linux64) target with no translation layer.
-//
-// TO BE REMOVED: runners will later be fetched from a remote runner repository; this whole block is
-// temporary scaffolding (note the hardcoded GE-Proton PROTONPATH).
-// TODO(sharing): the "pretend repo" stands in for a real HOSTED git repository of package JSONs. For
-// now it is a local directory; later a Repository of TYPE:"git" is cloned/pulled into ~/.VidyaGod/DOWNLOADS
-// and indexed like any local repo. The user supplied this dev path.
-static std::string PretendRepoPath() { return "/home/lorenzo-zurini/PRETENDRERPO"; }
-
-static void SeedDefaultRegistry(QDir * AppDataDir)
-{
-    // TODO(sharing): seeding hardcoded runner packages is dev scaffolding — the real flow pulls these
-    // from the hosted repository. They now live in the pretend repo (not ~/.VidyaGod/GLOBAL_RUNNERS).
-    QDir Reg(QString::fromStdString(PretendRepoPath()));
-    Reg.mkpath(".");
-    // DOWNLOADS: cache for repo-fetched packages + remote SOURCE artifacts. // TODO(sharing): populate it.
-    AppDataDir->mkpath("DOWNLOADS");
-
-    nlohmann::ordered_json Packages = nlohmann::ordered_json::parse(R"JSON({
-        "ge-proton10-30": {
-            "PACKAGEUID": "runner-ge-proton10-30", "PACKAGENAME": "GE-Proton 10-30", "PACKAGEVERSION": "10-30",
-            "HOST_PLATFORM": "linux64",
-            "RUNNERS": [ {
-                "RUNNER_ID": "ge-proton10-30", "NAME": "GE-Proton10-30", "TYPE": "wine",
-                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
-                "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun",
-                         "PROTONPATH": "/home/lorenzo-zurini/.local/share/Steam/compatibilitytools.d/GE-Proton10-30" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
-        },
-        "umu-proton": {
-            "PACKAGEUID": "runner-umu-proton", "PACKAGENAME": "umu-proton", "PACKAGEVERSION": "1.0",
-            "HOST_PLATFORM": "linux64",
-            "RUNNERS": [ {
-                "RUNNER_ID": "umu-proton", "NAME": "umu-proton", "TYPE": "wine",
-                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "umu-run",
-                "ENV": { "WINEPREFIX": "%RuntimePath%", "GAMEID": "%UMUID%", "PROTON_VERB": "waitforexitandrun" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
-        },
-        "wine": {
-            "PACKAGEUID": "runner-wine", "PACKAGENAME": "Wine", "PACKAGEVERSION": "1.0",
-            "HOST_PLATFORM": "linux64",
-            "RUNNERS": [ {
-                "RUNNER_ID": "wine", "NAME": "wine", "TYPE": "wine",
-                "GUEST_PLATFORM": ["win32", "win64"], "EXECUTABLE": "wine",
-                "ENV": { "WINEPREFIX": "%RuntimePath%" },
-                "REMOVE_ENV": ["LD_LIBRARY_PATH"], "ARGS": [], "MODULES": [] } ]
-        },
-        "snes9x": {
-            "PACKAGEUID": "runner-snes9x", "PACKAGENAME": "Snes9x", "PACKAGEVERSION": "1.0",
-            "HOST_PLATFORM": "linux64",
-            "RUNNERS": [ {
-                "RUNNER_ID": "snes9x", "NAME": "snes9x", "TYPE": "emulator",
-                "GUEST_PLATFORM": ["snes"], "EXECUTABLE": "snes9x",
-                "ENV": {}, "REMOVE_ENV": [], "ARGS": ["-fullscreen"], "MODULES": [] } ]
-        },
-        "native-passthrough": {
-            "PACKAGEUID": "runner-native-passthrough", "PACKAGENAME": "Native (passthrough)", "PACKAGEVERSION": "1.0",
-            "HOST_PLATFORM": "linux64",
-            "RUNNERS": [ {
-                "RUNNER_ID": "native-passthrough", "NAME": "Native (passthrough)", "TYPE": "native",
-                "GUEST_PLATFORM": ["linux64"], "EXECUTABLE": "",
-                "ENV": {}, "REMOVE_ENV": [], "ARGS": [], "MODULES": [] } ]
-        }
-    })JSON");
-
-    for (auto It = Packages.begin(); It != Packages.end(); ++It)
-    {
-        QDir PkgDir(Reg.filePath(QString::fromStdString(It.key())));
-        PkgDir.mkpath(".");
-        QFile Mf(PkgDir.filePath("MANIFEST.json"));
-        if (Mf.exists()) continue; //never clobber an existing (possibly user-edited) runner package
-        nlohmann::ordered_json M = It.value();
-        if (JSONOps::SaveJSON(&M, &Mf))
-            LogOut("main.cpp", "Seeded built-in runner package: " + It.key());
-    }
-}
+// The hosted repository of built-in runner packages (and other shared packages). Synced into
+// ~/.VidyaGod/DOWNLOADS by ContainerWrapper::SyncRepositories and indexed like any other repository.
+static std::string DefaultRunnerRepoURL() { return "https://github.com/lorenzo-zurini/VidyaGodRunners.git"; }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.Repositories (the package catalog sources).
@@ -368,23 +290,21 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
-    //Repositories: ordered list of catalog sources. Each: { NAME, PATH, TYPE:"local" }.
-    //TODO(sharing): TYPE:"git" with a URL, synced into DOWNLOADS. RepositoryDirs() still reads the legacy
-    //Settings.GlobalRunners string array, so old configs keep working until they're migrated here.
+    //Repositories: ordered list of catalog sources. Each: { NAME, PATH, TYPE }. TYPE:"git" PATHs are a
+    //clone URL synced into ~/.VidyaGod/DOWNLOADS; TYPE:"local" PATHs are indexed in place.
+    //The sole default is the hosted VidyaGodRunners repository (built-in runners + shared packages).
     if (!gc["Settings"].contains("Repositories") || !gc["Settings"]["Repositories"].is_array())
     {
         nlohmann::ordered_json Repos = nlohmann::ordered_json::array();
-        //Always include the pretend repo (dev scaffolding for hosted runners). TODO(sharing): drop this.
-        Repos.push_back(nlohmann::ordered_json{ {"NAME", "pretend"}, {"PATH", PretendRepoPath()}, {"TYPE", "local"} });
+        Repos.push_back(nlohmann::ordered_json{
+            {"NAME", "VidyaGodRunners"},
+            {"PATH", DefaultRunnerRepoURL()},
+            {"TYPE", "git"} });
         //Migrate any legacy Settings.GlobalRunners dirs so user-configured registries survive the upgrade.
         if (gc["Settings"].contains("GlobalRunners") && gc["Settings"]["GlobalRunners"].is_array() && !gc["Settings"]["GlobalRunners"].empty())
-        {
             for (const auto &D : gc["Settings"]["GlobalRunners"])
                 if (D.is_string())
                     Repos.push_back(nlohmann::ordered_json{ {"NAME", "legacy"}, {"PATH", std::string(D)}, {"TYPE", "local"} });
-        }
-        else
-            Repos.push_back(nlohmann::ordered_json{ {"NAME", "global-runners"}, {"PATH", "~/.VidyaGod/GLOBAL_RUNNERS"}, {"TYPE", "local"} });
         gc["Settings"]["Repositories"] = Repos;
         Changed = true;
     }
@@ -409,13 +329,10 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     }
     if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
 
-    //Ensure the built-in runner registry exists (idempotent — never clobbers existing packages).
-    SeedDefaultRegistry(AppDataDir);
-
     const bool Changed = EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
-    //Index the configured Repositories into the catalog. // TODO(sharing): for TYPE:"git" repos this is
-    //where a clone/pull into DOWNLOADS happens; for now it indexes local repos in place + logs them.
+    //Sync + index the configured Repositories into the catalog: TYPE:"git" repos (the default
+    //VidyaGodRunners) are cloned/pulled into ~/.VidyaGod/DOWNLOADS, then everything is indexed.
     ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
 
     if ((!Existed || Changed) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
