@@ -4,6 +4,7 @@
 #include "jsonoperations.h"
 #include "filesystemoperations.h"
 #include "prelaunchwindow.h"
+#include "ipfswrapper.h"
 
 #include <QPainter>
 #include <QApplication>
@@ -12,6 +13,12 @@
 #include <QGuiApplication>
 #include <QFrame>
 #include <QPaintEvent>
+#include <QHeaderView>
+#include <QProgressBar>
+#include <QClipboard>
+#include <QTableWidgetItem>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -492,6 +499,9 @@ void MainWindow::BuildStaticUI()
 
     // ── Settings tab ───────────────────────────────────────────────────────────
     BuildSettingsTab();
+
+    // ── IPFS tab ─────────────────────────────────────────────────────────────────
+    BuildIpfsTab();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -638,6 +648,137 @@ QWidget * MainWindow::BuildPathsSettingsPage()
     pl->addWidget(note);
     pl->addStretch(1);
     return page;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// IPFS tab — Kubo transfers + seeded (pinned) content. Kubo is OPTIONAL: when the
+// `ipfs` binary is absent the tab shows a greyed install message instead. VidyaGod
+// never starts the daemon — it only reports whether the user is running one.
+// ═════════════════════════════════════════════════════════════════════════════
+
+void MainWindow::BuildIpfsTab()
+{
+    IpfsTabWidget = new QWidget(MainWindowTabWidget);
+    QVBoxLayout * v = new QVBoxLayout(IpfsTabWidget);
+    v->setContentsMargins(12,12,12,12);
+    MainWindowTabWidget->addTab(IpfsTabWidget, "IPFS");
+
+    if (!IpfsWrapper::Available())
+    {
+        QLabel * msg = new QLabel(
+            "<div style='color:#8f98a0;'><b>IPFS is unavailable</b><br><br>"
+            "Please install <b>Kubo</b> (the IPFS implementation) and make sure <code>ipfs</code> is on your "
+            "PATH to enable IPFS functionality.<br><br>"
+            "Run <code>ipfs daemon</code> afterwards to fetch and seed shared packages.</div>", IpfsTabWidget);
+        msg->setAlignment(Qt::AlignCenter); msg->setWordWrap(true);
+        v->addStretch(1); v->addWidget(msg); v->addStretch(1);
+        return;                                              // greyed/empty — no controls
+    }
+
+    // Status row.
+    QHBoxLayout * statusRow = new QHBoxLayout();
+    IpfsStatusLabel = new QLabel(QStringLiteral("…"), IpfsTabWidget);
+    QPushButton * refreshBtn = new QPushButton("Refresh", IpfsTabWidget);
+    connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::RefreshIpfsTab);
+    statusRow->addWidget(IpfsStatusLabel, 1);
+    statusRow->addWidget(refreshBtn);
+    v->addLayout(statusRow);
+
+    // Transfers (live fetches from the launch worker).
+    QGroupBox * txBox = new QGroupBox("Transfers", IpfsTabWidget);
+    QVBoxLayout * txl = new QVBoxLayout(txBox);
+    IpfsTransfers = new QTableWidget(0, 3, txBox);
+    IpfsTransfers->setHorizontalHeaderLabels({"CID", "Progress", "Status"});
+    IpfsTransfers->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    IpfsTransfers->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    IpfsTransfers->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsTransfers->verticalHeader()->setVisible(false);
+    txl->addWidget(IpfsTransfers);
+    v->addWidget(txBox, 1);
+
+    // Seeded content (pinned CIDs).
+    QGroupBox * pinBox = new QGroupBox("Seeded content (pinned)", IpfsTabWidget);
+    QVBoxLayout * pl = new QVBoxLayout(pinBox);
+    IpfsPins = new QTableWidget(0, 2, pinBox);
+    IpfsPins->setHorizontalHeaderLabels({"CID", ""});
+    IpfsPins->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsPins->verticalHeader()->setVisible(false);
+    pl->addWidget(IpfsPins);
+    v->addWidget(pinBox, 1);
+
+    // Live transfer notifications (marshalled onto the GUI thread by IpfsManager).
+    IpfsManager * mgr = IpfsManager::instance();
+    connect(mgr, &IpfsManager::transferStarted, this, [this](QString cid) {
+        if (!IpfsTransfers) return;
+        int row = IpfsTransferRows.value(cid, -1);
+        if (row < 0) {
+            row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
+            IpfsTransferRows.insert(cid, row);
+            IpfsTransfers->setItem(row, 0, new QTableWidgetItem(cid));
+            QProgressBar * bar = new QProgressBar(); bar->setRange(0, 0); // indeterminate until first %
+            IpfsTransfers->setCellWidget(row, 1, bar);
+            IpfsTransfers->setItem(row, 2, new QTableWidgetItem("Fetching…"));
+        } else if (IpfsTransfers->item(row, 2)) {
+            IpfsTransfers->item(row, 2)->setText("Fetching…");
+        }
+    });
+    connect(mgr, &IpfsManager::transferProgress, this, [this](QString cid, double pct) {
+        int row = IpfsTransferRows.value(cid, -1);
+        if (row < 0 || !IpfsTransfers) return;
+        if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 1))) {
+            bar->setRange(0, 100); bar->setValue(int(pct + 0.5));
+        }
+    });
+    connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok) {
+        int row = IpfsTransferRows.value(cid, -1);
+        if (row >= 0 && IpfsTransfers) {
+            if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 1))) {
+                bar->setRange(0, 100); if (ok) bar->setValue(100);
+            }
+            if (IpfsTransfers->item(row, 2)) IpfsTransfers->item(row, 2)->setText(ok ? "Done" : "Failed");
+        }
+        RefreshIpfsTab();                                    // a finished fetch likely added a pin
+    });
+
+    // Periodic status/pin refresh.
+    IpfsRefreshTimer = new QTimer(this);
+    connect(IpfsRefreshTimer, &QTimer::timeout, this, &MainWindow::RefreshIpfsTab);
+    IpfsRefreshTimer->start(5000);
+    RefreshIpfsTab();
+}
+
+void MainWindow::RefreshIpfsTab()
+{
+    if (!IpfsWrapper::Available() || !IpfsStatusLabel) return;
+
+    const bool Daemon = IpfsWrapper::DaemonRunning();
+    QString S = QString("Daemon: %1").arg(Daemon
+        ? "<span style='color:#5fb55f;'>running</span>"
+        : "<span style='color:#c0726a;'>stopped — run <code>ipfs daemon</code> to seed</span>");
+    if (Daemon) S += QString("   •   Peers: %1").arg(IpfsWrapper::PeerCount());
+    const QString Repo = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
+    if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
+    IpfsStatusLabel->setText(S);
+
+    if (!IpfsPins) return;
+    const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
+    IpfsPins->setRowCount(int(Pins.size()));
+    for (int i = 0; i < int(Pins.size()); ++i)
+    {
+        const QString Cid = QString::fromStdString(Pins[i].Cid);
+        IpfsPins->setItem(i, 0, new QTableWidgetItem(Cid));
+        QWidget * cell = new QWidget();
+        QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,2,2,2); cl->setSpacing(4);
+        QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
+        QPushButton * unpinBtn = new QPushButton("Unpin", cell);
+        connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
+        connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
+        cl->addWidget(copyBtn); cl->addWidget(unpinBtn);
+        IpfsPins->setCellWidget(i, 1, cell);
+    }
+    IpfsPins->resizeColumnToContents(1);
 }
 
 void MainWindow::BuildLibraryGameCards()

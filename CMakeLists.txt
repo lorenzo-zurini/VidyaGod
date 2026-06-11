@@ -44,6 +44,9 @@ set(PROJECT_SOURCES
     src/prelaunchwindow.h
     src/prelaunchwindow.cpp
 
+    src/ipfswrapper.h
+    src/ipfswrapper.cpp
+
     translations/${TS_FILES}
 )
 

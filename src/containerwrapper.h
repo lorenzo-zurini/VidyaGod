@@ -125,6 +125,7 @@ public:
     std::filesystem::path DefPrefixBasePath; //TempPath/DEFPREFIX — the def-prefix base (= STEAM_COMPAT_DATA_PATH for proton, at init)
     std::filesystem::path DefPrefixPath;     //DefPrefixBasePath/<PREFIX_SUBPATH> — the Wine prefix directory built by wineboot
     std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
+    nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch
     //Phase-context prefix: bound to the def-prefix during InitializeDefPrefix and to the runtime during Execute,
     //so a runner ENV references %WinePrefix% (the prefix dir) / %PrefixBase% (its base) without code knowing umu vs proton.
     std::filesystem::path ActivePrefix;      //current-phase prefix dir  → %WinePrefix% (defaults to RuntimePath)
@@ -256,6 +257,11 @@ public:
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
     //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
     static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);
+    //Fetches every remote SOURCE the launch needs (the runner build + each VFS layer) into the local cache
+    //before anything that reads them. Currently handles TYPE:"ipfs" via Kubo (fetch + pin). Returns false if
+    //a required CID could not be fetched (no fallback — the launch must abort). Run at the start of
+    //BuildContainerRuntime, before InitializeDefPrefix (the runner binary must exist on disk by then).
+    static bool EnsureSources(struct ContainerParams &ContainerParams);
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
     //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.

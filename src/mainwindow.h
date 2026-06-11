@@ -26,6 +26,9 @@
 #include <QComboBox>
 #include <QLineEdit>
 #include <QFormLayout>
+#include <QTableWidget>
+#include <QTimer>
+#include <QHash>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
@@ -160,6 +163,14 @@ private:
     QStackedWidget * SettingsStack         = nullptr;
     QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
 
+    // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
+    QWidget       * IpfsTabWidget   = nullptr;
+    QLabel        * IpfsStatusLabel = nullptr;
+    QTableWidget  * IpfsTransfers   = nullptr;   // CID | Progress | Status — live fetches
+    QTableWidget  * IpfsPins        = nullptr;   // pinned (seeded) CIDs
+    QTimer        * IpfsRefreshTimer = nullptr;
+    QHash<QString, int> IpfsTransferRows;        // CID → row index in IpfsTransfers
+
     void BuildStaticUI();
     void BuildLibraryGameCards();
     void BuildLibraryDynamicUI();
@@ -167,6 +178,8 @@ private:
     void BuildSettingsTab();
     void RebuildSettingsRunnersPage();
     QWidget * BuildPathsSettingsPage();
+    void BuildIpfsTab();
+    void RefreshIpfsTab();   // refresh status + seeded list (no-op when ipfs absent)
     void sortCards();
     bool SaveGlobalConfigJSON();
 

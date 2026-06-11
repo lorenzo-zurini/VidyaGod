@@ -2,6 +2,7 @@
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "registrywrapper.h"
+#include "ipfswrapper.h"
 #include <random>
 #include <fstream>
 #include <sstream>
@@ -150,6 +151,15 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Stale union/zip/bind mounts and leftover RUNTIME/DEFPREFIX/staging dirs would otherwise corrupt
     //this build (or cause spurious "already mounted"/EEXIST failures).
     ContainerWrapper::CleanStaleRuntime(ContainerParams.TempPath);
+
+    //Fetch any remote SOURCEs (the runner build + VFS layers via IPFS) into the local cache BEFORE they
+    //are read — the runner binary must exist on disk before InitializeDefPrefix. No fallback: abort if a
+    //required CID cannot be fetched.
+    if (!ContainerWrapper::EnsureSources(this->ContainerParams))
+    {
+        LogErr("ContainerWrapper::BuildContainerRuntime", "Required sources unavailable — aborting.");
+        return false;
+    }
 
     //AUTO-DETECT whether any subcomponent requires a VFS mount.
     for (auto &Sub : ContainerParams.SubComponentsArray)
@@ -1006,7 +1016,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (SelectedRunner.contains("PREFIX_SUBPATH") && SelectedRunner["PREFIX_SUBPATH"].is_string())
             PrefixSubpath = std::string(SelectedRunner["PREFIX_SUBPATH"]);
         if (SelectedRunner.contains("SOURCE"))
+        {
+            ContainerParams.RunnerSource      = SelectedRunner["SOURCE"];      // fetched by EnsureSources
             ContainerParams.RunnerRuntimePath = ResolveLayerSource(SelectedRunner, ContainerParams.PackagePath);
+        }
         //The runner's own enabled modules join the recipe (mounted as base) — see CreateRecipe. Same
         //universal MODULES schema + resolution as variants (runner module toggles also via ModuleStates).
         ContainerParams.RunnerEndpoints = ResolveEnabledModules(
@@ -1529,10 +1542,11 @@ static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const s
         PathStr = Src.value("PATH", PathStr);
         if (SType == "ipfs")
         {
-            // TODO(sharing): fetch Src["CID"] from IPFS into ~/.VidyaGod/DOWNLOADS and return that path.
+            //An ipfs SOURCE resolves to its deterministic cache path (DOWNLOADS/ipfs/<CID>). The actual
+            //fetch+pin happens in EnsureSources before the content is needed; resolution stays pure. An
+            //empty CID falls through to the local PATH fallback (offline authoring).
             const std::string Cid = Src.value("CID", std::string());
-            if (!Cid.empty())
-                LogWarn("ResolveLayerSource", "ipfs SOURCE CID '" + Cid + "' not fetched (backend pending); using local PATH.");
+            if (!Cid.empty()) return IpfsWrapper::CachePath(Cid);
         }
         // else: github-release / url — TODO(sharing) fetch; fall back to the bundled PATH for now.
     }
@@ -1560,6 +1574,36 @@ std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct Conta
         }
     }
     return Missing;
+}
+
+//Fetches every remote SOURCE the launch needs into the local cache before the content is read. Currently
+//handles TYPE:"ipfs" via Kubo (fetch + pin). No fallback: a CID that cannot be fetched fails the launch.
+bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
+{
+    //Fetches one SOURCE block if it is an ipfs locator with a CID. A non-ipfs/empty-CID SOURCE is fine
+    //(it resolves to a local PATH). Returns false only when a required CID could not be fetched.
+    auto FetchIfIpfs = [](const nlohmann::ordered_json &Src) -> bool
+    {
+        if (!Src.is_object() || Src.value("TYPE", std::string("path")) != "ipfs") return true;
+        const std::string Cid = Src.value("CID", std::string());
+        if (Cid.empty() || IpfsWrapper::IsCached(Cid)) return true;
+        if (!IpfsWrapper::Available())
+        {
+            LogErr("ContainerWrapper::EnsureSources",
+                   "SOURCE needs CID " + Cid + " but Kubo (ipfs) is not installed — cannot fetch (no fallback).");
+            return false;
+        }
+        std::string Err;
+        return !IpfsWrapper::FetchSync(Cid, &Err).empty();
+    };
+
+    bool Ok = true;
+    if (!FetchIfIpfs(ContainerParams.RunnerSource)) Ok = false;     // the runner build (e.g. Proton)
+    for (const auto &Sub : ContainerParams.SubComponentsArray)      // every VFS layer
+        if (Sub.contains("SOURCE") && !FetchIfIpfs(Sub["SOURCE"])) Ok = false;
+
+    if (!Ok) LogErr("ContainerWrapper::EnsureSources", "One or more required IPFS sources could not be fetched; aborting launch.");
+    return Ok;
 }
 
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (Wine), every
