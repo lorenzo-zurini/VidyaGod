@@ -731,10 +731,19 @@ std::string ContainerWrapper::HostPlatform()
     return "linux64";
 }
 
-//~/.VidyaGod/DOWNLOADS — clone target for TYPE:"git" repositories (+ remote SOURCE artifact cache).
+//~/.VidyaGod/DOWNLOADS — clone target for the configured git repositories (+ remote SOURCE artifact cache).
 static std::string DownloadsDir()
 {
     return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/DOWNLOADS").toStdString();
+}
+
+//A repository's clone URL. Each Settings.Repositories[] entry is a git repo: an object with a "PATH"
+//(the URL), or a bare URL string.
+static std::string RepositoryURL(const nlohmann::ordered_json &R)
+{
+    if (R.is_object() && R.contains("PATH") && R["PATH"].is_string()) return std::string(R["PATH"]);
+    if (R.is_string()) return std::string(R);
+    return std::string();
 }
 
 //The clone directory name for a git repository: its NAME, else the URL basename minus a ".git" suffix.
@@ -743,7 +752,7 @@ static std::string GitRepoName(const nlohmann::ordered_json &R)
     std::string Name = R.is_object() ? R.value("NAME", std::string()) : std::string();
     if (Name.empty())
     {
-        std::string U = R.is_object() ? R.value("PATH", std::string()) : (R.is_string() ? std::string(R) : std::string());
+        std::string U = RepositoryURL(R);
         while (!U.empty() && U.back() == '/') U.pop_back();
         const auto Slash = U.find_last_of('/');
         Name = (Slash == std::string::npos) ? U : U.substr(Slash + 1);
@@ -754,27 +763,14 @@ static std::string GitRepoName(const nlohmann::ordered_json &R)
     return Name.empty() ? std::string("repo") : Name;
 }
 
-//The on-disk directory that a repository entry is indexed from. A "local" repo expands a leading "~";
-//a "git" repo resolves to its ~/.VidyaGod/DOWNLOADS/<name> clone (whether or not it has been cloned
-//yet — SyncRepositories does the actual clone/pull). A bare string is treated as a local path.
+//The on-disk directory a repository is indexed from: its ~/.VidyaGod/DOWNLOADS/<name> clone (whether or
+//not it has been cloned yet — SyncRepositories does the actual clone/pull).
 static std::string RepositoryLocalDir(const nlohmann::ordered_json &R)
 {
-    auto Expand = [](std::string P) -> std::string {
-        if (!P.empty() && P[0] == '~') P = QDir::homePath().toStdString() + P.substr(1);
-        return P;
-    };
-    const std::string Type = R.is_object() ? R.value("TYPE", std::string("local")) : "local";
-    if (Type == "git")
-        return QDir::cleanPath(QString::fromStdString(DownloadsDir() + "/" + GitRepoName(R))).toStdString();
-    if (R.is_object() && R.contains("PATH") && R["PATH"].is_string()) return Expand(std::string(R["PATH"]));
-    if (R.is_string()) return Expand(std::string(R));
-    return std::string();
+    return QDir::cleanPath(QString::fromStdString(DownloadsDir() + "/" + GitRepoName(R))).toStdString();
 }
 
-//Returns the configured Repository directories to index. Each Settings.Repositories[] entry resolves to
-//its local dir (local PATH expanded, git → its DOWNLOADS clone). Back-compat: a legacy
-//Settings.GlobalRunners string array is read as local repos. Defaults to ~/.VidyaGod/GLOBAL_RUNNERS
-//when neither is configured.
+//Returns the clone directories of every configured Settings.Repositories[] git repo (indexed in order).
 static std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::string> Dirs;
@@ -782,20 +778,7 @@ static std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &Glo
                                              ? &GlobalConfigJSON["Settings"] : nullptr;
     if (Settings && Settings->contains("Repositories") && (*Settings)["Repositories"].is_array())
         for (const auto &R : (*Settings)["Repositories"])
-        {
-            std::string Dir = RepositoryLocalDir(R);
-            if (!Dir.empty()) Dirs.push_back(std::move(Dir));
-        }
-    else if (Settings && Settings->contains("GlobalRunners") && (*Settings)["GlobalRunners"].is_array()) // legacy
-        for (const auto &D : (*Settings)["GlobalRunners"])
-            if (D.is_string())
-            {
-                std::string P = std::string(D);
-                if (!P.empty() && P[0] == '~') P = QDir::homePath().toStdString() + P.substr(1);
-                Dirs.push_back(P);
-            }
-    if (Dirs.empty())
-        Dirs.push_back(QDir::cleanPath(QDir::homePath() + "/.VidyaGod/GLOBAL_RUNNERS").toStdString());
+            if (!RepositoryURL(R).empty()) Dirs.push_back(RepositoryLocalDir(R));
     return Dirs;
 }
 
@@ -854,38 +837,28 @@ static bool SyncGitRepository(const std::string &Url, const std::string &CloneDi
     return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), QString::fromStdString(CloneDir)});
 }
 
-//Synchronizes + indexes the configured Repositories at startup. TYPE:"git" repos are cloned/pulled into
-//~/.VidyaGod/DOWNLOADS first; everything is then indexed in place (logs what was found).
+//Synchronizes + indexes the configured Repositories at startup: every repo is a git repo, cloned/pulled
+//into ~/.VidyaGod/DOWNLOADS first, then indexed in place (logs what was found).
 //TODO(sharing): persist a catalog index here instead of rescanning on demand.
 void ContainerWrapper::SyncRepositories(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     const nlohmann::ordered_json *Settings = (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
                                              ? &GlobalConfigJSON["Settings"] : nullptr;
-    const nlohmann::ordered_json *Repos = (Settings && Settings->contains("Repositories") && (*Settings)["Repositories"].is_array())
-                                          ? &(*Settings)["Repositories"] : nullptr;
+    if (!Settings || !Settings->contains("Repositories") || !(*Settings)["Repositories"].is_array()) return;
 
-    auto Index = [](const std::string &Dir) {
-        QDir D(QString::fromStdString(Dir));
-        if (!D.exists()) { LogWarn("ContainerWrapper::SyncRepositories", "Repository missing (skipped): " + Dir); return; }
-        int Count = D.entryList(QDir::Dirs | QDir::NoDotAndDotDot).size();
-        LogOut("ContainerWrapper::SyncRepositories", "Indexed repository " + Dir + " (" + std::to_string(Count) + " package(s)).");
-    };
-
-    if (!Repos) { for (const auto &Dir : RepositoryDirs(GlobalConfigJSON)) Index(Dir); return; }
-
-    for (const auto &R : *Repos)
+    for (const auto &R : (*Settings)["Repositories"])
     {
-        const std::string Type  = R.is_object() ? R.value("TYPE", std::string("local")) : "local";
+        const std::string Url = RepositoryURL(R);
+        if (Url.empty()) continue;
         const std::string Local = RepositoryLocalDir(R);
-        if (Local.empty()) continue;
-        if (Type == "git")
-        {
-            const std::string Url = R.is_object() ? R.value("PATH", std::string()) : (R.is_string() ? std::string(R) : std::string());
-            LogOut("ContainerWrapper::SyncRepositories", "Syncing git repository " + Url + " -> " + Local);
-            if (!SyncGitRepository(Url, Local))
-                LogWarn("ContainerWrapper::SyncRepositories", "git clone/pull failed for " + Url + " (using last-synced clone, if any).");
-        }
-        Index(Local);
+        LogOut("ContainerWrapper::SyncRepositories", "Syncing git repository " + Url + " -> " + Local);
+        if (!SyncGitRepository(Url, Local))
+            LogWarn("ContainerWrapper::SyncRepositories", "git clone/pull failed for " + Url + " (using last-synced clone, if any).");
+
+        QDir D(QString::fromStdString(Local));
+        if (!D.exists()) { LogWarn("ContainerWrapper::SyncRepositories", "Repository missing (skipped): " + Local); continue; }
+        int Count = D.entryList(QDir::Dirs | QDir::NoDotAndDotDot).size();
+        LogOut("ContainerWrapper::SyncRepositories", "Indexed repository " + Local + " (" + std::to_string(Count) + " package(s)).");
     }
 }
 

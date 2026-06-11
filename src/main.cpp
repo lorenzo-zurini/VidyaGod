@@ -290,22 +290,13 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
-    //Repositories: ordered list of catalog sources. Each: { NAME, PATH, TYPE }. TYPE:"git" PATHs are a
-    //clone URL synced into ~/.VidyaGod/DOWNLOADS; TYPE:"local" PATHs are indexed in place.
-    //The sole default is the hosted VidyaGodRunners repository (built-in runners + shared packages).
+    //Repositories: ordered list of git repos. Each: { NAME, PATH } where PATH is a clone URL, synced
+    //into ~/.VidyaGod/DOWNLOADS and indexed. The sole default is the hosted VidyaGodRunners repository
+    //(built-in runners + shared packages).
     if (!gc["Settings"].contains("Repositories") || !gc["Settings"]["Repositories"].is_array())
     {
-        nlohmann::ordered_json Repos = nlohmann::ordered_json::array();
-        Repos.push_back(nlohmann::ordered_json{
-            {"NAME", "VidyaGodRunners"},
-            {"PATH", DefaultRunnerRepoURL()},
-            {"TYPE", "git"} });
-        //Migrate any legacy Settings.GlobalRunners dirs so user-configured registries survive the upgrade.
-        if (gc["Settings"].contains("GlobalRunners") && gc["Settings"]["GlobalRunners"].is_array() && !gc["Settings"]["GlobalRunners"].empty())
-            for (const auto &D : gc["Settings"]["GlobalRunners"])
-                if (D.is_string())
-                    Repos.push_back(nlohmann::ordered_json{ {"NAME", "legacy"}, {"PATH", std::string(D)}, {"TYPE", "local"} });
-        gc["Settings"]["Repositories"] = Repos;
+        gc["Settings"]["Repositories"] = nlohmann::ordered_json::array({
+            nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"PATH", DefaultRunnerRepoURL()} } });
         Changed = true;
     }
     return Changed;
