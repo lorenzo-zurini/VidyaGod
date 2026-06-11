@@ -3,6 +3,7 @@
 #include "jsonoperations.h"
 #include "registrywrapper.h"
 #include "ipfswrapper.h"
+#include "runnerwrapper.h"
 #include <random>
 #include <fstream>
 #include <sstream>
@@ -17,6 +18,9 @@
 //Resolves a layer/runner SOURCE locator to an absolute host path (defined below; forward-declared so
 //DeriveContainerParams can resolve the selected runner's SOURCE).
 static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath);
+//True if any subcomponent is a matching-scope RegEdit (defined below; forward-declared for the post-mount
+//installed-runner base-reg-edit pass in BuildContainerRuntime).
+static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool WantOverride);
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -94,7 +98,11 @@ bool ContainerWrapper::InitializeContainer()
     //Fold the selected runner's own components (from its registry package, if any) into the component
     //pool so its ENDPOINTS resolve and its CustomVar subcomponents are visible to the steps below.
     //(Empty for an embedded/PATH runner whose components already live in MANIFESTJSON.)
-    if (this->ContainerParams.RunnerComponents.is_array() && !this->ContainerParams.RunnerComponents.empty())
+    //EXCEPTION: a separate-mount installed runner (RunnerShipsBuild && !UnifiedRuntime) keeps its build out
+    //of the game pool — its layers mount at their own RunnerMountPath instead (see MountRunnerBuild).
+    if (this->ContainerParams.RunnerShipsBuild && !this->ContainerParams.UnifiedRuntime)
+        LogOut("ContainerWrapper::InitializeContainer", "Runner ships a build — mounted separately, not folded into the game pool.");
+    else if (this->ContainerParams.RunnerComponents.is_array() && !this->ContainerParams.RunnerComponents.empty())
     {
         if (!this->MANIFESTJSON.contains("COMPONENTS") || !this->MANIFESTJSON["COMPONENTS"].is_array())
             this->MANIFESTJSON["COMPONENTS"] = nlohmann::ordered_json::array();
@@ -186,12 +194,22 @@ bool ContainerWrapper::BuildContainerRuntime()
     //the lowest-priority VFS layer — and WRITELAYER can shadow them if the user has their own values.
     if (WineMode)
     {
-        this->InitializeDefPrefix(this->ContainerParams);
-        this->ApplyBaseRegEdits(this->ContainerParams);
-        //Seed persisted registry-key subtrees into DEFPREFIX AFTER base RegEdits, so the user's saved
-        //state wins over the package defaults. No-op unless RegKeyPersist subcomponents are declared.
-        this->SeedPersistRegKeys(this->ContainerParams);
-        this->ProcessFileEdits(this->ContainerParams, false);
+        if (ContainerParams.RunnerShipsBuild)
+        {
+            //Installed runner: its build is pre-provisioned. Mount it read-only at RunnerMountPath; DEFPREFIX
+            //comes from the one-time read-only artifact (no wineboot). Base reg-edits/file-edits can't be
+            //baked into the read-only artifact, so they are deferred to the post-mount pass (WRITELAYER).
+            if (!this->MountRunnerBuild(this->ContainerParams)) return false;
+        }
+        else
+        {
+            this->InitializeDefPrefix(this->ContainerParams);
+            this->ApplyBaseRegEdits(this->ContainerParams);
+            //Seed persisted registry-key subtrees into DEFPREFIX AFTER base RegEdits, so the user's saved
+            //state wins over the package defaults. No-op unless RegKeyPersist subcomponents are declared.
+            this->SeedPersistRegKeys(this->ContainerParams);
+            this->ProcessFileEdits(this->ContainerParams, false);
+        }
     }
 
     //Seed any persisted registry into the ephemeral WRITELAYER so it shadows DEFPREFIX.
@@ -220,6 +238,16 @@ bool ContainerWrapper::BuildContainerRuntime()
     //operate on the mounted runtime (COW directly to WRITELAYER) — they win unconditionally.
     if (WineMode)
     {
+        //Installed runners: base reg-edits couldn't be baked into the read-only DEFPREFIX artifact, so apply
+        //them to the mounted runtime now (COW to WRITELAYER), before the OVERRIDE pass.
+        if (ContainerParams.RunnerShipsBuild && HasRegEdits(ContainerParams, /*WantOverride=*/false))
+        {
+            RegistryWrapper RW;
+            RW.LoadPrefix(ContainerParams.RuntimePath);
+            RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
+            if (!RW.SavePrefix(ContainerParams.RuntimePath))
+                LogWarn("ContainerWrapper::BuildContainerRuntime", "Failed to apply base RegEdits to runtime.");
+        }
         this->ProcessDLLOverrides(this->ContainerParams);
         this->ProcessFileEdits(this->ContainerParams, true);
         this->ApplyOverrideRegEdits(this->ContainerParams);
@@ -1020,6 +1048,19 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
             ContainerParams.RunnerSource      = SelectedRunner["SOURCE"];      // fetched by EnsureSources
             ContainerParams.RunnerRuntimePath = ResolveLayerSource(SelectedRunner, ContainerParams.PackagePath);
         }
+        //Installed-runner model: collect the runner's VFSZipLayer subcomponents (its build, e.g. a Proton
+        //zip). When present, the build is mounted read-only at its own RunnerMountPath (%RunnerMount%) and
+        //DEFPREFIX comes from the one-time per-runner artifact — no per-launch wineboot.
+        ContainerParams.UnifiedRuntime = SelectedRunner.value("UNIFIED_RUNTIME", false);
+        for (auto &C : ContainerParams.RunnerComponents)
+            if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
+                for (auto &S : C["SUBCOMPONENTS"])
+                {
+                    const std::string T = S.value("TYPE", std::string());
+                    if (T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer")
+                        ContainerParams.RunnerLayers.push_back(S);
+                }
+        ContainerParams.RunnerShipsBuild = !ContainerParams.RunnerLayers.empty();
         //The runner's own enabled modules join the recipe (mounted as base) — see CreateRecipe. Same
         //universal MODULES schema + resolution as variants (runner module toggles also via ModuleStates).
         ContainerParams.RunnerEndpoints = ResolveEnabledModules(
@@ -1068,6 +1109,11 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.TempPath                            = TempRoot / ContainerParams.PackageUID;
     LogOut("ContainerWrapper::DeriveContainerParams", "TempPath: " + ContainerParams.TempPath.string());
 
+    //Installed-runner separate mount: the build mounts read-only at TempPath/RUNNER, exposed as %RunnerMount%.
+    //(Unified runners share the game RUNTIME — handled by folding instead.)
+    if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
+        ContainerParams.RunnerMountPath = ContainerParams.TempPath / "RUNNER";
+
     //The runtime mount base; the actual launch prefix is RuntimeBasePath/<PREFIX_SUBPATH> (empty for umu/wine
     //→ prefix == base; "pfx" for Proton → STEAM_COMPAT_DATA_PATH=RuntimeBasePath, pfx==RuntimePath).
     ContainerParams.RuntimeBasePath                     = ContainerParams.TempPath / "RUNTIME";
@@ -1091,8 +1137,12 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     {
         //Game files sit at drive_c/PackageUID so Wine sees them as C:\PackageUID.
         ContainerParams.ProgramPath                     = ContainerParams.RuntimePath / "drive_c" / ContainerParams.PackageUID;
-        //Def-prefix base + the prefix wineboot actually builds (base/<PREFIX_SUBPATH>); mirrors the runtime layout.
-        ContainerParams.DefPrefixBasePath               = ContainerParams.TempPath / "DEFPREFIX";
+        //Def-prefix base + the prefix Wine actually uses (base/<PREFIX_SUBPATH>); mirrors the runtime layout.
+        //Installed runners use their one-time read-only DEFPREFIX artifact (generated at install); other wine
+        //runners build it per-launch under TempPath/DEFPREFIX (InitializeDefPrefix).
+        ContainerParams.DefPrefixBasePath               = ContainerParams.RunnerShipsBuild
+            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerID))
+            : ContainerParams.TempPath / "DEFPREFIX";
         ContainerParams.DefPrefixPath                   = PrefixSubpath.empty() ? ContainerParams.DefPrefixBasePath
                                                                                 : ContainerParams.DefPrefixBasePath / PrefixSubpath;
         ContainerParams.WindowsProgramPath              = "C:\\" + ContainerParams.PackageUID;
@@ -1134,6 +1184,8 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["RuntimePath"] = this->RuntimePath;
     VariablesMap["RuntimeBasePath"] = this->RuntimeBasePath;
     VariablesMap["RunnerRuntimePath"] = this->RunnerRuntimePath;
+    //The runner build's mount (installed-runner model); unified runners run from inside the game RUNTIME.
+    VariablesMap["RunnerMount"] = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
     //Phase-context prefix: %WinePrefix% is the prefix dir for the current phase (def-prefix at init, runtime
     //at launch); %PrefixBase% its base (Proton's STEAM_COMPAT_DATA_PATH). Default to the runtime when unset.
     VariablesMap["WinePrefix"] = this->ActivePrefix.empty() ? this->RuntimePath : this->ActivePrefix;
@@ -1576,33 +1628,39 @@ std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct Conta
     return Missing;
 }
 
-//Fetches every remote SOURCE the launch needs into the local cache before the content is read. Currently
-//handles TYPE:"ipfs" via Kubo (fetch + pin). No fallback: a CID that cannot be fetched fails the launch.
+//Verifies every remote SOURCE the launch needs is ALREADY installed — it never fetches at launch (the
+//library/runner install flow fetches ahead of time). Returns false (blocking the launch) if any required
+//IPFS CID isn't cached or the runner's DEFPREFIX artifact is missing.
 bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
 {
-    //Fetches one SOURCE block if it is an ipfs locator with a CID. A non-ipfs/empty-CID SOURCE is fine
-    //(it resolves to a local PATH). Returns false only when a required CID could not be fetched.
-    auto FetchIfIpfs = [](const nlohmann::ordered_json &Src) -> bool
+    bool Ok = true;
+    auto Check = [&](const nlohmann::ordered_json &Src)
     {
-        if (!Src.is_object() || Src.value("TYPE", std::string("path")) != "ipfs") return true;
+        if (!Src.is_object() || Src.value("TYPE", std::string("path")) != "ipfs") return;
         const std::string Cid = Src.value("CID", std::string());
-        if (Cid.empty() || IpfsWrapper::IsCached(Cid)) return true;
-        if (!IpfsWrapper::Available())
-        {
-            LogErr("ContainerWrapper::EnsureSources",
-                   "SOURCE needs CID " + Cid + " but Kubo (ipfs) is not installed — cannot fetch (no fallback).");
-            return false;
-        }
-        std::string Err;
-        return !IpfsWrapper::FetchSync(Cid, &Err).empty();
+        if (Cid.empty() || IpfsWrapper::IsCached(Cid)) return;
+        Ok = false;
+        LogErr("ContainerWrapper::EnsureSources", "Required IPFS source not installed: CID " + Cid);
     };
 
-    bool Ok = true;
-    if (!FetchIfIpfs(ContainerParams.RunnerSource)) Ok = false;     // the runner build (e.g. Proton)
-    for (const auto &Sub : ContainerParams.SubComponentsArray)      // every VFS layer
-        if (Sub.contains("SOURCE") && !FetchIfIpfs(Sub["SOURCE"])) Ok = false;
+    Check(ContainerParams.RunnerSource);                                        // legacy top-level runner SOURCE
+    for (const auto &Sub : ContainerParams.RunnerLayers)                        // the runner build layers
+        if (Sub.contains("SOURCE")) Check(Sub["SOURCE"]);
+    for (const auto &Sub : ContainerParams.SubComponentsArray)                  // every game VFS layer
+        if (Sub.contains("SOURCE")) Check(Sub["SOURCE"]);
 
-    if (!Ok) LogErr("ContainerWrapper::EnsureSources", "One or more required IPFS sources could not be fetched; aborting launch.");
+    //An installed wine runner must have its one-time DEFPREFIX artifact (generated at install).
+    if (ContainerParams.RunnerShipsBuild && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    {
+        std::error_code Ec;
+        if (ContainerParams.DefPrefixPath.empty() || !std::filesystem::exists(ContainerParams.DefPrefixPath, Ec))
+        {
+            Ok = false;
+            LogErr("ContainerWrapper::EnsureSources", "Runner not installed: missing DEFPREFIX artifact " + ContainerParams.DefPrefixPath.string());
+        }
+    }
+
+    if (!Ok) LogErr("ContainerWrapper::EnsureSources", "Required dependencies are not installed — launch blocked (install them first).");
     return Ok;
 }
 
@@ -1701,31 +1759,8 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
         return false;
     }
 
-    std::filesystem::create_directories(ContainerParams.RuntimePath);
     std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";
-    {
-        std::ofstream Out(SpecPath);
-        if (!Out) { LogErr("ContainerWrapper::MountVFS", "Cannot write spec " + SpecPath.string()); return false; }
-        Out << Spec.dump(2);
-    }
-
-    const std::string Helper = VidyagodfsPath();
-    LogOut("ContainerWrapper::MountVFS", "Mounting via " + Helper + " (spec " + SpecPath.string() + ")");
-    //--watch-pid lets the helper's watchdog auto-unmount if this process dies (crash/kill) instead of
-    //leaving a dangling mount for CleanStaleRuntime to reap on the next launch.
-    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, ContainerParams.RuntimePath,
-                                                       "--watch-pid", std::to_string(getpid()),
-                                                       "-o", "auto_cache"});
-    LogOut("ContainerWrapper::MountVFS", "vidyagodfs spawn exit: " + std::to_string(result));
-
-    //The helper forks after the mount is established; poll until RuntimePath shows as a mount.
-    bool Mounted = false;
-    for (int i = 0; i < 50; ++i)
-    {
-        if (!ContainerWrapper::MountpointsUnder(ContainerParams.RuntimePath).empty()) { Mounted = true; break; }
-        QThread::msleep(100);
-    }
-    if (!Mounted)
+    if (!ContainerWrapper::SpawnVidyagodfs(Spec, ContainerParams.RuntimePath, SpecPath))
     {
         LogErr("ContainerWrapper::MountVFS", "vidyagodfs mount did not appear at " + ContainerParams.RuntimePath.string());
         return false;
@@ -1736,6 +1771,154 @@ bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
     else
         ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);
     LogSucc("ContainerWrapper::MountVFS", "Successfully mounted VFS.");
+    return true;
+}
+
+//Low-level vidyagodfs mount: write Spec to SpecPath, spawn the helper onto Mountpoint, poll until live.
+bool ContainerWrapper::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
+                                       const std::filesystem::path &SpecPath)
+{
+    std::filesystem::create_directories(Mountpoint);
+    {
+        std::ofstream Out(SpecPath);
+        if (!Out) { LogErr("ContainerWrapper::SpawnVidyagodfs", "Cannot write spec " + SpecPath.string()); return false; }
+        Out << Spec.dump(2);
+    }
+    const std::string Helper = VidyagodfsPath();
+    LogOut("ContainerWrapper::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
+    //--watch-pid: the helper's watchdog auto-unmounts if this process dies, instead of leaking a mount.
+    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, Mountpoint,
+                                                       "--watch-pid", std::to_string(getpid()), "-o", "auto_cache"});
+    LogOut("ContainerWrapper::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
+    for (int i = 0; i < 50; ++i)
+    {
+        if (!ContainerWrapper::MountpointsUnder(Mountpoint).empty()) return true;
+        QThread::msleep(100);
+    }
+    return false;
+}
+
+//Mounts the selected runner's build (its VFSZipLayer subcomponents) read-only at RunnerMountPath — the
+//separate-mount, installed-runner model. The zips are mounted (never extracted) at the mount root by their
+//resolved (cached) source. Registers the mount for lazy cleanup. No-op when the runner ships no build or is
+//unified into the game RUNTIME.
+bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
+{
+    if (!ContainerParams.RunnerShipsBuild || ContainerParams.UnifiedRuntime) return true;
+    if (ContainerParams.RunnerLayers.empty()) return true;
+
+    nlohmann::ordered_json Spec;
+    Spec["mountpoint"] = ContainerParams.RunnerMountPath.string();
+    Spec["uid"] = 1000; Spec["gid"] = 1000;
+    Spec["readonly"] = true; Spec["writelayer"] = nullptr;
+    nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
+    for (auto &Sub : ContainerParams.RunnerLayers)
+    {
+        const std::string Type = Sub.value("TYPE", std::string());
+        std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
+        if (LType.empty()) continue;
+        std::string Target = Sub.value("TARGET", std::string());            // beside the runner-mount root
+        Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.PackagePath)},
+                          {"target", Target}, {"rw", false}});
+    }
+    Spec["layers"] = Layers;
+
+    const std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.runner.spec.json";
+    if (!ContainerWrapper::SpawnVidyagodfs(Spec, ContainerParams.RunnerMountPath, SpecPath))
+    {
+        LogErr("ContainerWrapper::MountRunnerBuild", "runner build mount did not appear at " + ContainerParams.RunnerMountPath.string());
+        return false;
+    }
+    ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RunnerMountPath);  // ephemeral, lazy unmount
+    LogSucc("ContainerWrapper::MountRunnerBuild", "Mounted runner build at " + ContainerParams.RunnerMountPath.string());
+    return true;
+}
+
+//Installs a runner package: fetches its VFSZipLayer CIDs (IPFS), and for wine runners generates the
+//one-time read-only DEFPREFIX artifact by mounting the build and running `wineboot` once. Idempotent.
+bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, std::string *Error)
+{
+    (void)GlobalConfigJSON;
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::InstallRunner", M); return false; };
+
+    const std::string Id = RunnerWrapper::RunnerId(RunnerPkg);
+    if (Id.empty()) return Fail("runner package has no RUNNER_ID");
+
+    //1. Fetch the runner build layers from IPFS (cached + pinned).
+    for (const std::string &Cid : RunnerWrapper::BuildCids(RunnerPkg))
+    {
+        std::string Err;
+        if (IpfsWrapper::FetchSync(Cid, &Err).empty()) return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
+    }
+    LogSucc("ContainerWrapper::InstallRunner", "Fetched runner build for " + Id);
+    if (!RunnerWrapper::IsWineRunner(RunnerPkg)) return true;       // non-wine: no prefix to build
+
+    //2. Generate the one-time DEFPREFIX artifact (idempotent).
+    const std::filesystem::path ArtifactDir = RunnerWrapper::ArtifactDir(Id);
+    const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(Id);    // ArtifactDir/DEFPREFIX
+    const nlohmann::ordered_json &R = RunnerPkg["RUNNERS"][0];
+    const std::string Subpath = R.value("PREFIX_SUBPATH", std::string());
+    const std::filesystem::path PrefixDir = Subpath.empty() ? DefArtifact : (DefArtifact / Subpath);
+
+    std::error_code Ec;
+    if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
+    {
+        LogOut("ContainerWrapper::InstallRunner", "DEFPREFIX artifact already present for " + Id);
+        return true;
+    }
+
+    //Mount the build read-only at a temp runner mount so `wineboot` can run from it.
+    const std::filesystem::path MountDir = ArtifactDir / ".buildmount";
+    std::filesystem::create_directories(ArtifactDir, Ec);
+    nlohmann::ordered_json Spec;
+    Spec["mountpoint"] = MountDir.string(); Spec["uid"] = 1000; Spec["gid"] = 1000;
+    Spec["readonly"] = true; Spec["writelayer"] = nullptr;
+    nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
+    for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
+        for (const auto &S : C.value("SUBCOMPONENTS", nlohmann::ordered_json::array()))
+        {
+            const std::string T = S.value("TYPE", std::string());
+            const std::string LType = (T == "VFSZipLayer") ? "zip" : (T == "VFSDirLayer") ? "dir" : (T == "VFSFileLayer") ? "file" : "";
+            if (LType.empty()) continue;
+            Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, std::filesystem::path())},
+                              {"target", S.value("TARGET", std::string())}, {"rw", false}});
+        }
+    Spec["layers"] = Layers;
+    if (!SpawnVidyagodfs(Spec, MountDir, ArtifactDir / ".buildmount.spec.json"))
+        return Fail("could not mount runner build for install");
+
+    //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings (prefix → the artifact).
+    std::map<std::string, std::string> Vars;
+    Vars["RunnerMount"]     = MountDir.string();
+    Vars["PrefixBase"]      = DefArtifact.string();        // STEAM_COMPAT_DATA_PATH
+    Vars["RuntimeBasePath"] = DefArtifact.string();
+    Vars["WinePrefix"]      = PrefixDir.string();
+    Vars["TempPath"]        = ArtifactDir.string();
+
+    std::string Program = R.value("EXECUTABLE", std::string("%RunnerMount%/proton"));
+    ContainerWrapper::StringVariableSubstitution(Program, Vars);
+    QStringList Args;
+    for (const auto &A : R.value("ARGS", nlohmann::ordered_json::array()))
+    { std::string a = std::string(A); ContainerWrapper::StringVariableSubstitution(a, Vars); Args << QString::fromStdString(a); }
+    Args << "wineboot";
+
+    QProcessEnvironment Env = QProcessEnvironment::systemEnvironment();
+    const nlohmann::ordered_json RemoveEnv = R.value("REMOVE_ENV", nlohmann::ordered_json::array());
+    const nlohmann::ordered_json RunnerEnv = R.value("ENV", nlohmann::ordered_json::object());
+    for (const auto &K : RemoveEnv) Env.remove(QString::fromStdString(std::string(K)));
+    for (auto &[K, V] : RunnerEnv.items())
+    { std::string v = V.get<std::string>(); ContainerWrapper::StringVariableSubstitution(v, Vars); Env.insert(QString::fromStdString(K), QString::fromStdString(v)); }
+
+    std::filesystem::create_directories(DefArtifact, Ec);
+    LogOut("ContainerWrapper::InstallRunner", "Generating DEFPREFIX: " + Program + " " + Args.join(' ').toStdString());
+    QProcess P; P.setProgram(QString::fromStdString(Program)); P.setArguments(Args); P.setProcessEnvironment(Env);
+    P.start(); P.waitForFinished(-1);
+    std::cout << P.readAllStandardError().toStdString() << std::endl << P.readAllStandardOutput().toStdString() << std::endl;
+    const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
+
+    QProcess::execute("fusermount3", {"-uz", QString::fromStdString(MountDir.string())});
+    if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Id); }
+    LogSucc("ContainerWrapper::InstallRunner", "Installed runner " + Id + " (DEFPREFIX at " + DefArtifact.string() + ")");
     return true;
 }
 

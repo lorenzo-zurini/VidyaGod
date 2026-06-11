@@ -38,6 +38,7 @@ struct LaunchParameters
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)
+    std::string InstallRunnerId;                                          //--install-runner: install this runner (fetch build + build DEFPREFIX) then exit
 };
 
 int main(int argc, char *argv[]);

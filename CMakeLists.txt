@@ -47,6 +47,9 @@ set(PROJECT_SOURCES
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
+    src/runnerwrapper.h
+    src/runnerwrapper.cpp
+
     translations/${TS_FILES}
 )
 

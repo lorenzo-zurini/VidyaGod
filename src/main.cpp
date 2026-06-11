@@ -153,6 +153,23 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    //HEADLESS: install a runner (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
+    if (!LaunchParameters.InstallRunnerId.empty())
+    {
+        const std::string Id = LaunchParameters.InstallRunnerId;
+        LogOut("main.cpp", "Installing runner: " + Id);
+        nlohmann::ordered_json RunnerPkg;
+        for (const auto &Pkg : ContainerWrapper::CatalogPackages(GlobalConfigJSON))
+            if (JSONOps::HasRunners(Pkg))
+                for (const auto &R : Pkg["RUNNERS"])
+                    if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = Pkg; break; }
+        if (RunnerPkg.is_null()) { LogErr("main.cpp", "No runner package found for RUNNER_ID '" + Id + "'."); return 1; }
+        std::string Err;
+        const bool Ok = ContainerWrapper::InstallRunner(GlobalConfigJSON, RunnerPkg, &Err);
+        LogOut("main.cpp", Ok ? "Runner installed." : ("Runner install failed: " + Err));
+        return Ok ? 0 : 1;
+    }
+
     //HEADLESS MODE: build the container and run the game without showing any window.
     //Used both for the --package CLI flag and for auto-detected package-directory mode.
     if(LaunchParameters.RunningHeadless)
@@ -402,6 +419,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--variant" && i + 1 < argc)
         {
             RuntimeParameters.VariantID = argv[++i];
+        }
+        else if (arg == "--install-runner" && i + 1 < argc)
+        {
+            RuntimeParameters.InstallRunnerId = argv[++i];
         }
         else if (arg == "--runner" && i + 1 < argc)
         {

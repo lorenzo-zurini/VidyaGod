@@ -126,6 +126,13 @@ public:
     std::filesystem::path DefPrefixPath;     //DefPrefixBasePath/<PREFIX_SUBPATH> — the Wine prefix directory built by wineboot
     std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
     nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch
+
+    //Installed-runner model: the runner ships its own build as VFSZipLayer(s) (e.g. a Proton zip), mounted
+    //read-only at its own mount; its DEFPREFIX is a one-time read-only per-runner artifact (no launch wineboot).
+    bool                                 RunnerShipsBuild = false; //selected runner has a mounted build
+    bool                                 UnifiedRuntime   = false; //mount the runner build INTO the game RUNTIME (rare; UNIFIED_RUNTIME)
+    std::filesystem::path                RunnerMountPath;          //where the runner build is mounted — exposed as %RunnerMount%
+    std::vector<nlohmann::ordered_json>  RunnerLayers;             //the runner's VFSZipLayer subcomponents to mount at RunnerMountPath
     //Phase-context prefix: bound to the def-prefix during InitializeDefPrefix and to the runtime during Execute,
     //so a runner ENV references %WinePrefix% (the prefix dir) / %PrefixBase% (its base) without code knowing umu vs proton.
     std::filesystem::path ActivePrefix;      //current-phase prefix dir  → %WinePrefix% (defaults to RuntimePath)
@@ -289,6 +296,17 @@ public:
     //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, then polls mountinfo for readiness.
     //Registers RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
     static bool MountVFS(struct ContainerParams &ContainerParams);
+    //Writes a layer spec to SpecPath, spawns vidyagodfs onto Mountpoint, polls until the mount is live.
+    //The low-level mount primitive shared by MountVFS, the runner mount, and runner install.
+    static bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
+                                const std::filesystem::path &SpecPath);
+    //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath (the separate-mount,
+    //installed-runner model). Registers it for cleanup. No-op when the runner ships no build.
+    bool MountRunnerBuild(struct ContainerParams &ContainerParams);
+    //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS) and, for wine runners, generates the
+    //one-time read-only DEFPREFIX artifact (mount build → wineboot → store). Returns false on failure.
+    static bool InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
+                              std::string *Error = nullptr);
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
     static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
