@@ -5,6 +5,9 @@
 #include "filesystemoperations.h"
 #include "prelaunchwindow.h"
 #include "ipfswrapper.h"
+#include "runnerwrapper.h"
+
+#include <thread>
 
 #include <QPainter>
 #include <QApplication>
@@ -91,6 +94,44 @@ void LibraryGameCard::play()
             QString Msg = "This package's manifest has errors and cannot be launched:\n\n";
             for (const auto &E : ValErr) Msg += "• " + QString::fromStdString(E) + "\n";
             QMessageBox::critical(nullptr, "Manifest Error", Msg);
+            return;
+        }
+    }
+
+    //Gate: the runner this game uses must be installed (IPFS builds are fetched ahead of time, never at
+    //launch). If a required build/DEFPREFIX is missing, offer to install the runner instead of launching.
+    {
+        nlohmann::ordered_json ManifestCopy = *MANIFESTJSON;                  // copy — the probe folds runner comps
+        struct ContainerParams CP(PackagePath, SubgameID, std::string());
+        ContainerWrapper Probe(*GlobalConfigJSON, ManifestCopy, CP);          // resolution only (no mount)
+        if (!ContainerWrapper::EnsureSources(CP))
+        {
+            nlohmann::ordered_json RunnerPkg;
+            for (const auto & Pkg : ContainerWrapper::CatalogPackages(*GlobalConfigJSON))
+                if (JSONOps::HasRunners(Pkg))
+                    for (const auto & R : Pkg["RUNNERS"])
+                        if (R.value("RUNNER_ID", std::string()) == CP.RunnerID) { RunnerPkg = Pkg; break; }
+
+            const QString Rid = QString::fromStdString(CP.RunnerID);
+            if (RunnerPkg.is_null() || !RunnerWrapper::ShipsBuild(RunnerPkg))
+            { QMessageBox::warning(nullptr, "Runner unavailable",
+                  "This game needs runner '" + Rid + "', which isn't installed and can't be fetched."); return; }
+            if (!IpfsWrapper::Available())
+            { QMessageBox::warning(nullptr, "Kubo required",
+                  "Runner '" + Rid + "' must be downloaded over IPFS, but Kubo (ipfs) isn't installed."); return; }
+            if (QMessageBox::question(nullptr, "Install runner?",
+                    "This game needs runner '" + Rid + "', which isn't installed yet.\n\n"
+                    "Download and install it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
+                return;
+            std::thread([GC = GlobalConfigJSON, RunnerPkg, Rid]{
+                std::string Err;
+                bool Ok = ContainerWrapper::InstallRunner(*GC, RunnerPkg, &Err);
+                QMetaObject::invokeMethod(qApp, [Ok, Err, Rid]{
+                    if (Ok) QMessageBox::information(nullptr, "Runner installed",
+                                "Runner '" + Rid + "' installed — press Play to launch.");
+                    else    QMessageBox::warning(nullptr, "Runner install failed", QString::fromStdString(Err));
+                }, Qt::QueuedConnection);
+            }).detach();
             return;
         }
     }
@@ -559,37 +600,74 @@ void MainWindow::RebuildSettingsRunnersPage()
     QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
     SettingsRunnersScroll->setWidget(contents);
 
-    // Runners now live as packages in the GLOBAL_RUNNERS registry. List them read-only here; editing
-    // them (and managing registry directories) is part of the upcoming runner-management UI.
+    // Runners are packages from the configured repositories. One that ships its own build (e.g. Proton over
+    // IPFS) must be installed (build fetched + DEFPREFIX generated) before games can use it.
     QLabel * intro = new QLabel(
-        "Runners are packages in the GLOBAL_RUNNERS registry. Add one by dropping its folder into a "
-        "registry directory (Storage & Paths). Editing is coming soon.", contents);
+        "Runners are packages from your repositories. A runner that ships its own build (e.g. Proton over "
+        "IPFS) must be installed before games can use it.", contents);
     intro->setWordWrap(true);
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    std::vector<nlohmann::ordered_json> Runners = ContainerWrapper::RegistryRunners(*GlobalConfigJSON);
-    if (Runners.empty())
+    std::vector<nlohmann::ordered_json> Pkgs;
+    for (const auto & Pkg : ContainerWrapper::CatalogPackages(*GlobalConfigJSON))
+        if (JSONOps::HasRunners(Pkg)) Pkgs.push_back(Pkg);
+    if (Pkgs.empty())
     {
-        QLabel * none = new QLabel("No registry runners found.", contents);
+        QLabel * none = new QLabel("No runners found in your repositories.", contents);
         none->setStyleSheet("color:#8f98a0;");
         v->addWidget(none);
     }
-    for (const auto & R : Runners)
+    for (const auto & Pkg : Pkgs)
     {
+        const nlohmann::ordered_json & R = Pkg["RUNNERS"][0];
         std::string rid = R.value("RUNNER_ID", std::string("(unnamed)"));
-        QGroupBox * card = new QGroupBox(QString::fromStdString(rid), contents);
-        QFormLayout * f = new QFormLayout(card); card->setLayout(f);
+        QGroupBox * card = new QGroupBox(QString::fromStdString(R.value("NAME", rid)), contents);
+        QVBoxLayout * cv = new QVBoxLayout(card); card->setLayout(cv);
+        QFormLayout * f = new QFormLayout(); cv->addLayout(f);
 
         QString guest;
         if (R.contains("GUEST_PLATFORM") && R["GUEST_PLATFORM"].is_array())
             for (const auto & P : R["GUEST_PLATFORM"])
                 if (P.is_string()) guest += (guest.isEmpty() ? "" : ", ") + QString::fromStdString(std::string(P));
-
-        f->addRow("NAME:",       new QLabel(QString::fromStdString(R.value("NAME", std::string())), card));
-        f->addRow("TYPE:",       new QLabel(QString::fromStdString(R.value("TYPE", std::string())), card));
+        f->addRow("RUNNER_ID:",      new QLabel(QString::fromStdString(rid), card));
+        f->addRow("TYPE:",           new QLabel(QString::fromStdString(R.value("TYPE", std::string())), card));
         f->addRow("GUEST_PLATFORM:", new QLabel(guest, card));
-        f->addRow("EXECUTABLE:", new QLabel(QString::fromStdString(R.value("EXECUTABLE", std::string())), card));
+
+        // Install state + action.
+        const bool Ships     = RunnerWrapper::ShipsBuild(Pkg);
+        const bool Installed = RunnerWrapper::IsInstalled(Pkg);
+        QHBoxLayout * row = new QHBoxLayout();
+        QLabel * st = new QLabel(card);
+        if (!Ships)          st->setText("<span style='color:#8f98a0;'>built-in (no install needed)</span>");
+        else if (Installed)  st->setText("<span style='color:#5fb55f;'>Installed</span>");
+        else                 st->setText("<span style='color:#c0726a;'>Not installed</span>");
+        row->addWidget(st, 1);
+        if (Ships && !Installed && IpfsWrapper::Available())
+        {
+            QPushButton * btn = new QPushButton("Install", card);
+            connect(btn, &QPushButton::clicked, this, [this, Pkg, btn, st]{
+                btn->setEnabled(false); btn->setText("Installing…");
+                st->setText("<span style='color:#c6a15f;'>Installing… (see IPFS tab)</span>");
+                std::thread([this, Pkg]{
+                    std::string Err;
+                    bool Ok = ContainerWrapper::InstallRunner(*GlobalConfigJSON, Pkg, &Err);
+                    QMetaObject::invokeMethod(this, [this, Ok, Err]{
+                        if (!Ok) QMessageBox::warning(this, "Runner install failed", QString::fromStdString(Err));
+                        RebuildSettingsRunnersPage();
+                        RefreshIpfsTab();
+                    }, Qt::QueuedConnection);
+                }).detach();
+            });
+            row->addWidget(btn);
+        }
+        else if (Ships && !Installed)
+        {
+            QLabel * need = new QLabel("install Kubo to fetch", card);
+            need->setStyleSheet("color:#8f98a0;font-style:italic;");
+            row->addWidget(need);
+        }
+        cv->addLayout(row);
         v->addWidget(card);
     }
     v->addStretch(1);
