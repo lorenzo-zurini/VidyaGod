@@ -13,6 +13,10 @@
 #include <QThread>
 #include <QMetaObject>
 
+//Resolves a layer/runner SOURCE locator to an absolute host path (defined below; forward-declared so
+//DeriveContainerParams can resolve the selected runner's SOURCE).
+static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath);
+
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
 ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
@@ -965,6 +969,9 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         }
     }
 
+    //The selected runner's PREFIX_SUBPATH (default ""): the wine prefix (drive_c + hives) lives at
+    //<base>/<subpath>. "" → prefix == base (umu/wine, unchanged); "pfx" → Proton's STEAM_COMPAT_DATA_PATH/pfx.
+    std::string PrefixSubpath;
     const RunnerCandidate * Selected = nullptr;
     auto PickById = [&](const std::string &Id) -> bool
     {
@@ -994,6 +1001,12 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
         if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
         if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
+        //Prefix layout + runner build locator (e.g. a Proton dir). PREFIX_SUBPATH deepens the prefix path;
+        //SOURCE (relative/absolute PATH now; url/ipfs later) resolves to the runner's binary tree.
+        if (SelectedRunner.contains("PREFIX_SUBPATH") && SelectedRunner["PREFIX_SUBPATH"].is_string())
+            PrefixSubpath = std::string(SelectedRunner["PREFIX_SUBPATH"]);
+        if (SelectedRunner.contains("SOURCE"))
+            ContainerParams.RunnerRuntimePath = ResolveLayerSource(SelectedRunner, ContainerParams.PackagePath);
         //The runner's own enabled modules join the recipe (mounted as base) — see CreateRecipe. Same
         //universal MODULES schema + resolution as variants (runner module toggles also via ModuleStates).
         ContainerParams.RunnerEndpoints = ResolveEnabledModules(
@@ -1042,7 +1055,11 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.TempPath                            = TempRoot / ContainerParams.PackageUID;
     LogOut("ContainerWrapper::DeriveContainerParams", "TempPath: " + ContainerParams.TempPath.string());
 
-    ContainerParams.RuntimePath                         = ContainerParams.TempPath / "RUNTIME";
+    //The runtime mount base; the actual launch prefix is RuntimeBasePath/<PREFIX_SUBPATH> (empty for umu/wine
+    //→ prefix == base; "pfx" for Proton → STEAM_COMPAT_DATA_PATH=RuntimeBasePath, pfx==RuntimePath).
+    ContainerParams.RuntimeBasePath                     = ContainerParams.TempPath / "RUNTIME";
+    ContainerParams.RuntimePath                         = PrefixSubpath.empty() ? ContainerParams.RuntimeBasePath
+                                                                                : ContainerParams.RuntimeBasePath / PrefixSubpath;
     LogOut("ContainerWrapper::DeriveContainerParams", "RuntimePath: " + ContainerParams.RuntimePath.string());
 
     ContainerParams.WriteLayerPath                      = ContainerParams.TempPath / "WRITELAYER";
@@ -1061,7 +1078,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     {
         //Game files sit at drive_c/PackageUID so Wine sees them as C:\PackageUID.
         ContainerParams.ProgramPath                     = ContainerParams.RuntimePath / "drive_c" / ContainerParams.PackageUID;
-        ContainerParams.DefPrefixPath                   = ContainerParams.TempPath / "DEFPREFIX";
+        //Def-prefix base + the prefix wineboot actually builds (base/<PREFIX_SUBPATH>); mirrors the runtime layout.
+        ContainerParams.DefPrefixBasePath               = ContainerParams.TempPath / "DEFPREFIX";
+        ContainerParams.DefPrefixPath                   = PrefixSubpath.empty() ? ContainerParams.DefPrefixBasePath
+                                                                                : ContainerParams.DefPrefixBasePath / PrefixSubpath;
         ContainerParams.WindowsProgramPath              = "C:\\" + ContainerParams.PackageUID;
         //Double-backslash variant for use in .reg file string values.
         ContainerParams.WindowsProgramPathDoubleBackSlash = "C:\\\\" + ContainerParams.PackageUID;
@@ -1099,6 +1119,12 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["ScreenWidth"] = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
     VariablesMap["RuntimePath"] = this->RuntimePath;
+    VariablesMap["RuntimeBasePath"] = this->RuntimeBasePath;
+    VariablesMap["RunnerRuntimePath"] = this->RunnerRuntimePath;
+    //Phase-context prefix: %WinePrefix% is the prefix dir for the current phase (def-prefix at init, runtime
+    //at launch); %PrefixBase% its base (Proton's STEAM_COMPAT_DATA_PATH). Default to the runtime when unset.
+    VariablesMap["WinePrefix"] = this->ActivePrefix.empty() ? this->RuntimePath : this->ActivePrefix;
+    VariablesMap["PrefixBase"] = this->ActivePrefixBase.empty() ? this->RuntimeBasePath : this->ActivePrefixBase;
     VariablesMap["WriteLayerPath"] = this->WriteLayerPath;
     VariablesMap["UserDataPath"] = this->UserDataPath;
     VariablesMap["TempPath"] = this->TempPath;
@@ -1348,23 +1374,45 @@ bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerPa
 //The prefix must be initialized before any game layers are stacked on top.
 bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerParams)
 {
-    //Initialising UMU prefix.
+    //Build the base wine prefix by running `wineboot` through the runner. Fully manifest-driven: the umu vs
+    //proton difference is just the runner's EXECUTABLE/ARGS/ENV plus the prefix layout. The phase-context
+    //prefix vars (%WinePrefix% / %PrefixBase%) bind to the DEF-prefix here so a runner ENV like
+    //WINEPREFIX=%WinePrefix% (umu) or STEAM_COMPAT_DATA_PATH=%PrefixBase% (proton) points at what we build.
+    ContainerParams.ActivePrefix     = ContainerParams.DefPrefixPath;
+    ContainerParams.ActivePrefixBase = ContainerParams.DefPrefixBasePath;
     LogOut("ContainerWrapper::InitializeDefPrefix", "Initialising DefPrefix, path: " + ContainerParams.DefPrefixPath.string());
+    std::filesystem::create_directories(ContainerParams.DefPrefixBasePath);
     std::filesystem::create_directories(ContainerParams.DefPrefixPath);
+
+    //EXECUTABLE may reference %RunnerRuntimePath% (e.g. the Proton build's proton script).
+    std::string Program = ContainerParams.RunnerExecutable;
+    ContainerWrapper::StringVariableSubstitution(Program, ContainerParams.GetVariablesMap());
 
     QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
     QProcess * RunProcess = new QProcess;
-    RunProcess->setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
-    RunProcess->setArguments({"wineboot"});
+    RunProcess->setProgram(QString::fromStdString(Program));
 
-    //RunProcessEnvironment.insert("PROTONPATH", this->Paths["ProtonPath"]);
-    RunProcessEnvironment.insert("WINEPREFIX", QString::fromStdString(ContainerParams.DefPrefixPath));
-    RunProcessEnvironment.insert("GAMEID", "0");
-    //PROTON_VERB=waitforexitandrun ensures wineboot completes before we proceed.
-    RunProcessEnvironment.insert("PROTON_VERB", "waitforexitandrun");
-    //Remove LD_LIBRARY_PATH to prevent host libraries conflicting with Proton's bundled ones.
-    RunProcessEnvironment.remove("LD_LIBRARY_PATH");
+    //Args: the runner's ARGS (the launcher verb, e.g. proton's "waitforexitandrun"; empty for umu) then wineboot.
+    QStringList Arguments;
+    for (std::string Arg : ContainerParams.RunnerArgs)
+    {
+        ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
+        Arguments.append(QString::fromStdString(Arg));
+    }
+    Arguments.append("wineboot");
+    RunProcess->setArguments(Arguments);
 
+    //Env: runner REMOVE_ENV then the runner ENV block (with %var% expansion), exactly as at launch.
+    for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
+        RunProcessEnvironment.remove(QString::fromStdString(Key));
+    for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
+    {
+        std::string ExpandedValue = Value.get<std::string>();
+        ContainerWrapper::StringVariableSubstitution(ExpandedValue, ContainerParams.GetVariablesMap());
+        RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(ExpandedValue));
+    }
+
+    LogOut("ContainerWrapper::InitializeDefPrefix", "wineboot: " + Program + " " + Arguments.join(' ').toStdString());
     RunProcess->setProcessEnvironment(RunProcessEnvironment);
     RunProcess->start();
     RunProcess->waitForFinished(-1);
@@ -1469,6 +1517,7 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //mirrors a URL/CID). Pure resolution; existence is verified separately by VerifyDependencies.
 //TODO(sharing): when SOURCE.TYPE is github-release/url/ipfs, fetch+cache into ~/.VidyaGod/DOWNLOADS and
 //return that path; the local PATH stays the bundled offline fallback. SOURCE.TYPE "path" overrides PATH.
+//ipfs is recognized (reads CID) but its fetch backend is deferred — it falls back to the local PATH for now.
 static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
 {
     std::string PathStr = Sub.value("PATH", std::string());
@@ -1476,8 +1525,16 @@ static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const s
     {
         const auto &Src = Sub["SOURCE"];
         const std::string SType = Src.value("TYPE", std::string("path"));
-        if (SType == "path") PathStr = Src.value("PATH", PathStr);
-        // else: github-release / url / ipfs — TODO(sharing) fetch; fall back to the bundled PATH for now.
+        //The SOURCE's own PATH is the local/offline fallback for every type (and the value for "path").
+        PathStr = Src.value("PATH", PathStr);
+        if (SType == "ipfs")
+        {
+            // TODO(sharing): fetch Src["CID"] from IPFS into ~/.VidyaGod/DOWNLOADS and return that path.
+            const std::string Cid = Src.value("CID", std::string());
+            if (!Cid.empty())
+                LogWarn("ResolveLayerSource", "ipfs SOURCE CID '" + Cid + "' not fetched (backend pending); using local PATH.");
+        }
+        // else: github-release / url — TODO(sharing) fetch; fall back to the bundled PATH for now.
     }
     std::filesystem::path P(PathStr);
     return (P.is_absolute() ? P : (PackagePath / P)).string();
@@ -1981,6 +2038,30 @@ bool ContainerWrapper::FileOverwrite(const std::string &Value, const std::filesy
 //does not exist in the mounted runtime.
 bool ContainerWrapper::Execute(std::string OverrideExe)
 {
+    //Launch phase: bind the context prefix vars to the mounted runtime (InitializeDefPrefix bound them to
+    //the def-prefix). %WinePrefix% → RuntimePath, %PrefixBase% → RuntimeBasePath (= proton STEAM_COMPAT_DATA_PATH).
+    ContainerParams.ActivePrefix     = ContainerParams.RuntimePath;
+    ContainerParams.ActivePrefixBase = ContainerParams.RuntimeBasePath;
+
+    //When the prefix lives in a subdir (PREFIX_SUBPATH, e.g. Proton's pfx), the launcher keeps compat-data
+    //bookkeeping (version / tracked_files / config_info) at the *base* level. Init wrote those into
+    //DefPrefixBasePath; seed them into RuntimeBasePath so the launcher sees an already-provisioned prefix and
+    //skips its launch-time upgrade (which would otherwise fail reading the missing base-level files). The pfx
+    //itself is the mounted union at RuntimePath; only the sibling base files are carried over.
+    if (ContainerParams.RuntimePath != ContainerParams.RuntimeBasePath
+        && std::filesystem::exists(ContainerParams.DefPrefixBasePath))
+    {
+        std::error_code Ec;
+        for (const auto &Entry : std::filesystem::directory_iterator(ContainerParams.DefPrefixBasePath, Ec))
+        {
+            if (!Entry.is_regular_file(Ec)) continue;          // skip pfx/ (the prefix dir / mountpoint)
+            const std::string Name = Entry.path().filename().string();
+            if (Name == "pfx.lock") continue;                  // don't carry a stale lock
+            std::filesystem::copy_file(Entry.path(), ContainerParams.RuntimeBasePath / Name,
+                                       std::filesystem::copy_options::overwrite_existing, Ec);
+        }
+    }
+
     std::string FinalExe;
     if (!OverrideExe.empty())
     {
@@ -2048,37 +2129,22 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     RunProcess.setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
     RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
 
-    // For emulator/native runners: prepend RunnerArgs (template-expanded), then exe
-    // For wine runners: exe first, then ExeArgs
+    //Unified argument order for every runner type: RunnerArgs (template-expanded) → exe/ROM path (if any)
+    //→ ExeArgs. This is data-driven: a launcher verb lives in the runner's ARGS (e.g. proton's
+    //"waitforexitandrun"), so umu (ARGS=[]) yields [exe, ExeArgs] exactly as before, while proton yields
+    //[waitforexitandrun, exe, ExeArgs]. Emulators/native put their flags in ARGS and the ROM as the exe.
     QStringList Arguments;
-    if (ContainerParams.RunnerTypeEnum != RunnerType::Wine)
+    for (std::string Arg : ContainerParams.RunnerArgs)
     {
-        //Emulator/Custom/Native: runner args first, then the exe/ROM path (if any), then ExeArgs.
-        for (std::string Arg : ContainerParams.RunnerArgs)
-        {
-            ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
-            Arguments.append(QString::fromStdString(Arg));
-        }
-        if (!FinalExe.empty())
-            Arguments.append(QString::fromStdString(FinalExe));
-        //ExeArgs from the VariantDefinition (e.g. -c config.cfg for GemRB, or extra flags).
-        if (OverrideExe.empty())
-            for (std::string Arg : ContainerParams.ExeArgs)
-                Arguments.append(QString::fromStdString(Arg));
+        ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
+        Arguments.append(QString::fromStdString(Arg));
     }
-    else
-    {
-        //Wine: exe path is the first argument; game's own args follow.
-        //ExeArgs are skipped when OverrideExe is set (tooling scenario, not a game launch).
+    if (!FinalExe.empty())
         Arguments.append(QString::fromStdString(FinalExe));
-        if (OverrideExe.empty() && !ContainerParams.ExeArgs.empty())
-        {
-            for (std::string Arg : ContainerParams.ExeArgs)
-            {
-                Arguments.append(QString::fromStdString(Arg));
-            }
-        }
-    }
+    //ExeArgs from the VariantDefinition (e.g. -c config.cfg for GemRB); skipped for an OverrideExe (tooling).
+    if (OverrideExe.empty())
+        for (std::string Arg : ContainerParams.ExeArgs)
+            Arguments.append(QString::fromStdString(Arg));
     RunProcess.setArguments(Arguments);
     RunProcess.setProcessEnvironment(RunProcessEnvironment);
 

@@ -116,12 +116,19 @@ public:
     //              RuntimePath, WriteLayerPath and DefPrefixPath are all nested inside it.
     //  DURABLE   — UserDataPath = PackagePath/USERDATA; survives Cleanup(), travels with the package.
     //              Holds only the persisted state declared by the PERSIST manifest object.
-    std::filesystem::path RuntimePath;       //TempPath/RUNTIME — where the final unionfs VFS is mounted
+    std::filesystem::path RuntimeBasePath;   //TempPath/RUNTIME — the runtime mount base (= STEAM_COMPAT_DATA_PATH for proton)
+    std::filesystem::path RuntimePath;       //RuntimeBasePath/<PREFIX_SUBPATH> — where the final unionfs VFS is mounted (the launch prefix)
     std::filesystem::path WriteLayerPath;    //TempPath/WRITELAYER — ephemeral copy-on-write layer at the top of the VFS stack
     std::filesystem::path TempPath;          //~/.VidyaGod/TEMP/PackageUID — prefix, per-layer pre-mount dirs, reg patches
     std::filesystem::path UserDataPath;      //PackagePath/USERDATA — durable persist store (PERSIST.ALL / DIRS / REGISTRY)
     std::filesystem::path ProgramPath;       //Wine: RuntimePath/drive_c/PackageUID; others: RuntimePath
-    std::filesystem::path DefPrefixPath;     //TempPath/DEFPREFIX — the Wine prefix directory
+    std::filesystem::path DefPrefixBasePath; //TempPath/DEFPREFIX — the def-prefix base (= STEAM_COMPAT_DATA_PATH for proton, at init)
+    std::filesystem::path DefPrefixPath;     //DefPrefixBasePath/<PREFIX_SUBPATH> — the Wine prefix directory built by wineboot
+    std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
+    //Phase-context prefix: bound to the def-prefix during InitializeDefPrefix and to the runtime during Execute,
+    //so a runner ENV references %WinePrefix% (the prefix dir) / %PrefixBase% (its base) without code knowing umu vs proton.
+    std::filesystem::path ActivePrefix;      //current-phase prefix dir  → %WinePrefix% (defaults to RuntimePath)
+    std::filesystem::path ActivePrefixBase;  //current-phase prefix base → %PrefixBase% (defaults to RuntimeBasePath)
     std::filesystem::path ExePathRelative;   //Exe/ROM/data path relative to ProgramPath, from MANIFEST
     std::filesystem::path ExePathComplete;   //ProgramPath / ExePathRelative — absolute host path to the exe
     std::filesystem::path ExePathInPrefix;   //Wine only: C:\PackageUID\ExePathRelative — Windows-style path for Wine
