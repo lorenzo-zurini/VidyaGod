@@ -106,7 +106,7 @@ void PackageEditor::on_AddComponentButton_clicked()
 {
     QString File = PromptTargetFile("Add Component");
     if (File.isEmpty()) return;
-    (*MANIFESTJSON)[json::json_pointer("/COMPONENTS")].push_back(json::object({{"COMPONENTID", nullptr}, {"NAME", nullptr}, {"SUBCOMPONENTS", json::array()}, {"__FILE__", File.toStdString()}}));
+    (*MANIFESTJSON)[json::json_pointer("/COMPONENTS")].push_back(json::object({{"COMPONENTID", ""}, {"NAME", ""}, {"SUBCOMPONENTS", json::array()}, {"__FILE__", File.toStdString()}}));
     SaveManifestJSON();
     BuildUI();
     RefreshJSONView();

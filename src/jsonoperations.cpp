@@ -220,6 +220,15 @@ bool JSONOps::AssembleManifest(const QString &PackageDir, nlohmann::ordered_json
 //Validates an assembled manifest (see header).
 void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
 {
+    // Null-safe string read: returns the string value, or Def if the key is absent OR not a string.
+    // (nlohmann's .value() THROWS type_error.302 on a present-but-NULL field — which a half-finished
+    // package routinely has, e.g. an unnamed component with "COMPONENTID": null. Validation must never
+    // crash on malformed input.)
+    auto Str = [](const nlohmann::ordered_json &J, const char *Key, const std::string &Def = std::string()) -> std::string {
+        auto It = J.find(Key);
+        return (It != J.end() && It->is_string()) ? It->get<std::string>() : Def;
+    };
+
     // Assembly-time errors carried forward in the doc (e.g. conflicting identity across fragments).
     if (Assembled.contains("__VG_ERRORS__") && Assembled["__VG_ERRORS__"].is_array())
         for (const auto &E : Assembled["__VG_ERRORS__"])
@@ -245,7 +254,7 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
     if (Assembled.contains("COMPONENTS") && Assembled["COMPONENTS"].is_array())
         for (const auto &C : Assembled["COMPONENTS"])
         {
-            std::string Id = C.value("COMPONENTID", std::string());
+            std::string Id = Str(C, "COMPONENTID");
             if (Id.empty()) { Warnings.push_back("A component has an empty COMPONENTID"); continue; }
             ComponentIds.insert(Id);
             std::string Parent;
@@ -260,19 +269,19 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                 for (const auto &S : C["SUBCOMPONENTS"])
                 {
                     if (!S.is_object()) continue;
-                    std::string T = S.value("TYPE", std::string());
+                    std::string T = Str(S, "TYPE");
                     if (T == "CustomVar")
                     {
-                        std::string K = S.value("KEY", std::string());
+                        std::string K = Str(S, "KEY");
                         if (K.empty()) Warnings.push_back("Component '" + Id + "' has a CustomVar with no KEY");
                         else if (!VarKeys.insert(K).second)
                             Warnings.push_back("Component '" + Id + "' has duplicate CustomVar KEY '" + K + "'");
                     }
                     // PersistDir/PersistFile need a runtime-root-relative PATH; RegPersist takes no fields.
-                    else if ((T == "PersistDir" || T == "PersistFile") && S.value("PATH", std::string()).empty())
+                    else if ((T == "PersistDir" || T == "PersistFile") && Str(S, "PATH").empty())
                         Warnings.push_back("Component '" + Id + "' has a " + T + " with an empty PATH");
                     // RegKeyPersist needs a registry key REGPATH (HKLM\.. / HKCU\..).
-                    else if (T == "RegKeyPersist" && S.value("REGPATH", std::string()).empty())
+                    else if (T == "RegKeyPersist" && Str(S, "REGPATH").empty())
                         Warnings.push_back("Component '" + Id + "' has a RegKeyPersist with an empty REGPATH");
                 }
         }
@@ -310,14 +319,14 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
     if (Assembled.contains("GAMES") && Assembled["GAMES"].is_array())
         for (const auto &G : Assembled["GAMES"])
         {
-            std::string GID = G.value("GAMEID", std::string("?"));
+            std::string GID = Str(G, "GAMEID", "?");
             const auto Variants = (G.contains("VARIANTS") && G["VARIANTS"].is_array()) ? G["VARIANTS"] : nlohmann::ordered_json::array();
             if (Variants.empty()) Warnings.push_back("Game '" + GID + "' has no variants");
             int RecCount = 0;
             for (const auto &V : Variants)
             {
-                std::string VID = V.value("VARIANT_ID", std::string("?"));
-                if (V.value("RECOMMENDED", false)) RecCount++;
+                std::string VID = Str(V, "VARIANT_ID", "?");
+                if (V.contains("RECOMMENDED") && V["RECOMMENDED"].is_boolean() && V["RECOMMENDED"].get<bool>()) RecCount++;
                 const auto Comps = ModuleComponents(V);
                 if (Comps.empty()) Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no modules");
                 for (const auto &C : Comps)
@@ -333,7 +342,7 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
     if (Assembled.contains("RUNNERS") && Assembled["RUNNERS"].is_array())
         for (const auto &R : Assembled["RUNNERS"])
         {
-            std::string RID = R.value("RUNNER_ID", std::string());
+            std::string RID = Str(R, "RUNNER_ID");
             if (RID.empty()) Warnings.push_back("A runner has no RUNNER_ID");
             if (!R.contains("GUEST_PLATFORM") || !R["GUEST_PLATFORM"].is_array() || R["GUEST_PLATFORM"].empty())
                 Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' has no GUEST_PLATFORM");
