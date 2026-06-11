@@ -138,9 +138,25 @@ std::string FetchSync(const std::string &Cid, std::string *Error)
     QFile Marker(QString::fromStdString(CompleteMarker(Cid)));
     if (Marker.open(QIODevice::WriteOnly)) Marker.close();
 
-    // Pin so the content keeps seeding (best-effort — a missing daemon just means it isn't served yet).
-    if (!RunIpfs({"pin", "add", QString::fromStdString(Cid)}, nullptr, 60000))
-        LogWarn("IpfsWrapper::FetchSync", "could not pin CID " + Cid + " (start `ipfs daemon` to seed it).");
+    // Seed via Filestore (--nocopy): re-add the cache file so its blocks REFERENCE it on disk instead of a
+    // second blockstore copy. When the content was nocopy-hosted (raw leaves), this reproduces the same CID
+    // and pins it. If the re-add yields a different CID (content not nocopy-hosted), undo it and fall back to
+    // a normal blockstore pin so we still seed the correct CID. Best-effort — a missing daemon just defers it.
+    QString Added;
+    const bool NocopyOk = RunIpfs({"add", "--nocopy", "--pin=true", "-Q", QString::fromStdString(Dest)}, &Added, 600000);
+    const std::string AddedCid = Added.trimmed().toStdString();
+    if (NocopyOk && AddedCid == Cid)
+        LogSucc("IpfsWrapper::FetchSync", "Seeding " + Cid + " via Filestore (--nocopy, no blockstore copy).");
+    else
+    {
+        if (NocopyOk && !AddedCid.empty())
+        {
+            LogWarn("IpfsWrapper::FetchSync", "nocopy add produced a different CID (" + AddedCid + ") — content not nocopy-hosted; using a normal pin.");
+            RunIpfs({"pin", "rm", QString::fromStdString(AddedCid)}, nullptr, 30000);   // undo the wrong filestore pin
+        }
+        if (!RunIpfs({"pin", "add", QString::fromStdString(Cid)}, nullptr, 60000))
+            LogWarn("IpfsWrapper::FetchSync", "could not pin CID " + Cid + " (start `ipfs daemon` to seed it).");
+    }
 
     LogSucc("IpfsWrapper::FetchSync", "Fetched + pinned CID " + Cid);
     Emit({ TransferEvent::Finished, Cid, 100.0, true });
