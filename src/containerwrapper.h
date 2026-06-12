@@ -76,6 +76,7 @@ public:
     //Runner config (resolved from RUNNERS arrays — package's own + global registry — by GUEST_PLATFORM membership):
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
     std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
+    std::string RunnerVariantID;         //VARIANT_ID of the chosen runner variant (install artifact + exec params come from it)
     std::string RunnerExecutable;        //Binary to exec (e.g. "umu-run", "snes9x")
     RunnerType RunnerTypeEnum = RunnerType::Wine; //Determines argument order and Wine-specific steps
     nlohmann::ordered_json RunnerEnv;    //Key/value env vars to set; values may contain %VARIABLE% tokens
@@ -305,10 +306,10 @@ public:
     //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath (the separate-mount,
     //installed-runner model). Registers it for cleanup. No-op when the runner ships no build.
     bool MountRunnerBuild(struct ContainerParams &ContainerParams);
-    //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS) and, for wine runners, generates the
-    //one-time read-only DEFPREFIX artifact (mount build → wineboot → store). Returns false on failure.
+    //Installs one runner VARIANT: fetches its build CIDs (IPFS) and, for a wine variant, generates the
+    //one-time read-only DEFPREFIX artifact (mount build → wineboot → store). VariantId "" = default variant.
     static bool InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
-                              std::string *Error = nullptr);
+                              const std::string &VariantId = std::string(), std::string *Error = nullptr);
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
     static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);

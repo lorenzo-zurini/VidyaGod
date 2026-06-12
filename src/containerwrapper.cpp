@@ -22,6 +22,9 @@ static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const s
 //installed-runner base-reg-edit pass in BuildContainerRuntime).
 static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool WantOverride);
 
+//The host platform this build runs on — a runner variant is only eligible if its HOST_PLATFORM matches.
+static std::string MachinePlatform() { return "linux64"; }
+
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
 ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
@@ -623,7 +626,9 @@ std::vector<std::string> ContainerWrapper::ResolveEnabledModules(const std::vect
         int Idx = FindComponentIndex(MANIFESTJSON, Component);
         while (Idx != -1)
         {
-            auto &ParentField = MANIFESTJSON["COMPONENTS"][Idx]["PARENTCOMPONENT"];
+            const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
+            if (!Comp.contains("PARENTCOMPONENT")) break;          // a component may have no parent (root / runner build)
+            const auto &ParentField = Comp["PARENTCOMPONENT"];
             if (ParentField.is_null() || ParentField == "") break;
             std::string Parent = ParentField;
             if (InModules.count(Parent)) Ancestors.push_back(Parent);
@@ -933,16 +938,14 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     //Game specific — only populated when a game was specified.
     int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
 
-    //HOST_PLATFORM is now per-variant: the platform the SELECTED game variant targets, matched against each
-    //runner variant's GUEST_PLATFORM. (Free-form: "win32", "linux64", "snes", …) Falls back to the legacy
-    //package-level field for the no-game tooling path / un-migrated data.
+    //HOST_PLATFORM is per-variant: the platform the SELECTED game variant targets, matched against each
+    //runner variant's GUEST_PLATFORM. (Free-form: "win32", "linux64", "snes", …) Empty only on the
+    //no-game tooling path (prefix-only), where no runner match is expected.
     ContainerParams.Platform = std::string();
     if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS") && MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"].is_array())
         for (const auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
             if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
             { ContainerParams.Platform = V.value("HOST_PLATFORM", std::string()); break; }
-    if (ContainerParams.Platform.empty())
-        ContainerParams.Platform = MANIFESTJSON.value("HOST_PLATFORM", std::string());   // legacy/no-game fallback
 
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
@@ -977,10 +980,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
             if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
             { VariantPin = V.value("RUNNER_ID", std::string()); break; }
 
-    //A candidate carries its runner json plus its owning package's COMPONENTS (so a registry runner's
-    //ENDPOINTS / CustomVar subcomponents resolve). The launching package's own runners carry no extra
-    //components — those already live in MANIFESTJSON.
-    struct RunnerCandidate { nlohmann::ordered_json Runner; nlohmann::ordered_json Components; };
+    //A candidate carries its runner ENTITY, the matched runner VARIANT (its exec params + build modules),
+    //and its owning package's COMPONENTS (so the runner's component subcomponents resolve). The launching
+    //package's own runners carry no extra components — those already live in MANIFESTJSON.
+    struct RunnerCandidate { nlohmann::ordered_json Runner; nlohmann::ordered_json Variant; nlohmann::ordered_json Components; };
     std::vector<RunnerCandidate> Candidates;
     std::unordered_set<std::string> SeenRunnerIds;
     auto GatherRunners = [&](const nlohmann::ordered_json &Source, const nlohmann::ordered_json &Components)
@@ -988,15 +991,25 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
         for (const auto &R : Source["RUNNERS"])
         {
-            bool Match = false;
-            if (R.contains("GUEST_PLATFORM") && R["GUEST_PLATFORM"].is_array())
-                for (const auto &P : R["GUEST_PLATFORM"])
-                    if (P.is_string() && std::string(P) == ContainerParams.Platform) { Match = true; break; }
-            if (!Match) continue;
             std::string RID = R.value("RUNNER_ID", std::string());
             if (!RID.empty() && SeenRunnerIds.count(RID)) continue;
+            if (!R.contains("VARIANTS") || !R["VARIANTS"].is_array()) continue;
+            //Pick the runner VARIANT that serves the game's platform (GUEST_PLATFORM ∋ Platform) and runs on
+            //this machine (HOST_PLATFORM == MachinePlatform); prefer a RECOMMENDED one.
+            const nlohmann::ordered_json *Best = nullptr;
+            for (const auto &V : R["VARIANTS"])
+            {
+                bool Guest = false;
+                if (V.contains("GUEST_PLATFORM") && V["GUEST_PLATFORM"].is_array())
+                    for (const auto &P : V["GUEST_PLATFORM"])
+                        if (P.is_string() && std::string(P) == ContainerParams.Platform) { Guest = true; break; }
+                if (!Guest || V.value("HOST_PLATFORM", std::string()) != MachinePlatform()) continue;
+                if (!Best || V.value("RECOMMENDED", false)) Best = &V;
+                if (V.value("RECOMMENDED", false)) break;
+            }
+            if (!Best) continue;
             SeenRunnerIds.insert(RID);
-            Candidates.push_back({ R, Components });
+            Candidates.push_back({ R, *Best, Components });
         }
     };
     //1. The launching package's own runners first (a bundle shadows a registry runner of the same id).
@@ -1035,36 +1048,37 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
 
     if (Selected)
     {
-        const nlohmann::ordered_json &SelectedRunner = Selected->Runner;
-        ContainerParams.RunnerComponents = Selected->Components; //folded into the pool by InitializeContainer
+        const nlohmann::ordered_json &SelectedRunner  = Selected->Runner;   // entity: RUNNER_ID, NAME
+        const nlohmann::ordered_json &SelectedVariant = Selected->Variant;  // exec params + build modules + platform
+        ContainerParams.RunnerComponents = Selected->Components;
         //Use explicit null guards — direct JSON-to-string conversion throws on null values.
         ContainerParams.RunnerID         = SelectedRunner.value("RUNNER_ID", std::string());
-        ContainerParams.RunnerName       = (SelectedRunner.contains("NAME")       && SelectedRunner["NAME"].is_string())       ? std::string(SelectedRunner["NAME"])       : "";
-        ContainerParams.RunnerExecutable = (SelectedRunner.contains("EXECUTABLE") && SelectedRunner["EXECUTABLE"].is_string()) ? std::string(SelectedRunner["EXECUTABLE"]) : "";
-        std::string RunnerTypeStr        = (SelectedRunner.contains("TYPE")       && SelectedRunner["TYPE"].is_string())       ? std::string(SelectedRunner["TYPE"])       : "custom";
+        ContainerParams.RunnerName       = (SelectedRunner.contains("NAME") && SelectedRunner["NAME"].is_string()) ? std::string(SelectedRunner["NAME"]) : ContainerParams.RunnerID;
+        ContainerParams.RunnerVariantID  = SelectedVariant.value("VARIANT_ID", std::string("default"));
+        ContainerParams.RunnerExecutable = (SelectedVariant.contains("EXECUTABLE") && SelectedVariant["EXECUTABLE"].is_string()) ? std::string(SelectedVariant["EXECUTABLE"]) : "";
+        std::string RunnerTypeStr        = (SelectedVariant.contains("TYPE") && SelectedVariant["TYPE"].is_string()) ? std::string(SelectedVariant["TYPE"]) : "custom";
         //Map the string type to the enum so the rest of the code can branch without string comparisons.
         if (RunnerTypeStr == "wine")           ContainerParams.RunnerTypeEnum = RunnerType::Wine;
         else if (RunnerTypeStr == "emulator")  ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
         else if (RunnerTypeStr == "custom")    ContainerParams.RunnerTypeEnum = RunnerType::Custom;
         else                                   ContainerParams.RunnerTypeEnum = RunnerType::Native;
-        if (SelectedRunner.contains("ENV"))        ContainerParams.RunnerEnv = SelectedRunner["ENV"];
-        if (SelectedRunner.contains("REMOVE_ENV")) for (auto &E : SelectedRunner["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
-        if (SelectedRunner.contains("ARGS"))       for (auto &A : SelectedRunner["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
-        //Prefix layout + runner build locator (e.g. a Proton dir). PREFIX_SUBPATH deepens the prefix path;
-        //SOURCE (relative/absolute PATH now; url/ipfs later) resolves to the runner's binary tree.
-        if (SelectedRunner.contains("PREFIX_SUBPATH") && SelectedRunner["PREFIX_SUBPATH"].is_string())
-            PrefixSubpath = std::string(SelectedRunner["PREFIX_SUBPATH"]);
-        if (SelectedRunner.contains("SOURCE"))
-        {
-            ContainerParams.RunnerSource      = SelectedRunner["SOURCE"];      // fetched by EnsureSources
-            ContainerParams.RunnerRuntimePath = ResolveLayerSource(SelectedRunner, ContainerParams.PackagePath);
-        }
-        //Installed-runner model: collect the runner's VFSZipLayer subcomponents (its build, e.g. a Proton
-        //zip). When present, the build is mounted read-only at its own RunnerMountPath (%RunnerMount%) and
-        //DEFPREFIX comes from the one-time per-runner artifact — no per-launch wineboot.
-        ContainerParams.UnifiedRuntime = SelectedRunner.value("UNIFIED_RUNTIME", false);
+        if (SelectedVariant.contains("ENV"))        ContainerParams.RunnerEnv = SelectedVariant["ENV"];
+        if (SelectedVariant.contains("REMOVE_ENV")) for (auto &E : SelectedVariant["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
+        if (SelectedVariant.contains("ARGS"))       for (auto &A : SelectedVariant["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
+        if (SelectedVariant.contains("PREFIX_SUBPATH") && SelectedVariant["PREFIX_SUBPATH"].is_string())
+            PrefixSubpath = std::string(SelectedVariant["PREFIX_SUBPATH"]);
+        ContainerParams.UnifiedRuntime = SelectedVariant.value("UNIFIED_RUNTIME", false);
+
+        //Installed-runner model: the runner build = the VFSZipLayer subcomponents of the components this
+        //runner variant's MODULES enable. When present, the build mounts read-only at its own RunnerMountPath
+        //(%RunnerMount%) and DEFPREFIX is the one-time per-(runner,variant) artifact — no per-launch wineboot.
+        nlohmann::ordered_json RunnerManifest; RunnerManifest["COMPONENTS"] = ContainerParams.RunnerComponents;
+        const std::vector<std::string> RunnerEnabled = ResolveEnabledModules(
+            ParseModules(SelectedVariant.value("MODULES", nlohmann::ordered_json::array())),
+            ContainerParams.ModuleStates, RunnerManifest);
+        std::set<std::string> WantComps(RunnerEnabled.begin(), RunnerEnabled.end());
         for (auto &C : ContainerParams.RunnerComponents)
-            if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
+            if (WantComps.count(C.value("COMPONENTID", std::string())) && C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
                 for (auto &S : C["SUBCOMPONENTS"])
                 {
                     const std::string T = S.value("TYPE", std::string());
@@ -1072,11 +1086,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
                         ContainerParams.RunnerLayers.push_back(S);
                 }
         ContainerParams.RunnerShipsBuild = !ContainerParams.RunnerLayers.empty();
-        //The runner's own enabled modules join the recipe (mounted as base) — see CreateRecipe. Same
-        //universal MODULES schema + resolution as variants (runner module toggles also via ModuleStates).
-        ContainerParams.RunnerEndpoints = ResolveEnabledModules(
-            ParseModules(SelectedRunner.value("MODULES", nlohmann::ordered_json::array())),
-            ContainerParams.ModuleStates, MANIFESTJSON);
+        ContainerParams.RunnerEndpoints  = {}; //runner components mount separately (or unified) — not in the game recipe
     }
     else
     {
@@ -1152,7 +1162,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         //Installed runners use their one-time read-only DEFPREFIX artifact (generated at install); other wine
         //runners build it per-launch under TempPath/DEFPREFIX (InitializeDefPrefix).
         ContainerParams.DefPrefixBasePath               = ContainerParams.RunnerShipsBuild
-            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerID))
+            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerID, ContainerParams.RunnerVariantID))
             : ContainerParams.TempPath / "DEFPREFIX";
         ContainerParams.DefPrefixPath                   = PrefixSubpath.empty() ? ContainerParams.DefPrefixBasePath
                                                                                 : ContainerParams.DefPrefixBasePath / PrefixSubpath;
@@ -1847,38 +1857,46 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
 
 //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS), and for wine runners generates the
 //one-time read-only DEFPREFIX artifact by mounting the build and running `wineboot` once. Idempotent.
-bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, std::string *Error)
+bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId, std::string *Error)
 {
     (void)GlobalConfigJSON;
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::InstallRunner", M); return false; };
 
-    const std::string Id = RunnerWrapper::RunnerId(RunnerPkg);
-    if (Id.empty()) return Fail("runner package has no RUNNER_ID");
+    const std::string Id  = RunnerWrapper::RunnerId(RunnerPkg);
+    const std::string Vid = VariantId.empty() ? RunnerWrapper::DefaultVariantId(RunnerPkg) : VariantId;
+    if (Id.empty())  return Fail("runner package has no RUNNER_ID");
+    if (Vid.empty()) return Fail("runner '" + Id + "' has no variant to install");
+    const nlohmann::ordered_json R = RunnerWrapper::Variant(RunnerPkg, Vid);   // the runner VARIANT (exec params)
+    if (R.empty())   return Fail("runner '" + Id + "' has no variant '" + Vid + "'");
+    const std::string Label = Id + ":" + Vid;
 
-    //1. Fetch the runner build layers from IPFS (cached + pinned).
-    for (const std::string &Cid : RunnerWrapper::BuildCids(RunnerPkg))
+    //1. Fetch this variant's build layers from IPFS (cached + pinned).
+    for (const std::string &Cid : RunnerWrapper::BuildCids(RunnerPkg, Vid))
     {
         std::string Err;
         if (IpfsWrapper::FetchSync(Cid, &Err).empty()) return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
     }
-    LogSucc("ContainerWrapper::InstallRunner", "Fetched runner build for " + Id);
-    if (!RunnerWrapper::IsWineRunner(RunnerPkg)) return true;       // non-wine: no prefix to build
+    LogSucc("ContainerWrapper::InstallRunner", "Fetched runner build for " + Label);
+    if (!RunnerWrapper::IsWineRunner(RunnerPkg, Vid)) return true;       // non-wine: no prefix to build
 
-    //2. Generate the one-time DEFPREFIX artifact (idempotent).
-    const std::filesystem::path ArtifactDir = RunnerWrapper::ArtifactDir(Id);
-    const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(Id);    // ArtifactDir/DEFPREFIX
-    const nlohmann::ordered_json &R = RunnerPkg["RUNNERS"][0];
+    //2. Generate the one-time DEFPREFIX artifact for this (runner, variant) (idempotent).
+    const std::filesystem::path ArtifactDir = RunnerWrapper::ArtifactDir(Id, Vid);
+    const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(Id, Vid);  // ArtifactDir/DEFPREFIX
     const std::string Subpath = R.value("PREFIX_SUBPATH", std::string());
     const std::filesystem::path PrefixDir = Subpath.empty() ? DefArtifact : (DefArtifact / Subpath);
 
     std::error_code Ec;
     if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
     {
-        LogOut("ContainerWrapper::InstallRunner", "DEFPREFIX artifact already present for " + Id);
+        LogOut("ContainerWrapper::InstallRunner", "DEFPREFIX artifact already present for " + Label);
         return true;
     }
 
-    //Mount the build read-only at a temp runner mount so `wineboot` can run from it.
+    //Mount this variant's build read-only at a temp runner mount so `wineboot` can run from it. Only the
+    //components the variant's MODULES enable are mounted.
+    std::vector<std::string> WantComps;
+    for (const auto &M : R.value("MODULES", nlohmann::ordered_json::array()))
+        if (M.is_object()) { std::string C = M.value("COMPONENT", std::string()); if (!C.empty()) WantComps.push_back(C); }
     const std::filesystem::path MountDir = ArtifactDir / ".buildmount";
     std::filesystem::create_directories(ArtifactDir, Ec);
     nlohmann::ordered_json Spec;
@@ -1886,6 +1904,10 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
+    {
+        bool Wanted = false;
+        for (const auto &W : WantComps) if (C.value("COMPONENTID", std::string()) == W) { Wanted = true; break; }
+        if (!Wanted) continue;
         for (const auto &S : C.value("SUBCOMPONENTS", nlohmann::ordered_json::array()))
         {
             const std::string T = S.value("TYPE", std::string());
@@ -1894,6 +1916,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
             Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, std::filesystem::path())},
                               {"target", S.value("TARGET", std::string())}, {"rw", false}});
         }
+    }
     Spec["layers"] = Layers;
     if (!SpawnVidyagodfs(Spec, MountDir, ArtifactDir / ".buildmount.spec.json"))
         return Fail("could not mount runner build for install");
@@ -1928,8 +1951,8 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
     const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
 
     QProcess::execute("fusermount3", {"-uz", QString::fromStdString(MountDir.string())});
-    if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Id); }
-    LogSucc("ContainerWrapper::InstallRunner", "Installed runner " + Id + " (DEFPREFIX at " + DefArtifact.string() + ")");
+    if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Label); }
+    LogSucc("ContainerWrapper::InstallRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
     return true;
 }
 

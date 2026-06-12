@@ -335,19 +335,28 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             if (RecCount > 1) Warnings.push_back("Game '" + GID + "' has " + std::to_string(RecCount) + " RECOMMENDED variants");
         }
 
-    // Runner checks (RUNNERS array). Each runner needs a GUEST_PLATFORM. A runner's MODULES often
-    // reference its OWN package's components — but a registry runner is validated in isolation, so a
-    // module component not present in this doc is only a warning (it may resolve in the runner's own package).
+    // Runner checks. A runner mirrors a game: RUNNERS[].{RUNNER_ID, VARIANTS[]}. Each runner VARIANT needs
+    // HOST_PLATFORM (the host it runs on) and GUEST_PLATFORM (the platforms it serves). A variant's MODULES
+    // reference its OWN package's components — only a warning if absent here (validated in isolation).
     if (Assembled.contains("RUNNERS") && Assembled["RUNNERS"].is_array())
         for (const auto &R : Assembled["RUNNERS"])
         {
             std::string RID = Str(R, "RUNNER_ID");
-            if (RID.empty()) Warnings.push_back("A runner has no RUNNER_ID");
-            if (!R.contains("GUEST_PLATFORM") || !R["GUEST_PLATFORM"].is_array() || R["GUEST_PLATFORM"].empty())
-                Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' has no GUEST_PLATFORM");
-            for (const auto &C : ModuleComponents(R))
-                if (!ComponentIds.count(C))
-                    Warnings.push_back("Runner '" + (RID.empty() ? std::string("?") : RID) + "' module '" + C + "' is not a component in this package (may resolve in the runner's own package)");
+            if (RID.empty()) RID = "?";
+            else if (Str(R, "RUNNER_ID").empty()) Warnings.push_back("A runner has no RUNNER_ID");
+            const auto Variants = (R.contains("VARIANTS") && R["VARIANTS"].is_array()) ? R["VARIANTS"] : nlohmann::ordered_json::array();
+            if (Variants.empty()) Warnings.push_back("Runner '" + RID + "' has no variants");
+            for (const auto &V : Variants)
+            {
+                std::string VID = Str(V, "VARIANT_ID", "?");
+                if (Str(V, "HOST_PLATFORM").empty())
+                    Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' has no HOST_PLATFORM");
+                if (!V.contains("GUEST_PLATFORM") || !V["GUEST_PLATFORM"].is_array() || V["GUEST_PLATFORM"].empty())
+                    Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' has no GUEST_PLATFORM");
+                for (const auto &C : ModuleComponents(V))
+                    if (!ComponentIds.count(C))
+                        Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' module '" + C + "' is not a component in this package");
+            }
         }
 }
 

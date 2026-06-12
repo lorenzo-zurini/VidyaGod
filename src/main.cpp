@@ -156,8 +156,10 @@ int main(int argc, char *argv[])
     //HEADLESS: install a runner (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
     if (!LaunchParameters.InstallRunnerId.empty())
     {
-        const std::string Id = LaunchParameters.InstallRunnerId;
-        LogOut("main.cpp", "Installing runner: " + Id);
+        //--install-runner <RUNNER_ID>[:<VARIANT_ID>] — variant defaults to the runner's recommended/first.
+        std::string Id = LaunchParameters.InstallRunnerId, Variant;
+        if (auto Colon = Id.find(':'); Colon != std::string::npos) { Variant = Id.substr(Colon + 1); Id = Id.substr(0, Colon); }
+        LogOut("main.cpp", "Installing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
         nlohmann::ordered_json RunnerPkg;
         for (const auto &Pkg : ContainerWrapper::CatalogPackages(GlobalConfigJSON))
             if (JSONOps::HasRunners(Pkg))
@@ -165,7 +167,7 @@ int main(int argc, char *argv[])
                     if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = Pkg; break; }
         if (RunnerPkg.is_null()) { LogErr("main.cpp", "No runner package found for RUNNER_ID '" + Id + "'."); return 1; }
         std::string Err;
-        const bool Ok = ContainerWrapper::InstallRunner(GlobalConfigJSON, RunnerPkg, &Err);
+        const bool Ok = ContainerWrapper::InstallRunner(GlobalConfigJSON, RunnerPkg, Variant, &Err);
         LogOut("main.cpp", Ok ? "Runner installed." : ("Runner install failed: " + Err));
         return Ok ? 0 : 1;
     }

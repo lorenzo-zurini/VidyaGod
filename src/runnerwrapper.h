@@ -6,42 +6,49 @@
 #include "nlohmann/json.hpp"
 
 // ---------------------------------------------------------------------------
-// RunnerWrapper — install-state helpers for runner *packages*.
+// RunnerWrapper — install-state helpers for runner *packages*, per runner VARIANT.
 //
-// A runner is delivered "like a normal package": HOST_PLATFORM + RUNNERS[0] +
-// COMPONENTS whose SUBCOMPONENTS include VFSZipLayer(s) with SOURCE {TYPE:"ipfs",
-// CID} (the runner build, e.g. a Proton zip — never extracted). A runner is
-// "installed" once its IPFS layers are fetched+pinned and (for wine/proton) its
-// one-time read-only DEFPREFIX artifact has been generated.
+// A runner mirrors a game: `RUNNERS[].{RUNNER_ID, NAME, VARIANTS[]}` over the shared `COMPONENTS` pool.
+// Each runner VARIANT carries the execution params (TYPE/EXECUTABLE/ENV/ARGS/PREFIX_SUBPATH), the guest
+// platforms it serves (GUEST_PLATFORM) + its host (HOST_PLATFORM), and MODULES selecting its build
+// component(s) (VFSZipLayer(s) with SOURCE {TYPE:"ipfs",CID} — never extracted).
 //
-// These are pure helpers (no mounting / no wineboot). The actual install work —
-// fetch + mount + generate DEFPREFIX — lives in ContainerWrapper::InstallRunner,
-// which has the vidyagodfs machinery.
+// "Installed" is therefore per (RUNNER_ID, VARIANT_ID): the variant's build CIDs are fetched+pinned, and
+// (for a wine variant) its one-time read-only DEFPREFIX artifact has been generated. These are pure helpers
+// (no mounting / no wineboot); the install work lives in ContainerWrapper::InstallRunner.
+//
+// Single-runner-entity packages are assumed (RUNNERS[0] is the entity).
 // ---------------------------------------------------------------------------
 namespace RunnerWrapper {
 
-// ~/.VidyaGod/DOWNLOADS/runners/<RunnerId> — where this runner's install artifacts live.
-std::string ArtifactDir(const std::string &RunnerId);
+// ~/.VidyaGod/DOWNLOADS/runners/<RunnerId>/<VariantId> — this runner-variant's install artifacts.
+std::string ArtifactDir(const std::string &RunnerId, const std::string &VariantId);
 
 // The read-only DEFPREFIX artifact generated once at install (ArtifactDir/DEFPREFIX).
-std::string DefPrefixArtifact(const std::string &RunnerId);
+std::string DefPrefixArtifact(const std::string &RunnerId, const std::string &VariantId);
 
-// The RUNNER_ID of a runner package's first RUNNERS entry ("" if none).
+// RUNNER_ID of the package's runner entity ("" if none).
 std::string RunnerId(const nlohmann::ordered_json &RunnerPkg);
 
-// Whether a runner package's RUNNERS[0] is a wine/proton runner (needs a DEFPREFIX).
-bool IsWineRunner(const nlohmann::ordered_json &RunnerPkg);
+// The runner entity's variant ids, and the default (RECOMMENDED, else first; "" if none).
+std::vector<std::string> VariantIds(const nlohmann::ordered_json &RunnerPkg);
+std::string              DefaultVariantId(const nlohmann::ordered_json &RunnerPkg);
 
-// Whether a runner package ships its own build (has at least one VFSZipLayer with an ipfs SOURCE) — i.e.
-// it must be installed before use. PATH runners (umu-run, system wine, emulators) have none.
-bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg);
+// The runner variant object (empty if not found). Pass "" for VariantId to get the default variant.
+nlohmann::ordered_json Variant(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
-// Every ipfs CID referenced by the runner package's VFSZipLayer subcomponents (the build to fetch).
-std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg);
+// Whether the given runner variant is a wine/proton variant (needs a DEFPREFIX).
+bool IsWineRunner(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
-// Installed = every BuildCid is cached AND (wine) the DEFPREFIX artifact exists. A PATH runner
-// (ShipsBuild == false) is always "installed" (nothing to fetch).
-bool IsInstalled(const nlohmann::ordered_json &RunnerPkg);
+// Every ipfs CID the variant's build references (VFSZipLayer SOURCEs of the components its MODULES enable).
+std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
+
+// Whether the variant ships a build (≥1 ipfs build CID) — i.e. it must be installed before use.
+bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
+
+// Installed = every build CID cached AND (wine) the DEFPREFIX artifact exists. A variant that ships no
+// build is always "installed" (nothing to fetch).
+bool IsInstalled(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
 } // namespace RunnerWrapper
 
