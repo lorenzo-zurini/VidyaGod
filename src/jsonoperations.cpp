@@ -242,11 +242,8 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             Errors.push_back(std::string("Missing identity field: ") + Key);
     }
 
-    // HOST_PLATFORM — the platform this package runs as (matched against runner GUEST_PLATFORM).
-    // Advisory: a pure-dependency package (no GAMES/RUNNERS) legitimately omits it.
-    if (!Assembled.contains("HOST_PLATFORM") ||
-        !Assembled["HOST_PLATFORM"].is_string() || std::string(Assembled["HOST_PLATFORM"]).empty())
-        Warnings.push_back("No HOST_PLATFORM declared (needed to resolve a runner for a game)");
+    // HOST_PLATFORM is now per-variant (the platform each game/runner variant targets), validated in the
+    // GAMES/RUNNERS loops below. There is no package-level HOST_PLATFORM anymore.
 
     // Component id set + parent map. Also flag duplicate CustomVar KEYs within one component.
     std::unordered_set<std::string> ComponentIds;
@@ -327,6 +324,8 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             {
                 std::string VID = Str(V, "VARIANT_ID", "?");
                 if (V.contains("RECOMMENDED") && V["RECOMMENDED"].is_boolean() && V["RECOMMENDED"].get<bool>()) RecCount++;
+                if (Str(V, "HOST_PLATFORM").empty())
+                    Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no HOST_PLATFORM (needed to resolve a runner)");
                 const auto Comps = ModuleComponents(V);
                 if (Comps.empty()) Warnings.push_back("Variant '" + VID + "' in game '" + GID + "' has no modules");
                 for (const auto &C : Comps)

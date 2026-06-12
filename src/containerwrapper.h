@@ -45,6 +45,8 @@ struct VariantInfo {
     std::string VariantID;      // VARIANT_ID field on the variant
     std::string Name;           // optional NAME; falls back to VARIANT_ID for display
     bool        IsRecommended = false; // RECOMMENDED:true on the variant — shown with ⭐ in picker
+    std::string HostPlatform;   // HOST_PLATFORM — per-variant (game: the platform it targets; runner: the host OS it runs on)
+    std::vector<std::string> GuestPlatform; // GUEST_PLATFORM — runner variants only (the guest platforms this variant serves)
     std::vector<ModuleInfo> Modules; // MODULES array (toggleable component references, load order)
 };
 

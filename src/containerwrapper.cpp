@@ -585,6 +585,9 @@ std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::
         Info.VariantID     = V.value("VARIANT_ID", std::string());
         Info.Name          = V.value("NAME", Info.VariantID);
         Info.IsRecommended = V.value("RECOMMENDED", false);
+        Info.HostPlatform  = V.value("HOST_PLATFORM", std::string());
+        if (V.contains("GUEST_PLATFORM") && V["GUEST_PLATFORM"].is_array())   // runner variants only
+            for (const auto &P : V["GUEST_PLATFORM"]) if (P.is_string()) Info.GuestPlatform.push_back(std::string(P));
         Info.Modules       = ParseModules(V.value("MODULES", nlohmann::ordered_json::array()));
         Variants.push_back(std::move(Info));
     }
@@ -927,12 +930,20 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     ContainerParams.PackageUID                          = MANIFESTJSON["PACKAGEUID"];
     LogOut("ContainerWrapper::DeriveContainerParams", "PackageUID: " + ContainerParams.PackageUID);
 
-    //HOST_PLATFORM is package identity — the platform this package runs AS, matched against each
-    //runner's GUEST_PLATFORM. (Free-form: "win32", "snes", "custom", …)
-    ContainerParams.Platform = MANIFESTJSON.value("HOST_PLATFORM", std::string());
-
     //Game specific — only populated when a game was specified.
     int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+
+    //HOST_PLATFORM is now per-variant: the platform the SELECTED game variant targets, matched against each
+    //runner variant's GUEST_PLATFORM. (Free-form: "win32", "linux64", "snes", …) Falls back to the legacy
+    //package-level field for the no-game tooling path / un-migrated data.
+    ContainerParams.Platform = std::string();
+    if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS") && MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"].is_array())
+        for (const auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
+            if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
+            { ContainerParams.Platform = V.value("HOST_PLATFORM", std::string()); break; }
+    if (ContainerParams.Platform.empty())
+        ContainerParams.Platform = MANIFESTJSON.value("HOST_PLATFORM", std::string());   // legacy/no-game fallback
+
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
         ContainerParams.GameName                        = MANIFESTJSON["GAMES"][SubgameIdx]["TITLE"];
