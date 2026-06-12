@@ -169,7 +169,8 @@ private:
     QTableWidget  * IpfsTransfers   = nullptr;   // CID | Progress | Status — live fetches
     QTableWidget  * IpfsPins        = nullptr;   // pinned (seeded) CIDs
     QTimer        * IpfsRefreshTimer = nullptr;
-    QHash<QString, int> IpfsTransferRows;        // CID → row index in IpfsTransfers
+    QHash<QString, int>     IpfsTransferRows;     // CID → row index in IpfsTransfers
+    QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
 
     void BuildStaticUI();
     void BuildLibraryGameCards();

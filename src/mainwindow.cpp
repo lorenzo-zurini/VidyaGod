@@ -734,6 +734,38 @@ QWidget * MainWindow::BuildPathsSettingsPage()
 // never starts the daemon — it only reports whether the user is running one.
 // ═════════════════════════════════════════════════════════════════════════════
 
+// Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>"), so the IPFS tab
+// can show what each CID actually is instead of a raw hash.
+static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc)
+{
+    QHash<QString, QString> Labels;
+    for (const auto & Pkg : ContainerWrapper::CatalogPackages(gc))
+    {
+        const std::string PkgName = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string()));
+        if (!Pkg.contains("COMPONENTS") || !Pkg["COMPONENTS"].is_array()) continue;
+        for (const auto & C : Pkg["COMPONENTS"])
+        {
+            const std::string CompName = C.value("NAME", std::string());
+            if (!C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+            for (const auto & S : C["SUBCOMPONENTS"])
+            {
+                const std::string T = S.value("TYPE", std::string());
+                if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+                if (!S.contains("SOURCE") || !S["SOURCE"].is_object() || S["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
+                const std::string Cid = S["SOURCE"].value("CID", std::string());
+                if (Cid.empty()) continue;
+                std::string Label = PkgName;                                   // default: package name
+                if (!CompName.empty() && CompName.find(PkgName) == std::string::npos)   // component adds info
+                    Label = PkgName.empty() ? CompName : (PkgName + " — " + CompName);
+                else if (PkgName.empty() && !CompName.empty())
+                    Label = CompName;
+                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(Label));
+            }
+        }
+    }
+    return Labels;
+}
+
 void MainWindow::BuildIpfsTab()
 {
     IpfsTabWidget = new QWidget(MainWindowTabWidget);
@@ -762,11 +794,14 @@ void MainWindow::BuildIpfsTab()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    // Transfers (live fetches from the launch worker).
+    // Build the CID → human-label index up front so transfers/pins show what each CID actually is.
+    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);
+
+    // Transfers (live fetches from the launch worker). Name | CID | Progress | Status.
     QGroupBox * txBox = new QGroupBox("Transfers", IpfsTabWidget);
     QVBoxLayout * txl = new QVBoxLayout(txBox);
-    IpfsTransfers = new QTableWidget(0, 3, txBox);
-    IpfsTransfers->setHorizontalHeaderLabels({"CID", "Progress", "Status"});
+    IpfsTransfers = new QTableWidget(0, 4, txBox);
+    IpfsTransfers->setHorizontalHeaderLabels({"Name", "CID", "Progress", "Status"});
     IpfsTransfers->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsTransfers->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsTransfers->setSelectionMode(QAbstractItemView::NoSelection);
@@ -774,11 +809,11 @@ void MainWindow::BuildIpfsTab()
     txl->addWidget(IpfsTransfers);
     v->addWidget(txBox, 1);
 
-    // Seeded content (pinned CIDs).
+    // Seeded content (pinned CIDs). Name | CID | actions.
     QGroupBox * pinBox = new QGroupBox("Seeded content (pinned)", IpfsTabWidget);
     QVBoxLayout * pl = new QVBoxLayout(pinBox);
-    IpfsPins = new QTableWidget(0, 2, pinBox);
-    IpfsPins->setHorizontalHeaderLabels({"CID", ""});
+    IpfsPins = new QTableWidget(0, 3, pinBox);
+    IpfsPins->setHorizontalHeaderLabels({"Name", "CID", ""});
     IpfsPins->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
@@ -792,30 +827,32 @@ void MainWindow::BuildIpfsTab()
         if (!IpfsTransfers) return;
         int row = IpfsTransferRows.value(cid, -1);
         if (row < 0) {
+            if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);  // refresh once
             row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
             IpfsTransferRows.insert(cid, row);
-            IpfsTransfers->setItem(row, 0, new QTableWidgetItem(cid));
+            IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
+            IpfsTransfers->setItem(row, 1, new QTableWidgetItem(cid));
             QProgressBar * bar = new QProgressBar(); bar->setRange(0, 0); // indeterminate until first %
-            IpfsTransfers->setCellWidget(row, 1, bar);
-            IpfsTransfers->setItem(row, 2, new QTableWidgetItem("Fetching…"));
-        } else if (IpfsTransfers->item(row, 2)) {
-            IpfsTransfers->item(row, 2)->setText("Fetching…");
+            IpfsTransfers->setCellWidget(row, 2, bar);
+            IpfsTransfers->setItem(row, 3, new QTableWidgetItem("Fetching…"));
+        } else if (IpfsTransfers->item(row, 3)) {
+            IpfsTransfers->item(row, 3)->setText("Fetching…");
         }
     });
     connect(mgr, &IpfsManager::transferProgress, this, [this](QString cid, double pct) {
         int row = IpfsTransferRows.value(cid, -1);
         if (row < 0 || !IpfsTransfers) return;
-        if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 1))) {
+        if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 2))) {
             bar->setRange(0, 100); bar->setValue(int(pct + 0.5));
         }
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok) {
         int row = IpfsTransferRows.value(cid, -1);
         if (row >= 0 && IpfsTransfers) {
-            if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 1))) {
+            if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 2))) {
                 bar->setRange(0, 100); if (ok) bar->setValue(100);
             }
-            if (IpfsTransfers->item(row, 2)) IpfsTransfers->item(row, 2)->setText(ok ? "Done" : "Failed");
+            if (IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(ok ? "Done" : "Failed");
         }
         RefreshIpfsTab();                                    // a finished fetch likely added a pin
     });
@@ -841,12 +878,14 @@ void MainWindow::RefreshIpfsTab()
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
+    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);                  // keep names current with the catalog
     const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
     IpfsPins->setRowCount(int(Pins.size()));
     for (int i = 0; i < int(Pins.size()); ++i)
     {
         const QString Cid = QString::fromStdString(Pins[i].Cid);
-        IpfsPins->setItem(i, 0, new QTableWidgetItem(Cid));
+        IpfsPins->setItem(i, 0, new QTableWidgetItem(IpfsCidLabels.value(Cid, QStringLiteral("(unknown)"))));
+        IpfsPins->setItem(i, 1, new QTableWidgetItem(Cid));
         QWidget * cell = new QWidget();
         QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,2,2,2); cl->setSpacing(4);
         QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
@@ -854,9 +893,9 @@ void MainWindow::RefreshIpfsTab()
         connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
         connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
         cl->addWidget(copyBtn); cl->addWidget(unpinBtn);
-        IpfsPins->setCellWidget(i, 1, cell);
+        IpfsPins->setCellWidget(i, 2, cell);
     }
-    IpfsPins->resizeColumnToContents(1);
+    IpfsPins->resizeColumnToContents(2);
 }
 
 void MainWindow::BuildLibraryGameCards()
