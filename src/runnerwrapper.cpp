@@ -99,7 +99,7 @@ bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &Vari
     return !BuildCids(RunnerPkg, VariantId).empty();
 }
 
-bool IsInstalled(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
+bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
 {
     if (!ShipsBuild(RunnerPkg, VariantId)) return true;                  // PATH runner — nothing to install
     for (const std::string &Cid : BuildCids(RunnerPkg, VariantId))

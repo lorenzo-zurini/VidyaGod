@@ -267,15 +267,15 @@ public:
     //Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
     //(VFSZip/Dir/FileLayer) across its COMPONENTS. The set a game install must fetch to be playable.
     static std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
-    //Installs a catalog GAME package (sibling of InstallRunner): fetches+pins every PackageIpfsCids over IPFS,
+    //Installs a catalog GAME package (sibling of ImportRunner): fetches+pins every PackageIpfsCids over IPFS,
     //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH:PackageDir} in
     //GlobalConfigJSON (deduped by PACKAGEUID). The caller persists GlobalConfig and refreshes the UI. The
     //game's runner is provisioned separately by the play()/EnsureSources gate. Returns false (with *Error) on
     //a failed fetch.
-    static bool InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
+    static bool ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
                                const std::string &PackageDir, std::string *Error = nullptr);
     //True when a package is installed: its PACKAGEUID is in LIBRARY and every PackageIpfsCids is locally cached.
-    static bool IsPackageInstalled(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
+    static bool IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).
@@ -326,7 +326,7 @@ public:
     bool MountRunnerBuild(struct ContainerParams &ContainerParams);
     //Installs one runner VARIANT: fetches its build CIDs (IPFS) and, for a wine variant, generates the
     //one-time read-only DEFPREFIX artifact (mount build → wineboot → store). VariantId "" = default variant.
-    static bool InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
+    static bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
                               const std::string &VariantId = std::string(), std::string *Error = nullptr);
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.

@@ -1948,10 +1948,10 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
 
 //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS), and for wine runners generates the
 //one-time read-only DEFPREFIX artifact by mounting the build and running `wineboot` once. Idempotent.
-bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId, std::string *Error)
+bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId, std::string *Error)
 {
     (void)GlobalConfigJSON;
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::InstallRunner", M); return false; };
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::ImportRunner", M); return false; };
 
     const std::string Id  = RunnerWrapper::RunnerId(RunnerPkg);
     const std::string Vid = VariantId.empty() ? RunnerWrapper::DefaultVariantId(RunnerPkg) : VariantId;
@@ -1967,7 +1967,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
         std::string Err;
         if (IpfsWrapper::FetchSync(Cid, &Err).empty()) return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
     }
-    LogSucc("ContainerWrapper::InstallRunner", "Fetched runner build for " + Label);
+    LogSucc("ContainerWrapper::ImportRunner", "Fetched runner build for " + Label);
     if (!RunnerWrapper::IsWineRunner(RunnerPkg, Vid)) return true;       // non-wine: no prefix to build
 
     //2. Generate the one-time DEFPREFIX artifact for this (runner, variant) (idempotent).
@@ -1979,7 +1979,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
     std::error_code Ec;
     if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
     {
-        LogOut("ContainerWrapper::InstallRunner", "DEFPREFIX artifact already present for " + Label);
+        LogOut("ContainerWrapper::ImportRunner", "DEFPREFIX artifact already present for " + Label);
         return true;
     }
 
@@ -2036,7 +2036,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
     { std::string v = V.get<std::string>(); ContainerWrapper::StringVariableSubstitution(v, Vars); Env.insert(QString::fromStdString(K), QString::fromStdString(v)); }
 
     std::filesystem::create_directories(DefArtifact, Ec);
-    LogOut("ContainerWrapper::InstallRunner", "Generating DEFPREFIX: " + Program + " " + Args.join(' ').toStdString());
+    LogOut("ContainerWrapper::ImportRunner", "Generating DEFPREFIX: " + Program + " " + Args.join(' ').toStdString());
     QProcess P; P.setProgram(QString::fromStdString(Program)); P.setArguments(Args); P.setProcessEnvironment(Env);
     P.start(); P.waitForFinished(-1);
     std::cout << P.readAllStandardError().toStdString() << std::endl << P.readAllStandardOutput().toStdString() << std::endl;
@@ -2044,7 +2044,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
 
     QProcess::execute("fusermount3", {"-uz", QString::fromStdString(MountDir.string())});
     if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Label); }
-    LogSucc("ContainerWrapper::InstallRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
+    LogSucc("ContainerWrapper::ImportRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
     return true;
 }
 
@@ -2074,11 +2074,11 @@ std::vector<std::string> ContainerWrapper::PackageIpfsCids(const nlohmann::order
 
 //Installs a catalog GAME package: fetches+pins every ipfs CID its content references, then registers a slim
 //LIBRARY entry (deduped by PACKAGEUID) in GlobalConfigJSON. The caller persists GlobalConfig + refreshes the
-//UI. The game's runner is provisioned separately by the play()/EnsureSources gate. Mirrors InstallRunner.
-bool ContainerWrapper::InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
+//UI. The game's runner is provisioned separately by the play()/EnsureSources gate. Mirrors ImportRunner.
+bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
                                       const std::string &PackageDir, std::string *Error)
 {
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::InstallPackage", M); return false; };
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::ImportPackage", M); return false; };
 
     const std::string Uid = Manifest.value("PACKAGEUID", std::string());
     if (Uid.empty()) return Fail("package has no PACKAGEUID");
@@ -2091,7 +2091,7 @@ bool ContainerWrapper::InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, 
         if (IpfsWrapper::FetchSync(Cid, &Err).empty())
             return Fail("could not fetch content CID " + Cid + " (" + Err + ")");
     }
-    LogSucc("ContainerWrapper::InstallPackage", "Fetched " + std::to_string(Cids.size()) + " content CID(s) for package " + Uid);
+    LogSucc("ContainerWrapper::ImportPackage", "Fetched " + std::to_string(Cids.size()) + " content CID(s) for package " + Uid);
 
     //2. Register in LIBRARY (the games-view of the catalog), deduped by PACKAGEUID. PATH points at the catalog
     //   clone dir — the manifest lives there and its layers resolve via the CID cache; nothing is copied.
@@ -2099,7 +2099,7 @@ bool ContainerWrapper::InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, 
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
     for (const auto &E : GlobalConfigJSON["LIBRARY"])
         if (E.value("PACKAGEUID", std::string()) == Uid)
-        { LogOut("ContainerWrapper::InstallPackage", "Package " + Uid + " already in LIBRARY."); return true; }
+        { LogOut("ContainerWrapper::ImportPackage", "Package " + Uid + " already in LIBRARY."); return true; }
 
     nlohmann::ordered_json Slim;
     Slim["PACKAGEUID"]     = Uid;
@@ -2107,12 +2107,12 @@ bool ContainerWrapper::InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, 
     Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
     Slim["PATH"]           = PackageDir;
     GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
-    LogSucc("ContainerWrapper::InstallPackage", "Installed package " + Uid + " into LIBRARY (PATH " + PackageDir + ")");
+    LogSucc("ContainerWrapper::ImportPackage", "Installed package " + Uid + " into LIBRARY (PATH " + PackageDir + ")");
     return true;
 }
 
 //True when a package is installed: its PACKAGEUID is in LIBRARY and every content CID is locally cached.
-bool ContainerWrapper::IsPackageInstalled(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
+bool ContainerWrapper::IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
 {
     const std::string Uid = Manifest.value("PACKAGEUID", std::string());
     if (Uid.empty()) return false;

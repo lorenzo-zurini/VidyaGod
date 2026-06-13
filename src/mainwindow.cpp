@@ -98,8 +98,8 @@ void LibraryGameCard::play()
         }
     }
 
-    //Gate: the runner this game uses must be installed (IPFS builds are fetched ahead of time, never at
-    //launch). If a required build/DEFPREFIX is missing, offer to install the runner instead of launching.
+    //Gate: the runner this game uses must be imported (IPFS builds are fetched ahead of time, never at
+    //launch). If a required build/DEFPREFIX is missing, offer to import the runner instead of launching.
     {
         nlohmann::ordered_json ManifestCopy = *MANIFESTJSON;                  // copy — the probe folds runner comps
         struct ContainerParams CP(PackagePath, SubgameID, std::string());
@@ -116,21 +116,21 @@ void LibraryGameCard::play()
             const QString Rid = QString::fromStdString(CP.RunnerID + (Vid.empty() ? "" : (":" + Vid)));
             if (RunnerPkg.is_null() || !RunnerWrapper::ShipsBuild(RunnerPkg, Vid))
             { QMessageBox::warning(nullptr, "Runner unavailable",
-                  "This game needs runner '" + Rid + "', which isn't installed and can't be fetched."); return; }
+                  "This game needs runner '" + Rid + "', which isn't imported and can't be fetched."); return; }
             if (!IpfsWrapper::Available())
             { QMessageBox::warning(nullptr, "Kubo required",
                   "Runner '" + Rid + "' must be downloaded over IPFS, but Kubo (ipfs) isn't installed."); return; }
-            if (QMessageBox::question(nullptr, "Install runner?",
-                    "This game needs runner '" + Rid + "', which isn't installed yet.\n\n"
-                    "Download and install it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
+            if (QMessageBox::question(nullptr, "Import runner?",
+                    "This game needs runner '" + Rid + "', which isn't imported yet.\n\n"
+                    "Download and import it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
                 return;
             std::thread([GC = GlobalConfigJSON, RunnerPkg, Vid, Rid]{
                 std::string Err;
-                bool Ok = ContainerWrapper::InstallRunner(*GC, RunnerPkg, Vid, &Err);
+                bool Ok = ContainerWrapper::ImportRunner(*GC, RunnerPkg, Vid, &Err);
                 QMetaObject::invokeMethod(qApp, [Ok, Err, Rid]{
-                    if (Ok) QMessageBox::information(nullptr, "Runner installed",
-                                "Runner '" + Rid + "' installed — press Play to launch.");
-                    else    QMessageBox::warning(nullptr, "Runner install failed", QString::fromStdString(Err));
+                    if (Ok) QMessageBox::information(nullptr, "Runner imported",
+                                "Runner '" + Rid + "' imported — press Play to launch.");
+                    else    QMessageBox::warning(nullptr, "Runner import failed", QString::fromStdString(Err));
                 }, Qt::QueuedConnection);
             }).detach();
             return;
@@ -539,7 +539,7 @@ void MainWindow::BuildStaticUI()
     PackagesScrollArea->setWidgetResizable(true);
     PackagesTabWidgetLayout->addWidget(PackagesScrollArea);
 
-    // ── Store tab (catalog games to install over IPFS) ──────────────────────────
+    // ── Store tab (catalog games to import over IPFS) ──────────────────────────
     BuildStoreTab();
 
     // ── Settings tab ───────────────────────────────────────────────────────────
@@ -605,10 +605,10 @@ void MainWindow::RebuildSettingsRunnersPage()
     SettingsRunnersScroll->setWidget(contents);
 
     // Runners are packages from the configured repositories. One that ships its own build (e.g. Proton over
-    // IPFS) must be installed (build fetched + DEFPREFIX generated) before games can use it.
+    // IPFS) must be imported (build fetched + DEFPREFIX generated) before games can use it.
     QLabel * intro = new QLabel(
         "Runners are packages from your repositories. A runner that ships its own build (e.g. Proton over "
-        "IPFS) must be installed before games can use it.", contents);
+        "IPFS) must be imported before games can use it.", contents);
     intro->setWordWrap(true);
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
@@ -630,7 +630,7 @@ void MainWindow::RebuildSettingsRunnersPage()
         QVBoxLayout * cv = new QVBoxLayout(card); card->setLayout(cv);
         cv->addWidget(new QLabel("<span style='color:#8f98a0;'>RUNNER_ID: " + QString::fromStdString(rid) + "</span>", card));
 
-        // One row per runner VARIANT: TYPE/platforms + install state + Install button.
+        // One row per runner VARIANT: TYPE/platforms + import state + Import button.
         for (const std::string & Vid : RunnerWrapper::VariantIds(Pkg))
         {
             const nlohmann::ordered_json V = RunnerWrapper::Variant(Pkg, Vid);
@@ -642,32 +642,32 @@ void MainWindow::RebuildSettingsRunnersPage()
                                + "  ·  " + QString::fromStdString(V.value("HOST_PLATFORM", std::string())) + " → [" + guest + "]";
 
             const bool Ships     = RunnerWrapper::ShipsBuild(Pkg, Vid);
-            const bool Installed = RunnerWrapper::IsInstalled(Pkg, Vid);
+            const bool Imported = RunnerWrapper::IsImported(Pkg, Vid);
             QHBoxLayout * row = new QHBoxLayout();
             row->addWidget(new QLabel(Desc, card), 1);
             QLabel * st = new QLabel(card);
             if (!Ships)          st->setText("<span style='color:#8f98a0;'>built-in</span>");
-            else if (Installed)  st->setText("<span style='color:#5fb55f;'>Installed</span>");
-            else                 st->setText("<span style='color:#c0726a;'>Not installed</span>");
+            else if (Imported)  st->setText("<span style='color:#5fb55f;'>Imported</span>");
+            else                 st->setText("<span style='color:#c0726a;'>Not imported</span>");
             row->addWidget(st);
-            if (Ships && !Installed && IpfsWrapper::Available())
+            if (Ships && !Imported && IpfsWrapper::Available())
             {
-                QPushButton * btn = new QPushButton("Install", card);
+                QPushButton * btn = new QPushButton("Import", card);
                 connect(btn, &QPushButton::clicked, this, [this, Pkg, Vid, btn, st]{
-                    btn->setEnabled(false); btn->setText("Installing…");
-                    st->setText("<span style='color:#c6a15f;'>Installing… (see IPFS tab)</span>");
+                    btn->setEnabled(false); btn->setText("Importing…");
+                    st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
                     std::thread([this, Pkg, Vid]{
                         std::string Err;
-                        bool Ok = ContainerWrapper::InstallRunner(*GlobalConfigJSON, Pkg, Vid, &Err);
+                        bool Ok = ContainerWrapper::ImportRunner(*GlobalConfigJSON, Pkg, Vid, &Err);
                         QMetaObject::invokeMethod(this, [this, Ok, Err]{
-                            if (!Ok) QMessageBox::warning(this, "Runner install failed", QString::fromStdString(Err));
+                            if (!Ok) QMessageBox::warning(this, "Runner import failed", QString::fromStdString(Err));
                             RebuildSettingsRunnersPage(); RefreshIpfsTab();
                         }, Qt::QueuedConnection);
                     }).detach();
                 });
                 row->addWidget(btn);
             }
-            else if (Ships && !Installed)
+            else if (Ships && !Imported)
             {
                 QLabel * need = new QLabel("install Kubo", card);
                 need->setStyleSheet("color:#8f98a0;font-style:italic;");
@@ -785,8 +785,8 @@ void MainWindow::BuildStoreTab()
     RebuildStoreTab();
 }
 
-//Lists every catalog game that isn't installed yet, with an Install button that fetches its content over IPFS
-//and adds it to the library. Mirrors RebuildSettingsRunnersPage (runner installs).
+//Lists every catalog game that isn't imported yet, with an Install button that fetches its content over IPFS
+//and adds it to the library. Mirrors RebuildSettingsRunnersPage (runner imports).
 void MainWindow::RebuildStoreTab()
 {
     if (!StoreScroll) return;
@@ -797,7 +797,7 @@ void MainWindow::RebuildStoreTab()
     StoreScroll->setWidget(contents);
 
     QLabel * intro = new QLabel(
-        "Games shared in your repositories. Install one to download its content over IPFS and add it to your "
+        "Games shared in your repositories. Import one to download its content over IPFS and add it to your "
         "library. (Its runner is fetched on first launch.)", contents);
     intro->setWordWrap(true);
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
@@ -809,7 +809,7 @@ void MainWindow::RebuildStoreTab()
         const nlohmann::ordered_json & Pkg = PkgDir.first;
         const std::string & Dir = PkgDir.second;
         if (!JSONOps::HasGames(Pkg)) continue;
-        if (ContainerWrapper::IsPackageInstalled(*GlobalConfigJSON, Pkg)) continue; // already in the library
+        if (ContainerWrapper::IsPackageImported(*GlobalConfigJSON, Pkg)) continue; // already in the library
         shown++;
 
         const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
@@ -829,11 +829,11 @@ void MainWindow::RebuildStoreTab()
         row->addWidget(new QLabel(QString("%1 content layer(s) over IPFS").arg(CidCount), card), 1);
         if (IpfsWrapper::Available())
         {
-            QPushButton * btn = new QPushButton("Install", card);
+            QPushButton * btn = new QPushButton("Import", card);
             const nlohmann::ordered_json PkgCopy = Pkg;   // capture by value for the worker
             const std::string DirCopy = Dir;
             connect(btn, &QPushButton::clicked, this, [this, PkgCopy, DirCopy, btn]{
-                btn->setEnabled(false); btn->setText("Installing…");
+                btn->setEnabled(false); btn->setText("Importing…");
                 // Fetch content on a worker thread (the slow part); register in LIBRARY on the GUI thread.
                 std::thread([this, PkgCopy, DirCopy]{
                     std::string Err; bool Ok = true;
@@ -842,12 +842,12 @@ void MainWindow::RebuildStoreTab()
                     QMetaObject::invokeMethod(this, [this, Ok, Err, PkgCopy, DirCopy]{
                         if (Ok)
                         {
-                            std::string E2;   // content is now cached → InstallPackage's fetches are instant cache hits
-                            if (ContainerWrapper::InstallPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &E2))
+                            std::string E2;   // content is now cached → ImportPackage's fetches are instant cache hits
+                            if (ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &E2))
                             { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
-                            else QMessageBox::warning(this, "Install failed", QString::fromStdString(E2));
+                            else QMessageBox::warning(this, "Import failed", QString::fromStdString(E2));
                         }
-                        else QMessageBox::warning(this, "Install failed", QString::fromStdString(Err));
+                        else QMessageBox::warning(this, "Import failed", QString::fromStdString(Err));
                         RebuildStoreTab(); RefreshIpfsTab();
                     }, Qt::QueuedConnection);
                 }).detach();
@@ -865,7 +865,7 @@ void MainWindow::RebuildStoreTab()
     }
     if (shown == 0)
     {
-        QLabel * none = new QLabel("No installable games found in your repositories.", contents);
+        QLabel * none = new QLabel("No new games available to import.", contents);
         none->setStyleSheet("color:#8f98a0;");
         v->addWidget(none);
     }

@@ -22,7 +22,7 @@ static int AcquireSingleInstanceLock(const std::string &LockPath)
     return Fd;
 }
 
-static QString DependencyInstallHint(const std::string &Dep); // defined after main()
+static QString DependencyImportHint(const std::string &Dep); // defined after main()
 
 //Application-wide event filter that stops a QComboBox from changing its value when the mouse
 //wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
@@ -153,13 +153,13 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    //HEADLESS: install a runner (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
-    if (!LaunchParameters.InstallRunnerId.empty())
+    //HEADLESS: import a runner (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
+    if (!LaunchParameters.ImportRunnerId.empty())
     {
-        //--install-runner <RUNNER_ID>[:<VARIANT_ID>] — variant defaults to the runner's recommended/first.
-        std::string Id = LaunchParameters.InstallRunnerId, Variant;
+        //--import-runner <RUNNER_ID>[:<VARIANT_ID>] — variant defaults to the runner's recommended/first.
+        std::string Id = LaunchParameters.ImportRunnerId, Variant;
         if (auto Colon = Id.find(':'); Colon != std::string::npos) { Variant = Id.substr(Colon + 1); Id = Id.substr(0, Colon); }
-        LogOut("main.cpp", "Installing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
+        LogOut("main.cpp", "Importing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
         nlohmann::ordered_json RunnerPkg;
         for (const auto &Pkg : ContainerWrapper::CatalogPackages(GlobalConfigJSON))
             if (JSONOps::HasRunners(Pkg))
@@ -167,29 +167,29 @@ int main(int argc, char *argv[])
                     if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = Pkg; break; }
         if (RunnerPkg.is_null()) { LogErr("main.cpp", "No runner package found for RUNNER_ID '" + Id + "'."); return 1; }
         std::string Err;
-        const bool Ok = ContainerWrapper::InstallRunner(GlobalConfigJSON, RunnerPkg, Variant, &Err);
-        LogOut("main.cpp", Ok ? "Runner installed." : ("Runner install failed: " + Err));
+        const bool Ok = ContainerWrapper::ImportRunner(GlobalConfigJSON, RunnerPkg, Variant, &Err);
+        LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
         return Ok ? 0 : 1;
     }
 
-    //HEADLESS: install a catalog game package (fetch its IPFS content + register it in LIBRARY) then exit.
-    if (!LaunchParameters.InstallPackageUid.empty())
+    //HEADLESS: import a catalog game package (fetch its IPFS content + register it in LIBRARY) then exit.
+    if (!LaunchParameters.ImportPackageUid.empty())
     {
-        const std::string Uid = LaunchParameters.InstallPackageUid;
-        LogOut("main.cpp", "Installing package: " + Uid);
+        const std::string Uid = LaunchParameters.ImportPackageUid;
+        LogOut("main.cpp", "Importing package: " + Uid);
         nlohmann::ordered_json Manifest; std::string Dir;
         for (auto &PD : ContainerWrapper::CatalogPackagesWithDir(GlobalConfigJSON))
             if (PD.first.value("PACKAGEUID", std::string()) == Uid) { Manifest = PD.first; Dir = PD.second; break; }
         if (Manifest.is_null()) { LogErr("main.cpp", "No catalog package found for PACKAGEUID '" + Uid + "'."); return 1; }
         std::string Err;
-        const bool Ok = ContainerWrapper::InstallPackage(GlobalConfigJSON, Manifest, Dir, &Err);
+        const bool Ok = ContainerWrapper::ImportPackage(GlobalConfigJSON, Manifest, Dir, &Err);
         if (Ok)
         {
             QFile GCFile(AppDataDir.filePath("GlobalConfig.JSON"));
             if (!JSONOps::SaveJSON(&GlobalConfigJSON, &GCFile))
-                LogWarn("main.cpp", "Package installed but GlobalConfig.JSON could not be written.");
+                LogWarn("main.cpp", "Package imported but GlobalConfig.JSON could not be written.");
         }
-        LogOut("main.cpp", Ok ? "Package installed." : ("Package install failed: " + Err));
+        LogOut("main.cpp", Ok ? "Package imported." : ("Package import failed: " + Err));
         return Ok ? 0 : 1;
     }
 
@@ -257,7 +257,7 @@ int main(int argc, char *argv[])
     if (!MissingDeps.empty())
     {
         QString Msg = "VidyaGod needs the following to launch games, but couldn't find them:\n\n";
-        for (const std::string &Dep : MissingDeps) Msg += "•  " + DependencyInstallHint(Dep) + "\n\n";
+        for (const std::string &Dep : MissingDeps) Msg += "•  " + DependencyImportHint(Dep) + "\n\n";
         Msg += "You can still browse and manage your library; launching a game will fail until these are installed.";
         QMessageBox::warning(nullptr, "Missing dependencies", Msg);
     }
@@ -300,7 +300,7 @@ std::list<std::string> CheckExecutableDependencies()
 }
 
 //Human-friendly install guidance for a missing dependency, shown in the GUI startup dialog.
-static QString DependencyInstallHint(const std::string &Dep)
+static QString DependencyImportHint(const std::string &Dep)
 {
     if (Dep == "fusermount3")
         return "fusermount3 — part of FUSE 3 (needed to mount game runtimes).\n"
@@ -443,13 +443,13 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.VariantID = argv[++i];
         }
-        else if (arg == "--install-runner" && i + 1 < argc)
+        else if (arg == "--import-runner" && i + 1 < argc)
         {
-            RuntimeParameters.InstallRunnerId = argv[++i];
+            RuntimeParameters.ImportRunnerId = argv[++i];
         }
-        else if (arg == "--install-package" && i + 1 < argc)
+        else if (arg == "--import-package" && i + 1 < argc)
         {
-            RuntimeParameters.InstallPackageUid = argv[++i];
+            RuntimeParameters.ImportPackageUid = argv[++i];
         }
         else if (arg == "--runner" && i + 1 < argc)
         {
