@@ -2219,8 +2219,6 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
 
     auto IsLayer = [](const std::string &T) { return T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer"; };
 
-    //Relative content paths to EXCLUDE from the dehydrated export (every layer's content home, collected below).
-    std::set<std::string> ContentPaths;
     int Seeded = 0, Walked = 0;
 
     //Walk every *.json fragment directly (no assemble/decompose round-trip — this preserves each subcomponent's
@@ -2244,11 +2242,7 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(S, Pkg, Local, Cid);
 
-                //Record the layer's content home (only if it lives inside the package) for export exclusion.
                 std::error_code Rc;
-                const std::string Rel = std::filesystem::relative(Local, Pkg, Rc).generic_string();
-                if (!Rc && !Rel.empty() && Rel.rfind("..", 0) != 0) ContentPaths.insert(Rel);
-
                 if (!Cid.empty()) continue;                                      // already has an ipfs CID — idempotent
                 if (!std::filesystem::exists(Local, Rc)) continue;               // no local content to seed
                 std::string Err;
@@ -2270,18 +2264,35 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
     LogSucc("ContainerWrapper::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
             + " of " + std::to_string(Walked) + " layer(s) newly seeded)");
 
-    //Export a manifest-only dehydrated copy (skip the bundled layer content) — the artifact a repo shares.
+    //Export the dehydrated manifest, if requested. A dehydrated package is METADATA ONLY: the JSON manifest
+    //fragments plus the cover/art images they reference. We copy exactly those (top-level *.json + top-level
+    //image files) via an ALLOWLIST — never the bundled content (a package may hold content zips, leftover
+    //extracted dirs, or other stray files far larger than any declared layer; a denylist of layer PATHs misses
+    //those). The fragments carry the CIDs, so a consumer rehydrates the content from IPFS on import.
     if (!DehydratedDestDir.empty())
     {
         const std::filesystem::path Dest(DehydratedDestDir);
         std::filesystem::remove_all(Dest, Ec);
-        std::filesystem::create_directories(Dest.parent_path(), Ec);
-        std::filesystem::copy(Pkg, Dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, Ec);
-        if (Ec) return Fail("could not copy package for dehydrated export (" + Ec.message() + ")");
-        for (const std::string &Rel : ContentPaths)
-            std::filesystem::remove_all(Dest / Rel, Ec);                         // strip content — manifest + covers only
-        LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated package to " + Dest.string()
-                + " (" + std::to_string(ContentPaths.size()) + " content path(s) excluded)");
+        std::filesystem::create_directories(Dest, Ec);
+        if (Ec) return Fail("could not create dehydrated export dir (" + Ec.message() + ")");
+
+        static const std::set<std::string> AssetExt =
+            { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg" };
+        int Copied = 0;
+        for (const auto &Entry : std::filesystem::directory_iterator(Pkg, Ec))
+        {
+            if (!Entry.is_regular_file()) continue;
+            std::string Ext = Entry.path().extension().string();
+            std::transform(Ext.begin(), Ext.end(), Ext.begin(), [](unsigned char c){ return std::tolower(c); });
+            if (Ext != ".json" && !AssetExt.count(Ext)) continue;                 // manifests + cover art only
+            std::error_code Ce;
+            std::filesystem::copy_file(Entry.path(), Dest / Entry.path().filename(),
+                                       std::filesystem::copy_options::overwrite_existing, Ce);
+            if (Ce) LogWarn("ContainerWrapper::PublishPackage", "export skip " + Entry.path().string() + " (" + Ce.message() + ")");
+            else ++Copied;
+        }
+        LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated manifest to " + Dest.string()
+                + " (" + std::to_string(Copied) + " file(s): manifests + cover art)");
     }
     return true;
 }
