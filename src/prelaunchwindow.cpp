@@ -287,14 +287,32 @@ PreLaunchWindow::PreLaunchWindow(
     // filtered by GUEST_PLATFORM ∋ the package's HOST_PLATFORM. Combo userData holds the RUNNER_ID;
     // dedup by RUNNER_ID (the package's own runners shadow registry runners).
     (void)SubgameIdx;
-    std::string Platform = (*MANIFESTJSON).value("HOST_PLATFORM", std::string());
+    // The package's target platforms = its game variants' HOST_PLATFORM (per-variant schema), with the legacy
+    // top-level HOST_PLATFORM as a fallback. A runner qualifies if any of its variants' GUEST_PLATFORM (or its
+    // legacy top-level GUEST_PLATFORM) serves one of them.
+    std::set<std::string> GamePlatforms;
+    if ((*MANIFESTJSON).contains("HOST_PLATFORM") && (*MANIFESTJSON)["HOST_PLATFORM"].is_string())
+        GamePlatforms.insert(std::string((*MANIFESTJSON)["HOST_PLATFORM"]));
+    if ((*MANIFESTJSON).contains("GAMES") && (*MANIFESTJSON)["GAMES"].is_array())
+        for (const auto &G : (*MANIFESTJSON)["GAMES"])
+            if (G.contains("VARIANTS") && G["VARIANTS"].is_array())
+                for (const auto &V : G["VARIANTS"])
+                    if (V.contains("HOST_PLATFORM") && V["HOST_PLATFORM"].is_string())
+                        GamePlatforms.insert(std::string(V["HOST_PLATFORM"]));
+
     std::set<QString> SeenRunnerIds;
+    auto Serves = [&](const nlohmann::ordered_json &Arr) {
+        if (!Arr.is_array()) return false;
+        for (const auto &P : Arr)
+            if (P.is_string() && GamePlatforms.count(std::string(P))) return true;
+        return false;
+    };
     auto CollectRunner = [&](const nlohmann::ordered_json &Runner)
     {
-        bool Match = false;
-        if (Runner.contains("GUEST_PLATFORM") && Runner["GUEST_PLATFORM"].is_array())
-            for (auto &P : Runner["GUEST_PLATFORM"])
-                if (P.is_string() && std::string(P) == Platform) { Match = true; break; }
+        bool Match = Serves(Runner.value("GUEST_PLATFORM", nlohmann::ordered_json()));   // legacy top-level
+        if (!Match && Runner.contains("VARIANTS") && Runner["VARIANTS"].is_array())
+            for (const auto &V : Runner["VARIANTS"])                                      // per-variant (current schema)
+                if (Serves(V.value("GUEST_PLATFORM", nlohmann::ordered_json()))) { Match = true; break; }
         if (!Match) return;
         QString RID = QString::fromStdString(Runner.value("RUNNER_ID", std::string()));
         if (SeenRunnerIds.count(RID)) return;
