@@ -1,6 +1,7 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
+#include "processenv.h"
 #include "registrywrapper.h"
 #include "ipfswrapper.h"
 #include "runnerwrapper.h"
@@ -931,6 +932,7 @@ std::vector<nlohmann::ordered_json> ContainerWrapper::RegistryRunners(const nloh
 static bool RunGit(const QStringList &Args, const QString &WorkDir = QString())
 {
     QProcess P;
+    P.setProcessEnvironment(SystemToolEnv());                                   // system git must not inherit the AppImage LD_LIBRARY_PATH
     if (!WorkDir.isEmpty()) P.setWorkingDirectory(WorkDir);
     P.start("git", Args);
     if (!P.waitForStarted(10000)) return false;
@@ -1578,7 +1580,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     std::string Program = ContainerParams.RunnerExecutable;
     ContainerWrapper::StringVariableSubstitution(Program, ContainerParams.GetVariablesMap());
 
-    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
     QProcess * RunProcess = new QProcess;
     RunProcess->setProgram(QString::fromStdString(Program));
 
@@ -2092,7 +2094,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     { std::string a = std::string(A); ContainerWrapper::StringVariableSubstitution(a, Vars); Args << QString::fromStdString(a); }
     Args << "wineboot";
 
-    QProcessEnvironment Env = QProcessEnvironment::systemEnvironment();
+    QProcessEnvironment Env = SystemToolEnv();                                   // system proton/wine, not AppImage libs
     const nlohmann::ordered_json RemoveEnv = R.value("REMOVE_ENV", nlohmann::ordered_json::array());
     const nlohmann::ordered_json RunnerEnv = R.value("ENV", nlohmann::ordered_json::object());
     for (const auto &K : RemoveEnv) Env.remove(QString::fromStdString(std::string(K)));
@@ -2106,7 +2108,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     std::cout << P.readAllStandardError().toStdString() << std::endl << P.readAllStandardOutput().toStdString() << std::endl;
     const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
 
-    QProcess::execute("fusermount3", {"-uz", QString::fromStdString(MountDir.string())});
+    ContainerWrapper::RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
     if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Label); }
     LogSucc("ContainerWrapper::ImportRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
     return true;
@@ -2686,7 +2688,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     LogOut("ContainerWrapper::Execute", "Executing: " + FinalExe);
     LogOut("ContainerWrapper::Execute", "WorkDirPath: " + ContainerParams.WorkDirPathComplete.string());
 
-    QProcessEnvironment RunProcessEnvironment = QProcessEnvironment::systemEnvironment();
+    QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
 
     // Apply runner-level env removes first so they can't be re-added by the ENV block below.
     for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
@@ -2780,11 +2782,15 @@ void ContainerWrapper::KillGame()
     if (Pid > 0)
     {
         //Kill the entire process group (wine, wineserver, game children) in one shot.
-        //SIGKILL the group first, then the direct process as a fallback.
-        QProcess::execute("kill", {"-9", "--", "-" + QString::number(Pid)});
+        //SIGKILL the group first, then the direct process as a fallback. (System tools — strip the
+        //AppImage LD_LIBRARY_PATH so they load host libs, via SystemToolEnv.)
+        auto RunSys = [](const QString &Prog, const QStringList &A){
+            QProcess Pr; Pr.setProcessEnvironment(SystemToolEnv()); Pr.start(Prog, A); Pr.waitForFinished(-1);
+        };
+        RunSys("kill", {"-9", "--", "-" + QString::number(Pid)});
 
         //Also walk /proc to kill any stragglers that escaped the group.
-        QProcess::execute("bash", {"-c",
+        RunSys("bash", {"-c",
             "pgrep -P " + QString::number(Pid) + " | xargs -r kill -9 2>/dev/null; "
             "kill -9 " + QString::number(Pid) + " 2>/dev/null"});
     }
@@ -2821,21 +2827,21 @@ bool ContainerWrapper::Cleanup()
         for (int Attempt = 0; Attempt < 5 && !Unmounted; ++Attempt)
         {
             if (Attempt > 0) QThread::msleep(200); //give a lingering wineserver time to release
-            if (ContainerWrapper::RunCommand("fusermount3", {"-u", *It}) == 0)
+            if (ContainerWrapper::RunCommand("fusermount3", {"-u", *It}, SystemToolEnv()) == 0)
                 Unmounted = true;
         }
         if (!Unmounted)
         {
             LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries: " + It->string());
             //Lazy-detach so it eventually clears, but mark the wipe unsafe for this run.
-            ContainerWrapper::RunCommand("fusermount3", {"-uz", *It});
+            ContainerWrapper::RunCommand("fusermount3", {"-uz", *It}, SystemToolEnv());
             DurableUnmountOk = false;
         }
     }
 
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
-        ContainerWrapper::RunCommand("fusermount3", {"-uz", UnmountPath});
+        ContainerWrapper::RunCommand("fusermount3", {"-uz", UnmountPath}, SystemToolEnv());
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)
@@ -2918,7 +2924,7 @@ void ContainerWrapper::CleanStaleRuntime(const std::filesystem::path &TempPath)
     //non-lazy unmount spews while a lingering wineserver still holds handles; the actual teardown
     //then finishes in the background, so we VERIFY it has fully cleared below before touching disk.
     for (const std::string &Mount : StaleMounts)
-        ContainerWrapper::RunCommand("fusermount3", {"-uz", Mount});
+        ContainerWrapper::RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
 
     //Save-safety gate (mirrors Cleanup): poll until nothing under TempPath is mounted, so remove_all
     //can never traverse a still-live PERSIST bind into PackagePath/USERDATA. Wait, don't assume.

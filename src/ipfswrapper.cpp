@@ -1,5 +1,6 @@
 #include "ipfswrapper.h"
 #include "commonutils.h"
+#include "processenv.h"
 
 #include <QProcess>
 #include <QStandardPaths>
@@ -33,6 +34,7 @@ static std::string IpfsCacheRoot()
 static bool RunIpfs(const QStringList &Args, QString *Out = nullptr, int TimeoutMs = 120000)
 {
     QProcess P;
+    P.setProcessEnvironment(SystemToolEnv());                                   // system ipfs must not inherit the AppImage LD_LIBRARY_PATH
     P.start("ipfs", Args);
     if (!P.waitForStarted(10000)) return false;
     if (!P.waitForFinished(TimeoutMs)) { P.kill(); P.waitForFinished(2000); return false; }
@@ -78,6 +80,7 @@ bool IsCached(const std::string &Cid)
 static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
 {
     QProcess P;
+    P.setProcessEnvironment(SystemToolEnv());
     P.start("ipfs", {"get", QString::fromStdString(Cid), "-o", Dest});
     if (!P.waitForStarted(10000)) return false;
 
