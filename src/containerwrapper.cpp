@@ -2742,6 +2742,10 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
             Arguments.append(QString::fromStdString(Arg));
     RunProcess.setArguments(Arguments);
     RunProcess.setProcessEnvironment(RunProcessEnvironment);
+    //Stream the runner's output (and its grandchildren — proton's python wrapper, wine, the game) straight to our
+    //stdout/stderr. Captured pipes can swallow what subprocesses write to the inherited terminal fds, which hides
+    //early proton/wine failures; forwarding makes those visible live.
+    RunProcess.setProcessChannelMode(QProcess::ForwardedChannels);
 
     //Register the process pointer so KillGame() can signal it while Execute() blocks.
     {
@@ -2758,8 +2762,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         ActiveRunProcess = nullptr;
     }
 
-    std::cout << RunProcess.readAllStandardError().toStdString() << std::endl;
-    std::cout << RunProcess.readAllStandardOutput().toStdString() << std::endl;
+    //(Runner output was forwarded live to our stdout/stderr above — nothing buffered to print here.)
 
     if (RunProcess.exitStatus() == QProcess::CrashExit)
     {
