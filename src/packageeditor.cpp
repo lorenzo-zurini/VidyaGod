@@ -1429,18 +1429,31 @@ bool PackageEditor::BuildUI()
                         IndividualSubComponentGroupBoxLayout->addWidget(ConvertBtn, 1, 2);
                     }
 
-                    //TARGET field — for VFSZipLayer and VFSDirLayer only.
+                    //TARGET + SUBPATH fields — for VFSZipLayer and VFSDirLayer only.
                     if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer")
                     {
+                        auto &SubRef = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
+
                         IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("TARGET:"), 2, 0);
                         QLineEdit * TargetField = new QLineEdit(IndividualSubComponentGroupBox);
                         QString TargetJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/TARGET").arg(i).arg(j);
                         TargetField->setProperty("JSONPath", TargetJSONPath);
-                        auto &SubRef = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
                         if (SubRef.contains("TARGET") && SubRef["TARGET"].is_string())
                             TargetField->setText(QString::fromStdString(std::string(SubRef["TARGET"])));
                         QObject::connect(TargetField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                         IndividualSubComponentGroupBoxLayout->addWidget(TargetField, 2, 1);
+
+                        //SUBPATH — mount only a path WITHIN the source at TARGET (empty = whole source). For a
+                        //single file, point SUBPATH at it and make TARGET the full destination path (incl. filename).
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("SUBPATH:"), 3, 0);
+                        QLineEdit * SubpathField = new QLineEdit(IndividualSubComponentGroupBox);
+                        SubpathField->setPlaceholderText("optional: path inside the source (e.g. MS/x86/D3D9.dll)");
+                        QString SubpathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/SUBPATH").arg(i).arg(j);
+                        SubpathField->setProperty("JSONPath", SubpathJSONPath);
+                        if (SubRef.contains("SUBPATH") && SubRef["SUBPATH"].is_string())
+                            SubpathField->setText(QString::fromStdString(std::string(SubRef["SUBPATH"])));
+                        QObject::connect(SubpathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        IndividualSubComponentGroupBoxLayout->addWidget(SubpathField, 3, 1);
                     }
                 }
                 else if (SubComponentType == "RegEdit")

@@ -1775,7 +1775,8 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
             std::string T = Sub["TARGET"];
             Target = Target.empty() ? T : (Target + "/" + T);
         }
-        Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target}, {"rw", false}});
+        Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
+                          {"subpath", Sub.value("SUBPATH", std::string())}, {"rw", false}});
     }
 
     //DEFAULTDATA — package-encoded base (non-OVERRIDE) Reg/File edits, at the runtime root. Above the
@@ -1893,7 +1894,7 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
         if (LType.empty()) continue;
         std::string Target = Sub.value("TARGET", std::string());            // beside the runner-mount root
         Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.PackagePath)},
-                          {"target", Target}, {"rw", false}});
+                          {"target", Target}, {"subpath", Sub.value("SUBPATH", std::string())}, {"rw", false}});
     }
     Spec["layers"] = Layers;
 
@@ -1967,7 +1968,8 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
             const std::string LType = (T == "VFSZipLayer") ? "zip" : (T == "VFSDirLayer") ? "dir" : (T == "VFSFileLayer") ? "file" : "";
             if (LType.empty()) continue;
             Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, std::filesystem::path())},
-                              {"target", S.value("TARGET", std::string())}, {"rw", false}});
+                              {"target", S.value("TARGET", std::string())},
+                              {"subpath", S.value("SUBPATH", std::string())}, {"rw", false}});
         }
     }
     Spec["layers"] = Layers;
