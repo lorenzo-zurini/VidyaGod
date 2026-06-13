@@ -868,9 +868,9 @@ static std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &Glo
 //libraries) and globally cross-referenceable.
 //TODO(sharing): also fold in LIBRARY entries + DOWNLOADS, dedupe by PACKAGEUID, and persist the index
 //rather than rescanning every call.
-std::vector<nlohmann::ordered_json> ContainerWrapper::CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON)
+std::vector<std::pair<nlohmann::ordered_json, std::string>> ContainerWrapper::CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    std::vector<nlohmann::ordered_json> Packages;
+    std::vector<std::pair<nlohmann::ordered_json, std::string>> Packages;
     std::set<std::string> SeenUID; // first occurrence wins → earlier repository shadows later ones
     for (const auto &RepoDir : RepositoryDirs(GlobalConfigJSON))
     {
@@ -878,13 +878,21 @@ std::vector<nlohmann::ordered_json> ContainerWrapper::CatalogPackages(const nloh
         if (!Dir.exists()) continue;
         for (const QString &Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
         {
+            const QString PkgDir = Dir.filePath(Sub);
             nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-            if (!JSONOps::AssembleManifest(Dir.filePath(Sub), Pkg, Warn)) continue;
+            if (!JSONOps::AssembleManifest(PkgDir, Pkg, Warn)) continue;
             std::string Uid = Pkg.value("PACKAGEUID", std::string());
             if (!Uid.empty() && !SeenUID.insert(Uid).second) continue; // already provided by a higher-priority repo
-            Packages.push_back(std::move(Pkg));
+            Packages.emplace_back(std::move(Pkg), PkgDir.toStdString());
         }
     }
+    return Packages;
+}
+
+std::vector<nlohmann::ordered_json> ContainerWrapper::CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<nlohmann::ordered_json> Packages;
+    for (auto &[Pkg, Dir] : CatalogPackagesWithDir(GlobalConfigJSON)) { (void)Dir; Packages.push_back(std::move(Pkg)); }
     return Packages;
 }
 
@@ -2037,6 +2045,84 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
     QProcess::execute("fusermount3", {"-uz", QString::fromStdString(MountDir.string())});
     if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Label); }
     LogSucc("ContainerWrapper::InstallRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
+    return true;
+}
+
+//Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
+//(VFSZip/Dir/FileLayer) across its COMPONENTS. This is the content a game install must fetch to be playable.
+std::vector<std::string> ContainerWrapper::PackageIpfsCids(const nlohmann::ordered_json &Manifest)
+{
+    std::vector<std::string> Cids;
+    std::set<std::string> Seen;
+    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return Cids;
+    for (const auto &C : Manifest["COMPONENTS"])
+    {
+        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            const std::string T = S.value("TYPE", std::string());
+            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+            if (!S.contains("SOURCE") || !S["SOURCE"].is_object()) continue;
+            const auto &Src = S["SOURCE"];
+            if (Src.value("TYPE", std::string()) != "ipfs") continue;
+            const std::string Cid = Src.value("CID", std::string());
+            if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
+        }
+    }
+    return Cids;
+}
+
+//Installs a catalog GAME package: fetches+pins every ipfs CID its content references, then registers a slim
+//LIBRARY entry (deduped by PACKAGEUID) in GlobalConfigJSON. The caller persists GlobalConfig + refreshes the
+//UI. The game's runner is provisioned separately by the play()/EnsureSources gate. Mirrors InstallRunner.
+bool ContainerWrapper::InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
+                                      const std::string &PackageDir, std::string *Error)
+{
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::InstallPackage", M); return false; };
+
+    const std::string Uid = Manifest.value("PACKAGEUID", std::string());
+    if (Uid.empty()) return Fail("package has no PACKAGEUID");
+
+    //1. Fetch this package's content layers from IPFS (cached + pinned). A missing/unreachable CID aborts.
+    const std::vector<std::string> Cids = PackageIpfsCids(Manifest);
+    for (const std::string &Cid : Cids)
+    {
+        std::string Err;
+        if (IpfsWrapper::FetchSync(Cid, &Err).empty())
+            return Fail("could not fetch content CID " + Cid + " (" + Err + ")");
+    }
+    LogSucc("ContainerWrapper::InstallPackage", "Fetched " + std::to_string(Cids.size()) + " content CID(s) for package " + Uid);
+
+    //2. Register in LIBRARY (the games-view of the catalog), deduped by PACKAGEUID. PATH points at the catalog
+    //   clone dir — the manifest lives there and its layers resolve via the CID cache; nothing is copied.
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
+        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
+    for (const auto &E : GlobalConfigJSON["LIBRARY"])
+        if (E.value("PACKAGEUID", std::string()) == Uid)
+        { LogOut("ContainerWrapper::InstallPackage", "Package " + Uid + " already in LIBRARY."); return true; }
+
+    nlohmann::ordered_json Slim;
+    Slim["PACKAGEUID"]     = Uid;
+    Slim["PACKAGENAME"]    = Manifest.value("PACKAGENAME", std::string());
+    Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
+    Slim["PATH"]           = PackageDir;
+    GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
+    LogSucc("ContainerWrapper::InstallPackage", "Installed package " + Uid + " into LIBRARY (PATH " + PackageDir + ")");
+    return true;
+}
+
+//True when a package is installed: its PACKAGEUID is in LIBRARY and every content CID is locally cached.
+bool ContainerWrapper::IsPackageInstalled(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
+{
+    const std::string Uid = Manifest.value("PACKAGEUID", std::string());
+    if (Uid.empty()) return false;
+    bool InLibrary = false;
+    if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+        for (const auto &E : GlobalConfigJSON["LIBRARY"])
+            if (E.value("PACKAGEUID", std::string()) == Uid) { InLibrary = true; break; }
+    if (!InLibrary) return false;
+    for (const std::string &Cid : PackageIpfsCids(Manifest))
+        if (!IpfsWrapper::IsCached(Cid)) return false;
     return true;
 }
 

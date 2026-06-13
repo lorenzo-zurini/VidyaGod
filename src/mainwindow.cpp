@@ -539,6 +539,9 @@ void MainWindow::BuildStaticUI()
     PackagesScrollArea->setWidgetResizable(true);
     PackagesTabWidgetLayout->addWidget(PackagesScrollArea);
 
+    // ── Store tab (catalog games to install over IPFS) ──────────────────────────
+    BuildStoreTab();
+
     // ── Settings tab ───────────────────────────────────────────────────────────
     BuildSettingsTab();
 
@@ -768,6 +771,105 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc)
         }
     }
     return Labels;
+}
+
+void MainWindow::BuildStoreTab()
+{
+    StoreTabWidget = new QWidget(MainWindowTabWidget);
+    QVBoxLayout * sl = new QVBoxLayout(StoreTabWidget); StoreTabWidget->setLayout(sl);
+    MainWindowTabWidget->addTab(StoreTabWidget, "Store");
+
+    StoreScroll = new QScrollArea(StoreTabWidget);
+    StoreScroll->setWidgetResizable(true);
+    sl->addWidget(StoreScroll, 1);
+    RebuildStoreTab();
+}
+
+//Lists every catalog game that isn't installed yet, with an Install button that fetches its content over IPFS
+//and adds it to the library. Mirrors RebuildSettingsRunnersPage (runner installs).
+void MainWindow::RebuildStoreTab()
+{
+    if (!StoreScroll) return;
+    if (StoreScroll->widget()) StoreScroll->widget()->deleteLater();
+
+    QWidget * contents = new QWidget(StoreScroll);
+    QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
+    StoreScroll->setWidget(contents);
+
+    QLabel * intro = new QLabel(
+        "Games shared in your repositories. Install one to download its content over IPFS and add it to your "
+        "library. (Its runner is fetched on first launch.)", contents);
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    v->addWidget(intro);
+
+    int shown = 0;
+    for (auto & PkgDir : ContainerWrapper::CatalogPackagesWithDir(*GlobalConfigJSON))
+    {
+        const nlohmann::ordered_json & Pkg = PkgDir.first;
+        const std::string & Dir = PkgDir.second;
+        if (!JSONOps::HasGames(Pkg)) continue;
+        if (ContainerWrapper::IsPackageInstalled(*GlobalConfigJSON, Pkg)) continue; // already in the library
+        shown++;
+
+        const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
+        const std::string Ver  = Pkg.value("PACKAGEVERSION", std::string());
+        QGroupBox * card = new QGroupBox(QString::fromStdString(Name + (Ver.empty() ? "" : ("  ·  v" + Ver))), contents);
+        QVBoxLayout * cv = new QVBoxLayout(card); card->setLayout(cv);
+
+        QString titles;
+        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array())
+            for (const auto & G : Pkg["GAMES"])
+                titles += (titles.isEmpty() ? "" : ", ")
+                        + QString::fromStdString(G.value("TITLE", G.value("GAMEID", std::string())));
+        cv->addWidget(new QLabel("<span style='color:#8f98a0;'>" + titles + "</span>", card));
+
+        const int CidCount = (int)ContainerWrapper::PackageIpfsCids(Pkg).size();
+        QHBoxLayout * row = new QHBoxLayout();
+        row->addWidget(new QLabel(QString("%1 content layer(s) over IPFS").arg(CidCount), card), 1);
+        if (IpfsWrapper::Available())
+        {
+            QPushButton * btn = new QPushButton("Install", card);
+            const nlohmann::ordered_json PkgCopy = Pkg;   // capture by value for the worker
+            const std::string DirCopy = Dir;
+            connect(btn, &QPushButton::clicked, this, [this, PkgCopy, DirCopy, btn]{
+                btn->setEnabled(false); btn->setText("Installing…");
+                // Fetch content on a worker thread (the slow part); register in LIBRARY on the GUI thread.
+                std::thread([this, PkgCopy, DirCopy]{
+                    std::string Err; bool Ok = true;
+                    for (const std::string & Cid : ContainerWrapper::PackageIpfsCids(PkgCopy))
+                        if (IpfsWrapper::FetchSync(Cid, &Err).empty()) { Ok = false; break; }
+                    QMetaObject::invokeMethod(this, [this, Ok, Err, PkgCopy, DirCopy]{
+                        if (Ok)
+                        {
+                            std::string E2;   // content is now cached → InstallPackage's fetches are instant cache hits
+                            if (ContainerWrapper::InstallPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &E2))
+                            { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
+                            else QMessageBox::warning(this, "Install failed", QString::fromStdString(E2));
+                        }
+                        else QMessageBox::warning(this, "Install failed", QString::fromStdString(Err));
+                        RebuildStoreTab(); RefreshIpfsTab();
+                    }, Qt::QueuedConnection);
+                }).detach();
+            });
+            row->addWidget(btn);
+        }
+        else
+        {
+            QLabel * need = new QLabel("install Kubo to download", card);
+            need->setStyleSheet("color:#8f98a0;font-style:italic;");
+            row->addWidget(need);
+        }
+        cv->addLayout(row);
+        v->addWidget(card);
+    }
+    if (shown == 0)
+    {
+        QLabel * none = new QLabel("No installable games found in your repositories.", contents);
+        none->setStyleSheet("color:#8f98a0;");
+        v->addWidget(none);
+    }
+    v->addStretch(1);
 }
 
 void MainWindow::BuildIpfsTab()

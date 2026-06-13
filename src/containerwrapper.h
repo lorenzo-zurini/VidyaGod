@@ -261,6 +261,21 @@ public:
     //Every package manifest known across all configured Repositories (Settings.Repositories) — the
     //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + LIBRARY/DOWNLOADS, persisted.
     static std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
+    //As CatalogPackages, but pairs each assembled manifest with its owning package directory (the repo-clone
+    //dir the manifest was read from). Installers/UI need the dir to register a LIBRARY PATH and resolve layers.
+    static std::vector<std::pair<nlohmann::ordered_json, std::string>> CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON);
+    //Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
+    //(VFSZip/Dir/FileLayer) across its COMPONENTS. The set a game install must fetch to be playable.
+    static std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
+    //Installs a catalog GAME package (sibling of InstallRunner): fetches+pins every PackageIpfsCids over IPFS,
+    //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH:PackageDir} in
+    //GlobalConfigJSON (deduped by PACKAGEUID). The caller persists GlobalConfig and refreshes the UI. The
+    //game's runner is provisioned separately by the play()/EnsureSources gate. Returns false (with *Error) on
+    //a failed fetch.
+    static bool InstallPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
+                               const std::string &PackageDir, std::string *Error = nullptr);
+    //True when a package is installed: its PACKAGEUID is in LIBRARY and every PackageIpfsCids is locally cached.
+    static bool IsPackageInstalled(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).

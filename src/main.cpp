@@ -172,6 +172,27 @@ int main(int argc, char *argv[])
         return Ok ? 0 : 1;
     }
 
+    //HEADLESS: install a catalog game package (fetch its IPFS content + register it in LIBRARY) then exit.
+    if (!LaunchParameters.InstallPackageUid.empty())
+    {
+        const std::string Uid = LaunchParameters.InstallPackageUid;
+        LogOut("main.cpp", "Installing package: " + Uid);
+        nlohmann::ordered_json Manifest; std::string Dir;
+        for (auto &PD : ContainerWrapper::CatalogPackagesWithDir(GlobalConfigJSON))
+            if (PD.first.value("PACKAGEUID", std::string()) == Uid) { Manifest = PD.first; Dir = PD.second; break; }
+        if (Manifest.is_null()) { LogErr("main.cpp", "No catalog package found for PACKAGEUID '" + Uid + "'."); return 1; }
+        std::string Err;
+        const bool Ok = ContainerWrapper::InstallPackage(GlobalConfigJSON, Manifest, Dir, &Err);
+        if (Ok)
+        {
+            QFile GCFile(AppDataDir.filePath("GlobalConfig.JSON"));
+            if (!JSONOps::SaveJSON(&GlobalConfigJSON, &GCFile))
+                LogWarn("main.cpp", "Package installed but GlobalConfig.JSON could not be written.");
+        }
+        LogOut("main.cpp", Ok ? "Package installed." : ("Package install failed: " + Err));
+        return Ok ? 0 : 1;
+    }
+
     //HEADLESS MODE: build the container and run the game without showing any window.
     //Used both for the --package CLI flag and for auto-detected package-directory mode.
     if(LaunchParameters.RunningHeadless)
@@ -425,6 +446,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--install-runner" && i + 1 < argc)
         {
             RuntimeParameters.InstallRunnerId = argv[++i];
+        }
+        else if (arg == "--install-package" && i + 1 < argc)
+        {
+            RuntimeParameters.InstallPackageUid = argv[++i];
         }
         else if (arg == "--runner" && i + 1 < argc)
         {

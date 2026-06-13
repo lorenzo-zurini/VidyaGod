@@ -163,6 +163,10 @@ private:
     QStackedWidget * SettingsStack         = nullptr;
     QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
 
+    // ── Store tab (catalog games to discover + install over IPFS) ──
+    QWidget     * StoreTabWidget = nullptr;
+    QScrollArea * StoreScroll    = nullptr; // rebuilt in place by RebuildStoreTab()
+
     // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
     QWidget       * IpfsTabWidget   = nullptr;
     QLabel        * IpfsStatusLabel = nullptr;
@@ -179,6 +183,8 @@ private:
     void BuildSettingsTab();
     void RebuildSettingsRunnersPage();
     QWidget * BuildPathsSettingsPage();
+    void BuildStoreTab();
+    void RebuildStoreTab();  // list installable catalog games (HasGames, not installed) with Install buttons
     void BuildIpfsTab();
     void RefreshIpfsTab();   // refresh status + seeded list (no-op when ipfs absent)
     void sortCards();
