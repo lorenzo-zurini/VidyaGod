@@ -281,6 +281,24 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                     // RegKeyPersist needs a registry key REGPATH (HKLM\.. / HKCU\..).
                     else if (T == "RegKeyPersist" && Str(S, "REGPATH").empty())
                         Warnings.push_back("Component '" + Id + "' has a RegKeyPersist with an empty REGPATH");
+                    // VFSZipLayer/VFSDirLayer SUBMOUNTS: each entry is "src:dst"; flag malformed entries and
+                    // duplicate destinations within the layer (the FS skips malformed and later-wins on dup).
+                    else if ((T == "VFSZipLayer" || T == "VFSDirLayer") && S.contains("SUBMOUNTS") && S["SUBMOUNTS"].is_array())
+                    {
+                        std::unordered_set<std::string> Dests;
+                        for (const auto &E : S["SUBMOUNTS"])
+                        {
+                            if (!E.is_string())
+                            { Warnings.push_back("Component '" + Id + "' has a non-string SUBMOUNTS entry"); continue; }
+                            std::string M = E.get<std::string>();
+                            size_t Colon = M.find(':');
+                            if (Colon == std::string::npos)
+                            { Warnings.push_back("Component '" + Id + "' SUBMOUNTS entry '" + M + "' is malformed (expected 'src:dst')"); continue; }
+                            std::string Dst = M.substr(Colon + 1);
+                            if (!Dests.insert(Dst).second)
+                                Warnings.push_back("Component '" + Id + "' has duplicate SUBMOUNTS destination '" + Dst + "'");
+                        }
+                    }
                 }
         }
 
