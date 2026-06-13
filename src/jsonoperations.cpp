@@ -1,5 +1,6 @@
 #include "jsonoperations.h"
 #include "commonutils.h"
+#include <set>
 #include <unordered_set>
 #include <unordered_map>
 
