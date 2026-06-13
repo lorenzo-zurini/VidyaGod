@@ -162,6 +162,7 @@ private:
     QListWidget    * SettingsCategoryList  = nullptr;
     QStackedWidget * SettingsStack         = nullptr;
     QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
+    QScrollArea    * SettingsReposScroll   = nullptr; // rebuilt in place by RebuildSettingsReposPage()
 
     // ── Store tab (catalog games to discover + install over IPFS) ──
     QWidget     * StoreTabWidget = nullptr;
@@ -182,6 +183,7 @@ private:
     void BuildPackagesDynamicUI();
     void BuildSettingsTab();
     void RebuildSettingsRunnersPage();
+    void RebuildSettingsReposPage();
     QWidget * BuildPathsSettingsPage();
     void BuildStoreTab();
     void RebuildStoreTab();  // list installable catalog games (HasGames, not installed) with Install buttons

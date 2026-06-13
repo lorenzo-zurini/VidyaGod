@@ -567,6 +567,7 @@ void MainWindow::BuildSettingsTab()
     SettingsCategoryList->setFixedWidth(170);
     SettingsCategoryList->setFrameShape(QFrame::NoFrame);
     SettingsCategoryList->addItem("Runners");
+    SettingsCategoryList->addItem("Repositories");
     SettingsCategoryList->addItem("Storage & Paths");
     outer->addWidget(SettingsCategoryList);
 
@@ -587,7 +588,20 @@ void MainWindow::BuildSettingsTab()
         RebuildSettingsRunnersPage();
     }
 
-    // Page 1 — Storage & Paths.
+    // Page 1 — Repositories (a scroll area we rebuild in place on add/remove).
+    {
+        QWidget * page = new QWidget(SettingsStack);
+        QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
+        pl->setContentsMargins(8,8,8,8);
+        SettingsReposScroll = new QScrollArea(page);
+        SettingsReposScroll->setWidgetResizable(true);
+        SettingsReposScroll->setFrameShape(QFrame::NoFrame);
+        pl->addWidget(SettingsReposScroll);
+        SettingsStack->addWidget(page);
+        RebuildSettingsReposPage();
+    }
+
+    // Page 2 — Storage & Paths.
     SettingsStack->addWidget(BuildPathsSettingsPage());
 
     QObject::connect(SettingsCategoryList, &QListWidget::currentRowChanged,
@@ -677,6 +691,97 @@ void MainWindow::RebuildSettingsRunnersPage()
         }
         v->addWidget(card);
     }
+    v->addStretch(1);
+}
+
+// Repositories settings page — add/remove the git repos that share dehydrated packages.
+// Each Settings.Repositories[] entry is {NAME, PATH:<git url>}, cloned to ~/.VidyaGod/DOWNLOADS/<name>
+// and indexed. Adding one clones it (off-thread); removing drops the reference (the disposable clone is
+// left on disk). After any change the Store + Runners pages are rebuilt so the new catalog shows.
+void MainWindow::RebuildSettingsReposPage()
+{
+    if (!SettingsReposScroll) return;
+    if (SettingsReposScroll->widget()) SettingsReposScroll->widget()->deleteLater();
+
+    QWidget * contents = new QWidget(SettingsReposScroll);
+    QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
+    SettingsReposScroll->setWidget(contents);
+
+    QLabel * intro = new QLabel(
+        "Repositories are git repos that share dehydrated packages (manifests + IPFS CIDs, no bundled content). "
+        "Cloned into ~/.VidyaGod/DOWNLOADS and indexed into the catalog; private repos work if your git is set "
+        "up to authenticate non-interactively (SSH key or a stored token).", contents);
+    intro->setWordWrap(true);
+    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    v->addWidget(intro);
+
+    auto & S = (*GlobalConfigJSON)["Settings"];
+    if (!S.contains("Repositories") || !S["Repositories"].is_array())
+        S["Repositories"] = nlohmann::ordered_json::array();
+
+    if (S["Repositories"].empty())
+    {
+        QLabel * none = new QLabel("No repositories configured.", contents);
+        none->setStyleSheet("color:#8f98a0;");
+        v->addWidget(none);
+    }
+    for (int i = 0; i < int(S["Repositories"].size()); ++i)
+    {
+        const auto & R = S["Repositories"][i];
+        const std::string Url  = R.is_object() ? R.value("PATH", std::string()) : std::string();
+        std::string Name = R.is_object() ? R.value("NAME", std::string()) : std::string();
+        if (Name.empty()) { QString b = QString::fromStdString(Url); b = b.section('/', -1); if (b.endsWith(".git")) b.chop(4); Name = b.toStdString(); }
+
+        QGroupBox * card = new QGroupBox(QString::fromStdString(Name), contents);
+        QHBoxLayout * row = new QHBoxLayout(card); card->setLayout(row);
+        QLabel * urlLbl = new QLabel("<span style='color:#8f98a0;'>" + QString::fromStdString(Url).toHtmlEscaped() + "</span>", card);
+        urlLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        row->addWidget(urlLbl, 1);
+        QPushButton * rm = new QPushButton("Remove", card);
+        connect(rm, &QPushButton::clicked, this, [this, i]{
+            auto & SS = (*GlobalConfigJSON)["Settings"];
+            if (SS.contains("Repositories") && SS["Repositories"].is_array() && i < int(SS["Repositories"].size()))
+                SS["Repositories"].erase(SS["Repositories"].begin() + i);
+            SaveGlobalConfigJSON();
+            RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab();
+        });
+        row->addWidget(rm);
+        v->addWidget(card);
+    }
+
+    // ── Add-repository row ──
+    QGroupBox * add = new QGroupBox("Add repository", contents);
+    QFormLayout * af = new QFormLayout(add); add->setLayout(af);
+    QLineEdit * nameEdit = new QLineEdit(add);
+    nameEdit->setPlaceholderText("(optional — defaults to the URL's basename)");
+    QLineEdit * urlEdit = new QLineEdit(add);
+    urlEdit->setPlaceholderText("https://github.com/you/Repo.git  or  git@github.com:you/Repo.git");
+    af->addRow("Name:", nameEdit);
+    af->addRow("Git URL:", urlEdit);
+    QPushButton * addBtn = new QPushButton("Add + sync", add);
+    af->addRow("", addBtn);
+    connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, urlEdit, addBtn]{
+        const QString Url = urlEdit->text().trimmed();
+        if (Url.isEmpty()) { QMessageBox::warning(this, "Add repository", "Enter a git URL."); return; }
+        nlohmann::ordered_json Entry = nlohmann::ordered_json::object();
+        const QString Nm = nameEdit->text().trimmed();
+        if (!Nm.isEmpty()) Entry["NAME"] = Nm.toStdString();
+        Entry["PATH"] = Url.toStdString();
+        auto & SS = (*GlobalConfigJSON)["Settings"];
+        if (!SS.contains("Repositories") || !SS["Repositories"].is_array()) SS["Repositories"] = nlohmann::ordered_json::array();
+        SS["Repositories"].push_back(Entry);
+        SaveGlobalConfigJSON();
+        addBtn->setEnabled(false); addBtn->setText("Cloning…");
+        // Clone/pull off-thread (network); refresh the catalog-driven pages when done.
+        std::thread([this]{
+            ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
+            QMetaObject::invokeMethod(this, [this]{
+                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab();
+            }, Qt::QueuedConnection);
+        }).detach();
+    });
+    v->addWidget(add);
+
     v->addStretch(1);
 }
 
