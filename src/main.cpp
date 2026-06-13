@@ -193,6 +193,19 @@ int main(int argc, char *argv[])
         return Ok ? 0 : 1;
     }
 
+    //HEADLESS: publish (dehydrate) a local package — seed its layer content over IPFS, record the CIDs into the
+    //manifest fragments in place, and optionally export a manifest-only copy — then exit.
+    if (!LaunchParameters.PublishPackageDir.empty())
+    {
+        const std::string Dir  = LaunchParameters.PublishPackageDir;
+        const std::string Dest = LaunchParameters.PublishToDir;
+        LogOut("main.cpp", "Publishing package: " + Dir + (Dest.empty() ? "" : (" -> " + Dest)));
+        std::string Err;
+        const bool Ok = ContainerWrapper::PublishPackage(Dir, Dest, &Err);
+        LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
+        return Ok ? 0 : 1;
+    }
+
     //HEADLESS MODE: build the container and run the game without showing any window.
     //Used both for the --package CLI flag and for auto-detected package-directory mode.
     if(LaunchParameters.RunningHeadless)
@@ -450,6 +463,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--import-package" && i + 1 < argc)
         {
             RuntimeParameters.ImportPackageUid = argv[++i];
+        }
+        else if (arg == "--publish" && i + 1 < argc)
+        {
+            RuntimeParameters.PublishPackageDir = argv[++i];
+        }
+        else if (arg == "--publish-to" && i + 1 < argc)
+        {
+            RuntimeParameters.PublishToDir = argv[++i];
         }
         else if (arg == "--runner" && i + 1 < argc)
         {

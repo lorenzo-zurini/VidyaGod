@@ -40,6 +40,8 @@ struct LaunchParameters
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)
     std::string ImportRunnerId;                                          //--import-runner: install this runner (fetch build + build DEFPREFIX) then exit
     std::string ImportPackageUid;                                        //--import-package: install this catalog game (fetch IPFS content + add to LIBRARY) then exit
+    std::string PublishPackageDir;                                       //--publish <pkgdir>: dehydrate this local package (seed content -> CIDs into the manifest) then exit
+    std::string PublishToDir;                                            //--publish-to <dir>: also export a manifest-only dehydrated copy there
 };
 
 int main(int argc, char *argv[]);

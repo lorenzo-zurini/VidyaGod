@@ -30,11 +30,33 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     QPushButton * AddSubGameBtn   = new QPushButton("Add SubGame",   this);
     QPushButton * AddComponentBtn = new QPushButton("Add Component", this);
     QPushButton * AddRunnerBtn    = new QPushButton("Add Runner",    this);
+    QPushButton * PublishBtn      = new QPushButton("Publish",       this);
     Toolbar->addWidget(AddSubGameBtn);
     Toolbar->addWidget(AddComponentBtn);
     Toolbar->addWidget(AddRunnerBtn);
     Toolbar->addStretch();
+    Toolbar->addWidget(PublishBtn);
     MainLayout->addLayout(Toolbar);
+
+    //Publish (dehydrate): flush edits, seed each layer's content over IPFS + record its CID into the manifest in
+    //place, and export a manifest-only copy to a chosen folder (ready to commit into a sharing repo).
+    connect(PublishBtn, &QPushButton::clicked, this, [this](){
+        if (!PackageDir) return;
+        SaveManifestJSON();                                                      // flush pending edits to fragments first
+        const QString Dest = QFileDialog::getExistingDirectory(
+            this, "Export dehydrated copy to… (cancel to dehydrate in place only)");
+        std::string Err;
+        const bool Ok = ContainerWrapper::PublishPackage(
+            PackageDir->path().toStdString(), Dest.toStdString(), &Err);
+        if (Ok)
+        {
+            LoadFragmentsAndAssemble(); BuildUI(); RefreshJSONView();            // reflect the newly added SOURCE CIDs
+            QMessageBox::information(this, "Publish",
+                Dest.isEmpty() ? "Package dehydrated (content seeded, CIDs written into the manifest)."
+                               : ("Package published.\nManifest-only copy exported to:\n" + Dest));
+        }
+        else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
+    });
 
     connect(AddSubGameBtn,   &QPushButton::clicked, this, &PackageEditor::on_AddSubGameButton_clicked);
     connect(AddComponentBtn, &QPushButton::clicked, this, &PackageEditor::on_AddComponentButton_clicked);

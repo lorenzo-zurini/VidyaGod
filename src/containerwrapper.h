@@ -279,6 +279,14 @@ public:
                                const std::string &PackageDir, std::string *Error = nullptr);
     //True when a package is installed: its PACKAGEUID is in LIBRARY and every PackageIpfsCids is locally cached.
     static bool IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
+    //PUBLISH (the inverse of import — dehydrate a local package for sharing). For every VFS layer in PackageDir
+    //whose local content exists and has no ipfs SOURCE CID yet, seeds it over IPFS (IpfsWrapper::AddNoCopy) and
+    //records SOURCE:{TYPE:ipfs,CID} into its manifest fragment IN PLACE (content kept — the package becomes a
+    //local+CID hybrid, identical in shape to an imported one). Layers already carrying a CID are skipped
+    //(idempotent). If DehydratedDestDir is non-empty, ALSO exports a manifest-only "dehydrated" copy there (JSON
+    //fragments + cover assets, NO layer content) — the artifact a repo shares and ImportPackage consumes. Seeding
+    //needs the user's daemon; CIDs are still computed offline. Returns false (with *Error) on failure.
+    static bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).

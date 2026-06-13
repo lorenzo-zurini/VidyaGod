@@ -47,6 +47,13 @@ std::string FetchSync(const std::string &Cid, std::string *Error = nullptr);
 // DestPath on success, "" on failure (with *Error set when provided).
 std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
 
+// Seeds a local file or directory by adding it to the Filestore via `ipfs add --nocopy --pin` (blocks REFERENCE
+// the file in place — no second copy) and returns its content-addressed CID, "" on failure (with *Error set when
+// provided). This is how publishing dehydrates a package: each layer's local content is added → its CID is
+// recorded in the manifest. Adding works offline (content enters the local repo); peers receive it once a daemon
+// runs. Degrades gracefully when `ipfs` is absent.
+std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
+
 // ----- best-effort status helpers for the IPFS tab (empty/0 when unavailable) -----
 
 // Number of connected swarm peers (`ipfs swarm peers`), 0 if no daemon.

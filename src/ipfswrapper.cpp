@@ -100,6 +100,23 @@ static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
     return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
 }
 
+std::string AddNoCopy(const std::string &PathStr, std::string *Error)
+{
+    auto Fail = [&](const std::string &Msg) -> std::string { if (Error) *Error = Msg; return std::string(); };
+
+    if (PathStr.empty())  return Fail("empty path");
+    if (!Available())     return Fail("Kubo (ipfs) is not installed — cannot add " + PathStr);
+    const QString Path = QString::fromStdString(PathStr);
+    if (!QFileInfo::exists(Path)) return Fail("path does not exist: " + PathStr);
+
+    QString Added;
+    if (!RunIpfs({"add", "--nocopy", "--pin=true", "-Q", Path}, &Added, 600000))
+        return Fail("`ipfs add --nocopy` failed for " + PathStr + " (is Filestore enabled?)");
+    const std::string Cid = Added.trimmed().toStdString();
+    if (Cid.empty()) return Fail("`ipfs add` produced no CID for " + PathStr);
+    return Cid;
+}
+
 std::string FetchSync(const std::string &Cid, std::string *Error)
 {
     auto Fail = [&](const std::string &Msg) -> std::string {
@@ -142,9 +159,8 @@ std::string FetchSync(const std::string &Cid, std::string *Error)
     // second blockstore copy. When the content was nocopy-hosted (raw leaves), this reproduces the same CID
     // and pins it. If the re-add yields a different CID (content not nocopy-hosted), undo it and fall back to
     // a normal blockstore pin so we still seed the correct CID. Best-effort — a missing daemon just defers it.
-    QString Added;
-    const bool NocopyOk = RunIpfs({"add", "--nocopy", "--pin=true", "-Q", QString::fromStdString(Dest)}, &Added, 600000);
-    const std::string AddedCid = Added.trimmed().toStdString();
+    const std::string AddedCid = AddNoCopy(Dest);                                // single seed implementation
+    const bool NocopyOk = !AddedCid.empty();
     if (NocopyOk && AddedCid == Cid)
         LogSucc("IpfsWrapper::FetchSync", "Seeding " + Cid + " via Filestore (--nocopy, no blockstore copy).");
     else
@@ -200,9 +216,8 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     // Seed from the destination via Filestore (--nocopy): the blocks REFERENCE the file in place — no second
     // copy. If the re-add yields a different CID (content not nocopy-hostable), fall back to a normal pin so we
     // still seed the correct CID. Best-effort — a missing daemon just defers it.
-    QString Added;
-    const bool NocopyOk = RunIpfs({"add", "--nocopy", "--pin=true", "-Q", Dest}, &Added, 600000);
-    const std::string AddedCid = Added.trimmed().toStdString();
+    const std::string AddedCid = AddNoCopy(Dest.toStdString());                  // single seed implementation
+    const bool NocopyOk = !AddedCid.empty();
     if (NocopyOk && AddedCid == Cid)
         LogSucc("IpfsWrapper::FetchToPath", "Seeding " + Cid + " via Filestore from " + DestPathStr);
     else

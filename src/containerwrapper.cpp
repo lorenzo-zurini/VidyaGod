@@ -2202,6 +2202,90 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
     return true;
 }
 
+//PUBLISH — the inverse of ImportPackage. Dehydrates a local package for sharing: seeds each VFS layer's local
+//content over IPFS and records its CID into the manifest fragments IN PLACE (content kept), then optionally
+//exports a manifest-only copy (no content) ready to commit into a sharing repo. See the header for the contract.
+bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
+{
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::PublishPackage", M); return false; };
+
+    std::error_code Ec;
+    const std::filesystem::path Pkg(PackageDir);
+    if (!std::filesystem::is_directory(Pkg, Ec)) return Fail("not a package directory: " + PackageDir);
+
+    if (!IpfsWrapper::DaemonRunning())
+        LogWarn("ContainerWrapper::PublishPackage",
+                "no IPFS daemon running — CIDs will be computed but content seeds to peers only once `ipfs daemon` is up.");
+
+    auto IsLayer = [](const std::string &T) { return T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer"; };
+
+    //Relative content paths to EXCLUDE from the dehydrated export (every layer's content home, collected below).
+    std::set<std::string> ContentPaths;
+    int Seeded = 0, Walked = 0;
+
+    //Walk every *.json fragment directly (no assemble/decompose round-trip — this preserves each subcomponent's
+    //exact file placement). Annotate VFS-layer subcomponents in place; re-save only the fragments we mutate.
+    for (const auto &Entry : std::filesystem::directory_iterator(Pkg, Ec))
+    {
+        if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;
+        QFile FragFile(QString::fromStdString(Entry.path().string()));
+        nlohmann::ordered_json Frag;
+        if (JSONOps::LoadJSON(&FragFile, &Frag)) continue;                       // LoadJSON returns true on FAILURE
+        if (!Frag.contains("COMPONENTS") || !Frag["COMPONENTS"].is_array()) continue;
+
+        bool Mutated = false;
+        for (auto &C : Frag["COMPONENTS"])
+        {
+            if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+            for (auto &S : C["SUBCOMPONENTS"])
+            {
+                if (!IsLayer(S.value("TYPE", std::string()))) continue;
+                ++Walked;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(S, Pkg, Local, Cid);
+
+                //Record the layer's content home (only if it lives inside the package) for export exclusion.
+                std::error_code Rc;
+                const std::string Rel = std::filesystem::relative(Local, Pkg, Rc).generic_string();
+                if (!Rc && !Rel.empty() && Rel.rfind("..", 0) != 0) ContentPaths.insert(Rel);
+
+                if (!Cid.empty()) continue;                                      // already has an ipfs CID — idempotent
+                if (!std::filesystem::exists(Local, Rc)) continue;               // no local content to seed
+                std::string Err;
+                const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
+                if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
+
+                nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object())
+                                                 ? S["SOURCE"] : nlohmann::ordered_json::object();
+                Src["TYPE"] = "ipfs";                                            // keep any existing SOURCE.PATH override
+                Src["CID"]  = NewCid;
+                S["SOURCE"] = std::move(Src);
+                Mutated = true;
+                ++Seeded;
+            }
+        }
+        if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
+            return Fail("could not write annotated manifest fragment: " + Entry.path().string());
+    }
+    LogSucc("ContainerWrapper::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
+            + " of " + std::to_string(Walked) + " layer(s) newly seeded)");
+
+    //Export a manifest-only dehydrated copy (skip the bundled layer content) — the artifact a repo shares.
+    if (!DehydratedDestDir.empty())
+    {
+        const std::filesystem::path Dest(DehydratedDestDir);
+        std::filesystem::remove_all(Dest, Ec);
+        std::filesystem::create_directories(Dest.parent_path(), Ec);
+        std::filesystem::copy(Pkg, Dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, Ec);
+        if (Ec) return Fail("could not copy package for dehydrated export (" + Ec.message() + ")");
+        for (const std::string &Rel : ContentPaths)
+            std::filesystem::remove_all(Dest / Rel, Ec);                         // strip content — manifest + covers only
+        LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated package to " + Dest.string()
+                + " (" + std::to_string(ContentPaths.size()) + " content path(s) excluded)");
+    }
+    return true;
+}
+
 //True when a package is installed: its PACKAGEUID is in LIBRARY and every content CID is locally cached.
 bool ContainerWrapper::IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
 {
