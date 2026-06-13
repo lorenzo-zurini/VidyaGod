@@ -723,6 +723,41 @@ QWidget * MainWindow::BuildPathsSettingsPage()
     rl->addWidget(browse);
     form->addRow("Temporary / runtime root:", rootRow);
 
+    // Library folder — Settings.Paths.LibraryRoot (empty = default). Imported packages are hydrated here,
+    // one subfolder per repo.
+    const QString defaultLibRoot = QDir::cleanPath(QDir::homePath() + "/.VidyaGod/library");
+    QWidget * libRow = new QWidget(page);
+    QHBoxLayout * ll = new QHBoxLayout(libRow); ll->setContentsMargins(0,0,0,0);
+    libRow->setLayout(ll);
+    QLineEdit * libEdit = new QLineEdit(libRow);
+    libEdit->setPlaceholderText(defaultLibRoot + "  (default)");
+    {
+        auto & S = (*GlobalConfigJSON)["Settings"];
+        if (S.contains("Paths") && S["Paths"].is_object()
+            && S["Paths"].contains("LibraryRoot") && S["Paths"]["LibraryRoot"].is_string())
+            libEdit->setText(QString::fromStdString(std::string(S["Paths"]["LibraryRoot"])));
+    }
+    auto writeLibRoot = [this,libEdit]{
+        auto & S = (*GlobalConfigJSON)["Settings"];
+        QString t = libEdit->text().trimmed();
+        if (t.isEmpty()) {
+            if (S.contains("Paths") && S["Paths"].is_object()) S["Paths"].erase("LibraryRoot");
+        } else {
+            if (!S.contains("Paths") || !S["Paths"].is_object()) S["Paths"] = nlohmann::ordered_json::object();
+            S["Paths"]["LibraryRoot"] = t.toStdString();
+        }
+        SaveGlobalConfigJSON();
+    };
+    QObject::connect(libEdit, &QLineEdit::editingFinished, this, writeLibRoot);
+    ll->addWidget(libEdit, 1);
+    QPushButton * libBrowse = new QPushButton("Browse…", libRow);
+    QObject::connect(libBrowse, &QPushButton::clicked, this, [this,libEdit,writeLibRoot]{
+        QString d = QFileDialog::getExistingDirectory(this, "Select library folder");
+        if (!d.isEmpty()) { libEdit->setText(d); writeLibRoot(); }
+    });
+    ll->addWidget(libBrowse);
+    form->addRow("Library folder:", libRow);
+
     // AppData dir (read-only, informational).
     QLineEdit * appDataLbl = new QLineEdit(AppDataDir->path(), page);
     appDataLbl->setReadOnly(true);
@@ -1095,6 +1130,17 @@ void MainWindow::BuildPackagesDynamicUI()
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEVERSION"]),w),i,2);
         QPushButton * rb = new QPushButton("Remove", w);
         QObject::connect(rb, &QPushButton::clicked, this, [this,i]{
+            // A managed import (under the library folder) → delete its hydrated copy. A local/portable package
+            // added from elsewhere → only drop the reference (never touch the user's own files).
+            const std::string Path = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
+            const std::string LibRoot = ContainerWrapper::LibraryRootDir(*GlobalConfigJSON);
+            std::error_code Ec;
+            if (!Path.empty() && !LibRoot.empty())
+            {
+                const std::string P = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
+                const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(LibRoot), Ec).string();
+                if (P.rfind(R + "/", 0) == 0) std::filesystem::remove_all(P, Ec); // P strictly under the library root
+            }
             (*GlobalConfigJSON)["LIBRARY"].erase(i); RebuildDynamicUI(); SaveGlobalConfigJSON();
         });
         g->addWidget(rb, i, 3);

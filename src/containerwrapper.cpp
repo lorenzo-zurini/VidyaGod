@@ -163,12 +163,17 @@ bool ContainerWrapper::BuildContainerRuntime()
     //this build (or cause spurious "already mounted"/EEXIST failures).
     ContainerWrapper::CleanStaleRuntime(ContainerParams.TempPath);
 
-    //Fetch any remote SOURCEs (the runner build + VFS layers via IPFS) into the local cache BEFORE they
-    //are read — the runner binary must exist on disk before InitializeDefPrefix. No fallback: abort if a
-    //required CID cannot be fetched.
+    //Verify every dependency is satisfiable (runner build cached, DEFPREFIX present, game layers local-or-fetchable),
+    //then materialize any missing game-layer content from a backend (IPFS) to its expected local path. Both run
+    //before InitializeDefPrefix/mount — the content must exist on disk by then. Abort if anything can't be provided.
     if (!ContainerWrapper::EnsureSources(this->ContainerParams))
     {
         LogErr("ContainerWrapper::BuildContainerRuntime", "Required sources unavailable — aborting.");
+        return false;
+    }
+    if (!ContainerWrapper::MaterializeLayers(this->ContainerParams))
+    {
+        LogErr("ContainerWrapper::BuildContainerRuntime", "Could not materialize required layer content — aborting.");
         return false;
     }
 
@@ -818,6 +823,22 @@ static std::string DownloadsDir()
 {
     return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/DOWNLOADS").toStdString();
 }
+
+//The managed library root — where imported packages are hydrated, one subfolder per repo. Overridable via
+//Settings.Paths.LibraryRoot; default ~/.VidyaGod/library.
+static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+    {
+        const auto &S = GlobalConfigJSON["Settings"];
+        if (S.contains("Paths") && S["Paths"].is_object() && S["Paths"].contains("LibraryRoot")
+            && S["Paths"]["LibraryRoot"].is_string() && !std::string(S["Paths"]["LibraryRoot"]).empty())
+            return QDir::cleanPath(QString::fromStdString(std::string(S["Paths"]["LibraryRoot"]))).toStdString();
+    }
+    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/library").toStdString();
+}
+
+std::string ContainerWrapper::LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON) { return LibraryDir(GlobalConfigJSON); }
 
 //A repository's clone URL. Each Settings.Repositories[] entry is a git repo: an object with a "PATH"
 //(the URL), or a bare URL string.
@@ -1681,33 +1702,38 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
     return result;
 }
 
-//Resolves a File/Dir/Zip layer's content to an absolute host path — its "locator". A relative PATH is
-//joined to the package; an absolute PATH is used verbatim (the local-added-in-place locator, which
-//mirrors a URL/CID). Pure resolution; existence is verified separately by VerifyDependencies.
-//TODO(sharing): when SOURCE.TYPE is github-release/url/ipfs, fetch+cache into ~/.VidyaGod/DOWNLOADS and
-//return that path; the local PATH stays the bundled offline fallback. SOURCE.TYPE "path" overrides PATH.
-//ipfs is recognized (reads CID) but its fetch backend is deferred — it falls back to the local PATH for now.
-static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
+//A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID
+//(empty if none). The local path is the content's home; the CID is one of (eventually several) remote fallback
+//sources to fetch it from. (Future backends — torrent, LAN — read their own SOURCE fields here.)
+static void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,
+                         std::filesystem::path &Local, std::string &Cid)
 {
     std::string PathStr = Sub.value("PATH", std::string());
+    Cid.clear();
     if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object())
     {
         const auto &Src = Sub["SOURCE"];
-        const std::string SType = Src.value("TYPE", std::string("path"));
-        //The SOURCE's own PATH is the local/offline fallback for every type (and the value for "path").
-        PathStr = Src.value("PATH", PathStr);
-        if (SType == "ipfs")
-        {
-            //An ipfs SOURCE resolves to its deterministic cache path (DOWNLOADS/ipfs/<CID>). The actual
-            //fetch+pin happens in EnsureSources before the content is needed; resolution stays pure. An
-            //empty CID falls through to the local PATH fallback (offline authoring).
-            const std::string Cid = Src.value("CID", std::string());
-            if (!Cid.empty()) return IpfsWrapper::CachePath(Cid);
-        }
-        // else: github-release / url — TODO(sharing) fetch; fall back to the bundled PATH for now.
+        PathStr = Src.value("PATH", PathStr);                                  // SOURCE.PATH overrides the local path
+        if (Src.value("TYPE", std::string("path")) == "ipfs") Cid = Src.value("CID", std::string());
     }
     std::filesystem::path P(PathStr);
-    return (P.is_absolute() ? P : (PackagePath / P)).string();
+    Local = P.is_absolute() ? P : (PackagePath / P);
+}
+
+//Resolves a File/Dir/Zip layer's content to an absolute host path — its "locator" — by HIERARCHICAL FALLBACK:
+//  1. the LOCAL path (PackagePath/PATH) if it exists — highest priority, offline, zero-fetch;
+//  2. else a remote backend's local store — the IPFS cache path (DOWNLOADS/ipfs/<CID>) now; torrent/LAN later.
+//The CID is never consumed-away: it stays in SOURCE as the permanent identity + fallback. EnsureSources /
+//MaterializeLayers fetch the content (to the local path for game layers, to the cache for runner builds) before
+//it is read; this resolution is pure.
+static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
+{
+    std::filesystem::path Local; std::string Cid;
+    LayerLocator(Sub, PackagePath, Local, Cid);
+    std::error_code Ec;
+    if (std::filesystem::exists(Local, Ec)) return Local.string();   // 1. local (highest priority)
+    if (!Cid.empty()) return IpfsWrapper::CachePath(Cid);            // 2. ipfs cache  [future: torrent, LAN]
+    return Local.string();                                          // offline fallback (may be missing)
 }
 
 //Returns the unresolved dependency locators for a built container — drives the portable/standalone
@@ -1721,50 +1747,88 @@ std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct Conta
     {
         const std::string Type = Sub.value("TYPE", std::string());
         if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
-        const std::string Resolved = ResolveLayerSource(Sub, ContainerParams.PackagePath);
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;
-        if (Resolved.empty() || !std::filesystem::exists(Resolved, Ec))
-        {
-            LogErr("ContainerWrapper::VerifyDependencies", "Layer source missing: " + Resolved);
-            Missing.push_back(Resolved);
-        }
+        if (std::filesystem::exists(Local, Ec)) continue;        // present locally (highest priority)
+        if (!Cid.empty()) continue;                              // fetchable from a backend — not "missing"
+        LogErr("ContainerWrapper::VerifyDependencies", "Layer content unavailable (no local file, no source): " + Local.string());
+        Missing.push_back(Local.string());
     }
     return Missing;
 }
 
-//Verifies every remote SOURCE the launch needs is ALREADY installed — it never fetches at launch (the
-//library/runner install flow fetches ahead of time). Returns false (blocking the launch) if any required
-//IPFS CID isn't cached or the runner's DEFPREFIX artifact is missing.
+//Pre-flight CHECK (never fetches — safe to call from the GUI thread, e.g. the play() gate). Returns false,
+//blocking the launch, only when something can't be satisfied:
+//  - a RUNNER build CID isn't cached (runners are fetched ahead of time by ImportRunner — "import the runner"),
+//  - the wine runner's DEFPREFIX artifact is missing,
+//  - a GAME VFS layer has neither local content NOR a backend (CID) to fetch it from.
+//A game layer that is missing locally but HAS a CID is fine here — MaterializeLayers fetches it on the worker.
 bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
 {
     bool Ok = true;
-    auto Check = [&](const nlohmann::ordered_json &Src)
+    auto CheckCached = [&](const nlohmann::ordered_json &Src)                    // runner sources: must be cached
     {
         if (!Src.is_object() || Src.value("TYPE", std::string("path")) != "ipfs") return;
         const std::string Cid = Src.value("CID", std::string());
         if (Cid.empty() || IpfsWrapper::IsCached(Cid)) return;
         Ok = false;
-        LogErr("ContainerWrapper::EnsureSources", "Required IPFS source not installed: CID " + Cid);
+        LogErr("ContainerWrapper::EnsureSources", "Required runner source not installed: CID " + Cid);
     };
+    CheckCached(ContainerParams.RunnerSource);                                   // legacy top-level runner SOURCE
+    for (const auto &Sub : ContainerParams.RunnerLayers)                         // the runner build layers
+        if (Sub.contains("SOURCE")) CheckCached(Sub["SOURCE"]);
 
-    Check(ContainerParams.RunnerSource);                                        // legacy top-level runner SOURCE
-    for (const auto &Sub : ContainerParams.RunnerLayers)                        // the runner build layers
-        if (Sub.contains("SOURCE")) Check(Sub["SOURCE"]);
-    for (const auto &Sub : ContainerParams.SubComponentsArray)                  // every game VFS layer
-        if (Sub.contains("SOURCE")) Check(Sub["SOURCE"]);
+    for (const auto &Sub : ContainerParams.SubComponentsArray)                   // game VFS layers: local OR fetchable
+    {
+        const std::string Type = Sub.value("TYPE", std::string());
+        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
+        std::error_code Ec;
+        if (std::filesystem::exists(Local, Ec) || !Cid.empty()) continue;        // present, or a backend can provide it
+        Ok = false;
+        LogErr("ContainerWrapper::EnsureSources", "Missing layer content (no local file, no source): " + Local.string());
+    }
 
-    //An installed wine runner must have its one-time DEFPREFIX artifact (generated at install).
+    //An installed wine runner must have its one-time DEFPREFIX artifact (generated at import).
     if (ContainerParams.RunnerShipsBuild && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
     {
         std::error_code Ec;
         if (ContainerParams.DefPrefixPath.empty() || !std::filesystem::exists(ContainerParams.DefPrefixPath, Ec))
         {
             Ok = false;
-            LogErr("ContainerWrapper::EnsureSources", "Runner not installed: missing DEFPREFIX artifact " + ContainerParams.DefPrefixPath.string());
+            LogErr("ContainerWrapper::EnsureSources", "Runner not imported: missing DEFPREFIX artifact " + ContainerParams.DefPrefixPath.string());
         }
     }
 
-    if (!Ok) LogErr("ContainerWrapper::EnsureSources", "Required dependencies are not installed — launch blocked (install them first).");
+    if (!Ok) LogErr("ContainerWrapper::EnsureSources", "Required dependencies are unavailable — launch blocked.");
+    return Ok;
+}
+
+//Hierarchical fallback MATERIALIZER (worker thread only — may block on a download). For each GAME VFS layer
+//whose local content is missing, fetches it from a backend (IPFS now) straight to its expected local PATH, so
+//the package self-heals and subsequent launches are fully local. Runner builds are not materialized here (they
+//stay in the shared cache, fetched at runner import). Returns false if a required layer could not be fetched.
+bool ContainerWrapper::MaterializeLayers(struct ContainerParams &ContainerParams)
+{
+    bool Ok = true;
+    for (const auto &Sub : ContainerParams.SubComponentsArray)
+    {
+        const std::string Type = Sub.value("TYPE", std::string());
+        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
+        std::error_code Ec;
+        if (std::filesystem::exists(Local, Ec)) continue;                        // already local — highest priority
+        if (Cid.empty()) continue;                                              // no backend (flagged by EnsureSources)
+        std::string Err;                                                        // fetch from IPFS to the expected path
+        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
+        {
+            Ok = false;
+            LogErr("ContainerWrapper::MaterializeLayers", "Could not fetch layer CID " + Cid + " -> " + Local.string() + " (" + Err + ")");
+        }
+    }
     return Ok;
 }
 
@@ -2083,31 +2147,58 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
     const std::string Uid = Manifest.value("PACKAGEUID", std::string());
     if (Uid.empty()) return Fail("package has no PACKAGEUID");
 
-    //1. Fetch this package's content layers from IPFS (cached + pinned). A missing/unreachable CID aborts.
-    const std::vector<std::string> Cids = PackageIpfsCids(Manifest);
-    for (const std::string &Cid : Cids)
-    {
-        std::string Err;
-        if (IpfsWrapper::FetchSync(Cid, &Err).empty())
-            return Fail("could not fetch content CID " + Cid + " (" + Err + ")");
-    }
-    LogSucc("ContainerWrapper::ImportPackage", "Fetched " + std::to_string(Cids.size()) + " content CID(s) for package " + Uid);
-
-    //2. Register in LIBRARY (the games-view of the catalog), deduped by PACKAGEUID. PATH points at the catalog
-    //   clone dir — the manifest lives there and its layers resolve via the CID cache; nothing is copied.
+    //Already in the library? (deduped by PACKAGEUID)
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
     for (const auto &E : GlobalConfigJSON["LIBRARY"])
         if (E.value("PACKAGEUID", std::string()) == Uid)
         { LogOut("ContainerWrapper::ImportPackage", "Package " + Uid + " already in LIBRARY."); return true; }
 
+    //1. Hydrate the dehydrated package into the managed library folder, separated by repo:
+    //   <LibraryDir>/<repo>/<pkg>. Copy the manifest dir verbatim (JSON fragments + cover assets — the CIDs in
+    //   the manifest are KEPT as the permanent fallback source). Nothing is stripped.
+    std::error_code Ec;
+    const std::filesystem::path Src(PackageDir);
+    const std::string RepoName = Src.parent_path().filename().string();          // the repo clone dir's name
+    const std::string PkgName  = Src.filename().string();
+    const std::filesystem::path Dest = std::filesystem::path(LibraryDir(GlobalConfigJSON)) / RepoName / PkgName;
+    std::filesystem::remove_all(Dest, Ec);
+    std::filesystem::create_directories(Dest.parent_path(), Ec);
+    std::filesystem::copy(Src, Dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, Ec);
+    if (Ec) return Fail("could not copy package into the library folder (" + Ec.message() + ")");
+
+    //2. Materialize content: fetch each VFS layer's content from a backend (IPFS) to its expected local path in
+    //   the copied package, so it becomes identical to a local package (local-first resolution, CID as fallback).
+    int Fetched = 0;
+    if (Manifest.contains("COMPONENTS") && Manifest["COMPONENTS"].is_array())
+        for (const auto &C : Manifest["COMPONENTS"])
+        {
+            if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+            for (const auto &S : C["SUBCOMPONENTS"])
+            {
+                const std::string T = S.value("TYPE", std::string());
+                if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(S, Dest, Local, Cid);
+                if (Cid.empty() || Local == Dest) continue;                      // no backend, or no PATH to place it
+                if (std::filesystem::exists(Local, Ec)) continue;                // already materialized in the copy
+                std::string Err;
+                if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
+                { std::filesystem::remove_all(Dest, Ec); return Fail("could not fetch layer CID " + Cid + " (" + Err + ")"); }
+                ++Fetched;
+            }
+        }
+    LogSucc("ContainerWrapper::ImportPackage", "Hydrated package " + Uid + " into " + Dest.string()
+            + " (" + std::to_string(Fetched) + " layer(s) fetched)");
+
+    //3. Register a thin LIBRARY reference to the hydrated (now fully-local) package.
     nlohmann::ordered_json Slim;
     Slim["PACKAGEUID"]     = Uid;
     Slim["PACKAGENAME"]    = Manifest.value("PACKAGENAME", std::string());
     Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
-    Slim["PATH"]           = PackageDir;
+    Slim["PATH"]           = Dest.string();
     GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
-    LogSucc("ContainerWrapper::ImportPackage", "Installed package " + Uid + " into LIBRARY (PATH " + PackageDir + ")");
+    LogSucc("ContainerWrapper::ImportPackage", "Imported package " + Uid + " into LIBRARY (PATH " + Dest.string() + ")");
     return true;
 }
 

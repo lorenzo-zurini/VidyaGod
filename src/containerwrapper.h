@@ -267,6 +267,9 @@ public:
     //Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
     //(VFSZip/Dir/FileLayer) across its COMPONENTS. The set a game install must fetch to be playable.
     static std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
+    //The managed library root (where imports are hydrated, one subfolder per repo): Settings.Paths.LibraryRoot
+    //or the default ~/.VidyaGod/library. Exposed so the UI can tell managed (delete-on-remove) entries apart.
+    static std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
     //Installs a catalog GAME package (sibling of ImportRunner): fetches+pins every PackageIpfsCids over IPFS,
     //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH:PackageDir} in
     //GlobalConfigJSON (deduped by PACKAGEUID). The caller persists GlobalConfig and refreshes the UI. The
@@ -285,11 +288,14 @@ public:
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
     //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
     static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);
-    //Fetches every remote SOURCE the launch needs (the runner build + each VFS layer) into the local cache
-    //before anything that reads them. Currently handles TYPE:"ipfs" via Kubo (fetch + pin). Returns false if
-    //a required CID could not be fetched (no fallback — the launch must abort). Run at the start of
-    //BuildContainerRuntime, before InitializeDefPrefix (the runner binary must exist on disk by then).
+    //Pre-flight CHECK (never fetches; GUI-thread safe) that every dependency is satisfiable — runner build CIDs
+    //cached, the wine DEFPREFIX artifact present, and every game VFS layer either local or backend-fetchable.
+    //Returns false (blocking the launch) otherwise. Used by the play() gate and at the start of BuildContainerRuntime.
     static bool EnsureSources(struct ContainerParams &ContainerParams);
+    //Worker-thread MATERIALIZER (may block on a download): fetches each game VFS layer whose local content is
+    //missing from a backend (IPFS) straight to its expected local PATH (self-healing). Runner builds stay cached.
+    //Run in BuildContainerRuntime after EnsureSources, before the mount. Returns false if a layer can't be fetched.
+    static bool MaterializeLayers(struct ContainerParams &ContainerParams);
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
     //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.

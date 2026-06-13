@@ -163,6 +163,64 @@ std::string FetchSync(const std::string &Cid, std::string *Error)
     return Dest;
 }
 
+std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error)
+{
+    auto Fail = [&](const std::string &Msg) -> std::string {
+        if (Error) *Error = Msg;
+        LogErr("IpfsWrapper::FetchToPath", Msg);
+        Emit({ TransferEvent::Finished, Cid, -1.0, false });
+        return std::string();
+    };
+
+    if (Cid.empty())         return Fail("empty CID");
+    if (DestPathStr.empty()) return Fail("empty destination path");
+    const QString Dest = QString::fromStdString(DestPathStr);
+    if (QFileInfo::exists(Dest)) { LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr); return DestPathStr; }
+    if (!Available())        return Fail("Kubo (ipfs) is not installed — cannot fetch CID " + Cid);
+
+    QDir().mkpath(QFileInfo(Dest).absolutePath());          // ensure the layer's parent dirs exist
+    const QString TmpDest = Dest + ".tmp";
+    QDir(TmpDest).removeRecursively();                       // clear any partial previous attempt
+    QFile::remove(TmpDest);
+
+    LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
+    Emit({ TransferEvent::Started, Cid, -1.0, false });
+    if (!RunIpfsGet(Cid, TmpDest))
+    {
+        QDir(TmpDest).removeRecursively(); QFile::remove(TmpDest);
+        return Fail("`ipfs get` failed for CID " + Cid + " (is the daemon running / CID reachable?)");
+    }
+
+    // Atomically publish the fetched content at the destination.
+    QFile::remove(Dest);
+    QDir(Dest).removeRecursively();
+    if (!QDir().rename(TmpDest, Dest))
+        return Fail("failed to move fetched CID into place: " + DestPathStr);
+
+    // Seed from the destination via Filestore (--nocopy): the blocks REFERENCE the file in place — no second
+    // copy. If the re-add yields a different CID (content not nocopy-hostable), fall back to a normal pin so we
+    // still seed the correct CID. Best-effort — a missing daemon just defers it.
+    QString Added;
+    const bool NocopyOk = RunIpfs({"add", "--nocopy", "--pin=true", "-Q", Dest}, &Added, 600000);
+    const std::string AddedCid = Added.trimmed().toStdString();
+    if (NocopyOk && AddedCid == Cid)
+        LogSucc("IpfsWrapper::FetchToPath", "Seeding " + Cid + " via Filestore from " + DestPathStr);
+    else
+    {
+        if (NocopyOk && !AddedCid.empty())
+        {
+            LogWarn("IpfsWrapper::FetchToPath", "nocopy add produced a different CID (" + AddedCid + ") — using a normal pin.");
+            RunIpfs({"pin", "rm", QString::fromStdString(AddedCid)}, nullptr, 30000);
+        }
+        if (!RunIpfs({"pin", "add", QString::fromStdString(Cid)}, nullptr, 60000))
+            LogWarn("IpfsWrapper::FetchToPath", "could not pin CID " + Cid + " (start `ipfs daemon` to seed it).");
+    }
+
+    LogSucc("IpfsWrapper::FetchToPath", "Materialized CID " + Cid + " at " + DestPathStr);
+    Emit({ TransferEvent::Finished, Cid, 100.0, true });
+    return DestPathStr;
+}
+
 int PeerCount()
 {
     QString Out;

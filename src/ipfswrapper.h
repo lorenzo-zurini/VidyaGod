@@ -41,6 +41,12 @@ bool IsCached(const std::string &Cid);
 // "" on failure (with *Error set to a human-readable reason when provided).
 std::string FetchSync(const std::string &Cid, std::string *Error = nullptr);
 
+// Fetches a CID's content directly to DestPath (creating parent dirs) and seeds it from there via
+// `ipfs add --nocopy` — one copy at the destination, no separate blockstore/cache copy. Used to materialize
+// a layer's content at its expected local PATH. No-op (returns DestPath) if DestPath already exists. Returns
+// DestPath on success, "" on failure (with *Error set when provided).
+std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
+
 // ----- best-effort status helpers for the IPFS tab (empty/0 when unavailable) -----
 
 // Number of connected swarm peers (`ipfs swarm peers`), 0 if no daemon.
