@@ -547,17 +547,47 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
                                         ? US["VARIABLES"] : nlohmann::ordered_json::object();
 
+    // Resolve the combo-selected runner variant so its knobs (referenced in the runner's ENV/ARGS) can be
+    // surfaced as pickers too — this is how a game seeds env/args to its runner via FORCEVARS. Reuse
+    // DeriveContainerParams' runner pick (same GUEST/HOST platform match). Scope to the variant's enabled
+    // components (RunnerRecipe) so a monolithic multi-version runner package doesn't surface inactive knobs.
+    std::vector<std::pair<std::string, nlohmann::ordered_json>> RunnerPickerComps;
+    {
+        std::string SelRunnerID;
+        if (RunnerCombo && RunnerCombo->currentIndex() >= 0)
+            SelRunnerID = RunnerCombo->currentData().toString().toStdString();
+
+        ContainerParams RP("", SubgameID, "");
+        RP.VariantID = SelVariantID;
+        RP.RunnerID  = SelRunnerID;
+        ContainerWrapper::DeriveContainerParams(*MANIFESTJSON, RP, *GlobalConfigJSON);
+
+        // The runner's ENV/ARGS reference its knobs; add them to the chain string so those knobs pass the
+        // "is referenced in chain" filter below.
+        ChainSubComponentsStr += RP.RunnerEnv.dump();
+        for (const auto &A : RP.RunnerArgs) ChainSubComponentsStr += A;
+
+        std::set<std::string> Want(RP.RunnerRecipe.begin(), RP.RunnerRecipe.end());
+        for (auto &C : RP.RunnerComponents)
+        {
+            if (!C.is_object()) continue;
+            std::string CID = C.value("COMPONENTID", std::string());
+            if (!Want.empty() && !Want.count(CID)) continue;
+            if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
+                ChainSubComponentsStr += C["SUBCOMPONENTS"].dump();
+            RunnerPickerComps.emplace_back(CID, C);
+        }
+    }
+
     bool AnyVisible = false;
 
-    // CustomVars are subcomponents (TYPE:"CustomVar"), namespaced %COMPONENTID.KEY%. Walk the recipe
-    // components and surface each displayable var that is actually referenced elsewhere in the chain.
-    // Pickers are grouped into a box per owning component (created lazily, only if it has a var).
-    for (const std::string &CompID : TmpParams.Recipe)
+    // CustomVars are subcomponents (TYPE:"CustomVar"), bare global %KEY%. Surface each displayable var that
+    // is actually referenced elsewhere in the chain. Pickers are grouped into a box per owning component
+    // (created lazily, only if it has a var). Both the game recipe and the selected runner variant's enabled
+    // components are scanned, so a runner's env/args knobs show up alongside the game's.
+    auto BuildPickers = [&](const nlohmann::ordered_json &Comp, const std::string &CompID)
     {
-        int CIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, CompID);
-        if (CIdx == -1) continue;
-        auto &Comp = (*MANIFESTJSON)["COMPONENTS"][CIdx];
-        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) return;
 
         QGroupBox *  CompBox  = nullptr;
         QFormLayout * CompForm = nullptr;
@@ -573,9 +603,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         for (auto &CV : Comp["SUBCOMPONENTS"])
         {
         if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
-        std::string BareKey = CV.value("KEY", std::string());
-        if (BareKey.empty()) continue;
-        std::string Key = CompID + "." + BareKey;   // namespaced token name
+        std::string Key = CV.value("KEY", std::string());   // bare global token name
+        if (Key.empty()) continue;
 
         // Only show if this key is actually referenced in the chain.
         std::string Token = "%" + Key + "%";
@@ -669,7 +698,17 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
         // Add the component's box only if it ended up with at least one visible var.
         if (CompBox) CustomVarForm->addRow(CompBox);
-    } // for each recipe component
+    }; // BuildPickers
+
+    // Game recipe components first, then the selected runner variant's enabled components.
+    for (const std::string &CompID : TmpParams.Recipe)
+    {
+        int CIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, CompID);
+        if (CIdx == -1) continue;
+        BuildPickers((*MANIFESTJSON)["COMPONENTS"][CIdx], CompID);
+    }
+    for (const auto &[RCompID, RComp] : RunnerPickerComps)
+        BuildPickers(RComp, RCompID);
 
     CustomVarGroup->setVisible(AnyVisible);
 }
@@ -868,7 +907,7 @@ void PreLaunchWindow::onLaunchClicked()
     // 2. Override with visible picker selections (covers DISPLAY:true vars).
     std::map<std::string, std::string> CollectedVars;
 
-    // Step 1: variant FORCEVARS seed (keys are namespaced %COMPONENTID.KEY%). Everything not seeded
+    // Step 1: variant FORCEVARS seed (keys are bare global %KEY%). Everything not seeded
     // or picked is left to the container to resolve (DEFAULT / random / USERSETTINGS).
     if (MANIFESTJSON)
     {
@@ -881,7 +920,7 @@ void PreLaunchWindow::onLaunchClicked()
     }
 
     // Step 2: visible picker widgets (DISPLAY:true) override. Collected via findChildren since the
-    // pickers are nested in per-component group boxes. Each widget carries its namespaced CVKey.
+    // pickers are nested in per-component group boxes. Each widget carries its bare CVKey.
     std::map<std::string, std::string> PickerVars;
     for (QWidget * W : CustomVarGroup->findChildren<QWidget*>())
     {
@@ -897,7 +936,7 @@ void PreLaunchWindow::onLaunchClicked()
         CollectedVars[Key.toStdString()] = Val;
     }
 
-    // Auto-save the displayed picker values to USERSETTINGS["VARIABLES"] (namespaced keys) so they
+    // Auto-save the displayed picker values to USERSETTINGS["VARIABLES"] (bare keys) so they
     // pre-fill on the next launch, taking precedence over DEFAULT and random picks.
     if (!PackageUID.empty() && !PickerVars.empty())
     {

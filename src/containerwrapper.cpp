@@ -251,6 +251,12 @@ bool ContainerWrapper::BuildContainerRuntime()
             if (!RW.SavePrefix(ContainerParams.RuntimePath))
                 LogWarn("ContainerWrapper::BuildContainerRuntime", "Failed to apply base RegEdits to runtime.");
         }
+        //Same deferral for base FileEdits: the Pre-VFS pass was skipped (it would target the read-only
+        //DEFPREFIX artifact), so apply base (non-OVERRIDE) FileEdits — e.g. Warcraft III's roc/tft .w3k CD
+        //keys — to the mounted runtime now. Without this they were applied in neither pass for installed
+        //runners, leaving the game to prompt for keys.
+        if (ContainerParams.RunnerShipsBuild)
+            this->ProcessFileEdits(this->ContainerParams, /*OverridePass=*/false, /*BaseToRuntime=*/true);
         this->ProcessDLLOverrides(this->ContainerParams);
         this->ProcessFileEdits(this->ContainerParams, true);
         this->ApplyOverrideRegEdits(this->ContainerParams);
@@ -400,16 +406,19 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
 }
 
 //Resolves every CustomVar SUBCOMPONENT (TYPE:"CustomVar") of the components in the Recipe into
-//ContainerParams.CustomVariables, keyed by the namespaced token "COMPONENTID.KEY". Components are
-//walked in Recipe order, so a later component's var overrides an earlier identical namespaced token.
+//ContainerParams.CustomVariables, keyed by the bare global token "KEY" (no COMPONENTID prefix).
+//Components are walked in Recipe order, so a later component's var overrides an earlier one with the
+//same KEY — bare keys are one shared knob: intentional sharing (a game seeding a runner's knob via
+//FORCEVARS) is the feature, and the same logical knob declared across many version components collapses
+//to one because only the selected variant's enabled components are ever in a recipe.
 //
 //Resolution priority for each variable (highest to lowest):
-//  1. ContainerParams.VariableOverrides — set from --var COMP.KEY=VALUE CLI flags or UI picker
+//  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
 //  3. DEFAULT from the CustomVar definition
 bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
 {
-    //Helper: resolve a single namespaced KEY/DEFAULT pair through the priority chain.
+    //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
     {
         if (ContainerParams.VariableOverrides.count(Key))
@@ -428,16 +437,15 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
         return DefaultValue;
     };
 
-    //Resolve a single CustomVar subcomponent under namespace NS = "COMPONENTID." — two-layer pipeline:
+    //Resolve a single CustomVar subcomponent into its bare global %KEY% — two-layer pipeline:
     //  Layer 1: StringVariableSubstitution expands %ScreenWidth%, %PackagePath%, and any
     //           already-resolved CustomVar (GetVariablesMap() is rebuilt per-var).
     //  Layer 2: TranslateCustomVarValue converts the display value to raw storage (e.g. dword).
     //DISPLAY is a UI-only flag; all vars resolve here regardless.
-    auto ResolveCustomVar = [&](const nlohmann::ordered_json &CV, const std::string &NS)
+    auto ResolveCustomVar = [&](const nlohmann::ordered_json &CV)
     {
-        std::string Bare = CV.value("KEY", std::string());
-        if (Bare.empty()) return;
-        std::string Key     = NS + Bare;                            // namespaced token name
+        std::string Key = CV.value("KEY", std::string());           // bare global token name
+        if (Key.empty()) return;
         std::string VarType = CV.value("VARTYPE", std::string("string"));
 
         // random: pick a fresh value from OPTIONS each launch (CLI override still wins).
@@ -466,7 +474,7 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
     };
 
     //Walk the Recipe in order; for each component, resolve its CustomVar subcomponents. Later
-    //components win (they re-assign the same namespaced key).
+    //components win (they re-assign the same bare key).
     LogOut("ContainerWrapper::ResolveCustomVariables", "Resolving CustomVar subcomponents...");
     for (const std::string &CompID : ContainerParams.Recipe)
     {
@@ -474,10 +482,27 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
         if (Idx == -1) continue;
         const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
         if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-        const std::string NS = CompID + ".";
         for (const auto &S : Comp["SUBCOMPONENTS"])
             if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
-                ResolveCustomVar(S, NS);
+                ResolveCustomVar(S);
+    }
+
+    //Also resolve the selected runner variant's CustomVars: its components mount separately (RunnerEndpoints
+    //is empty), so they're never in the game Recipe — but a runner exposes tweakable knobs (referenced as
+    //%KEY% in its ENV/ARGS) that a game seeds via FORCEVARS. This is how a game passes env/args to its runner,
+    //no bespoke fields. Scope to the variant's enabled components (RunnerRecipe) so a monolithic multi-version
+    //runner package doesn't let an inactive version's knob win.
+    if (!ContainerParams.RunnerComponents.empty())
+    {
+        std::set<std::string> RunnerWant(ContainerParams.RunnerRecipe.begin(), ContainerParams.RunnerRecipe.end());
+        for (const auto &Comp : ContainerParams.RunnerComponents)
+        {
+            if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+            if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
+            for (const auto &S : Comp["SUBCOMPONENTS"])
+                if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
+                    ResolveCustomVar(S);
+        }
     }
     LogSucc("ContainerWrapper::ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
     return true;
@@ -1076,6 +1101,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         const std::vector<std::string> RunnerEnabled = ResolveEnabledModules(
             ParseModules(SelectedVariant.value("MODULES", nlohmann::ordered_json::array())),
             ContainerParams.ModuleStates, RunnerManifest);
+        ContainerParams.RunnerRecipe = RunnerEnabled; //scopes runner CustomVar resolution to this variant's enabled components
         std::set<std::string> WantComps(RunnerEnabled.begin(), RunnerEnabled.end());
         for (auto &C : ContainerParams.RunnerComponents)
             if (WantComps.count(C.value("COMPONENTID", std::string())) && C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
@@ -2186,11 +2212,12 @@ bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerPara
 //  OverridePass=true  (post-VFS): writes to RuntimePath via the union, COW-ing directly into
 //    WRITELAYER — wins unconditionally over any previous state.
 //MUST BE RUN AFTER VARIABLE SUBSTITUTION (already done in BuildSubComponentsArray).
-bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass)
+bool ContainerWrapper::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass, bool BaseToRuntime)
 {
-    std::filesystem::path BasePath = OverridePass ? ContainerParams.RuntimePath : ContainerParams.DefPrefixPath;
+    std::filesystem::path BasePath = (OverridePass || BaseToRuntime) ? ContainerParams.RuntimePath : ContainerParams.DefPrefixPath;
+    const char *PassName = OverridePass ? "Post-VFS (override)" : (BaseToRuntime ? "Deferred base (installed runner)" : "Pre-VFS (base)");
     LogOut("ContainerWrapper::ProcessFileEdits",
-           std::string(OverridePass ? "Post-VFS" : "Pre-VFS") + " FileEdit pass. Base: " + BasePath.string());
+           std::string(PassName) + " FileEdit pass. Base: " + BasePath.string());
 
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {

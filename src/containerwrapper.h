@@ -84,6 +84,7 @@ public:
     std::vector<std::string> RunnerArgs; //Arguments prepended before the exe for emulator/custom runners
     std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
     nlohmann::ordered_json RunnerComponents = nlohmann::ordered_json::array(); //RESOLVED — COMPONENTS of the selected runner's registry package (empty for an embedded/PATH runner); folded into the component pool
+    std::vector<std::string> RunnerRecipe; //RESOLVED — the selected runner variant's enabled component ids (its MODULES recipe); scopes runner CustomVar resolution to the active variant only
 
     //Flags
     std::string subgame_id;                                         //PASSED
@@ -353,9 +354,14 @@ public:
 
     //FileEdits:
     //Processes FileEdit subcomponents. MUST BE RUN AFTER VARIABLE SUBSTITUTION.
-    //OverridePass=false: writes to DefPrefixPath (pre-VFS, WRITELAYER can shadow it).
-    //OverridePass=true:  writes to RuntimePath  (post-VFS, goes directly to WRITELAYER — wins unconditionally).
-    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false);
+    //OverridePass selects WHICH edits run (OVERRIDE flag must match); the base path is normally
+    //DefPrefixPath for the base pass and RuntimePath for the override pass.
+    //OverridePass=false: base edits → DefPrefixPath (pre-VFS, WRITELAYER can shadow them).
+    //OverridePass=true:  override edits → RuntimePath (post-VFS, COW to WRITELAYER — wins unconditionally).
+    //BaseToRuntime=true forces the write base to RuntimePath even on the base pass — used by the
+    //installed-runner path, where the read-only DEFPREFIX artifact can't receive base edits, so they
+    //are deferred to the mounted runtime (mirrors the base-RegEdit deferral).
+    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false, bool BaseToRuntime = false);
     //Reads FilePath line by line and replaces any line starting with Key with Key+Value.
     //Useful for patching INI-style config files that use prefix-based key matching.
     static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);

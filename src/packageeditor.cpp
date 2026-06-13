@@ -1727,10 +1727,9 @@ bool PackageEditor::BuildUI()
                         cvrow++;
                     }
 
-                    // Token hint — how to reference this var elsewhere (namespaced by its component).
-                    std::string CompID = (*MANIFESTJSON)["COMPONENTS"][i].value("COMPONENTID", std::string("COMPONENTID"));
+                    // Token hint — how to reference this var elsewhere (bare global %KEY%, no component prefix).
                     std::string Bare   = CV.value("KEY", std::string("KEY"));
-                    QLabel * Hint = new QLabel("Reference as  %" + QString::fromStdString(CompID) + "." + QString::fromStdString(Bare) + "%", IndividualSubComponentGroupBox);
+                    QLabel * Hint = new QLabel("Reference as  %" + QString::fromStdString(Bare) + "%", IndividualSubComponentGroupBox);
                     Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
                     IndividualSubComponentGroupBoxLayout->addWidget(Hint, cvrow, 0, 1, -1);
                     cvrow++;
@@ -2231,8 +2230,9 @@ void PackageEditor::AddFileEdit()
     SaveManifestJSON(); RefreshJSONView(); BuildUI();
 }
 
-//Adds a CustomVar subcomponent. CustomVars travel with their component and namespace as
-//%COMPONENTID.KEY% (resolved in recipe order — see ContainerWrapper::ResolveCustomVariables).
+//Adds a CustomVar subcomponent. CustomVars travel with their component but resolve into a bare global
+//%KEY% namespace (no COMPONENTID prefix; resolved in recipe order, last wins — see
+//ContainerWrapper::ResolveCustomVariables). The same KEY across version components is one shared knob.
 void PackageEditor::AddCustomVar()
 {
     QString JSONPath = ResolveComponentJSONPath(QObject::sender());

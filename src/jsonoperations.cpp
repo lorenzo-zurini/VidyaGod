@@ -259,8 +259,9 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                 Parent = std::string(C["PARENTCOMPONENT"]);
             ParentOf[Id] = Parent;
 
-            // CustomVar subcomponents: KEYs must be unique within the component (they namespace as
-            // %COMPONENTID.KEY%).
+            // CustomVar subcomponents: KEYs must be unique within the component. They resolve into a
+            // bare global %KEY% namespace; the same KEY across components is one shared knob (last in
+            // recipe order wins), so cross-component duplicates are intentional, not an error.
             std::unordered_set<std::string> VarKeys;
             if (C.contains("SUBCOMPONENTS") && C["SUBCOMPONENTS"].is_array())
                 for (const auto &S : C["SUBCOMPONENTS"])
