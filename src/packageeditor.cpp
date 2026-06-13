@@ -1447,7 +1447,7 @@ bool PackageEditor::BuildUI()
                         IndividualSubComponentGroupBoxLayout->addWidget(ConvertBtn, 1, 2);
                     }
 
-                    //TARGET + SUBPATH fields — for VFSZipLayer and VFSDirLayer only.
+                    //TARGET + SUBMOUNTS fields — for VFSZipLayer and VFSDirLayer only.
                     if (SubComponentType == "VFSZipLayer" || SubComponentType == "VFSDirLayer")
                     {
                         auto &SubRef = (*PackageEditor::MANIFESTJSON)["COMPONENTS"][i]["SUBCOMPONENTS"][j];
@@ -1461,17 +1461,34 @@ bool PackageEditor::BuildUI()
                         QObject::connect(TargetField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                         IndividualSubComponentGroupBoxLayout->addWidget(TargetField, 2, 1);
 
-                        //SUBPATH — mount only a path WITHIN the source at TARGET (empty = whole source). For a
-                        //single file, point SUBPATH at it and make TARGET the full destination path (incl. filename).
-                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("SUBPATH:"), 3, 0);
-                        QLineEdit * SubpathField = new QLineEdit(IndividualSubComponentGroupBox);
-                        SubpathField->setPlaceholderText("optional: path inside the source (e.g. MS/x86/D3D9.dll)");
-                        QString SubpathJSONPath = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2/SUBPATH").arg(i).arg(j);
-                        SubpathField->setProperty("JSONPath", SubpathJSONPath);
-                        if (SubRef.contains("SUBPATH") && SubRef["SUBPATH"].is_string())
-                            SubpathField->setText(QString::fromStdString(std::string(SubRef["SUBPATH"])));
-                        QObject::connect(SubpathField, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
-                        IndividualSubComponentGroupBoxLayout->addWidget(SubpathField, 3, 1);
+                        //SUBMOUNTS — Docker-style "src:dst" mounts of paths WITHIN the source, one per line; the
+                        //layer mounts source/<src> at <dst> (a full path relative to the runtime root). Empty =
+                        //mount the whole source at TARGET. Stored as a JSON string array.
+                        IndividualSubComponentGroupBoxLayout->addWidget(new QLabel("SUBMOUNTS:"), 3, 0);
+                        QTextEdit * SubMountsField = new QTextEdit(IndividualSubComponentGroupBox);
+                        SubMountsField->setPlaceholderText("source/path:dest/path   (one per line; empty = whole source at TARGET)");
+                        SubMountsField->setFixedHeight(72);
+                        if (SubRef.contains("SUBMOUNTS") && SubRef["SUBMOUNTS"].is_array())
+                        {
+                            QString Txt;
+                            for (const auto &E : SubRef["SUBMOUNTS"])
+                                if (E.is_string()) Txt += QString::fromStdString(std::string(E)) + "\n";
+                            SubMountsField->setPlainText(Txt.trimmed());
+                        }
+                        QString SMPtr = QString("/COMPONENTS/%1/SUBCOMPONENTS/%2").arg(i).arg(j);
+                        QObject::connect(SubMountsField, &QTextEdit::textChanged, this, [this, SMPtr, SubMountsField](){
+                            nlohmann::ordered_json Arr = nlohmann::ordered_json::array();
+                            for (const QString &Line : SubMountsField->toPlainText().split('\n'))
+                            {
+                                QString T = Line.trimmed();
+                                if (!T.isEmpty()) Arr.push_back(T.toStdString());
+                            }
+                            auto Ptr = json::json_pointer(SMPtr.toStdString());
+                            if (Arr.empty()) (*MANIFESTJSON)[Ptr].erase("SUBMOUNTS");
+                            else             (*MANIFESTJSON)[Ptr]["SUBMOUNTS"] = Arr;
+                            SaveManifestJSON();
+                        });
+                        IndividualSubComponentGroupBoxLayout->addWidget(SubMountsField, 3, 1);
                     }
                 }
                 else if (SubComponentType == "RegEdit")

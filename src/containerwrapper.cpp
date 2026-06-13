@@ -1805,7 +1805,7 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
             Target = Target.empty() ? T : (Target + "/" + T);
         }
         Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
-                          {"subpath", Sub.value("SUBPATH", std::string())}, {"rw", false}});
+                          {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }
 
     //DEFAULTDATA — package-encoded base (non-OVERRIDE) Reg/File edits, at the runtime root. Above the
@@ -1923,7 +1923,7 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
         if (LType.empty()) continue;
         std::string Target = Sub.value("TARGET", std::string());            // beside the runner-mount root
         Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.PackagePath)},
-                          {"target", Target}, {"subpath", Sub.value("SUBPATH", std::string())}, {"rw", false}});
+                          {"target", Target}, {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }
     Spec["layers"] = Layers;
 
@@ -1998,7 +1998,7 @@ bool ContainerWrapper::InstallRunner(nlohmann::ordered_json &GlobalConfigJSON, c
             if (LType.empty()) continue;
             Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, std::filesystem::path())},
                               {"target", S.value("TARGET", std::string())},
-                              {"subpath", S.value("SUBPATH", std::string())}, {"rw", false}});
+                              {"submounts", S.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
         }
     }
     Spec["layers"] = Layers;
