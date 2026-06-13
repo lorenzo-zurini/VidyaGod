@@ -192,9 +192,8 @@ bool ContainerWrapper::BuildContainerRuntime()
         return false;
     }
 
-    //Wine-specific pre-VFS steps: provision DEFPREFIX, then materialise every package-encoded BASE edit
-    //into the DEFAULTDATA layer (between the component layers and the WRITELAYER). DEFPREFIX is left
-    //pristine for both runner models; one code path, no installed-vs-not branching for edits.
+    //Provision the Wine prefix (DEFPREFIX) — Wine only. Left pristine; base edits go to DEFAULTDATA below.
+    //One code path, no installed-vs-not branching for edits.
     if (WineMode)
     {
         if (ContainerParams.RunnerShipsBuild)
@@ -203,10 +202,11 @@ bool ContainerWrapper::BuildContainerRuntime()
             { if (!this->MountRunnerBuild(this->ContainerParams)) return false; }
         else
             this->InitializeDefPrefix(this->ContainerParams);
-
-        //All base (non-OVERRIDE) Reg/FileEdits + persisted reg-key seeds → the DEFAULTDATA layer.
-        this->BuildDefaultData(this->ContainerParams);
     }
+
+    //Materialise every package-encoded BASE edit into the DEFAULTDATA layer (between the component layers
+    //and the WRITELAYER). FileEdits apply to any runner; base RegEdits are Wine-only (handled inside).
+    this->BuildDefaultData(this->ContainerParams);
 
     //Seed any persisted registry into the ephemeral WRITELAYER so it shadows DEFPREFIX.
     //No-op under PersistAll (durable RW branch already holds the reg files).
@@ -230,13 +230,13 @@ bool ContainerWrapper::BuildContainerRuntime()
     if (!this->MountVFS(this->ContainerParams)) return false;
     this->CheckCaseConflicts(ContainerParams.RuntimePath);
 
-    //Wine-specific post-mount steps: DLL overrides + OVERRIDE Reg/FileEdits operate on the mounted runtime
-    //(COW directly to WRITELAYER) — they win unconditionally, over both the package content AND the user's
-    //persisted state. Base edits already live in the DEFAULTDATA layer below.
+    //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
+    //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
+    //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
+    this->ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true);
     if (WineMode)
     {
         this->ProcessDLLOverrides(this->ContainerParams);
-        this->ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true);
         this->ApplyOverrideRegEdits(this->ContainerParams);
     }
 
@@ -1412,27 +1412,41 @@ static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool Want
 //(WRITELAYER) shadow them in turn — PortableApps-style "factory defaults under live user data".
 //
 //Contents:
-//  - Base FileEdits  → files at their prefix-relative paths under DEFAULTDATA.
+//  - Base FileEdits  → files at their root-relative paths under DEFAULTDATA. Applied for ANY runner type
+//                      (Wine: drive_c/…; emulator/native: the runtime root).
 //  - Base RegEdits   → full user.reg/system.reg/userdef.reg = DEFPREFIX hives + edits (shadow DEFPREFIX's;
-//                      vidyagodfs COWs from this highest layer when Wine writes the registry).
-//  - Persisted RegKeyPersist subtrees merged in AFTER base edits, so the user's saved key state wins.
+//                      vidyagodfs COWs from this highest layer when Wine writes the registry). WINE-ONLY.
+//  - Persisted RegKeyPersist subtrees merged in AFTER base edits, so the user's saved key state wins. WINE-ONLY.
 //
 //DEFPREFIX itself is NEVER mutated (read-only source for the hives) — pristine for both runner models.
 //OVERRIDE edits are NOT handled here; they go post-mount straight to the runtime (COW → WRITELAYER).
+//Creates nothing when there are no base edits, so edit-less packages get no (empty) DEFAULTDATA layer.
 //MUST BE RUN AFTER VARIABLE SUBSTITUTION (BuildSubComponentsArray) and after DEFPREFIX is provisioned.
 bool ContainerWrapper::BuildDefaultData(struct ContainerParams &ContainerParams)
 {
+    const bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
+
+    bool HaveBaseFileEdits = false;
+    for (const auto &S : ContainerParams.SubComponentsArray)
+        if (S.value("TYPE", std::string()) == "FileEdit" && S.value("OVERRIDE", false) == false)
+            { HaveBaseFileEdits = true; break; }
+
+    //Registry is Wine-only; emulator/native runners have no hives.
+    const bool HaveBaseReg = WineMode && HasRegEdits(ContainerParams, /*WantOverride=*/false);
+    const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "__REGKEYS__";
+    const bool HavePersistKeys = WineMode && !ContainerParams.PersistAll && !ContainerParams.PersistRegKeys.empty()
+                                 && std::filesystem::exists(RegKeyStore);
+
+    if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys) return true; // nothing to materialise
+
     std::error_code Ec;
     std::filesystem::create_directories(ContainerParams.DefaultDataPath, Ec);
 
-    //Base FileEdits → DEFAULTDATA (at their prefix-relative paths).
-    ContainerWrapper::ProcessFileEdits(ContainerParams, /*OverridePass=*/false, ContainerParams.DefaultDataPath);
+    //Base FileEdits → DEFAULTDATA (at their root-relative paths).
+    if (HaveBaseFileEdits)
+        ContainerWrapper::ProcessFileEdits(ContainerParams, /*OverridePass=*/false, ContainerParams.DefaultDataPath);
 
     //Base RegEdits + persisted reg-key subtrees → DEFAULTDATA hives, built from DEFPREFIX (never mutating it).
-    const bool HaveBaseReg = HasRegEdits(ContainerParams, /*WantOverride=*/false);
-    const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "__REGKEYS__";
-    const bool HavePersistKeys = !ContainerParams.PersistAll && !ContainerParams.PersistRegKeys.empty()
-                                 && std::filesystem::exists(RegKeyStore);
     if (HaveBaseReg || HavePersistKeys)
     {
         //No wineserver quiesce needed: InitializeDefPrefix / the installed artifact leave DEFPREFIX quiescent,
@@ -1766,8 +1780,8 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
 
     //DEFAULTDATA — package-encoded base (non-OVERRIDE) Reg/File edits, at the runtime root. Above the
     //component layers (so the edits override the package's own content) but below the writelayer (so the
-    //user's persisted changes win). Built by BuildDefaultData; absent for non-Wine or edit-less packages.
-    if (WineMode && !ContainerParams.DefaultDataPath.empty()
+    //user's persisted changes win). Built by BuildDefaultData for any runner; absent for edit-less packages.
+    if (!ContainerParams.DefaultDataPath.empty()
         && std::filesystem::exists(ContainerParams.DefaultDataPath))
         Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefaultDataPath.string()}, {"target", ""}, {"rw", false}});
 
