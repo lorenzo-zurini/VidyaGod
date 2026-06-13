@@ -38,6 +38,7 @@ struct ModuleInfo {
     std::string Label;           // optional LABEL for the tree (falls back to component NAME/id)
     bool        Required = true;  // REQUIRED — defaults true (modules are required unless opted out)
     bool        Default  = true;  // DEFAULT — initial enabled state when optional; defaults true
+    std::vector<std::string> Exclude; // EXCLUDE — component ids this module is mutually exclusive with (symmetric)
 };
 
 //Each module walks its component's PARENTCOMPONENT chain; the union of enabled chains forms the recipe.

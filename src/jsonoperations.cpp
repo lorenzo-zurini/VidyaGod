@@ -313,6 +313,34 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
         return Comps;
     };
 
+    // Helper: mutually-exclusive (EXCLUDE) pairs in a MODULES set where BOTH are REQUIRED — unsatisfiable,
+    // since at most one of an exclusive pair may be enabled but two are forced on. Returns "A <-> B" strings.
+    auto ExclusiveRequiredConflicts = [](const nlohmann::ordered_json &Owner) {
+        std::vector<std::string> Out;
+        if (!Owner.contains("MODULES") || !Owner["MODULES"].is_array()) return Out;
+        std::map<std::string, bool> Req;
+        for (const auto &M : Owner["MODULES"])
+            if (M.is_object() && M.contains("COMPONENT") && M["COMPONENT"].is_string())
+                Req[std::string(M["COMPONENT"])] = M.value("REQUIRED", true);
+        std::set<std::string> Seen;
+        for (const auto &M : Owner["MODULES"])
+        {
+            if (!M.is_object() || !M.contains("COMPONENT") || !M["COMPONENT"].is_string()) continue;
+            std::string C = M["COMPONENT"];
+            if (!M.value("REQUIRED", true) || !M.contains("EXCLUDE") || !M["EXCLUDE"].is_array()) continue;
+            for (const auto &E : M["EXCLUDE"])
+            {
+                if (!E.is_string()) continue;
+                std::string Other = E;
+                if (!Req.count(Other) || !Req[Other]) continue; // the other side isn't a REQUIRED module here
+                std::string a = C, b = Other; if (a > b) std::swap(a, b);
+                std::string Key = a + " <-> " + b;
+                if (Seen.insert(Key).second) Out.push_back(Key);
+            }
+        }
+        return Out;
+    };
+
     // Game / variant / module checks.
     if (Assembled.contains("GAMES") && Assembled["GAMES"].is_array())
         for (const auto &G : Assembled["GAMES"])
@@ -332,6 +360,8 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                 for (const auto &C : Comps)
                     if (!ComponentIds.count(C))
                         Errors.push_back("Variant '" + VID + "' (game '" + GID + "') module '" + C + "' is not a known component");
+                for (const auto &P : ExclusiveRequiredConflicts(V))
+                    Errors.push_back("Variant '" + VID + "' (game '" + GID + "') has mutually-exclusive REQUIRED modules: " + P);
             }
             if (RecCount > 1) Warnings.push_back("Game '" + GID + "' has " + std::to_string(RecCount) + " RECOMMENDED variants");
         }
@@ -357,6 +387,8 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                 for (const auto &C : ModuleComponents(V))
                     if (!ComponentIds.count(C))
                         Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' module '" + C + "' is not a component in this package");
+                for (const auto &P : ExclusiveRequiredConflicts(V))
+                    Errors.push_back("Runner '" + RID + "' variant '" + VID + "' has mutually-exclusive REQUIRED modules: " + P);
             }
         }
 }

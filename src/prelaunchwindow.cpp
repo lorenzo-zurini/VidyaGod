@@ -13,6 +13,7 @@
 #include <QGuiApplication>
 #include <QApplication>
 #include <QScrollBar>
+#include <QMessageBox>
 
 // ============================================================================
 // LaunchThread
@@ -760,26 +761,52 @@ void PreLaunchWindow::RebuildModuleTree()
             for (std::string C = NearestModuleAncestor(M.Component); !C.empty(); C = NearestModuleAncestor(C))
                 LockedOn.insert(C);
         }
+    LockedModules = LockedOn; // hidden, always-on components — a toggle excluding one of these is rejected
+
+    // Symmetric mutual-exclusion adjacency over ALL modules (incl. hidden), for PropagateModuleItem.
+    ModuleExcludes.clear();
+    for (auto &M : Modules)
+        for (auto &E : M.Exclude) { ModuleExcludes[M.Component].insert(E); ModuleExcludes[E].insert(M.Component); }
+
+    // Nearest module-ancestor that is itself visible (not hidden/locked) — for re-parenting under hiding.
+    auto NearestVisibleAncestor = [&](const std::string &Comp) -> std::string {
+        for (std::string C = NearestModuleAncestor(Comp); !C.empty(); C = NearestModuleAncestor(C))
+            if (!LockedOn.count(C)) return C;
+        return "";
+    };
 
     auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
     const nlohmann::ordered_json Saved = (US.contains("MODULES") && US["MODULES"].is_object()) ? US["MODULES"] : nlohmann::ordered_json::object();
 
+    // Build items only for genuinely toggleable (non-locked) modules — REQUIRED / required-forced ones are
+    // hidden since the user can't change them. Initial state is normalized so no two mutually-exclusive
+    // modules start enabled together (first-declared wins).
     std::map<std::string, QTreeWidgetItem*> Items;
+    std::set<std::string> InitiallyOn;
     for (auto &M : Modules)
     {
-        bool UiReq   = LockedOn.count(M.Component) > 0;
-        bool Desired = UiReq ? true
-                     : (Saved.contains(M.Component) && Saved[M.Component].is_boolean() ? (bool)Saved[M.Component] : M.Default);
+        if (LockedOn.count(M.Component)) continue; // non-toggleable → hidden
+        bool Desired = (Saved.contains(M.Component) && Saved[M.Component].is_boolean()) ? (bool)Saved[M.Component] : M.Default;
+        if (Desired)
+        {
+            bool Conflict = false;
+            auto ai = ModuleExcludes.find(M.Component);
+            if (ai != ModuleExcludes.end())
+                for (const auto &On : InitiallyOn) if (ai->second.count(On)) { Conflict = true; break; }
+            if (Conflict) Desired = false; else InitiallyOn.insert(M.Component);
+        }
         QTreeWidgetItem* It = new QTreeWidgetItem();
         It->setText(0, QString::fromStdString(M.Label.empty() ? M.Component : M.Label));
         It->setData(0, Qt::UserRole,     QString::fromStdString(M.Component));
-        It->setData(0, Qt::UserRole + 1, UiReq);
+        It->setData(0, Qt::UserRole + 1, false);   // visible items are always optional/toggleable
         It->setData(0, Qt::UserRole + 2, Desired);
         Items[M.Component] = It;
     }
+    if (Items.empty()) { ModuleGroup->setVisible(false); ModuleTree->blockSignals(false); return; }
     for (auto &M : Modules)
     {
-        std::string P = NearestModuleAncestor(M.Component);
+        if (!Items.count(M.Component)) continue; // hidden
+        std::string P = NearestVisibleAncestor(M.Component);
         if (!P.empty() && Items.count(P)) Items[P]->addChild(Items[M.Component]);
         else                              ModuleTree->addTopLevelItem(Items[M.Component]);
     }
@@ -813,9 +840,43 @@ void PreLaunchWindow::RefreshModuleLocks()
 void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
 {
     if (!Item) return;
-    //Record the user's intent for an unlocked optional item; locked items are snapped back by the refresh.
-    if (!Item->data(0, Qt::UserRole + 3).toBool())
-        Item->setData(0, Qt::UserRole + 2, Item->checkState(0) == Qt::Checked);
+    if (Item->data(0, Qt::UserRole + 3).toBool()) { RefreshModuleLocks(); return; } // locked: snapped back by refresh
+
+    const bool NowChecked = Item->checkState(0) == Qt::Checked;
+    const std::string Comp = Item->data(0, Qt::UserRole).toString().toStdString();
+    auto ai = ModuleExcludes.find(Comp);
+    const bool HasExcl = (ai != ModuleExcludes.end());
+
+    // Enabling a module that is mutually exclusive with a hidden always-on (REQUIRED-forced) module can't
+    // win — that module can't yield. Warn and revert.
+    if (NowChecked && HasExcl)
+        for (const auto &E : ai->second)
+            if (LockedModules.count(E))
+            {
+                QMessageBox::warning(this, "Mutually exclusive module",
+                    QString::fromStdString("This option is mutually exclusive with an always-on module ('" + E +
+                                           "'), so it can't be enabled."));
+                ModuleTree->blockSignals(true);
+                Item->setCheckState(0, Qt::Unchecked);
+                ModuleTree->blockSignals(false);
+                Item->setData(0, Qt::UserRole + 2, false);
+                RefreshModuleLocks();
+                return;
+            }
+
+    //Record the user's intent for this unlocked item.
+    Item->setData(0, Qt::UserRole + 2, NowChecked);
+
+    // At most one: ticking a module unticks every visible module it excludes (optional siblings yield).
+    if (NowChecked && HasExcl)
+    {
+        std::function<void(QTreeWidgetItem*)> Walk = [&](QTreeWidgetItem* It) {
+            std::string C = It->data(0, Qt::UserRole).toString().toStdString();
+            if (It != Item && ai->second.count(C)) It->setData(0, Qt::UserRole + 2, false);
+            for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
+        };
+        for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i) Walk(ModuleTree->topLevelItem(i));
+    }
     RefreshModuleLocks();
 }
 

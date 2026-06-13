@@ -18,6 +18,10 @@
 #include <QSpinBox>
 #include <QTreeWidget>
 
+#include <set>
+#include <map>
+#include <string>
+
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
 #include "commonutils.h"
@@ -145,6 +149,9 @@ private:
     QFormLayout*  CustomVarForm         = nullptr;
     QGroupBox*    ModuleGroup           = nullptr; // Rebuilt by RebuildModuleTree()
     QTreeWidget*  ModuleTree            = nullptr;
+    // Mutual-exclusion state for the current tree (filled by RebuildModuleTree, used by PropagateModuleItem):
+    std::map<std::string, std::set<std::string>> ModuleExcludes; // component → mutually-exclusive components (symmetric)
+    std::set<std::string>                        LockedModules;  // hidden always-on (REQUIRED-forced) components
     QTextEdit*    ConsoleEdit       = nullptr;
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;

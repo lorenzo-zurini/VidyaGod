@@ -405,6 +405,10 @@ QWidget * PackageEditor::BuildModulesEditor(const std::string &VariantPtr)
         const bool        CurReq   = M.is_object() ? M.value("REQUIRED", true) : true;
         const bool        CurDef   = M.is_object() ? M.value("DEFAULT", true)  : true;
         const std::string CurLabel = M.is_object() ? M.value("LABEL", std::string()) : std::string();
+        std::string CurExclude;
+        if (M.is_object() && M.contains("EXCLUDE") && M["EXCLUDE"].is_array())
+            for (const auto &E : M["EXCLUDE"])
+                if (E.is_string()) CurExclude += (CurExclude.empty() ? "" : ", ") + std::string(E);
         const std::string MPtr = VariantPtr + "/MODULES/" + std::to_string(ek);
 
         QHBoxLayout * Row = new QHBoxLayout();
@@ -435,6 +439,20 @@ QWidget * PackageEditor::BuildModulesEditor(const std::string &VariantPtr)
         QObject::connect(LabelField, &QLineEdit::editingFinished, this, [this, MPtr, LabelField](){
             (*MANIFESTJSON)[json::json_pointer(MPtr + "/LABEL")] = LabelField->text().toStdString(); SaveManifestJSON(); RefreshJSONView();
         });
+        // EXCLUDE — comma-separated component ids this module is mutually exclusive with (stored as a JSON array).
+        QLineEdit * ExcludeField = new QLineEdit(QString::fromStdString(CurExclude), ModBox);
+        ExcludeField->setPlaceholderText("Mutually exclusive with… (component ids, comma-separated)");
+        QObject::connect(ExcludeField, &QLineEdit::editingFinished, this, [this, MPtr, ExcludeField](){
+            nlohmann::ordered_json Arr = nlohmann::ordered_json::array();
+            for (const QString &Part : ExcludeField->text().split(',', Qt::SkipEmptyParts))
+            {
+                std::string Id = Part.trimmed().toStdString();
+                if (!Id.empty()) Arr.push_back(Id);
+            }
+            if (Arr.empty()) (*MANIFESTJSON)[json::json_pointer(MPtr)].erase("EXCLUDE");
+            else             (*MANIFESTJSON)[json::json_pointer(MPtr + "/EXCLUDE")] = Arr;
+            SaveManifestJSON(); RefreshJSONView();
+        });
         QPushButton * UpBtn = new QPushButton("▲", ModBox); UpBtn->setFixedWidth(28);
         QPushButton * DnBtn = new QPushButton("▼", ModBox); DnBtn->setFixedWidth(28);
         QPushButton * DelBtn = new QPushButton("✕", ModBox); DelBtn->setFixedWidth(28);
@@ -451,7 +469,7 @@ QWidget * PackageEditor::BuildModulesEditor(const std::string &VariantPtr)
             (*MANIFESTJSON)[json::json_pointer(ArrPtr)].erase(ek); SaveManifestJSON(); BuildUI();
         });
         Row->addWidget(CompPicker, 1); Row->addWidget(ReqChk); Row->addWidget(DefChk);
-        Row->addWidget(LabelField, 1); Row->addWidget(UpBtn); Row->addWidget(DnBtn); Row->addWidget(DelBtn);
+        Row->addWidget(LabelField, 1); Row->addWidget(ExcludeField, 1); Row->addWidget(UpBtn); Row->addWidget(DnBtn); Row->addWidget(DelBtn);
         ModLayout->addLayout(Row);
     }
     QPushButton * AddModBtn = new QPushButton("+ Add Component", ModBox);

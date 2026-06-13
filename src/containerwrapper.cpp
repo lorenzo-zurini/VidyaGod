@@ -572,6 +572,9 @@ std::vector<ModuleInfo> ContainerWrapper::ParseModules(const nlohmann::ordered_j
         Info.Label    = M.value("LABEL", std::string());
         Info.Required = M.value("REQUIRED", true);
         Info.Default  = M.value("DEFAULT", true);
+        if (M.contains("EXCLUDE") && M["EXCLUDE"].is_array())
+            for (const auto &E : M["EXCLUDE"])
+                if (E.is_string() && !std::string(E).empty()) Info.Exclude.push_back(std::string(E));
         Modules.push_back(std::move(Info));
     }
     return Modules;
@@ -650,6 +653,32 @@ std::vector<std::string> ContainerWrapper::ResolveEnabledModules(const std::vect
     for (const auto &M : Modules)
         if (M.Required)
             for (const auto &A : ModuleAncestors(M.Component)) Enabled[A] = true;
+
+    //Step 2.5: mutual exclusion (EXCLUDE) — no two components linked by an exclusion edge stay enabled. The
+    //relation is symmetric (A excludes B ⇔ B excludes A). REQUIRED modules are kept first (they win); then each
+    //still-enabled optional, in declaration order, is dropped if it conflicts with anything already kept — so
+    //the first-declared of a mutually-exclusive set survives. Deterministic, so a saved state or --module flag
+    //enabling both members can never leak both into the recipe.
+    std::map<std::string, std::set<std::string>> ExclAdj;
+    for (const auto &M : Modules)
+        for (const auto &E : M.Exclude) { ExclAdj[M.Component].insert(E); ExclAdj[E].insert(M.Component); }
+    if (!ExclAdj.empty())
+    {
+        std::set<std::string> Kept;
+        auto Conflicts = [&](const std::string &C) {
+            auto it = ExclAdj.find(C);
+            if (it == ExclAdj.end()) return false;
+            for (const auto &K : Kept) if (it->second.count(K)) return true;
+            return false;
+        };
+        for (const auto &M : Modules) if (Enabled[M.Component] && M.Required)  Kept.insert(M.Component);
+        for (const auto &M : Modules)
+        {
+            if (!Enabled[M.Component] || M.Required) continue;
+            if (Conflicts(M.Component)) Enabled[M.Component] = false;
+            else                        Kept.insert(M.Component);
+        }
+    }
 
     //Step 3: hierarchy gate — drop any module with a disabled module-ancestor (full chain).
     std::vector<std::string> EnabledComponents;
