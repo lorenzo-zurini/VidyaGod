@@ -128,6 +128,7 @@ public:
     std::filesystem::path ProgramPath;       //Wine: RuntimePath/drive_c/PackageUID; others: RuntimePath
     std::filesystem::path DefPrefixBasePath; //TempPath/DEFPREFIX — the def-prefix base (= STEAM_COMPAT_DATA_PATH for proton, at init)
     std::filesystem::path DefPrefixPath;     //DefPrefixBasePath/<PREFIX_SUBPATH> — the Wine prefix directory built by wineboot
+    std::filesystem::path DefaultDataPath;   //TempPath/DEFAULTDATA — RO layer holding all package-encoded base edits (Reg/File), between the component layers and the WRITELAYER; regenerated each launch
     std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
     nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch
 
@@ -323,10 +324,8 @@ public:
     //Copies each PersistFile from RuntimePath/<rel> into UserDataPath/<rel> on Cleanup, capturing
     //the session's writes. Must run BEFORE the runtime is unmounted/wiped. No-op when PersistAll.
     static bool CapturePersistFiles(struct ContainerParams &ContainerParams);
-    //Merges each previously-persisted RegKeyPersist subtree (from UserDataPath/__REGKEYS__/*.reg)
-    //directly into the DEFPREFIX hives before the union mounts, so the durable key shadows the
-    //default. Wine-only, pre-VFS. No-op when PersistAll or nothing persisted yet.
-    static bool SeedPersistRegKeys(struct ContainerParams &ContainerParams);
+    //(The seed side of RegKeyPersist — merging persisted subtrees into the base hives — is done by
+    //BuildDefaultData, which writes them into the DEFAULTDATA hives rather than mutating DEFPREFIX.)
     //Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the
     //durable store UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op PersistAll.
     static bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
@@ -338,10 +337,11 @@ public:
     //Initializes the Wine prefix at DefPrefixPath by running `wineboot` via the runner.
     //DefPrefixPath becomes the base (root) layer of the spec built by BuildLayerSpec.
     static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
-    //Applies all non-OVERRIDE RegEdit subcomponents directly into the DEFPREFIX hive files via
-    //RegistryWrapper (no .reg generation, no `reg import`). Quiesces any wineserver left by wineboot
-    //first so it cannot flush and clobber the edits. Pre-VFS, so DEFPREFIX stays the lowest layer.
-    static bool ApplyBaseRegEdits(struct ContainerParams &ContainerParams);
+    //Builds the DEFAULTDATA layer (TempPath/DEFAULTDATA): all package-encoded BASE (non-OVERRIDE) edits —
+    //FileEdits as files, RegEdits as full hives copied-from-and-shadowing DEFPREFIX, plus merged persisted
+    //RegKeyPersist subtrees. Mounts between the component layers and the WRITELAYER, so it overrides package
+    //content but the user's persisted writes shadow it. DEFPREFIX is never mutated. Wine-only, pre-VFS.
+    static bool BuildDefaultData(struct ContainerParams &ContainerParams);
     //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime hives via RegistryWrapper,
     //after VFS is up. Saving RuntimePath/*.reg COWs the whole file into the RW WRITELAYER, so the
     //values win over DEFPREFIX and prior COW state. No wine runs on RuntimePath yet, so no quiesce.
@@ -354,14 +354,14 @@ public:
 
     //FileEdits:
     //Processes FileEdit subcomponents. MUST BE RUN AFTER VARIABLE SUBSTITUTION.
-    //OverridePass selects WHICH edits run (OVERRIDE flag must match); the base path is normally
-    //DefPrefixPath for the base pass and RuntimePath for the override pass.
-    //OverridePass=false: base edits → DefPrefixPath (pre-VFS, WRITELAYER can shadow them).
-    //OverridePass=true:  override edits → RuntimePath (post-VFS, COW to WRITELAYER — wins unconditionally).
-    //BaseToRuntime=true forces the write base to RuntimePath even on the base pass — used by the
-    //installed-runner path, where the read-only DEFPREFIX artifact can't receive base edits, so they
-    //are deferred to the mounted runtime (mirrors the base-RegEdit deferral).
-    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false, bool BaseToRuntime = false);
+    //OverridePass selects WHICH edits run (the OVERRIDE flag must match it).
+    //BaseDir, when non-empty, is the directory the matched edits are written under; otherwise it
+    //defaults to RuntimePath for the override pass and DefPrefixPath for the base pass.
+    //  base pass  (OverridePass=false): written into BaseDir — normally the DEFAULTDATA layer, so the
+    //                                   WRITELAYER (user) can shadow them.
+    //  override pass (OverridePass=true): written into RuntimePath (post-VFS, COW to WRITELAYER — wins).
+    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false,
+                                 const std::filesystem::path &BaseDir = {});
     //Reads FilePath line by line and replaces any line starting with Key with Key+Value.
     //Useful for patching INI-style config files that use prefix-based key matching.
     static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);

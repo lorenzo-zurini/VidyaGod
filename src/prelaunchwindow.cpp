@@ -61,17 +61,12 @@ void LaunchThread::run()
                 emit statusChanged("Prefix ready.");
             }
         }
-        else if (ctx.find("ApplyBaseRegEdits") != std::string::npos)
+        else if (ctx.find("BuildDefaultData") != std::string::npos)
         {
-            if (msg.find("Applying base RegEdits") != std::string::npos)
-            {
-                emit progressChanged(35);
-                emit statusChanged("Applying registry patches...");
-            }
-            else if (msg.find("applied to DEFPREFIX") != std::string::npos)
-            {
+            emit progressChanged(35);
+            emit statusChanged("Preparing package edits...");
+            if (msg.find("DEFAULTDATA layer built") != std::string::npos)
                 emit progressChanged(45);
-            }
         }
         else if (ctx.find("MountVFS") != std::string::npos && msg.find("Mounting via") != std::string::npos)
         {
