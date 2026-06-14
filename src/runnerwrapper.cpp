@@ -3,6 +3,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <filesystem>
 
 namespace RunnerWrapper {
 
@@ -14,18 +15,11 @@ static const nlohmann::ordered_json * Entity(const nlohmann::ordered_json &Runne
     return nullptr;
 }
 
-std::string ArtifactDir(const std::string &RunnerId, const std::string &VariantId)
+std::string DefPrefixArtifact(const std::string &PackageDir, const std::string &VariantId)
 {
-    if (RunnerId.empty()) return std::string();
+    if (PackageDir.empty()) return std::string();
     const std::string V = VariantId.empty() ? std::string("default") : VariantId;
-    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/DOWNLOADS/runners/"
-                           + QString::fromStdString(RunnerId) + "/" + QString::fromStdString(V)).toStdString();
-}
-
-std::string DefPrefixArtifact(const std::string &RunnerId, const std::string &VariantId)
-{
-    const std::string A = ArtifactDir(RunnerId, VariantId);
-    return A.empty() ? std::string() : (A + "/DEFPREFIX");
+    return QDir::cleanPath(QString::fromStdString(PackageDir + "/__DEFPREFIX__/" + V)).toStdString();
 }
 
 std::string RunnerId(const nlohmann::ordered_json &RunnerPkg)
@@ -99,15 +93,34 @@ bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &Vari
     return !BuildCids(RunnerPkg, VariantId).empty();
 }
 
-bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
+bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId)
 {
     if (!ShipsBuild(RunnerPkg, VariantId)) return true;                  // PATH runner — nothing to install
-    for (const std::string &Cid : BuildCids(RunnerPkg, VariantId))
-        if (!IpfsWrapper::IsCached(Cid)) return false;                   // build not fetched yet
+    if (PackageDir.empty()) return false;
+    const nlohmann::ordered_json V = Variant(RunnerPkg, VariantId);
+    std::vector<std::string> Want;
+    for (const auto &M : V.value("MODULES", nlohmann::ordered_json::array()))
+        if (M.is_object()) { std::string C = M.value("COMPONENT", std::string()); if (!C.empty()) Want.push_back(C); }
+    // Each build layer must be hydrated locally at PackageDir/<PATH> (PATH is required by validation).
+    for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
+    {
+        bool Wanted = false;
+        for (const auto &W : Want) if (C.value("COMPONENTID", std::string()) == W) { Wanted = true; break; }
+        if (!Wanted || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            if (S.value("TYPE", std::string()) != "VFSZipLayer") continue;
+            if (!S.contains("SOURCE") || !S["SOURCE"].is_object() || S["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
+            std::string Path = S.value("PATH", std::string());
+            if (S["SOURCE"].contains("PATH") && S["SOURCE"]["PATH"].is_string()) Path = std::string(S["SOURCE"]["PATH"]);
+            if (Path.empty()) return false;                             // invalid path-less build → treat as not imported
+            if (!std::filesystem::exists(std::filesystem::path(PackageDir) / Path)) return false;
+        }
+    }
     if (IsWineRunner(RunnerPkg, VariantId))
     {
         const std::string Vid = VariantId.empty() ? DefaultVariantId(RunnerPkg) : VariantId;
-        QDir D(QString::fromStdString(DefPrefixArtifact(RunnerId(RunnerPkg), Vid)));
+        QDir D(QString::fromStdString(DefPrefixArtifact(PackageDir, Vid)));
         if (!D.exists() || D.isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot)) return false; // prefix not built
     }
     return true;

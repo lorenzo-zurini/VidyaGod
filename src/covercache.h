@@ -38,8 +38,8 @@ signals:
 
 private:
     explicit CoverCache(QObject * parent = nullptr);
-    void request(const QString & Cid);          // start an async fetch (no-op if already in flight)
-    QSet<QString> InFlight;                      // CIDs currently being fetched (dedup)
+    void request(const QString & Cid, const QString & DestPath);   // async fetch the cover to DestPath (deduped)
+    QSet<QString> InFlight;                                          // dest paths currently being fetched (dedup)
 };
 
 #endif // COVERCACHE_H

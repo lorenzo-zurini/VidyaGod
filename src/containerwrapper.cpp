@@ -819,14 +819,9 @@ std::string ContainerWrapper::HostPlatform()
     return "linux64";
 }
 
-//~/.VidyaGod/DOWNLOADS — clone target for the configured git repositories (+ remote SOURCE artifact cache).
-static std::string DownloadsDir()
-{
-    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/DOWNLOADS").toStdString();
-}
-
-//The managed library root — where imported packages are hydrated, one subfolder per repo. Overridable via
-//Settings.Paths.LibraryRoot; default ~/.VidyaGod/library.
+//The managed library root — repos are git-cloned here (one subfolder per repo) and every package hydrates in
+//place beside its manifest. This is the ONE location for everything; there is no DOWNLOADS / ipfs cache.
+//Overridable via Settings.Paths.LibraryRoot; default ~/.VidyaGod/LIBRARY.
 static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
@@ -836,7 +831,7 @@ static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
             && S["Paths"]["LibraryRoot"].is_string() && !std::string(S["Paths"]["LibraryRoot"]).empty())
             return QDir::cleanPath(QString::fromStdString(std::string(S["Paths"]["LibraryRoot"]))).toStdString();
     }
-    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/library").toStdString();
+    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/LIBRARY").toStdString();
 }
 
 std::string ContainerWrapper::LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON) { return LibraryDir(GlobalConfigJSON); }
@@ -867,11 +862,11 @@ static std::string GitRepoName(const nlohmann::ordered_json &R)
     return Name.empty() ? std::string("repo") : Name;
 }
 
-//The on-disk directory a repository is indexed from: its ~/.VidyaGod/DOWNLOADS/<name> clone (whether or
-//not it has been cloned yet — SyncRepositories does the actual clone/pull).
-static std::string RepositoryLocalDir(const nlohmann::ordered_json &R)
+//A repository's git working tree: LIBRARY/<name> (cloned/pulled by SyncRepositories; whether or not it exists
+//yet). The clone IS the library — its dehydrated package dirs hydrate content in place.
+static std::string RepositoryLocalDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &R)
 {
-    return QDir::cleanPath(QString::fromStdString(DownloadsDir() + "/" + GitRepoName(R))).toStdString();
+    return QDir::cleanPath(QString::fromStdString(LibraryDir(GlobalConfigJSON) + "/" + GitRepoName(R))).toStdString();
 }
 
 //Returns the clone directories of every configured Settings.Repositories[] git repo (indexed in order).
@@ -882,7 +877,7 @@ static std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &Glo
                                              ? &GlobalConfigJSON["Settings"] : nullptr;
     if (Settings && Settings->contains("Repositories") && (*Settings)["Repositories"].is_array())
         for (const auto &R : (*Settings)["Repositories"])
-            if (!RepositoryURL(R).empty()) Dirs.push_back(RepositoryLocalDir(R));
+            if (!RepositoryURL(R).empty()) Dirs.push_back(RepositoryLocalDir(GlobalConfigJSON, R));
     return Dirs;
 }
 
@@ -954,7 +949,9 @@ static bool SyncGitRepository(const std::string &Url, const std::string &CloneDi
             return true;                                                          // diverged/rewritten → realign
         QDir(Dir).removeRecursively();                                            // unrecoverable → re-clone below
     }
-    QDir().mkpath(QString::fromStdString(DownloadsDir())); // clone creates CloneDir; its parent must exist
+    else if (QDir(Dir).exists())
+        QDir(Dir).removeRecursively();                                           // a non-git dir (old copied mirror) → replace with a clone
+    QDir().mkpath(QString::fromStdString(std::filesystem::path(CloneDir).parent_path().string())); // LIBRARY root must exist
     return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), Dir});
 }
 
@@ -983,10 +980,10 @@ static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid
 }
 
 //True if any variant of a runner package has been imported (build cached + DEFPREFIX) — its "hydrated" state.
-static bool RunnerPkgImported(const nlohmann::ordered_json &Pkg)
+static bool RunnerPkgImported(const nlohmann::ordered_json &Pkg, const std::string &PackageDir)
 {
     for (const std::string &Vid : RunnerWrapper::VariantIds(Pkg))
-        if (RunnerWrapper::IsImported(Pkg, Vid)) return true;
+        if (RunnerWrapper::IsImported(Pkg, PackageDir, Vid)) return true;
     return false;
 }
 
@@ -1007,17 +1004,17 @@ static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::stri
         if (JSONOps::AssembleManifest(QString::fromStdString(Path), Pkg, Warn))
             Downloaded = (JSONOps::HasGames(Pkg)   && !ContainerWrapper::PackageIpfsCids(Pkg).empty()
                                                    && ContainerWrapper::PackageHydrated(Pkg, Path))
-                      || (JSONOps::HasRunners(Pkg) && RunnerPkgImported(Pkg));
+                      || (JSONOps::HasRunners(Pkg) && RunnerPkgImported(Pkg, Path));
         if (Downloaded) continue;                                                 // downloaded orphan — keep
         if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
         Arr.erase(Arr.begin() + i);
     }
 }
 
-//Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
-//into the managed library folder (manifests + covers, no content) and upsert ONE un-hydrated LIBRARY index entry
-//per package — kind (game/runner/dependency) is emergent from the manifest, so a repo's games AND runners (a
-//package can be both) all live in the single LIBRARY. Importing later fetches a package's content in place.
+//Syncs the configured Repositories: git clone/pull each directly into LIBRARY/<repo> (the clone IS the library —
+//no separate mirror, no DOWNLOADS), then upsert ONE LIBRARY index entry per package pointing at its cloned dir.
+//Kind (game/runner/dependency) is emergent from the manifest, so a repo's games AND runners (a package can be
+//both) all live in the single LIBRARY. Importing later fetches a package's content in place beside its manifest.
 //Reconciles away repo entries that vanished. Caller persists GlobalConfigJSON.
 void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
 {
@@ -1037,7 +1034,7 @@ void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON
         const std::string Url = RepositoryURL(R);
         if (Url.empty()) continue;
         const std::string RepoName = GitRepoName(R);
-        const std::string Local = RepositoryLocalDir(R);
+        const std::string Local = RepositoryLocalDir(GlobalConfigJSON, R);
         LogOut("ContainerWrapper::SyncRepositories", "Syncing git repository " + Url + " -> " + Local);
         if (!SyncGitRepository(Url, Local))
             LogWarn("ContainerWrapper::SyncRepositories", "git clone/pull failed for " + Url + " (using last-synced clone, if any).");
@@ -1054,13 +1051,9 @@ void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON
             const std::string Uid = Pkg.value("PACKAGEUID", std::string());
             if (Uid.empty()) continue;
 
-            //Mirror the dehydrated package into the managed library folder (refreshes manifests/covers; never
-            //touches any content already fetched there). This is the on-disk un-hydrated library.
-            const std::string MirrorDir = (std::filesystem::path(LibRoot) / RepoName / Sub.toStdString()).string();
-            MirrorDehydrated(ClonePkgDir.toStdString(), MirrorDir);
-
+            //The cloned package dir IS the library package — content hydrates here in place. Index it directly.
             SeenUid.insert(Uid);
-            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, MirrorDir, Pkg);  // one entry per package
+            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, ClonePkgDir.toStdString(), Pkg);
             if (JSONOps::HasGames(Pkg))   ++Games;
             if (JSONOps::HasRunners(Pkg)) ++Runners;
         }
@@ -1142,10 +1135,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
     //A candidate carries its runner ENTITY, the matched runner VARIANT (its exec params + build modules),
     //and its owning package's COMPONENTS (so the runner's component subcomponents resolve). The launching
     //package's own runners carry no extra components — those already live in MANIFESTJSON.
-    struct RunnerCandidate { nlohmann::ordered_json Runner; nlohmann::ordered_json Variant; nlohmann::ordered_json Components; };
+    struct RunnerCandidate { nlohmann::ordered_json Runner; nlohmann::ordered_json Variant; nlohmann::ordered_json Components; std::string PackageDir; };
     std::vector<RunnerCandidate> Candidates;
     std::unordered_set<std::string> SeenRunnerIds;
-    auto GatherRunners = [&](const nlohmann::ordered_json &Source, const nlohmann::ordered_json &Components)
+    auto GatherRunners = [&](const nlohmann::ordered_json &Source, const nlohmann::ordered_json &Components, const std::string &SourceDir)
     {
         if (!Source.contains("RUNNERS") || !Source["RUNNERS"].is_array()) return;
         for (const auto &R : Source["RUNNERS"])
@@ -1168,11 +1161,12 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
             }
             if (!Best) continue;
             SeenRunnerIds.insert(RID);
-            Candidates.push_back({ R, *Best, Components });
+            Candidates.push_back({ R, *Best, Components, SourceDir });
         }
     };
-    //1. The launching package's own runners first (a bundle shadows a registry runner of the same id).
-    GatherRunners(MANIFESTJSON, nlohmann::ordered_json::array());
+    //1. The launching package's own runners first (a bundle shadows a registry runner of the same id) — its
+    //   build lives in the game's own dir.
+    GatherRunners(MANIFESTJSON, nlohmann::ordered_json::array(), ContainerParams.PackagePath.string());
     //2. Every runner package in each configured repository.
     //TODO(sharing): resolve from CatalogPackages once it carries each package's owning dir for components.
     for (const auto &RegDir : RepositoryDirs(GlobalConfigJSON))
@@ -1186,7 +1180,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
             if (!JSONOps::HasRunners(Pkg)) continue;
             nlohmann::ordered_json Comps = (Pkg.contains("COMPONENTS") && Pkg["COMPONENTS"].is_array())
                                            ? Pkg["COMPONENTS"] : nlohmann::ordered_json::array();
-            GatherRunners(Pkg, Comps);
+            GatherRunners(Pkg, Comps, Dir.filePath(Sub).toStdString());          // the runner package's library dir
         }
     }
 
@@ -1210,6 +1204,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         const nlohmann::ordered_json &SelectedRunner  = Selected->Runner;   // entity: RUNNER_ID, NAME
         const nlohmann::ordered_json &SelectedVariant = Selected->Variant;  // exec params + build modules + platform
         ContainerParams.RunnerComponents = Selected->Components;
+        ContainerParams.RunnerPackagePath = Selected->PackageDir;                 // runner build + DEFPREFIX live here
         //Use explicit null guards — direct JSON-to-string conversion throws on null values.
         ContainerParams.RunnerID         = SelectedRunner.value("RUNNER_ID", std::string());
         ContainerParams.RunnerName       = (SelectedRunner.contains("NAME") && SelectedRunner["NAME"].is_string()) ? std::string(SelectedRunner["NAME"]) : ContainerParams.RunnerID;
@@ -1325,7 +1320,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         //Installed runners use their one-time read-only DEFPREFIX artifact (generated at install); other wine
         //runners build it per-launch under TempPath/DEFPREFIX (InitializeDefPrefix).
         ContainerParams.DefPrefixBasePath               = ContainerParams.RunnerShipsBuild
-            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerID, ContainerParams.RunnerVariantID))
+            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerPackagePath.string(), ContainerParams.RunnerVariantID))
             : ContainerParams.TempPath / "DEFPREFIX";
         ContainerParams.DefPrefixPath                   = PrefixSubpath.empty() ? ContainerParams.DefPrefixBasePath
                                                                                 : ContainerParams.DefPrefixBasePath / PrefixSubpath;
@@ -1818,20 +1813,15 @@ static void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesyste
     Local = P.is_absolute() ? P : (PackagePath / P);
 }
 
-//Resolves a File/Dir/Zip layer's content to an absolute host path — its "locator" — by HIERARCHICAL FALLBACK:
-//  1. the LOCAL path (PackagePath/PATH) if it exists — highest priority, offline, zero-fetch;
-//  2. else a remote backend's local store — the IPFS cache path (DOWNLOADS/ipfs/<CID>) now; torrent/LAN later.
-//The CID is never consumed-away: it stays in SOURCE as the permanent identity + fallback. EnsureSources /
-//MaterializeLayers fetch the content (to the local path for game layers, to the cache for runner builds) before
-//it is read; this resolution is pure.
+//Resolves a File/Dir/Zip layer's content to its LOCAL absolute path (PackagePath/PATH). Content always lives
+//in place inside the package's LIBRARY dir — hydrated there by ImportPackage/ImportRunner (or already present
+//for a local package). The CID in SOURCE is the permanent identity used to fetch/seed it; this resolution is
+//pure and local-only (no cache). A missing path means the package isn't hydrated (EnsureSources blocks launch).
 static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
 {
     std::filesystem::path Local; std::string Cid;
     LayerLocator(Sub, PackagePath, Local, Cid);
-    std::error_code Ec;
-    if (std::filesystem::exists(Local, Ec)) return Local.string();   // 1. local (highest priority)
-    if (!Cid.empty()) return IpfsWrapper::CachePath(Cid);            // 2. ipfs cache  [future: torrent, LAN]
-    return Local.string();                                          // offline fallback (may be missing)
+    return Local.string();
 }
 
 //Returns the unresolved dependency locators for a built container — drives the portable/standalone
@@ -1865,17 +1855,19 @@ std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct Conta
 bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
 {
     bool Ok = true;
-    auto CheckCached = [&](const nlohmann::ordered_json &Src)                    // runner sources: must be cached
+    //Runner build layers must be hydrated locally in the runner's library dir (ImportRunner fetches them ahead
+    //of time — "import the runner"). Missing → the runner isn't installed; block the launch.
+    for (const auto &Sub : ContainerParams.RunnerLayers)
     {
-        if (!Src.is_object() || Src.value("TYPE", std::string("path")) != "ipfs") return;
-        const std::string Cid = Src.value("CID", std::string());
-        if (Cid.empty() || IpfsWrapper::IsCached(Cid)) return;
+        const std::string Type = Sub.value("TYPE", std::string());
+        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Sub, ContainerParams.RunnerPackagePath, Local, Cid);
+        std::error_code Ec;
+        if (std::filesystem::exists(Local, Ec)) continue;
         Ok = false;
-        LogErr("ContainerWrapper::EnsureSources", "Required runner source not installed: CID " + Cid);
-    };
-    CheckCached(ContainerParams.RunnerSource);                                   // legacy top-level runner SOURCE
-    for (const auto &Sub : ContainerParams.RunnerLayers)                         // the runner build layers
-        if (Sub.contains("SOURCE")) CheckCached(Sub["SOURCE"]);
+        LogErr("ContainerWrapper::EnsureSources", "Runner not imported: missing build " + Local.string());
+    }
 
     for (const auto &Sub : ContainerParams.SubComponentsArray)                   // game VFS layers: local OR fetchable
     {
@@ -2092,7 +2084,7 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
         std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
         if (LType.empty()) continue;
         std::string Target = Sub.value("TARGET", std::string());            // beside the runner-mount root
-        Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.PackagePath)},
+        Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath)},
                           {"target", Target}, {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }
     Spec["layers"] = Layers;
@@ -2110,7 +2102,7 @@ bool ContainerWrapper::MountRunnerBuild(struct ContainerParams &ContainerParams)
 
 //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS), and for wine runners generates the
 //one-time read-only DEFPREFIX artifact by mounting the build and running `wineboot` once. Idempotent.
-bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId, std::string *Error)
+bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId, std::string *Error)
 {
     (void)GlobalConfigJSON;
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::ImportRunner", M); return false; };
@@ -2119,60 +2111,69 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     const std::string Vid = VariantId.empty() ? RunnerWrapper::DefaultVariantId(RunnerPkg) : VariantId;
     if (Id.empty())  return Fail("runner package has no RUNNER_ID");
     if (Vid.empty()) return Fail("runner '" + Id + "' has no variant to install");
+    if (PackageDir.empty()) return Fail("runner '" + Id + "' has no package directory");
     const nlohmann::ordered_json R = RunnerWrapper::Variant(RunnerPkg, Vid);   // the runner VARIANT (exec params)
     if (R.empty())   return Fail("runner '" + Id + "' has no variant '" + Vid + "'");
     const std::string Label = Id + ":" + Vid;
-
-    //1. Fetch this variant's build layers from IPFS (cached + pinned).
-    for (const std::string &Cid : RunnerWrapper::BuildCids(RunnerPkg, Vid))
-    {
-        std::string Err;
-        if (IpfsWrapper::FetchSync(Cid, &Err).empty()) return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
-    }
-    LogSucc("ContainerWrapper::ImportRunner", "Fetched runner build for " + Label);
-    if (!RunnerWrapper::IsWineRunner(RunnerPkg, Vid)) return true;       // non-wine: no prefix to build
-
-    //2. Generate the one-time DEFPREFIX artifact for this (runner, variant) (idempotent).
-    const std::filesystem::path ArtifactDir = RunnerWrapper::ArtifactDir(Id, Vid);
-    const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(Id, Vid);  // ArtifactDir/DEFPREFIX
-    const std::string Subpath = R.value("PREFIX_SUBPATH", std::string());
-    const std::filesystem::path PrefixDir = Subpath.empty() ? DefArtifact : (DefArtifact / Subpath);
-
+    const std::filesystem::path Pkg(PackageDir);
     std::error_code Ec;
-    if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
-    {
-        LogOut("ContainerWrapper::ImportRunner", "DEFPREFIX artifact already present for " + Label);
-        return true;
-    }
 
-    //Mount this variant's build read-only at a temp runner mount so `wineboot` can run from it. Only the
-    //components the variant's MODULES enable are mounted.
+    //The components this variant's MODULES enable — the runner build is their VFS layers.
     std::vector<std::string> WantComps;
     for (const auto &M : R.value("MODULES", nlohmann::ordered_json::array()))
         if (M.is_object()) { std::string C = M.value("COMPONENT", std::string()); if (!C.empty()) WantComps.push_back(C); }
-    const std::filesystem::path MountDir = ArtifactDir / ".buildmount";
-    std::filesystem::create_directories(ArtifactDir, Ec);
+    auto Wanted = [&](const nlohmann::ordered_json &C){ for (const auto &W : WantComps) if (C.value("COMPONENTID", std::string()) == W) return true; return false; };
+
+    //1. Hydrate this variant's build layers IN PLACE in the runner's library dir (FetchToPath to PackageDir/PATH).
+    int FetchedLayers = 0;
+    for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
+    {
+        if (!Wanted(C) || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            const std::string T = S.value("TYPE", std::string());
+            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(S, Pkg, Local, Cid);
+            if (Cid.empty() || Local == Pkg || std::filesystem::exists(Local, Ec)) continue;
+            std::string Err;
+            if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
+                return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
+            ++FetchedLayers;
+        }
+    }
+    LogSucc("ContainerWrapper::ImportRunner", "Hydrated runner build for " + Label + " (" + std::to_string(FetchedLayers) + " layer(s))");
+    if (!RunnerWrapper::IsWineRunner(RunnerPkg, Vid)) return true;       // non-wine: no prefix to build
+
+    //2. Generate the one-time DEFPREFIX in the runner's library dir (idempotent): PackageDir/__DEFPREFIX__/<vid>.
+    const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(PackageDir, Vid);
+    const std::string Subpath = R.value("PREFIX_SUBPATH", std::string());
+    const std::filesystem::path PrefixDir = Subpath.empty() ? DefArtifact : (DefArtifact / Subpath);
+    if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
+    { LogOut("ContainerWrapper::ImportRunner", "DEFPREFIX already present for " + Label); return true; }
+
+    //Mount the (now-local) build read-only at a temp mount under __DEFPREFIX__ so `wineboot` can run from it.
+    const std::filesystem::path MountDir = Pkg / "__DEFPREFIX__" / (".buildmount-" + Vid);
+    std::filesystem::create_directories(MountDir.parent_path(), Ec);
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = MountDir.string(); Spec["uid"] = 1000; Spec["gid"] = 1000;
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
     {
-        bool Wanted = false;
-        for (const auto &W : WantComps) if (C.value("COMPONENTID", std::string()) == W) { Wanted = true; break; }
-        if (!Wanted) continue;
+        if (!Wanted(C)) continue;
         for (const auto &S : C.value("SUBCOMPONENTS", nlohmann::ordered_json::array()))
         {
             const std::string T = S.value("TYPE", std::string());
             const std::string LType = (T == "VFSZipLayer") ? "zip" : (T == "VFSDirLayer") ? "dir" : (T == "VFSFileLayer") ? "file" : "";
             if (LType.empty()) continue;
-            Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, std::filesystem::path())},
+            Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, Pkg)},
                               {"target", S.value("TARGET", std::string())},
                               {"submounts", S.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
         }
     }
     Spec["layers"] = Layers;
-    if (!SpawnVidyagodfs(Spec, MountDir, ArtifactDir / ".buildmount.spec.json"))
+    if (!SpawnVidyagodfs(Spec, MountDir, Pkg / "__DEFPREFIX__" / (".buildmount-" + Vid + ".spec.json")))
         return Fail("could not mount runner build for install");
 
     //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings (prefix → the artifact).
@@ -2181,7 +2182,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     Vars["PrefixBase"]      = DefArtifact.string();        // STEAM_COMPAT_DATA_PATH
     Vars["RuntimeBasePath"] = DefArtifact.string();
     Vars["WinePrefix"]      = PrefixDir.string();
-    Vars["TempPath"]        = ArtifactDir.string();
+    Vars["TempPath"]        = DefArtifact.string();
 
     std::string Program = R.value("EXECUTABLE", std::string("%RunnerMount%/proton"));
     ContainerWrapper::StringVariableSubstitution(Program, Vars);
@@ -2205,6 +2206,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
 
     ContainerWrapper::RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
+    std::filesystem::remove_all(MountDir, Ec);                                   // drop the transient build mountpoint
     if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + Label); }
     LogSucc("ContainerWrapper::ImportRunner", "Installed runner " + Label + " (DEFPREFIX at " + DefArtifact.string() + ")");
     return true;
@@ -2258,11 +2260,10 @@ std::vector<std::string> ContainerWrapper::PackageCoverCids(const nlohmann::orde
     return Cids;
 }
 
-//HYDRATES a GAME package IN PLACE: fetches every ipfs content layer to its expected path inside the package's
-//managed library folder (the sync mirror), turning an un-hydrated entry into a fully-local, launchable one. The
-//LIBRARY entry already exists from sync — this ensures it points at the hydrated dir. If PackageDir is NOT yet
-//under the managed library (e.g. a manual import of an external dehydrated dir), its dehydrated manifest is first
-//mirrored in. Idempotent: re-importing a hydrated package fetches nothing. Caller persists GlobalConfig.
+//HYDRATES a package IN PLACE: fetches every ipfs content layer AND every cover to its declared PATH inside the
+//package's LIBRARY dir (the git clone), turning an un-hydrated entry into a fully-local one — identical to a local
+//package. The LIBRARY entry already exists from sync; this ensures it points here. Idempotent: re-importing
+//fetches nothing already present. Caller persists GlobalConfig.
 bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
                                       const std::string &PackageDir, std::string *Error)
 {
@@ -2273,20 +2274,11 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
 
-    //Hydration destination. If the package already lives in the managed library (the sync mirror), hydrate in
-    //place; otherwise mirror its dehydrated manifest into <LibraryDir>/<repo>/<pkg> first (no content copied).
-    const std::string LibRoot = LibraryDir(GlobalConfigJSON);
-    std::filesystem::path Dest(PackageDir);
-    if (std::string(PackageDir).rfind(LibRoot, 0) != 0)
-    {
-        const std::filesystem::path Src(PackageDir);
-        Dest = std::filesystem::path(LibRoot) / Src.parent_path().filename() / Src.filename();
-        MirrorDehydrated(PackageDir, Dest.string());
-    }
-
-    //Materialize content in place: fetch each VFS layer's content from IPFS to Dest/PATH (local-first afterwards).
+    const std::filesystem::path Dest(PackageDir);                                 // the cloned package dir = the library package
     std::error_code Ec;
     int Fetched = 0;
+
+    //Fetch each VFS layer's content in place at Dest/PATH (CID is the permanent identity; PATH the local home).
     if (Manifest.contains("COMPONENTS") && Manifest["COMPONENTS"].is_array())
         for (const auto &C : Manifest["COMPONENTS"])
         {
@@ -2297,16 +2289,36 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
                 if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(S, Dest, Local, Cid);
-                if (Cid.empty() || Local == Dest) continue;                      // no backend, or no PATH to place it
-                if (std::filesystem::exists(Local, Ec)) continue;                // already present (hydrated)
-                std::string Err;                                                 // fetch in place; leave partials on failure
+                if (Cid.empty() || Local == Dest) continue;                      // no backend, or no PATH
+                if (std::filesystem::exists(Local, Ec)) continue;                // already present
+                std::string Err;
                 if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
                     return Fail("could not fetch layer CID " + Cid + " (" + Err + ")");
                 ++Fetched;
             }
         }
+
+    //Fetch covers in place too (COVER objects are {PATH, SOURCE:{ipfs,CID}} — LayerLocator reads them like a layer).
+    auto FetchCover = [&](const nlohmann::ordered_json &Holder)
+    {
+        if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Holder["COVER"], Dest, Local, Cid);
+        if (Cid.empty() || Local == Dest || std::filesystem::exists(Local, Ec)) return;
+        std::string Err;
+        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
+            LogWarn("ContainerWrapper::ImportPackage", "could not fetch cover CID " + Cid + " (" + Err + ")");
+        else ++Fetched;
+    };
+    if (Manifest.contains("GAMES") && Manifest["GAMES"].is_array())
+        for (const auto &G : Manifest["GAMES"])
+        {
+            if (!G.is_object()) continue;
+            if (G.contains("METADATA") && G["METADATA"].is_object()) FetchCover(G["METADATA"]);
+            FetchCover(G);
+        }
     LogSucc("ContainerWrapper::ImportPackage", "Hydrated package " + Uid + " in place at " + Dest.string()
-            + " (" + std::to_string(Fetched) + " layer(s) fetched)");
+            + " (" + std::to_string(Fetched) + " file(s) fetched)");
 
     //Ensure a LIBRARY entry points at the hydrated dir (sync usually created it already; add if missing — e.g. a
     //manual external import → a local entry with no REPO).
@@ -2488,9 +2500,11 @@ bool ContainerWrapper::IsPackageImported(const nlohmann::ordered_json &GlobalCon
         for (const auto &E : GlobalConfigJSON["LIBRARY"])
             if (E.value("PACKAGEUID", std::string()) == Uid) { InLibrary = true; break; }
     if (!InLibrary) return false;
-    for (const std::string &Cid : PackageIpfsCids(Manifest))
-        if (!IpfsWrapper::IsCached(Cid)) return false;
-    return true;
+    //Imported = hydrated: its content is present locally in its LIBRARY dir.
+    for (const auto &E : GlobalConfigJSON["LIBRARY"])
+        if (E.value("PACKAGEUID", std::string()) == Uid)
+            return PackageHydrated(Manifest, E.value("PATH", std::string()));
+    return false;
 }
 
 //The 3 Wine registry files that hold per-prefix state.

@@ -23,12 +23,6 @@ static TransferCallback g_TransferCb;
 void SetTransferCallback(TransferCallback Callback) { g_TransferCb = std::move(Callback); }
 static void Emit(const TransferEvent &E) { if (g_TransferCb) g_TransferCb(E); }
 
-// ~/.VidyaGod/DOWNLOADS/ipfs — the CID cache root (mirrors DownloadsDir() in containerwrapper.cpp).
-static std::string IpfsCacheRoot()
-{
-    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/DOWNLOADS/ipfs").toStdString();
-}
-
 // Runs `ipfs` with the given args, blocking up to TimeoutMs (-1 = wait indefinitely). Captures stdout
 // into *Out when provided. Returns true on a clean (exit-0) finish.
 static bool RunIpfs(const QStringList &Args, QString *Out = nullptr, int TimeoutMs = 120000)
@@ -52,26 +46,6 @@ bool DaemonRunning()
     // `ipfs swarm peers` only succeeds in online mode (a running daemon).
     if (!Available()) return false;
     return RunIpfs({"swarm", "peers"}, nullptr, 10000);
-}
-
-std::string CachePath(const std::string &Cid)
-{
-    if (Cid.empty()) return std::string();
-    return QDir::cleanPath(QString::fromStdString(IpfsCacheRoot() + "/" + Cid)).toStdString();
-}
-
-// The completion marker sits beside the cache entry (which may be a file or a directory).
-static std::string CompleteMarker(const std::string &Cid)
-{
-    const std::string P = CachePath(Cid);
-    return P.empty() ? std::string() : (P + ".complete");
-}
-
-bool IsCached(const std::string &Cid)
-{
-    const std::string P = CachePath(Cid), M = CompleteMarker(Cid);
-    return !P.empty() && QFileInfo::exists(QString::fromStdString(P))
-                      && QFileInfo::exists(QString::fromStdString(M));
 }
 
 // Runs `ipfs get <Cid> -o <Dest>`, pumping stderr to report the latest progress percentage through Emit().
@@ -118,68 +92,6 @@ std::string AddNoCopy(const std::string &PathStr, std::string *Error)
     const std::string Cid = Added.trimmed().toStdString();
     if (Cid.empty()) return Fail("`ipfs add` produced no CID for " + PathStr);
     return Cid;
-}
-
-std::string FetchSync(const std::string &Cid, std::string *Error)
-{
-    auto Fail = [&](const std::string &Msg) -> std::string {
-        if (Error) *Error = Msg;
-        LogErr("IpfsWrapper::FetchSync", Msg);
-        Emit({ TransferEvent::Finished, Cid, -1.0, false });
-        return std::string();
-    };
-
-    if (Cid.empty())     return Fail("empty CID");
-    if (!Available())    return Fail("Kubo (ipfs) is not installed — cannot fetch CID " + Cid);
-
-    const std::string Dest = CachePath(Cid);
-    if (IsCached(Cid)) { LogOut("IpfsWrapper::FetchSync", "CID already cached: " + Cid); return Dest; }
-
-    QDir().mkpath(QString::fromStdString(IpfsCacheRoot()));
-    const QString TmpDest = QString::fromStdString(Dest) + ".tmp";
-    QDir(TmpDest).removeRecursively();                 // clear any partial previous attempt
-    QFile::remove(TmpDest);                             // (in case the entry was a file)
-
-    LogOut("IpfsWrapper::FetchSync", "Fetching CID " + Cid + " -> " + Dest);
-    Emit({ TransferEvent::Started, Cid, -1.0, false });
-    if (!RunIpfsGet(Cid, TmpDest))
-    {
-        QDir(TmpDest).removeRecursively();
-        QFile::remove(TmpDest);
-        return Fail("`ipfs get` failed for CID " + Cid + " (is the daemon running / CID reachable?)");
-    }
-
-    // Atomically publish the completed fetch, then drop the completion marker.
-    QFile::remove(QString::fromStdString(Dest));
-    QDir(QString::fromStdString(Dest)).removeRecursively();
-    if (!QDir().rename(TmpDest, QString::fromStdString(Dest)))
-        return Fail("failed to move fetched CID into place: " + Dest);
-
-    QFile Marker(QString::fromStdString(CompleteMarker(Cid)));
-    if (Marker.open(QIODevice::WriteOnly)) Marker.close();
-
-    // Seed via Filestore (--nocopy): re-add the cache file so its blocks REFERENCE it on disk instead of a
-    // second blockstore copy. When the content was nocopy-hosted (raw leaves), this reproduces the same CID
-    // and pins it. If the re-add yields a different CID (content not nocopy-hosted), undo it and fall back to
-    // a normal blockstore pin so we still seed the correct CID. Best-effort — a missing daemon just defers it.
-    const std::string AddedCid = AddNoCopy(Dest);                                // single seed implementation
-    const bool NocopyOk = !AddedCid.empty();
-    if (NocopyOk && AddedCid == Cid)
-        LogSucc("IpfsWrapper::FetchSync", "Seeding " + Cid + " via Filestore (--nocopy, no blockstore copy).");
-    else
-    {
-        if (NocopyOk && !AddedCid.empty())
-        {
-            LogWarn("IpfsWrapper::FetchSync", "nocopy add produced a different CID (" + AddedCid + ") — content not nocopy-hosted; using a normal pin.");
-            RunIpfs({"pin", "rm", QString::fromStdString(AddedCid)}, nullptr, 30000);   // undo the wrong filestore pin
-        }
-        if (!RunIpfs({"pin", "add", QString::fromStdString(Cid)}, nullptr, 60000))
-            LogWarn("IpfsWrapper::FetchSync", "could not pin CID " + Cid + " (start `ipfs daemon` to seed it).");
-    }
-
-    LogSucc("IpfsWrapper::FetchSync", "Fetched + pinned CID " + Cid);
-    Emit({ TransferEvent::Finished, Cid, 100.0, true });
-    return Dest;
 }
 
 std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error)

@@ -85,6 +85,7 @@ public:
     std::vector<std::string> RunnerArgs; //Arguments prepended before the exe for emulator/custom runners
     std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
     nlohmann::ordered_json RunnerComponents = nlohmann::ordered_json::array(); //RESOLVED — COMPONENTS of the selected runner's registry package (empty for an embedded/PATH runner); folded into the component pool
+    std::filesystem::path RunnerPackagePath; //RESOLVED — the selected runner package's LIBRARY dir; its build layers + DEFPREFIX hydrate/resolve here
     std::vector<std::string> RunnerRecipe; //RESOLVED — the selected runner variant's enabled component ids (its MODULES recipe); scopes runner CustomVar resolution to the active variant only
 
     //Flags
@@ -259,7 +260,7 @@ public:
     //detection. Used to reason about which guest platforms run natively vs. need a translation runner.
     static std::string HostPlatform();
     //Every package manifest known across all configured Repositories (Settings.Repositories) — the
-    //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + LIBRARY/DOWNLOADS, persisted.
+    //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + locally-added LIBRARY entries, persisted.
     static std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
     //As CatalogPackages, but pairs each assembled manifest with its owning package directory (the repo-clone
     //dir the manifest was read from). Installers/UI need the dir to register a LIBRARY PATH and resolve layers.
@@ -305,9 +306,9 @@ public:
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).
     static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
-    //Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
-    //into the managed library folder and upsert ONE un-hydrated LIBRARY index entry per package (kind is emergent
-    //— a repo's games and runners all live in the single LIBRARY), reconciling away repo entries that vanished.
+    //Syncs the configured Repositories: git clone/pull each directly into LIBRARY/<repo> (the clone IS the library),
+    //then upsert ONE un-hydrated LIBRARY index entry per package (kind is emergent — a repo's games and runners all
+    //live in the single LIBRARY), reconciling away repo entries that vanished. There is no DOWNLOADS / mirror step.
     //Mutates GlobalConfigJSON; the caller persists it.
     static void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
@@ -355,10 +356,11 @@ public:
     //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath (the separate-mount,
     //installed-runner model). Registers it for cleanup. No-op when the runner ships no build.
     bool MountRunnerBuild(struct ContainerParams &ContainerParams);
-    //Installs one runner VARIANT: fetches its build CIDs (IPFS) and, for a wine variant, generates the
-    //one-time read-only DEFPREFIX artifact (mount build → wineboot → store). VariantId "" = default variant.
+    //Installs one runner VARIANT: hydrates its build layers IN PLACE into the runner's LIBRARY dir (PackageDir),
+    //and for a wine variant generates the one-time DEFPREFIX at PackageDir/__DEFPREFIX__/<variant>. VariantId "" =
+    //default variant.
     static bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
-                              const std::string &VariantId = std::string(), std::string *Error = nullptr);
+                              const std::string &PackageDir, const std::string &VariantId = std::string(), std::string *Error = nullptr);
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
     static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);

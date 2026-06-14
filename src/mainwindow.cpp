@@ -135,11 +135,11 @@ void LibraryGameCard::play()
         ContainerWrapper Probe(*GlobalConfigJSON, ManifestCopy, CP);          // resolution only (no mount)
         if (!ContainerWrapper::EnsureSources(CP))
         {
-            nlohmann::ordered_json RunnerPkg;
-            for (const auto & Pkg : ContainerWrapper::CatalogPackages(*GlobalConfigJSON))
-                if (JSONOps::HasRunners(Pkg))
-                    for (const auto & R : Pkg["RUNNERS"])
-                        if (R.value("RUNNER_ID", std::string()) == CP.RunnerID) { RunnerPkg = Pkg; break; }
+            nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
+            for (auto & PD : ContainerWrapper::CatalogPackagesWithDir(*GlobalConfigJSON))
+                if (JSONOps::HasRunners(PD.first))
+                    for (const auto & R : PD.first["RUNNERS"])
+                        if (R.value("RUNNER_ID", std::string()) == CP.RunnerID) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
 
             const std::string Vid = CP.RunnerVariantID;
             const QString Rid = QString::fromStdString(CP.RunnerID + (Vid.empty() ? "" : (":" + Vid)));
@@ -153,9 +153,9 @@ void LibraryGameCard::play()
                     "This game needs runner '" + Rid + "', which isn't imported yet.\n\n"
                     "Download and import it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
                 return;
-            std::thread([GC = GlobalConfigJSON, RunnerPkg, Vid, Rid]{
+            std::thread([GC = GlobalConfigJSON, RunnerPkg, RunnerDir, Vid, Rid]{
                 std::string Err;
-                bool Ok = ContainerWrapper::ImportRunner(*GC, RunnerPkg, Vid, &Err);
+                bool Ok = ContainerWrapper::ImportRunner(*GC, RunnerPkg, RunnerDir, Vid, &Err);
                 QMetaObject::invokeMethod(qApp, [Ok, Err, Rid]{
                     if (Ok) QMessageBox::information(nullptr, "Runner imported",
                                 "Runner '" + Rid + "' imported — press Play to launch.");
@@ -677,13 +677,14 @@ void MainWindow::RebuildSettingsRunnersPage()
 
     //Runners are the HasRunners packages of the unified LIBRARY (kind is emergent — the same index holds games,
     //runners, and dual game+runner packages). Assemble each entry's manifest from its mirrored dir.
-    std::vector<nlohmann::ordered_json> Pkgs;
+    std::vector<std::pair<nlohmann::ordered_json, std::string>> Pkgs;          // (manifest, package dir)
     if (GlobalConfigJSON->contains("LIBRARY") && (*GlobalConfigJSON)["LIBRARY"].is_array())
         for (const auto & Ent : (*GlobalConfigJSON)["LIBRARY"])
         {
+            const std::string Dir = Ent.value("PATH", std::string());
             nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-            if (JSONOps::AssembleManifest(QString::fromStdString(Ent.value("PATH", std::string())), Pkg, Warn)
-                && JSONOps::HasRunners(Pkg)) Pkgs.push_back(Pkg);
+            if (JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn) && JSONOps::HasRunners(Pkg))
+                Pkgs.push_back({Pkg, Dir});
         }
     if (Pkgs.empty())
     {
@@ -691,8 +692,10 @@ void MainWindow::RebuildSettingsRunnersPage()
         none->setStyleSheet("color:#8f98a0;");
         v->addWidget(none);
     }
-    for (const auto & Pkg : Pkgs)
+    for (const auto & PD : Pkgs)
     {
+        const nlohmann::ordered_json & Pkg = PD.first;
+        const std::string & PkgDir = PD.second;
         const nlohmann::ordered_json & E = Pkg["RUNNERS"][0];
         std::string rid = E.value("RUNNER_ID", std::string("(unnamed)"));
         QGroupBox * card = new QGroupBox(QString::fromStdString(E.value("NAME", rid)), contents);
@@ -711,7 +714,7 @@ void MainWindow::RebuildSettingsRunnersPage()
                                + "  ·  " + QString::fromStdString(V.value("HOST_PLATFORM", std::string())) + " → [" + guest + "]";
 
             const bool Ships     = RunnerWrapper::ShipsBuild(Pkg, Vid);
-            const bool Imported = RunnerWrapper::IsImported(Pkg, Vid);
+            const bool Imported = RunnerWrapper::IsImported(Pkg, PkgDir, Vid);
             QHBoxLayout * row = new QHBoxLayout();
             row->addWidget(new QLabel(Desc, card), 1);
             QLabel * st = new QLabel(card);
@@ -722,12 +725,12 @@ void MainWindow::RebuildSettingsRunnersPage()
             if (Ships && !Imported && IpfsWrapper::Available())
             {
                 QPushButton * btn = new QPushButton("Import", card);
-                connect(btn, &QPushButton::clicked, this, [this, Pkg, Vid, btn, st]{
+                connect(btn, &QPushButton::clicked, this, [this, Pkg, PkgDir, Vid, btn, st]{
                     btn->setEnabled(false); btn->setText("Importing…");
                     st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
-                    std::thread([this, Pkg, Vid]{
+                    std::thread([this, Pkg, PkgDir, Vid]{
                         std::string Err;
-                        bool Ok = ContainerWrapper::ImportRunner(*GlobalConfigJSON, Pkg, Vid, &Err);
+                        bool Ok = ContainerWrapper::ImportRunner(*GlobalConfigJSON, Pkg, PkgDir, Vid, &Err);
                         QMetaObject::invokeMethod(this, [this, Ok, Err]{
                             if (!Ok) QMessageBox::warning(this, "Runner import failed", QString::fromStdString(Err));
                             RebuildSettingsRunnersPage(); RefreshIpfsTab();
@@ -750,7 +753,7 @@ void MainWindow::RebuildSettingsRunnersPage()
 }
 
 // Repositories settings page — add/remove the git repos that share dehydrated packages.
-// Each Settings.Repositories[] entry is {NAME, PATH:<git url>}, cloned to ~/.VidyaGod/DOWNLOADS/<name>
+// Each Settings.Repositories[] entry is {NAME, PATH:<git url>}, cloned to ~/.VidyaGod/LIBRARY/<name>
 // and indexed. Adding one clones it (off-thread); removing drops the reference (the disposable clone is
 // left on disk). After any change the Store + Runners pages are rebuilt so the new catalog shows.
 void MainWindow::RebuildSettingsReposPage()
@@ -764,8 +767,8 @@ void MainWindow::RebuildSettingsReposPage()
 
     QLabel * intro = new QLabel(
         "Repositories are git repos that share dehydrated packages (manifests + IPFS CIDs, no bundled content). "
-        "Cloned into ~/.VidyaGod/DOWNLOADS and indexed into the catalog; private repos work if your git is set "
-        "up to authenticate non-interactively (SSH key or a stored token).", contents);
+        "Cloned into your LIBRARY, where packages hydrate their content in place; private repos work if your git is "
+        "set up to authenticate non-interactively (SSH key or a stored token).", contents);
     intro->setWordWrap(true);
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
@@ -1082,19 +1085,12 @@ void MainWindow::RebuildStoreTab()
             const std::string DirCopy = Dir;
             connect(btn, &QPushButton::clicked, this, [this, PkgCopy, DirCopy, btn]{
                 btn->setEnabled(false); btn->setText("Importing…");
-                // Fetch content on a worker thread (the slow part); register in LIBRARY on the GUI thread.
+                // Hydrate in place on a worker thread (FetchToPath is the slow part; it emits IPFS-tab progress).
                 std::thread([this, PkgCopy, DirCopy]{
-                    std::string Err; bool Ok = true;
-                    for (const std::string & Cid : ContainerWrapper::PackageIpfsCids(PkgCopy))
-                        if (IpfsWrapper::FetchSync(Cid, &Err).empty()) { Ok = false; break; }
-                    QMetaObject::invokeMethod(this, [this, Ok, Err, PkgCopy, DirCopy]{
-                        if (Ok)
-                        {
-                            std::string E2;   // content is now cached → ImportPackage's fetches are instant cache hits
-                            if (ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &E2))
-                            { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
-                            else QMessageBox::warning(this, "Import failed", QString::fromStdString(E2));
-                        }
+                    std::string Err;
+                    bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
+                    QMetaObject::invokeMethod(this, [this, Ok, Err]{
+                        if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
                         else QMessageBox::warning(this, "Import failed", QString::fromStdString(Err));
                         RebuildStoreTab(); RefreshIpfsTab();
                     }, Qt::QueuedConnection);

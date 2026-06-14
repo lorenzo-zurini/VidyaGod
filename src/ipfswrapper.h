@@ -29,22 +29,11 @@ bool Available();
 // actually seeds to peers while a daemon is running. Detect only; never started.
 bool DaemonRunning();
 
-// The deterministic on-disk cache location for a CID: ~/.VidyaGod/DOWNLOADS/ipfs/<CID>.
-// Pure (no I/O) — ResolveLayerSource uses it to resolve an ipfs SOURCE to a path.
-std::string CachePath(const std::string &Cid);
-
-// True if CachePath(Cid) holds a completed fetch (its sibling ".complete" marker exists).
-bool IsCached(const std::string &Cid);
-
-// Fetches a CID into its cache (`ipfs get`) and pins it (`ipfs pin add`) so it seeds,
-// blocking until done. No-op if already cached. Returns the cache path on success, or
-// "" on failure (with *Error set to a human-readable reason when provided).
-std::string FetchSync(const std::string &Cid, std::string *Error = nullptr);
-
 // Fetches a CID's content directly to DestPath (creating parent dirs) and seeds it from there via
-// `ipfs add --nocopy` — one copy at the destination, no separate blockstore/cache copy. Used to materialize
-// a layer's content at its expected local PATH. No-op (returns DestPath) if DestPath already exists. Returns
-// DestPath on success, "" on failure (with *Error set when provided).
+// `ipfs add --nocopy` — one copy at the destination, no separate blockstore/cache copy. This is THE fetch
+// primitive: everything (game content, runner builds, covers) materializes in place at its local PATH inside
+// the package's LIBRARY dir. No-op (returns DestPath) if DestPath already exists. Returns DestPath on success,
+// "" on failure (with *Error set when provided). Reports lifecycle/progress through the TransferCallback.
 std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
 
 // Seeds a local file or directory by adding it to the Filestore via `ipfs add --nocopy --pin` (blocks REFERENCE

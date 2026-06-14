@@ -31,33 +31,27 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
 {
     QString File, Cid;
     Locate(Cover, File, Cid);
+    if (File.isEmpty()) return QString();
 
-    // 1. Local-first: the curated image sitting next to the manifest (authoring / a hydrated copy).
-    if (!File.isEmpty())
-    {
-        const QString Local = QDir::cleanPath(PackageDir + "/" + File);
-        if (QFileInfo::exists(Local)) return Local;
-    }
-    // 2. Cached IPFS fetch.
-    if (!Cid.isEmpty())
-    {
-        if (IpfsWrapper::IsCached(Cid.toStdString()))
-            return QString::fromStdString(IpfsWrapper::CachePath(Cid.toStdString()));
-        request(Cid);                                   // 3. not here yet — fetch in the background
-    }
+    // Local-first: the cover lives next to the manifest at PackageDir/<PATH> (authoring, or once hydrated).
+    const QString Local = QDir::cleanPath(PackageDir + "/" + File);
+    if (QFileInfo::exists(Local)) return Local;
+
+    // Not here yet — fetch it there in the background; coverReady(cid) fires when it lands.
+    if (!Cid.isEmpty()) request(Cid, Local);
     return QString();
 }
 
-void CoverCache::request(const QString & Cid)
+void CoverCache::request(const QString & Cid, const QString & DestPath)
 {
-    if (Cid.isEmpty() || InFlight.contains(Cid)) return;
-    InFlight.insert(Cid);
-    const std::string C = Cid.toStdString();
-    std::thread([this, C, Cid]{
+    if (Cid.isEmpty() || DestPath.isEmpty() || InFlight.contains(DestPath)) return;
+    InFlight.insert(DestPath);
+    const std::string C = Cid.toStdString(), D = DestPath.toStdString();
+    std::thread([this, C, D, Cid, DestPath]{
         std::string Err;
-        IpfsWrapper::FetchSync(C, &Err);                // fetches into the cache + seeds (best-effort)
-        QMetaObject::invokeMethod(this, [this, Cid]{
-            InFlight.remove(Cid);
+        IpfsWrapper::FetchToPath(C, D, &Err);           // fetch the cover in place next to the manifest + seed
+        QMetaObject::invokeMethod(this, [this, Cid, DestPath]{
+            InFlight.remove(DestPath);
             emit coverReady(Cid);                       // GUI thread: callers re-resolve + repaint
         }, Qt::QueuedConnection);
     }).detach();

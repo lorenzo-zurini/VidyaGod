@@ -160,14 +160,14 @@ int main(int argc, char *argv[])
         std::string Id = LaunchParameters.ImportRunnerId, Variant;
         if (auto Colon = Id.find(':'); Colon != std::string::npos) { Variant = Id.substr(Colon + 1); Id = Id.substr(0, Colon); }
         LogOut("main.cpp", "Importing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
-        nlohmann::ordered_json RunnerPkg;
-        for (const auto &Pkg : ContainerWrapper::CatalogPackages(GlobalConfigJSON))
-            if (JSONOps::HasRunners(Pkg))
-                for (const auto &R : Pkg["RUNNERS"])
-                    if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = Pkg; break; }
+        nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
+        for (auto &PD : ContainerWrapper::CatalogPackagesWithDir(GlobalConfigJSON))
+            if (JSONOps::HasRunners(PD.first))
+                for (const auto &R : PD.first["RUNNERS"])
+                    if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
         if (RunnerPkg.is_null()) { LogErr("main.cpp", "No runner package found for RUNNER_ID '" + Id + "'."); return 1; }
         std::string Err;
-        const bool Ok = ContainerWrapper::ImportRunner(GlobalConfigJSON, RunnerPkg, Variant, &Err);
+        const bool Ok = ContainerWrapper::ImportRunner(GlobalConfigJSON, RunnerPkg, RunnerDir, Variant, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
         return Ok ? 0 : 1;
     }
@@ -335,8 +335,8 @@ static QString DependencyImportHint(const std::string &Dep)
     return QString::fromStdString(Dep);
 }
 
-// The hosted repository of built-in runner packages (and other shared packages). Synced into
-// ~/.VidyaGod/DOWNLOADS by ContainerWrapper::SyncRepositories and indexed like any other repository.
+// The hosted repository of built-in runner packages (and other shared packages). Cloned into
+// ~/.VidyaGod/LIBRARY/<repo> by ContainerWrapper::SyncRepositories and indexed like any other repository.
 static std::string DefaultRunnerRepoURL() { return "https://github.com/lorenzo-zurini/VidyaGodRunners.git"; }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
@@ -344,15 +344,15 @@ static std::string DefaultRunnerRepoURL() { return "https://github.com/lorenzo-z
 //Runners (and every other shared package) live as packages in the configured Repositories.
 //Returns true if it added anything, so the caller can persist a freshly-seeded config.
 //TODO(sharing): the LIBRARY is just the games-view of the catalog; the catalog itself is the union of
-//every package across all Repositories (+ locally-added, + DOWNLOADS), globally cross-referenceable.
+//every package across all Repositories (+ locally-added entries), globally cross-referenceable.
 static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
 {
     bool Changed = false;
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
-    //Repositories: ordered list of git repos. Each: { NAME, PATH } where PATH is a clone URL, synced
-    //into ~/.VidyaGod/DOWNLOADS and indexed. The sole default is the hosted VidyaGodRunners repository
+    //Repositories: ordered list of git repos. Each: { NAME, PATH } where PATH is a clone URL, cloned
+    //into ~/.VidyaGod/LIBRARY/<repo> and indexed. The sole default is the hosted VidyaGodRunners repository
     //(built-in runners + shared packages).
     if (!gc["Settings"].contains("Repositories") || !gc["Settings"]["Repositories"].is_array())
     {
@@ -383,9 +383,9 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
 
     EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
-    //Sync the configured Repositories: clone/pull into ~/.VidyaGod/DOWNLOADS, mirror every dehydrated package
-    //into the managed library folder, and upsert the un-hydrated LIBRARY/RUNNERS index. This mutates the config
-    //(so always persist afterwards), building a full un-hydrated library that imports later hydrate in place.
+    //Sync the configured Repositories: clone/pull each into ~/.VidyaGod/LIBRARY/<repo> (the clone IS the library)
+    //and upsert the un-hydrated LIBRARY index. This mutates the config (so always persist afterwards), building a
+    //full un-hydrated library of manifests that imports later hydrate in place beside each manifest.
     ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
 
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))

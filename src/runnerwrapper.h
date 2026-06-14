@@ -21,11 +21,9 @@
 // ---------------------------------------------------------------------------
 namespace RunnerWrapper {
 
-// ~/.VidyaGod/DOWNLOADS/runners/<RunnerId>/<VariantId> — this runner-variant's import artifacts.
-std::string ArtifactDir(const std::string &RunnerId, const std::string &VariantId);
-
-// The read-only DEFPREFIX artifact generated once at import (ArtifactDir/DEFPREFIX).
-std::string DefPrefixArtifact(const std::string &RunnerId, const std::string &VariantId);
+// The read-only DEFPREFIX a wine runner generates once at import, inside its own LIBRARY package dir:
+// <PackageDir>/__DEFPREFIX__/<VariantId>.
+std::string DefPrefixArtifact(const std::string &PackageDir, const std::string &VariantId);
 
 // RUNNER_ID of the package's runner entity ("" if none).
 std::string RunnerId(const nlohmann::ordered_json &RunnerPkg);
@@ -46,9 +44,9 @@ std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, cons
 // Whether the variant ships a build (≥1 ipfs build CID) — i.e. it must be imported before use.
 bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
-// Imported = every build CID cached AND (wine) the DEFPREFIX artifact exists. A variant that ships no
-// build is always "imported" (nothing to fetch).
-bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
+// Imported = every build layer hydrated locally in PackageDir AND (wine) the DEFPREFIX exists. A variant that
+// ships no build is always "imported" (nothing to fetch).
+bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId);
 
 } // namespace RunnerWrapper
 

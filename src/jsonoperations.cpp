@@ -269,6 +269,10 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                 {
                     if (!S.is_object()) continue;
                     std::string T = Str(S, "TYPE");
+                    // Every content layer MUST declare a local PATH (where its content lives / hydrates to).
+                    // A path-less layer (e.g. a CID-only runner build) is a hard error.
+                    if ((T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer") && Str(S, "PATH").empty())
+                        Errors.push_back("Component '" + Id + "' has a " + T + " with no PATH — content must declare a local path.");
                     if (T == "CustomVar")
                     {
                         std::string K = Str(S, "KEY");
@@ -365,6 +369,16 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
         for (const auto &G : Assembled["GAMES"])
         {
             std::string GID = Str(G, "GAMEID", "?");
+            // A declared cover MUST resolve to a local PATH (a filename string, or an object with PATH).
+            const nlohmann::ordered_json *Cov = nullptr;
+            if (G.contains("METADATA") && G["METADATA"].is_object() && G["METADATA"].contains("COVER")) Cov = &G["METADATA"]["COVER"];
+            else if (G.contains("COVER")) Cov = &G["COVER"];
+            if (Cov)
+            {
+                const bool HasPath = (Cov->is_string() && !Cov->get<std::string>().empty())
+                                  || (Cov->is_object() && !Cov->value("PATH", std::string()).empty());
+                if (!HasPath) Errors.push_back("Game '" + GID + "' has a COVER with no PATH — a cover must declare a local path.");
+            }
             const auto Variants = (G.contains("VARIANTS") && G["VARIANTS"].is_array()) ? G["VARIANTS"] : nlohmann::ordered_json::array();
             if (Variants.empty()) Warnings.push_back("Game '" + GID + "' has no variants");
             int RecCount = 0;
