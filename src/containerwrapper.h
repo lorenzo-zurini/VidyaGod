@@ -287,12 +287,24 @@ public:
     //fragments + cover assets, NO layer content) — the artifact a repo shares and ImportPackage consumes. Seeding
     //needs the user's daemon; CIDs are still computed offline. Returns false (with *Error) on failure.
     static bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
+    //Copies a package's DEHYDRATED manifest from SrcDir into DestDir: an allowlist of its top-level *.json
+    //fragments + cover/art images, and NOTHING else (never bundled content). DestDir is created if absent;
+    //manifests/covers are overwritten, but any content already present is LEFT untouched (so mirroring over a
+    //hydrated package is safe). Returns the number of files copied. Shared by SyncRepositories (mirror repo→
+    //library) and PublishPackage (export).
+    static int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
+    //True when a game package is HYDRATED — every VFS content layer is present locally at its expected path
+    //(the local-first state launch wants). A package with no content layers is vacuously hydrated. Drives the
+    //Library (hydrated) vs Store (un-hydrated) split.
+    static bool PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).
     static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
-    //Indexes the configured Repositories at startup. TODO(sharing): git clone/pull + persisted catalog.
-    static void SyncRepositories(const nlohmann::ordered_json &GlobalConfigJSON);
+    //Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
+    //into the managed library folder and upsert un-hydrated LIBRARY (games) / RUNNERS (runners) index entries,
+    //reconciling away repo entries that vanished. Mutates GlobalConfigJSON; the caller persists it.
+    static void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
     //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
     static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);

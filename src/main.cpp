@@ -172,15 +172,23 @@ int main(int argc, char *argv[])
         return Ok ? 0 : 1;
     }
 
-    //HEADLESS: import a catalog game package (fetch its IPFS content + register it in LIBRARY) then exit.
+    //HEADLESS: hydrate a library game package in place (fetch its IPFS content) then exit. The init-time sync
+    //already mirrored every repo package into the managed library and indexed it in LIBRARY, so resolve there.
     if (!LaunchParameters.ImportPackageUid.empty())
     {
         const std::string Uid = LaunchParameters.ImportPackageUid;
         LogOut("main.cpp", "Importing package: " + Uid);
         nlohmann::ordered_json Manifest; std::string Dir;
-        for (auto &PD : ContainerWrapper::CatalogPackagesWithDir(GlobalConfigJSON))
-            if (PD.first.value("PACKAGEUID", std::string()) == Uid) { Manifest = PD.first; Dir = PD.second; break; }
-        if (Manifest.is_null()) { LogErr("main.cpp", "No catalog package found for PACKAGEUID '" + Uid + "'."); return 1; }
+        if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+            for (auto &E : GlobalConfigJSON["LIBRARY"])
+                if (E.value("PACKAGEUID", std::string()) == Uid)
+                {
+                    Dir = E.value("PATH", std::string());
+                    std::vector<std::string> Warn;
+                    JSONOps::AssembleManifest(QString::fromStdString(Dir), Manifest, Warn);
+                    break;
+                }
+        if (Manifest.is_null() || Dir.empty()) { LogErr("main.cpp", "No library package found for PACKAGEUID '" + Uid + "'."); return 1; }
         std::string Err;
         const bool Ok = ContainerWrapper::ImportPackage(GlobalConfigJSON, Manifest, Dir, &Err);
         if (Ok)
@@ -373,13 +381,14 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     }
     if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
 
-    const bool Changed = EnsureGlobalConfigDefaults(*GlobalConfigJSON);
+    EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
-    //Sync + index the configured Repositories into the catalog: TYPE:"git" repos (the default
-    //VidyaGodRunners) are cloned/pulled into ~/.VidyaGod/DOWNLOADS, then everything is indexed.
+    //Sync the configured Repositories: clone/pull into ~/.VidyaGod/DOWNLOADS, mirror every dehydrated package
+    //into the managed library folder, and upsert the un-hydrated LIBRARY/RUNNERS index. This mutates the config
+    //(so always persist afterwards), building a full un-hydrated library that imports later hydrate in place.
     ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
 
-    if ((!Existed || Changed) && !JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
+    if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
         LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
         return true; //fail

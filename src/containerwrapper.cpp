@@ -950,19 +950,88 @@ static bool SyncGitRepository(const std::string &Url, const std::string &CloneDi
     return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), QString::fromStdString(CloneDir)});
 }
 
-//Synchronizes + indexes the configured Repositories at startup: every repo is a git repo, cloned/pulled
-//into ~/.VidyaGod/DOWNLOADS first, then indexed in place (logs what was found).
-//TODO(sharing): persist a catalog index here instead of rescanning on demand.
-void ContainerWrapper::SyncRepositories(const nlohmann::ordered_json &GlobalConfigJSON)
+//Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH,REPO} into Arr (LIBRARY or RUNNERS),
+//keyed by PACKAGEUID. A repo sync owns entries carrying a REPO; a local (no-REPO) entry with the same UID wins
+//and is left untouched (the user's own package shadows a repo copy).
+static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &Repo,
+                             const std::string &MirrorDir, const nlohmann::ordered_json &Pkg)
 {
-    const nlohmann::ordered_json *Settings = (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
-                                             ? &GlobalConfigJSON["Settings"] : nullptr;
-    if (!Settings || !Settings->contains("Repositories") || !(*Settings)["Repositories"].is_array()) return;
+    for (auto &E : Arr)
+    {
+        if (E.value("PACKAGEUID", std::string()) != Uid) continue;
+        if (!E.contains("REPO")) return;                                          // local entry owns this UID
+        E["PACKAGENAME"]    = Pkg.value("PACKAGENAME", std::string());
+        E["PACKAGEVERSION"] = Pkg.value("PACKAGEVERSION", std::string());
+        E["PATH"]           = MirrorDir;
+        E["REPO"]           = Repo;
+        return;
+    }
+    nlohmann::ordered_json Slim;
+    Slim["PACKAGEUID"]     = Uid;
+    Slim["PACKAGENAME"]    = Pkg.value("PACKAGENAME", std::string());
+    Slim["PACKAGEVERSION"] = Pkg.value("PACKAGEVERSION", std::string());
+    Slim["PATH"]           = MirrorDir;
+    Slim["REPO"]           = Repo;
+    Arr.push_back(std::move(Slim));
+}
 
-    for (const auto &R : (*Settings)["Repositories"])
+//True if any variant of a runner package has been imported (build cached + DEFPREFIX) — its "hydrated" state.
+static bool RunnerPkgImported(const nlohmann::ordered_json &Pkg)
+{
+    for (const std::string &Vid : RunnerWrapper::VariantIds(Pkg))
+        if (RunnerWrapper::IsImported(Pkg, Vid)) return true;
+    return false;
+}
+
+//Reconciliation: drops REPO-sourced entries whose PACKAGEUID is no longer provided by any repo (not in SeenUids)
+//AND that are un-hydrated, deleting their mirror dir (only under LibRoot). Local (no-REPO) entries and hydrated
+//orphans (content the user downloaded) are kept.
+static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::string> &SeenUids,
+                           const std::string &LibRoot, bool Runner)
+{
+    for (int i = (int)Arr.size() - 1; i >= 0; --i)
+    {
+        nlohmann::ordered_json &E = Arr[i];
+        if (!E.contains("REPO")) continue;                                        // local — keep
+        if (SeenUids.count(E.value("PACKAGEUID", std::string()))) continue;       // still in a repo — keep
+        const std::string Path = E.value("PATH", std::string());
+        nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+        bool Downloaded = false;
+        if (JSONOps::AssembleManifest(QString::fromStdString(Path), Pkg, Warn))
+            //"Downloaded" = something was actually fetched: an imported runner, or a game with content layers all
+            //present locally (a layer-less game has nothing to download, so it isn't a kept orphan).
+            Downloaded = Runner ? RunnerPkgImported(Pkg)
+                                : (!ContainerWrapper::PackageIpfsCids(Pkg).empty() && ContainerWrapper::PackageHydrated(Pkg, Path));
+        if (Downloaded) continue;                                                 // downloaded orphan — keep
+        if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
+        Arr.erase(Arr.begin() + i);
+    }
+}
+
+//Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
+//into the managed library folder (manifests + covers, no content) and upsert un-hydrated LIBRARY (games) /
+//RUNNERS (runners) index entries — building a full, un-hydrated library up front. Importing later fetches a
+//package's content in place. Reconciles away repo entries that vanished. Caller persists GlobalConfigJSON.
+void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
+{
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
+    if (!GlobalConfigJSON["Settings"].contains("Repositories") || !GlobalConfigJSON["Settings"]["Repositories"].is_array()) return;
+
+    //Ensure the index arrays exist BEFORE iterating — adding a top-level key reallocates the object's storage,
+    //so creating them later would dangle a cached reference into the Repositories array.
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
+        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
+    if (!GlobalConfigJSON.contains("RUNNERS") || !GlobalConfigJSON["RUNNERS"].is_array())
+        GlobalConfigJSON["RUNNERS"] = nlohmann::ordered_json::array();
+
+    const std::string LibRoot = LibraryDir(GlobalConfigJSON);
+    std::set<std::string> SeenGameUid, SeenRunnerUid;
+
+    for (auto &R : GlobalConfigJSON["Settings"]["Repositories"])
     {
         const std::string Url = RepositoryURL(R);
         if (Url.empty()) continue;
+        const std::string RepoName = GitRepoName(R);
         const std::string Local = RepositoryLocalDir(R);
         LogOut("ContainerWrapper::SyncRepositories", "Syncing git repository " + Url + " -> " + Local);
         if (!SyncGitRepository(Url, Local))
@@ -970,9 +1039,30 @@ void ContainerWrapper::SyncRepositories(const nlohmann::ordered_json &GlobalConf
 
         QDir D(QString::fromStdString(Local));
         if (!D.exists()) { LogWarn("ContainerWrapper::SyncRepositories", "Repository missing (skipped): " + Local); continue; }
-        int Count = D.entryList(QDir::Dirs | QDir::NoDotAndDotDot).size();
-        LogOut("ContainerWrapper::SyncRepositories", "Indexed repository " + Local + " (" + std::to_string(Count) + " package(s)).");
+
+        int Games = 0, Runners = 0;
+        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        {
+            const QString ClonePkgDir = D.filePath(Sub);
+            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+            if (!JSONOps::AssembleManifest(ClonePkgDir, Pkg, Warn)) continue;
+            const std::string Uid = Pkg.value("PACKAGEUID", std::string());
+            if (Uid.empty()) continue;
+
+            //Mirror the dehydrated package into the managed library folder (refreshes manifests/covers; never
+            //touches any content already fetched there). This is the on-disk un-hydrated library.
+            const std::string MirrorDir = (std::filesystem::path(LibRoot) / RepoName / Sub.toStdString()).string();
+            MirrorDehydrated(ClonePkgDir.toStdString(), MirrorDir);
+
+            if (JSONOps::HasGames(Pkg))   { SeenGameUid.insert(Uid);   UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, MirrorDir, Pkg); ++Games; }
+            if (JSONOps::HasRunners(Pkg)) { SeenRunnerUid.insert(Uid); UpsertIndexEntry(GlobalConfigJSON["RUNNERS"], Uid, RepoName, MirrorDir, Pkg); ++Runners; }
+        }
+        LogOut("ContainerWrapper::SyncRepositories", "Indexed " + Local + " ("
+               + std::to_string(Games) + " game(s), " + std::to_string(Runners) + " runner(s)).");
     }
+
+    ReconcileIndex(GlobalConfigJSON["LIBRARY"], SeenGameUid,   LibRoot, false);
+    ReconcileIndex(GlobalConfigJSON["RUNNERS"], SeenRunnerUid, LibRoot, true);
 }
 
 //Fills all derived fields in ContainerParams from MANIFEST and GlobalConfigJSON.
@@ -2138,9 +2228,11 @@ std::vector<std::string> ContainerWrapper::PackageIpfsCids(const nlohmann::order
     return Cids;
 }
 
-//Installs a catalog GAME package: fetches+pins every ipfs CID its content references, then registers a slim
-//LIBRARY entry (deduped by PACKAGEUID) in GlobalConfigJSON. The caller persists GlobalConfig + refreshes the
-//UI. The game's runner is provisioned separately by the play()/EnsureSources gate. Mirrors ImportRunner.
+//HYDRATES a GAME package IN PLACE: fetches every ipfs content layer to its expected path inside the package's
+//managed library folder (the sync mirror), turning an un-hydrated entry into a fully-local, launchable one. The
+//LIBRARY entry already exists from sync — this ensures it points at the hydrated dir. If PackageDir is NOT yet
+//under the managed library (e.g. a manual import of an external dehydrated dir), its dehydrated manifest is first
+//mirrored in. Idempotent: re-importing a hydrated package fetches nothing. Caller persists GlobalConfig.
 bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
                                       const std::string &PackageDir, std::string *Error)
 {
@@ -2148,29 +2240,22 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
 
     const std::string Uid = Manifest.value("PACKAGEUID", std::string());
     if (Uid.empty()) return Fail("package has no PACKAGEUID");
-
-    //Already in the library? (deduped by PACKAGEUID)
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
-    for (const auto &E : GlobalConfigJSON["LIBRARY"])
-        if (E.value("PACKAGEUID", std::string()) == Uid)
-        { LogOut("ContainerWrapper::ImportPackage", "Package " + Uid + " already in LIBRARY."); return true; }
 
-    //1. Hydrate the dehydrated package into the managed library folder, separated by repo:
-    //   <LibraryDir>/<repo>/<pkg>. Copy the manifest dir verbatim (JSON fragments + cover assets — the CIDs in
-    //   the manifest are KEPT as the permanent fallback source). Nothing is stripped.
+    //Hydration destination. If the package already lives in the managed library (the sync mirror), hydrate in
+    //place; otherwise mirror its dehydrated manifest into <LibraryDir>/<repo>/<pkg> first (no content copied).
+    const std::string LibRoot = LibraryDir(GlobalConfigJSON);
+    std::filesystem::path Dest(PackageDir);
+    if (std::string(PackageDir).rfind(LibRoot, 0) != 0)
+    {
+        const std::filesystem::path Src(PackageDir);
+        Dest = std::filesystem::path(LibRoot) / Src.parent_path().filename() / Src.filename();
+        MirrorDehydrated(PackageDir, Dest.string());
+    }
+
+    //Materialize content in place: fetch each VFS layer's content from IPFS to Dest/PATH (local-first afterwards).
     std::error_code Ec;
-    const std::filesystem::path Src(PackageDir);
-    const std::string RepoName = Src.parent_path().filename().string();          // the repo clone dir's name
-    const std::string PkgName  = Src.filename().string();
-    const std::filesystem::path Dest = std::filesystem::path(LibraryDir(GlobalConfigJSON)) / RepoName / PkgName;
-    std::filesystem::remove_all(Dest, Ec);
-    std::filesystem::create_directories(Dest.parent_path(), Ec);
-    std::filesystem::copy(Src, Dest, std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing, Ec);
-    if (Ec) return Fail("could not copy package into the library folder (" + Ec.message() + ")");
-
-    //2. Materialize content: fetch each VFS layer's content from a backend (IPFS) to its expected local path in
-    //   the copied package, so it becomes identical to a local package (local-first resolution, CID as fallback).
     int Fetched = 0;
     if (Manifest.contains("COMPONENTS") && Manifest["COMPONENTS"].is_array())
         for (const auto &C : Manifest["COMPONENTS"])
@@ -2183,24 +2268,30 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(S, Dest, Local, Cid);
                 if (Cid.empty() || Local == Dest) continue;                      // no backend, or no PATH to place it
-                if (std::filesystem::exists(Local, Ec)) continue;                // already materialized in the copy
-                std::string Err;
+                if (std::filesystem::exists(Local, Ec)) continue;                // already present (hydrated)
+                std::string Err;                                                 // fetch in place; leave partials on failure
                 if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
-                { std::filesystem::remove_all(Dest, Ec); return Fail("could not fetch layer CID " + Cid + " (" + Err + ")"); }
+                    return Fail("could not fetch layer CID " + Cid + " (" + Err + ")");
                 ++Fetched;
             }
         }
-    LogSucc("ContainerWrapper::ImportPackage", "Hydrated package " + Uid + " into " + Dest.string()
+    LogSucc("ContainerWrapper::ImportPackage", "Hydrated package " + Uid + " in place at " + Dest.string()
             + " (" + std::to_string(Fetched) + " layer(s) fetched)");
 
-    //3. Register a thin LIBRARY reference to the hydrated (now fully-local) package.
-    nlohmann::ordered_json Slim;
-    Slim["PACKAGEUID"]     = Uid;
-    Slim["PACKAGENAME"]    = Manifest.value("PACKAGENAME", std::string());
-    Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
-    Slim["PATH"]           = Dest.string();
-    GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
-    LogSucc("ContainerWrapper::ImportPackage", "Imported package " + Uid + " into LIBRARY (PATH " + Dest.string() + ")");
+    //Ensure a LIBRARY entry points at the hydrated dir (sync usually created it already; add if missing — e.g. a
+    //manual external import → a local entry with no REPO).
+    bool Found = false;
+    for (auto &E : GlobalConfigJSON["LIBRARY"])
+        if (E.value("PACKAGEUID", std::string()) == Uid) { E["PATH"] = Dest.string(); Found = true; break; }
+    if (!Found)
+    {
+        nlohmann::ordered_json Slim;
+        Slim["PACKAGEUID"]     = Uid;
+        Slim["PACKAGENAME"]    = Manifest.value("PACKAGENAME", std::string());
+        Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
+        Slim["PATH"]           = Dest.string();
+        GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
+    }
     return true;
 }
 
@@ -2266,35 +2357,61 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
     LogSucc("ContainerWrapper::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
             + " of " + std::to_string(Walked) + " layer(s) newly seeded)");
 
-    //Export the dehydrated manifest, if requested. A dehydrated package is METADATA ONLY: the JSON manifest
-    //fragments plus the cover/art images they reference. We copy exactly those (top-level *.json + top-level
-    //image files) via an ALLOWLIST — never the bundled content (a package may hold content zips, leftover
-    //extracted dirs, or other stray files far larger than any declared layer; a denylist of layer PATHs misses
-    //those). The fragments carry the CIDs, so a consumer rehydrates the content from IPFS on import.
+    //Export the dehydrated manifest, if requested — a clean manifest-only copy (manifests + cover art, no
+    //content) via the shared allowlist mirror. remove_all first so the export dir holds only the dehydration.
     if (!DehydratedDestDir.empty())
     {
-        const std::filesystem::path Dest(DehydratedDestDir);
-        std::filesystem::remove_all(Dest, Ec);
-        std::filesystem::create_directories(Dest, Ec);
-        if (Ec) return Fail("could not create dehydrated export dir (" + Ec.message() + ")");
-
-        static const std::set<std::string> AssetExt =
-            { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg" };
-        int Copied = 0;
-        for (const auto &Entry : std::filesystem::directory_iterator(Pkg, Ec))
-        {
-            if (!Entry.is_regular_file()) continue;
-            std::string Ext = Entry.path().extension().string();
-            std::transform(Ext.begin(), Ext.end(), Ext.begin(), [](unsigned char c){ return std::tolower(c); });
-            if (Ext != ".json" && !AssetExt.count(Ext)) continue;                 // manifests + cover art only
-            std::error_code Ce;
-            std::filesystem::copy_file(Entry.path(), Dest / Entry.path().filename(),
-                                       std::filesystem::copy_options::overwrite_existing, Ce);
-            if (Ce) LogWarn("ContainerWrapper::PublishPackage", "export skip " + Entry.path().string() + " (" + Ce.message() + ")");
-            else ++Copied;
-        }
-        LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated manifest to " + Dest.string()
+        std::filesystem::remove_all(DehydratedDestDir, Ec);
+        const int Copied = MirrorDehydrated(PackageDir, DehydratedDestDir);
+        LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated manifest to " + DehydratedDestDir
                 + " (" + std::to_string(Copied) + " file(s): manifests + cover art)");
+    }
+    return true;
+}
+
+//Copies a package's DEHYDRATED manifest (top-level *.json fragments + cover/art images) into DestDir. Never
+//copies content; never deletes anything already in DestDir (so it can refresh a mirror over hydrated content).
+int ContainerWrapper::MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
+{
+    std::error_code Ec;
+    std::filesystem::create_directories(DestDir, Ec);
+    static const std::set<std::string> AssetExt =
+        { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg" };
+    int Copied = 0;
+    for (const auto &Entry : std::filesystem::directory_iterator(SrcDir, Ec))
+    {
+        if (!Entry.is_regular_file()) continue;
+        std::string Ext = Entry.path().extension().string();
+        std::transform(Ext.begin(), Ext.end(), Ext.begin(), [](unsigned char c){ return std::tolower(c); });
+        if (Ext != ".json" && !AssetExt.count(Ext)) continue;                     // manifests + cover art only
+        std::error_code Ce;
+        std::filesystem::copy_file(Entry.path(), std::filesystem::path(DestDir) / Entry.path().filename(),
+                                   std::filesystem::copy_options::overwrite_existing, Ce);
+        if (Ce) LogWarn("ContainerWrapper::MirrorDehydrated", "skip " + Entry.path().string() + " (" + Ce.message() + ")");
+        else ++Copied;
+    }
+    return Copied;
+}
+
+//True when every VFS content layer of a game is present locally at its expected path (vacuously true if the
+//package has no content layers — nothing to fetch). This is the "hydrated" state the library/store split keys
+//off; it mirrors launch's local-first resolution via LayerLocator.
+bool ContainerWrapper::PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir)
+{
+    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return true;
+    const std::filesystem::path Pkg(PackageDir);
+    for (const auto &C : Manifest["COMPONENTS"])
+    {
+        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            const std::string T = S.value("TYPE", std::string());
+            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(S, Pkg, Local, Cid);
+            std::error_code Ec;
+            if (!std::filesystem::exists(Local, Ec)) return false;                // a layer's content is missing
+        }
     }
     return true;
 }

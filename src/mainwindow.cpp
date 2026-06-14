@@ -627,9 +627,16 @@ void MainWindow::RebuildSettingsRunnersPage()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
+    //Drive the list from the persisted RUNNERS index (populated by SyncRepositories), assembling each runner
+    //package's manifest from its mirrored dir. Symmetric with the games LIBRARY.
     std::vector<nlohmann::ordered_json> Pkgs;
-    for (const auto & Pkg : ContainerWrapper::CatalogPackages(*GlobalConfigJSON))
-        if (JSONOps::HasRunners(Pkg)) Pkgs.push_back(Pkg);
+    if (GlobalConfigJSON->contains("RUNNERS") && (*GlobalConfigJSON)["RUNNERS"].is_array())
+        for (const auto & Ent : (*GlobalConfigJSON)["RUNNERS"])
+        {
+            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+            if (JSONOps::AssembleManifest(QString::fromStdString(Ent.value("PATH", std::string())), Pkg, Warn)
+                && JSONOps::HasRunners(Pkg)) Pkgs.push_back(Pkg);
+        }
     if (Pkgs.empty())
     {
         QLabel * none = new QLabel("No runners found in your repositories.", contents);
@@ -772,11 +779,12 @@ void MainWindow::RebuildSettingsReposPage()
         SS["Repositories"].push_back(Entry);
         SaveGlobalConfigJSON();
         addBtn->setEnabled(false); addBtn->setText("Cloning…");
-        // Clone/pull off-thread (network); refresh the catalog-driven pages when done.
+        // Clone/pull + mirror + index off-thread (network); persist and refresh the pages when done.
         std::thread([this]{
-            ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
+            ContainerWrapper::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
             QMetaObject::invokeMethod(this, [this]{
-                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab();
+                SaveGlobalConfigJSON();
+                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab(); RebuildDynamicUI();
             }, Qt::QueuedConnection);
         }).detach();
     });
@@ -943,13 +951,18 @@ void MainWindow::RebuildStoreTab()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
+    //The Store lists the UN-HYDRATED games of the library — entries synced/mirrored from a repo whose content
+    //hasn't been downloaded yet. Importing fetches their content in place (into the mirror dir = Dir).
     int shown = 0;
-    for (auto & PkgDir : ContainerWrapper::CatalogPackagesWithDir(*GlobalConfigJSON))
+    const auto & Lib = (*GlobalConfigJSON)["LIBRARY"];
+    for (int li = 0; li < (Lib.is_array() ? (int)Lib.size() : 0); li++)
     {
-        const nlohmann::ordered_json & Pkg = PkgDir.first;
-        const std::string & Dir = PkgDir.second;
+        const std::string Dir = Lib[li].value("PATH", std::string());            // the package's managed mirror dir
+        nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+        if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) continue;
         if (!JSONOps::HasGames(Pkg)) continue;
-        if (ContainerWrapper::IsPackageImported(*GlobalConfigJSON, Pkg)) continue; // already in the library
+        if (ContainerWrapper::PackageHydrated(Pkg, Dir)) continue;                // already downloaded → Library tab
+        if (ContainerWrapper::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
         shown++;
 
         const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
@@ -1150,11 +1163,13 @@ void MainWindow::BuildLibraryGameCards()
     for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
         nlohmann::ordered_json pm;
         std::vector<std::string> AsmWarn;
-        if (!JSONOps::AssembleManifest(QString::fromStdString(
-                std::string((*GlobalConfigJSON)["LIBRARY"][i]["PATH"])), pm, AsmWarn)) continue;
+        const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
+        if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
         //Only packages with games show in the library (the archetype). A pure-dependency or
         //runner-only package contributes no cards.
         if (!JSONOps::HasGames(pm)) continue;
+        //Only HYDRATED games appear in the Library; un-hydrated (synced-but-not-downloaded) ones live in the Store.
+        if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
         for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
             std::string sid = pm["GAMES"][j].contains("GAMEID") &&
                 !pm["GAMES"][j]["GAMEID"].is_null()
