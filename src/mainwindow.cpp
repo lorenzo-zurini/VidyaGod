@@ -20,8 +20,31 @@
 #include <QProgressBar>
 #include <QClipboard>
 #include <QTableWidgetItem>
+#include <QTreeWidgetItem>
+#include <QStyledItemDelegate>
+#include <QStyleOptionProgressBar>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+
+// Paints a column's integer value (0..100) as a progress bar, so a transfers table stays sortable (the value
+// lives in the item, not a fragile cell widget). A negative value renders an indeterminate "busy" bar.
+class ProgressBarDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
+    {
+        const int v = idx.data(Qt::DisplayRole).toInt();
+        QStyleOptionProgressBar bar;
+        bar.rect = opt.rect.adjusted(2, 3, -2, -3);
+        bar.minimum = 0; bar.maximum = (v < 0 ? 0 : 100);   // max 0 = indeterminate
+        bar.progress = (v < 0 ? 0 : v);
+        bar.textVisible = (v >= 0);
+        bar.text = (v >= 0) ? QString::number(v) + "%" : QString();
+        bar.textAlignment = Qt::AlignCenter;
+        QApplication::style()->drawControl(QStyle::CE_ProgressBar, &bar, p);
+    }
+};
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -889,9 +912,10 @@ QWidget * MainWindow::BuildPathsSettingsPage()
 // never starts the daemon — it only reports whether the user is running one.
 // ═════════════════════════════════════════════════════════════════════════════
 
-// Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>"), so the IPFS tab
-// can show what each CID actually is instead of a raw hash.
-static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc)
+// Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>"), so the IPFS tab can
+// show what each CID actually is instead of a raw hash. When OutPackages is given, also maps CID → its owning
+// package name (used to group the seeded-content list by package).
+static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc, QHash<QString, QString> * OutPackages = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & Pkg : ContainerWrapper::CatalogPackages(gc))
@@ -915,6 +939,9 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc)
                 else if (PkgName.empty() && !CompName.empty())
                     Label = CompName;
                 Labels.insert(QString::fromStdString(Cid), QString::fromStdString(Label));
+                if (OutPackages)
+                    OutPackages->insert(QString::fromStdString(Cid),
+                                        QString::fromStdString(PkgName.empty() ? std::string("(unnamed package)") : PkgName));
             }
         }
     }
@@ -1053,65 +1080,70 @@ void MainWindow::BuildIpfsTab()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    // Build the CID → human-label index up front so transfers/pins show what each CID actually is.
-    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);
+    // Build the CID → label + CID → package indexes up front (label for the table, package for grouping).
+    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);
 
-    // Transfers (live fetches from the launch worker). Name | CID | Progress | Status.
+    // Transfers (live fetches). Name | CID | Progress | Status — sortable; progress lives in the item and is
+    // delegate-drawn (no cell widget), so re-sorting can't desync it.
     QGroupBox * txBox = new QGroupBox("Transfers", IpfsTabWidget);
     QVBoxLayout * txl = new QVBoxLayout(txBox);
     IpfsTransfers = new QTableWidget(0, 4, txBox);
     IpfsTransfers->setHorizontalHeaderLabels({"Name", "CID", "Progress", "Status"});
     IpfsTransfers->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    IpfsTransfers->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsTransfers));
     IpfsTransfers->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsTransfers->setSelectionMode(QAbstractItemView::NoSelection);
     IpfsTransfers->verticalHeader()->setVisible(false);
+    IpfsTransfers->setSortingEnabled(true);
+    IpfsTransfers->sortByColumn(0, Qt::AscendingOrder);
     txl->addWidget(IpfsTransfers);
     v->addWidget(txBox, 1);
 
-    // Seeded content (pinned CIDs). Name | CID | actions.
+    // Seeded content (pinned CIDs), grouped by package and sortable (click a header to sort within groups).
     QGroupBox * pinBox = new QGroupBox("Seeded content (pinned)", IpfsTabWidget);
     QVBoxLayout * pl = new QVBoxLayout(pinBox);
-    IpfsPins = new QTableWidget(0, 3, pinBox);
-    IpfsPins->setHorizontalHeaderLabels({"Name", "CID", ""});
-    IpfsPins->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    IpfsPins = new QTreeWidget(pinBox);
+    IpfsPins->setColumnCount(3);
+    IpfsPins->setHeaderLabels({"Name", "CID", ""});
+    IpfsPins->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
-    IpfsPins->verticalHeader()->setVisible(false);
+    IpfsPins->setSortingEnabled(true);
+    IpfsPins->sortByColumn(0, Qt::AscendingOrder);
     pl->addWidget(IpfsPins);
     v->addWidget(pinBox, 1);
 
-    // Live transfer notifications (marshalled onto the GUI thread by IpfsManager).
+    // Live transfer notifications (marshalled onto the GUI thread by IpfsManager). Each CID's progress item
+    // pointer is tracked (it survives re-sorting); the live row is derived from it on demand.
     IpfsManager * mgr = IpfsManager::instance();
     connect(mgr, &IpfsManager::transferStarted, this, [this](QString cid) {
         if (!IpfsTransfers) return;
-        int row = IpfsTransferRows.value(cid, -1);
-        if (row < 0) {
-            if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);  // refresh once
-            row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
-            IpfsTransferRows.insert(cid, row);
+        QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr);
+        if (!prog) {
+            if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);
+            IpfsTransfers->setSortingEnabled(false);          // keep the row intact while we fill it
+            const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
             IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
             IpfsTransfers->setItem(row, 1, new QTableWidgetItem(cid));
-            QProgressBar * bar = new QProgressBar(); bar->setRange(0, 0); // indeterminate until first %
-            IpfsTransfers->setCellWidget(row, 2, bar);
+            prog = new QTableWidgetItem(); prog->setData(Qt::DisplayRole, -1);   // indeterminate until first %
+            IpfsTransfers->setItem(row, 2, prog);
             IpfsTransfers->setItem(row, 3, new QTableWidgetItem("Fetching…"));
-        } else if (IpfsTransfers->item(row, 3)) {
-            IpfsTransfers->item(row, 3)->setText("Fetching…");
+            IpfsTransfers->setSortingEnabled(true);
+            IpfsTransferProgress.insert(cid, prog);
+        } else {
+            const int row = IpfsTransfers->row(prog);
+            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText("Fetching…");
         }
     });
     connect(mgr, &IpfsManager::transferProgress, this, [this](QString cid, double pct) {
-        int row = IpfsTransferRows.value(cid, -1);
-        if (row < 0 || !IpfsTransfers) return;
-        if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 2))) {
-            bar->setRange(0, 100); bar->setValue(int(pct + 0.5));
-        }
+        if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
+            prog->setData(Qt::DisplayRole, int(pct + 0.5));
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok) {
-        int row = IpfsTransferRows.value(cid, -1);
-        if (row >= 0 && IpfsTransfers) {
-            if (auto * bar = qobject_cast<QProgressBar*>(IpfsTransfers->cellWidget(row, 2))) {
-                bar->setRange(0, 100); if (ok) bar->setValue(100);
-            }
-            if (IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(ok ? "Done" : "Failed");
+        if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
+            prog->setData(Qt::DisplayRole, ok ? 100 : prog->data(Qt::DisplayRole).toInt());
+            const int row = IpfsTransfers->row(prog);
+            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(ok ? "Done" : "Failed");
         }
         RefreshIpfsTab();                                    // a finished fetch likely added a pin
     });
@@ -1137,23 +1169,49 @@ void MainWindow::RefreshIpfsTab()
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON);                  // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);   // keep names current with the catalog
     const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
-    IpfsPins->setRowCount(int(Pins.size()));
-    for (int i = 0; i < int(Pins.size()); ++i)
+
+    // Group the pinned CIDs by owning package (QMap → keys already alphabetical; unknowns bucketed last).
+    QMap<QString, QStringList> ByPackage;
+    const QString Unknown = QStringLiteral("Unknown / not in your library");
+    for (const auto & P : Pins)
     {
-        const QString Cid = QString::fromStdString(Pins[i].Cid);
-        IpfsPins->setItem(i, 0, new QTableWidgetItem(IpfsCidLabels.value(Cid, QStringLiteral("(unknown)"))));
-        IpfsPins->setItem(i, 1, new QTableWidgetItem(Cid));
-        QWidget * cell = new QWidget();
-        QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,2,2,2); cl->setSpacing(4);
-        QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
-        QPushButton * unpinBtn = new QPushButton("Unpin", cell);
-        connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
-        connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
-        cl->addWidget(copyBtn); cl->addWidget(unpinBtn);
-        IpfsPins->setCellWidget(i, 2, cell);
+        const QString Cid = QString::fromStdString(P.Cid);
+        ByPackage[IpfsCidPackages.value(Cid, Unknown)].append(Cid);
     }
+
+    IpfsPins->setSortingEnabled(false);                                    // batch-build, then let the header sort
+    IpfsPins->clear();
+    for (auto it = ByPackage.constBegin(); it != ByPackage.constEnd(); ++it)
+    {
+        const QString & PkgName = it.key();
+        QTreeWidgetItem * grp = new QTreeWidgetItem(IpfsPins);
+        grp->setText(0, QString("%1   (%2)").arg(PkgName).arg(it.value().size()));
+        QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f);
+        grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
+        for (const QString & Cid : it.value())
+        {
+            const QString Label = IpfsCidLabels.value(Cid, QStringLiteral("(unknown)"));
+            QString Leaf = Label;                                          // child shows the layer, not the package
+            if (Label.startsWith(PkgName + " — ")) Leaf = Label.mid(PkgName.size() + 3);
+            else if (Label == PkgName)             Leaf = QStringLiteral("content");
+            QTreeWidgetItem * child = new QTreeWidgetItem(grp);
+            child->setText(0, Leaf);
+            child->setText(1, Cid);
+            QWidget * cell = new QWidget();
+            QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
+            QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
+            QPushButton * unpinBtn = new QPushButton("Unpin", cell);
+            connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
+            connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
+            cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
+            IpfsPins->setItemWidget(child, 2, cell);
+        }
+    }
+    IpfsPins->setSortingEnabled(true);
+    IpfsPins->expandAll();
+    IpfsPins->resizeColumnToContents(1);
     IpfsPins->resizeColumnToContents(2);
 }
 

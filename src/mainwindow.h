@@ -27,6 +27,7 @@
 #include <QLineEdit>
 #include <QFormLayout>
 #include <QTableWidget>
+#include <QTreeWidget>
 #include <QTimer>
 #include <QHash>
 
@@ -171,11 +172,12 @@ private:
     // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
     QWidget       * IpfsTabWidget   = nullptr;
     QLabel        * IpfsStatusLabel = nullptr;
-    QTableWidget  * IpfsTransfers   = nullptr;   // CID | Progress | Status — live fetches
-    QTableWidget  * IpfsPins        = nullptr;   // pinned (seeded) CIDs
+    QTableWidget  * IpfsTransfers   = nullptr;   // Name | CID | Progress | Status — live fetches (sortable)
+    QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (sortable)
     QTimer        * IpfsRefreshTimer = nullptr;
-    QHash<QString, int>     IpfsTransferRows;     // CID → row index in IpfsTransfers
+    QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
+    QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)
 
     void BuildStaticUI();
     void BuildLibraryGameCards();
