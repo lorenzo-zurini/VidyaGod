@@ -110,9 +110,15 @@ bool ContainerWrapper::InitializeContainer()
     {
         if (!this->MANIFESTJSON.contains("COMPONENTS") || !this->MANIFESTJSON["COMPONENTS"].is_array())
             this->MANIFESTJSON["COMPONENTS"] = nlohmann::ordered_json::array();
+        //Dedupe by COMPONENTID: an embedded runner's components already live in MANIFESTJSON (we pass the
+        //package's own COMPONENTS through GatherRunners), so re-adding them would mount the game twice.
+        std::set<std::string> PoolIds;
+        for (auto &C : this->MANIFESTJSON["COMPONENTS"]) PoolIds.insert(C.value("COMPONENTID", std::string()));
+        int Folded = 0;
         for (auto &C : this->ContainerParams.RunnerComponents)
-            this->MANIFESTJSON["COMPONENTS"].push_back(C);
-        LogOut("ContainerWrapper::InitializeContainer", "Folded " + std::to_string(this->ContainerParams.RunnerComponents.size()) + " runner component(s) into the pool.");
+            if (PoolIds.insert(C.value("COMPONENTID", std::string())).second)
+                { this->MANIFESTJSON["COMPONENTS"].push_back(C); ++Folded; }
+        LogOut("ContainerWrapper::InitializeContainer", "Folded " + std::to_string(Folded) + " runner component(s) into the pool.");
     }
 
     if(!this->CreateRecipe(this->MANIFESTJSON, this->ContainerParams))
@@ -1165,8 +1171,13 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
         }
     };
     //1. The launching package's own runners first (a bundle shadows a registry runner of the same id) — its
-    //   build lives in the game's own dir.
-    GatherRunners(MANIFESTJSON, nlohmann::ordered_json::array(), ContainerParams.PackagePath.string());
+    //   build lives in the game's own dir. Pass the package's own COMPONENTS so an embedded runner's build
+    //   layers (e.g. a bundled gemrb engine) are discoverable; the fold below dedupes them against the pool.
+    {
+        const nlohmann::ordered_json OwnComps = (MANIFESTJSON.contains("COMPONENTS") && MANIFESTJSON["COMPONENTS"].is_array())
+                                                ? MANIFESTJSON["COMPONENTS"] : nlohmann::ordered_json::array();
+        GatherRunners(MANIFESTJSON, OwnComps, ContainerParams.PackagePath.string());
+    }
     //2. Every runner package in each configured repository.
     //TODO(sharing): resolve from CatalogPackages once it carries each package's owning dir for components.
     for (const auto &RegDir : RepositoryDirs(GlobalConfigJSON))
@@ -1241,7 +1252,10 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
                         ContainerParams.RunnerLayers.push_back(S);
                 }
         ContainerParams.RunnerShipsBuild = !ContainerParams.RunnerLayers.empty();
-        ContainerParams.RunnerEndpoints  = {}; //runner components mount separately (or unified) — not in the game recipe
+        //A UNIFIED runner shares the game's RUNTIME: its enabled components must enter the game recipe so their
+        //layers mount alongside the game (CreateRecipe prepends RunnerEndpoints as the base). A separate-mount
+        //runner instead mounts its build at %RunnerMount% via MountRunnerBuild, so it stays out of the recipe.
+        ContainerParams.RunnerEndpoints  = ContainerParams.UnifiedRuntime ? RunnerEnabled : std::vector<std::string>{};
     }
     else
     {
