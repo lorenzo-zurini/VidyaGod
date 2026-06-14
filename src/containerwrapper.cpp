@@ -2227,6 +2227,30 @@ std::vector<std::string> ContainerWrapper::PackageIpfsCids(const nlohmann::order
     return Cids;
 }
 
+//Every distinct cover-art CID a package references — the SOURCE:{ipfs,CID} of each GAMES[].METADATA.COVER object
+//(and the legacy game-level COVER). Covers are content-addressed like layers; this drives the IPFS-tab "Assets".
+std::vector<std::string> ContainerWrapper::PackageCoverCids(const nlohmann::ordered_json &Manifest)
+{
+    std::vector<std::string> Cids;
+    std::set<std::string> Seen;
+    if (!Manifest.contains("GAMES") || !Manifest["GAMES"].is_array()) return Cids;
+    auto Consider = [&](const nlohmann::ordered_json &Holder)
+    {
+        if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
+        const auto &Cv = Holder["COVER"];
+        if (!Cv.contains("SOURCE") || !Cv["SOURCE"].is_object() || Cv["SOURCE"].value("TYPE", std::string()) != "ipfs") return;
+        const std::string Cid = Cv["SOURCE"].value("CID", std::string());
+        if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
+    };
+    for (const auto &G : Manifest["GAMES"])
+    {
+        if (!G.is_object()) continue;
+        if (G.contains("METADATA") && G["METADATA"].is_object()) Consider(G["METADATA"]);
+        Consider(G);
+    }
+    return Cids;
+}
+
 //HYDRATES a GAME package IN PLACE: fetches every ipfs content layer to its expected path inside the package's
 //managed library folder (the sync mirror), turning an un-hydrated entry into a fully-local, launchable one. The
 //LIBRARY entry already exists from sync — this ensures it points at the hydrated dir. If PackageDir is NOT yet
@@ -2311,19 +2335,21 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
 
     auto IsLayer = [](const std::string &T) { return T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer"; };
 
-    int Seeded = 0, Walked = 0;
+    int Seeded = 0, Walked = 0, Covers = 0;
 
     //Walk every *.json fragment directly (no assemble/decompose round-trip — this preserves each subcomponent's
-    //exact file placement). Annotate VFS-layer subcomponents in place; re-save only the fragments we mutate.
+    //exact file placement). Content-address VFS layers AND cover assets in place; re-save only mutated fragments.
     for (const auto &Entry : std::filesystem::directory_iterator(Pkg, Ec))
     {
         if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;
         QFile FragFile(QString::fromStdString(Entry.path().string()));
         nlohmann::ordered_json Frag;
         if (JSONOps::LoadJSON(&FragFile, &Frag)) continue;                       // LoadJSON returns true on FAILURE
-        if (!Frag.contains("COMPONENTS") || !Frag["COMPONENTS"].is_array()) continue;
 
         bool Mutated = false;
+
+        //Content layers: keep PATH, add SOURCE:{ipfs,CID} (idempotent — skip those already carrying a CID).
+        if (Frag.contains("COMPONENTS") && Frag["COMPONENTS"].is_array())
         for (auto &C : Frag["COMPONENTS"])
         {
             if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
@@ -2350,39 +2376,70 @@ bool ContainerWrapper::PublishPackage(const std::string &PackageDir, const std::
                 ++Seeded;
             }
         }
+
+        //Cover art: content-address the curated GAMES[].METADATA.COVER exactly like a layer — keep the filename in
+        //PATH, add SOURCE:{ipfs,CID}. Upgrades the legacy bare-string form; idempotent once a CID is present.
+        auto SeedCover = [&](nlohmann::ordered_json &Holder)
+        {
+            if (!Holder.contains("COVER")) return;
+            nlohmann::ordered_json &Cover = Holder["COVER"];
+            std::string File;
+            if (Cover.is_string()) File = Cover.get<std::string>();
+            else if (Cover.is_object())
+            {
+                if (Cover.contains("SOURCE") && Cover["SOURCE"].is_object()
+                    && !Cover["SOURCE"].value("CID", std::string()).empty()) return;   // already addressed
+                File = Cover.value("PATH", std::string());
+            }
+            else return;
+            if (File.empty()) return;
+            std::error_code Rc;
+            const std::filesystem::path Local = Pkg / File;
+            if (!std::filesystem::exists(Local, Rc)) return;                      // not a local file (CID-only ref)
+            std::string Err;
+            const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
+            if (NewCid.empty()) { LogWarn("ContainerWrapper::PublishPackage", "could not seed cover " + Local.string() + " (" + Err + ")"); return; }
+            Cover = nlohmann::ordered_json{ {"PATH", File}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", NewCid}}} };
+            Mutated = true;
+            ++Covers;
+        };
+        if (Frag.contains("GAMES") && Frag["GAMES"].is_array())
+        for (auto &G : Frag["GAMES"])
+        {
+            if (!G.is_object()) continue;
+            if (G.contains("METADATA") && G["METADATA"].is_object()) SeedCover(G["METADATA"]);
+            SeedCover(G);                                                         // legacy game-level COVER
+        }
+
         if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
             return Fail("could not write annotated manifest fragment: " + Entry.path().string());
     }
     LogSucc("ContainerWrapper::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
-            + " of " + std::to_string(Walked) + " layer(s) newly seeded)");
+            + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded)");
 
-    //Export the dehydrated manifest, if requested — a clean manifest-only copy (manifests + cover art, no
-    //content) via the shared allowlist mirror. remove_all first so the export dir holds only the dehydration.
+    //Export the dehydrated manifest, if requested — a clean manifest-only copy (JSON fragments, no image bytes;
+    //covers travel as CIDs). remove_all first so the export dir holds only the dehydration.
     if (!DehydratedDestDir.empty())
     {
         std::filesystem::remove_all(DehydratedDestDir, Ec);
         const int Copied = MirrorDehydrated(PackageDir, DehydratedDestDir);
         LogSucc("ContainerWrapper::PublishPackage", "Exported dehydrated manifest to " + DehydratedDestDir
-                + " (" + std::to_string(Copied) + " file(s): manifests + cover art)");
+                + " (" + std::to_string(Copied) + " JSON fragment(s))");
     }
     return true;
 }
 
-//Copies a package's DEHYDRATED manifest (top-level *.json fragments + cover/art images) into DestDir. Never
-//copies content; never deletes anything already in DestDir (so it can refresh a mirror over hydrated content).
+//Copies a package's DEHYDRATED manifest — ONLY its top-level *.json fragments — into DestDir. Never copies content
+//or image bytes (covers travel as CIDs in the manifest); never deletes anything already in DestDir (so it can
+//refresh a mirror over hydrated content). Returns the number of fragments copied.
 int ContainerWrapper::MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 {
     std::error_code Ec;
     std::filesystem::create_directories(DestDir, Ec);
-    static const std::set<std::string> AssetExt =
-        { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".svg" };
     int Copied = 0;
     for (const auto &Entry : std::filesystem::directory_iterator(SrcDir, Ec))
     {
-        if (!Entry.is_regular_file()) continue;
-        std::string Ext = Entry.path().extension().string();
-        std::transform(Ext.begin(), Ext.end(), Ext.begin(), [](unsigned char c){ return std::tolower(c); });
-        if (Ext != ".json" && !AssetExt.count(Ext)) continue;                     // manifests + cover art only
+        if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;   // manifests only
         std::error_code Ce;
         std::filesystem::copy_file(Entry.path(), std::filesystem::path(DestDir) / Entry.path().filename(),
                                    std::filesystem::copy_options::overwrite_existing, Ce);

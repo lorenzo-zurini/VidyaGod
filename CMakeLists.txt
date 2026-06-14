@@ -50,6 +50,9 @@ set(PROJECT_SOURCES
     src/runnerwrapper.h
     src/runnerwrapper.cpp
 
+    src/covercache.h
+    src/covercache.cpp
+
     translations/${TS_FILES}
 )
 

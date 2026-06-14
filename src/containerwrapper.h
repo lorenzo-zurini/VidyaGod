@@ -267,6 +267,9 @@ public:
     //Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
     //(VFSZip/Dir/FileLayer) across its COMPONENTS. The set a game install must fetch to be playable.
     static std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
+    //Every distinct cover-art CID a package references — the SOURCE:{ipfs,CID} of each GAMES[].METADATA.COVER
+    //object (covers are content-addressed like layers). Used by the IPFS tab's "Assets" grouping.
+    static std::vector<std::string> PackageCoverCids(const nlohmann::ordered_json &Manifest);
     //The managed library root (where imports are hydrated, one subfolder per repo): Settings.Paths.LibraryRoot
     //or the default ~/.VidyaGod/library. Exposed so the UI can tell managed (delete-on-remove) entries apart.
     static std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
@@ -282,15 +285,16 @@ public:
     //PUBLISH (the inverse of import — dehydrate a local package for sharing). For every VFS layer in PackageDir
     //whose local content exists and has no ipfs SOURCE CID yet, seeds it over IPFS (IpfsWrapper::AddNoCopy) and
     //records SOURCE:{TYPE:ipfs,CID} into its manifest fragment IN PLACE (content kept — the package becomes a
-    //local+CID hybrid, identical in shape to an imported one). Layers already carrying a CID are skipped
-    //(idempotent). If DehydratedDestDir is non-empty, ALSO exports a manifest-only "dehydrated" copy there (JSON
-    //fragments + cover assets, NO layer content) — the artifact a repo shares and ImportPackage consumes. Seeding
-    //needs the user's daemon; CIDs are still computed offline. Returns false (with *Error) on failure.
+    //local+CID hybrid). The curated GAMES[].METADATA.COVER is content-addressed the same way: kept as an object
+    //{PATH:<filename>, SOURCE:{ipfs,CID}}. Layers/covers already carrying a CID are skipped (idempotent). If
+    //DehydratedDestDir is non-empty, ALSO exports a manifest-only "dehydrated" copy there (JSON fragments only,
+    //NO image bytes or content) — the artifact a repo shares. Seeding needs the user's daemon; CIDs are still
+    //computed offline. Returns false (with *Error) on failure.
     static bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
-    //Copies a package's DEHYDRATED manifest from SrcDir into DestDir: an allowlist of its top-level *.json
-    //fragments + cover/art images, and NOTHING else (never bundled content). DestDir is created if absent;
-    //manifests/covers are overwritten, but any content already present is LEFT untouched (so mirroring over a
-    //hydrated package is safe). Returns the number of files copied. Shared by SyncRepositories (mirror repo→
+    //Copies a package's DEHYDRATED manifest from SrcDir into DestDir: ONLY its top-level *.json fragments, nothing
+    //else (no content, no image bytes — covers travel as CIDs in the manifest). DestDir is created if absent;
+    //fragments are overwritten, but anything already present is LEFT untouched (so mirroring over a hydrated
+    //package is safe). Returns the number of files copied. Shared by SyncRepositories (mirror repo→
     //library) and PublishPackage (export).
     static int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
     //True when a game package is HYDRATED — every VFS content layer is present locally at its expected path

@@ -1,6 +1,7 @@
 #include "prelaunchwindow.h"
 #include "packageeditor.h"
 #include "mainwindow.h"
+#include "covercache.h"
 #include <random>
 #include <set>
 #include <algorithm>
@@ -243,20 +244,34 @@ PreLaunchWindow::PreLaunchWindow(
         std::string Title = (!TitleVal.is_null() && TitleVal.is_string()) ? std::string(TitleVal) : SubgameID;
         setWindowTitle("Launch " + QString::fromStdString(Title));
 
+        //Cover via CoverCache (dual-form COVER: filename or {PATH,SOURCE:{ipfs,CID}}); local-first, else a
+        //background IPFS fetch that fires coverReady so we drop it in when it lands.
         auto &SubgameMeta = (*MANIFESTJSON)["GAMES"][SubgameIdx]["METADATA"];
-        std::string CoverFile =
-            (SubgameMeta.is_object() && SubgameMeta.contains("COVER") && SubgameMeta["COVER"].is_string())
-            ? std::string(SubgameMeta["COVER"])
-            : ((*MANIFESTJSON)["GAMES"][SubgameIdx].contains("COVER")
-               ? std::string((*MANIFESTJSON)["GAMES"][SubgameIdx]["COVER"])
-               : "");
-        if (!CoverFile.empty())
+        const nlohmann::ordered_json * CoverNode = nullptr;
+        if (SubgameMeta.is_object() && SubgameMeta.contains("COVER"))            CoverNode = &SubgameMeta["COVER"];
+        else if ((*MANIFESTJSON)["GAMES"][SubgameIdx].contains("COVER"))         CoverNode = &(*MANIFESTJSON)["GAMES"][SubgameIdx]["COVER"];
+        if (CoverNode)
         {
-            QPixmap Pix(QDir::cleanPath(
-                QString::fromStdString(PackagePath) + QDir::separator() +
-                QString::fromStdString(CoverFile)));
-            if (!Pix.isNull())
-                CoverLabel->setPixmap(Pix.scaledToWidth(188, Qt::SmoothTransformation));
+            auto setFrom = [this](const QString & Path){
+                QPixmap Pix(Path);
+                if (!Pix.isNull()) CoverLabel->setPixmap(Pix.scaledToWidth(188, Qt::SmoothTransformation));
+            };
+            const QString Now = CoverCache::instance()->resolve(*CoverNode, QString::fromStdString(PackagePath));
+            if (!Now.isEmpty()) setFrom(Now);
+            else
+            {
+                QString F, Cid; CoverCache::Locate(*CoverNode, F, Cid);
+                if (!Cid.isEmpty())
+                {
+                    const nlohmann::ordered_json CoverCopy = *CoverNode;
+                    const QString Pkg = QString::fromStdString(PackagePath);
+                    connect(CoverCache::instance(), &CoverCache::coverReady, this, [this, Cid, CoverCopy, Pkg, setFrom](QString Ready){
+                        if (Ready != Cid) return;
+                        const QString P = CoverCache::instance()->resolve(CoverCopy, Pkg);
+                        if (!P.isEmpty()) setFrom(P);
+                    });
+                }
+            }
         }
     }
 

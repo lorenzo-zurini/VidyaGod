@@ -6,6 +6,7 @@
 #include "prelaunchwindow.h"
 #include "ipfswrapper.h"
 #include "runnerwrapper.h"
+#include "covercache.h"
 
 #include <thread>
 
@@ -94,15 +95,20 @@ void LibraryGameCard::InitializeClassVariables()
                   + strOrEmpty("SUBSERIES") + "|" + numPad("SUBSERIESSORTNUMBER")
                   + "|" + SortTitle;
 
-    std::string cov =
-        (Meta.is_object() && Meta.contains("COVER") && Meta["COVER"].is_string())
-        ? std::string(Meta["COVER"])
-        : ((*MANIFESTJSON)["GAMES"][idx].contains("COVER")
-           ? std::string((*MANIFESTJSON)["GAMES"][idx]["COVER"]) : "");
-    if (!cov.empty())
-        CoverOriginal.load(QDir::cleanPath(
-            QString::fromStdString(PackagePath.string()) + "/" +
-            QString::fromStdString(cov)));
+    //Cover — local-first via CoverCache, which handles the dual-form COVER (a filename, or an object
+    //{PATH,SOURCE:{ipfs,CID}}): local file if present, else the cached IPFS fetch, else a background fetch that
+    //fires CoverCache::coverReady(cid) so the card reloads. A null CoverOriginal renders the placeholder.
+    CoverOriginal = QPixmap();
+    CoverCid.clear();
+    const nlohmann::ordered_json * CoverNode = nullptr;
+    if (Meta.is_object() && Meta.contains("COVER"))                  CoverNode = &Meta["COVER"];
+    else if ((*MANIFESTJSON)["GAMES"][idx].contains("COVER"))        CoverNode = &(*MANIFESTJSON)["GAMES"][idx]["COVER"];
+    if (CoverNode)
+    {
+        const QString Path = CoverCache::instance()->resolve(*CoverNode, QString::fromStdString(PackagePath.string()));
+        if (!Path.isEmpty()) CoverOriginal.load(Path);
+        else { QString f; CoverCache::Locate(*CoverNode, f, CoverCid); }   // pending fetch — refresh on coverReady
+    }
 }
 
 void LibraryGameCard::play()
@@ -570,6 +576,25 @@ void MainWindow::BuildStaticUI()
 
     // ── IPFS tab ─────────────────────────────────────────────────────────────────
     BuildIpfsTab();
+
+    // Lazy cover loading: when a background cover fetch lands, reload the affected cards. Debounced so a burst of
+    // arrivals (e.g. first paint of the Library/Store) coalesces into a single refresh.
+    CoverRefreshTimer = new QTimer(this);
+    CoverRefreshTimer->setSingleShot(true);
+    CoverRefreshTimer->setInterval(200);
+    connect(CoverRefreshTimer, &QTimer::timeout, this, [this]{
+        if (LibraryGameCards)
+        {
+            bool Any = false;
+            for (LibraryGameCard * Card : *LibraryGameCards)
+                if (Card && Card->CoverOriginal.isNull()) { Card->InitializeClassVariables(); Any = true; }
+            if (Any && View) View->refreshVisuals();
+        }
+        RebuildStoreTab();
+    });
+    connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](QString){
+        if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
+    });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -921,7 +946,8 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
     for (const auto & Pkg : ContainerWrapper::CatalogPackages(gc))
     {
         const std::string PkgName = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string()));
-        if (!Pkg.contains("COMPONENTS") || !Pkg["COMPONENTS"].is_array()) continue;
+        //Content layers → grouped under their package.
+        if (Pkg.contains("COMPONENTS") && Pkg["COMPONENTS"].is_array())
         for (const auto & C : Pkg["COMPONENTS"])
         {
             const std::string CompName = C.value("NAME", std::string());
@@ -943,6 +969,29 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
                     OutPackages->insert(QString::fromStdString(Cid),
                                         QString::fromStdString(PkgName.empty() ? std::string("(unnamed package)") : PkgName));
             }
+        }
+
+        //Cover-art CIDs → a single "Assets" group (separate from game content), labeled by package/game.
+        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array())
+        for (const auto & G : Pkg["GAMES"])
+        {
+            if (!G.is_object()) continue;
+            const std::string GameName = G.value("TITLE", G.value("GAMEID", std::string()));
+            auto consider = [&](const nlohmann::ordered_json & Holder)
+            {
+                if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
+                const auto & Cv = Holder["COVER"];
+                if (!Cv.contains("SOURCE") || !Cv["SOURCE"].is_object() || Cv["SOURCE"].value("TYPE", std::string()) != "ipfs") return;
+                const std::string Cid = Cv["SOURCE"].value("CID", std::string());
+                if (Cid.empty()) return;
+                const std::string Base = PkgName.empty() ? GameName : PkgName;
+                const std::string Label = (GameName.empty() || GameName == Base) ? (Base + " — cover")
+                                                                                 : (Base + " — " + GameName + " cover");
+                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(Label));
+                if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
+            };
+            if (G.contains("METADATA") && G["METADATA"].is_object()) consider(G["METADATA"]);
+            consider(G);
         }
     }
     return Labels;
@@ -995,7 +1044,27 @@ void MainWindow::RebuildStoreTab()
         const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
         const std::string Ver  = Pkg.value("PACKAGEVERSION", std::string());
         QGroupBox * card = new QGroupBox(QString::fromStdString(Name + (Ver.empty() ? "" : ("  ·  v" + Ver))), contents);
-        QVBoxLayout * cv = new QVBoxLayout(card); card->setLayout(cv);
+        QHBoxLayout * cardRow = new QHBoxLayout(card); card->setLayout(cardRow);
+
+        //Lazy cover thumbnail (local-first, else IPFS-cached; a background fetch refreshes the Store on arrival).
+        QLabel * cover = new QLabel(card);
+        cover->setFixedSize(56, 84);
+        cover->setScaledContents(true);
+        cover->setStyleSheet("background:palette(mid);border:1px solid palette(dark);");
+        const nlohmann::ordered_json * CoverNode = nullptr;
+        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array() && !Pkg["GAMES"].empty())
+        {
+            const auto & G0 = Pkg["GAMES"][0];
+            if (G0.contains("METADATA") && G0["METADATA"].is_object() && G0["METADATA"].contains("COVER")) CoverNode = &G0["METADATA"]["COVER"];
+            else if (G0.contains("COVER")) CoverNode = &G0["COVER"];
+        }
+        if (CoverNode)
+        {
+            const QString CovPath = CoverCache::instance()->resolve(*CoverNode, QString::fromStdString(Dir));
+            if (!CovPath.isEmpty()) { QPixmap pm(CovPath); if (!pm.isNull()) cover->setPixmap(pm); }
+        }
+        cardRow->addWidget(cover);
+        QVBoxLayout * cv = new QVBoxLayout(); cardRow->addLayout(cv, 1);
 
         QString titles;
         if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array())

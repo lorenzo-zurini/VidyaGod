@@ -54,6 +54,7 @@ public:
     std::filesystem::path  PackagePath;
     QPixmap                CoverOriginal;
     QPixmap                CoverScaled;
+    QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
     QString                ElidedTitle;   // cached — recomputed only when card width changes
 
     // Sort keys — populated in InitializeClassVariables()
@@ -175,6 +176,7 @@ private:
     QTableWidget  * IpfsTransfers   = nullptr;   // Name | CID | Progress | Status — live fetches (sortable)
     QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (sortable)
     QTimer        * IpfsRefreshTimer = nullptr;
+    QTimer        * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one card refresh
     QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
     QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)

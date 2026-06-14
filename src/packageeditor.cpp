@@ -1,6 +1,7 @@
 #include "packageeditor.h"
 #include "commonutils.h"
 #include "registrywrapper.h"
+#include "covercache.h"
 #include <QPushButton>
 #include <iostream>
 #include <QBuffer>
@@ -715,19 +716,23 @@ bool PackageEditor::BuildUI()
             CoverDropLabel->setAcceptDrops(true);
             CoverDropLabel->setProperty("SubgameIndex", i);
 
-            //Load existing cover if set in metadata.
+            //Load existing cover via CoverCache (dual-form COVER: filename, or {PATH,SOURCE:{ipfs,CID}} once
+            //published) — local-first, with a lazy IPFS fallback for an already-published package.
             {
-                std::string CoverFile;
-                if (SubgameRef.contains("METADATA") && SubgameRef["METADATA"].is_object()
-                    && SubgameRef["METADATA"].contains("COVER") && SubgameRef["METADATA"]["COVER"].is_string())
-                    CoverFile = std::string(SubgameRef["METADATA"]["COVER"]);
-                else if (SubgameRef.contains("COVER") && SubgameRef["COVER"].is_string())
-                    CoverFile = std::string(SubgameRef["COVER"]);
-                if (!CoverFile.empty())
+                const nlohmann::ordered_json * CoverNode = nullptr;
+                if (SubgameRef.contains("METADATA") && SubgameRef["METADATA"].is_object() && SubgameRef["METADATA"].contains("COVER"))
+                    CoverNode = &SubgameRef["METADATA"]["COVER"];
+                else if (SubgameRef.contains("COVER"))
+                    CoverNode = &SubgameRef["COVER"];
+                if (CoverNode)
                 {
-                    QPixmap Pix(QDir::cleanPath(PackageDir->path() + "/" + QString::fromStdString(CoverFile)));
-                    if (!Pix.isNull())
-                        CoverDropLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                    const QString P = CoverCache::instance()->resolve(*CoverNode, PackageDir->path());
+                    if (!P.isEmpty())
+                    {
+                        QPixmap Pix(P);
+                        if (!Pix.isNull())
+                            CoverDropLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                    }
                 }
             }
             CoverDropLabel->installEventFilter(this);
