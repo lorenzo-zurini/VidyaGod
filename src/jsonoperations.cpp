@@ -153,7 +153,7 @@ void JSONOps::MergeManifestInto(nlohmann::ordered_json &Base, const nlohmann::or
             continue; // identical scalar — fine
         else if (Key.rfind("__", 0) == 0)
             continue; // editor provenance tag (e.g. __FILE__) — keep first silently
-        else if (Key == "PACKAGEUID" || Key == "PACKAGENAME" || Key == "PACKAGEVERSION")
+        else if (Key == "PACKAGEUID" || Key == "PACKAGENAME")
             continue; // identity conflicts are reported as hard errors by AssembleManifest
         else
             Warnings.push_back("Conflict at '" + ChildCtx + "': keeping first value (" + BVal.dump() + "), ignoring (" + OVal.dump() + ")");
@@ -162,7 +162,7 @@ void JSONOps::MergeManifestInto(nlohmann::ordered_json &Base, const nlohmann::or
 
 //The top-level scalar fields that define a package's identity. A package directory must declare
 //exactly one consistent value for each — conflicting values across fragments are a hard error.
-static const char *const kIdentityFields[] = { "PACKAGEUID", "PACKAGENAME", "PACKAGEVERSION" };
+static const char *const kIdentityFields[] = { "PACKAGEUID", "PACKAGENAME" };
 
 //Assembles every *.json in PackageDir into a single manifest (see header).
 bool JSONOps::AssembleManifest(const QString &PackageDir, nlohmann::ordered_json &Out, std::vector<std::string> &Warnings)
@@ -236,7 +236,7 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
             if (E.is_string()) Errors.push_back(std::string(E));
 
     // Identity.
-    for (const char *Key : {"PACKAGEUID", "PACKAGENAME", "PACKAGEVERSION"})
+    for (const char *Key : {"PACKAGEUID", "PACKAGENAME"})
     {
         if (!Assembled.contains(Key) || Assembled[Key].is_null() ||
             (Assembled[Key].is_string() && std::string(Assembled[Key]).empty()))

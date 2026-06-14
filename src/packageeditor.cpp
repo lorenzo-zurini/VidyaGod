@@ -110,7 +110,7 @@ bool PackageEditor::InitMANIFESTJSON()
         //Seed a brand-new package with empty identity fields. The manifest validator flags these
         //as missing until the author fills them in (no dependency on GlobalConfig schema).
         (*PackageEditor::MANIFESTJSON) = json::object({
-            {"PACKAGENAME", ""}, {"PACKAGEUID", ""}, {"PACKAGEVERSION", ""}
+            {"PACKAGENAME", ""}, {"PACKAGEUID", ""}
         });
     }
     return true;
@@ -161,7 +161,7 @@ std::map<QString, nlohmann::ordered_json> PackageEditor::DecomposeByFile()
     auto &M = *MANIFESTJSON;
 
     // Identity (incl. HOST_PLATFORM) → identity file.
-    for (const char *Key : {"PACKAGENAME", "PACKAGEUID", "PACKAGEVERSION", "HOST_PLATFORM"})
+    for (const char *Key : {"PACKAGENAME", "PACKAGEUID", "HOST_PLATFORM"})
         if (M.contains(Key)) Docs[Ident][Key] = M[Key];
 
     // RUNNERS (flat array of runner objects, each tagged).

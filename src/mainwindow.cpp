@@ -1042,8 +1042,7 @@ void MainWindow::RebuildStoreTab()
         shown++;
 
         const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
-        const std::string Ver  = Pkg.value("PACKAGEVERSION", std::string());
-        QGroupBox * card = new QGroupBox(QString::fromStdString(Name + (Ver.empty() ? "" : ("  ·  v" + Ver))), contents);
+        QGroupBox * card = new QGroupBox(QString::fromStdString(Name), contents);
         QHBoxLayout * cardRow = new QHBoxLayout(card); card->setLayout(cardRow);
 
         //Lazy cover thumbnail (local-first, else IPFS-cached; a background fetch refreshes the Store on arrival).
@@ -1372,9 +1371,8 @@ void MainWindow::BuildPackagesDynamicUI()
     PackagesScrollArea->setWidget(w);
     QGridLayout * g = new QGridLayout(w); w->setLayout(g);
     for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
-        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGENAME"]),w),i,0);
-        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEUID"]),w),i,1);
-        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i]["PACKAGEVERSION"]),w),i,2);
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),i,0);
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),i,1);
         QPushButton * rb = new QPushButton("Remove", w);
         QObject::connect(rb, &QPushButton::clicked, this, [this,i]{
             // A managed import (under the library folder) → delete its hydrated copy. A local/portable package
@@ -1390,7 +1388,7 @@ void MainWindow::BuildPackagesDynamicUI()
             }
             (*GlobalConfigJSON)["LIBRARY"].erase(i); RebuildDynamicUI(); SaveGlobalConfigJSON();
         });
-        g->addWidget(rb, i, 3);
+        g->addWidget(rb, i, 2);
     }
     g->setRowStretch(g->rowCount(), 1);
 }
@@ -1458,8 +1456,9 @@ void MainWindow::on_AddGameButton_clicked()
             if (e["PACKAGEUID"]==m["PACKAGEUID"]) { dup=true; skipped++; break; }
         if (dup) continue;
         nlohmann::ordered_json slim;
-        slim["PACKAGEUID"]=m["PACKAGEUID"]; slim["PACKAGENAME"]=m["PACKAGENAME"];
-        slim["PACKAGEVERSION"]=m["PACKAGEVERSION"]; slim["PATH"]=path.toStdString();
+        slim["PACKAGEUID"]=m.value("PACKAGEUID", std::string());
+        slim["PACKAGENAME"]=m.value("PACKAGENAME", std::string());
+        slim["PATH"]=path.toStdString();
         (*GlobalConfigJSON)["LIBRARY"].push_back(slim);
         added++;
     }

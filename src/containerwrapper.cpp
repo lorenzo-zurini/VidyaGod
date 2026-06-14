@@ -958,9 +958,9 @@ static bool SyncGitRepository(const std::string &Url, const std::string &CloneDi
     return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), Dir});
 }
 
-//Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH,REPO} into Arr (LIBRARY or RUNNERS),
-//keyed by PACKAGEUID. A repo sync owns entries carrying a REPO; a local (no-REPO) entry with the same UID wins
-//and is left untouched (the user's own package shadows a repo copy).
+//Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PATH,REPO} into Arr (LIBRARY or RUNNERS), keyed by
+//PACKAGEUID. A repo sync owns entries carrying a REPO; a local (no-REPO) entry with the same UID wins and is
+//left untouched (the user's own package shadows a repo copy). (Versioning is by git commit — no PACKAGEVERSION.)
 static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &Repo,
                              const std::string &MirrorDir, const nlohmann::ordered_json &Pkg)
 {
@@ -968,18 +968,17 @@ static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid
     {
         if (E.value("PACKAGEUID", std::string()) != Uid) continue;
         if (!E.contains("REPO")) return;                                          // local entry owns this UID
-        E["PACKAGENAME"]    = Pkg.value("PACKAGENAME", std::string());
-        E["PACKAGEVERSION"] = Pkg.value("PACKAGEVERSION", std::string());
-        E["PATH"]           = MirrorDir;
-        E["REPO"]           = Repo;
+        E["PACKAGENAME"] = Pkg.value("PACKAGENAME", std::string());
+        E["PATH"]        = MirrorDir;
+        E["REPO"]        = Repo;
+        E.erase("PACKAGEVERSION");                                                // drop the legacy field if present
         return;
     }
     nlohmann::ordered_json Slim;
-    Slim["PACKAGEUID"]     = Uid;
-    Slim["PACKAGENAME"]    = Pkg.value("PACKAGENAME", std::string());
-    Slim["PACKAGEVERSION"] = Pkg.value("PACKAGEVERSION", std::string());
-    Slim["PATH"]           = MirrorDir;
-    Slim["REPO"]           = Repo;
+    Slim["PACKAGEUID"]  = Uid;
+    Slim["PACKAGENAME"] = Pkg.value("PACKAGENAME", std::string());
+    Slim["PATH"]        = MirrorDir;
+    Slim["REPO"]        = Repo;
     Arr.push_back(std::move(Slim));
 }
 
@@ -2317,10 +2316,9 @@ bool ContainerWrapper::ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, c
     if (!Found)
     {
         nlohmann::ordered_json Slim;
-        Slim["PACKAGEUID"]     = Uid;
-        Slim["PACKAGENAME"]    = Manifest.value("PACKAGENAME", std::string());
-        Slim["PACKAGEVERSION"] = Manifest.value("PACKAGEVERSION", std::string());
-        Slim["PATH"]           = Dest.string();
+        Slim["PACKAGEUID"]  = Uid;
+        Slim["PACKAGENAME"] = Manifest.value("PACKAGENAME", std::string());
+        Slim["PATH"]        = Dest.string();
         GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
     }
     return true;

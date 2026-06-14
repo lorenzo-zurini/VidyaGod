@@ -274,7 +274,7 @@ public:
     //or the default ~/.VidyaGod/library. Exposed so the UI can tell managed (delete-on-remove) entries apart.
     static std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
     //Installs a catalog GAME package (sibling of ImportRunner): fetches+pins every PackageIpfsCids over IPFS,
-    //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH:PackageDir} in
+    //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PATH:PackageDir} in
     //GlobalConfigJSON (deduped by PACKAGEUID). The caller persists GlobalConfig and refreshes the UI. The
     //game's runner is provisioned separately by the play()/EnsureSources gate. Returns false (with *Error) on
     //a failed fetch.
