@@ -983,11 +983,11 @@ static bool RunnerPkgImported(const nlohmann::ordered_json &Pkg)
     return false;
 }
 
-//Reconciliation: drops REPO-sourced entries whose PACKAGEUID is no longer provided by any repo (not in SeenUids)
-//AND that are un-hydrated, deleting their mirror dir (only under LibRoot). Local (no-REPO) entries and hydrated
-//orphans (content the user downloaded) are kept.
-static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::string> &SeenUids,
-                           const std::string &LibRoot, bool Runner)
+//Reconciliation: drops REPO-sourced LIBRARY entries whose PACKAGEUID is no longer provided by any repo (not in
+//SeenUids) AND that hold nothing the user downloaded, deleting their mirror dir (only under LibRoot). Local
+//(no-REPO) entries and downloaded orphans are kept. "Downloaded" is kind-agnostic: a game whose content layers
+//are present, or a runner that's been imported (the same package can be both).
+static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::string> &SeenUids, const std::string &LibRoot)
 {
     for (int i = (int)Arr.size() - 1; i >= 0; --i)
     {
@@ -998,10 +998,9 @@ static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::stri
         nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
         bool Downloaded = false;
         if (JSONOps::AssembleManifest(QString::fromStdString(Path), Pkg, Warn))
-            //"Downloaded" = something was actually fetched: an imported runner, or a game with content layers all
-            //present locally (a layer-less game has nothing to download, so it isn't a kept orphan).
-            Downloaded = Runner ? RunnerPkgImported(Pkg)
-                                : (!ContainerWrapper::PackageIpfsCids(Pkg).empty() && ContainerWrapper::PackageHydrated(Pkg, Path));
+            Downloaded = (JSONOps::HasGames(Pkg)   && !ContainerWrapper::PackageIpfsCids(Pkg).empty()
+                                                   && ContainerWrapper::PackageHydrated(Pkg, Path))
+                      || (JSONOps::HasRunners(Pkg) && RunnerPkgImported(Pkg));
         if (Downloaded) continue;                                                 // downloaded orphan — keep
         if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
         Arr.erase(Arr.begin() + i);
@@ -1009,23 +1008,22 @@ static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::stri
 }
 
 //Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
-//into the managed library folder (manifests + covers, no content) and upsert un-hydrated LIBRARY (games) /
-//RUNNERS (runners) index entries — building a full, un-hydrated library up front. Importing later fetches a
-//package's content in place. Reconciles away repo entries that vanished. Caller persists GlobalConfigJSON.
+//into the managed library folder (manifests + covers, no content) and upsert ONE un-hydrated LIBRARY index entry
+//per package — kind (game/runner/dependency) is emergent from the manifest, so a repo's games AND runners (a
+//package can be both) all live in the single LIBRARY. Importing later fetches a package's content in place.
+//Reconciles away repo entries that vanished. Caller persists GlobalConfigJSON.
 void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
     if (!GlobalConfigJSON["Settings"].contains("Repositories") || !GlobalConfigJSON["Settings"]["Repositories"].is_array()) return;
 
-    //Ensure the index arrays exist BEFORE iterating — adding a top-level key reallocates the object's storage,
-    //so creating them later would dangle a cached reference into the Repositories array.
+    //Ensure LIBRARY exists BEFORE iterating — adding a top-level key reallocates the object's storage, so
+    //creating it later would dangle a cached reference into the Repositories array.
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
-    if (!GlobalConfigJSON.contains("RUNNERS") || !GlobalConfigJSON["RUNNERS"].is_array())
-        GlobalConfigJSON["RUNNERS"] = nlohmann::ordered_json::array();
 
     const std::string LibRoot = LibraryDir(GlobalConfigJSON);
-    std::set<std::string> SeenGameUid, SeenRunnerUid;
+    std::set<std::string> SeenUid;
 
     for (auto &R : GlobalConfigJSON["Settings"]["Repositories"])
     {
@@ -1054,15 +1052,16 @@ void ContainerWrapper::SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON
             const std::string MirrorDir = (std::filesystem::path(LibRoot) / RepoName / Sub.toStdString()).string();
             MirrorDehydrated(ClonePkgDir.toStdString(), MirrorDir);
 
-            if (JSONOps::HasGames(Pkg))   { SeenGameUid.insert(Uid);   UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, MirrorDir, Pkg); ++Games; }
-            if (JSONOps::HasRunners(Pkg)) { SeenRunnerUid.insert(Uid); UpsertIndexEntry(GlobalConfigJSON["RUNNERS"], Uid, RepoName, MirrorDir, Pkg); ++Runners; }
+            SeenUid.insert(Uid);
+            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, MirrorDir, Pkg);  // one entry per package
+            if (JSONOps::HasGames(Pkg))   ++Games;
+            if (JSONOps::HasRunners(Pkg)) ++Runners;
         }
         LogOut("ContainerWrapper::SyncRepositories", "Indexed " + Local + " ("
                + std::to_string(Games) + " game(s), " + std::to_string(Runners) + " runner(s)).");
     }
 
-    ReconcileIndex(GlobalConfigJSON["LIBRARY"], SeenGameUid,   LibRoot, false);
-    ReconcileIndex(GlobalConfigJSON["RUNNERS"], SeenRunnerUid, LibRoot, true);
+    ReconcileIndex(GlobalConfigJSON["LIBRARY"], SeenUid, LibRoot);
 }
 
 //Fills all derived fields in ContainerParams from MANIFEST and GlobalConfigJSON.

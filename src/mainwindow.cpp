@@ -627,11 +627,11 @@ void MainWindow::RebuildSettingsRunnersPage()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    //Drive the list from the persisted RUNNERS index (populated by SyncRepositories), assembling each runner
-    //package's manifest from its mirrored dir. Symmetric with the games LIBRARY.
+    //Runners are the HasRunners packages of the unified LIBRARY (kind is emergent — the same index holds games,
+    //runners, and dual game+runner packages). Assemble each entry's manifest from its mirrored dir.
     std::vector<nlohmann::ordered_json> Pkgs;
-    if (GlobalConfigJSON->contains("RUNNERS") && (*GlobalConfigJSON)["RUNNERS"].is_array())
-        for (const auto & Ent : (*GlobalConfigJSON)["RUNNERS"])
+    if (GlobalConfigJSON->contains("LIBRARY") && (*GlobalConfigJSON)["LIBRARY"].is_array())
+        for (const auto & Ent : (*GlobalConfigJSON)["LIBRARY"])
         {
             nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
             if (JSONOps::AssembleManifest(QString::fromStdString(Ent.value("PATH", std::string())), Pkg, Warn)

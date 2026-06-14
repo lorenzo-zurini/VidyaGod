@@ -302,8 +302,9 @@ public:
     //owning components).
     static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
     //Syncs the configured Repositories: git clone/pull each into DOWNLOADS, then MIRROR every dehydrated package
-    //into the managed library folder and upsert un-hydrated LIBRARY (games) / RUNNERS (runners) index entries,
-    //reconciling away repo entries that vanished. Mutates GlobalConfigJSON; the caller persists it.
+    //into the managed library folder and upsert ONE un-hydrated LIBRARY index entry per package (kind is emergent
+    //— a repo's games and runners all live in the single LIBRARY), reconciling away repo entries that vanished.
+    //Mutates GlobalConfigJSON; the caller persists it.
     static void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
     //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
