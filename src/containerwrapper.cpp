@@ -2514,6 +2514,25 @@ bool ContainerWrapper::PackageHydrated(const nlohmann::ordered_json &Manifest, c
     return true;
 }
 
+//True iff the manifest declares at least one VFS content layer. A content-less package (a malformed game with
+//no layers, e.g. Dino Crisis 2, or a PATH-only runner like wine/umu-proton/native-passthrough/snes9x) returns
+//false — paired with PackageHydrated it keeps those out of the Library/Packages tabs. Ignores SOURCE so a
+//locally-added package (content present, no CID) still counts as having content.
+bool ContainerWrapper::PackageHasContent(const nlohmann::ordered_json &Manifest)
+{
+    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return false;
+    for (const auto &C : Manifest["COMPONENTS"])
+    {
+        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            const std::string T = S.value("TYPE", std::string());
+            if (T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer") return true;
+        }
+    }
+    return false;
+}
+
 //True when a package is installed: its PACKAGEUID is in LIBRARY and every content CID is locally cached.
 bool ContainerWrapper::IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
 {

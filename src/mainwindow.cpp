@@ -1447,6 +1447,8 @@ void MainWindow::BuildLibraryGameCards()
         //Only packages with games show in the library (the archetype). A pure-dependency or
         //runner-only package contributes no cards.
         if (!JSONOps::HasGames(pm)) continue;
+        //Skip content-less packages (a malformed game with no VFS layers is vacuously "hydrated").
+        if (!ContainerWrapper::PackageHasContent(pm)) continue;
         //Only HYDRATED games appear in the Library; un-hydrated (synced-but-not-downloaded) ones live in the Store.
         if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
         for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
@@ -1526,10 +1528,12 @@ void MainWindow::BuildPackagesDynamicUI()
     int row = 0;
     for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
         //Only HYDRATED packages (content present locally) are listed — synced-but-not-downloaded repo entries
-        //live in the Available tab, not here. Layer-less packages are vacuously hydrated and stay.
+        //live in the Available tab, not here. Content-less packages (a malformed game with no layers, or a
+        //PATH-only runner) are vacuously hydrated, so require real content to exclude them.
         const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
         nlohmann::ordered_json pm; std::vector<std::string> AsmWarn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
+        if (!ContainerWrapper::PackageHasContent(pm)) continue;
         if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),row,1);

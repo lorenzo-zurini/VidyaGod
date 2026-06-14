@@ -302,6 +302,10 @@ public:
     //(the local-first state launch wants). A package with no content layers is vacuously hydrated. Drives the
     //Library (hydrated) vs Store (un-hydrated) split.
     static bool PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir);
+    //True when a package declares ANY VFS content layer (Zip/Dir/File) at all — distinguishes a real package
+    //from a content-less one (a malformed game with no layers, or a PATH-only runner). Manifest-only, ignores
+    //SOURCE so local-only content counts. Pair with PackageHydrated to hide content-less entries from the UI.
+    static bool PackageHasContent(const nlohmann::ordered_json &Manifest);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).
