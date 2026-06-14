@@ -819,10 +819,12 @@ void MainWindow::RebuildSettingsRunnersPage()
 
             const bool Ships     = RunnerWrapper::ShipsBuild(Pkg, Vid);
             const bool Imported = RunnerWrapper::IsImported(Pkg, PkgDir, Vid);
+            const bool Avail    = RunnerWrapper::ExecutableAvailable(V);
             QHBoxLayout * row = new QHBoxLayout();
             row->addWidget(new QLabel(Desc, card), 1);
             QLabel * st = new QLabel(card);
-            if (!Ships)          st->setText("<span style='color:#8f98a0;'>built-in</span>");
+            if (!Ships && Avail) st->setText("<span style='color:#8f98a0;'>built-in</span>");
+            else if (!Ships)    st->setText("<span style='color:#c0726a;'>not installed on system</span>");
             else if (Imported)  st->setText("<span style='color:#5fb55f;'>Imported</span>");
             else                 st->setText("<span style='color:#c0726a;'>Not imported</span>");
             row->addWidget(st);

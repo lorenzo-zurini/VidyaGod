@@ -2,6 +2,7 @@
 #include "packageeditor.h"
 #include "mainwindow.h"
 #include "covercache.h"
+#include "runnerwrapper.h"
 #include <random>
 #include <set>
 #include <algorithm>
@@ -324,10 +325,17 @@ PreLaunchWindow::PreLaunchWindow(
     };
     auto CollectRunner = [&](const nlohmann::ordered_json &Runner)
     {
-        bool Match = Serves(Runner.value("GUEST_PLATFORM", nlohmann::ordered_json()));   // legacy top-level
-        if (!Match && Runner.contains("VARIANTS") && Runner["VARIANTS"].is_array())
+        // A runner qualifies only if it has a platform-serving variant that can actually run here — a built-in
+        // PATH runner whose executable isn't installed on this system is excluded (RunnerWrapper::ExecutableAvailable).
+        bool Match = false;
+        if (Runner.contains("VARIANTS") && Runner["VARIANTS"].is_array())
+        {
             for (const auto &V : Runner["VARIANTS"])                                      // per-variant (current schema)
-                if (Serves(V.value("GUEST_PLATFORM", nlohmann::ordered_json()))) { Match = true; break; }
+                if (Serves(V.value("GUEST_PLATFORM", nlohmann::ordered_json()))
+                    && RunnerWrapper::ExecutableAvailable(V)) { Match = true; break; }
+        }
+        else
+            Match = Serves(Runner.value("GUEST_PLATFORM", nlohmann::ordered_json()));     // legacy top-level (no variants)
         if (!Match) return;
         QString RID = QString::fromStdString(Runner.value("RUNNER_ID", std::string()));
         if (SeenRunnerIds.count(RID)) return;

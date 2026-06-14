@@ -44,6 +44,12 @@ std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, cons
 // Whether the variant ships a build (≥1 ipfs build CID) — i.e. it must be imported before use.
 bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
+// Whether a variant's EXECUTABLE can actually run on this system. A build-based runner (EXECUTABLE resolves
+// from its mounted build / contains a %VAR%) and a native passthrough (empty EXECUTABLE) are always available;
+// a built-in PATH runner (a bare command like "wine"/"umu-run"/"snes9x") is available only if that command is
+// found on PATH (or is an existing executable path). Gates such runners out of the picker/launch resolver.
+bool ExecutableAvailable(const nlohmann::ordered_json &Variant);
+
 // Imported = every build layer hydrated locally in PackageDir AND (wine) the DEFPREFIX exists. A variant that
 // ships no build is always "imported" (nothing to fetch).
 bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId);

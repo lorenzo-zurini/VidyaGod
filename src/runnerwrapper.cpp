@@ -3,6 +3,8 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QStandardPaths>
+#include <QString>
 #include <filesystem>
 
 namespace RunnerWrapper {
@@ -91,6 +93,18 @@ std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, cons
 bool ShipsBuild(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
 {
     return !BuildCids(RunnerPkg, VariantId).empty();
+}
+
+bool ExecutableAvailable(const nlohmann::ordered_json &Variant)
+{
+    std::string Exe = Variant.value("EXECUTABLE", std::string());
+    // Trim surrounding whitespace.
+    const auto b = Exe.find_first_not_of(" \t");
+    if (b == std::string::npos) return true;                          // empty/blank → native passthrough (runs the game's own exe)
+    Exe = Exe.substr(b, Exe.find_last_not_of(" \t") - b + 1);
+    if (Exe.find('%') != std::string::npos) return true;             // resolves from a mounted build / %VAR% — not a bare system command
+    // A bare command (or an absolute/relative path): must be found on PATH or exist as an executable file.
+    return !QStandardPaths::findExecutable(QString::fromStdString(Exe)).isEmpty();
 }
 
 bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId)

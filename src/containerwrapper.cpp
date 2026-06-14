@@ -1162,6 +1162,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
                     for (const auto &P : V["GUEST_PLATFORM"])
                         if (P.is_string() && std::string(P) == ContainerParams.Platform) { Guest = true; break; }
                 if (!Guest || V.value("HOST_PLATFORM", std::string()) != MachinePlatform()) continue;
+                if (!RunnerWrapper::ExecutableAvailable(V)) continue;   // built-in PATH runner not installed on this system
                 if (!Best || V.value("RECOMMENDED", false)) Best = &V;
                 if (V.value("RECOMMENDED", false)) break;
             }
