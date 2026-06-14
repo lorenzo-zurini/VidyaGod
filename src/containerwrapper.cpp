@@ -1878,7 +1878,17 @@ bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.RunnerPackagePath, Local, Cid);
         std::error_code Ec;
-        if (std::filesystem::exists(Local, Ec)) continue;
+        if (std::filesystem::exists(Local, Ec))
+        {
+            //IPFS fetch (FetchToPath) drops the executable bit, so a loose runner binary (e.g. a bundled
+            //AppImage as a VFSFileLayer) lands as 0644 and can't be exec'd once mounted. Zip/Dir layers keep
+            //their internal entry modes, so this only matters for a single-file runner build. Restore +x.
+            if (Type == "VFSFileLayer")
+                std::filesystem::permissions(Local, std::filesystem::perms::owner_exec
+                    | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec,
+                    std::filesystem::perm_options::add, Ec);
+            continue;
+        }
         Ok = false;
         LogErr("ContainerWrapper::EnsureSources", "Runner not imported: missing build " + Local.string());
     }
