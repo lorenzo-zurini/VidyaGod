@@ -940,14 +940,22 @@ static bool RunGit(const QStringList &Args, const QString &WorkDir = QString())
     return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
 }
 
-//Clones (first run) or fast-forward pulls (subsequent runs) a git repository into CloneDir.
+//Clones (first run) or updates (subsequent runs) a git repository into CloneDir. Self-heals from a rewritten
+//remote history (e.g. a force-push / squash): a plain fast-forward pull fails there, so fall back to fetch +
+//hard-reset to the remote, and re-clone from scratch only if even that fails.
 static bool SyncGitRepository(const std::string &Url, const std::string &CloneDir)
 {
     if (Url.empty()) return false;
-    if (QDir(QString::fromStdString(CloneDir) + "/.git").exists())
-        return RunGit({"pull", "--ff-only"}, QString::fromStdString(CloneDir));
+    const QString Dir = QString::fromStdString(CloneDir);
+    if (QDir(Dir + "/.git").exists())
+    {
+        if (RunGit({"pull", "--ff-only"}, Dir)) return true;                      // normal fast-forward
+        if (RunGit({"fetch", "origin"}, Dir) && RunGit({"reset", "--hard", "@{u}"}, Dir))
+            return true;                                                          // diverged/rewritten → realign
+        QDir(Dir).removeRecursively();                                            // unrecoverable → re-clone below
+    }
     QDir().mkpath(QString::fromStdString(DownloadsDir())); // clone creates CloneDir; its parent must exist
-    return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), QString::fromStdString(CloneDir)});
+    return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), Dir});
 }
 
 //Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PACKAGEVERSION,PATH,REPO} into Arr (LIBRARY or RUNNERS),
