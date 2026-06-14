@@ -30,6 +30,7 @@
 #include <QTreeWidget>
 #include <QTimer>
 #include <QHash>
+#include <QSet>
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
@@ -52,6 +53,7 @@ public:
     std::string            SubgameID;
     QString                GameTitle;
     std::filesystem::path  PackagePath;
+    bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     QPixmap                CoverOriginal;
     QPixmap                CoverScaled;
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
@@ -80,14 +82,27 @@ public:
     explicit LibraryView(QWidget * parent = nullptr);
 
     struct SeriesGroup { int first, last; QColor color; QString name; };
+    //A collapsible section over a CONTIGUOUS card-index range (cards must be pre-sorted so each group is a run).
+    //Used by the Available tab to group by repository; empty ⇒ the flat grid (Library tab, unchanged).
+    struct Group { QString name; int first, last; bool collapsed; };
 
     void setCards(QList<LibraryGameCard *> * cards);
     void prescaleCovers(int cardW);
     void layoutCards(int cardW);
     void setSeriesGroups(const QVector<SeriesGroup> & groups);
+    //Collapsible repo sections (empty clears them → flat layout). Replaces the hover/edit affordances per the
+    //action mode set via setHoverAction.
+    void setGroups(const QVector<Group> & groups);
+    //Hover-button caption + click behaviour: emitDownload=true makes a card click emit downloadRequested
+    //(Available tab) instead of calling play(); label is the centered button text (e.g. "⬇  Download").
+    void setHoverAction(const QString & label, bool emitDownload);
     //Re-scale covers/titles at the CURRENT width and repaint, WITHOUT resetting the layout (used when a
     //card's data changed in place — e.g. after a package edit). No-op if the view hasn't been laid out yet.
     void refreshVisuals();
+
+signals:
+    void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it
+    void groupToggled(const QString & name, bool collapsed);   // a section header was collapsed/expanded
 
 protected:
     void resizeEvent(QResizeEvent * e) override;
@@ -104,14 +119,21 @@ private:
     QList<LibraryGameCard *> * Cards = nullptr;
     QVector<QRect>             Rects;
     QVector<SeriesGroup>       SeriesGroups;
+    QVector<Group>             Groups;       // collapsible repo sections; empty ⇒ flat grid
+    QVector<QRect>             HeaderRects;  // one per Group (content coords); for collapse hit-testing
+    QString                    HoverLabel = "▶  Play";   // centered hover-button caption
+    bool                       EmitDownload = false;          // card click → downloadRequested vs play()
+    bool                       ShowEditCorner = true;         // draw/handle the "···" edit corner
     int HoveredIdx = -1;
     int CardW = 0, CardH = 0;
     int LastCols = 0, LastHGap = 0;
+    int ContentH = 0;   // total laid-out content height (cached so a vertical-only resize updates the scrollbar)
 
-    static constexpr int MinGap = 16;
-    static constexpr int VPad   = 16;
-    static constexpr int EditW  = 30;
-    static constexpr int LineH  = 30;
+    static constexpr int MinGap   = 16;
+    static constexpr int VPad     = 16;
+    static constexpr int EditW    = 30;
+    static constexpr int LineH    = 30;
+    static constexpr int HeaderH  = 34;   // collapsible section header band height
 
     QFont        TitleFont, PlayFont;
     QFontMetrics TitleFM;
@@ -166,9 +188,13 @@ private:
     QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
     QScrollArea    * SettingsReposScroll   = nullptr; // rebuilt in place by RebuildSettingsReposPage()
 
-    // ── Store tab (catalog games to discover + install over IPFS) ──
-    QWidget     * StoreTabWidget = nullptr;
-    QScrollArea * StoreScroll    = nullptr; // rebuilt in place by RebuildStoreTab()
+    // ── Available tab (repo games to discover + download over IPFS) — same grid as Library, grouped by repo ──
+    QWidget     * AvailableTabWidget = nullptr;
+    LibraryView * AvailableView      = nullptr;   // shares the Library card grid (download-on-hover, grouped)
+    QList<LibraryGameCard *> * AvailableGameCards = new QList<LibraryGameCard *>();
+    QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
+    QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
+    SortMode      AvailableSort = SortMode::Name;  // within-group ordering on the Available grid
 
     // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
     QWidget       * IpfsTabWidget   = nullptr;
@@ -189,8 +215,9 @@ private:
     void RebuildSettingsRunnersPage();
     void RebuildSettingsReposPage();
     QWidget * BuildPathsSettingsPage();
-    void BuildStoreTab();
-    void RebuildStoreTab();  // list installable catalog games (HasGames, not installed) with Install buttons
+    void BuildAvailableTab();
+    void RebuildAvailableTab();   // grouped grid of un-hydrated repo games; click a card to download over IPFS
+    void DownloadAvailable(LibraryGameCard * card);   // import (hydrate) the package behind an Available card
     void BuildIpfsTab();
     void RefreshIpfsTab();   // refresh status + seeded list (no-op when ipfs absent)
     void sortCards();

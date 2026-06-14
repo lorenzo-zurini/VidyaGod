@@ -236,6 +236,22 @@ void LibraryView::setSeriesGroups(const QVector<SeriesGroup> & groups)
     viewport()->update();
 }
 
+void LibraryView::setGroups(const QVector<Group> & groups)
+{
+    Groups = groups;
+    HeaderRects.resize(groups.size());
+    LastCols = -1;   // force a relayout (group structure changed)
+    layoutCards(CardW > 0 ? CardW : 185);
+    viewport()->update();
+}
+
+void LibraryView::setHoverAction(const QString & label, bool emitDownload)
+{
+    HoverLabel = label;
+    EmitDownload = emitDownload;
+    ShowEditCorner = !emitDownload;   // Available cards have no "···" edit corner
+}
+
 void LibraryView::refreshVisuals()
 {
     if (CardW > 0) prescaleCovers(CardW); // recompute CoverScaled + ElidedTitle from the (changed) data
@@ -267,26 +283,65 @@ void LibraryView::layoutCards(int cardW)
     const int cardH = cardW * 3 / 2;
     const int cols  = qMax(1, (vW + MinGap) / (cardW + MinGap));
     const int hGap  = qMax(MinGap, (vW - cols * cardW) / (cols + 1));
-    const int rows  = (count + cols - 1) / cols;
-    const int totalH = VPad + rows * cardH + (rows - 1) * MinGap + VPad;
 
-    verticalScrollBar()->setRange(0, qMax(0, totalH - vH));
+    // Always refresh the scrollbar from the cached content height — a vertical-only resize changes vH but not
+    // the column layout, so it would otherwise be skipped below.
+    verticalScrollBar()->setRange(0, qMax(0, ContentH - vH));
     verticalScrollBar()->setPageStep(vH);
 
-    // Skip repaint when layout is identical — covers most resize events.
+    // Skip recompute when layout is identical — covers most resize events. (setGroups forces LastCols=-1.)
     if (cols == LastCols && hGap == LastHGap && cardW == CardW) return;
 
     CardW = cardW; CardH = cardH;
     LastCols = cols; LastHGap = hGap;
 
     Rects.resize(count);
-    for (int i = 0; i < count; i++) {
-        Rects[i] = QRect(
-            hGap + (i % cols) * (cardW + hGap),
-            VPad + (i / cols) * (cardH  + MinGap),
-            cardW, cardH);
+    int totalH;
+
+    if (Groups.isEmpty())
+    {
+        // Flat grid (Library tab) — unchanged.
+        for (int i = 0; i < count; i++)
+            Rects[i] = QRect(hGap + (i % cols) * (cardW + hGap),
+                             VPad + (i / cols) * (cardH + MinGap), cardW, cardH);
+        const int rows = (count + cols - 1) / cols;
+        totalH = VPad + rows * cardH + (rows - 1) * MinGap + VPad;
+    }
+    else
+    {
+        // Collapsible sections: a full-width header band before each group; a collapsed group lays out no
+        // cards (its members get empty rects, skipped in paint + hit-testing).
+        HeaderRects.resize(Groups.size());
+        int y = VPad;
+        for (int gi = 0; gi < Groups.size(); gi++)
+        {
+            const Group & g = Groups[gi];
+            HeaderRects[gi] = QRect(0, y, vW, HeaderH);
+            y += HeaderH;
+            const int n = (g.last >= g.first) ? (g.last - g.first + 1) : 0;
+            if (!g.collapsed && n > 0)
+            {
+                for (int k = 0; k < n; k++)
+                {
+                    const int i = g.first + k;
+                    Rects[i] = QRect(hGap + (k % cols) * (cardW + hGap),
+                                     y + (k / cols) * (cardH + MinGap), cardW, cardH);
+                }
+                const int rows = (n + cols - 1) / cols;
+                y += rows * cardH + (rows - 1) * MinGap + MinGap;
+            }
+            else
+            {
+                for (int k = 0; k < n; k++) Rects[g.first + k] = QRect();   // collapsed → hidden
+                y += MinGap;
+            }
+        }
+        totalH = y + VPad;
     }
 
+    ContentH = totalH;
+    verticalScrollBar()->setRange(0, qMax(0, totalH - vH));
+    verticalScrollBar()->setPageStep(vH);
     viewport()->update();
 }
 
@@ -337,12 +392,26 @@ void LibraryView::onPaint(QPaintEvent * e)
     p.fillRect(vRect, QApplication::palette().color(QPalette::Window));
     p.translate(0, -scrollY);
 
-    // Series group backgrounds — drawn in content coordinates before cards
+    // Series group backgrounds — drawn in content coordinates before cards (flat/Library mode only)
     for (auto & g : SeriesGroups) {
         const int topY = Rects[g.first].top()    - MinGap;
         const int botY = Rects[g.last].bottom()  + MinGap;
         const QRect bgR(0, topY, viewport()->width(), botY - topY);
         if (bgR.intersects(cRect)) p.fillRect(bgR, g.color);
+    }
+
+    // Collapsible section headers (Available mode) — a band with a chevron + repo name + count.
+    for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++) {
+        const QRect & h = HeaderRects[gi];
+        if (!h.intersects(cRect)) continue;
+        const Group & g = Groups[gi];
+        p.fillRect(h, QColor(0xff,0xff,0xff,16));
+        p.fillRect(QRect(h.left(), h.bottom()-1, h.width(), 1), QColor(0,0,0,60));
+        p.setPen(QColor(0xc6,0xd4,0xdf,230));
+        p.setFont(PlayFont);
+        const int n = (g.last >= g.first) ? (g.last - g.first + 1) : 0;
+        p.drawText(h.adjusted(12,0,-12,0), Qt::AlignVCenter|Qt::AlignLeft,
+                   (g.collapsed ? "▸  " : "▾  ") + g.name + QString("   (%1)").arg(n));
     }
 
     p.setFont(TitleFont);
@@ -363,29 +432,42 @@ void LibraryView::onPaint(QPaintEvent * e)
                        Qt::AlignCenter | Qt::TextWordWrap, card->GameTitle);
         }
 
+        // In-flight import (Available): darken + a centered "Downloading…" label; no hover affordances.
+        if (card->Downloading) {
+            p.fillRect(r, QColor(0,0,0,150));
+            p.setFont(PlayFont); p.setPen(Qt::white);
+            p.drawText(r, Qt::AlignCenter, "Downloading…");
+            p.setFont(TitleFont);
+            continue;
+        }
+
         if (i != HoveredIdx) continue;
 
-        // Hover: darken + play button + title strip
+        // Hover: darken + action button (Play or Download) + title strip
         p.fillRect(r, QColor(0,0,0,110));
 
-        const QRect btn(r.left()+(r.width()-90)/2, r.top()+(r.height()-32)/2-16, 90, 32);
+        const int btnW = qMax(90, TitleFM.horizontalAdvance(HoverLabel) + 28);
+        const QRect btn(r.left()+(r.width()-btnW)/2, r.top()+(r.height()-32)/2-16, btnW, 32);
         p.setBrush(QColor(0x4a,0x90,0xd9,230));
         p.setPen(Qt::NoPen);
         p.drawRoundedRect(btn, 4, 4);
         p.setFont(PlayFont);
         p.setPen(Qt::white);
-        p.drawText(btn, Qt::AlignCenter, "▶  Play");
+        p.drawText(btn, Qt::AlignCenter, HoverLabel);
 
         p.setFont(TitleFont);
+        const int textRight = ShowEditCorner ? (EditW+4) : 8;
         const QRect line(r.left(), r.bottom()-LineH, r.width(), LineH);
         p.fillRect(line, QColor(0,0,0,160));
         p.setPen(QColor(0xff,0xff,0xff,220));
-        p.drawText(line.adjusted(8,0,-(EditW+4),0),
+        p.drawText(line.adjusted(8,0,-textRight,0),
                    Qt::AlignVCenter|Qt::AlignLeft|Qt::TextSingleLine,
                    card->ElidedTitle);
-        p.setPen(QColor(0xc6,0xd4,0xdf,200));
-        p.drawText(QRect(r.right()-EditW, r.bottom()-LineH, EditW, LineH),
-                   Qt::AlignCenter, "···");
+        if (ShowEditCorner) {
+            p.setPen(QColor(0xc6,0xd4,0xdf,200));
+            p.drawText(QRect(r.right()-EditW, r.bottom()-LineH, EditW, LineH),
+                       Qt::AlignCenter, "···");
+        }
     }
 }
 
@@ -409,12 +491,26 @@ void LibraryView::onMousePress(QMouseEvent * e)
 {
     if (!Cards || e->button() != Qt::LeftButton) return;
     const QPoint pos = e->pos() + QPoint(0, verticalScrollBar()->value());
+
+    // Section header → toggle collapse.
+    for (int gi = 0; gi < Groups.size() && gi < HeaderRects.size(); gi++) {
+        if (!HeaderRects[gi].contains(pos)) continue;
+        Groups[gi].collapsed = !Groups[gi].collapsed;
+        emit groupToggled(Groups[gi].name, Groups[gi].collapsed);
+        LastCols = -1;                 // force relayout (section heights changed)
+        layoutCards(CardW);
+        viewport()->update();
+        return;
+    }
+
     const int count = Cards->count();
     for (int i = 0; i < count; i++) {
-        if (!Rects[i].contains(pos)) continue;
+        if (!Rects[i].contains(pos)) continue;          // collapsed cards have empty rects → skipped
+        if (Cards->at(i)->Downloading) return;          // import in flight — ignore
+        if (EmitDownload) { emit downloadRequested(Cards->at(i)); return; }
         QRect editR(Rects[i].right()-EditW, Rects[i].bottom()-LineH, EditW, LineH);
-        if (editR.contains(pos)) Cards->at(i)->edit();
-        else                     Cards->at(i)->play();
+        if (ShowEditCorner && editR.contains(pos)) Cards->at(i)->edit();
+        else                                       Cards->at(i)->play();
         return;
     }
 }
@@ -472,6 +568,8 @@ MainWindow::~MainWindow()
 {
     qDeleteAll(*LibraryGameCards);
     delete LibraryGameCards;
+    qDeleteAll(*AvailableGameCards);
+    delete AvailableGameCards;
 }
 
 void MainWindow::BuildStaticUI()
@@ -568,8 +666,8 @@ void MainWindow::BuildStaticUI()
     PackagesScrollArea->setWidgetResizable(true);
     PackagesTabWidgetLayout->addWidget(PackagesScrollArea);
 
-    // ── Store tab (catalog games to import over IPFS) ──────────────────────────
-    BuildStoreTab();
+    // ── Available tab (repo games to download over IPFS) ───────────────────────
+    BuildAvailableTab();
 
     // ── Settings tab ───────────────────────────────────────────────────────────
     BuildSettingsTab();
@@ -590,7 +688,13 @@ void MainWindow::BuildStaticUI()
                 if (Card && Card->CoverOriginal.isNull()) { Card->InitializeClassVariables(); Any = true; }
             if (Any && View) View->refreshVisuals();
         }
-        RebuildStoreTab();
+        if (AvailableGameCards)
+        {
+            bool Any = false;
+            for (LibraryGameCard * Card : *AvailableGameCards)
+                if (Card && Card->CoverOriginal.isNull()) { Card->InitializeClassVariables(); Any = true; }
+            if (Any && AvailableView) AvailableView->refreshVisuals();
+        }
     });
     connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](QString){
         if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
@@ -801,7 +905,7 @@ void MainWindow::RebuildSettingsReposPage()
             if (SS.contains("Repositories") && SS["Repositories"].is_array() && i < int(SS["Repositories"].size()))
                 SS["Repositories"].erase(SS["Repositories"].begin() + i);
             SaveGlobalConfigJSON();
-            RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab();
+            RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab();
         });
         row->addWidget(rm);
         v->addWidget(card);
@@ -835,7 +939,7 @@ void MainWindow::RebuildSettingsReposPage()
             ContainerWrapper::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
             QMetaObject::invokeMethod(this, [this]{
                 SaveGlobalConfigJSON();
-                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildStoreTab(); RebuildDynamicUI();
+                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
             }, Qt::QueuedConnection);
         }).detach();
     });
@@ -1000,120 +1104,173 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
     return Labels;
 }
 
-void MainWindow::BuildStoreTab()
+//The "Available" tab: the un-hydrated repo games, shown in the SAME card grid as the Library (LibraryView),
+//grouped by repository into collapsible sections. Hovering a card shows a Download button; clicking it fetches
+//the package's content over IPFS and moves it to the Library.
+void MainWindow::BuildAvailableTab()
 {
-    StoreTabWidget = new QWidget(MainWindowTabWidget);
-    QVBoxLayout * sl = new QVBoxLayout(StoreTabWidget); StoreTabWidget->setLayout(sl);
-    MainWindowTabWidget->addTab(StoreTabWidget, "Store");
+    // Load persisted collapse state for repo sections.
+    AvailableCollapsedRepos.clear();
+    if ((*GlobalConfigJSON)["Settings"].contains("AvailableCollapsedRepos")
+        && (*GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"].is_array())
+        for (const auto & R : (*GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"])
+            if (R.is_string()) AvailableCollapsedRepos.insert(QString::fromStdString(std::string(R)));
 
-    StoreScroll = new QScrollArea(StoreTabWidget);
-    StoreScroll->setWidgetResizable(true);
-    sl->addWidget(StoreScroll, 1);
-    RebuildStoreTab();
+    AvailableTabWidget = new QWidget(MainWindowTabWidget);
+    QVBoxLayout * v = new QVBoxLayout(AvailableTabWidget);
+    v->setContentsMargins(0,0,0,0); v->setSpacing(0);
+    AvailableTabWidget->setLayout(v);
+    MainWindowTabWidget->addTab(AvailableTabWidget, "Available");
+
+    // Toolbar — mirrors the Library tab: Name/Date/Series sort (within each repo) + size picker.
+    QWidget * toolbar = new QWidget(AvailableTabWidget);
+    QHBoxLayout * tl = new QHBoxLayout(toolbar);
+    tl->setContentsMargins(8,4,8,4);
+
+    const QString sortBtnStyle =
+        "QPushButton{background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
+        "QPushButton:checked{border-bottom:2px solid palette(highlight);font-weight:bold;}"
+        "QPushButton:hover{color:palette(highlighted-text);}";
+    QButtonGroup * sortGroup = new QButtonGroup(toolbar);
+    sortGroup->setExclusive(true);
+    auto makeSortBtn = [&](const QString & lbl, SortMode mode) {
+        QPushButton * b = new QPushButton(lbl, toolbar);
+        b->setCheckable(true); b->setChecked(AvailableSort == mode);
+        b->setStyleSheet(sortBtnStyle);
+        sortGroup->addButton(b);
+        connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
+            if (!checked) return;
+            AvailableSort = mode; RebuildAvailableTab();
+        });
+        tl->addWidget(b);
+    };
+    makeSortBtn("Name", SortMode::Name); makeSortBtn("Date", SortMode::Date); makeSortBtn("Series", SortMode::Series);
+    tl->addStretch();
+    auto makeSizeBtn = [&](const QString & lbl, int w) {
+        QPushButton * b = new QPushButton(lbl, toolbar);
+        b->setCheckable(true); b->setChecked(CardPixelWidth == w);
+        b->setStyleSheet(
+            "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
+            "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
+            "QPushButton:hover{color:#c6d4df;}");
+        connect(b, &QPushButton::clicked, this, [this,w,lbl,toolbar](){
+            CardPixelWidth = w;
+            for (auto * x : toolbar->findChildren<QPushButton*>()) if (x->isCheckable() && (x->text()=="Large"||x->text()=="Medium"||x->text()=="Small")) x->setChecked(x->text()==lbl);
+            if (AvailableView) { AvailableView->prescaleCovers(CardPixelWidth); AvailableView->layoutCards(CardPixelWidth); }
+        });
+        tl->addWidget(b);
+    };
+    makeSizeBtn("Large",250); makeSizeBtn("Medium",185); makeSizeBtn("Small",120);
+    v->addWidget(toolbar);
+
+    AvailableView = new LibraryView(AvailableTabWidget);
+    AvailableView->setHoverAction("⬇  Download", true);
+    v->addWidget(AvailableView);
+
+    connect(AvailableView, &LibraryView::downloadRequested, this, &MainWindow::DownloadAvailable);
+    connect(AvailableView, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
+        if (collapsed) AvailableCollapsedRepos.insert(name); else AvailableCollapsedRepos.remove(name);
+        auto & arr = (*GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"] = nlohmann::ordered_json::array();
+        for (const QString & R : AvailableCollapsedRepos) arr.push_back(R.toStdString());
+        SaveGlobalConfigJSON();
+    });
+
+    RebuildAvailableTab();
 }
 
-//Lists every catalog game that isn't imported yet, with an Install button that fetches its content over IPFS
-//and adds it to the library. Mirrors RebuildSettingsRunnersPage (runner imports).
-void MainWindow::RebuildStoreTab()
+//(Re)builds the Available grid: one card per un-hydrated repo game, grouped by repository (collapsible).
+void MainWindow::RebuildAvailableTab()
 {
-    if (!StoreScroll) return;
-    if (StoreScroll->widget()) StoreScroll->widget()->deleteLater();
+    if (!AvailableView) return;
+    qDeleteAll(*AvailableGameCards); AvailableGameCards->clear();
 
-    QWidget * contents = new QWidget(StoreScroll);
-    QVBoxLayout * v = new QVBoxLayout(contents); contents->setLayout(v);
-    StoreScroll->setWidget(contents);
+    // Repo name for a LIBRARY entry (groups un-repo'd local entries under "Local").
+    auto RepoOf = [&](int i) -> QString {
+        const auto & E = (*GlobalConfigJSON)["LIBRARY"][i];
+        const std::string R = E.value("REPO", std::string());
+        return R.empty() ? QStringLiteral("Local") : QString::fromStdString(R);
+    };
 
-    QLabel * intro = new QLabel(
-        "Games shared in your repositories. Import one to download its content over IPFS and add it to your "
-        "library. (Its runner is fetched on first launch.)", contents);
-    intro->setWordWrap(true);
-    intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
-    v->addWidget(intro);
-
-    //The Store lists the UN-HYDRATED games of the library — entries synced/mirrored from a repo whose content
-    //hasn't been downloaded yet. Importing fetches their content in place (into the mirror dir = Dir).
-    int shown = 0;
     const auto & Lib = (*GlobalConfigJSON)["LIBRARY"];
-    for (int li = 0; li < (Lib.is_array() ? (int)Lib.size() : 0); li++)
+    for (int i = 0; i < (Lib.is_array() ? (int)Lib.size() : 0); i++)
     {
-        const std::string Dir = Lib[li].value("PATH", std::string());            // the package's managed mirror dir
+        const std::string Dir = Lib[i].value("PATH", std::string());
         nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) continue;
         if (!JSONOps::HasGames(Pkg)) continue;
-        if (ContainerWrapper::PackageHydrated(Pkg, Dir)) continue;                // already downloaded → Library tab
+        if (ContainerWrapper::PackageHydrated(Pkg, Dir)) continue;                // downloaded → Library tab
         if (ContainerWrapper::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
-        shown++;
-
-        const std::string Name = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string("(unnamed)")));
-        QGroupBox * card = new QGroupBox(QString::fromStdString(Name), contents);
-        QHBoxLayout * cardRow = new QHBoxLayout(card); card->setLayout(cardRow);
-
-        //Lazy cover thumbnail (local-first, else IPFS-cached; a background fetch refreshes the Store on arrival).
-        QLabel * cover = new QLabel(card);
-        cover->setFixedSize(56, 84);
-        cover->setScaledContents(true);
-        cover->setStyleSheet("background:palette(mid);border:1px solid palette(dark);");
-        const nlohmann::ordered_json * CoverNode = nullptr;
-        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array() && !Pkg["GAMES"].empty())
+        const bool Busy = DownloadingUids.contains(QString::fromStdString(Pkg.value("PACKAGEUID", std::string())));
+        for (int j = 0; j < (int)Pkg["GAMES"].size(); j++)
         {
-            const auto & G0 = Pkg["GAMES"][0];
-            if (G0.contains("METADATA") && G0["METADATA"].is_object() && G0["METADATA"].contains("COVER")) CoverNode = &G0["METADATA"]["COVER"];
-            else if (G0.contains("COVER")) CoverNode = &G0["COVER"];
+            std::string sid = (Pkg["GAMES"][j].contains("GAMEID") && !Pkg["GAMES"][j]["GAMEID"].is_null())
+                              ? std::string(Pkg["GAMES"][j]["GAMEID"]) : "";
+            auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
+            c->InitializeClassVariables();
+            c->Downloading = Busy;
+            AvailableGameCards->append(c);
         }
-        if (CoverNode)
-        {
-            const QString CovPath = CoverCache::instance()->resolve(*CoverNode, QString::fromStdString(Dir));
-            if (!CovPath.isEmpty()) { QPixmap pm(CovPath); if (!pm.isNull()) cover->setPixmap(pm); }
-        }
-        cardRow->addWidget(cover);
-        QVBoxLayout * cv = new QVBoxLayout(); cardRow->addLayout(cv, 1);
-
-        QString titles;
-        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array())
-            for (const auto & G : Pkg["GAMES"])
-                titles += (titles.isEmpty() ? "" : ", ")
-                        + QString::fromStdString(G.value("TITLE", G.value("GAMEID", std::string())));
-        cv->addWidget(new QLabel("<span style='color:#8f98a0;'>" + titles + "</span>", card));
-
-        const int CidCount = (int)ContainerWrapper::PackageIpfsCids(Pkg).size();
-        QHBoxLayout * row = new QHBoxLayout();
-        row->addWidget(new QLabel(QString("%1 content layer(s) over IPFS").arg(CidCount), card), 1);
-        if (IpfsWrapper::Available())
-        {
-            QPushButton * btn = new QPushButton("Import", card);
-            const nlohmann::ordered_json PkgCopy = Pkg;   // capture by value for the worker
-            const std::string DirCopy = Dir;
-            connect(btn, &QPushButton::clicked, this, [this, PkgCopy, DirCopy, btn]{
-                btn->setEnabled(false); btn->setText("Importing…");
-                // Hydrate in place on a worker thread (FetchToPath is the slow part; it emits IPFS-tab progress).
-                std::thread([this, PkgCopy, DirCopy]{
-                    std::string Err;
-                    bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
-                    QMetaObject::invokeMethod(this, [this, Ok, Err]{
-                        if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
-                        else QMessageBox::warning(this, "Import failed", QString::fromStdString(Err));
-                        RebuildStoreTab(); RefreshIpfsTab();
-                    }, Qt::QueuedConnection);
-                }).detach();
-            });
-            row->addWidget(btn);
-        }
-        else
-        {
-            QLabel * need = new QLabel("install Kubo to download", card);
-            need->setStyleSheet("color:#8f98a0;font-style:italic;");
-            row->addWidget(need);
-        }
-        cv->addLayout(row);
-        v->addWidget(card);
     }
-    if (shown == 0)
-    {
-        QLabel * none = new QLabel("No new games available to import.", contents);
-        none->setStyleSheet("color:#8f98a0;");
-        v->addWidget(none);
+
+    // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
+    auto keyOf = [this](LibraryGameCard * a) -> QString {
+        switch (AvailableSort) { case SortMode::Date:   return a->SortDate + "|" + a->SortTitle;
+                                 case SortMode::Series: return a->SortSeriesKey;
+                                 default:               return a->SortTitle; }
+    };
+    std::sort(AvailableGameCards->begin(), AvailableGameCards->end(), [&](LibraryGameCard * a, LibraryGameCard * b){
+        const QString ra = RepoOf(a->Game), rb = RepoOf(b->Game);
+        if (ra != rb) return ra < rb;
+        return keyOf(a) < keyOf(b);
+    });
+
+    QVector<LibraryView::Group> groups;
+    const int n = AvailableGameCards->count();
+    for (int s = 0; s < n; ) {
+        const QString r = RepoOf(AvailableGameCards->at(s)->Game);
+        int e = s; while (e + 1 < n && RepoOf(AvailableGameCards->at(e + 1)->Game) == r) ++e;
+        groups.append({ r, s, e, AvailableCollapsedRepos.contains(r) });
+        s = e + 1;
     }
-    v->addStretch(1);
+
+    AvailableView->setCards(AvailableGameCards);
+    AvailableView->setGroups(groups);
+    AvailableView->prescaleCovers(CardPixelWidth);
+    AvailableView->layoutCards(CardPixelWidth);
+}
+
+//Hydrates the package behind an Available card over IPFS (in place, on a worker), then moves it to the Library.
+void MainWindow::DownloadAvailable(LibraryGameCard * card)
+{
+    if (!card) return;
+    if (!IpfsWrapper::Available()) {
+        QMessageBox::warning(this, "Kubo required",
+            "Downloading content needs Kubo (ipfs), which isn't installed."); return;
+    }
+    const int i = card->Game;
+    if (i < 0 || i >= (int)(*GlobalConfigJSON)["LIBRARY"].size()) return;
+    const std::string Dir = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
+    nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+    if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) return;
+    const QString Uid = QString::fromStdString(Pkg.value("PACKAGEUID", std::string()));
+    if (Uid.isEmpty() || DownloadingUids.contains(Uid)) return;       // already in flight
+
+    DownloadingUids.insert(Uid);
+    RebuildAvailableTab();    // repaint all cards of this package as "Downloading…"
+    RefreshIpfsTab();
+
+    const nlohmann::ordered_json PkgCopy = Pkg;
+    const std::string DirCopy = Dir;
+    std::thread([this, PkgCopy, DirCopy, Uid]{
+        std::string Err;
+        bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
+        QMetaObject::invokeMethod(this, [this, Ok, Err, Uid]{
+            DownloadingUids.remove(Uid);
+            if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
+            else    QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
+            RebuildAvailableTab(); RefreshIpfsTab();
+        }, Qt::QueuedConnection);
+    }).detach();
 }
 
 void MainWindow::BuildIpfsTab()
@@ -1366,9 +1523,16 @@ void MainWindow::BuildPackagesDynamicUI()
     QWidget * w = new QWidget(PackagesScrollArea);
     PackagesScrollArea->setWidget(w);
     QGridLayout * g = new QGridLayout(w); w->setLayout(g);
+    int row = 0;
     for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
-        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),i,0);
-        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),i,1);
+        //Only HYDRATED packages (content present locally) are listed — synced-but-not-downloaded repo entries
+        //live in the Available tab, not here. Layer-less packages are vacuously hydrated and stay.
+        const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
+        nlohmann::ordered_json pm; std::vector<std::string> AsmWarn;
+        if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
+        if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),row,0);
+        g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);
         QObject::connect(rb, &QPushButton::clicked, this, [this,i]{
             // A managed import (under the library folder) → delete its hydrated copy. A local/portable package
@@ -1384,7 +1548,8 @@ void MainWindow::BuildPackagesDynamicUI()
             }
             (*GlobalConfigJSON)["LIBRARY"].erase(i); RebuildDynamicUI(); SaveGlobalConfigJSON();
         });
-        g->addWidget(rb, i, 2);
+        g->addWidget(rb, row, 2);
+        row++;
     }
     g->setRowStretch(g->rowCount(), 1);
 }
