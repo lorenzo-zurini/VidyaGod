@@ -466,11 +466,21 @@ void LibraryView::onPaint(QPaintEvent * e)
                        Qt::AlignCenter | Qt::TextWordWrap, card->GameTitle);
         }
 
-        // In-flight import (Available): darken + a centered "Downloading…" label; no hover affordances.
+        // In-flight import (Available): darken + a centered "Downloading…" label and a progress bar; no hover.
         if (card->Downloading) {
             p.fillRect(r, QColor(0,0,0,150));
             p.setFont(PlayFont); p.setPen(Qt::white);
-            p.drawText(r, Qt::AlignCenter, "Downloading…");
+            const int pct = card->DownloadPercent >= 0 ? (int)(card->DownloadPercent + 0.5) : -1;
+            p.drawText(QRect(r.left(), r.top(), r.width(), r.height()/2),
+                       Qt::AlignHCenter | Qt::AlignBottom,
+                       pct >= 0 ? QString("Downloading…  %1%").arg(pct) : QStringLiteral("Downloading…"));
+            // Thin progress bar (indeterminate-full when percent unknown).
+            const int bw = qMin(r.width() - 24, 160), bh = 6;
+            const QRect bar(r.left() + (r.width()-bw)/2, r.top() + r.height()/2 + 6, bw, bh);
+            p.setPen(Qt::NoPen); p.setBrush(QColor(255,255,255,60)); p.drawRoundedRect(bar, 3, 3);
+            p.setBrush(QColor(0x4a,0x90,0xd9,235));
+            const int fillW = pct >= 0 ? bar.width() * pct / 100 : bar.width();
+            p.drawRoundedRect(QRect(bar.left(), bar.top(), fillW, bar.height()), 3, 3);
             p.setFont(TitleFont);
             continue;
         }
@@ -1240,6 +1250,27 @@ void MainWindow::BuildAvailableTab()
         SaveGlobalConfigJSON();
     });
 
+    // Live download progress: average a package's content-CID transfer percents onto its Available card(s).
+    auto applyProgress = [this](QString cid, double pct){
+        auto it = DownloadCidToUid.constFind(cid);
+        if (it == DownloadCidToUid.constEnd()) return;
+        const QString Uid = it.value();
+        if (pct >= 0) DownloadCidPct[cid] = pct;
+        const QStringList & Cids = DownloadUidCids[Uid];
+        double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0);
+        const double Avg = Cids.isEmpty() ? -1.0 : Sum / Cids.size();
+        bool Any = false;
+        for (LibraryGameCard * card : *AvailableGameCards)
+            if (card && card->Downloading
+                && QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][card->Game].value("PACKAGEUID", std::string())) == Uid)
+            { card->DownloadPercent = Avg; Any = true; }
+        if (Any && AvailableView) AvailableView->refreshVisuals();
+    };
+    connect(IpfsManager::instance(), &IpfsManager::transferProgress, this,
+            [applyProgress](QString cid, double pct){ applyProgress(cid, pct); });
+    connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
+            [applyProgress](QString cid, bool){ applyProgress(cid, 100.0); });
+
     RebuildAvailableTab();
 }
 
@@ -1265,7 +1296,11 @@ void MainWindow::RebuildAvailableTab()
         if (!JSONOps::HasGames(Pkg)) continue;
         if (ContainerWrapper::PackageHydrated(Pkg, Dir)) continue;                // downloaded → Library tab
         if (ContainerWrapper::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
-        const bool Busy = DownloadingUids.contains(QString::fromStdString(Pkg.value("PACKAGEUID", std::string())));
+        const QString PkgUid = QString::fromStdString(Pkg.value("PACKAGEUID", std::string()));
+        const bool Busy = DownloadingUids.contains(PkgUid);
+        double BusyPct = -1.0;                                                    // carry current progress across rebuilds
+        if (Busy) { const QStringList & cs = DownloadUidCids.value(PkgUid);
+                    if (!cs.isEmpty()) { double s = 0; for (const QString & c : cs) s += DownloadCidPct.value(c, 0.0); BusyPct = s / cs.size(); } }
         for (int j = 0; j < (int)Pkg["GAMES"].size(); j++)
         {
             std::string sid = (Pkg["GAMES"][j].contains("GAMEID") && !Pkg["GAMES"][j]["GAMEID"].is_null())
@@ -1273,6 +1308,7 @@ void MainWindow::RebuildAvailableTab()
             auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
             c->InitializeClassVariables();
             c->Downloading = Busy;
+            c->DownloadPercent = BusyPct;
             AvailableGameCards->append(c);
         }
     }
@@ -1318,6 +1354,12 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     if (Uid.isEmpty() || DownloadingUids.contains(Uid)) return;       // already in flight
 
     DownloadingUids.insert(Uid);
+    // Track this package's content CIDs so transfer-progress signals can aggregate onto its card.
+    QStringList Cids;
+    for (const auto & C : ContainerWrapper::PackageIpfsCids(Pkg))
+    { const QString Qc = QString::fromStdString(C); Cids << Qc; DownloadCidToUid[Qc] = Uid; DownloadCidPct[Qc] = 0.0; }
+    DownloadUidCids[Uid] = Cids;
+
     RebuildAvailableTab();    // repaint all cards of this package as "Downloading…"
     RefreshIpfsTab();
 
@@ -1328,6 +1370,8 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
         QMetaObject::invokeMethod(this, [this, Ok, Err, Uid]{
             DownloadingUids.remove(Uid);
+            for (const QString & c : DownloadUidCids.value(Uid)) { DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
+            DownloadUidCids.remove(Uid);
             if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
             else    QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
             RebuildAvailableTab(); RefreshIpfsTab();

@@ -55,6 +55,7 @@ public:
     QString                GameTitle;
     std::filesystem::path  PackagePath;
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
+    double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;
     QPixmap                CoverScaled;
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
@@ -198,6 +199,9 @@ private:
     QList<LibraryGameCard *> * AvailableGameCards = new QList<LibraryGameCard *>();
     QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
     QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
+    QHash<QString, QString>      DownloadCidToUid; // in-flight content CID → its owning PACKAGEUID
+    QHash<QString, QStringList>  DownloadUidCids;  // PACKAGEUID → its content CIDs (for averaging progress)
+    QHash<QString, double>       DownloadCidPct;   // in-flight CID → latest percent (0..100)
     SortMode      AvailableSort = SortMode::Name;  // within-group ordering on the Available grid
 
     // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
