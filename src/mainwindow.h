@@ -183,6 +183,7 @@ private:
     QList<LibraryGameCard *> * LibraryGameCards = new QList<LibraryGameCard *>();
     QList<LibraryGameCard *>   LibraryVisible;     // the search-filtered subset actually shown by the view
     QString                    LibrarySearch;      // case-insensitive title filter ("" = show all)
+    QSet<QString>              LibraryCollapsedSeries;  // series names collapsed in Series view (persisted)
 
     QWidget     * PackagesTabWidget;
     QVBoxLayout * PackagesTabWidgetLayout;

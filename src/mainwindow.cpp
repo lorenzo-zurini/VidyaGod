@@ -695,6 +695,18 @@ void MainWindow::BuildStaticUI()
     View->setEmptyMessage("No games yet.\n\nAdd a repository in Settings → Repositories, then download games from the Available tab.");
     LibraryTabWidgetLayout->addWidget(View);
 
+    // Persisted collapse state for the Series-view sections.
+    if ((*GlobalConfigJSON)["Settings"].contains("LibraryCollapsedSeries")
+        && (*GlobalConfigJSON)["Settings"]["LibraryCollapsedSeries"].is_array())
+        for (const auto & N : (*GlobalConfigJSON)["Settings"]["LibraryCollapsedSeries"])
+            if (N.is_string()) LibraryCollapsedSeries.insert(QString::fromStdString(std::string(N)));
+    connect(View, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
+        if (collapsed) LibraryCollapsedSeries.insert(name); else LibraryCollapsedSeries.remove(name);
+        auto & arr = (*GlobalConfigJSON)["Settings"]["LibraryCollapsedSeries"] = nlohmann::ordered_json::array();
+        for (const QString & N : LibraryCollapsedSeries) arr.push_back(N.toStdString());
+        SaveGlobalConfigJSON();
+    });
+
     // ── Packages tab ──────────────────────────────────────────────────────────
     PackagesTabWidget = new QWidget(MainWindowTabWidget);
     PackagesTabWidgetLayout = new QVBoxLayout(PackagesTabWidget);
@@ -1638,27 +1650,24 @@ void MainWindow::sortCards()
             LibraryVisible.append(c);
     View->setCards(&LibraryVisible);
 
-    // Series colour-band groups, computed over the VISIBLE (sorted+filtered) cards.
+    // Series mode → collapsible sections (one per series, ungrouped games under "Other"), computed over the
+    // VISIBLE cards. Other modes → flat (no groups, no bands).
+    View->setSeriesGroups({});
     if (CurrentSort == SortMode::Series) {
-        QVector<LibraryView::SeriesGroup> groups;
+        QVector<LibraryView::Group> groups;
         const int n = LibraryVisible.count();
         int start = 0;
         while (start < n) {
             const QString & sName = LibraryVisible[start]->SeriesName;
             int end = start;
             while (end + 1 < n && LibraryVisible[end + 1]->SeriesName == sName) ++end;
-            if (!sName.isEmpty()) {
-                uint h = qHash(sName);
-                LibraryView::SeriesGroup g;
-                g.first = start; g.last = end; g.name = sName;
-                g.color = QColor::fromHsv(static_cast<int>(h % 360), 55, 90, 55);
-                groups.append(g);
-            }
+            const QString Name = sName.isEmpty() ? QStringLiteral("Other") : sName;
+            groups.append({ Name, start, end, LibraryCollapsedSeries.contains(Name) });
             start = end + 1;
         }
-        View->setSeriesGroups(groups);
+        View->setGroups(groups);
     } else {
-        View->setSeriesGroups({});
+        View->setGroups({});
     }
 }
 
