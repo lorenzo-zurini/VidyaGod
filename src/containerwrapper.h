@@ -448,5 +448,12 @@ private:
     //Null at all other times. Read/written only under ActiveRunMutex.
     QProcess* ActiveRunProcess = nullptr;
     QMutex    ActiveRunMutex;
+
+public:
+    //Run outcome, set by Execute() and readable by the caller (LaunchThread) to surface failures: the child's
+    //exit code, whether it crashed, and whether the user asked to kill it (KillGame) — a kill isn't a failure.
+    int  LastExitCode = 0;
+    bool LastCrashed  = false;
+    bool UserKilled   = false;
 };
 #endif // CONTAINERWRAPPER_H

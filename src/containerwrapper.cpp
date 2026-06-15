@@ -3003,9 +3003,13 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
 
     if (RunProcess.exitStatus() == QProcess::CrashExit)
     {
+        this->LastCrashed = true;
+        this->LastExitCode = -1;
         LogErr("ContainerWrapper::Execute", "Process crashed.");
         return false;
     }
+    this->LastCrashed = false;
+    this->LastExitCode = RunProcess.exitCode();
     LogOut("ContainerWrapper::Execute", "Process exited normally with code " + std::to_string(RunProcess.exitCode()));
     return true;
 }
@@ -3016,6 +3020,7 @@ void ContainerWrapper::KillGame()
 {
     QMutexLocker Locker(&ActiveRunMutex);
     if (!ActiveRunProcess) return;
+    this->UserKilled = true;                 // a deliberate kill — not a launch failure to report
     LogOut("ContainerWrapper::KillGame", "Killing game process tree.");
 
     qint64 Pid = ActiveRunProcess->processId();

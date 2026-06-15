@@ -157,7 +157,12 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 3: Execute game (blocks until process exits or is killed).
     // -----------------------------------------------------------------
-    bool ExecOk = LocalWrapper->Execute();
+    LocalWrapper->Execute();
+
+    // Capture the run outcome BEFORE the wrapper is destroyed, so we can report a failed launch.
+    const bool Crashed   = LocalWrapper->LastCrashed;
+    const int  ExitCode  = LocalWrapper->LastExitCode;
+    const bool UserKilled = LocalWrapper->UserKilled;
 
     // -----------------------------------------------------------------
     // Step 4: Cleanup (unless the user opted out).
@@ -184,9 +189,15 @@ void LaunchThread::run()
     }
     delete LocalWrapper;
 
-    if (!ExecOk)
+    // A deliberate user-kill is not a failure. Otherwise a crash or a non-zero exit code means the game didn't
+    // run cleanly — surface it (the runner's output was forwarded live to the terminal/log for details).
+    if (!UserKilled && (Crashed || ExitCode != 0))
     {
-        emit launchFinished(false, "The game process failed to execute or crashed.");
+        QString Msg = Crashed
+            ? QStringLiteral("The game process crashed.")
+            : QStringLiteral("The game exited with code %1.").arg(ExitCode);
+        Msg += QStringLiteral("\n\nIf it didn't launch, check the terminal/log output for the runner's error.");
+        emit launchFinished(false, Msg);
         return;
     }
 
@@ -1186,7 +1197,11 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     if (success)
         StatusLabel->setText("Finished.");
     else
+    {
         StatusLabel->setText("Error: " + errorMsg);
+        // A modal dialog so the failure is seen even if the window is set to close after launch.
+        QMessageBox::warning(this, "Launch failed", errorMsg);
+    }
 
     // Reset controls so the user can launch again.
     RunnerCombo->setEnabled(true);

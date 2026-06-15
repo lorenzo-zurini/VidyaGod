@@ -254,7 +254,10 @@ int main(int argc, char *argv[])
         }
         NewContainerWrapper.BuildContainerRuntime();
         NewContainerWrapper.Execute();
-        return 0;
+        if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
+            LogWarn("main.cpp", "Game did not exit cleanly (code "
+                    + std::to_string(NewContainerWrapper.LastExitCode) + ") — check the runner output above.");
+        return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
 
 
