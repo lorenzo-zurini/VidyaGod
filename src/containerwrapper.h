@@ -197,7 +197,7 @@ public:
     //Container initialization:
     //Resolves which variant + endpoints to build given the subgame_id / VariantID / component_id combo.
     //If only subgame_id is set, picks the RECOMMENDED variant (else first) and fills VariantID + Endpoints.
-    static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool DecideComponent(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
 
     //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID under the subgame
     //identified by ContainerParams.subgame_id, then populates ExePathRelative, ExePathComplete,
@@ -207,7 +207,7 @@ public:
     //Each endpoint chain is appended root-first; later endpoints (array order) stack higher
     //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
     //{component_id} when Endpoints is empty (direct/editor mode).
-    static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool CreateRecipe(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
     //(Catalog / RegistryRunners / LibraryRootDir / Import / Publish / Mirror / Sync moved to PackageCatalog —
     //see packagecatalog.h. ImportRunner stays here: it needs the launch engine's mount + wineboot machinery.)
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
@@ -224,21 +224,21 @@ public:
     //Scans all CustomVar subcomponents in the Recipe and resolves their values.
     //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
     //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.
-    static bool ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
+    static bool ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
     //Collects all SUBCOMPONENTS from components in the Recipe into SubComponentsArray.
     //Performs %VARIABLE% substitution on each subcomponent's JSON at collection time.
     //CustomVar and Persist* subcomponents are skipped here (handled by ResolveCustomVariables /
     //DerivePersistence respectively).
-    static bool BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Walks the Recipe and derives persistence from PersistDir/PersistFile/RegPersist subcomponents
     //into PersistDirs/PersistFiles/PersistRegistry. When NONE are declared, sets PersistAll=true
     //(whole-runtime persist — the durable UserDataPath becomes the union's RW branch). PATH strings
     //are %VARIABLE%-substituted. Must run after ResolveCustomVariables and before BuildContainerRuntime.
-    static bool DerivePersistence(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
+    static bool DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
     //Fills all derived ContainerParams fields from MANIFEST and GlobalConfigJSON.
     //Must run after DecideComponent so platform and subgame index are known.
     //Resolves runner via USERSETTINGS > RECOMMENDED_RUNNER > first available fallback.
-    static bool DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON);
+    static bool DeriveContainerParams(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
     //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):
     //Builds the JSON layer-spec from the resolved container: DEFPREFIX base (Wine), each

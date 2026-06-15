@@ -160,7 +160,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         std::string Type = Sub.value("TYPE", std::string());
-        if (Type == "VFSZipLayer" || Type == "VFSDirLayer" || Type == "VFSFileLayer")
+        if (IsVfsLayer(Type))
         {
             ContainerParams.UsesVFS = true;
             break;
@@ -242,7 +242,7 @@ bool ContainerWrapper::BuildVirtualFilesystem()
 //  - Subgame only:  reads the subgame's COMPONENT field to resolve component_id automatically.
 //  - Component only: used directly (bypasses subgame lookup).
 //  - Both set:      both are used as-is (component_id overrides the subgame's default).
-bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool ContainerWrapper::DecideComponent(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     LogOut("ContainerWrapper::DecideComponent", "Deciding: subgame_id: " + ContainerParams.subgame_id + " VariantID: " + ContainerParams.VariantID + " component_id: " + ContainerParams.component_id);
 
@@ -305,7 +305,7 @@ bool ContainerWrapper::DecideComponent(nlohmann::ordered_json MANIFESTJSON, stru
 //  * shared ancestors mounted exactly once (at their first appearance),
 //  * independent branches ordered by endpoint array order — and because later-in-Recipe means
 //    higher unionfs priority downstream, later endpoints override earlier ones (load order).
-bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool ContainerWrapper::CreateRecipe(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     ContainerParams.Recipe.clear();
 
@@ -352,7 +352,7 @@ bool ContainerWrapper::CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct 
 //  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
 //  3. DEFAULT from the CustomVar definition
-bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
+bool ContainerWrapper::ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
@@ -458,7 +458,7 @@ bool ContainerWrapper::ResolveCustomVariables(nlohmann::ordered_json MANIFESTJSO
 //UserDataPath becomes the union's RW branch and the entire overlay survives. Declaring ANY Persist*
 //subcomponent switches to selective persistence (ephemeral WRITELAYER + only the declared targets).
 //PATH strings are %VARIABLE%-substituted, so resolved CustomVars / system tokens are available.
-bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool ContainerWrapper::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     ContainerParams.PersistDirs.clear();
     ContainerParams.PersistFiles.clear();
@@ -589,7 +589,7 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
 //so all downstream consumers receive already-expanded values.
 //CustomVar and Persist* subcomponents are skipped — they are handled by ResolveCustomVariables and
 //DerivePersistence. MANIFEST order is preserved, which determines VFS layer stacking order.
-bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams)
+bool ContainerWrapper::BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     //Iterate in Recipe order (ancestor-first) so VFS layers are stacked correctly regardless
     //of how components are ordered in the manifest. For each Recipe entry, find the component
@@ -643,7 +643,7 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
 //Path layout differs by runner type:
 //  Wine:  ProgramPath = RuntimePath/drive_c/PackageUID, prefix at TempPath/DEFPREFIX.
 //  Other: ProgramPath = RuntimePath (files mounted directly at the union root).
-bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams, nlohmann::ordered_json GlobalConfigJSON)
+bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     //Package-specific:
     ContainerParams.PackageName                         = MANIFESTJSON["PACKAGENAME"];
@@ -808,7 +808,7 @@ bool ContainerWrapper::DeriveContainerParams(nlohmann::ordered_json MANIFESTJSON
                 for (auto &S : C["SUBCOMPONENTS"])
                 {
                     const std::string T = S.value("TYPE", std::string());
-                    if (T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer")
+                    if (IsVfsLayer(T))
                         ContainerParams.RunnerLayers.push_back(S);
                 }
         ContainerParams.RunnerShipsBuild = !ContainerParams.RunnerLayers.empty();
@@ -1381,7 +1381,7 @@ std::vector<std::string> ContainerWrapper::VerifyDependencies(const struct Conta
     for (const auto &Sub : ContainerParams.SubComponentsArray)
     {
         const std::string Type = Sub.value("TYPE", std::string());
-        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        if (!IsVfsLayer(Type)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;
@@ -1407,7 +1407,7 @@ bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
     for (const auto &Sub : ContainerParams.RunnerLayers)
     {
         const std::string Type = Sub.value("TYPE", std::string());
-        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        if (!IsVfsLayer(Type)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.RunnerPackagePath, Local, Cid);
         std::error_code Ec;
@@ -1429,7 +1429,7 @@ bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
     for (const auto &Sub : ContainerParams.SubComponentsArray)                   // game VFS layers: local OR fetchable
     {
         const std::string Type = Sub.value("TYPE", std::string());
-        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        if (!IsVfsLayer(Type)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;
@@ -1463,7 +1463,7 @@ bool ContainerWrapper::MaterializeLayers(struct ContainerParams &ContainerParams
     for (const auto &Sub : ContainerParams.SubComponentsArray)
     {
         const std::string Type = Sub.value("TYPE", std::string());
-        if (Type != "VFSZipLayer" && Type != "VFSDirLayer" && Type != "VFSFileLayer") continue;
+        if (!IsVfsLayer(Type)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;
@@ -1689,7 +1689,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
         for (const auto &S : C["SUBCOMPONENTS"])
         {
             const std::string T = S.value("TYPE", std::string());
-            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
+            if (!IsVfsLayer(T)) continue;
             std::filesystem::path Local; std::string Cid;
             LayerLocator(S, Pkg, Local, Cid);
             if (Cid.empty() || Local == Pkg || std::filesystem::exists(Local, Ec)) continue;
