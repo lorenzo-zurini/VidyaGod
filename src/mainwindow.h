@@ -34,6 +34,7 @@
 
 #include "nlohmann/json.hpp"
 #include "containerwrapper.h"
+#include "ipfswrapper.h"
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -202,6 +203,7 @@ private:
     QTableWidget  * IpfsTransfers   = nullptr;   // Name | CID | Progress | Status — live fetches (sortable)
     QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (sortable)
     QTimer        * IpfsRefreshTimer = nullptr;
+    bool            IpfsRefreshInFlight = false;   // a worker is already gathering ipfs status — skip re-entrancy
     QTimer        * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one card refresh
     QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
@@ -219,7 +221,9 @@ private:
     void RebuildAvailableTab();   // grouped grid of un-hydrated repo games; click a card to download over IPFS
     void DownloadAvailable(LibraryGameCard * card);   // import (hydrate) the package behind an Available card
     void BuildIpfsTab();
-    void RefreshIpfsTab();   // refresh status + seeded list (no-op when ipfs absent)
+    void RefreshIpfsTab();   // kicks an off-thread gather of status + seeded list (no-op when ipfs absent)
+    void ApplyIpfsSnapshot(bool daemon, int peers, const QString & repo,
+                           const std::vector<IpfsWrapper::PinEntry> & pins);  // GUI-thread paint of the gathered data
     void sortCards();
     bool SaveGlobalConfigJSON();
 

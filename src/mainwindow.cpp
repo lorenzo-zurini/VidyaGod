@@ -693,6 +693,14 @@ void MainWindow::BuildStaticUI()
     // ── IPFS tab ─────────────────────────────────────────────────────────────────
     BuildIpfsTab();
 
+    // Only poll IPFS (subprocess-spawning) while its tab is the visible one.
+    connect(MainWindowTabWidget, &QTabWidget::currentChanged, this, [this](int){
+        const bool OnIpfs = (MainWindowTabWidget->currentWidget() == IpfsTabWidget);
+        if (!IpfsRefreshTimer) return;
+        if (OnIpfs) { if (!IpfsRefreshTimer->isActive()) IpfsRefreshTimer->start(5000); RefreshIpfsTab(); }
+        else        IpfsRefreshTimer->stop();
+    });
+
     // Lazy cover loading: when a background cover fetch lands, reload the affected cards. Debounced so a burst of
     // arrivals (e.g. first paint of the Library/Store) coalesces into a single refresh.
     CoverRefreshTimer = new QTimer(this);
@@ -1405,29 +1413,47 @@ void MainWindow::BuildIpfsTab()
         RefreshIpfsTab();                                    // a finished fetch likely added a pin
     });
 
-    // Periodic status/pin refresh.
+    // Periodic status/pin refresh — only while the IPFS tab is visible (each tick spawns ipfs subprocesses;
+    // no point paying that when the user isn't looking). Started/stopped by the tab-change handler in BuildStaticUI.
     IpfsRefreshTimer = new QTimer(this);
     connect(IpfsRefreshTimer, &QTimer::timeout, this, &MainWindow::RefreshIpfsTab);
-    IpfsRefreshTimer->start(5000);
-    RefreshIpfsTab();
+    if (MainWindowTabWidget && MainWindowTabWidget->currentWidget() == IpfsTabWidget)
+    { IpfsRefreshTimer->start(5000); RefreshIpfsTab(); }
 }
 
 void MainWindow::RefreshIpfsTab()
 {
     if (!IpfsWrapper::Available() || !IpfsStatusLabel) return;
+    if (IpfsRefreshInFlight) return;                                       // a gather is already running
+    IpfsRefreshInFlight = true;
 
-    const bool Daemon = IpfsWrapper::DaemonRunning();
+    // Gather the (subprocess-spawning) ipfs status + pins OFF the GUI thread, then apply on the GUI thread.
+    std::thread([this]{
+        const bool   Daemon = IpfsWrapper::DaemonRunning();
+        const int    Peers  = Daemon ? IpfsWrapper::PeerCount() : 0;
+        const QString Repo  = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
+        const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
+        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins]{
+            IpfsRefreshInFlight = false;
+            ApplyIpfsSnapshot(Daemon, Peers, Repo, Pins);
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
+// Paints the gathered IPFS status + grouped pins onto the IPFS tab (GUI thread only).
+void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
+                                   const std::vector<IpfsWrapper::PinEntry> & Pins)
+{
+    if (!IpfsStatusLabel) return;
     QString S = QString("Daemon: %1").arg(Daemon
         ? "<span style='color:#5fb55f;'>running</span>"
         : "<span style='color:#c0726a;'>stopped — run <code>ipfs daemon</code> to seed</span>");
-    if (Daemon) S += QString("   •   Peers: %1").arg(IpfsWrapper::PeerCount());
-    const QString Repo = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
+    if (Daemon) S += QString("   •   Peers: %1").arg(Peers);
     if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
     IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);   // keep names current with the catalog
-    const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
 
     // Group the pinned CIDs by owning package (QMap → keys already alphabetical; unknowns bucketed last).
     QMap<QString, QStringList> ByPackage;
