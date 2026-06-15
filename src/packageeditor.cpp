@@ -2275,34 +2275,31 @@ void PackageEditor::AddEntrypoint()
 }
 
 
+//Shared body of the "Add <subcomponent>" slots: append Sub to the SUBCOMPONENTS of the component owning the
+//Add… button, then persist + rebuild the UI.
+void PackageEditor::AppendSubcomponent(QObject * Sender, const nlohmann::ordered_json & Sub)
+{
+    const QString JSONPath = ResolveComponentJSONPath(Sender);
+    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
+    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(Sub);
+    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+}
+
 void PackageEditor::AddRegEdit()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
-        {"TYPE", "RegEdit"}, {"REGPATH", ""}, {"ARCHITECTURE", "32"}, {"KEYVALUES", json::object()}
-    }));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({
+        {"TYPE", "RegEdit"}, {"REGPATH", ""}, {"ARCHITECTURE", "32"}, {"KEYVALUES", json::object()} }));
 }
 
 void PackageEditor::AddDllOverride()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
-        {"TYPE", "DllOverride"}, {"DLLOVERRIDE", ""}
-    }));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", ""} }));
 }
 
 void PackageEditor::AddFileEdit()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
-        {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""}
-    }));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({
+        {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""} }));
 }
 
 //Adds a CustomVar subcomponent. CustomVars travel with their component but resolve into a bare global
@@ -2310,12 +2307,8 @@ void PackageEditor::AddFileEdit()
 //ContainerWrapper::ResolveCustomVariables). The same KEY across version components is one shared knob.
 void PackageEditor::AddCustomVar()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({
-        {"TYPE", "CustomVar"}, {"KEY", ""}, {"LABEL", ""}, {"DEFAULT", ""}, {"VARTYPE", "string"}, {"DISPLAY", true}
-    }));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({
+        {"TYPE", "CustomVar"}, {"KEY", ""}, {"LABEL", ""}, {"DEFAULT", ""}, {"VARTYPE", "string"}, {"DISPLAY", true} }));
 }
 
 //Persistence subcomponents — declared at the point where a component introduces the state that
@@ -2323,34 +2316,22 @@ void PackageEditor::AddCustomVar()
 //none are present) to selective persistence (see ContainerWrapper::DerivePersistence).
 void PackageEditor::AddPersistDir()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "PersistDir"}, {"PATH", ""}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({ {"TYPE", "PersistDir"}, {"PATH", ""} }));
 }
 
 void PackageEditor::AddPersistFile()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "PersistFile"}, {"PATH", ""}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({ {"TYPE", "PersistFile"}, {"PATH", ""} }));
 }
 
 void PackageEditor::AddRegPersist()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "RegPersist"}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({ {"TYPE", "RegPersist"} }));
 }
 
 void PackageEditor::AddRegKeyPersist()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "RegKeyPersist"}, {"REGPATH", ""}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    AppendSubcomponent(QObject::sender(), json::object({ {"TYPE", "RegKeyPersist"}, {"REGPATH", ""} }));
 }
 
 void PackageEditor::MoveComponentUp()

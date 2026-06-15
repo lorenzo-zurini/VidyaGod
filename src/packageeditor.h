@@ -98,6 +98,9 @@ private:
     void CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id);
     void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
+    //Appends a subcomponent object to the SUBCOMPONENTS of the component owning `Sender` (the Add… button),
+    //then persists + rebuilds the UI. Shared body of the AddRegEdit/AddDllOverride/AddFileEdit/... slots.
+    void AppendSubcomponent(QObject * Sender, const nlohmann::ordered_json & Sub);
     //Builds the reusable MODULES editor (component picker + REQUIRED/DEFAULT/LABEL + reorder/remove + Add)
     //for the variant at the given JSON pointer (e.g. "/GAMES/0/VARIANTS/1" or "/RUNNERS/0/VARIANTS/0").
     //Lets both game variants and runner variants attach components. Returns a QGroupBox to add to a layout.
