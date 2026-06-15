@@ -27,6 +27,26 @@
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 
+// True if IPFS can fetch content right NOW (binary present AND a daemon is running). Otherwise shows the reason
+// and returns false. VidyaGod never starts the daemon — it only detects and tells the user to.
+static bool IpfsFetchReady(QWidget * parent)
+{
+    if (!IpfsWrapper::Available())
+    {
+        QMessageBox::warning(parent, "Kubo required",
+            "Downloading content over IPFS needs Kubo (the `ipfs` CLI), which isn't installed.");
+        return false;
+    }
+    if (!IpfsWrapper::DaemonRunning())
+    {
+        QMessageBox::warning(parent, "IPFS daemon not running",
+            "Your IPFS daemon isn't running, so content can't be downloaded.\n\n"
+            "Start it with `ipfs daemon`, or enable the ipfs systemd user service, then try again.");
+        return false;
+    }
+    return true;
+}
+
 // Paints a column's integer value (0..100) as a progress bar, so a transfers table stays sortable (the value
 // lives in the item, not a fragile cell widget). A negative value renders an indeterminate "busy" bar.
 class ProgressBarDelegate : public QStyledItemDelegate
@@ -146,9 +166,7 @@ void LibraryGameCard::play()
             if (RunnerPkg.is_null() || !RunnerWrapper::ShipsBuild(RunnerPkg, Vid))
             { QMessageBox::warning(nullptr, "Runner unavailable",
                   "This game needs runner '" + Rid + "', which isn't imported and can't be fetched."); return; }
-            if (!IpfsWrapper::Available())
-            { QMessageBox::warning(nullptr, "Kubo required",
-                  "Runner '" + Rid + "' must be downloaded over IPFS, but Kubo (ipfs) isn't installed."); return; }
+            if (!IpfsFetchReady(nullptr)) return;
             if (QMessageBox::question(nullptr, "Import runner?",
                     "This game needs runner '" + Rid + "', which isn't imported yet.\n\n"
                     "Download and import it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
@@ -832,6 +850,7 @@ void MainWindow::RebuildSettingsRunnersPage()
             {
                 QPushButton * btn = new QPushButton("Import", card);
                 connect(btn, &QPushButton::clicked, this, [this, Pkg, PkgDir, Vid, btn, st]{
+                    if (!IpfsFetchReady(this)) return;          // need a running daemon to fetch
                     btn->setEnabled(false); btn->setText("Importing…");
                     st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
                     std::thread([this, Pkg, PkgDir, Vid]{
@@ -1245,10 +1264,7 @@ void MainWindow::RebuildAvailableTab()
 void MainWindow::DownloadAvailable(LibraryGameCard * card)
 {
     if (!card) return;
-    if (!IpfsWrapper::Available()) {
-        QMessageBox::warning(this, "Kubo required",
-            "Downloading content needs Kubo (ipfs), which isn't installed."); return;
-    }
+    if (!IpfsFetchReady(this)) return;
     const int i = card->Game;
     if (i < 0 || i >= (int)(*GlobalConfigJSON)["LIBRARY"].size()) return;
     const std::string Dir = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
