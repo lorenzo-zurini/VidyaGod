@@ -240,6 +240,7 @@ public:
     //Resolves runner via USERSETTINGS > RECOMMENDED_RUNNER > first available fallback.
     static bool DeriveContainerParams(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
+private:
     //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):
     //Builds the JSON layer-spec from the resolved container: DEFPREFIX base (Wine), each
     //VFSZipLayer/VFSDirLayer/VFSFileLayer rooted at its TARGET (logically, no staging dirs), PERSIST
@@ -255,11 +256,13 @@ public:
     //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath (the separate-mount,
     //installed-runner model). Registers it for cleanup. No-op when the runner ships no build.
     bool MountRunnerBuild(struct ContainerParams &ContainerParams);
+public:
     //Installs one runner VARIANT: hydrates its build layers IN PLACE into the runner's LIBRARY dir (PackageDir),
     //and for a wine variant generates the one-time DEFPREFIX at PackageDir/__DEFPREFIX__/<variant>. VariantId "" =
-    //default variant.
+    //default variant. (Stays public: it's the runner-install entry point called by the UI / headless --import-runner.)
     static bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
                               const std::string &PackageDir, const std::string &VariantId = std::string(), std::string *Error = nullptr);
+private:
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
     static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
@@ -316,6 +319,7 @@ public:
     //Writes Value as the complete content of FilePath, creating parent dirs if needed.
     static bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
 
+public:
     //Misc
     //Synchronously runs Program with Arguments in the given environment.
     //Waits indefinitely for completion. Returns the exit code, or -1 on crash/start failure.
