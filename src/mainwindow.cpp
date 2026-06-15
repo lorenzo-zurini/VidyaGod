@@ -270,6 +270,12 @@ void LibraryView::setHoverAction(const QString & label, bool emitDownload)
     ShowEditCorner = !emitDownload;   // Available cards have no "···" edit corner
 }
 
+void LibraryView::setEmptyMessage(const QString & message)
+{
+    EmptyMessage = message;
+    viewport()->update();
+}
+
 void LibraryView::refreshVisuals()
 {
     if (CardW > 0) prescaleCovers(CardW); // recompute CoverScaled + ElidedTitle from the (changed) data
@@ -408,6 +414,16 @@ void LibraryView::onPaint(QPaintEvent * e)
     QPainter p(viewport());
     p.setClipRect(vRect);
     p.fillRect(vRect, QApplication::palette().color(QPalette::Window));
+
+    // Empty state: centered first-run hint, no cards to draw.
+    if (Cards->isEmpty() && !EmptyMessage.isEmpty())
+    {
+        p.setPen(QColor(0x8f, 0x98, 0xa0));
+        p.drawText(viewport()->rect().adjusted(40, 0, -40, 0),
+                   Qt::AlignCenter | Qt::TextWordWrap, EmptyMessage);
+        return;
+    }
+
     p.translate(0, -scrollY);
 
     // Series group backgrounds — drawn in content coordinates before cards (flat/Library mode only)
@@ -656,6 +672,7 @@ void MainWindow::BuildStaticUI()
     LibraryTabWidgetLayout->addWidget(toolbar);
 
     View = new LibraryView(LibraryTabWidget);
+    View->setEmptyMessage("No games yet.\n\nAdd a repository in Settings → Repositories, then download games from the Available tab.");
     LibraryTabWidgetLayout->addWidget(View);
 
     // ── Packages tab ──────────────────────────────────────────────────────────
@@ -1212,6 +1229,7 @@ void MainWindow::BuildAvailableTab()
 
     AvailableView = new LibraryView(AvailableTabWidget);
     AvailableView->setHoverAction("⬇  Download", true);
+    AvailableView->setEmptyMessage("Nothing to download.\n\nAdd a repository in Settings → Repositories (or hit “Sync now”) to see shared games here.");
     v->addWidget(AvailableView);
 
     connect(AvailableView, &LibraryView::downloadRequested, this, &MainWindow::DownloadAvailable);
@@ -1616,6 +1634,12 @@ void MainWindow::BuildPackagesDynamicUI()
         });
         g->addWidget(rb, row, 2);
         row++;
+    }
+    if (row == 0)
+    {
+        QLabel * none = new QLabel("No installed packages yet — download games from the Available tab.", w);
+        none->setStyleSheet("color:#8f98a0;");
+        g->addWidget(none, 0, 0, 1, 3);
     }
     g->setRowStretch(g->rowCount(), 1);
 }

@@ -97,6 +97,8 @@ public:
     //Hover-button caption + click behaviour: emitDownload=true makes a card click emit downloadRequested
     //(Available tab) instead of calling play(); label is the centered button text (e.g. "⬇  Download").
     void setHoverAction(const QString & label, bool emitDownload);
+    //Centered hint painted when there are no cards (first-run guidance).
+    void setEmptyMessage(const QString & message);
     //Re-scale covers/titles at the CURRENT width and repaint, WITHOUT resetting the layout (used when a
     //card's data changed in place — e.g. after a package edit). No-op if the view hasn't been laid out yet.
     void refreshVisuals();
@@ -123,6 +125,7 @@ private:
     QVector<Group>             Groups;       // collapsible repo sections; empty ⇒ flat grid
     QVector<QRect>             HeaderRects;  // one per Group (content coords); for collapse hit-testing
     QString                    HoverLabel = "▶  Play";   // centered hover-button caption
+    QString                    EmptyMessage;             // shown centered when there are no cards
     bool                       EmitDownload = false;          // card click → downloadRequested vs play()
     bool                       ShowEditCorner = true;         // draw/handle the "···" edit corner
     int HoveredIdx = -1;
