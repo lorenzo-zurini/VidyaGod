@@ -898,6 +898,24 @@ void MainWindow::RebuildSettingsReposPage()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
+    // ── Sync now ── pull all repos again to pick up packages added/updated upstream (no restart needed).
+    {
+        QHBoxLayout * syncRow = new QHBoxLayout();
+        QPushButton * syncBtn = new QPushButton("Sync now", contents);
+        syncRow->addWidget(syncBtn); syncRow->addStretch(1);
+        v->addLayout(syncRow);
+        connect(syncBtn, &QPushButton::clicked, this, [this, syncBtn]{
+            syncBtn->setEnabled(false); syncBtn->setText("Syncing…");
+            std::thread([this]{
+                ContainerWrapper::SyncRepositories(*GlobalConfigJSON);   // git pull each repo + reindex LIBRARY
+                QMetaObject::invokeMethod(this, [this]{
+                    SaveGlobalConfigJSON();
+                    RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
+                }, Qt::QueuedConnection);
+            }).detach();
+        });
+    }
+
     auto & S = (*GlobalConfigJSON)["Settings"];
     if (!S.contains("Repositories") || !S["Repositories"].is_array())
         S["Repositories"] = nlohmann::ordered_json::array();
