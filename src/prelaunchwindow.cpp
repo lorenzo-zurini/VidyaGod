@@ -249,7 +249,7 @@ PreLaunchWindow::PreLaunchWindow(
     RootLayout->addWidget(CoverLabel);
 
     // Load cover from MANIFEST SUBGAMES[idx].METADATA.COVER
-    int SubgameIdx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+    int SubgameIdx = ManifestModel::FindGameIndex(*MANIFESTJSON, SubgameID);
     if (SubgameIdx != -1)
     {
         auto &TitleVal = (*MANIFESTJSON)["GAMES"][SubgameIdx]["TITLE"];
@@ -374,7 +374,7 @@ PreLaunchWindow::PreLaunchWindow(
     PickerForm->addRow("Variant:", VariantCombo);
 
     // Collect variants via ContainerWrapper helper.
-    std::vector<VariantInfo> Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID);
+    std::vector<VariantInfo> Variants = ManifestModel::GetAvailableVariants(*MANIFESTJSON, SubgameID);
     std::string RecommendedID;
     for (auto &V : Variants)
     {
@@ -558,7 +558,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     if (VariantCombo->currentIndex() >= 0)
         SelVariantID = VariantCombo->currentData().toString().toStdString();
 
-    std::vector<std::string> SelEndpoints = ContainerWrapper::FindEndpointsForVariant(*MANIFESTJSON, SubgameID, SelVariantID);
+    std::vector<std::string> SelEndpoints = ManifestModel::FindEndpointsForVariant(*MANIFESTJSON, SubgameID, SelVariantID);
 
     // Get the union recipe (all endpoint chains) so CustomVars referenced anywhere are in scope.
     ContainerParams TmpParams("", SubgameID, "");
@@ -580,7 +580,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     // Get entrypoint-level CUSTOMVARS seed.
     nlohmann::ordered_json VariantSeed = nlohmann::ordered_json::object();
     {
-        int SubgameIdx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+        int SubgameIdx = ManifestModel::FindGameIndex(*MANIFESTJSON, SubgameID);
         if (SubgameIdx != -1 && (*MANIFESTJSON)["GAMES"][SubgameIdx].contains("VARIANTS"))
             for (auto &V : (*MANIFESTJSON)["GAMES"][SubgameIdx]["VARIANTS"])
                 if (V.value("VARIANT_ID", std::string()) == SelVariantID && V.contains("FORCEVARS"))
@@ -751,7 +751,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     // Game recipe components first, then the selected runner variant's enabled components.
     for (const std::string &CompID : TmpParams.Recipe)
     {
-        int CIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, CompID);
+        int CIdx = ManifestModel::FindComponentIndex(*MANIFESTJSON, CompID);
         if (CIdx == -1) continue;
         BuildPickers((*MANIFESTJSON)["COMPONENTS"][CIdx], CompID);
     }
@@ -774,9 +774,9 @@ void PreLaunchWindow::RebuildModuleTree()
     const std::string VariantID = VariantCombo ? VariantCombo->currentData().toString().toStdString() : std::string();
 
     // Universal MODULES: variant's + the selected runner's, deduped by component (first wins).
-    std::vector<ModuleInfo> Modules = ContainerWrapper::GetVariantModules(*MANIFESTJSON, SubgameID, VariantID);
+    std::vector<ModuleInfo> Modules = ManifestModel::GetVariantModules(*MANIFESTJSON, SubgameID, VariantID);
     if (RunnerCombo && RunnerCombo->currentIndex() >= 0 && RunnerCombo->currentIndex() < (int)Runners.size())
-        for (auto &M : ContainerWrapper::ParseModules(Runners[RunnerCombo->currentIndex()].second.value("MODULES", nlohmann::ordered_json::array())))
+        for (auto &M : ManifestModel::ParseModules(Runners[RunnerCombo->currentIndex()].second.value("MODULES", nlohmann::ordered_json::array())))
             Modules.push_back(M);
     {
         std::set<std::string> Seen; std::vector<ModuleInfo> Uniq;
@@ -965,7 +965,7 @@ void PreLaunchWindow::ReloadAndRebuild()
         QSignalBlocker B(VariantCombo);
         VariantCombo->clear();
         std::string RecommendedID;
-        for (auto & V : ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID))
+        for (auto & V : ManifestModel::GetAvailableVariants(*MANIFESTJSON, SubgameID))
         {
             QString Label = QString::fromStdString(V.Name.empty() ? V.VariantID : V.Name);
             if (V.IsRecommended) { Label = "⭐ " + Label; RecommendedID = V.VariantID; }
@@ -1000,7 +1000,7 @@ void PreLaunchWindow::onLaunchClicked()
     // Fallback: first available variant.
     if (SelectedVariantID.empty())
     {
-        auto Variants = ContainerWrapper::GetAvailableVariants(*MANIFESTJSON, SubgameID);
+        auto Variants = ManifestModel::GetAvailableVariants(*MANIFESTJSON, SubgameID);
         if (!Variants.empty())
             SelectedVariantID = Variants.front().VariantID;
     }
@@ -1019,7 +1019,7 @@ void PreLaunchWindow::onLaunchClicked()
     // or picked is left to the container to resolve (DEFAULT / random / USERSETTINGS).
     if (MANIFESTJSON)
     {
-        int SubgameIdx2 = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+        int SubgameIdx2 = ManifestModel::FindGameIndex(*MANIFESTJSON, SubgameID);
         if (SubgameIdx2 != -1 && (*MANIFESTJSON)["GAMES"][SubgameIdx2].contains("VARIANTS"))
             for (auto &Var : (*MANIFESTJSON)["GAMES"][SubgameIdx2]["VARIANTS"])
                 if (Var.value("VARIANT_ID", std::string()) == SelectedVariantID && Var.contains("FORCEVARS"))

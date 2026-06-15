@@ -1919,7 +1919,7 @@ void PackageEditor::RemoveComponent()
     std::string ComponentID = ComponentTabWidget->property("ComponentID").toString().toStdString();
     LogOut("PackageEditor", "REMOVE COMPONENT " + ComponentID);
 
-    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    int Idx = ManifestModel::FindComponentIndex(*MANIFESTJSON, ComponentID);
     if (Idx == -1) { LogErr("PackageEditor", "Component not found: " + ComponentID); return; }
     (*PackageEditor::MANIFESTJSON)["COMPONENTS"].erase(Idx);
     LogOut("PackageEditor", "Deleted component: " + ComponentID);
@@ -2171,7 +2171,7 @@ void PackageEditor::CompareComponentsRegistry(const std::string &oldcomponent_id
 //CAUTION! VIBE RE-CODED TO MAKE COMPATIBLE WITH GCC 12!! MUST TEST!!
 void PackageEditor::MergeRegistryDeltaInComponent(nlohmann::ordered_json *DeltaSubComponentArray, const std::string &targetcomponent_id)
 {
-    int targetcomponentIdx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, targetcomponent_id);
+    int targetcomponentIdx = ManifestModel::FindComponentIndex(*MANIFESTJSON, targetcomponent_id);
     if (targetcomponentIdx == -1) return;
 
     // Iterate through all new subcomponents
@@ -2356,7 +2356,7 @@ void PackageEditor::AddRegKeyPersist()
 void PackageEditor::MoveComponentUp()
 {
     std::string ComponentID = qobject_cast<QPushButton*>(sender())->parentWidget()->property("ComponentID").toString().toStdString();
-    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    int Idx = ManifestModel::FindComponentIndex(*MANIFESTJSON, ComponentID);
     if (Idx <= 0) return;
     auto Tmp = (*MANIFESTJSON)["COMPONENTS"][Idx];
     (*MANIFESTJSON)["COMPONENTS"][Idx]     = (*MANIFESTJSON)["COMPONENTS"][Idx - 1];
@@ -2370,7 +2370,7 @@ void PackageEditor::MoveComponentUp()
 void PackageEditor::MoveComponentDown()
 {
     std::string ComponentID = qobject_cast<QPushButton*>(sender())->parentWidget()->property("ComponentID").toString().toStdString();
-    int Idx = ContainerWrapper::FindComponentIndex(*MANIFESTJSON, ComponentID);
+    int Idx = ManifestModel::FindComponentIndex(*MANIFESTJSON, ComponentID);
     int Total = (int)(*MANIFESTJSON)["COMPONENTS"].size();
     if (Idx < 0 || Idx >= Total - 1) return;
     auto Tmp = (*MANIFESTJSON)["COMPONENTS"][Idx];

@@ -16,15 +16,13 @@
 #include <QThread>
 #include <QMetaObject>
 
-//Resolves a layer/runner SOURCE locator to an absolute host path (defined below; forward-declared so
-//DeriveContainerParams can resolve the selected runner's SOURCE).
-static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath);
+//Pure manifest queries + the VFS-layer helpers (IsVfsLayer/LayerType/ForEachVfsLayer/LayerLocator/
+//ResolveLayerSource/MachinePlatform/Find*/...) now live in ManifestModel; this brings them in unqualified.
+using namespace ManifestModel;
+
 //True if any subcomponent is a matching-scope RegEdit (defined below; forward-declared for the post-mount
 //installed-runner base-reg-edit pass in BuildContainerRuntime).
 static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool WantOverride);
-
-//The host platform this build runs on — a runner variant is only eligible if its HOST_PLATFORM matches.
-static std::string MachinePlatform() { return "linux64"; }
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -42,36 +40,6 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::
     LogOut("ContainerParams::ContainerParams", "ContainerParams object created...");
 }
 
-//Linear scan for a subgame by its SUBGAMEID string.
-//Returns the array index into MANIFEST["GAMES"], or -1 if not found.
-int ContainerWrapper::FindGameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
-{
-    for (int i = 0; i < (int)MANIFESTJSON["GAMES"].size(); i++)
-    {
-        if (!MANIFESTJSON["GAMES"][i]["GAMEID"].is_null() && MANIFESTJSON["GAMES"][i]["GAMEID"] == SubgameID)
-        {
-            return i;
-        }
-    }
-    LogErr("ContainerWrapper::FindGameIndex", "Subgame ID not found: " + SubgameID);
-    return -1;
-}
-
-//Linear scan for a component by its COMPONENTID string.
-//Returns the array index into MANIFEST["COMPONENTS"], or -1 if not found or if ComponentID is empty.
-int ContainerWrapper::FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID)
-{
-    if (ComponentID.empty()) return -1;
-    for (int i = 0; i < (int)MANIFESTJSON["COMPONENTS"].size(); i++)
-    {
-        if (!MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"].is_null() && MANIFESTJSON["COMPONENTS"][i]["COMPONENTID"] == ComponentID)
-        {
-            return i;
-        }
-    }
-    LogErr("ContainerWrapper::FindComponentIndex", "Component ID not found: " + ComponentID);
-    return -1;
-}
 
 //NOTE: the registry is now its own class (RegistryWrapper) and the filesystem is its own binary
 //(vidyagodfs, the VidyaGodFS submodule). The remaining refactor would be to lift the VFS orchestration
@@ -569,149 +537,6 @@ bool ContainerWrapper::DerivePersistence(nlohmann::ordered_json MANIFESTJSON, st
     return true;
 }
 
-//Reads a MODULES json array (objects: COMPONENT/REQUIRED/DEFAULT/LABEL) into ModuleInfo entries.
-//MODULES-only: non-object entries and entries without a COMPONENT are skipped (no legacy tolerance).
-std::vector<ModuleInfo> ContainerWrapper::ParseModules(const nlohmann::ordered_json &ModulesArray)
-{
-    std::vector<ModuleInfo> Modules;
-    if (!ModulesArray.is_array()) return Modules;
-    for (const auto &M : ModulesArray)
-    {
-        if (!M.is_object()) continue;
-        ModuleInfo Info;
-        Info.Component = M.value("COMPONENT", std::string());
-        if (Info.Component.empty()) continue;
-        Info.Label    = M.value("LABEL", std::string());
-        Info.Required = M.value("REQUIRED", true);
-        Info.Default  = M.value("DEFAULT", true);
-        if (M.contains("EXCLUDE") && M["EXCLUDE"].is_array())
-            for (const auto &E : M["EXCLUDE"])
-                if (E.is_string() && !std::string(E).empty()) Info.Exclude.push_back(std::string(E));
-        Modules.push_back(std::move(Info));
-    }
-    return Modules;
-}
-
-//Returns all variants listed under SUBGAMES[SubgameID].VARIANTS (each with its parsed MODULES).
-std::vector<VariantInfo> ContainerWrapper::GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID)
-{
-    std::vector<VariantInfo> Variants;
-    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
-    if (SubgameIdx == -1) return Variants;
-    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
-    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return Variants;
-    for (auto &V : Subgame["VARIANTS"])
-    {
-        VariantInfo Info;
-        Info.VariantID     = V.value("VARIANT_ID", std::string());
-        Info.Name          = V.value("NAME", Info.VariantID);
-        Info.IsRecommended = V.value("RECOMMENDED", false);
-        Info.HostPlatform  = V.value("HOST_PLATFORM", std::string());
-        if (V.contains("GUEST_PLATFORM") && V["GUEST_PLATFORM"].is_array())   // runner variants only
-            for (const auto &P : V["GUEST_PLATFORM"]) if (P.is_string()) Info.GuestPlatform.push_back(std::string(P));
-        Info.Modules       = ParseModules(V.value("MODULES", nlohmann::ordered_json::array()));
-        Variants.push_back(std::move(Info));
-    }
-    return Variants;
-}
-
-//Returns the MODULES of the variant matching { SubgameID, VariantID } (empty if not found).
-std::vector<ModuleInfo> ContainerWrapper::GetVariantModules(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
-{
-    int SubgameIdx = FindGameIndex(MANIFESTJSON, SubgameID);
-    if (SubgameIdx == -1) return {};
-    auto &Subgame = MANIFESTJSON["GAMES"][SubgameIdx];
-    if (!Subgame.contains("VARIANTS") || !Subgame["VARIANTS"].is_array()) return {};
-    for (auto &V : Subgame["VARIANTS"])
-        if (V.value("VARIANT_ID", std::string()) == VariantID)
-            return ParseModules(V.value("MODULES", nlohmann::ordered_json::array()));
-    return {};
-}
-
-//Resolves the enabled subset of `Modules` to component ids (in load order). See header for the rules:
-//raw enable (REQUIRED || (state ? : DEFAULT)), REQUIRED propagated up the PARENTCOMPONENT chain, then
-//the hierarchy gate (a disabled module-ancestor force-disables descendants).
-std::vector<std::string> ContainerWrapper::ResolveEnabledModules(const std::vector<ModuleInfo> &Modules,
-                                                                 const std::map<std::string, bool> &ModuleStates,
-                                                                 const nlohmann::ordered_json &MANIFESTJSON)
-{
-    std::map<std::string, bool> InModules; // component → is a module here
-    for (const auto &M : Modules) InModules[M.Component] = true;
-
-    //All module-ancestors of a component (PARENTCOMPONENT chain entries that are themselves modules).
-    auto ModuleAncestors = [&](const std::string &Component) {
-        std::vector<std::string> Ancestors;
-        int Idx = FindComponentIndex(MANIFESTJSON, Component);
-        while (Idx != -1)
-        {
-            const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
-            if (!Comp.contains("PARENTCOMPONENT")) break;          // a component may have no parent (root / runner build)
-            const auto &ParentField = Comp["PARENTCOMPONENT"];
-            if (ParentField.is_null() || ParentField == "") break;
-            std::string Parent = ParentField;
-            if (InModules.count(Parent)) Ancestors.push_back(Parent);
-            Idx = FindComponentIndex(MANIFESTJSON, Parent);
-        }
-        return Ancestors;
-    };
-
-    //Step 1: raw enable.
-    std::map<std::string, bool> Enabled;
-    for (const auto &M : Modules)
-        Enabled[M.Component] = M.Required ? true
-                             : (ModuleStates.count(M.Component) ? ModuleStates.at(M.Component) : M.Default);
-
-    //Step 2: a REQUIRED module forces all its module-ancestors enabled (a required child keeps its parents).
-    for (const auto &M : Modules)
-        if (M.Required)
-            for (const auto &A : ModuleAncestors(M.Component)) Enabled[A] = true;
-
-    //Step 2.5: mutual exclusion (EXCLUDE) — no two components linked by an exclusion edge stay enabled. The
-    //relation is symmetric (A excludes B ⇔ B excludes A). REQUIRED modules are kept first (they win); then each
-    //still-enabled optional, in declaration order, is dropped if it conflicts with anything already kept — so
-    //the first-declared of a mutually-exclusive set survives. Deterministic, so a saved state or --module flag
-    //enabling both members can never leak both into the recipe.
-    std::map<std::string, std::set<std::string>> ExclAdj;
-    for (const auto &M : Modules)
-        for (const auto &E : M.Exclude) { ExclAdj[M.Component].insert(E); ExclAdj[E].insert(M.Component); }
-    if (!ExclAdj.empty())
-    {
-        std::set<std::string> Kept;
-        auto Conflicts = [&](const std::string &C) {
-            auto it = ExclAdj.find(C);
-            if (it == ExclAdj.end()) return false;
-            for (const auto &K : Kept) if (it->second.count(K)) return true;
-            return false;
-        };
-        for (const auto &M : Modules) if (Enabled[M.Component] && M.Required)  Kept.insert(M.Component);
-        for (const auto &M : Modules)
-        {
-            if (!Enabled[M.Component] || M.Required) continue;
-            if (Conflicts(M.Component)) Enabled[M.Component] = false;
-            else                        Kept.insert(M.Component);
-        }
-    }
-
-    //Step 3: hierarchy gate — drop any module with a disabled module-ancestor (full chain).
-    std::vector<std::string> EnabledComponents;
-    for (const auto &M : Modules)
-    {
-        if (!Enabled[M.Component]) continue;
-        bool AncestorsOk = true;
-        for (const auto &A : ModuleAncestors(M.Component))
-            if (!Enabled[A]) { AncestorsOk = false; break; }
-        if (AncestorsOk) EnabledComponents.push_back(M.Component);
-    }
-    return EnabledComponents;
-}
-
-//Convenience: the default-enabled module components of a variant (REQUIRED||DEFAULT, no user overrides).
-//Used where a representative recipe scope is needed (e.g. the prelaunch CustomVar picker rebuild).
-std::vector<std::string> ContainerWrapper::FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID)
-{
-    return ResolveEnabledModules(GetVariantModules(MANIFESTJSON, SubgameID, VariantID), {}, MANIFESTJSON);
-}
-
 //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID
 //under SUBGAMES[ContainerParams.subgame_id].VARIANTS and populates exe/work-dir/args fields.
 //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
@@ -820,10 +645,6 @@ bool ContainerWrapper::BuildSubComponentsArray(nlohmann::ordered_json MANIFESTJS
 
 //The platform the HOST runs as. Phase-1 stub — only Linux is supported, so this is constant.
 //TO BE REPLACED by real OS/arch detection when VidyaGod runs on other hosts (e.g. Windows).
-std::string ContainerWrapper::HostPlatform()
-{
-    return "linux64";
-}
 
 //The managed library root — repos are git-cloned here (one subfolder per repo) and every package hydrates in
 //place beside its manifest. This is the ONE location for everything; there is no DOWNLOADS / ipfs cache.
@@ -1008,8 +829,8 @@ static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::stri
         nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
         bool Downloaded = false;
         if (JSONOps::AssembleManifest(QString::fromStdString(Path), Pkg, Warn))
-            Downloaded = (JSONOps::HasGames(Pkg)   && !ContainerWrapper::PackageIpfsCids(Pkg).empty()
-                                                   && ContainerWrapper::PackageHydrated(Pkg, Path))
+            Downloaded = (JSONOps::HasGames(Pkg)   && !ManifestModel::PackageIpfsCids(Pkg).empty()
+                                                   && ManifestModel::PackageHydrated(Pkg, Path))
                       || (JSONOps::HasRunners(Pkg) && RunnerPkgImported(Pkg, Path));
         if (Downloaded) continue;                                                 // downloaded orphan — keep
         if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
@@ -1810,34 +1631,7 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
     return result;
 }
 
-//A VFS layer's locators: its expected LOCAL path (PackagePath/PATH, SOURCE.PATH overriding) and its ipfs CID
-//(empty if none). The local path is the content's home; the CID is one of (eventually several) remote fallback
-//sources to fetch it from. (Future backends — torrent, LAN — read their own SOURCE fields here.)
-static void LayerLocator(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath,
-                         std::filesystem::path &Local, std::string &Cid)
-{
-    std::string PathStr = Sub.value("PATH", std::string());
-    Cid.clear();
-    if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object())
-    {
-        const auto &Src = Sub["SOURCE"];
-        PathStr = Src.value("PATH", PathStr);                                  // SOURCE.PATH overrides the local path
-        if (Src.value("TYPE", std::string("path")) == "ipfs") Cid = Src.value("CID", std::string());
-    }
-    std::filesystem::path P(PathStr);
-    Local = P.is_absolute() ? P : (PackagePath / P);
-}
-
-//Resolves a File/Dir/Zip layer's content to its LOCAL absolute path (PackagePath/PATH). Content always lives
-//in place inside the package's LIBRARY dir — hydrated there by ImportPackage/ImportRunner (or already present
-//for a local package). The CID in SOURCE is the permanent identity used to fetch/seed it; this resolution is
-//pure and local-only (no cache). A missing path means the package isn't hydrated (EnsureSources blocks launch).
-static std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::filesystem::path &PackagePath)
-{
-    std::filesystem::path Local; std::string Cid;
-    LayerLocator(Sub, PackagePath, Local, Cid);
-    return Local.string();
-}
+//(LayerLocator / ResolveLayerSource moved to ManifestModel — see manifestmodel.h.)
 
 //Returns the unresolved dependency locators for a built container — drives the portable/standalone
 //readiness warning. Iteration 1 verifies every VFS layer's resolved source exists.
@@ -2237,53 +2031,7 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     return true;
 }
 
-//Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
-//(VFSZip/Dir/FileLayer) across its COMPONENTS. This is the content a game install must fetch to be playable.
-std::vector<std::string> ContainerWrapper::PackageIpfsCids(const nlohmann::ordered_json &Manifest)
-{
-    std::vector<std::string> Cids;
-    std::set<std::string> Seen;
-    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return Cids;
-    for (const auto &C : Manifest["COMPONENTS"])
-    {
-        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : C["SUBCOMPONENTS"])
-        {
-            const std::string T = S.value("TYPE", std::string());
-            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
-            if (!S.contains("SOURCE") || !S["SOURCE"].is_object()) continue;
-            const auto &Src = S["SOURCE"];
-            if (Src.value("TYPE", std::string()) != "ipfs") continue;
-            const std::string Cid = Src.value("CID", std::string());
-            if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
-        }
-    }
-    return Cids;
-}
-
-//Every distinct cover-art CID a package references — the SOURCE:{ipfs,CID} of each GAMES[].METADATA.COVER object
-//(and the legacy game-level COVER). Covers are content-addressed like layers; this drives the IPFS-tab "Assets".
-std::vector<std::string> ContainerWrapper::PackageCoverCids(const nlohmann::ordered_json &Manifest)
-{
-    std::vector<std::string> Cids;
-    std::set<std::string> Seen;
-    if (!Manifest.contains("GAMES") || !Manifest["GAMES"].is_array()) return Cids;
-    auto Consider = [&](const nlohmann::ordered_json &Holder)
-    {
-        if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
-        const auto &Cv = Holder["COVER"];
-        if (!Cv.contains("SOURCE") || !Cv["SOURCE"].is_object() || Cv["SOURCE"].value("TYPE", std::string()) != "ipfs") return;
-        const std::string Cid = Cv["SOURCE"].value("CID", std::string());
-        if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
-    };
-    for (const auto &G : Manifest["GAMES"])
-    {
-        if (!G.is_object()) continue;
-        if (G.contains("METADATA") && G["METADATA"].is_object()) Consider(G["METADATA"]);
-        Consider(G);
-    }
-    return Cids;
-}
+//(PackageIpfsCids / PackageCoverCids moved to ManifestModel — see manifestmodel.h.)
 
 //HYDRATES a package IN PLACE: fetches every ipfs content layer AND every cover to its declared PATH inside the
 //package's LIBRARY dir (the git clone), turning an un-hydrated entry into a fully-local one — identical to a local
@@ -2492,47 +2240,7 @@ int ContainerWrapper::MirrorDehydrated(const std::string &SrcDir, const std::str
     return Copied;
 }
 
-//True when every VFS content layer of a game is present locally at its expected path (vacuously true if the
-//package has no content layers — nothing to fetch). This is the "hydrated" state the library/store split keys
-//off; it mirrors launch's local-first resolution via LayerLocator.
-bool ContainerWrapper::PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir)
-{
-    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return true;
-    const std::filesystem::path Pkg(PackageDir);
-    for (const auto &C : Manifest["COMPONENTS"])
-    {
-        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : C["SUBCOMPONENTS"])
-        {
-            const std::string T = S.value("TYPE", std::string());
-            if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(S, Pkg, Local, Cid);
-            std::error_code Ec;
-            if (!std::filesystem::exists(Local, Ec)) return false;                // a layer's content is missing
-        }
-    }
-    return true;
-}
-
-//True iff the manifest declares at least one VFS content layer. A content-less package (a malformed game with
-//no layers, e.g. Dino Crisis 2, or a PATH-only runner like wine/umu-proton/native-passthrough/snes9x) returns
-//false — paired with PackageHydrated it keeps those out of the Library/Packages tabs. Ignores SOURCE so a
-//locally-added package (content present, no CID) still counts as having content.
-bool ContainerWrapper::PackageHasContent(const nlohmann::ordered_json &Manifest)
-{
-    if (!Manifest.contains("COMPONENTS") || !Manifest["COMPONENTS"].is_array()) return false;
-    for (const auto &C : Manifest["COMPONENTS"])
-    {
-        if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : C["SUBCOMPONENTS"])
-        {
-            const std::string T = S.value("TYPE", std::string());
-            if (T == "VFSZipLayer" || T == "VFSDirLayer" || T == "VFSFileLayer") return true;
-        }
-    }
-    return false;
-}
+//(PackageHydrated / PackageHasContent moved to ManifestModel — see manifestmodel.h.)
 
 //True when a package is installed: its PACKAGEUID is in LIBRARY and every content CID is locally cached.
 bool ContainerWrapper::IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)

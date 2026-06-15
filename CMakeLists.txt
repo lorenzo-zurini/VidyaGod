@@ -35,6 +35,9 @@ set(PROJECT_SOURCES
     src/containerwrapper.h
     src/containerwrapper.cpp
 
+    src/manifestmodel.h
+    src/manifestmodel.cpp
+
     src/registrywrapper.h
     src/registrywrapper.cpp
 

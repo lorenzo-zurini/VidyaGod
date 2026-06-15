@@ -21,6 +21,8 @@
 #include <QMutex>
 #include <QMutexLocker>
 
+#include "manifestmodel.h"   // ModuleInfo/VariantInfo + pure manifest queries (moved out of this class)
+
 //Determines which execution backend is used for a subgame.
 //  Wine     — Windows executables via Wine/Proton (umu-run); needs a Wine prefix and VFS drive_c layout.
 //  Emulator — ROM-based games; runner receives the ROM path as its argument.
@@ -28,28 +30,7 @@
 //  Custom   — Any other runner; DATAPATH is passed instead of EXEPATH/ROM.
 enum class RunnerType { Wine, Emulator, Native, Custom };
 
-//Describes one available variant for a given subgame.
-//Selecting a variant = selecting which set of ENDPOINTS (terminal components) to build.
-//A toggleable build module: a reference to a component (leaf OR internal node) the user can enable or
-//disable. REQUIRED modules are always in the recipe and locked in the UI; optional ones (REQUIRED:false)
-//are user-toggled, starting at DEFAULT. Used identically by variants and runners (universal schema).
-struct ModuleInfo {
-    std::string Component;       // COMPONENT — the component id this module pulls in
-    std::string Label;           // optional LABEL for the tree (falls back to component NAME/id)
-    bool        Required = true;  // REQUIRED — defaults true (modules are required unless opted out)
-    bool        Default  = true;  // DEFAULT — initial enabled state when optional; defaults true
-    std::vector<std::string> Exclude; // EXCLUDE — component ids this module is mutually exclusive with (symmetric)
-};
-
-//Each module walks its component's PARENTCOMPONENT chain; the union of enabled chains forms the recipe.
-struct VariantInfo {
-    std::string VariantID;      // VARIANT_ID field on the variant
-    std::string Name;           // optional NAME; falls back to VARIANT_ID for display
-    bool        IsRecommended = false; // RECOMMENDED:true on the variant — shown with ⭐ in picker
-    std::string HostPlatform;   // HOST_PLATFORM — per-variant (game: the platform it targets; runner: the host OS it runs on)
-    std::vector<std::string> GuestPlatform; // GUEST_PLATFORM — runner variants only (the guest platforms this variant serves)
-    std::vector<ModuleInfo> Modules; // MODULES array (toggleable component references, load order)
-};
+//(ModuleInfo / VariantInfo and the pure manifest-query helpers now live in manifestmodel.h / ManifestModel.)
 
 //All resolved parameters needed to build and launch a single container session.
 //Populated in two stages:
@@ -209,43 +190,19 @@ public:
     //recurse into USERDATA). Run at the start of BuildContainerRuntime, before any mounting.
     static void CleanStaleRuntime(const std::filesystem::path &TempPath);
 
-    //ID lookup helpers:
-    //Linear scan of MANIFEST["GAMES"] for a matching SUBGAMEID. Returns index or -1.
-    static int FindGameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
-
     //Per-package user settings helpers (settings live inside LIBRARY[i]["USERSETTINGS"]):
     //Returns a COPY of the USERSETTINGS object for the given PackageUID, or an empty object if not found.
     static nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID);
     //Writes a key/value into LIBRARY[i]["USERSETTINGS"] for the given PackageUID.
     //Creates the USERSETTINGS object if absent. No-op if the package is not in LIBRARY.
     static void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value);
-    //Linear scan of MANIFEST["COMPONENTS"] for a matching COMPONENTID. Returns index or -1.
-    //Returns -1 immediately if ComponentID is empty.
-    static int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID);
+
+    //(Game/component/variant/module lookups moved to ManifestModel — see manifestmodel.h.)
 
     //Container initialization:
     //Resolves which variant + endpoints to build given the subgame_id / VariantID / component_id combo.
     //If only subgame_id is set, picks the RECOMMENDED variant (else first) and fills VariantID + Endpoints.
     static bool DecideComponent(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-
-    //Returns all variants defined under SUBGAMES[SubgameID].VARIANTS (with their MODULES).
-    static std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
-
-    //Returns the MODULES of the variant matching { SubgameID, VariantID } (empty if not found).
-    static std::vector<ModuleInfo> GetVariantModules(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
-
-    //Reads a MODULES json array (objects: COMPONENT/REQUIRED/DEFAULT/LABEL) into ModuleInfo entries.
-    static std::vector<ModuleInfo> ParseModules(const nlohmann::ordered_json &ModulesArray);
-
-    //Resolves which of `Modules` are enabled into a list of component ids (load order), applying:
-    //REQUIRED||(ModuleStates? : DEFAULT), REQUIRED propagating up the PARENTCOMPONENT chain, and the
-    //hierarchy gate (a disabled module-ancestor force-disables its descendants). Used for variants AND runners.
-    static std::vector<std::string> ResolveEnabledModules(const std::vector<ModuleInfo> &Modules,
-                                                          const std::map<std::string, bool> &ModuleStates,
-                                                          const nlohmann::ordered_json &MANIFESTJSON);
-
-    //Convenience: the default-enabled module component ids of a variant (REQUIRED||DEFAULT, no overrides).
-    static std::vector<std::string> FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
 
     //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID under the subgame
     //identified by ContainerParams.subgame_id, then populates ExePathRelative, ExePathComplete,
@@ -256,21 +213,12 @@ public:
     //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
     //{component_id} when Endpoints is empty (direct/editor mode).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Returns the platform token the HOST runs as (e.g. "linux64"). Phase-1 stub — later real
-    //detection. Used to reason about which guest platforms run natively vs. need a translation runner.
-    static std::string HostPlatform();
     //Every package manifest known across all configured Repositories (Settings.Repositories) — the
     //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + locally-added LIBRARY entries, persisted.
     static std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
     //As CatalogPackages, but pairs each assembled manifest with its owning package directory (the repo-clone
     //dir the manifest was read from). Installers/UI need the dir to register a LIBRARY PATH and resolve layers.
     static std::vector<std::pair<nlohmann::ordered_json, std::string>> CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON);
-    //Every distinct ipfs CID a package's content references — the SOURCE:{TYPE:"ipfs",CID} of every VFS layer
-    //(VFSZip/Dir/FileLayer) across its COMPONENTS. The set a game install must fetch to be playable.
-    static std::vector<std::string> PackageIpfsCids(const nlohmann::ordered_json &Manifest);
-    //Every distinct cover-art CID a package references — the SOURCE:{ipfs,CID} of each GAMES[].METADATA.COVER
-    //object (covers are content-addressed like layers). Used by the IPFS tab's "Assets" grouping.
-    static std::vector<std::string> PackageCoverCids(const nlohmann::ordered_json &Manifest);
     //The managed library root (where imports are hydrated, one subfolder per repo): Settings.Paths.LibraryRoot
     //or the default ~/.VidyaGod/library. Exposed so the UI can tell managed (delete-on-remove) entries apart.
     static std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
@@ -298,14 +246,6 @@ public:
     //package is safe). Returns the number of files copied. Shared by SyncRepositories (mirror repo→
     //library) and PublishPackage (export).
     static int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
-    //True when a game package is HYDRATED — every VFS content layer is present locally at its expected path
-    //(the local-first state launch wants). A package with no content layers is vacuously hydrated. Drives the
-    //Library (hydrated) vs Store (un-hydrated) split.
-    static bool PackageHydrated(const nlohmann::ordered_json &Manifest, const std::string &PackageDir);
-    //True when a package declares ANY VFS content layer (Zip/Dir/File) at all — distinguishes a real package
-    //from a content-less one (a malformed game with no layers, or a PATH-only runner). Manifest-only, ignores
-    //SOURCE so local-only content counts. Pair with PackageHydrated to hide content-less entries from the UI.
-    static bool PackageHasContent(const nlohmann::ordered_json &Manifest);
     //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
     //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
     //owning components).

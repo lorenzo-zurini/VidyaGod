@@ -86,7 +86,7 @@ void LibraryGameCard::InitializeClassVariables()
     std::vector<std::string> AsmWarn;
     if (!JSONOps::AssembleManifest(QString::fromStdString(PackagePath.string()), *MANIFESTJSON, AsmWarn)) return;
 
-    int idx = ContainerWrapper::FindGameIndex(*MANIFESTJSON, SubgameID);
+    int idx = ManifestModel::FindGameIndex(*MANIFESTJSON, SubgameID);
     if (idx == -1) return;
 
     GameTitle = QString::fromStdString((*MANIFESTJSON)["GAMES"][idx]["TITLE"]);
@@ -1409,8 +1409,8 @@ void MainWindow::RebuildAvailableTab()
         nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) continue;
         if (!JSONOps::HasGames(Pkg)) continue;
-        if (ContainerWrapper::PackageHydrated(Pkg, Dir)) continue;                // downloaded → Library tab
-        if (ContainerWrapper::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
+        if (ManifestModel::PackageHydrated(Pkg, Dir)) continue;                // downloaded → Library tab
+        if (ManifestModel::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
         const QString PkgUid = QString::fromStdString(Pkg.value("PACKAGEUID", std::string()));
         const bool Busy = DownloadingUids.contains(PkgUid);
         double BusyPct = -1.0;                                                    // carry current progress across rebuilds
@@ -1473,7 +1473,7 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     DownloadingUids.insert(Uid);
     // Track this package's content CIDs so transfer-progress signals can aggregate onto its card.
     QStringList Cids;
-    for (const auto & C : ContainerWrapper::PackageIpfsCids(Pkg))
+    for (const auto & C : ManifestModel::PackageIpfsCids(Pkg))
     { const QString Qc = QString::fromStdString(C); Cids << Qc; DownloadCidToUid[Qc] = Uid; DownloadCidPct[Qc] = 0.0; }
     DownloadUidCids[Uid] = Cids;
 
@@ -1691,9 +1691,9 @@ void MainWindow::BuildLibraryGameCards()
         //runner-only package contributes no cards.
         if (!JSONOps::HasGames(pm)) continue;
         //Skip content-less packages (a malformed game with no VFS layers is vacuously "hydrated").
-        if (!ContainerWrapper::PackageHasContent(pm)) continue;
+        if (!ManifestModel::PackageHasContent(pm)) continue;
         //Only HYDRATED games appear in the Library; un-hydrated (synced-but-not-downloaded) ones live in the Store.
-        if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
+        if (!ManifestModel::PackageHydrated(pm, LibPath)) continue;
         for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
             std::string sid = pm["GAMES"][j].contains("GAMEID") &&
                 !pm["GAMES"][j]["GAMEID"].is_null()
@@ -1778,8 +1778,8 @@ void MainWindow::BuildPackagesDynamicUI()
         const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
         nlohmann::ordered_json pm; std::vector<std::string> AsmWarn;
         if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
-        if (!ContainerWrapper::PackageHasContent(pm)) continue;
-        if (!ContainerWrapper::PackageHydrated(pm, LibPath)) continue;
+        if (!ManifestModel::PackageHasContent(pm)) continue;
+        if (!ManifestModel::PackageHydrated(pm, LibPath)) continue;
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);
