@@ -1688,10 +1688,17 @@ void MainWindow::BuildPackagesDynamicUI()
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);
-        QObject::connect(rb, &QPushButton::clicked, this, [this,i]{
+        // Key removal by PACKAGEUID, resolved at click time — robust against the array shifting under us.
+        const std::string Uid = (*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string());
+        QObject::connect(rb, &QPushButton::clicked, this, [this, Uid]{
+            auto & Lib = (*GlobalConfigJSON)["LIBRARY"];
+            int idx = -1;
+            for (int k = 0; k < (int)Lib.size(); k++)
+                if (Lib[k].value("PACKAGEUID", std::string()) == Uid) { idx = k; break; }
+            if (idx < 0) return;
             // A managed import (under the library folder) → delete its hydrated copy. A local/portable package
             // added from elsewhere → only drop the reference (never touch the user's own files).
-            const std::string Path = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
+            const std::string Path = Lib[idx].value("PATH", std::string());
             const std::string LibRoot = ContainerWrapper::LibraryRootDir(*GlobalConfigJSON);
             std::error_code Ec;
             if (!Path.empty() && !LibRoot.empty())
@@ -1700,7 +1707,7 @@ void MainWindow::BuildPackagesDynamicUI()
                 const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(LibRoot), Ec).string();
                 if (P.rfind(R + "/", 0) == 0) std::filesystem::remove_all(P, Ec); // P strictly under the library root
             }
-            (*GlobalConfigJSON)["LIBRARY"].erase(i); RebuildDynamicUI(); SaveGlobalConfigJSON();
+            Lib.erase(idx); RebuildDynamicUI(); SaveGlobalConfigJSON();
         });
         g->addWidget(rb, row, 2);
         row++;
