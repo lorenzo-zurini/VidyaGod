@@ -651,8 +651,7 @@ void MainWindow::BuildStaticUI()
         QObject::connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
             if (!checked) return;
             CurrentSort = mode;
-            sortCards();
-            View->layoutCards(CardPixelWidth);
+            BuildLibraryDynamicUI();   // re-sort + re-filter + relayout
         });
         tl->addWidget(b);
     };
@@ -661,6 +660,17 @@ void MainWindow::BuildStaticUI()
     makeSortBtn("Series", SortMode::Series);
 
     tl->addStretch();
+
+    // Search filter (by title).
+    QLineEdit * searchEdit = new QLineEdit(toolbar);
+    searchEdit->setPlaceholderText("Search…");
+    searchEdit->setClearButtonEnabled(true);
+    searchEdit->setFixedWidth(180);
+    QObject::connect(searchEdit, &QLineEdit::textChanged, this, [this](const QString & t){
+        LibrarySearch = t.trimmed();
+        BuildLibraryDynamicUI();
+    });
+    tl->addWidget(searchEdit);
 
     // Size buttons — right side
     auto makeBtn = [&](const QString & lbl, int w) {
@@ -1220,6 +1230,15 @@ void MainWindow::BuildAvailableTab()
     };
     makeSortBtn("Name", SortMode::Name); makeSortBtn("Date", SortMode::Date); makeSortBtn("Series", SortMode::Series);
     tl->addStretch();
+    QLineEdit * availSearch = new QLineEdit(toolbar);
+    availSearch->setPlaceholderText("Search…");
+    availSearch->setClearButtonEnabled(true);
+    availSearch->setFixedWidth(180);
+    connect(availSearch, &QLineEdit::textChanged, this, [this](const QString & t){
+        AvailableSearch = t.trimmed();
+        RebuildAvailableTab();
+    });
+    tl->addWidget(availSearch);
     auto makeSizeBtn = [&](const QString & lbl, int w) {
         QPushButton * b = new QPushButton(lbl, toolbar);
         b->setCheckable(true); b->setChecked(CardPixelWidth == w);
@@ -1307,6 +1326,8 @@ void MainWindow::RebuildAvailableTab()
                               ? std::string(Pkg["GAMES"][j]["GAMEID"]) : "";
             auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
             c->InitializeClassVariables();
+            if (!AvailableSearch.isEmpty() && !c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
+            { delete c; continue; }                                              // filtered out by search
             c->Downloading = Busy;
             c->DownloadPercent = BusyPct;
             AvailableGameCards->append(c);
@@ -1593,17 +1614,13 @@ void MainWindow::sortCards()
     case SortMode::Name:
         std::sort(cards.begin(), cards.end(),
             [](auto * a, auto * b){ return a->SortTitle < b->SortTitle; });
-        View->setSeriesGroups({});
         break;
-
     case SortMode::Date:
         std::sort(cards.begin(), cards.end(),
             [](auto * a, auto * b){ return a->SortDate < b->SortDate; });
-        View->setSeriesGroups({});
         break;
-
-    case SortMode::Series: {
-        // Games without a series sort last, alphabetically by title within series
+    case SortMode::Series:
+        // Games without a series sort last, alphabetically by title within series.
         std::sort(cards.begin(), cards.end(), [](auto * a, auto * b) {
             bool aNoSeries = a->SeriesName.isEmpty();
             bool bNoSeries = b->SeriesName.isEmpty();
@@ -1611,15 +1628,25 @@ void MainWindow::sortCards()
             if (aNoSeries && bNoSeries) return a->SortTitle < b->SortTitle;
             return a->SortSeriesKey < b->SortSeriesKey;
         });
+        break;
+    }
 
-        // Build series groups with deterministic colors from the series name hash
+    // Apply the search filter to produce the visible subset the view actually shows.
+    LibraryVisible.clear();
+    for (auto * c : cards)
+        if (LibrarySearch.isEmpty() || c->GameTitle.contains(LibrarySearch, Qt::CaseInsensitive))
+            LibraryVisible.append(c);
+    View->setCards(&LibraryVisible);
+
+    // Series colour-band groups, computed over the VISIBLE (sorted+filtered) cards.
+    if (CurrentSort == SortMode::Series) {
         QVector<LibraryView::SeriesGroup> groups;
-        const int n = cards.count();
+        const int n = LibraryVisible.count();
         int start = 0;
         while (start < n) {
-            const QString & sName = cards[start]->SeriesName;
+            const QString & sName = LibraryVisible[start]->SeriesName;
             int end = start;
-            while (end + 1 < n && cards[end + 1]->SeriesName == sName) ++end;
+            while (end + 1 < n && LibraryVisible[end + 1]->SeriesName == sName) ++end;
             if (!sName.isEmpty()) {
                 uint h = qHash(sName);
                 LibraryView::SeriesGroup g;
@@ -1630,15 +1657,14 @@ void MainWindow::sortCards()
             start = end + 1;
         }
         View->setSeriesGroups(groups);
-        break;
-    }
+    } else {
+        View->setSeriesGroups({});
     }
 }
 
 void MainWindow::BuildLibraryDynamicUI()
 {
-    sortCards();
-    View->setCards(LibraryGameCards);
+    sortCards();   // sorts + filters into LibraryVisible and calls View->setCards()
     View->prescaleCovers(CardPixelWidth);
     View->layoutCards(CardPixelWidth);
 }

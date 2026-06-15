@@ -181,6 +181,8 @@ private:
     SortMode      CurrentSort    = SortMode::Name;
 
     QList<LibraryGameCard *> * LibraryGameCards = new QList<LibraryGameCard *>();
+    QList<LibraryGameCard *>   LibraryVisible;     // the search-filtered subset actually shown by the view
+    QString                    LibrarySearch;      // case-insensitive title filter ("" = show all)
 
     QWidget     * PackagesTabWidget;
     QVBoxLayout * PackagesTabWidgetLayout;
@@ -198,6 +200,7 @@ private:
     LibraryView * AvailableView      = nullptr;   // shares the Library card grid (download-on-hover, grouped)
     QList<LibraryGameCard *> * AvailableGameCards = new QList<LibraryGameCard *>();
     QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
+    QString       AvailableSearch;                // case-insensitive title filter for the Available grid
     QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
     QHash<QString, QString>      DownloadCidToUid; // in-flight content CID → its owning PACKAGEUID
     QHash<QString, QStringList>  DownloadUidCids;  // PACKAGEUID → its content CIDs (for averaging progress)
