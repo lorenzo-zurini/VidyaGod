@@ -53,6 +53,9 @@ set(PROJECT_SOURCES
     src/prelaunchwindow.h
     src/prelaunchwindow.cpp
 
+    src/launchthread.h
+    src/launchthread.cpp
+
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
