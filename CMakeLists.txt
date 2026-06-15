@@ -21,6 +21,9 @@ set(PROJECT_SOURCES
     src/main.h
 
     src/mainwindow.cpp
+
+    src/libraryview.h
+    src/libraryview.cpp
     src/mainwindow.h
 
     src/packageeditor.h
