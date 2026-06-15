@@ -156,7 +156,7 @@ void LibraryGameCard::play()
         if (!ContainerWrapper::EnsureSources(CP))
         {
             nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
-            for (auto & PD : ContainerWrapper::CatalogPackagesWithDir(*GlobalConfigJSON))
+            for (auto & PD : PackageCatalog::CatalogPackagesWithDir(*GlobalConfigJSON))
                 if (JSONOps::HasRunners(PD.first))
                     for (const auto & R : PD.first["RUNNERS"])
                         if (R.value("RUNNER_ID", std::string()) == CP.RunnerID) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
@@ -189,7 +189,7 @@ void LibraryGameCard::play()
         uid = std::string((*MANIFESTJSON)["PACKAGEUID"]);
     bool skip = false;
     if (!uid.empty()) {
-        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, uid);
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, uid);
         if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
@@ -1037,7 +1037,7 @@ void MainWindow::RebuildSettingsReposPage()
         connect(syncBtn, &QPushButton::clicked, this, [this, syncBtn]{
             syncBtn->setEnabled(false); syncBtn->setText("Syncing…");
             std::thread([this]{
-                ContainerWrapper::SyncRepositories(*GlobalConfigJSON);   // git pull each repo + reindex LIBRARY
+                PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // git pull each repo + reindex LIBRARY
                 QMetaObject::invokeMethod(this, [this]{
                     SaveGlobalConfigJSON();
                     RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
@@ -1105,7 +1105,7 @@ void MainWindow::RebuildSettingsReposPage()
         addBtn->setEnabled(false); addBtn->setText("Cloning…");
         // Clone/pull + mirror + index off-thread (network); persist and refresh the pages when done.
         std::thread([this]{
-            ContainerWrapper::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
+            PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
             QMetaObject::invokeMethod(this, [this]{
                 SaveGlobalConfigJSON();
                 RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
@@ -1219,7 +1219,7 @@ QWidget * MainWindow::BuildPathsSettingsPage()
 static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc, QHash<QString, QString> * OutPackages = nullptr)
 {
     QHash<QString, QString> Labels;
-    for (const auto & Pkg : ContainerWrapper::CatalogPackages(gc))
+    for (const auto & Pkg : PackageCatalog::CatalogPackages(gc))
     {
         const std::string PkgName = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string()));
         //Content layers → grouped under their package.
@@ -1484,7 +1484,7 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     const std::string DirCopy = Dir;
     std::thread([this, PkgCopy, DirCopy, Uid]{
         std::string Err;
-        bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
+        bool Ok = PackageCatalog::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
         QMetaObject::invokeMethod(this, [this, Ok, Err, Uid]{
             DownloadingUids.remove(Uid);
             const bool Cancelled = CancellingUids.remove(Uid);
@@ -1794,7 +1794,7 @@ void MainWindow::BuildPackagesDynamicUI()
             // A managed import (under the library folder) → delete its hydrated copy. A local/portable package
             // added from elsewhere → only drop the reference (never touch the user's own files).
             const std::string Path = Lib[idx].value("PATH", std::string());
-            const std::string LibRoot = ContainerWrapper::LibraryRootDir(*GlobalConfigJSON);
+            const std::string LibRoot = PackageCatalog::LibraryRootDir(*GlobalConfigJSON);
             std::error_code Ec;
             if (!Path.empty() && !LibRoot.empty())
             {

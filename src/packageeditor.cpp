@@ -47,7 +47,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
         const QString Dest = QFileDialog::getExistingDirectory(
             this, "Export dehydrated copy to… (cancel to dehydrate in place only)");
         std::string Err;
-        const bool Ok = ContainerWrapper::PublishPackage(
+        const bool Ok = PackageCatalog::PublishPackage(
             PackageDir->path().toStdString(), Dest.toStdString(), &Err);
         if (Ok)
         {
@@ -862,7 +862,7 @@ bool PackageEditor::BuildUI()
                         };
                         if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array())
                             for (auto &R : (*MANIFESTJSON)["RUNNERS"]) AddPin(R);
-                        for (auto &R : ContainerWrapper::RegistryRunners(*GlobalConfigJSON)) AddPin(R);
+                        for (auto &R : PackageCatalog::RegistryRunners(*GlobalConfigJSON)) AddPin(R);
                         { int idx = RPin->findData(QString::fromStdString(EP.value("RUNNER_ID", std::string()))); if (idx >= 0) { QSignalBlocker B(RPin); RPin->setCurrentIndex(idx); } }
                         QObject::connect(RPin, &QComboBox::currentIndexChanged, this, [this, i, epj, RPin](){
                             QString Rid = RPin->currentData().toString();
@@ -953,7 +953,7 @@ bool PackageEditor::BuildUI()
                         };
                         if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array())
                             for (auto &R : (*MANIFESTJSON)["RUNNERS"]) CollectR(R);
-                        for (auto &R : ContainerWrapper::RegistryRunners(*GlobalConfigJSON)) CollectR(R);
+                        for (auto &R : PackageCatalog::RegistryRunners(*GlobalConfigJSON)) CollectR(R);
                         if (Runners.empty()) { QMessageBox::warning(this, "Execute", "No runners for this platform."); return; }
 
                         QDialog D(this);
@@ -2042,7 +2042,7 @@ void PackageEditor::ExecuteComponent()
     };
     if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array())
         for (auto &R : (*MANIFESTJSON)["RUNNERS"]) CollectRunner(R, "bundle");
-    for (auto &R : ContainerWrapper::RegistryRunners(*GlobalConfigJSON)) CollectRunner(R, "registry");
+    for (auto &R : PackageCatalog::RegistryRunners(*GlobalConfigJSON)) CollectRunner(R, "registry");
 
     if (Runners.empty())
     {

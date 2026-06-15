@@ -38,6 +38,9 @@ set(PROJECT_SOURCES
     src/manifestmodel.h
     src/manifestmodel.cpp
 
+    src/packagecatalog.h
+    src/packagecatalog.cpp
+
     src/registrywrapper.h
     src/registrywrapper.cpp
 

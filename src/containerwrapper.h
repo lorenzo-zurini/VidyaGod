@@ -22,6 +22,7 @@
 #include <QMutexLocker>
 
 #include "manifestmodel.h"   // ModuleInfo/VariantInfo + pure manifest queries (moved out of this class)
+#include "packagecatalog.h"  // catalog/sharing service (moved out of this class)
 
 //Determines which execution backend is used for a subgame.
 //  Wine     — Windows executables via Wine/Proton (umu-run); needs a Wine prefix and VFS drive_c layout.
@@ -190,14 +191,8 @@ public:
     //recurse into USERDATA). Run at the start of BuildContainerRuntime, before any mounting.
     static void CleanStaleRuntime(const std::filesystem::path &TempPath);
 
-    //Per-package user settings helpers (settings live inside LIBRARY[i]["USERSETTINGS"]):
-    //Returns a COPY of the USERSETTINGS object for the given PackageUID, or an empty object if not found.
-    static nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID);
-    //Writes a key/value into LIBRARY[i]["USERSETTINGS"] for the given PackageUID.
-    //Creates the USERSETTINGS object if absent. No-op if the package is not in LIBRARY.
-    static void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value);
-
-    //(Game/component/variant/module lookups moved to ManifestModel — see manifestmodel.h.)
+    //(Per-package user settings + game/component/variant/module lookups moved out: PackageCatalog::Get/Set
+    //PackageUserSetting and ManifestModel::Find*/variants/modules respectively — see those headers.)
 
     //Container initialization:
     //Resolves which variant + endpoints to build given the subgame_id / VariantID / component_id combo.
@@ -213,48 +208,8 @@ public:
     //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
     //{component_id} when Endpoints is empty (direct/editor mode).
     static bool CreateRecipe(nlohmann::ordered_json MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Every package manifest known across all configured Repositories (Settings.Repositories) — the
-    //catalog, kind-agnostic and globally cross-referenceable. TODO(sharing): + locally-added LIBRARY entries, persisted.
-    static std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
-    //As CatalogPackages, but pairs each assembled manifest with its owning package directory (the repo-clone
-    //dir the manifest was read from). Installers/UI need the dir to register a LIBRARY PATH and resolve layers.
-    static std::vector<std::pair<nlohmann::ordered_json, std::string>> CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON);
-    //The managed library root (where imports are hydrated, one subfolder per repo): Settings.Paths.LibraryRoot
-    //or the default ~/.VidyaGod/library. Exposed so the UI can tell managed (delete-on-remove) entries apart.
-    static std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
-    //Installs a catalog GAME package (sibling of ImportRunner): fetches+pins every PackageIpfsCids over IPFS,
-    //then registers a slim LIBRARY entry {PACKAGEUID,PACKAGENAME,PATH:PackageDir} in
-    //GlobalConfigJSON (deduped by PACKAGEUID). The caller persists GlobalConfig and refreshes the UI. The
-    //game's runner is provisioned separately by the play()/EnsureSources gate. Returns false (with *Error) on
-    //a failed fetch.
-    static bool ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
-                               const std::string &PackageDir, std::string *Error = nullptr);
-    //True when a package is installed: its PACKAGEUID is in LIBRARY and every PackageIpfsCids is locally cached.
-    static bool IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
-    //PUBLISH (the inverse of import — dehydrate a local package for sharing). For every VFS layer in PackageDir
-    //whose local content exists and has no ipfs SOURCE CID yet, seeds it over IPFS (IpfsWrapper::AddNoCopy) and
-    //records SOURCE:{TYPE:ipfs,CID} into its manifest fragment IN PLACE (content kept — the package becomes a
-    //local+CID hybrid). The curated GAMES[].METADATA.COVER is content-addressed the same way: kept as an object
-    //{PATH:<filename>, SOURCE:{ipfs,CID}}. Layers/covers already carrying a CID are skipped (idempotent). If
-    //DehydratedDestDir is non-empty, ALSO exports a manifest-only "dehydrated" copy there (JSON fragments only,
-    //NO image bytes or content) — the artifact a repo shares. Seeding needs the user's daemon; CIDs are still
-    //computed offline. Returns false (with *Error) on failure.
-    static bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
-    //Copies a package's DEHYDRATED manifest from SrcDir into DestDir: ONLY its top-level *.json fragments, nothing
-    //else (no content, no image bytes — covers travel as CIDs in the manifest). DestDir is created if absent;
-    //fragments are overwritten, but anything already present is LEFT untouched (so mirroring over a hydrated
-    //package is safe). Returns the number of files copied. Shared by SyncRepositories (mirror repo→
-    //library) and PublishPackage (export).
-    static int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
-    //Returns every runner object across the catalog (the HasRunners packages). Used by the UI (runner
-    //picker, settings list). The launch resolver scans repositories itself (it also needs each runner's
-    //owning components).
-    static std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
-    //Syncs the configured Repositories: git clone/pull each directly into LIBRARY/<repo> (the clone IS the library),
-    //then upsert ONE un-hydrated LIBRARY index entry per package (kind is emergent — a repo's games and runners all
-    //live in the single LIBRARY), reconciling away repo entries that vanished. There is no DOWNLOADS / mirror step.
-    //Mutates GlobalConfigJSON; the caller persists it.
-    static void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
+    //(Catalog / RegistryRunners / LibraryRootDir / Import / Publish / Mirror / Sync moved to PackageCatalog —
+    //see packagecatalog.h. ImportRunner stays here: it needs the launch engine's mount + wineboot machinery.)
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
     //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
     static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);

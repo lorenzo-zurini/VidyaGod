@@ -161,7 +161,7 @@ int main(int argc, char *argv[])
         if (auto Colon = Id.find(':'); Colon != std::string::npos) { Variant = Id.substr(Colon + 1); Id = Id.substr(0, Colon); }
         LogOut("main.cpp", "Importing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
         nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
-        for (auto &PD : ContainerWrapper::CatalogPackagesWithDir(GlobalConfigJSON))
+        for (auto &PD : PackageCatalog::CatalogPackagesWithDir(GlobalConfigJSON))
             if (JSONOps::HasRunners(PD.first))
                 for (const auto &R : PD.first["RUNNERS"])
                     if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
@@ -190,7 +190,7 @@ int main(int argc, char *argv[])
                 }
         if (Manifest.is_null() || Dir.empty()) { LogErr("main.cpp", "No library package found for PACKAGEUID '" + Uid + "'."); return 1; }
         std::string Err;
-        const bool Ok = ContainerWrapper::ImportPackage(GlobalConfigJSON, Manifest, Dir, &Err);
+        const bool Ok = PackageCatalog::ImportPackage(GlobalConfigJSON, Manifest, Dir, &Err);
         if (Ok)
         {
             QFile GCFile(AppDataDir.filePath("GlobalConfig.JSON"));
@@ -209,7 +209,7 @@ int main(int argc, char *argv[])
         const std::string Dest = LaunchParameters.PublishToDir;
         LogOut("main.cpp", "Publishing package: " + Dir + (Dest.empty() ? "" : (" -> " + Dest)));
         std::string Err;
-        const bool Ok = ContainerWrapper::PublishPackage(Dir, Dest, &Err);
+        const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err);
         LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
         return Ok ? 0 : 1;
     }
@@ -339,7 +339,7 @@ static QString DependencyImportHint(const std::string &Dep)
 }
 
 // The hosted repository of built-in runner packages (and other shared packages). Cloned into
-// ~/.VidyaGod/LIBRARY/<repo> by ContainerWrapper::SyncRepositories and indexed like any other repository.
+// ~/.VidyaGod/LIBRARY/<repo> by PackageCatalog::SyncRepositories and indexed like any other repository.
 static std::string DefaultRunnerRepoURL() { return "https://github.com/lorenzo-zurini/VidyaGodRunners.git"; }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
@@ -389,7 +389,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     //Sync the configured Repositories: clone/pull each into ~/.VidyaGod/LIBRARY/<repo> (the clone IS the library)
     //and upsert the un-hydrated LIBRARY index. This mutates the config (so always persist afterwards), building a
     //full un-hydrated library of manifests that imports later hydrate in place beside each manifest.
-    ContainerWrapper::SyncRepositories(*GlobalConfigJSON);
+    PackageCatalog::SyncRepositories(*GlobalConfigJSON);
 
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {

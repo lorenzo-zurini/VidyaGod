@@ -357,12 +357,12 @@ PreLaunchWindow::PreLaunchWindow(
     };
     if ((*MANIFESTJSON).contains("RUNNERS") && (*MANIFESTJSON)["RUNNERS"].is_array())
         for (auto &R : (*MANIFESTJSON)["RUNNERS"]) CollectRunner(R);
-    for (auto &R : ContainerWrapper::RegistryRunners(*GlobalConfigJSON)) CollectRunner(R);
+    for (auto &R : PackageCatalog::RegistryRunners(*GlobalConfigJSON)) CollectRunner(R);
 
     // Pre-select: variant pin > USERSETTINGS PREFERRED_RUNNER > first. (Helper reads a variant's RUNNER_ID.)
     {
         std::string Pref;
-        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             Pref = std::string(US["PREFERRED_RUNNER"]);
         int Idx = Pref.empty() ? -1 : RunnerCombo->findData(QString::fromStdString(Pref));
@@ -386,7 +386,7 @@ PreLaunchWindow::PreLaunchWindow(
     // Pre-select: USERSETTINGS > RECOMMENDED variant > first.
     std::string PreselVariantID = RecommendedID;
     {
-        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         if (US.contains("PREFERRED_VARIANT_ID") && US["PREFERRED_VARIANT_ID"].is_string())
             PreselVariantID = std::string(US["PREFERRED_VARIANT_ID"]);
     }
@@ -591,7 +591,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     std::string PackageUID_local;
     if (MANIFESTJSON->contains("PACKAGEUID") && !(*MANIFESTJSON)["PACKAGEUID"].is_null())
         PackageUID_local = std::string((*MANIFESTJSON)["PACKAGEUID"]);
-    auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID_local);
+    auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID_local);
     nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
                                         ? US["VARIABLES"] : nlohmann::ordered_json::object();
 
@@ -827,7 +827,7 @@ void PreLaunchWindow::RebuildModuleTree()
         return "";
     };
 
-    auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+    auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
     const nlohmann::ordered_json Saved = (US.contains("MODULES") && US["MODULES"].is_object()) ? US["MODULES"] : nlohmann::ordered_json::object();
 
     // Build items only for genuinely toggleable (non-locked) modules — REQUIRED / required-forced ones are
@@ -1048,11 +1048,11 @@ void PreLaunchWindow::onLaunchClicked()
     // pre-fill on the next launch, taking precedence over DEFAULT and random picks.
     if (!PackageUID.empty() && !PickerVars.empty())
     {
-        auto US = ContainerWrapper::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
         nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
                                        ? US["VARIABLES"] : nlohmann::ordered_json::object();
         for (const auto &[K, V] : PickerVars) Vars[K] = V;
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
+        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
         QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
         JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
     }
@@ -1063,7 +1063,7 @@ void PreLaunchWindow::onLaunchClicked()
     {
         nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
         for (const auto &[Comp, On] : CollectModuleStates()) Mods[Comp] = On;
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
+        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
         QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
         JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
     }
@@ -1071,11 +1071,11 @@ void PreLaunchWindow::onLaunchClicked()
     // Always persist runner and entrypoint so next launch pre-selects them.
     if (!PackageUID.empty())
     {
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",     SelectedRunnerID);
-        ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", SelectedVariantID);
+        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",     SelectedRunnerID);
+        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", SelectedVariantID);
         // "Hide dialog next time" only when explicitly checked.
         if (RememberCheck->isChecked())
-            ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
+            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
         QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
         JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
     }
@@ -1225,9 +1225,9 @@ void PreLaunchWindow::savePreferences(const std::string& runnerName,
 {
     if (PackageUID.empty()) return;
 
-    ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",    runnerName);
-    ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", variantID);
-    ContainerWrapper::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG",   skipNext);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER",    runnerName);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_VARIANT_ID", variantID);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG",   skipNext);
 
     // Write to ~/.VidyaGod/GlobalConfig.JSON.
     QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
