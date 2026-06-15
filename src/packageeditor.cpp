@@ -851,16 +851,29 @@ bool PackageEditor::BuildUI()
                     EPCardLayout->addWidget(BuildModulesEditor("/GAMES/" + std::to_string(i) + "/VARIANTS/" + std::to_string(epj)), eprow, 0, 1, -1);
                     eprow++;
 
-                    // Exe-key (adaptive: ROM for emulator / DATAPATH for custom / EXEPATH for wine·native), then
-                    // EXEARGS, WORKDIR. The active key comes from the runner that serves this variant's platform.
-                    const std::string PinRid = EP.value("RUNNER_ID", std::string());
-                    const std::string ActiveExeKey = ExeKeyForPlatform(CurHost, PinRid);
-                    std::vector<std::string> ExeFields = { ActiveExeKey, "EXEARGS", "WORKDIR" };
-                    // If a stale, now-inactive exe-key already holds a value, surface it too so it stays editable.
-                    for (const char *K : {"EXEPATH", "ROM", "DATAPATH"})
-                        if (K != ActiveExeKey && EP.contains(K) && EP[K].is_string() && !std::string(EP[K]).empty())
-                            ExeFields.insert(ExeFields.begin() + 1, K);
-                    for (const auto &FieldKey : ExeFields)
+                    // CONTENTPATH — the one universal target path the runner runs/loads (exe, ROM, or data root;
+                    // its TYPE decides interpretation). Reads a legacy EXEPATH/ROM/DATAPATH value if present and
+                    // rewrites it to CONTENTPATH on save, migrating old packages in place. Then EXEARGS, WORKDIR.
+                    {
+                        std::string CurContent;
+                        for (const char *K : {"CONTENTPATH", "EXEPATH", "ROM", "DATAPATH"})
+                            if (EP.contains(K) && EP[K].is_string() && !std::string(EP[K]).empty())
+                            { CurContent = std::string(EP[K]); break; }
+                        EPCardLayout->addWidget(new QLabel("CONTENTPATH:"), eprow, 0);
+                        QLineEdit * FE = new QLineEdit(EPCard);
+                        FE->setText(QString::fromStdString(CurContent));
+                        FE->setPlaceholderText("path inside the package to the exe / ROM / data (relative)");
+                        QObject::connect(FE, &QLineEdit::editingFinished, this, [this, i, epj, FE](){
+                            auto &V = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj];
+                            for (const char *K : {"EXEPATH", "ROM", "DATAPATH"}) V.erase(K);   // drop legacy keys
+                            const QString T = FE->text().trimmed();
+                            if (T.isEmpty()) V.erase("CONTENTPATH"); else V["CONTENTPATH"] = T.toStdString();
+                            SaveManifestJSON(); RefreshJSONView();
+                        });
+                        EPCardLayout->addWidget(FE, eprow, 1, 1, 2);
+                        eprow++;
+                    }
+                    for (const auto &FieldKey : std::vector<std::string>{"EXEARGS", "WORKDIR"})
                     {
                         EPCardLayout->addWidget(new QLabel(QString::fromStdString(FieldKey) + ":"), eprow, 0);
                         QLineEdit * FE = new QLineEdit(EPCard);
@@ -1927,39 +1940,6 @@ static std::vector<nlohmann::ordered_json> VisibleRunners(const nlohmann::ordere
         for (const auto &R : Manifest["RUNNERS"]) Runners.push_back(R);
     for (const auto &R : PackageCatalog::RegistryRunners(GlobalConfig)) Runners.push_back(R);
     return Runners;
-}
-
-//True if a runner VARIANT object serves HostPlatform (its GUEST_PLATFORM contains it).
-static bool RunnerVariantServes(const nlohmann::ordered_json &V, const std::string &HostPlatform)
-{
-    if (!V.contains("GUEST_PLATFORM") || !V["GUEST_PLATFORM"].is_array()) return false;
-    for (const auto &P : V["GUEST_PLATFORM"]) if (P.is_string() && std::string(P) == HostPlatform) return true;
-    return false;
-}
-
-std::string PackageEditor::ExeKeyForPlatform(const std::string &HostPlatform, const std::string &RunnerIdPin)
-{
-    auto KeyFor = [](const std::string &Type) -> std::string {
-        if (Type == "emulator") return "ROM";
-        if (Type == "custom")   return "DATAPATH";
-        return "EXEPATH";                                   // wine / native / unknown
-    };
-    const auto Runners = VisibleRunners(*MANIFESTJSON, *GlobalConfigJSON);
-    //Pinned runner wins: use its serving (or default) variant's TYPE.
-    for (const auto &R : Runners)
-    {
-        if (R.value("RUNNER_ID", std::string()) != RunnerIdPin || RunnerIdPin.empty()) continue;
-        if (!R.contains("VARIANTS") || !R["VARIANTS"].is_array() || R["VARIANTS"].empty()) break;
-        for (const auto &V : R["VARIANTS"]) if (RunnerVariantServes(V, HostPlatform)) return KeyFor(V.value("TYPE", std::string()));
-        return KeyFor(R["VARIANTS"][0].value("TYPE", std::string()));
-    }
-    //Otherwise the first runner with a variant that serves this platform.
-    if (!HostPlatform.empty())
-        for (const auto &R : Runners)
-            if (R.contains("VARIANTS") && R["VARIANTS"].is_array())
-                for (const auto &V : R["VARIANTS"])
-                    if (RunnerVariantServes(V, HostPlatform)) return KeyFor(V.value("TYPE", std::string()));
-    return "EXEPATH";
 }
 
 std::vector<std::string> PackageEditor::KnownPlatforms()

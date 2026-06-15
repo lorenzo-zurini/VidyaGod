@@ -113,11 +113,6 @@ private:
     void UpdateValidationBox();
     //Returns the PLATFORM of the subgame with the given SUBGAMEID in the assembled manifest ("" if none).
     std::string SubgamePlatform(const std::string &SubgameID);
-    //The manifest exe-key a game variant should fill, derived from the runner that would serve it: a wine/native
-    //runner reads EXEPATH, an emulator reads ROM, a custom runner reads DATAPATH (mirrors
-    //ContainerWrapper::ResolveExecutableDefinition). Resolves the runner from RunnerIdPin if set, else the first
-    //catalog/own runner with a variant whose GUEST_PLATFORM serves HostPlatform. Defaults to "EXEPATH".
-    std::string ExeKeyForPlatform(const std::string &HostPlatform, const std::string &RunnerIdPin);
     //The union of every platform some runner can serve (GUEST_PLATFORM across catalog + this package's RUNNERS) —
     //drives the HOST_PLATFORM / GUEST_PLATFORM dropdown suggestions.
     std::vector<std::string> KnownPlatforms();

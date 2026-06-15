@@ -542,13 +542,15 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
         return false;
     }
     LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved variant: " + ContainerParams.VariantID);
-    // Pick exe key by runner type.
-    std::string ExeKey = "EXEPATH";
-    if      (ContainerParams.RunnerTypeEnum == RunnerType::Emulator) ExeKey = "ROM";
-    else if (ContainerParams.RunnerTypeEnum == RunnerType::Custom)   ExeKey = "DATAPATH";
-    auto &ExeVal = Resolved[ExeKey];
+    // The variant declares ONE universal target path — CONTENTPATH: the path (relative to the program mount) to
+    // whatever the runner runs or loads (an exe, a ROM, a data root, or nothing for a self-contained runner). The
+    // runner's TYPE decides how it's interpreted (see the Wine Windows-path block below + FinalExe in Execute), so
+    // a single key suffices. Legacy EXEPATH/ROM/DATAPATH are read as fallbacks so old/shared packages keep working.
     {
-        std::string ExeStr = (!ExeVal.is_null() && ExeVal.is_string()) ? std::string(ExeVal) : std::string();
+        std::string ExeStr;
+        for (const char *Key : {"CONTENTPATH", "EXEPATH", "ROM", "DATAPATH"})
+            if (Resolved.contains(Key) && Resolved[Key].is_string() && !std::string(Resolved[Key]).empty())
+            { ExeStr = std::string(Resolved[Key]); break; }
         ContainerWrapper::StringVariableSubstitution(ExeStr, ContainerParams.GetVariablesMap());
         ContainerParams.ExePathRelative = std::filesystem::path(ExeStr);
     }
@@ -2133,7 +2135,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
     else if (!ContainerParams.ExePathRelative.empty())
     {
-        //Non-Wine: only set FinalExe when the VariantDefinition specified a file (ROM, EXEPATH, DATAPATH).
+        //Non-Wine: only set FinalExe when the variant specified a CONTENTPATH (the exe/ROM/data the runner loads).
         //If ExePathRelative is empty the runner is self-contained (e.g. a bare AppImage) and
         //needs no positional argument — passing ProgramPath would be meaningless and likely fatal.
         FinalExe = ContainerParams.ExePathComplete.string();
@@ -2141,7 +2143,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
 
     if (FinalExe.empty() && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
     {
-        LogErr("ContainerWrapper::Execute", "No exe to run (Wine requires an EXEPATH). Aborting.");
+        LogErr("ContainerWrapper::Execute", "No exe to run (Wine requires a CONTENTPATH). Aborting.");
         return false;
     }
 
