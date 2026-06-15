@@ -666,12 +666,17 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
 
     if (!ContainerParams.subgame_id.empty() && SubgameIdx != -1)
     {
-        ContainerParams.GameName                        = MANIFESTJSON["GAMES"][SubgameIdx]["TITLE"];
-        //UMUID lives under the game's METADATA. "0" means no Steam AppID — umu-run treats that
-        //as a generic Wine launch.
-        auto &Meta      = MANIFESTJSON["GAMES"][SubgameIdx]["METADATA"];
-        ContainerParams.UMUID                           = (Meta.is_object() && Meta.contains("UMUID") && Meta["UMUID"].is_string())
-                                                          ? std::string(Meta["UMUID"]) : "0";
+        const auto &Game = MANIFESTJSON["GAMES"][SubgameIdx];
+        ContainerParams.GameName                        = Game.value("TITLE", ContainerParams.subgame_id);
+        //UMUID lives under the game's METADATA (optional). "0" means no Steam AppID — umu-run treats that
+        //as a generic Wine launch. METADATA may be absent on a minimally-authored package — guard the access
+        //(an unguarded const operator[] on a missing key aborts the whole process).
+        ContainerParams.UMUID = "0";
+        if (Game.contains("METADATA") && Game["METADATA"].is_object())
+        {
+            const auto &Meta = Game["METADATA"];
+            if (Meta.contains("UMUID") && Meta["UMUID"].is_string()) ContainerParams.UMUID = std::string(Meta["UMUID"]);
+        }
     }
     else
     {

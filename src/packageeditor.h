@@ -101,6 +101,9 @@ private:
     //Appends a subcomponent object to the SUBCOMPONENTS of the component owning `Sender` (the Add… button),
     //then persists + rebuilds the UI. Shared body of the AddRegEdit/AddDllOverride/AddFileEdit/... slots.
     void AppendSubcomponent(QObject * Sender, const nlohmann::ordered_json & Sub);
+    //Brings the selected source file/dir into the package dir for a VFS layer: asks Copy or Move, aborts on a
+    //name collision. Returns the in-package basename to store as the layer PATH, or "" if cancelled/failed.
+    QString ImportLayerFile(const QString & Selected, bool IsDir);
     //Builds the reusable MODULES editor (component picker + REQUIRED/DEFAULT/LABEL + reorder/remove + Add)
     //for the variant at the given JSON pointer (e.g. "/GAMES/0/VARIANTS/1" or "/RUNNERS/0/VARIANTS/0").
     //Lets both game variants and runner variants attach components. Returns a QGroupBox to add to a layout.
@@ -110,6 +113,14 @@ private:
     void UpdateValidationBox();
     //Returns the PLATFORM of the subgame with the given SUBGAMEID in the assembled manifest ("" if none).
     std::string SubgamePlatform(const std::string &SubgameID);
+    //The manifest exe-key a game variant should fill, derived from the runner that would serve it: a wine/native
+    //runner reads EXEPATH, an emulator reads ROM, a custom runner reads DATAPATH (mirrors
+    //ContainerWrapper::ResolveExecutableDefinition). Resolves the runner from RunnerIdPin if set, else the first
+    //catalog/own runner with a variant whose GUEST_PLATFORM serves HostPlatform. Defaults to "EXEPATH".
+    std::string ExeKeyForPlatform(const std::string &HostPlatform, const std::string &RunnerIdPin);
+    //The union of every platform some runner can serve (GUEST_PLATFORM across catalog + this package's RUNNERS) —
+    //drives the HOST_PLATFORM / GUEST_PLATFORM dropdown suggestions.
+    std::vector<std::string> KnownPlatforms();
 
     //MODULAR MANIFESTS (fragment-aware editing)
     //Loads every *.json fragment in the package into the assembled MANIFESTJSON, tagging each

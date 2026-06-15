@@ -7,8 +7,11 @@
 #include <QBuffer>
 #include <QImage>
 #include <QInputDialog>
+#include <QMessageBox>
+#include <QAbstractButton>
 #include <functional>
 #include <set>
+#include <filesystem>
 
 using json = nlohmann::ordered_json;
 
@@ -295,8 +298,10 @@ void PackageEditor::UpdateValidationBox()
 //is only one; otherwise shows a dropdown of existing files plus a "+ New file…" option.
 QString PackageEditor::PromptTargetFile(const QString &Title)
 {
+    //Single-fragment package (the common case): no point asking — route to the identity / sole fragment silently.
     if (FragmentFiles.size() <= 1)
-        return FragmentFiles.isEmpty() ? QString("MANIFEST.json") : FragmentFiles.first();
+        return !IdentityFile.isEmpty() ? IdentityFile
+             : (FragmentFiles.isEmpty() ? QString("MANIFEST.json") : FragmentFiles.first());
 
     QDialog D(this);
     D.setWindowTitle(Title);
@@ -820,15 +825,24 @@ bool PackageEditor::BuildUI()
                         eprow++;
                     }
 
-                    // HOST_PLATFORM — per-variant (the platform this variant targets, e.g. "win32"/"linux64").
+                    // HOST_PLATFORM — per-variant (the platform this variant targets). Editable combo seeded with
+                    // the platforms some runner can actually serve; changing it re-renders the card (so the exe-key
+                    // row below adapts to the new runner type).
+                    const std::string CurHost = (EP.contains("HOST_PLATFORM") && EP["HOST_PLATFORM"].is_string())
+                                                ? std::string(EP["HOST_PLATFORM"]) : std::string();
                     {
                         EPCardLayout->addWidget(new QLabel("HOST_PLATFORM:"), eprow, 0);
-                        QLineEdit * HP = new QLineEdit(EPCard);
-                        HP->setProperty("JSONPath", QString("/GAMES/%1/VARIANTS/%2/HOST_PLATFORM").arg(i).arg(epj));
-                        HP->setPlaceholderText("e.g. win32, win64, linux64, snes");
-                        if (EP.contains("HOST_PLATFORM") && EP["HOST_PLATFORM"].is_string())
-                            HP->setText(QString::fromStdString(std::string(EP["HOST_PLATFORM"])));
-                        QObject::connect(HP, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                        QComboBox * HP = new QComboBox(EPCard);
+                        HP->setEditable(true);
+                        HP->lineEdit()->setPlaceholderText("e.g. win32, win64, linux64, snes");
+                        for (const auto &P : KnownPlatforms()) HP->addItem(QString::fromStdString(P));
+                        { QSignalBlocker B(HP); HP->setCurrentText(QString::fromStdString(CurHost)); }
+                        QObject::connect(HP, &QComboBox::currentTextChanged, this, [this, i, epj](const QString &T){
+                            const QString Tr = T.trimmed();
+                            if (Tr.isEmpty()) (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj].erase("HOST_PLATFORM");
+                            else (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["HOST_PLATFORM"] = Tr.toStdString();
+                            SaveManifestJSON(); RefreshJSONView(); BuildUI();   // re-render so the exe-key row adapts
+                        });
                         EPCardLayout->addWidget(HP, eprow, 1, 1, 2);
                         eprow++;
                     }
@@ -837,8 +851,16 @@ bool PackageEditor::BuildUI()
                     EPCardLayout->addWidget(BuildModulesEditor("/GAMES/" + std::to_string(i) + "/VARIANTS/" + std::to_string(epj)), eprow, 0, 1, -1);
                     eprow++;
 
-                    // EXEPATH, EXEARGS, WORKDIR
-                    for (const auto &FieldKey : std::vector<std::string>{"EXEPATH", "EXEARGS", "WORKDIR"})
+                    // Exe-key (adaptive: ROM for emulator / DATAPATH for custom / EXEPATH for wine·native), then
+                    // EXEARGS, WORKDIR. The active key comes from the runner that serves this variant's platform.
+                    const std::string PinRid = EP.value("RUNNER_ID", std::string());
+                    const std::string ActiveExeKey = ExeKeyForPlatform(CurHost, PinRid);
+                    std::vector<std::string> ExeFields = { ActiveExeKey, "EXEARGS", "WORKDIR" };
+                    // If a stale, now-inactive exe-key already holds a value, surface it too so it stays editable.
+                    for (const char *K : {"EXEPATH", "ROM", "DATAPATH"})
+                        if (K != ActiveExeKey && EP.contains(K) && EP[K].is_string() && !std::string(EP[K]).empty())
+                            ExeFields.insert(ExeFields.begin() + 1, K);
+                    for (const auto &FieldKey : ExeFields)
                     {
                         EPCardLayout->addWidget(new QLabel(QString::fromStdString(FieldKey) + ":"), eprow, 0);
                         QLineEdit * FE = new QLineEdit(EPCard);
@@ -868,7 +890,7 @@ bool PackageEditor::BuildUI()
                             QString Rid = RPin->currentData().toString();
                             if (Rid.isEmpty()) (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj].erase("RUNNER_ID");
                             else (*MANIFESTJSON)["GAMES"][i]["VARIANTS"][epj]["RUNNER_ID"] = Rid.toStdString();
-                            SaveManifestJSON(); RefreshJSONView();
+                            SaveManifestJSON(); RefreshJSONView(); BuildUI();   // re-render so the exe-key row adapts to the pinned runner
                         });
                         EPCardLayout->addWidget(RPin, eprow, 1, 1, 2);
                         eprow++;
@@ -999,9 +1021,18 @@ bool PackageEditor::BuildUI()
                 QObject::connect(AddEPBtn, &QPushButton::clicked, this, [this, i](){
                     QString File = PromptTargetFile("Add Variant");
                     if (File.isEmpty()) return;
-                    (*MANIFESTJSON)["GAMES"][i]["VARIANTS"].push_back(json::object({
-                        {"VARIANT_ID", "main"}, {"MODULES", json::array()}, {"EXEPATH", ""}, {"EXEARGS", ""}, {"WORKDIR", ""}, {"__FILE__", File.toStdString()}
-                    }));
+                    //Seed HOST_PLATFORM from the subgame's first existing variant (the common "another variant,
+                    //same platform" case) so a runner resolves immediately; else "" and the combo guides the pick.
+                    //No exe-key is seeded — the adaptive row writes the right key (EXEPATH/ROM/DATAPATH) on edit.
+                    std::string SeedHost;
+                    auto &Vars = (*MANIFESTJSON)["GAMES"][i]["VARIANTS"];
+                    if (Vars.is_array() && !Vars.empty() && Vars[0].is_object() && Vars[0].contains("HOST_PLATFORM")
+                        && Vars[0]["HOST_PLATFORM"].is_string())
+                        SeedHost = std::string(Vars[0]["HOST_PLATFORM"]);
+                    json NewVar = json::object({
+                        {"VARIANT_ID", "main"}, {"HOST_PLATFORM", SeedHost}, {"MODULES", json::array()},
+                        {"EXEARGS", ""}, {"WORKDIR", ""}, {"__FILE__", File.toStdString()} });
+                    Vars.push_back(std::move(NewVar));
                     SaveManifestJSON(); BuildUI();
                 });
                 EPBoxLayout->addWidget(AddEPBtn);
@@ -1126,8 +1157,9 @@ bool PackageEditor::BuildUI()
                     });
                     VG->addWidget(TC, vrow, 1, 1, 2); vrow++;
 
-                    // String-list editor (GUEST_PLATFORM, ARGS) addressed at the variant path.
-                    auto AddVarList = [&](const QString &Title, const std::string &Key){
+                    // String-list editor (GUEST_PLATFORM, ARGS) addressed at the variant path. When Suggestions is
+                    // non-empty, each row is an editable combo offering those values (GUEST_PLATFORM → known platforms).
+                    auto AddVarList = [&](const QString &Title, const std::string &Key, const std::vector<std::string> &Suggestions){
                         const std::string AP = VPtr + "/" + Key;
                         const nlohmann::ordered_json::json_pointer APtr(AP);
                         if (!(*MANIFESTJSON).contains(APtr) || !(*MANIFESTJSON).at(APtr).is_array())
@@ -1138,15 +1170,34 @@ bool PackageEditor::BuildUI()
                         for (int k = 0; k < (int)Arr.size(); k++)
                         {
                             QHBoxLayout * Row = new QHBoxLayout();
-                            QLineEdit * LE = new QLineEdit(Box);
-                            LE->setProperty("JSONPath", QString::fromStdString(AP + "/" + std::to_string(k)));
-                            LE->setText(QString::fromStdString(Arr[k].is_string() ? std::string(Arr[k]) : ""));
-                            QObject::connect(LE, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                            const QString ItemPath = QString::fromStdString(AP + "/" + std::to_string(k));
+                            const QString Cur = QString::fromStdString(Arr[k].is_string() ? std::string(Arr[k]) : "");
+                            QWidget * Editor;
+                            if (!Suggestions.empty())
+                            {
+                                QComboBox * CB = new QComboBox(Box); CB->setEditable(true);
+                                for (const auto &S : Suggestions) CB->addItem(QString::fromStdString(S));
+                                { QSignalBlocker B(CB); CB->setCurrentText(Cur); }
+                                CB->setProperty("JSONPath", ItemPath);
+                                QObject::connect(CB, &QComboBox::currentTextChanged, this, [this, ItemPath](const QString &T){
+                                    (*MANIFESTJSON)[nlohmann::ordered_json::json_pointer(ItemPath.toStdString())] = T.trimmed().toStdString();
+                                    SaveManifestJSON(); RefreshJSONView();
+                                });
+                                Editor = CB;
+                            }
+                            else
+                            {
+                                QLineEdit * LE = new QLineEdit(Box);
+                                LE->setProperty("JSONPath", ItemPath);
+                                LE->setText(Cur);
+                                QObject::connect(LE, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
+                                Editor = LE;
+                            }
                             QPushButton * Del = new QPushButton("✕", Box); Del->setFixedWidth(28);
                             QObject::connect(Del, &QPushButton::clicked, this, [this, AP, k](){
                                 (*MANIFESTJSON)[nlohmann::ordered_json::json_pointer(AP)].erase(k); SaveManifestJSON(); BuildUI();
                             });
-                            Row->addWidget(LE, 1); Row->addWidget(Del); BL->addLayout(Row);
+                            Row->addWidget(Editor, 1); Row->addWidget(Del); BL->addLayout(Row);
                         }
                         QPushButton * Add = new QPushButton("+ Add", Box);
                         QObject::connect(Add, &QPushButton::clicked, this, [this, AP](){
@@ -1155,8 +1206,8 @@ bool PackageEditor::BuildUI()
                         BL->addWidget(Add);
                         VG->addWidget(Box, vrow, 0, 1, -1); vrow++;
                     };
-                    AddVarList("GUEST_PLATFORM", "GUEST_PLATFORM");
-                    AddVarList("ARGS", "ARGS");
+                    AddVarList("GUEST_PLATFORM", "GUEST_PLATFORM", KnownPlatforms());
+                    AddVarList("ARGS", "ARGS", {});
 
                     // ENV (key/value) at the variant path.
                     {
@@ -1866,6 +1917,64 @@ std::string PackageEditor::SubgamePlatform(const std::string &SubgameID)
     return "";
 }
 
+//Every runner visible to this package: its own RUNNERS (embedded) + the catalog's. Used to resolve a variant's
+//runner (for the exe-key) and to enumerate the platforms something can serve.
+static std::vector<nlohmann::ordered_json> VisibleRunners(const nlohmann::ordered_json &Manifest,
+                                                          const nlohmann::ordered_json &GlobalConfig)
+{
+    std::vector<nlohmann::ordered_json> Runners;
+    if (Manifest.contains("RUNNERS") && Manifest["RUNNERS"].is_array())
+        for (const auto &R : Manifest["RUNNERS"]) Runners.push_back(R);
+    for (const auto &R : PackageCatalog::RegistryRunners(GlobalConfig)) Runners.push_back(R);
+    return Runners;
+}
+
+//True if a runner VARIANT object serves HostPlatform (its GUEST_PLATFORM contains it).
+static bool RunnerVariantServes(const nlohmann::ordered_json &V, const std::string &HostPlatform)
+{
+    if (!V.contains("GUEST_PLATFORM") || !V["GUEST_PLATFORM"].is_array()) return false;
+    for (const auto &P : V["GUEST_PLATFORM"]) if (P.is_string() && std::string(P) == HostPlatform) return true;
+    return false;
+}
+
+std::string PackageEditor::ExeKeyForPlatform(const std::string &HostPlatform, const std::string &RunnerIdPin)
+{
+    auto KeyFor = [](const std::string &Type) -> std::string {
+        if (Type == "emulator") return "ROM";
+        if (Type == "custom")   return "DATAPATH";
+        return "EXEPATH";                                   // wine / native / unknown
+    };
+    const auto Runners = VisibleRunners(*MANIFESTJSON, *GlobalConfigJSON);
+    //Pinned runner wins: use its serving (or default) variant's TYPE.
+    for (const auto &R : Runners)
+    {
+        if (R.value("RUNNER_ID", std::string()) != RunnerIdPin || RunnerIdPin.empty()) continue;
+        if (!R.contains("VARIANTS") || !R["VARIANTS"].is_array() || R["VARIANTS"].empty()) break;
+        for (const auto &V : R["VARIANTS"]) if (RunnerVariantServes(V, HostPlatform)) return KeyFor(V.value("TYPE", std::string()));
+        return KeyFor(R["VARIANTS"][0].value("TYPE", std::string()));
+    }
+    //Otherwise the first runner with a variant that serves this platform.
+    if (!HostPlatform.empty())
+        for (const auto &R : Runners)
+            if (R.contains("VARIANTS") && R["VARIANTS"].is_array())
+                for (const auto &V : R["VARIANTS"])
+                    if (RunnerVariantServes(V, HostPlatform)) return KeyFor(V.value("TYPE", std::string()));
+    return "EXEPATH";
+}
+
+std::vector<std::string> PackageEditor::KnownPlatforms()
+{
+    std::set<std::string> Seen;
+    std::vector<std::string> Out;
+    for (const auto &R : VisibleRunners(*MANIFESTJSON, *GlobalConfigJSON))
+        if (R.contains("VARIANTS") && R["VARIANTS"].is_array())
+            for (const auto &V : R["VARIANTS"])
+                if (V.contains("GUEST_PLATFORM") && V["GUEST_PLATFORM"].is_array())
+                    for (const auto &P : V["GUEST_PLATFORM"])
+                        if (P.is_string() && Seen.insert(std::string(P)).second) Out.push_back(std::string(P));
+    return Out;
+}
+
 void PackageEditor::PlatformChanged()
 {
     QComboBox * PlatformPicker = qobject_cast<QComboBox *>(QObject::sender());
@@ -2227,43 +2336,82 @@ static QString ResolveComponentJSONPath(QObject * Sender)
     return QString();
 }
 
+//Brings `Selected` (a file or dir) into the package dir for a VFS layer. Asks Copy (keep the original) or Move,
+//and aborts on a name collision so an existing in-package file is never silently clobbered. Returns the basename
+//to store as the layer PATH, or "" on cancel/failure.
+QString PackageEditor::ImportLayerFile(const QString & Selected, bool IsDir)
+{
+    const QString Name = QFileInfo(Selected).fileName();
+    const QString Dest = QDir::cleanPath(PackageDir->path() + QDir::separator() + Name);
+
+    if (QFileInfo::exists(Dest))
+    {
+        QMessageBox::warning(this, "Name collision",
+            "“" + Name + "” already exists in the package directory.\nRename or remove it first, then re-add.");
+        return QString();
+    }
+
+    QMessageBox Box(this);
+    Box.setWindowTitle("Add layer");
+    Box.setText("Bring “" + Name + "” into the package?");
+    Box.setInformativeText("Copy keeps the original where it is; Move relocates it into the package.");
+    QPushButton * CopyBtn = Box.addButton("Copy", QMessageBox::AcceptRole);
+    QPushButton * MoveBtn = Box.addButton("Move", QMessageBox::DestructiveRole);
+    Box.addButton(QMessageBox::Cancel);
+    Box.setDefaultButton(CopyBtn);
+    Box.exec();
+    QAbstractButton * Clicked = Box.clickedButton();
+    if (Clicked != CopyBtn && Clicked != MoveBtn) return QString();   // cancelled
+
+    std::error_code Ec;
+    const std::filesystem::path Src(Selected.toStdString()), Dst(Dest.toStdString());
+    if (Clicked == MoveBtn)
+    {
+        std::filesystem::rename(Src, Dst, Ec);
+        if (Ec) { std::filesystem::copy(Src, Dst, std::filesystem::copy_options::recursive, Ec);   // cross-device → copy+remove
+                  if (!Ec) std::filesystem::remove_all(Src, Ec); }
+    }
+    else
+    {
+        std::filesystem::copy(Src, Dst,
+            IsDir ? std::filesystem::copy_options::recursive : std::filesystem::copy_options::none, Ec);
+    }
+    if (Ec)
+    {
+        QMessageBox::critical(this, "Add layer", "Could not bring the file in:\n" + QString::fromStdString(Ec.message()));
+        return QString();
+    }
+    return Name;
+}
+
 void PackageEditor::AddVFSDirLayer()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    QObject * Sender = QObject::sender();
     QString Selected = QFileDialog::getExistingDirectory(this, "Select directory to add as VFSDirLayer");
     if (Selected.isEmpty()) return;
-    QString DirName = QFileInfo(Selected).fileName();
-    QString Dest = QDir::cleanPath(PackageDir->path() + QDir::separator() + DirName);
-    QDir().rename(Selected, Dest);
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSDirLayer"}, {"PATH", DirName.toStdString()}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    QString Name = ImportLayerFile(Selected, /*IsDir=*/true);
+    if (Name.isEmpty()) return;
+    AppendSubcomponent(Sender, json::object({{"TYPE", "VFSDirLayer"}, {"PATH", Name.toStdString()}}));
 }
 
 void PackageEditor::AddVFSZipLayer()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    QObject * Sender = QObject::sender();
     QString Selected = QFileDialog::getOpenFileName(this, "Select ZIP file to add as VFSZipLayer", "", "ZIP files (*.zip)");
     if (Selected.isEmpty()) return;
-    QString ZipName = QFileInfo(Selected).fileName();
-    QString Dest = QDir::cleanPath(PackageDir->path() + QDir::separator() + ZipName);
-    QFile::rename(Selected, Dest);
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSZipLayer"}, {"PATH", ZipName.toStdString()}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    QString Name = ImportLayerFile(Selected, /*IsDir=*/false);
+    if (Name.isEmpty()) return;
+    AppendSubcomponent(Sender, json::object({{"TYPE", "VFSZipLayer"}, {"PATH", Name.toStdString()}}));
 }
 
 void PackageEditor::AddVFSFileLayer()
 {
-    QString JSONPath = ResolveComponentJSONPath(QObject::sender());
+    QObject * Sender = QObject::sender();
     QString Selected = QFileDialog::getOpenFileName(this, "Select file to add as VFSFileLayer");
     if (Selected.isEmpty()) return;
-    QString FileName = QFileInfo(Selected).fileName();
-    QString Dest = QDir::cleanPath(PackageDir->path() + QDir::separator() + FileName);
-    QFile::rename(Selected, Dest);
-    nlohmann::ordered_json::json_pointer JSONPointer(JSONPath.toStdString());
-    (*MANIFESTJSON)[JSONPointer]["SUBCOMPONENTS"].push_back(json::object({{"TYPE", "VFSFileLayer"}, {"PATH", FileName.toStdString()}}));
-    SaveManifestJSON(); RefreshJSONView(); BuildUI();
+    QString Name = ImportLayerFile(Selected, /*IsDir=*/false);
+    if (Name.isEmpty()) return;
+    AppendSubcomponent(Sender, json::object({{"TYPE", "VFSFileLayer"}, {"PATH", Name.toStdString()}}));
 }
 
 void PackageEditor::AddEntrypoint()
