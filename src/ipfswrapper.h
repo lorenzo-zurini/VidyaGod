@@ -43,6 +43,12 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // runs. Degrades gracefully when `ipfs` is absent.
 std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
 
+// ----- cancellation: abort an in-flight FetchToPath for a CID at its next checkpoint -----
+// RequestCancel marks a CID so a running FetchToPath (its `ipfs get`) aborts; ClearCancel un-marks it (call
+// once the import has returned, so a later re-download isn't pre-cancelled). Best-effort, thread-safe.
+void RequestCancel(const std::string &Cid);
+void ClearCancel(const std::string &Cid);
+
 // ----- best-effort status helpers for the IPFS tab (empty/0 when unavailable) -----
 
 // Number of connected swarm peers (`ipfs swarm peers`), 0 if no daemon.

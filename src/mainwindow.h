@@ -107,6 +107,7 @@ public:
 
 signals:
     void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it
+    void cancelRequested(LibraryGameCard * card);      // Available tab: a downloading card was clicked to cancel
     void groupToggled(const QString & name, bool collapsed);   // a section header was collapsed/expanded
 
 protected:
@@ -211,6 +212,7 @@ private:
     QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
     QString       AvailableSearch;                // case-insensitive title filter for the Available grid
     QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
+    QSet<QString> CancellingUids;                 // PACKAGEUIDs the user cancelled (suppresses the failure dialog)
     QHash<QString, QString>      DownloadCidToUid; // in-flight content CID → its owning PACKAGEUID
     QHash<QString, QStringList>  DownloadUidCids;  // PACKAGEUID → its content CIDs (for averaging progress)
     QHash<QString, double>       DownloadCidPct;   // in-flight CID → latest percent (0..100)

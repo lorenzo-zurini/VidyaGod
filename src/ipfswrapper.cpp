@@ -14,6 +14,8 @@
 #include <QCoreApplication>
 
 #include <utility>
+#include <set>
+#include <mutex>
 
 namespace IpfsWrapper {
 
@@ -22,6 +24,13 @@ namespace IpfsWrapper {
 static TransferCallback g_TransferCb;
 void SetTransferCallback(TransferCallback Callback) { g_TransferCb = std::move(Callback); }
 static void Emit(const TransferEvent &E) { if (g_TransferCb) g_TransferCb(E); }
+
+//Cancellation: CIDs marked here make an in-flight FetchToPath abort at its next checkpoint (and kill `ipfs get`).
+static std::set<std::string> g_Cancel;
+static std::mutex            g_CancelMx;
+static bool IsCancelled(const std::string &Cid) { std::lock_guard<std::mutex> L(g_CancelMx); return g_Cancel.count(Cid) > 0; }
+void RequestCancel(const std::string &Cid) { std::lock_guard<std::mutex> L(g_CancelMx); g_Cancel.insert(Cid); }
+void ClearCancel(const std::string &Cid)   { std::lock_guard<std::mutex> L(g_CancelMx); g_Cancel.erase(Cid); }
 
 // Runs `ipfs` with the given args, blocking up to TimeoutMs (-1 = wait indefinitely). Captures stdout
 // into *Out when provided. Returns true on a clean (exit-0) finish.
@@ -71,6 +80,7 @@ static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
             while (It.hasNext()) Pct = It.next().captured(1).toDouble();
             if (Pct >= 0.0) Emit({ TransferEvent::Progress, Cid, Pct, false });
         }
+        if (IsCancelled(Cid))          { P.kill(); P.waitForFinished(2000); return false; }   // user cancelled
         if (Timer.hasExpired(1800000)) { P.kill(); P.waitForFinished(2000); return false; }
     }
     P.waitForFinished(2000);
@@ -107,6 +117,7 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     if (DestPathStr.empty()) return Fail("empty destination path");
     const QString Dest = QString::fromStdString(DestPathStr);
     if (QFileInfo::exists(Dest)) { LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr); return DestPathStr; }
+    if (IsCancelled(Cid))    return Fail("cancelled");
     if (!Available())        return Fail("Kubo (ipfs) is not installed — cannot fetch CID " + Cid);
 
     QDir().mkpath(QFileInfo(Dest).absolutePath());          // ensure the layer's parent dirs exist

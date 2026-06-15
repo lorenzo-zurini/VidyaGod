@@ -483,6 +483,9 @@ void LibraryView::onPaint(QPaintEvent * e)
             p.setBrush(QColor(0x4a,0x90,0xd9,235));
             const int fillW = pct >= 0 ? bar.width() * pct / 100 : bar.width();
             p.drawRoundedRect(QRect(bar.left(), bar.top(), fillW, bar.height()), 3, 3);
+            p.setPen(QColor(0xff,0xff,0xff,150));
+            p.drawText(QRect(r.left(), bar.bottom()+4, r.width(), 18),
+                       Qt::AlignHCenter | Qt::AlignTop, "click to cancel");
             p.setFont(TitleFont);
             continue;
         }
@@ -560,7 +563,7 @@ void LibraryView::onMousePress(QMouseEvent * e)
     for (int i = 0; i < count; i++) {
         if (!Rects[i].contains(pos)) continue;          // collapsed cards have empty rects → skipped
         SelectedIdx = i;                                // keep keyboard focus in sync with the click
-        if (Cards->at(i)->Downloading) return;          // import in flight — ignore
+        if (Cards->at(i)->Downloading) { emit cancelRequested(Cards->at(i)); return; }   // in flight → offer to cancel
         if (EmitDownload) { emit downloadRequested(Cards->at(i)); return; }
         QRect editR(Rects[i].right()-EditW, Rects[i].bottom()-LineH, EditW, LineH);
         if (ShowEditCorner && editR.contains(pos)) Cards->at(i)->edit();
@@ -631,7 +634,7 @@ void LibraryView::ensureCardVisible(int i)
 void LibraryView::activateCard(int i)
 {
     if (!Cards || i < 0 || i >= Cards->count() || Rects[i].isNull()) return;
-    if (Cards->at(i)->Downloading) return;
+    if (Cards->at(i)->Downloading) { emit cancelRequested(Cards->at(i)); return; }
     if (EmitDownload) emit downloadRequested(Cards->at(i));
     else              Cards->at(i)->play();
 }
@@ -1344,6 +1347,17 @@ void MainWindow::BuildAvailableTab()
     v->addWidget(AvailableView);
 
     connect(AvailableView, &LibraryView::downloadRequested, this, &MainWindow::DownloadAvailable);
+    connect(AvailableView, &LibraryView::cancelRequested, this, [this](LibraryGameCard * card){
+        if (!card) return;
+        const int i = card->Game;
+        if (i < 0 || i >= (int)(*GlobalConfigJSON)["LIBRARY"].size()) return;
+        const QString Uid = QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string()));
+        if (Uid.isEmpty() || !DownloadingUids.contains(Uid)) return;
+        if (QMessageBox::question(this, "Cancel download?",
+                "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
+        CancellingUids.insert(Uid);                                   // suppress the failure dialog on abort
+        for (const QString & c : DownloadUidCids.value(Uid)) IpfsWrapper::RequestCancel(c.toStdString());
+    });
     connect(AvailableView, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
         if (collapsed) AvailableCollapsedRepos.insert(name); else AvailableCollapsedRepos.remove(name);
         auto & arr = (*GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"] = nlohmann::ordered_json::array();
@@ -1473,10 +1487,12 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         bool Ok = ContainerWrapper::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
         QMetaObject::invokeMethod(this, [this, Ok, Err, Uid]{
             DownloadingUids.remove(Uid);
-            for (const QString & c : DownloadUidCids.value(Uid)) { DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
+            const bool Cancelled = CancellingUids.remove(Uid);
+            for (const QString & c : DownloadUidCids.value(Uid))
+            { IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
             DownloadUidCids.remove(Uid);
             if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
-            else    QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
+            else if (!Cancelled) QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
             RebuildAvailableTab(); RefreshIpfsTab();
         }, Qt::QueuedConnection);
     }).detach();
