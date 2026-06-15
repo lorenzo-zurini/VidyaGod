@@ -218,6 +218,7 @@ LibraryView::LibraryView(QWidget * parent)
 
     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setFocusPolicy(Qt::StrongFocus);   // accept keyboard focus for arrow-key navigation
     setFrameShape(QFrame::NoFrame);
     setStyleSheet(
         "QScrollBar:vertical{width:12px;border:none;}"
@@ -241,6 +242,7 @@ void LibraryView::setCards(QList<LibraryGameCard *> * cards)
 {
     Cards        = cards;
     HoveredIdx   = -1;
+    SelectedIdx  = -1;
     LastCols     = 0;
     CardW        = 0;
     SeriesGroups.clear();
@@ -485,6 +487,13 @@ void LibraryView::onPaint(QPaintEvent * e)
             continue;
         }
 
+        // Keyboard focus ring (drawn whether or not hovered).
+        if (i == SelectedIdx) {
+            p.setBrush(Qt::NoBrush);
+            QPen ring(QColor(0x4a,0x90,0xd9), 3); p.setPen(ring);
+            p.drawRoundedRect(r.adjusted(1,1,-2,-2), 4, 4);
+        }
+
         if (i != HoveredIdx) continue;
 
         // Hover: darken + action button (Play or Download) + title strip
@@ -550,6 +559,7 @@ void LibraryView::onMousePress(QMouseEvent * e)
     const int count = Cards->count();
     for (int i = 0; i < count; i++) {
         if (!Rects[i].contains(pos)) continue;          // collapsed cards have empty rects → skipped
+        SelectedIdx = i;                                // keep keyboard focus in sync with the click
         if (Cards->at(i)->Downloading) return;          // import in flight — ignore
         if (EmitDownload) { emit downloadRequested(Cards->at(i)); return; }
         QRect editR(Rects[i].right()-EditW, Rects[i].bottom()-LineH, EditW, LineH);
@@ -564,6 +574,66 @@ void LibraryView::onLeave()
     if (HoveredIdx < 0) return;
     const int old = HoveredIdx; HoveredIdx = -1;
     viewport()->update(Rects[old].translated(0, -verticalScrollBar()->value()));
+}
+
+void LibraryView::keyPressEvent(QKeyEvent * e)
+{
+    switch (e->key()) {
+    case Qt::Key_Left:  moveSelection(-1, 0); return;
+    case Qt::Key_Right: moveSelection( 1, 0); return;
+    case Qt::Key_Up:    moveSelection( 0,-1); return;
+    case Qt::Key_Down:  moveSelection( 0, 1); return;
+    case Qt::Key_Return: case Qt::Key_Enter: case Qt::Key_Space:
+        activateCard(SelectedIdx); return;
+    default: QAbstractScrollArea::keyPressEvent(e);
+    }
+}
+
+// Geometry-based move: from the selected card's centre, pick the nearest visible card in the requested
+// direction (collapsed/empty rects are skipped). Works across the grouped layout's uneven rows.
+void LibraryView::moveSelection(int dx, int dy)
+{
+    if (!Cards || Cards->isEmpty()) return;
+    if (SelectedIdx < 0 || SelectedIdx >= Cards->count() || Rects[SelectedIdx].isNull()) {
+        for (int i = 0; i < Cards->count(); i++) if (!Rects[i].isNull()) { setSelected(i); return; }
+        return;
+    }
+    const QPoint c = Rects[SelectedIdx].center();
+    int best = -1; double bestScore = 1e18;
+    for (int i = 0; i < Cards->count(); i++) {
+        if (i == SelectedIdx || Rects[i].isNull()) continue;
+        const QPoint p = Rects[i].center();
+        const int ex = p.x() - c.x(), ey = p.y() - c.y();
+        if (dx > 0 && ex <= 0) continue;  if (dx < 0 && ex >= 0) continue;
+        if (dy > 0 && ey <= 0) continue;  if (dy < 0 && ey >= 0) continue;
+        // distance along the travel axis + a heavy penalty for drifting off it
+        const double score = dx != 0 ? (qAbs(ex) + 3.0 * qAbs(ey)) : (qAbs(ey) + 3.0 * qAbs(ex));
+        if (score < bestScore) { bestScore = score; best = i; }
+    }
+    if (best >= 0) setSelected(best);
+}
+
+void LibraryView::setSelected(int i)
+{
+    SelectedIdx = i;
+    ensureCardVisible(i);
+    viewport()->update();
+}
+
+void LibraryView::ensureCardVisible(int i)
+{
+    if (i < 0 || i >= Rects.size() || Rects[i].isNull()) return;
+    const int sy = verticalScrollBar()->value(), vh = viewport()->height();
+    if (Rects[i].top() < sy)               verticalScrollBar()->setValue(qMax(0, Rects[i].top() - VPad));
+    else if (Rects[i].bottom() > sy + vh)  verticalScrollBar()->setValue(Rects[i].bottom() - vh + VPad);
+}
+
+void LibraryView::activateCard(int i)
+{
+    if (!Cards || i < 0 || i >= Cards->count() || Rects[i].isNull()) return;
+    if (Cards->at(i)->Downloading) return;
+    if (EmitDownload) emit downloadRequested(Cards->at(i));
+    else              Cards->at(i)->play();
 }
 
 

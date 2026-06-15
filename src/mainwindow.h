@@ -19,6 +19,7 @@
 #include <QFontMetrics>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QKeyEvent>
 #include <QVector>
 #include <QScrollBar>
 #include <QListWidget>
@@ -112,6 +113,7 @@ protected:
     void resizeEvent(QResizeEvent * e) override;
     void scrollContentsBy(int, int) override;
     void wheelEvent(QWheelEvent * e) override;
+    void keyPressEvent(QKeyEvent * e) override;
     bool viewportEvent(QEvent * e) override;
 
 private:
@@ -119,6 +121,11 @@ private:
     void onMouseMove(QMouseEvent * e);
     void onMousePress(QMouseEvent * e);
     void onLeave();
+    // Keyboard navigation over the visible cards (skips collapsed/empty rects).
+    void moveSelection(int dx, int dy);   // dx/dy in {-1,0,1}: step left/right or up/down by geometry
+    void setSelected(int i);              // select + scroll into view + repaint
+    void ensureCardVisible(int i);
+    void activateCard(int i);             // Enter/Space: play() or emit downloadRequested(), per mode
 
     QList<LibraryGameCard *> * Cards = nullptr;
     QVector<QRect>             Rects;
@@ -130,6 +137,7 @@ private:
     bool                       EmitDownload = false;          // card click → downloadRequested vs play()
     bool                       ShowEditCorner = true;         // draw/handle the "···" edit corner
     int HoveredIdx = -1;
+    int SelectedIdx = -1;   // keyboard-focused card (-1 = none); painted with a focus ring
     int CardW = 0, CardH = 0;
     int LastCols = 0, LastHGap = 0;
     int ContentH = 0;   // total laid-out content height (cached so a vertical-only resize updates the scrollbar)
