@@ -223,7 +223,7 @@ int main(int argc, char *argv[])
             if (N.IsLaunchable() && (N.Uid == Uid || N.NodeId == Uid)) { LaunchId = NId; break; }
         if (LaunchId.empty()) { LogErr("main.cpp", "No launchable node found for '" + Uid + "'."); return 1; }
         std::string Err;
-        const bool Ok = PackageCatalog::HydrateNode(Index, LaunchId, &Err);
+        const bool Ok = PackageCatalog::HydrateNode(Index, LaunchId, {}, &Err);
         LogOut("main.cpp", Ok ? "Package imported." : ("Package import failed: " + Err));
         return Ok ? 0 : 1;
     }

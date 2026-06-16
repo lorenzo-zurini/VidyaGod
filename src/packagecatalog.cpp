@@ -470,9 +470,10 @@ std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Laun
 //Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
 //path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
+    const std::map<std::string, bool> &Toggles,
     const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn)
 {
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, {}))
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, Toggles))
     {
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
@@ -491,31 +492,31 @@ bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     if (!Idx.Find(LaunchNodeId)) return false;
     bool AllPresent = true;
-    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string&){
+    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string&){
         std::error_code Ec;
         if (!std::filesystem::exists(Local, Ec)) AllPresent = false;
     });
     return AllPresent;
 }
 
-std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId)
+std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles)
 {
     std::vector<std::string> Cids;
     std::set<std::string> Seen;
-    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string &Cid){
         if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
     });
     return Cids;
 }
 
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, std::string *Error)
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles, std::string *Error)
 {
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::HydrateNode", M); return false; };
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return Fail("launch node not found: " + LaunchNodeId);
 
     bool Failed = false; std::string Err; int Fetched = 0;
-    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
         if (Failed) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present

@@ -851,7 +851,8 @@ void MainWindow::ApplyAvailableFilter()
     AvailableView->layoutCards(CardPixelWidth);
 }
 
-//Hydrates the package behind an Available card over IPFS (in place, on a worker), then moves it to the Library.
+//Shows a pre-download picker (which editions + optional content) for an Available card, then hydrates the
+//selected node closures over IPFS (in place, on a worker) and moves the package to the Library.
 void MainWindow::DownloadAvailable(LibraryGameCard * card)
 {
     if (!card) return;
@@ -859,13 +860,66 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     const QString Key = card->GroupKey;
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
-    // Hydrate every edition in the tile's group; gather the union of their content CIDs for progress tracking.
-    const std::vector<std::string> LaunchIds = card->GroupNodeIds;
+    // ── Pre-download picker: choose which editions + optional content to fetch ──
+    const std::vector<std::string> Editions = card->GroupNodeIds;     // the tile's launchable nodes
+    std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across editions
+    for (const std::string & Lid : Editions)
+        for (const Node * O : ManifestModel::OptionalNodes(CatalogIndex, Lid))
+            if (OptSeen.insert(O->NodeId).second) Opts.push_back(O);
+
+    QDialog Dlg(this);
+    Dlg.setWindowTitle("Download — " + card->GameTitle);
+    Dlg.setMinimumWidth(420);
+    QVBoxLayout * DL = new QVBoxLayout(&Dlg);
+    DL->addWidget(new QLabel("Choose what to download:", &Dlg));
+
+    std::map<std::string, QCheckBox*> EdChecks;
+    {
+        QGroupBox * Box = new QGroupBox(Editions.size() > 1 ? "Editions" : "Game", &Dlg);
+        QVBoxLayout * BL = new QVBoxLayout(Box);
+        for (const std::string & Lid : Editions)
+        {
+            const Node * N = CatalogIndex.Find(Lid);
+            std::string Lbl = (N && !N->Label.empty()) ? N->Label
+                              : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
+            const int Items = (int)PackageCatalog::NodeContentCids(CatalogIndex, Lid).size();
+            QCheckBox * cb = new QCheckBox(QString::fromStdString(Lbl) + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
+            cb->setChecked(true);
+            EdChecks[Lid] = cb; BL->addWidget(cb);
+        }
+        DL->addWidget(Box);
+    }
+    std::map<std::string, QCheckBox*> OptChecks;
+    if (!Opts.empty())
+    {
+        QGroupBox * Box = new QGroupBox("Optional content", &Dlg);
+        QVBoxLayout * BL = new QVBoxLayout(Box);
+        for (const Node * O : Opts)
+        {
+            QCheckBox * cb = new QCheckBox(QString::fromStdString(O->Label.empty() ? O->NodeId : O->Label), Box);
+            cb->setChecked(O->Default);
+            OptChecks[O->NodeId] = cb; BL->addWidget(cb);
+        }
+        DL->addWidget(Box);
+    }
+    QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
+    QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);
+    QPushButton * GoBtn = new QPushButton("Download", &Dlg); GoBtn->setDefault(true);
+    BR->addWidget(CancelBtn); BR->addWidget(GoBtn);
+    connect(CancelBtn, &QPushButton::clicked, &Dlg, &QDialog::reject);
+    connect(GoBtn,     &QPushButton::clicked, &Dlg, &QDialog::accept);
+    if (Dlg.exec() != QDialog::Accepted) return;
+
+    std::vector<std::string> LaunchIds;                              // selected editions
+    for (const std::string & Lid : Editions) if (EdChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
+    if (LaunchIds.empty()) return;                                    // nothing picked
+    std::map<std::string, bool> Toggles;                             // optional-content selection
+    for (auto & [Id, cb] : OptChecks) Toggles[Id] = cb->isChecked();
 
     DownloadingUids.insert(Key);
     QStringList Cids;
     for (const std::string & Lid : LaunchIds)
-        for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid))
+        for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, Toggles))
         {
             const QString Qc = QString::fromStdString(C);
             if (DownloadCidToUid.contains(Qc)) continue;
@@ -882,10 +936,10 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while
     // a completing download reassigns it (RebuildDynamicUI) — that was the multi-download crash.
     NodeIndex Snapshot = CatalogIndex;
-    std::thread([this, LaunchIds, Key, Snapshot = std::move(Snapshot)]{
+    std::thread([this, LaunchIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
         std::string Err; bool Ok = true;
         for (const std::string & Lid : LaunchIds)
-            if (!PackageCatalog::HydrateNode(Snapshot, Lid, &Err)) { Ok = false; break; }
+            if (!PackageCatalog::HydrateNode(Snapshot, Lid, Toggles, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
+#include <map>
 #include <utility>
 
 #include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
@@ -50,11 +51,14 @@ std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Laun
 // True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
-// Available-tab download-progress aggregation. Excludes the runner build; cover CIDs are not included.
-std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. Toggles select
+// optional content (node-id -> enabled; absent optional nodes fall back to their DEFAULT).
+std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                         const std::map<std::string, bool> &Toggles = {});
 // Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
 // bundle PATH. Worker-thread (may block on downloads). Returns false (with *Error) on a failed fetch.
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, std::string *Error = nullptr);
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                 const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr);
 
 } // namespace PackageCatalog
 
