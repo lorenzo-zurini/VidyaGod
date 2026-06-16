@@ -193,50 +193,37 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    //HEADLESS: import a runner (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
+    //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
     if (!LaunchParameters.ImportRunnerId.empty())
     {
-        //--import-runner <RUNNER_ID>[:<VARIANT_ID>] — variant defaults to the runner's recommended/first.
-        std::string Id = LaunchParameters.ImportRunnerId, Variant;
-        if (auto Colon = Id.find(':'); Colon != std::string::npos) { Variant = Id.substr(Colon + 1); Id = Id.substr(0, Colon); }
-        LogOut("main.cpp", "Importing runner: " + Id + (Variant.empty() ? "" : (":" + Variant)));
-        nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
-        for (auto &PD : PackageCatalog::CatalogPackagesWithDir(GlobalConfigJSON))
-            if (JSONOps::HasRunners(PD.first))
-                for (const auto &R : PD.first["RUNNERS"])
-                    if (R.value("RUNNER_ID", std::string()) == Id) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
-        if (RunnerPkg.is_null()) { LogErr("main.cpp", "No runner package found for RUNNER_ID '" + Id + "'."); return 1; }
+        //--import-runner <RUNNER_NODE_ID> (node runners have no variants — a stray ":suffix" is ignored).
+        std::string Id = LaunchParameters.ImportRunnerId;
+        if (auto Colon = Id.find(':'); Colon != std::string::npos) Id = Id.substr(0, Colon);
+        LogOut("main.cpp", "Importing runner node: " + Id);
+        std::vector<std::filesystem::path> Roots;
+        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
         std::string Err;
-        const bool Ok = ContainerWrapper::ImportRunner(GlobalConfigJSON, RunnerPkg, RunnerDir, Variant, &Err);
+        const bool Ok = ContainerWrapper::ImportRunnerNode(GlobalConfigJSON, Index, Id, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
         return Ok ? 0 : 1;
     }
 
-    //HEADLESS: hydrate a library game package in place (fetch its IPFS content) then exit. The init-time sync
-    //already mirrored every repo package into the managed library and indexed it in LIBRARY, so resolve there.
+    //HEADLESS: hydrate a library game in place (fetch its node closure's IPFS content) then exit. Resolve the
+    //launchable node whose UID (or NODE_ID) matches the requested id, then hydrate its content closure.
     if (!LaunchParameters.ImportPackageUid.empty())
     {
         const std::string Uid = LaunchParameters.ImportPackageUid;
-        LogOut("main.cpp", "Importing package: " + Uid);
-        nlohmann::ordered_json Manifest; std::string Dir;
-        if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
-            for (auto &E : GlobalConfigJSON["LIBRARY"])
-                if (E.value("PACKAGEUID", std::string()) == Uid)
-                {
-                    Dir = E.value("PATH", std::string());
-                    std::vector<std::string> Warn;
-                    JSONOps::AssembleManifest(QString::fromStdString(Dir), Manifest, Warn);
-                    break;
-                }
-        if (Manifest.is_null() || Dir.empty()) { LogErr("main.cpp", "No library package found for PACKAGEUID '" + Uid + "'."); return 1; }
+        LogOut("main.cpp", "Importing package (node closure) for: " + Uid);
+        std::vector<std::filesystem::path> Roots;
+        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        std::string LaunchId;
+        for (const auto &[NId, N] : Index.Nodes)
+            if (N.IsLaunchable() && (N.Uid == Uid || N.NodeId == Uid)) { LaunchId = NId; break; }
+        if (LaunchId.empty()) { LogErr("main.cpp", "No launchable node found for '" + Uid + "'."); return 1; }
         std::string Err;
-        const bool Ok = PackageCatalog::ImportPackage(GlobalConfigJSON, Manifest, Dir, &Err);
-        if (Ok)
-        {
-            QFile GCFile(AppDataDir.filePath("GlobalConfig.JSON"));
-            if (!JSONOps::SaveJSON(&GlobalConfigJSON, &GCFile))
-                LogWarn("main.cpp", "Package imported but GlobalConfig.JSON could not be written.");
-        }
+        const bool Ok = PackageCatalog::HydrateNode(Index, LaunchId, &Err);
         LogOut("main.cpp", Ok ? "Package imported." : ("Package import failed: " + Err));
         return Ok ? 0 : 1;
     }

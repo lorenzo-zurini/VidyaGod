@@ -1,13 +1,12 @@
 #include "filesystemoperations.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
+#include "manifestmodel.h"
 
 FSOps::FSOps() {}
 
-//Checks that PackageDir points to a valid VidyaGod package.
-//A package is valid when its directory contains at least one *.json file whose assembled,
-//merged manifest yields a PACKAGEUID (modular manifests — no single MANIFEST.json required).
-//Returns false if the path is empty or no usable manifest with identity is found.
+//Checks that PackageDir points to a valid VidyaGod bundle (everything-is-a-node): a directory that holds at
+//least one <node_id>.json node file. Returns false if the path is empty or no node file is found.
 bool FSOps::CheckPackageValid(QDir * PackageDir)
 {
     if (PackageDir->path().isEmpty())
@@ -18,21 +17,15 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
 
     LogOut("FSOperations", "Scanning " + PackageDir->path().toStdString());
 
-    nlohmann::ordered_json Assembled;
-    std::vector<std::string> AsmWarn;
-    if (!JSONOps::AssembleManifest(PackageDir->path(), Assembled, AsmWarn) ||
-        !Assembled.contains("PACKAGEUID") || Assembled["PACKAGEUID"].is_null())
+    NodeIndex Idx;
+    ManifestModel::ScanBundleNodes(PackageDir->path().toStdString(), Idx);
+    if (Idx.Nodes.empty())
     {
-        LogErr("FSOperations", "Selected directory has no usable JSON manifest (PACKAGEUID).");
-        return false;
-    }
-    if (Assembled.contains("__VG_ERRORS__"))
-    {
-        LogErr("FSOperations", "Directory holds conflicting package identities (one package per directory).");
+        LogErr("FSOperations", "Selected directory has no node files (NODE_ID).");
         return false;
     }
 
-    LogSucc("FSOperations", "Valid package!");
+    LogSucc("FSOperations", "Valid bundle!");
     return true;
 }
 

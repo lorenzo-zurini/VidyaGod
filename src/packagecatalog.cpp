@@ -102,45 +102,6 @@ std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConf
     return Dirs;
 }
 
-// ----- catalog -----
-
-std::vector<std::pair<nlohmann::ordered_json, std::string>> CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON)
-{
-    std::vector<std::pair<nlohmann::ordered_json, std::string>> Packages;
-    std::set<std::string> SeenUID; // first occurrence wins → earlier repository shadows later ones
-    for (const auto &RepoDir : RepositoryDirs(GlobalConfigJSON))
-    {
-        QDir Dir(QString::fromStdString(RepoDir));
-        if (!Dir.exists()) continue;
-        for (const QString &Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
-        {
-            const QString PkgDir = Dir.filePath(Sub);
-            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-            if (!JSONOps::AssembleManifest(PkgDir, Pkg, Warn)) continue;
-            std::string Uid = Pkg.value("PACKAGEUID", std::string());
-            if (!Uid.empty() && !SeenUID.insert(Uid).second) continue; // already provided by a higher-priority repo
-            Packages.emplace_back(std::move(Pkg), PkgDir.toStdString());
-        }
-    }
-    return Packages;
-}
-
-std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON)
-{
-    std::vector<nlohmann::ordered_json> Packages;
-    for (auto &[Pkg, Dir] : CatalogPackagesWithDir(GlobalConfigJSON)) { (void)Dir; Packages.push_back(std::move(Pkg)); }
-    return Packages;
-}
-
-std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON)
-{
-    std::vector<nlohmann::ordered_json> Runners;
-    for (const auto &Pkg : CatalogPackages(GlobalConfigJSON))
-        if (JSONOps::HasRunners(Pkg))
-            for (const auto &R : Pkg["RUNNERS"]) Runners.push_back(R);
-    return Runners;
-}
-
 // ----- git plumbing -----
 
 //Runs git with the given arguments, blocking up to a couple of minutes. Returns true on a clean exit.
@@ -197,13 +158,6 @@ static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid
     Arr.push_back(std::move(Slim));
 }
 
-//True if any variant of a runner package has been imported (build cached + DEFPREFIX) — its "hydrated" state.
-static bool RunnerPkgImported(const nlohmann::ordered_json &Pkg, const std::string &PackageDir)
-{
-    for (const std::string &Vid : RunnerWrapper::VariantIds(Pkg))
-        if (RunnerWrapper::IsImported(Pkg, PackageDir, Vid)) return true;
-    return false;
-}
 
 //Drops REPO-sourced entries whose PACKAGEUID no longer comes from any synced repo AND that hold nothing the user
 //downloaded, deleting their dir (only under LibRoot). Local (no-REPO) entries and downloaded orphans are kept.
@@ -301,84 +255,6 @@ void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
 
 // ----- import / publish -----
 
-bool ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
-                   const std::string &PackageDir, std::string *Error)
-{
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::ImportPackage", M); return false; };
-
-    const std::string Uid = Manifest.value("PACKAGEUID", std::string());
-    if (Uid.empty()) return Fail("package has no PACKAGEUID");
-    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
-        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
-
-    const std::filesystem::path Dest(PackageDir);                                 // the cloned package dir = the library package
-    std::error_code Ec;
-    int Fetched = 0;
-    bool FetchFailed = false;
-    std::string FetchErr;
-
-    //Fetch each VFS layer's content in place at Dest/PATH (CID is the permanent identity; PATH the local home).
-    if (Manifest.contains("COMPONENTS"))
-        ForEachVfsLayer(Manifest["COMPONENTS"], [&](const nlohmann::ordered_json &S){
-            if (FetchFailed) return;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(S, Dest, Local, Cid);
-            if (Cid.empty() || Local == Dest) return;                            // no backend, or no PATH
-            if (std::filesystem::exists(Local, Ec)) return;                      // already present
-            std::string Err;
-            if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
-            { FetchFailed = true; FetchErr = "could not fetch layer CID " + Cid + " (" + Err + ")"; return; }
-            ++Fetched;
-        });
-    if (FetchFailed) return Fail(FetchErr);
-
-    //Fetch covers in place too (COVER objects are {PATH, SOURCE:{ipfs,CID}} — LayerLocator reads them like a layer).
-    auto FetchCover = [&](const nlohmann::ordered_json &Holder)
-    {
-        if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
-        std::filesystem::path Local; std::string Cid;
-        LayerLocator(Holder["COVER"], Dest, Local, Cid);
-        if (Cid.empty() || Local == Dest || std::filesystem::exists(Local, Ec)) return;
-        std::string Err;
-        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
-            LogWarn("PackageCatalog::ImportPackage", "could not fetch cover CID " + Cid + " (" + Err + ")");
-        else ++Fetched;
-    };
-    if (Manifest.contains("GAMES") && Manifest["GAMES"].is_array())
-        for (const auto &G : Manifest["GAMES"])
-        {
-            if (!G.is_object()) continue;
-            if (G.contains("METADATA") && G["METADATA"].is_object()) FetchCover(G["METADATA"]);
-            FetchCover(G);
-        }
-    LogSucc("PackageCatalog::ImportPackage", "Hydrated package " + Uid + " in place at " + Dest.string()
-            + " (" + std::to_string(Fetched) + " file(s) fetched)");
-
-    //Ensure a LIBRARY entry points at the hydrated dir (sync usually created it already; add if missing).
-    bool Found = false;
-    for (auto &E : GlobalConfigJSON["LIBRARY"])
-        if (E.value("PACKAGEUID", std::string()) == Uid) { E["PATH"] = Dest.string(); Found = true; break; }
-    if (!Found)
-    {
-        nlohmann::ordered_json Slim;
-        Slim["PACKAGEUID"]  = Uid;
-        Slim["PACKAGENAME"] = Manifest.value("PACKAGENAME", std::string());
-        Slim["PATH"]        = Dest.string();
-        GlobalConfigJSON["LIBRARY"].push_back(std::move(Slim));
-    }
-    return true;
-}
-
-bool IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest)
-{
-    const std::string Uid = Manifest.value("PACKAGEUID", std::string());
-    if (Uid.empty()) return false;
-    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array()) return false;
-    for (const auto &E : GlobalConfigJSON["LIBRARY"])
-        if (E.value("PACKAGEUID", std::string()) == Uid)
-            return PackageHydrated(Manifest, E.value("PATH", std::string()));     // in LIBRARY + content present locally
-    return false;
-}
 
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
 {

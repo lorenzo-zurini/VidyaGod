@@ -28,26 +28,12 @@ std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
 // The clone directories of every configured Settings.Repositories[] git repo (indexed in order).
 std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON);
 
-// ----- catalog -----
-// Every package manifest across all repositories, deduped by PACKAGEUID (earlier repo wins).
-std::vector<nlohmann::ordered_json> CatalogPackages(const nlohmann::ordered_json &GlobalConfigJSON);
-// As CatalogPackages, but pairs each manifest with its owning package directory.
-std::vector<std::pair<nlohmann::ordered_json, std::string>> CatalogPackagesWithDir(const nlohmann::ordered_json &GlobalConfigJSON);
-// Every runner object from every catalog package that HasRunners (a filtered view of the catalog).
-std::vector<nlohmann::ordered_json> RegistryRunners(const nlohmann::ordered_json &GlobalConfigJSON);
-
-// ----- sync / import / publish -----
-// Git clone/pull each repo into LIBRARY/<repo> and upsert one LIBRARY index entry per package, reconciling away
-// vanished repo entries. Mutates GlobalConfigJSON; caller persists it.
+// ----- sync / publish -----
+// Git clone/pull each repo into LIBRARY/<repo> and upsert one LIBRARY index entry per bundle (identity derived
+// from its node files), reconciling away vanished repo entries. Mutates GlobalConfigJSON; caller persists it.
 void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
-// Hydrate a package IN PLACE: fetch every ipfs content layer + cover to its declared PATH in PackageDir; ensure a
-// LIBRARY entry points there. Idempotent. Returns false (with *Error) on a failed fetch. Caller persists config.
-bool ImportPackage(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest,
-                   const std::string &PackageDir, std::string *Error = nullptr);
-// True when a package's PACKAGEUID is in LIBRARY and its content is hydrated locally.
-bool IsPackageImported(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Manifest);
-// Dehydrate a local package for sharing: seed each VFS layer + cover over IPFS, record SOURCE:{ipfs,CID} into the
-// manifest fragments IN PLACE (content kept), and optionally export a manifest-only copy to DehydratedDestDir.
+// Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
+// SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
 // Copy a package's dehydrated manifest (top-level *.json only, no content/images) into DestDir. Returns count copied.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);

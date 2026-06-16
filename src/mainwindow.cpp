@@ -337,81 +337,62 @@ void MainWindow::RebuildSettingsRunnersPage()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    //Runners are the HasRunners packages of the unified LIBRARY (kind is emergent — the same index holds games,
-    //runners, and dual game+runner packages). Assemble each entry's manifest from its mirrored dir.
-    std::vector<std::pair<nlohmann::ordered_json, std::string>> Pkgs;          // (manifest, package dir)
-    if (GlobalConfigJSON->contains("LIBRARY") && (*GlobalConfigJSON)["LIBRARY"].is_array())
-        for (const auto & Ent : (*GlobalConfigJSON)["LIBRARY"])
-        {
-            const std::string Dir = Ent.value("PATH", std::string());
-            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-            if (JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn) && JSONOps::HasRunners(Pkg))
-                Pkgs.push_back({Pkg, Dir});
-        }
-    if (Pkgs.empty())
+    //Runners are the ROLE:"runner" nodes of the global catalog graph — one card per runner node.
+    std::vector<const Node*> Runners;
+    for (const auto & [Id, N] : CatalogIndex.Nodes) { (void)Id; if (N.IsRunner()) Runners.push_back(&N); }
+    std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
+    if (Runners.empty())
     {
         QLabel * none = new QLabel("No runners found in your repositories.", contents);
         none->setStyleSheet("color:#8f98a0;");
         v->addWidget(none);
     }
-    for (const auto & PD : Pkgs)
+    for (const Node * R : Runners)
     {
-        const nlohmann::ordered_json & Pkg = PD.first;
-        const std::string & PkgDir = PD.second;
-        const nlohmann::ordered_json & E = Pkg["RUNNERS"][0];
-        std::string rid = E.value("RUNNER_ID", std::string("(unnamed)"));
-        QGroupBox * card = new QGroupBox(QString::fromStdString(E.value("NAME", rid)), contents);
+        const std::string rid = R->NodeId;
+        QGroupBox * card = new QGroupBox(QString::fromStdString(rid), contents);
         QVBoxLayout * cv = new QVBoxLayout(card); card->setLayout(cv);
-        cv->addWidget(new QLabel("<span style='color:#8f98a0;'>RUNNER_ID: " + QString::fromStdString(rid) + "</span>", card));
 
-        // One row per runner VARIANT: TYPE/platforms + import state + Import button.
-        for (const std::string & Vid : RunnerWrapper::VariantIds(Pkg))
+        QString guest;
+        for (const auto & P : R->GuestPlatform) guest += (guest.isEmpty() ? "" : ", ") + QString::fromStdString(P);
+        const QString Desc = QString::fromStdString(R->HostPlatform) + " → [" + guest + "]";
+
+        const bool Avail    = RunnerWrapper::ExecutableAvailable(R->Exec);
+        const bool Ships    = !PackageCatalog::NodeContentCids(CatalogIndex, rid).empty();
+        const bool Imported = ContainerWrapper::RunnerNodeImported(CatalogIndex, rid);
+        QHBoxLayout * row = new QHBoxLayout();
+        row->addWidget(new QLabel(Desc, card), 1);
+        QLabel * st = new QLabel(card);
+        if (!Ships && Avail) st->setText("<span style='color:#8f98a0;'>built-in</span>");
+        else if (!Ships)    st->setText("<span style='color:#c0726a;'>not installed on system</span>");
+        else if (Imported)  st->setText("<span style='color:#5fb55f;'>Imported</span>");
+        else                 st->setText("<span style='color:#c0726a;'>Not imported</span>");
+        row->addWidget(st);
+        if (Ships && !Imported && IpfsWrapper::Available())
         {
-            const nlohmann::ordered_json V = RunnerWrapper::Variant(Pkg, Vid);
-            QString guest;
-            if (V.contains("GUEST_PLATFORM") && V["GUEST_PLATFORM"].is_array())
-                for (const auto & P : V["GUEST_PLATFORM"])
-                    if (P.is_string()) guest += (guest.isEmpty() ? "" : ", ") + QString::fromStdString(std::string(P));
-            const QString Desc = QString::fromStdString(Vid) + "  ·  " + QString::fromStdString(V.value("TYPE", std::string()))
-                               + "  ·  " + QString::fromStdString(V.value("HOST_PLATFORM", std::string())) + " → [" + guest + "]";
-
-            const bool Ships     = RunnerWrapper::ShipsBuild(Pkg, Vid);
-            const bool Imported = RunnerWrapper::IsImported(Pkg, PkgDir, Vid);
-            const bool Avail    = RunnerWrapper::ExecutableAvailable(V);
-            QHBoxLayout * row = new QHBoxLayout();
-            row->addWidget(new QLabel(Desc, card), 1);
-            QLabel * st = new QLabel(card);
-            if (!Ships && Avail) st->setText("<span style='color:#8f98a0;'>built-in</span>");
-            else if (!Ships)    st->setText("<span style='color:#c0726a;'>not installed on system</span>");
-            else if (Imported)  st->setText("<span style='color:#5fb55f;'>Imported</span>");
-            else                 st->setText("<span style='color:#c0726a;'>Not imported</span>");
-            row->addWidget(st);
-            if (Ships && !Imported && IpfsWrapper::Available())
-            {
-                QPushButton * btn = new QPushButton("Import", card);
-                connect(btn, &QPushButton::clicked, this, [this, Pkg, PkgDir, Vid, btn, st]{
-                    if (!IpfsFetchReady(this)) return;          // need a running daemon to fetch
-                    btn->setEnabled(false); btn->setText("Importing…");
-                    st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
-                    std::thread([this, Pkg, PkgDir, Vid]{
-                        std::string Err;
-                        bool Ok = ContainerWrapper::ImportRunner(*GlobalConfigJSON, Pkg, PkgDir, Vid, &Err);
-                        QMetaObject::invokeMethod(this, [this, Ok, Err]{
-                            if (!Ok) QMessageBox::warning(this, "Runner import failed", QString::fromStdString(Err));
-                            RebuildSettingsRunnersPage(); RefreshIpfsTab();
-                        }, Qt::QueuedConnection);
-                    }).detach();
-                });
-                row->addWidget(btn);
-            }
-            else if (Ships && !Imported)
-            {
-                QLabel * need = new QLabel("install Kubo", card);
-                need->setStyleSheet("color:#8f98a0;font-style:italic;");
-                row->addWidget(need);
-            }
-            cv->addLayout(row);
+            QPushButton * btn = new QPushButton("Import", card);
+            connect(btn, &QPushButton::clicked, this, [this, rid, btn, st]{
+                if (!IpfsFetchReady(this)) return;              // need a running daemon to fetch
+                btn->setEnabled(false); btn->setText("Importing…");
+                st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
+                std::thread([this, rid]{
+                    std::string Err;
+                    bool Ok = ContainerWrapper::ImportRunnerNode(*GlobalConfigJSON, CatalogIndex, rid, &Err);
+                    QMetaObject::invokeMethod(this, [this, Ok, Err]{
+                        if (!Ok) QMessageBox::warning(this, "Runner import failed", QString::fromStdString(Err));
+                        RebuildSettingsRunnersPage(); RefreshIpfsTab();
+                    }, Qt::QueuedConnection);
+                }).detach();
+            });
+            row->addWidget(btn);
         }
+        else if (Ships && !Imported)
+        {
+            QLabel * need = new QLabel("install Kubo", card);
+            need->setStyleSheet("color:#8f98a0;font-style:italic;");
+            row->addWidget(need);
+        }
+        cv->addLayout(row);
         v->addWidget(card);
     }
     v->addStretch(1);
@@ -629,55 +610,39 @@ QWidget * MainWindow::BuildPathsSettingsPage()
 static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc, QHash<QString, QString> * OutPackages = nullptr)
 {
     QHash<QString, QString> Labels;
-    for (const auto & Pkg : PackageCatalog::CatalogPackages(gc))
+    NodeIndex Idx = PackageCatalog::BuildCatalogIndex(gc);
+    for (const auto & [NodeId, N] : Idx.Nodes)
     {
-        const std::string PkgName = Pkg.value("PACKAGENAME", Pkg.value("PACKAGEUID", std::string()));
-        //Content layers → grouped under their package.
-        if (Pkg.contains("COMPONENTS") && Pkg["COMPONENTS"].is_array())
-        for (const auto & C : Pkg["COMPONENTS"])
-        {
-            const std::string CompName = C.value("NAME", std::string());
-            if (!C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-            for (const auto & S : C["SUBCOMPONENTS"])
-            {
-                const std::string T = S.value("TYPE", std::string());
-                if (T != "VFSZipLayer" && T != "VFSDirLayer" && T != "VFSFileLayer") continue;
-                if (!S.contains("SOURCE") || !S["SOURCE"].is_object() || S["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
-                const std::string Cid = S["SOURCE"].value("CID", std::string());
-                if (Cid.empty()) continue;
-                std::string Label = PkgName;                                   // default: package name
-                if (!CompName.empty() && CompName.find(PkgName) == std::string::npos)   // component adds info
-                    Label = PkgName.empty() ? CompName : (PkgName + " — " + CompName);
-                else if (PkgName.empty() && !CompName.empty())
-                    Label = CompName;
-                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(Label));
-                if (OutPackages)
-                    OutPackages->insert(QString::fromStdString(Cid),
-                                        QString::fromStdString(PkgName.empty() ? std::string("(unnamed package)") : PkgName));
-            }
-        }
+        //A friendly bundle name for grouping: the node's title, else its GROUP/id.
+        std::string PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", std::string()) : std::string();
+        if (PkgName.empty()) PkgName = N.GroupKey();
 
-        //Cover-art CIDs → a single "Assets" group (separate from game content), labeled by package/game.
-        if (Pkg.contains("GAMES") && Pkg["GAMES"].is_array())
-        for (const auto & G : Pkg["GAMES"])
-        {
-            if (!G.is_object()) continue;
-            const std::string GameName = G.value("TITLE", G.value("GAMEID", std::string()));
-            auto consider = [&](const nlohmann::ordered_json & Holder)
+        //Content layer CIDs → labelled by their node (the component-equivalent), grouped by bundle.
+        if (N.Layers.is_array())
+            for (const auto & L : N.Layers)
             {
-                if (!Holder.contains("COVER") || !Holder["COVER"].is_object()) return;
-                const auto & Cv = Holder["COVER"];
-                if (!Cv.contains("SOURCE") || !Cv["SOURCE"].is_object() || Cv["SOURCE"].value("TYPE", std::string()) != "ipfs") return;
+                if (!ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))) continue;
+                if (!L.contains("SOURCE") || !L["SOURCE"].is_object() || L["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
+                const std::string Cid = L["SOURCE"].value("CID", std::string());
+                if (Cid.empty()) continue;
+                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(NodeId));
+                if (OutPackages)
+                    OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
+            }
+
+        //Cover-art CIDs → a single "Assets" group, labelled by bundle.
+        if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
+        {
+            const auto & Cv = N.Meta["COVER"];
+            if (Cv.contains("SOURCE") && Cv["SOURCE"].is_object() && Cv["SOURCE"].value("TYPE", std::string()) == "ipfs")
+            {
                 const std::string Cid = Cv["SOURCE"].value("CID", std::string());
-                if (Cid.empty()) return;
-                const std::string Base = PkgName.empty() ? GameName : PkgName;
-                const std::string Label = (GameName.empty() || GameName == Base) ? (Base + " — cover")
-                                                                                 : (Base + " — " + GameName + " cover");
-                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(Label));
-                if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
-            };
-            if (G.contains("METADATA") && G["METADATA"].is_object()) consider(G["METADATA"]);
-            consider(G);
+                if (!Cid.empty())
+                {
+                    Labels.insert(QString::fromStdString(Cid), QString::fromStdString((PkgName.empty() ? NodeId : PkgName) + " — cover"));
+                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
+                }
+            }
         }
     }
     return Labels;
@@ -1187,10 +1152,12 @@ void MainWindow::BuildPackagesDynamicUI()
         //live in the Available tab, not here. Content-less packages (a malformed game with no layers, or a
         //PATH-only runner) are vacuously hydrated, so require real content to exclude them.
         const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
-        nlohmann::ordered_json pm; std::vector<std::string> AsmWarn;
-        if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
-        if (!ManifestModel::PackageHasContent(pm)) continue;
-        if (!ManifestModel::PackageHydrated(pm, LibPath)) continue;
+        //Only HYDRATED bundles with a launchable node appear here (a runner-only bundle has none).
+        NodeIndex BIdx; ManifestModel::ScanBundleNodes(LibPath, BIdx);
+        bool AnyHydratedLaunchable = false;
+        for (const auto & [NodeId, N] : BIdx.Nodes)
+            if (N.IsLaunchable() && PackageCatalog::NodeHydrated(CatalogIndex, NodeId)) { AnyHydratedLaunchable = true; break; }
+        if (!AnyHydratedLaunchable) continue;
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);
@@ -1273,24 +1240,24 @@ void MainWindow::on_AddGameButton_clicked()
     if (paths.isEmpty()) { QMessageBox::warning(this,"No packages found","No valid packages found."); return; }
     int added=0, skipped=0;
     for (const QString & path : paths) {
-        nlohmann::ordered_json m;
-        std::vector<std::string> AsmWarn;
-        if (!JSONOps::AssembleManifest(path, m, AsmWarn)) { skipped++; continue; }
-        if (m.contains("__VG_ERRORS__")) { // conflicting identities — not a single valid package
-            LogWarn("MainWindow", "Skipping " + path.toStdString() + ": conflicting package identities.");
+        //Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
+        NodeIndex BIdx; ManifestModel::ScanBundleNodes(path.toStdString(), BIdx);
+        const Node * Rep = nullptr;
+        for (const auto & [id, N] : BIdx.Nodes)
+            if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
+        if (!Rep) {
+            LogWarn("MainWindow", "Skipping " + path.toStdString() + ": no launchable node (not a library bundle).");
             skipped++; continue;
         }
-        if (!JSONOps::HasGames(m)) { // runner-only / pure-dependency package — not a library entry
-            LogWarn("MainWindow", "Skipping " + path.toStdString() + ": no games (not a library package).");
-            skipped++; continue;
-        }
+        const std::string Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;
+        const std::string Name = Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId;
         bool dup=false;
         for (auto & e : (*GlobalConfigJSON)["LIBRARY"])
-            if (e["PACKAGEUID"]==m["PACKAGEUID"]) { dup=true; skipped++; break; }
+            if (e.value("PACKAGEUID", std::string()) == Uid) { dup=true; skipped++; break; }
         if (dup) continue;
         nlohmann::ordered_json slim;
-        slim["PACKAGEUID"]=m.value("PACKAGEUID", std::string());
-        slim["PACKAGENAME"]=m.value("PACKAGENAME", std::string());
+        slim["PACKAGEUID"]=Uid;
+        slim["PACKAGENAME"]=Name;
         slim["PATH"]=path.toStdString();
         (*GlobalConfigJSON)["LIBRARY"].push_back(slim);
         added++;

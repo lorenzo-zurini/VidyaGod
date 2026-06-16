@@ -1522,6 +1522,81 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     return true;
 }
 
+//Synthesizes a minimal RUNNERS[]-shaped package from a runner node + its content closure so the tested
+//ImportRunner machinery installs it unchanged. The build content nodes (the runner's PARENTS) become COMPONENTS;
+//the runner node's EXEC becomes the single "default" variant — matching DerivePaths (RunnerVariantID="default").
+bool ContainerWrapper::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
+                                        const std::string &RunnerNodeId, std::string *Error)
+{
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("ContainerWrapper::ImportRunnerNode", M); return false; };
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) return Fail("not a runner node: " + RunnerNodeId);
+
+    nlohmann::ordered_json Components = nlohmann::ordered_json::array();
+    nlohmann::ordered_json Modules    = nlohmann::ordered_json::array();
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
+    {
+        if (Id == RunnerNodeId) continue;
+        const Node *C = Idx.Find(Id);
+        if (!C || !C->Layers.is_array() || C->Layers.empty()) continue;
+        Components.push_back(nlohmann::ordered_json{{"COMPONENTID", Id}, {"SUBCOMPONENTS", C->Layers}});
+        Modules.push_back(nlohmann::ordered_json{{"COMPONENT", Id}});
+    }
+
+    nlohmann::ordered_json Variant = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
+    Variant["VARIANT_ID"]    = "default";
+    Variant["HOST_PLATFORM"] = R->HostPlatform;
+    Variant["GUEST_PLATFORM"] = R->GuestPlatform;
+    Variant["MODULES"]       = Modules;
+    Variant["RECOMMENDED"]   = true;
+
+    nlohmann::ordered_json Pkg = nlohmann::ordered_json::object();
+    Pkg["PACKAGEUID"] = R->Uid.empty() ? R->NodeId : R->Uid;
+    Pkg["RUNNERS"]    = nlohmann::ordered_json::array({ nlohmann::ordered_json{
+        {"RUNNER_ID", R->NodeId}, {"NAME", R->NodeId}, {"VARIANTS", nlohmann::ordered_json::array({Variant})} } });
+    Pkg["COMPONENTS"] = Components;
+
+    return ImportRunner(GlobalConfigJSON, Pkg, R->BundleDir.string(), "default", Error);
+}
+
+bool ContainerWrapper::RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId)
+{
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) return false;
+
+    //Every build VFS layer hydrated locally (the runner's content closure).
+    bool AllPresent = true; bool AnyBuild = false;
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
+    {
+        if (Id == RunnerNodeId) continue;
+        const Node *C = Idx.Find(Id);
+        if (!C || !C->Layers.is_array()) continue;
+        for (const auto &L : C->Layers)
+        {
+            if (!IsVfsLayer(LayerType(L))) continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(L, C->BundleDir, Local, Cid);
+            if (Local == C->BundleDir) continue;                                  // no PATH
+            AnyBuild = true;
+            std::error_code Ec;
+            if (!std::filesystem::exists(Local, Ec)) AllPresent = false;
+        }
+    }
+    if (!AnyBuild) return true;                                                   // ships no build → always installed
+    if (!AllPresent) return false;
+
+    //PREFIX_GENERATE runners also need their DEFPREFIX artifact present (<bundle>/__DEFPREFIX__/default/<prefixRoot>).
+    const bool PrefixGen = R->Exec.is_object() && R->Exec.value("PREFIX_GENERATE", false);
+    if (!PrefixGen) return true;
+    const std::string CR = R->Exec.is_object() ? R->Exec.value("CONTENT_ROOT", std::string()) : std::string();
+    std::string PrefixRoot;
+    { const auto Pos = CR.find("drive_c"); if (Pos != std::string::npos && Pos != 0) PrefixRoot = CR.substr(0, Pos - 1); }
+    std::filesystem::path Artifact = std::filesystem::path(RunnerWrapper::DefPrefixArtifact(R->BundleDir.string(), "default"));
+    std::filesystem::path PrefixDir = PrefixRoot.empty() ? Artifact : (Artifact / PrefixRoot);
+    std::error_code Ec;
+    return std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec);
+}
+
 //(PackageIpfsCids / PackageCoverCids moved to ManifestModel — see manifestmodel.h.)
 
 //(ImportPackage / PublishPackage / MirrorDehydrated / IsPackageImported moved to PackageCatalog — see packagecatalog.h.)

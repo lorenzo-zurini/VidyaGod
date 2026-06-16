@@ -255,6 +255,15 @@ public:
     //default variant. (Stays public: it's the runner-install entry point called by the UI / headless --import-runner.)
     static bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
                               const std::string &PackageDir, const std::string &VariantId = std::string(), std::string *Error = nullptr);
+    //Node-native runner install: synthesizes a minimal runner package from a ROLE:"runner" node + its content
+    //closure (the build) and runs ImportRunner — hydrating the build into the runner's bundle and generating the
+    //one-time DEFPREFIX at <bundle>/__DEFPREFIX__/default (where DerivePaths reads it). The runner-install entry
+    //point for the node world (Settings page / play-gate).
+    static bool ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
+                                 const std::string &RunnerNodeId, std::string *Error = nullptr);
+    //True when a runner node is installed: every build VFS layer hydrated locally AND (PREFIX_GENERATE) its
+    //DEFPREFIX artifact exists. A runner that ships no build is always "installed".
+    static bool RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId);
 private:
     //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
     //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
