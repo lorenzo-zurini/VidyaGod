@@ -1,16 +1,10 @@
 #include "libraryview.h"
-#include "containerwrapper.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "covercache.h"
 #include "prelaunchwindow.h"
 #include "ipfswrapper.h"
-#include "runnerwrapper.h"
-#include "jsonoperations.h"
 #include "commonutils.h"
-
-#include <thread>
-#include <algorithm>
 
 #include <QPainter>
 #include <QApplication>
@@ -43,30 +37,28 @@ bool IpfsFetchReady(QWidget * parent)
 // LibraryGameCard
 // ═════════════════════════════════════════════════════════════════════════════
 
-LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, int game, std::string subgameId)
-    : GlobalConfigJSON(gc), Game(game), SubgameID(subgameId)
+LibraryGameCard::LibraryGameCard(nlohmann::ordered_json * gc, const NodeIndex * index,
+                                 std::vector<std::string> groupNodeIds)
+    : Index(index), GroupNodeIds(std::move(groupNodeIds)), GlobalConfigJSON(gc)
 {
-    MANIFESTJSON = new nlohmann::ordered_json;
+    if (!GroupNodeIds.empty()) RepNodeId = GroupNodeIds.front();
 }
-
-LibraryGameCard::~LibraryGameCard() { delete MANIFESTJSON; }
 
 void LibraryGameCard::InitializeClassVariables()
 {
-    PackagePath = std::filesystem::path(std::string((*GlobalConfigJSON)["LIBRARY"][Game]["PATH"]));
-    std::vector<std::string> AsmWarn;
-    if (!JSONOps::AssembleManifest(QString::fromStdString(PackagePath.string()), *MANIFESTJSON, AsmWarn)) return;
+    const Node * Rep = (Index && !RepNodeId.empty()) ? Index->Find(RepNodeId) : nullptr;
+    if (!Rep) return;
 
-    int idx = ManifestModel::FindGameIndex(*MANIFESTJSON, SubgameID);
-    if (idx == -1) return;
+    PackagePath = Rep->BundleDir;
+    GroupKey    = QString::fromStdString(Rep->GroupKey());
+    RepUid      = Rep->Uid;
 
-    GameTitle = QString::fromStdString((*MANIFESTJSON)["GAMES"][idx]["TITLE"]);
+    const nlohmann::ordered_json & Meta = Rep->Meta;
+    GameTitle = QString::fromStdString(Meta.is_object() ? Meta.value("TITLE", RepNodeId) : RepNodeId);
 
     // Sort keys
     SortTitle = GameTitle.toLower();
     if (SortTitle.startsWith("the ")) SortTitle = SortTitle.mid(4);
-
-    auto & Meta = (*MANIFESTJSON)["GAMES"][idx]["METADATA"];
 
     SortDate = (Meta.is_object() && Meta.contains("RELEASEDATE") && Meta["RELEASEDATE"].is_string())
                ? QString::fromStdString(std::string(Meta["RELEASEDATE"])) : "9999";
@@ -91,82 +83,51 @@ void LibraryGameCard::InitializeClassVariables()
     //fires CoverCache::coverReady(cid) so the card reloads. A null CoverOriginal renders the placeholder.
     CoverOriginal = QPixmap();
     CoverCid.clear();
-    const nlohmann::ordered_json * CoverNode = nullptr;
-    if (Meta.is_object() && Meta.contains("COVER"))                  CoverNode = &Meta["COVER"];
-    else if ((*MANIFESTJSON)["GAMES"][idx].contains("COVER"))        CoverNode = &(*MANIFESTJSON)["GAMES"][idx]["COVER"];
-    if (CoverNode)
+    if (Meta.is_object() && Meta.contains("COVER"))
     {
-        const QString Path = CoverCache::instance()->resolve(*CoverNode, QString::fromStdString(PackagePath.string()));
+        const nlohmann::ordered_json & CoverNode = Meta["COVER"];
+        const QString Path = CoverCache::instance()->resolve(CoverNode, QString::fromStdString(PackagePath.string()));
         if (!Path.isEmpty()) CoverOriginal.load(Path);
-        else { QString f; CoverCache::Locate(*CoverNode, f, CoverCid); }   // pending fetch — refresh on coverReady
+        else { QString f; CoverCache::Locate(CoverNode, f, CoverCid); }   // pending fetch — refresh on coverReady
     }
 }
 
 void LibraryGameCard::play()
 {
-    //Validate the assembled manifest before launching; hard errors block launch.
+    if (!Index || GroupNodeIds.empty()) return;
+
+    //Validate the node graph before launching; hard errors block launch.
     {
         std::vector<std::string> ValErr, ValWarn;
-        JSONOps::ValidateManifest(*MANIFESTJSON, ValErr, ValWarn);
-        for (const auto &W : ValWarn) LogWarn("LibraryGameCard", "Manifest: " + W);
+        ManifestModel::ValidateNodeGraph(*Index, ValErr, ValWarn);
+        for (const auto &W : ValWarn) LogWarn("LibraryGameCard", "Node graph: " + W);
         if (!ValErr.empty())
         {
-            QString Msg = "This package's manifest has errors and cannot be launched:\n\n";
+            QString Msg = "This package's node graph has errors and cannot be launched:\n\n";
             for (const auto &E : ValErr) Msg += "• " + QString::fromStdString(E) + "\n";
             QMessageBox::critical(nullptr, "Manifest Error", Msg);
             return;
         }
     }
 
-    //Gate: the runner this game uses must be imported (IPFS builds are fetched ahead of time, never at
-    //launch). If a required build/DEFPREFIX is missing, offer to import the runner instead of launching.
-    {
-        nlohmann::ordered_json ManifestCopy = *MANIFESTJSON;                  // copy — the probe folds runner comps
-        struct ContainerParams CP(PackagePath, SubgameID, std::string());
-        ContainerWrapper Probe(*GlobalConfigJSON, ManifestCopy, CP);          // resolution only (no mount)
-        if (!ContainerWrapper::EnsureSources(CP))
+    //Gate: at least one runner must be available on this machine for the (representative) edition.
+    if (const Node * Rep = Index->Find(RepNodeId))
+        if (PackageCatalog::RunnerCandidates(*Index, *Rep).empty())
         {
-            nlohmann::ordered_json RunnerPkg; std::string RunnerDir;
-            for (auto & PD : PackageCatalog::CatalogPackagesWithDir(*GlobalConfigJSON))
-                if (JSONOps::HasRunners(PD.first))
-                    for (const auto & R : PD.first["RUNNERS"])
-                        if (R.value("RUNNER_ID", std::string()) == CP.RunnerID) { RunnerPkg = PD.first; RunnerDir = PD.second; break; }
-
-            const std::string Vid = CP.RunnerVariantID;
-            const QString Rid = QString::fromStdString(CP.RunnerID + (Vid.empty() ? "" : (":" + Vid)));
-            if (RunnerPkg.is_null() || !RunnerWrapper::ShipsBuild(RunnerPkg, Vid))
-            { QMessageBox::warning(nullptr, "Runner unavailable",
-                  "This game needs runner '" + Rid + "', which isn't imported and can't be fetched."); return; }
-            if (!IpfsFetchReady(nullptr)) return;
-            if (QMessageBox::question(nullptr, "Import runner?",
-                    "This game needs runner '" + Rid + "', which isn't imported yet.\n\n"
-                    "Download and import it now? (progress shows in the IPFS tab)") != QMessageBox::Yes)
-                return;
-            std::thread([GC = GlobalConfigJSON, RunnerPkg, RunnerDir, Vid, Rid]{
-                std::string Err;
-                bool Ok = ContainerWrapper::ImportRunner(*GC, RunnerPkg, RunnerDir, Vid, &Err);
-                QMetaObject::invokeMethod(qApp, [Ok, Err, Rid]{
-                    if (Ok) QMessageBox::information(nullptr, "Runner imported",
-                                "Runner '" + Rid + "' imported — press Play to launch.");
-                    else    QMessageBox::warning(nullptr, "Runner import failed", QString::fromStdString(Err));
-                }, Qt::QueuedConnection);
-            }).detach();
+            QMessageBox::warning(nullptr, "Runner unavailable",
+                "No installed runner can launch this game on this machine. "
+                "Add or download the required runner, then try again.");
             return;
         }
-    }
 
-    std::string uid;
-    if (MANIFESTJSON->contains("PACKAGEUID") && !(*MANIFESTJSON)["PACKAGEUID"].is_null())
-        uid = std::string((*MANIFESTJSON)["PACKAGEUID"]);
     bool skip = false;
-    if (!uid.empty()) {
-        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, uid);
+    if (!RepUid.empty()) {
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, RepUid);
         if (US.contains("SKIP_LAUNCH_DIALOG") && US["SKIP_LAUNCH_DIALOG"].is_boolean())
             skip = bool(US["SKIP_LAUNCH_DIALOG"]);
     }
     bool shift = (QGuiApplication::keyboardModifiers() & Qt::ShiftModifier) != 0;
-    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
-                                     PackagePath.string(), SubgameID, nullptr);
+    auto * dlg = new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, nullptr);
     dlg->show();
     if (skip && !shift)
         QMetaObject::invokeMethod(dlg, "onLaunchClicked", Qt::QueuedConnection);
@@ -174,8 +135,8 @@ void LibraryGameCard::play()
 
 void LibraryGameCard::edit()
 {
-    (new PreLaunchWindow(GlobalConfigJSON, MANIFESTJSON,
-                         PackagePath.string(), SubgameID, nullptr))->show();
+    if (!Index || GroupNodeIds.empty()) return;
+    (new PreLaunchWindow(GlobalConfigJSON, Index, GroupNodeIds, nullptr))->show();
 }
 
 

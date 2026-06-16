@@ -100,22 +100,16 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
                                           const std::map<std::string, bool> &Toggles,
                                           std::vector<std::string> *Missing = nullptr);
 
+// The OPTIONAL nodes reachable from a launchable via the PARENTS closure (for the picker's toggle list),
+// in discovery order. Runner nodes are excluded. Gating/EXCLUDE between them is resolved at launch by
+// ResolveNodeOrder; the picker just lists them as checkboxes.
+std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId);
+
 // Validate the whole node graph: every PARENTS id resolves + no cycles; VFS layers declare a PATH; each
 // launchable resolves a runner (platform match) + has content or is self-contained; runner nodes declare GUEST
 // platforms; a PREFIX_GENERATE runner routes content through drive_c; EXCLUDE is symmetric. Errors should block
 // (e.g. in the editor/CI), warnings advise. NODE_ID uniqueness is enforced earlier by the index (dups dropped).
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings);
-
-// Synthesize an OLD-SHAPE manifest (GAMES/COMPONENTS/RUNNERS) for launching LaunchNodeId, so the existing
-// ContainerWrapper pipeline runs the node graph unchanged: content parents become a linear COMPONENT chain in
-// resolved order, the launchable becomes a GAME+variant (carrying its EXEC), and every ROLE:"runner" node
-// becomes a RUNNER (the engine then platform-selects). OutPackageDir = the launchable's bundle dir. Returns an
-// empty object if LaunchNodeId is missing or not launchable. (Bridge used while migrating; the native consumer
-// replaces it later.)
-nlohmann::ordered_json SynthesizeManifest(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                          const std::map<std::string, bool> &Toggles,
-                                          std::filesystem::path &OutPackageDir,
-                                          std::vector<std::string> *Missing = nullptr);
 
 // ----- VFS layer helpers (the dedup foundation) -----
 // True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File).

@@ -177,13 +177,13 @@ static bool SyncGitRepository(const std::string &Url, const std::string &CloneDi
 //Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PATH,REPO} into Arr keyed by PACKAGEUID. A local (no-REPO)
 //entry with the same UID wins and is left untouched (the user's own package shadows a repo copy).
 static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &Repo,
-                             const std::string &MirrorDir, const nlohmann::ordered_json &Pkg)
+                             const std::string &MirrorDir, const std::string &Name)
 {
     for (auto &E : Arr)
     {
         if (E.value("PACKAGEUID", std::string()) != Uid) continue;
         if (!E.contains("REPO")) return;                                          // local entry owns this UID
-        E["PACKAGENAME"] = Pkg.value("PACKAGENAME", std::string());
+        E["PACKAGENAME"] = Name;
         E["PATH"]        = MirrorDir;
         E["REPO"]        = Repo;
         E.erase("PACKAGEVERSION");                                                // drop the legacy field if present
@@ -191,7 +191,7 @@ static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid
     }
     nlohmann::ordered_json Slim;
     Slim["PACKAGEUID"]  = Uid;
-    Slim["PACKAGENAME"] = Pkg.value("PACKAGENAME", std::string());
+    Slim["PACKAGENAME"] = Name;
     Slim["PATH"]        = MirrorDir;
     Slim["REPO"]        = Repo;
     Arr.push_back(std::move(Slim));
@@ -215,15 +215,42 @@ static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::stri
         if (!E.contains("REPO")) continue;                                        // local — keep
         if (SeenUids.count(E.value("PACKAGEUID", std::string()))) continue;       // still in a repo — keep
         const std::string Path = E.value("PATH", std::string());
-        nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
+        //A downloaded orphan (kept): any launchable node in the bundle is hydrated locally.
         bool Downloaded = false;
-        if (JSONOps::AssembleManifest(QString::fromStdString(Path), Pkg, Warn))
-            Downloaded = (JSONOps::HasGames(Pkg)   && !PackageIpfsCids(Pkg).empty() && PackageHydrated(Pkg, Path))
-                      || (JSONOps::HasRunners(Pkg) && RunnerPkgImported(Pkg, Path));
+        NodeIndex Idx; ManifestModel::ScanBundleNodes(Path, Idx);
+        for (const auto &[NodeId, N] : Idx.Nodes)
+            if (N.IsLaunchable() && NodeHydrated(Idx, NodeId)) { Downloaded = true; break; }
         if (Downloaded) continue;                                                 // downloaded orphan — keep
         if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
         Arr.erase(Arr.begin() + i);
     }
+}
+
+//A bundle's index identity, derived from its node files (everything-is-a-node): the representative launchable
+//node's UID + title, and whether the bundle defines any launchable / runner node. Replaces the AssembleManifest
+//PACKAGEUID/PACKAGENAME/HasGames/HasRunners reads.
+struct BundleIdentity { std::string Uid, Name; bool HasLaunchable = false, HasRunner = false; bool Valid = false; };
+static BundleIdentity ScanBundleIdentity(const std::string &BundleDir)
+{
+    BundleIdentity Id;
+    NodeIndex Idx;
+    ManifestModel::ScanBundleNodes(BundleDir, Idx);
+    const Node *Rep = nullptr;                                                    // prefer a presentable launchable
+    for (const auto &[NodeId, N] : Idx.Nodes)
+    {
+        if (N.IsLaunchable()) { Id.HasLaunchable = true; if (!Rep || (N.Presentable() && !Rep->Presentable())) Rep = &N; }
+        if (N.IsRunner())     Id.HasRunner = true;
+    }
+    if (!Rep)                                                                     // runner-only / content-only bundle
+        for (const auto &[NodeId, N] : Idx.Nodes) { if (!N.Uid.empty()) { Rep = &N; break; } }
+    if (!Rep && !Idx.Nodes.empty()) Rep = &Idx.Nodes.begin()->second;             // no UID anywhere (runners) → use NODE_ID
+    if (Rep)
+    {
+        Id.Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;
+        Id.Name = Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId;
+        Id.Valid = !Id.Uid.empty();
+    }
+    return Id;
 }
 
 void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
@@ -256,16 +283,14 @@ void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
         for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
         {
             const QString ClonePkgDir = D.filePath(Sub);
-            nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-            if (!JSONOps::AssembleManifest(ClonePkgDir, Pkg, Warn)) continue;
-            const std::string Uid = Pkg.value("PACKAGEUID", std::string());
-            if (Uid.empty()) continue;
+            const BundleIdentity Id = ScanBundleIdentity(ClonePkgDir.toStdString());
+            if (!Id.Valid) continue;
 
-            //The cloned package dir IS the library package — content hydrates here in place. Index it directly.
-            SeenUid.insert(Uid);
-            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Uid, RepoName, ClonePkgDir.toStdString(), Pkg);
-            if (JSONOps::HasGames(Pkg))   ++Games;
-            if (JSONOps::HasRunners(Pkg)) ++Runners;
+            //The cloned bundle dir IS the library package — content hydrates here in place. Index it directly.
+            SeenUid.insert(Id.Uid);
+            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Id.Uid, RepoName, ClonePkgDir.toStdString(), Id.Name);
+            if (Id.HasLaunchable) ++Games;
+            if (Id.HasRunner)     ++Runners;
         }
         LogOut("PackageCatalog::SyncRepositories", "Indexed " + Local + " ("
                + std::to_string(Games) + " game(s), " + std::to_string(Runners) + " runner(s)).");
@@ -532,6 +557,19 @@ std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
     return Out;
 }
 
+std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch)
+{
+    std::vector<const Node*> Out;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        if (!N.IsRunner() || N.HostPlatform != MachinePlatform()) continue;
+        bool Guest = false;
+        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Guest = true; break; }
+        if (Guest && RunnerWrapper::ExecutableAvailable(N.Exec)) Out.push_back(&N);
+    }
+    return Out;   // std::map iteration = sorted by node id
+}
+
 //Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
 //path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
@@ -561,6 +599,16 @@ bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
         if (!std::filesystem::exists(Local, Ec)) AllPresent = false;
     });
     return AllPresent;
+}
+
+std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId)
+{
+    std::vector<std::string> Cids;
+    std::set<std::string> Seen;
+    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string &Cid){
+        if (!Cid.empty() && Seen.insert(Cid).second) Cids.push_back(Cid);
+    });
+    return Cids;
 }
 
 bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, std::string *Error)

@@ -21,94 +21,91 @@
 #include <set>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "nlohmann/json.hpp"
-#include "containerwrapper.h"
+#include "manifestmodel.h"  // NodeIndex / Node
 #include "commonutils.h"
-#include "jsonoperations.h"
-#include "launchthread.h"   // LaunchThread (worker, moved out of this header)
+#include "launchthread.h"   // LaunchThread (worker)
 
 
 // ---------------------------------------------------------------------------
-// PreLaunchWindow
-// Non-modal dialog that lets the user pick runner + variant, shows live log
-// output, and provides Kill / Close buttons.
+// PreLaunchWindow — node-native launch dialog. Built from a library tile = a GROUP of launchable nodes
+// (the editions). Lets the user pick edition + runner + optional-node toggles + CustomVars, shows live log,
+// and launches the selected node via LaunchThread.LaunchNodeId (the engine resolves the rest from the graph).
 // ---------------------------------------------------------------------------
 class PreLaunchWindow : public QDialog
 {
     Q_OBJECT
 public:
-    explicit PreLaunchWindow(
+    PreLaunchWindow(
         nlohmann::ordered_json* GlobalConfigJSON,
-        nlohmann::ordered_json* MANIFESTJSON,
-        const std::string&      PackagePath,
-        const std::string&      SubgameID,
+        const NodeIndex*        Index,           // shared global node graph (owned by MainWindow)
+        std::vector<std::string> GroupNodeIds,   // the tile's launchable node ids (editions)
         QWidget*                parent = nullptr);
 
     ~PreLaunchWindow() override;
 
-    //The package this dialog is for (used by MainWindow::RefreshPackage to target the right dialog).
-    const std::string & packagePath() const { return PackagePath; }
-    //Re-assembles the manifest from disk and rebuilds the variant combo + module tree + CustomVar pickers
-    //after the package was edited. Safe to call on the shared manifest pointer (in-place re-assemble).
+    //The owning bundle dir of the current edition — used by MainWindow::RefreshPackage to target this dialog.
+    const std::string & packagePath() const { return BundleDir; }
+    //Rebuilds the edition combo + runner + module/CustomVar pickers (e.g. after the package was edited).
     void ReloadAndRebuild();
 
 private slots:
     void onLaunchClicked();
     void onKillClicked();
-    void onVariantChanged();
+    void onEditionChanged();
     void onLogLine(int level, QString context, QString message);
     void onStatusChanged(QString status);
     void onProgressChanged(int value);
     void onLaunchFinished(bool success, QString errorMsg);
 
 private:
-    // Saves PREFERRED_RUNNER / PREFERRED_VARIANT_ID / SKIP_LAUNCH_DIALOG to
-    // GlobalConfigJSON and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
-    void savePreferences(const std::string& runnerName, const std::string& variantID, bool skipNext);
-    // Rebuilds the CustomVar picker section based on the currently selected entrypoint.
+    // Saves PREFERRED_RUNNER / SKIP_LAUNCH_DIALOG / VARIABLES / MODULES to GlobalConfigJSON (keyed by the
+    // bundle UID) and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
+    void persistGlobalConfig();
+    // The currently-selected launchable node (the chosen edition). nullptr if the group is empty.
+    const Node* CurrentLaunch() const;
+    // Refresh the cover from the current edition's META.COVER.
+    void RebuildCover();
+    // Rebuilds the runner dropdown for the current edition (runner candidate nodes).
+    void RebuildRunnerCombo();
+    // Rebuilds the CustomVar picker section from the current edition's enabled node closure.
     void RebuildCustomVarPickers();
-    // Rebuilds the Modules tree from the selected variant's + runner's MODULES (nested by PARENTCOMPONENT).
+    // Rebuilds the optional-node toggle tree from the current edition's optional ancestors.
     void RebuildModuleTree();
-    // Reacts to a tree checkbox change: records the new desired state (ignored for locked items) then
-    // recomputes the whole tree's locks.
     void PropagateModuleItem(QTreeWidgetItem* Item);
-    // Recomputes every item's checkbox + locked/greyed state top-down: required → locked-on; an optional
-    // item under a disabled ancestor → locked-off; otherwise its own desired state.
     void RefreshModuleLocks();
-    // Collects the tree's current optional-module checkbox states into a component→enabled map.
+    // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
     std::map<std::string, bool> CollectModuleStates() const;
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
-    nlohmann::ordered_json* MANIFESTJSON     = nullptr;
-    std::string             PackagePath;
-    std::string             SubgameID;
-    std::string             PackageUID;   // Cached from MANIFEST for USERSETTINGS lookups
+    const NodeIndex*        Index            = nullptr;
+    std::vector<std::string> GroupNodeIds;
+    std::string             LaunchNodeId;   // current edition's node id
+    std::string             BundleDir;      // current edition's bundle dir
+    std::string             PackageUID;     // current edition's UID — USERSETTINGS key
 
     LaunchThread* LaunchWorker = nullptr;
-
-    // Collected runner list: display-name → runner JSON object
-    std::vector<std::pair<QString, nlohmann::ordered_json>> Runners;
 
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
     QComboBox*    RunnerCombo       = nullptr;
-    QComboBox*    VariantCombo      = nullptr;
-    QWidget*      VariantLabel      = nullptr; // the "Variant:" form label — hidden alongside the combo when <2 variants
+    QComboBox*    EditionCombo      = nullptr;
+    QWidget*      EditionLabel      = nullptr; // the "Edition:" form label — hidden when only one edition
     QProgressBar* ProgressBar       = nullptr;
     QLabel*       StatusLabel       = nullptr;
     QCheckBox*    NoCleanupCheck        = nullptr;
     QCheckBox*    RememberCheck         = nullptr;
     QCheckBox*    CloseAfterLaunchCheck = nullptr;
     QCheckBox*    DryRunCheck           = nullptr;
-    QGroupBox*    CustomVarGroup        = nullptr; // Rebuilt by RebuildCustomVarPickers()
+    QGroupBox*    CustomVarGroup        = nullptr;
     QFormLayout*  CustomVarForm         = nullptr;
-    QGroupBox*    ModuleGroup           = nullptr; // Rebuilt by RebuildModuleTree()
+    QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
-    // Mutual-exclusion state for the current tree (filled by RebuildModuleTree, used by PropagateModuleItem):
-    std::map<std::string, std::set<std::string>> ModuleExcludes; // component → mutually-exclusive components (symmetric)
-    std::set<std::string>                        LockedModules;  // hidden always-on (REQUIRED-forced) components
+    std::map<std::string, std::set<std::string>> ModuleExcludes; // node -> mutually-exclusive nodes (symmetric)
+    std::set<std::string>                        LockedModules;  // (unused for nodes; kept for the tree helpers)
     QTextEdit*    ConsoleEdit       = nullptr;
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;

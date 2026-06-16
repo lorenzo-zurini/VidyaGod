@@ -187,24 +187,14 @@ public:
     //PackageUserSetting and ManifestModel::Find*/variants/modules respectively — see those headers.)
 
     //Container initialization:
-    //Resolves which variant + endpoints to build given the subgame_id / VariantID / component_id combo.
-    //If only subgame_id is set, picks the RECOMMENDED variant (else first) and fills VariantID + Endpoints.
-    static bool DecideComponent(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-
-    //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID under the subgame
-    //identified by ContainerParams.subgame_id, then populates ExePathRelative, ExePathComplete,
-    //WorkDir, ExeArgs from it. Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
+    //Reads the launch node's EXEC (CONTENTPATH/EXEARGS/WORKDIR) into ExePathRelative/ExePathComplete/WorkDir/
+    //ExeArgs. Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
     static bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Builds the ordered Recipe as the UNION of every endpoint's PARENTCOMPONENT chain.
-    //Each endpoint chain is appended root-first; later endpoints (array order) stack higher
-    //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
-    //{component_id} when Endpoints is empty (direct/editor mode).
-    static bool CreateRecipe(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
 
-    //Native node-graph entry: populates ContainerParams + the internal component pool (this->MANIFESTJSON)
-    //DIRECTLY from the global NodeIndex (ContainerParams.NodeIdx) and launch NODE_ID — runner picked from
-    //ROLE:"runner" nodes, exec from launch.EXEC, Recipe from ResolveNodeOrder. Replaces DecideComponent +
-    //DeriveContainerParams + CreateRecipe for the node path; invoked by InitializeContainer when NodeIdx is set.
+    //Native node-graph entry (the ONLY initialization path): populates ContainerParams + the internal component
+    //pool (this->MANIFESTJSON) DIRECTLY from the global NodeIndex (ContainerParams.NodeIdx) and launch NODE_ID —
+    //runner picked from ROLE:"runner" nodes, exec from launch.EXEC, Recipe from ResolveNodeOrder. Invoked by
+    //InitializeContainer.
     bool InitializeFromNode();
     //Derives the session paths (Temp/Runtime/WriteLayer/DefaultData/UserData/Program/DefPrefix + ContentRoot
     //resolution + PrefixRoot + screen geometry) from already-set ContainerParams fields. Shared by the node
@@ -242,10 +232,6 @@ public:
     //(whole-runtime persist — the durable UserDataPath becomes the union's RW branch). PATH strings
     //are %VARIABLE%-substituted. Must run after ResolveCustomVariables and before BuildContainerRuntime.
     static bool DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Fills all derived ContainerParams fields from MANIFEST and GlobalConfigJSON.
-    //Must run after DecideComponent so platform and subgame index are known.
-    //Resolves runner via USERSETTINGS > RECOMMENDED_RUNNER > first available fallback.
-    static bool DeriveContainerParams(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
 private:
     //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):

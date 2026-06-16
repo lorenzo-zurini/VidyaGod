@@ -16,9 +16,11 @@
 #include <QPaintEvent>
 
 #include <string>
+#include <vector>
 #include <filesystem>
 
 #include "nlohmann/json.hpp"
+#include "manifestmodel.h"   // NodeIndex / Node
 
 // True if IPFS can fetch content right NOW (binary present AND a daemon is running). Otherwise shows the reason
 // (a QMessageBox parented to `parent`) and returns false. VidyaGod never starts the daemon — only detects it.
@@ -26,23 +28,27 @@
 bool IpfsFetchReady(QWidget * parent);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LibraryGameCard — plain data class (one game card), NOT a widget. Holds the cover/title/sort keys and the
-// per-card actions (play/edit). Rendered by LibraryView. Used by both the Library and Available tabs.
+// LibraryGameCard — plain data class (one tile), NOT a widget. A tile = a GROUP of launchable nodes (the
+// editions); it reads cover/title/sort from the group's representative (RECOMMENDED/first) node META and carries
+// the per-card actions (play/edit). Rendered by LibraryView. Used by both the Library and Available tabs.
 // ─────────────────────────────────────────────────────────────────────────────
 class LibraryGameCard
 {
 public:
-    LibraryGameCard(nlohmann::ordered_json * globalConfig, int game, std::string subgameId);
-    ~LibraryGameCard();
+    LibraryGameCard(nlohmann::ordered_json * globalConfig, const NodeIndex * index,
+                    std::vector<std::string> groupNodeIds);
 
     void InitializeClassVariables();
     void play();
     void edit();
 
-    int                    Game;
-    std::string            SubgameID;
-    QString                GameTitle;
-    std::filesystem::path  PackagePath;
+    const NodeIndex *        Index = nullptr;          // shared global node graph (owned by MainWindow)
+    std::vector<std::string> GroupNodeIds;             // the tile's launchable node ids (editions; RECOMMENDED first)
+    std::string              RepNodeId;                // representative node (front of GroupNodeIds) for meta/cover/sort
+    QString                  GroupKey;                 // tile grouping key (download tracking, repo grouping)
+    std::string              RepUid;                   // representative node UID (USERSETTINGS key)
+    QString                  GameTitle;
+    std::filesystem::path    PackagePath;              // representative node's bundle dir
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;
@@ -57,7 +63,6 @@ public:
     QString                SeriesName;    // raw series name for grouping (empty if none)
 
     nlohmann::ordered_json * GlobalConfigJSON = nullptr;
-    nlohmann::ordered_json * MANIFESTJSON     = nullptr;
 };
 
 

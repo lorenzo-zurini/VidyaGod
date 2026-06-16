@@ -65,6 +65,12 @@ private slots:
 private:
     nlohmann::ordered_json * GlobalConfigJSON;
 
+    // The global cross-bundle node graph — the node-native catalog source. Rebuilt from the configured repos on
+    // each RebuildDynamicUI; owned here so every LibraryGameCard / PreLaunchWindow can borrow a stable pointer.
+    NodeIndex CatalogIndex;
+    // Repo display name for a bundle dir (matches the dir against the configured repo clone roots; "Local" if none).
+    QString RepoNameForBundle(const std::filesystem::path & BundleDir) const;
+
     QTabWidget  * MainWindowTabWidget;
     QWidget     * LibraryTabWidget;
     QVBoxLayout * LibraryTabWidgetLayout;

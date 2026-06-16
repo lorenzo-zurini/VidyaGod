@@ -145,6 +145,28 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
     return Order;
 }
 
+std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId)
+{
+    std::vector<const Node*> Out;
+    std::set<std::string> Seen{LaunchNodeId};
+    std::vector<std::string> Frontier{LaunchNodeId};
+    while (!Frontier.empty())
+    {
+        const std::string Cur = Frontier.back(); Frontier.pop_back();
+        const Node *N = Idx.Find(Cur);
+        if (!N) continue;
+        for (const std::string &P : N->Parents)
+        {
+            if (!Seen.insert(P).second) continue;
+            const Node *PN = Idx.Find(P);
+            if (!PN || PN->IsRunner()) continue;
+            if (PN->Optional) Out.push_back(PN);
+            Frontier.push_back(P);
+        }
+    }
+    return Out;
+}
+
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
 {
     const std::string Machine = MachinePlatform();
@@ -217,89 +239,6 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     }
 }
 
-nlohmann::ordered_json SynthesizeManifest(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                          const std::map<std::string, bool> &Toggles,
-                                          std::filesystem::path &OutPackageDir,
-                                          std::vector<std::string> *Missing)
-{
-    using json = nlohmann::ordered_json;
-    const Node *Launch = Idx.Find(LaunchNodeId);
-    if (!Launch || Launch->IsRunner()) { if (Missing) Missing->push_back(LaunchNodeId); return json::object(); }
-    OutPackageDir = Launch->BundleDir;
-
-    const std::vector<std::string> Order = ResolveNodeOrder(Idx, LaunchNodeId, Toggles, Missing);
-
-    //Content parents → a linear COMPONENT chain in resolved order (parent-before-child). The runner nodes in the
-    //closure are skipped here (emitted as RUNNERS below); the launchable itself is handled as the GAME.
-    json Components = json::array();
-    std::string Prev, Top;
-    for (const std::string &Id : Order)
-    {
-        if (Id == LaunchNodeId) continue;
-        const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner()) continue;
-        Components.push_back(json{
-            {"COMPONENTID",     N->NodeId},
-            {"PARENTCOMPONENT", Prev.empty() ? json(nullptr) : json(Prev)},
-            {"SUBCOMPONENTS",   N->Layers}});
-        Prev = N->NodeId; Top = N->NodeId;
-    }
-    //The launchable's own contributions (if any) ride on top of the content chain.
-    if (Launch->Layers.is_array() && !Launch->Layers.empty())
-    {
-        const std::string SelfId = Launch->NodeId + "__self";
-        Components.push_back(json{
-            {"COMPONENTID",     SelfId},
-            {"PARENTCOMPONENT", Prev.empty() ? json(nullptr) : json(Prev)},
-            {"SUBCOMPONENTS",   Launch->Layers}});
-        Top = SelfId;
-    }
-
-    //GAME + variant from the launchable (EXEC fields — CONTENTPATH/EXEARGS — spread onto the variant).
-    json Variant = json::object();
-    Variant["VARIANT_ID"]    = "default";
-    Variant["HOST_PLATFORM"] = Launch->HostPlatform;
-    Variant["RECOMMENDED"]   = true;
-    json Modules = json::array();
-    if (!Top.empty()) Modules.push_back(json{{"COMPONENT", Top}});
-    Variant["MODULES"] = Modules;
-    if (Launch->Exec.is_object())
-        for (auto &[K, V] : Launch->Exec.items()) Variant[K] = V;
-
-    const std::string Title = Launch->Meta.is_object() ? Launch->Meta.value("TITLE", Launch->NodeId) : Launch->NodeId;
-    json Game = json::object();
-    Game["GAMEID"]  = Launch->NodeId;
-    Game["GAMEUID"] = Launch->Uid.empty() ? Launch->NodeId : Launch->Uid;
-    Game["TITLE"]   = Title;
-    if (Launch->Meta.is_object()) Game["METADATA"] = Launch->Meta;
-    Game["VARIANTS"] = json::array({Variant});
-
-    json M = json::object();
-    M["PACKAGEUID"]  = Launch->Uid.empty() ? Launch->NodeId : Launch->Uid;
-    M["PACKAGENAME"] = Title;
-    M["COMPONENTS"]  = Components;
-    M["GAMES"]       = json::array({Game});
-
-    //Every runner node → a RUNNER entry; the engine platform-selects by HOST/GUEST + preference.
-    json Runners = json::array();
-    for (const auto &[Id, N] : Idx.Nodes)
-    {
-        if (!N.IsRunner()) continue;
-        json RV = json::object();
-        RV["VARIANT_ID"]     = "default";
-        RV["HOST_PLATFORM"]  = N.HostPlatform;
-        RV["GUEST_PLATFORM"] = N.GuestPlatform;
-        RV["RECOMMENDED"]    = true;
-        if (N.Exec.is_object())
-            for (auto &[K, V] : N.Exec.items()) RV[K] = V;       // EXECUTABLE/ARGS/ENV/REMOVE_ENV/CONTENT_ROOT/PREFIX_GENERATE
-        Runners.push_back(json{
-            {"RUNNER_ID", N.NodeId},
-            {"NAME",      N.NodeId},
-            {"VARIANTS",  json::array({RV})}});
-    }
-    M["RUNNERS"] = Runners;
-    return M;
-}
 
 // ----- VFS layer helpers -----
 

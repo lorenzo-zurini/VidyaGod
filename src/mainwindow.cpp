@@ -84,6 +84,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     cl->setContentsMargins(0,0,0,0); cl->setSpacing(0);
     cw->setLayout(cl);
     setCentralWidget(cw);
+    CatalogIndex = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);   // node-native catalog source
     BuildStaticUI();
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
@@ -758,14 +759,12 @@ void MainWindow::BuildAvailableTab()
     connect(AvailableView, &LibraryView::downloadRequested, this, &MainWindow::DownloadAvailable);
     connect(AvailableView, &LibraryView::cancelRequested, this, [this](LibraryGameCard * card){
         if (!card) return;
-        const int i = card->Game;
-        if (i < 0 || i >= (int)(*GlobalConfigJSON)["LIBRARY"].size()) return;
-        const QString Uid = QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][i].value("PACKAGEUID", std::string()));
-        if (Uid.isEmpty() || !DownloadingUids.contains(Uid)) return;
+        const QString Key = card->GroupKey;
+        if (Key.isEmpty() || !DownloadingUids.contains(Key)) return;
         if (QMessageBox::question(this, "Cancel download?",
                 "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
-        CancellingUids.insert(Uid);                                   // suppress the failure dialog on abort
-        for (const QString & c : DownloadUidCids.value(Uid)) IpfsWrapper::RequestCancel(c.toStdString());
+        CancellingUids.insert(Key);                                   // suppress the failure dialog on abort
+        for (const QString & c : DownloadUidCids.value(Key)) IpfsWrapper::RequestCancel(c.toStdString());
     });
     connect(AvailableView, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
         if (collapsed) AvailableCollapsedRepos.insert(name); else AvailableCollapsedRepos.remove(name);
@@ -778,15 +777,14 @@ void MainWindow::BuildAvailableTab()
     auto applyProgress = [this](QString cid, double pct){
         auto it = DownloadCidToUid.constFind(cid);
         if (it == DownloadCidToUid.constEnd()) return;
-        const QString Uid = it.value();
+        const QString Key = it.value();
         if (pct >= 0) DownloadCidPct[cid] = pct;
-        const QStringList & Cids = DownloadUidCids[Uid];
+        const QStringList & Cids = DownloadUidCids[Key];
         double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0);
         const double Avg = Cids.isEmpty() ? -1.0 : Sum / Cids.size();
         bool Any = false;
         for (LibraryGameCard * card : *AvailableGameCards)
-            if (card && card->Downloading
-                && QString::fromStdString((*GlobalConfigJSON)["LIBRARY"][card->Game].value("PACKAGEUID", std::string())) == Uid)
+            if (card && card->Downloading && card->GroupKey == Key)
             { card->DownloadPercent = Avg; Any = true; }
         if (Any && AvailableView) AvailableView->refreshVisuals();
     };
@@ -804,39 +802,34 @@ void MainWindow::RebuildAvailableTab()
     if (!AvailableView) return;
     qDeleteAll(*AvailableGameCards); AvailableGameCards->clear();
 
-    // Repo name for a LIBRARY entry (groups un-repo'd local entries under "Local").
-    auto RepoOf = [&](int i) -> QString {
-        const auto & E = (*GlobalConfigJSON)["LIBRARY"][i];
-        const std::string R = E.value("REPO", std::string());
-        return R.empty() ? QStringLiteral("Local") : QString::fromStdString(R);
-    };
+    // Repo name for a card (groups un-repo'd local entries under "Local").
+    auto RepoOf = [this](LibraryGameCard * c) -> QString { return RepoNameForBundle(c->PackagePath); };
 
-    const auto & Lib = (*GlobalConfigJSON)["LIBRARY"];
-    for (int i = 0; i < (Lib.is_array() ? (int)Lib.size() : 0); i++)
+    //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
+    //over IPFS. (A fully-hydrated group lives in the Library tab.)
+    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(CatalogIndex))
     {
-        const std::string Dir = Lib[i].value("PATH", std::string());
-        nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-        if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) continue;
-        if (!JSONOps::HasGames(Pkg)) continue;
-        if (ManifestModel::PackageHydrated(Pkg, Dir)) continue;                // downloaded → Library tab
-        if (ManifestModel::PackageIpfsCids(Pkg).empty()) continue;            // nothing fetchable over IPFS
-        const QString PkgUid = QString::fromStdString(Pkg.value("PACKAGEUID", std::string()));
-        const bool Busy = DownloadingUids.contains(PkgUid);
-        double BusyPct = -1.0;                                                    // carry current progress across rebuilds
-        if (Busy) { const QStringList & cs = DownloadUidCids.value(PkgUid);
-                    if (!cs.isEmpty()) { double s = 0; for (const QString & c : cs) s += DownloadCidPct.value(c, 0.0); BusyPct = s / cs.size(); } }
-        for (int j = 0; j < (int)Pkg["GAMES"].size(); j++)
+        std::vector<std::string> Ids;
+        bool AnyMissing = false, AnyFetchable = false;
+        for (const Node * N : Group)
         {
-            std::string sid = (Pkg["GAMES"][j].contains("GAMEID") && !Pkg["GAMES"][j]["GAMEID"].is_null())
-                              ? std::string(Pkg["GAMES"][j]["GAMEID"]) : "";
-            auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
-            c->InitializeClassVariables();
-            if (!AvailableSearch.isEmpty() && !c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
-            { delete c; continue; }                                              // filtered out by search
-            c->Downloading = Busy;
-            c->DownloadPercent = BusyPct;
-            AvailableGameCards->append(c);
+            Ids.push_back(N->NodeId);
+            if (!PackageCatalog::NodeHydrated(CatalogIndex, N->NodeId)) AnyMissing = true;
+            if (!PackageCatalog::NodeContentCids(CatalogIndex, N->NodeId).empty()) AnyFetchable = true;
         }
+        if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
+        auto * c = new LibraryGameCard(GlobalConfigJSON, &CatalogIndex, std::move(Ids));
+        c->InitializeClassVariables();
+        if (!AvailableSearch.isEmpty() && !c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
+        { delete c; continue; }                                                  // filtered out by search
+
+        const bool Busy = DownloadingUids.contains(c->GroupKey);
+        double BusyPct = -1.0;                                                    // carry current progress across rebuilds
+        if (Busy) { const QStringList & cs = DownloadUidCids.value(c->GroupKey);
+                    if (!cs.isEmpty()) { double s = 0; for (const QString & cc : cs) s += DownloadCidPct.value(cc, 0.0); BusyPct = s / cs.size(); } }
+        c->Downloading = Busy;
+        c->DownloadPercent = BusyPct;
+        AvailableGameCards->append(c);
     }
 
     // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
@@ -846,7 +839,7 @@ void MainWindow::RebuildAvailableTab()
                                  default:               return a->SortTitle; }
     };
     std::sort(AvailableGameCards->begin(), AvailableGameCards->end(), [&](LibraryGameCard * a, LibraryGameCard * b){
-        const QString ra = RepoOf(a->Game), rb = RepoOf(b->Game);
+        const QString ra = RepoOf(a), rb = RepoOf(b);
         if (ra != rb) return ra < rb;
         return keyOf(a) < keyOf(b);
     });
@@ -854,8 +847,8 @@ void MainWindow::RebuildAvailableTab()
     QVector<LibraryView::Group> groups;
     const int n = AvailableGameCards->count();
     for (int s = 0; s < n; ) {
-        const QString r = RepoOf(AvailableGameCards->at(s)->Game);
-        int e = s; while (e + 1 < n && RepoOf(AvailableGameCards->at(e + 1)->Game) == r) ++e;
+        const QString r = RepoOf(AvailableGameCards->at(s));
+        int e = s; while (e + 1 < n && RepoOf(AvailableGameCards->at(e + 1)) == r) ++e;
         groups.append({ r, s, e, AvailableCollapsedRepos.contains(r) });
         s = e + 1;
     }
@@ -871,36 +864,37 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
 {
     if (!card) return;
     if (!IpfsFetchReady(this)) return;
-    const int i = card->Game;
-    if (i < 0 || i >= (int)(*GlobalConfigJSON)["LIBRARY"].size()) return;
-    const std::string Dir = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
-    nlohmann::ordered_json Pkg; std::vector<std::string> Warn;
-    if (!JSONOps::AssembleManifest(QString::fromStdString(Dir), Pkg, Warn)) return;
-    const QString Uid = QString::fromStdString(Pkg.value("PACKAGEUID", std::string()));
-    if (Uid.isEmpty() || DownloadingUids.contains(Uid)) return;       // already in flight
+    const QString Key = card->GroupKey;
+    if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
-    DownloadingUids.insert(Uid);
-    // Track this package's content CIDs so transfer-progress signals can aggregate onto its card.
+    // Hydrate every edition in the tile's group; gather the union of their content CIDs for progress tracking.
+    const std::vector<std::string> LaunchIds = card->GroupNodeIds;
+
+    DownloadingUids.insert(Key);
     QStringList Cids;
-    for (const auto & C : ManifestModel::PackageIpfsCids(Pkg))
-    { const QString Qc = QString::fromStdString(C); Cids << Qc; DownloadCidToUid[Qc] = Uid; DownloadCidPct[Qc] = 0.0; }
-    DownloadUidCids[Uid] = Cids;
+    for (const std::string & Lid : LaunchIds)
+        for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid))
+        {
+            const QString Qc = QString::fromStdString(C);
+            if (DownloadCidToUid.contains(Qc)) continue;
+            Cids << Qc; DownloadCidToUid[Qc] = Key; DownloadCidPct[Qc] = 0.0;
+        }
+    DownloadUidCids[Key] = Cids;
 
-    RebuildAvailableTab();    // repaint all cards of this package as "Downloading…"
+    RebuildAvailableTab();    // repaint this tile's card as "Downloading…"
     RefreshIpfsTab();
 
-    const nlohmann::ordered_json PkgCopy = Pkg;
-    const std::string DirCopy = Dir;
-    std::thread([this, PkgCopy, DirCopy, Uid]{
-        std::string Err;
-        bool Ok = PackageCatalog::ImportPackage(*GlobalConfigJSON, PkgCopy, DirCopy, &Err);
-        QMetaObject::invokeMethod(this, [this, Ok, Err, Uid]{
-            DownloadingUids.remove(Uid);
-            const bool Cancelled = CancellingUids.remove(Uid);
-            for (const QString & c : DownloadUidCids.value(Uid))
+    std::thread([this, LaunchIds, Key]{
+        std::string Err; bool Ok = true;
+        for (const std::string & Lid : LaunchIds)
+            if (!PackageCatalog::HydrateNode(CatalogIndex, Lid, &Err)) { Ok = false; break; }
+        QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
+            DownloadingUids.remove(Key);
+            const bool Cancelled = CancellingUids.remove(Key);
+            for (const QString & c : DownloadUidCids.value(Key))
             { IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
-            DownloadUidCids.remove(Uid);
-            if (Ok) { SaveGlobalConfigJSON(); RebuildDynamicUI(); }
+            DownloadUidCids.remove(Key);
+            if (Ok) RebuildDynamicUI();
             else if (!Cancelled) QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
             RebuildAvailableTab(); RefreshIpfsTab();
         }, Qt::QueuedConnection);
@@ -1088,29 +1082,37 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     IpfsPins->resizeColumnToContents(2);
 }
 
+QString MainWindow::RepoNameForBundle(const std::filesystem::path & BundleDir) const
+{
+    std::error_code Ec;
+    const std::string B = std::filesystem::weakly_canonical(BundleDir, Ec).string();
+    for (const std::string & RepoDir : PackageCatalog::RepositoryDirs(*GlobalConfigJSON))
+    {
+        const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(RepoDir), Ec).string();
+        if (!R.empty() && (B == R || B.rfind(R + "/", 0) == 0))
+            return QString::fromStdString(std::filesystem::path(RepoDir).filename().string());
+    }
+    return QStringLiteral("Local");
+}
+
 void MainWindow::BuildLibraryGameCards()
 {
     qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
-    for (int i = 0; i < (int)(*GlobalConfigJSON)["LIBRARY"].size(); i++) {
-        nlohmann::ordered_json pm;
-        std::vector<std::string> AsmWarn;
-        const std::string LibPath = (*GlobalConfigJSON)["LIBRARY"][i].value("PATH", std::string());
-        if (!JSONOps::AssembleManifest(QString::fromStdString(LibPath), pm, AsmWarn)) continue;
-        //Only packages with games show in the library (the archetype). A pure-dependency or
-        //runner-only package contributes no cards.
-        if (!JSONOps::HasGames(pm)) continue;
-        //Skip content-less packages (a malformed game with no VFS layers is vacuously "hydrated").
-        if (!ManifestModel::PackageHasContent(pm)) continue;
-        //Only HYDRATED games appear in the Library; un-hydrated (synced-but-not-downloaded) ones live in the Store.
-        if (!ManifestModel::PackageHydrated(pm, LibPath)) continue;
-        for (int j = 0; j < (int)pm["GAMES"].size(); j++) {
-            std::string sid = pm["GAMES"][j].contains("GAMEID") &&
-                !pm["GAMES"][j]["GAMEID"].is_null()
-                ? std::string(pm["GAMES"][j]["GAMEID"]) : "";
-            auto * c = new LibraryGameCard(GlobalConfigJSON, i, sid);
-            c->InitializeClassVariables();
-            LibraryGameCards->append(c);
+    //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
+    //locally) appear in the Library; un-hydrated ones live in the Available tab.
+    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(CatalogIndex))
+    {
+        std::vector<std::string> Ids;
+        bool AllHydrated = true;
+        for (const Node * N : Group)
+        {
+            Ids.push_back(N->NodeId);
+            if (!PackageCatalog::NodeHydrated(CatalogIndex, N->NodeId)) AllHydrated = false;
         }
+        if (!AllHydrated || Ids.empty()) continue;
+        auto * c = new LibraryGameCard(GlobalConfigJSON, &CatalogIndex, std::move(Ids));
+        c->InitializeClassVariables();
+        LibraryGameCards->append(c);
     }
 }
 
@@ -1227,6 +1229,7 @@ void MainWindow::BuildPackagesDynamicUI()
 
 void MainWindow::RebuildDynamicUI()
 {
+    CatalogIndex = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);   // re-scan the node graph from disk
     BuildLibraryGameCards(); BuildLibraryDynamicUI(); BuildPackagesDynamicUI();
 }
 
@@ -1239,18 +1242,16 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
     for (QWidget * W : QApplication::topLevelWidgets())
         if (auto * MW = qobject_cast<MainWindow *>(W)) { Self = MW; break; }
 
-    // Re-render every game card for this package IN PLACE (re-assemble manifest + re-derive title/cover).
-    // Never delete cards here — an open prelaunch borrows a card's MANIFESTJSON pointer.
-    if (Self && Self->LibraryGameCards)
+    // Re-scan the node graph and rebuild the tiles. The CatalogIndex address is stable (a member), so open
+    // prelaunch dialogs that borrow it stay valid — they just re-read below. Cards no longer share state with
+    // dialogs, so a full rebuild is safe.
+    if (Self)
     {
-        bool Any = false;
-        for (LibraryGameCard * Card : *Self->LibraryGameCards)
-            if (Card && QDir::cleanPath(QString::fromStdString(Card->PackagePath.string())) == Want)
-            { Card->InitializeClassVariables(); Any = true; }
-        if (Any && Self->View) Self->View->refreshVisuals(); // re-scale + repaint in place (keeps layout)
+        Self->RebuildDynamicUI();
+        if (Self->AvailableView) Self->RebuildAvailableTab();
     }
 
-    // Reload any open prelaunch dialog(s) for this package.
+    // Reload any open prelaunch dialog(s) whose current edition lives in this bundle.
     for (QWidget * W : QApplication::topLevelWidgets())
         if (auto * PL = qobject_cast<PreLaunchWindow *>(W))
             if (QDir::cleanPath(QString::fromStdString(PL->packagePath())) == Want)

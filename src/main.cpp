@@ -325,53 +325,6 @@ int main(int argc, char *argv[])
         return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
 
-    //HEADLESS MODE: build the container and run the game without showing any window.
-    //Used both for the --package CLI flag and for auto-detected package-directory mode.
-    if(LaunchParameters.RunningHeadless)
-    {
-        LogOut("main.cpp", "Running package " + LaunchParameters.HeadlessPackagePath.string() + " in HEADLESS mode.");
-        nlohmann::ordered_json MANIFESTJSON;
-        //Assemble the manifest from every *.json in the package dir, then validate.
-        std::vector<std::string> AsmWarn, ValErr, ValWarn;
-        if (!JSONOps::AssembleManifest(QString::fromStdString(LaunchParameters.HeadlessPackagePath), MANIFESTJSON, AsmWarn))
-        {
-            LogErr("main.cpp", "Fatal error: no usable JSON manifest in package, aborting.");
-            return 1;
-        }
-        for (const auto &W : AsmWarn) LogWarn("main.cpp", "Manifest: " + W);
-        JSONOps::ValidateManifest(MANIFESTJSON, ValErr, ValWarn);
-        for (const auto &W : ValWarn) LogWarn("main.cpp", "Manifest: " + W);
-        if (!ValErr.empty())
-        {
-            for (const auto &E : ValErr) LogErr("main.cpp", "Manifest error: " + E);
-            LogErr("main.cpp", "Aborting due to manifest validation errors.");
-            return 1;
-        }
-
-        //Construct the container, build its runtime (mounts, prefix, registry patches),
-        //execute the game, then return — cleanup happens inside Execute/Cleanup.
-        //VariantID is set BEFORE construction so DecideComponent/CreateRecipe resolve the
-        //selected variant's ENDPOINTS. A direct --component still works via HeadlessComponentID.
-        struct ContainerParams NewContainerParams = ContainerParams(LaunchParameters.HeadlessPackagePath, LaunchParameters.HeadlessGameID, LaunchParameters.HeadlessComponentID);
-        NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
-        NewContainerParams.ModuleStates = LaunchParameters.ModuleStates;
-        NewContainerParams.VariantID = LaunchParameters.VariantID;
-        NewContainerParams.RunnerID  = LaunchParameters.RunnerID;
-        class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
-        if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
-        {
-            LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
-            return 1;
-        }
-        NewContainerWrapper.BuildContainerRuntime();
-        NewContainerWrapper.Execute();
-        if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
-            LogWarn("main.cpp", "Game did not exit cleanly (code "
-                    + std::to_string(NewContainerWrapper.LastExitCode) + ") — check the runner output above.");
-        return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
-    }
-
-
     //Initializing GUI. MAKE SURE THERE ARE NOT QT GUI-RELATED CALLS ABOVE THIS LINE OR THE PROGRAM WILL CRASH.
     //QApplication must be constructed before any QWidget or QPixmap usage;
     //headless code paths above deliberately avoid creating any Qt GUI objects.

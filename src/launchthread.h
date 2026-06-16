@@ -23,12 +23,7 @@ class LaunchThread : public QThread
 public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
-    nlohmann::ordered_json MANIFESTJSON;
-    std::string            PackagePath;
-    std::string            SubgameID;
-    std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run (empty = old MANIFEST path)
-    std::string                        ComponentID;       // Optional direct component (editor/CLI); usually empty
-    std::string                        VariantID;         // VARIANT_ID of the selected variant
+    std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (resolved before construction)
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
     std::map<std::string, bool>        ModuleStates;      // Optional-module toggles from the prelaunch tree (component → enabled)

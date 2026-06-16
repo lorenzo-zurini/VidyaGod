@@ -58,8 +58,14 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
 // Presentable launchable nodes (ROLE:"launchable" + META) grouped by GROUP for library tiles: one inner vector per
 // tile (the group's editions, RECOMMENDED first then by id). Groups are ordered by the recommended edition's title.
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx);
+// Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
+// available), in sorted node-id order — for the prelaunch runner dropdown.
+std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);
 // True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
+// Available-tab download-progress aggregation. Excludes the runner build; cover CIDs are not included.
+std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
 // bundle PATH. Worker-thread (may block on downloads). Returns false (with *Error) on a failed fetch.
 bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, std::string *Error = nullptr);

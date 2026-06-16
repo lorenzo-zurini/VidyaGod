@@ -42,42 +42,45 @@
 #include "filesystemoperations.h"
 #include "jsonoperations.h"
 #include "containerwrapper.h"
+#include "packagecatalog.h"
+#include "manifestmodel.h"
 #include "nlohmann/json.hpp"
 
 
+// ---------------------------------------------------------------------------
+// PackageEditor — the node-native bundle editor ("everything is a node"). A bundle is a directory of
+// <node_id>.json files; this dialog lists them as tabs and edits each node's fields (NODE_ID / ROLE / GROUP /
+// LABEL / META / PLATFORM / EXEC / OPTIONAL / DEFAULT / EXCLUDE), its global PARENTS (a catalog-wide id picker),
+// and its LAYERS (the per-TYPE sub-editors: VFS / RegEdit / DllOverride / FileEdit / Persist* / CustomVar).
+// The authoring tooling (Run EXE / Browse / Regedit / Execute / Analyze) drives the native node engine
+// (ContainerWrapper::InitializeFromNode) against a freshly-saved-on-disk index of this bundle + the catalog.
+//
+// In-memory the working document is shaped { "NODES": [ <node>, ... ] } so the JSON-pointer field-edit machinery
+// is reused unchanged (paths like /NODES/3/EXEC/CONTENTPATH, /NODES/3/LAYERS/2/PATH). Each node carries an
+// editor-only "__FILE__" tag (its on-disk filename) so a NODE_ID rename re-files it. Save writes one file per node.
+// ---------------------------------------------------------------------------
 class PackageEditor : public QDialog
 {
     Q_OBJECT
 
 public:
-    //If PackagePath is non-empty, the file-picker dialog is skipped and that package is opened directly.
+    //If PackagePath is non-empty, the directory picker is skipped and that bundle is opened directly.
     explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
     ~PackageEditor();
 
 signals:
-    //Emitted whenever the package's manifest is written to disk, so open game cards / prelaunch dialogs
-    //can reload and re-render. Carries the package directory path.
+    //Emitted whenever the bundle's node files are written to disk, so open library tiles / prelaunch dialogs
+    //can reload and re-render. Carries the bundle directory path.
     void packageSaved(const QString &PackagePath);
 
 private slots:
-    void on_AddSubGameButton_clicked();
-    void on_AddComponentButton_clicked();
     void JSONQTextEditChanged();
     void JSONQLineEditChanged();
     void SaveJSONButtonPressed();
-    void ParentComponentChanged();
-    void PlatformChanged();
-    void RemoveSubgame();
-    void RemoveComponent();
-    void RunExeInComponent();
-    void BrowseInComponent();
-    void RegeditInComponent();
-    void ExecuteComponent();
-    void AnalyzeComponent();
+    // LAYERS sub-editor add-actions (append a TYPE-tagged layer to the owning node's LAYERS array).
     void AddVFSDirLayer();
     void AddVFSZipLayer();
     void AddVFSFileLayer();
-    void AddEntrypoint();
     void AddRegEdit();
     void AddDllOverride();
     void AddFileEdit();
@@ -86,85 +89,76 @@ private slots:
     void AddPersistFile();
     void AddRegPersist();
     void AddRegKeyPersist();
-    void FinalizeComponent();
-    void MoveComponentUp();
-    void MoveComponentDown();
 
 private:
-    bool InitMANIFESTJSON();
-    void SavePackage();
+    void SaveNodes();
     void RefreshJSONView();
     void InitPackage(const QString &PreselectedPath = "");
-    void CompareComponentsRegistry(const std::string &oldcomponent_id, const std::string &newcomponent_id);
-    void MergeRegistryDeltaInComponent(nlohmann::ordered_json * DeltaSubComponentArray, const std::string &targetcomponent_id);
     bool BuildUI();
-    //Appends a subcomponent object to the SUBCOMPONENTS of the component owning `Sender` (the Add… button),
-    //then persists + rebuilds the UI. Shared body of the AddRegEdit/AddDllOverride/AddFileEdit/... slots.
-    void AppendSubcomponent(QObject * Sender, const nlohmann::ordered_json & Sub);
-    //Brings the selected source file/dir into the package dir for a VFS layer: asks Copy or Move, aborts on a
-    //name collision. Returns the in-package basename to store as the layer PATH, or "" if cancelled/failed.
+
+    //Appends a layer object to the LAYERS of the node owning `Sender` (the Add… button/menu), then persists +
+    //rebuilds. Shared body of the AddRegEdit/AddDllOverride/AddFileEdit/... slots.
+    void AppendLayer(QObject * Sender, const nlohmann::ordered_json & Layer);
+    //Brings the selected source file/dir into the bundle dir for a VFS layer: asks Copy or Move, aborts on a
+    //name collision. Returns the in-bundle basename to store as the layer PATH, or "" if cancelled/failed.
     QString ImportLayerFile(const QString & Selected, bool IsDir);
-    //Builds the reusable MODULES editor (component picker + REQUIRED/DEFAULT/LABEL + reorder/remove + Add)
-    //for the variant at the given JSON pointer (e.g. "/GAMES/0/VARIANTS/1" or "/RUNNERS/0/VARIANTS/0").
-    //Lets both game variants and runner variants attach components. Returns a QGroupBox to add to a layout.
-    QWidget * BuildModulesEditor(const std::string &VariantPtr);
-    bool SaveManifestJSON();
-    //Refreshes the persistent validation box (below the tabs) from ValErrors/ValWarnings.
+
+    //NODE I/O (one file per node) ------------------------------------------------------------------
+    //Loads every <node_id>.json fragment in the bundle into the in-memory NODES array, tagging each node with a
+    //hidden "__FILE__" provenance key. Non-node *.json files (e.g. legacy MANIFEST.json) are ignored.
+    void LoadNodes();
+    //The on-disk filename a node should live in: its "__FILE__" tag, else <NODE_ID>.json.
+    QString FileForNode(const nlohmann::ordered_json & Node) const;
+
+    //AUTHORING EXECUTE (native node engine) -------------------------------------------------------
+    //Builds a NodeIndex covering THIS bundle (authoritative — freshly saved) plus the catalog repos, so a node's
+    //PARENTS (e.g. cross-bundle runner builds) resolve. The returned index is owned by the caller.
+    NodeIndex BuildExecIndex() const;
+    //The NODE_ID of the node-tab that owns `Sender`, or "" (walks up the JSONPath property like AppendLayer).
+    std::string NodeIdOfSender(QObject * Sender) const;
+    //Runs `Exe` (default = the launchable's CONTENTPATH) inside NodeId's resolved container (build → execute →
+    //cleanup), node-natively. Used by Run-EXE / Browse / Regedit / Execute.
+    void RunInNode(const std::string & NodeId, const std::string & Exe = "");
+    //Registry-diff authoring: build NodeId's container, snapshot its baseline registry vs the carried-over
+    //WRITELAYER, and merge the delta back into NodeId's LAYERS as RegEdit layers.
+    void AnalyzeNodeRegistry(const std::string & NodeId);
+    void MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray);
+
+    //VALIDATION -----------------------------------------------------------------------------------
+    //Runs ManifestModel::ValidateNodeGraph over this bundle's nodes (plus catalog, for cross-bundle parents).
+    void Revalidate();
     void UpdateValidationBox();
-    //Returns the PLATFORM of the subgame with the given SUBGAMEID in the assembled manifest ("" if none).
-    std::string SubgamePlatform(const std::string &SubgameID);
-    //The union of every platform some runner can serve (GUEST_PLATFORM across catalog + this package's RUNNERS) —
-    //drives the HOST_PLATFORM / GUEST_PLATFORM dropdown suggestions.
-    std::vector<std::string> KnownPlatforms();
 
-    //MODULAR MANIFESTS (fragment-aware editing)
-    //Loads every *.json fragment in the package into the assembled MANIFESTJSON, tagging each
-    //routable element (subgames, components, customvars, variants, runners) with a hidden
-    //"__FILE__" provenance key. Tracks FragmentFiles and IdentityFile.
-    void LoadFragmentsAndAssemble();
-    //Decomposes the tagged MANIFESTJSON back into one document per fragment file (by "__FILE__"),
-    //stripping the tags. Returns filename -> document.
-    std::map<QString, nlohmann::ordered_json> DecomposeByFile();
-    //Prompts the user to choose which fragment file a new element should live in (dropdown of
-    //existing files + "New file…"). Returns the chosen filename, or empty on cancel.
-    QString PromptTargetFile(const QString &Title);
-    //Runs JSONOps::ValidateManifest on a tag-stripped copy of MANIFESTJSON into ValErrors/ValWarnings.
-    void RevalidateManifest();
-    //Builds a "File: [dropdown]" row bound to the "__FILE__" tag of the element at ElementPointer
-    //(a json_pointer string into MANIFESTJSON, e.g. "/COMPONENTS/1" or "/SUBGAMES/0/VARIANTS/2").
-    //Changing it re-routes that element to another fragment file.
-    QWidget * MakeFileTagWidget(const std::string &ElementPointer);
+    //META cover drop ------------------------------------------------------------------------------
     bool eventFilter(QObject *obj, QEvent *event) override;
-    void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int SubgameIndex);
+    void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int NodeIndexInArray);
 
-    //int CurrentTab = 0;
-    //bool initdone = false;
+    //The union of every platform some runner can serve (GUEST across the catalog runners + this bundle's runner
+    //nodes) — drives the HOST / GUEST platform dropdown suggestions.
+    std::vector<std::string> KnownPlatforms();
+    //Every node id known (this bundle + catalog) — the global PARENTS picker source.
+    std::vector<std::string> KnownNodeIds();
 
-    QWidget * JSONTabWidget;
-    QWidget * ManifestTabWidget;
-    QTabWidget * SubGamesTabWidget = nullptr; // kept as member for position save/restore
-
-    //Saved UI state — restored after BuildUI() to keep the user on the same tab/subgame.
+    //Saved UI state — restored after BuildUI() to keep the user on the same tab.
     int SavedMainTab = 1;
-    int SavedSubgameTab = 0;
 
-    QPushButton * SaveJSONButton;
-    QTextEdit * JSONTextEdit;
-    QComboBox * JSONFileCombo = nullptr; // selects which fragment file the raw JSON tab edits
+    QWidget * JSONTabWidget = nullptr;
+    QPushButton * SaveJSONButton = nullptr;
+    QTextEdit * JSONTextEdit = nullptr;
+    QComboBox * JSONFileCombo = nullptr;   // selects which node file the raw JSON tab edits
 
-    QDir * PackageDir;
+    QDir * PackageDir = nullptr;
 
-    //Fragment files present in the package (filenames, no path). IdentityFile holds PACKAGE*/PERSIST.
-    QStringList FragmentFiles;
-    QString IdentityFile;
     std::vector<std::string> ValErrors, ValWarnings;
 
     QTabWidget * PackageEditorTabWidget = nullptr;
     //Persistent validation panel docked below the tabs (always visible), refreshed by UpdateValidationBox().
     QGroupBox * ValidationBox  = nullptr;
     QTextEdit * ValidationView = nullptr;
-    nlohmann::ordered_json * MANIFESTJSON;
-    nlohmann::ordered_json * GlobalConfigJSON;
+
+    //Working document: { "NODES": [ <node>, ... ] } (each node carries an editor-only "__FILE__" tag).
+    nlohmann::ordered_json * MANIFESTJSON = nullptr;
+    nlohmann::ordered_json * GlobalConfigJSON = nullptr;
     QNetworkAccessManager * NetMgr = nullptr;
 };
 

@@ -89,34 +89,36 @@ void LaunchThread::run()
         }
     });
 
+    if (this->LaunchNodeId.empty())
+    {
+        ClearLogCallback();
+        emit launchFinished(false, "No launch node specified.");
+        return;
+    }
+
     // -----------------------------------------------------------------
-    // Build ContainerParams and ContainerWrapper.
+    // Build ContainerParams and ContainerWrapper (native node-graph launch).
     // -----------------------------------------------------------------
-    struct ContainerParams Params(PackagePath, SubgameID, ComponentID);
+    std::filesystem::path NoPath;
+    struct ContainerParams Params(NoPath, std::string(), std::string());
     Params.VariableOverrides = this->VariableOverrides;
     Params.ModuleStates      = this->ModuleStates;
-    //Set the chosen variant AND runner BEFORE construction so DeriveContainerParams resolves the
-    //runner (and its MODULES) and CreateRecipe mounts the enabled modules. No post-construction override needed.
-    Params.VariantID = this->VariantID;
+    //The chosen runner is set BEFORE construction so PickRunnerNode honours it. Screen geometry was captured on
+    //the main thread (see onLaunchClicked) — the engine uses these instead of querying QGuiApplication here.
     Params.RunnerID  = this->RunnerID;
-    //Screen geometry was captured on the main thread (see onLaunchClicked) — DeriveContainerParams
-    //uses these instead of querying QGuiApplication from this worker thread.
     Params.ScreenWidth  = this->ScreenWidth;
     Params.ScreenHeight = this->ScreenHeight;
 
-    //Native node-graph launch: build the global index here (worker thread) and point the engine at the launch
-    //node. Index is a local that outlives LocalWrapper (which holds ContainerParams by reference).
-    NodeIndex Index;
-    if (!this->LaunchNodeId.empty())
-    {
-        std::vector<std::filesystem::path> Roots;
-        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-        Index = ManifestModel::BuildNodeIndex(Roots);
-        Params.NodeIdx      = &Index;
-        Params.LaunchNodeId = this->LaunchNodeId;
-    }
+    //Build the global node index here (worker thread) and point the engine at the launch node. Index is a local
+    //that outlives LocalWrapper (which holds ContainerParams by reference).
+    std::vector<std::filesystem::path> Roots;
+    for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+    NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+    Params.NodeIdx      = &Index;
+    Params.LaunchNodeId = this->LaunchNodeId;
 
-    ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, Params);
+    nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();
+    ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, UnusedManifest, Params);
 
     // Store wrapper pointer so kill() can reach it.
     {
@@ -125,9 +127,9 @@ void LaunchThread::run()
     }
 
     // -----------------------------------------------------------------
-    // Step 1: Resolve executable definition (VariantID was set pre-construction).
+    // Step 1: Resolve executable definition (reads the launch node's EXEC).
     // -----------------------------------------------------------------
-    if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, LocalWrapper->ContainerParams))
+    if (!ContainerWrapper::ResolveExecutableDefinition(UnusedManifest, LocalWrapper->ContainerParams))
     {
         ClearLogCallback();
         {
