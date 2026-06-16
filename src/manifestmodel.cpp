@@ -24,6 +24,9 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     if (Out.NodeId.empty()) return false;
     Out.Role     = J.value("ROLE", std::string("content"));
     Out.Uid      = J.value("UID", std::string());
+    Out.Group    = J.value("GROUP", std::string());
+    Out.Label    = J.value("LABEL", std::string());
+    Out.Recommended = J.value("RECOMMENDED", false);
     if (J.contains("META")    && J["META"].is_object())  Out.Meta  = J["META"];
     if (J.contains("EXEC")    && J["EXEC"].is_object())  Out.Exec  = J["EXEC"];
     if (J.contains("LAYERS")  && J["LAYERS"].is_array()) Out.Layers = J["LAYERS"];

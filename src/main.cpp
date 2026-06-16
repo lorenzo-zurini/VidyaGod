@@ -269,6 +269,24 @@ int main(int argc, char *argv[])
         return Errors.empty() ? 0 : 1;
     }
 
+    //HEADLESS: print the presentable library tiles (grouped launchable nodes) + hydration status.
+    if (LaunchParameters.ListNodes)
+    {
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+        auto Groups = PackageCatalog::PresentableGroups(Index);
+        LogOut("list-nodes", std::to_string(Groups.size()) + " library tile(s):");
+        for (const auto &G : Groups)
+        {
+            const Node *Rep = G.front();
+            std::string Editions;
+            for (const Node *N : G)
+                Editions += " " + N->NodeId + (PackageCatalog::NodeHydrated(Index, N->NodeId) ? "[hydrated]" : "[remote]");
+            LogOut("list-nodes", "  " + (Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId)
+                   + "  (group " + Rep->GroupKey() + "):" + Editions);
+        }
+        return 0;
+    }
+
     //HEADLESS (node graph): launch a launchable node from the global, cross-bundle node index — the engine
     //resolves EVERYTHING natively from the node graph (ContainerWrapper::InitializeFromNode). No manifest.
     if (!LaunchParameters.LaunchNodeId.empty())
@@ -553,6 +571,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--validate-nodes")
         {
             RuntimeParameters.ValidateNodes   = true;
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--list-nodes")
+        {
+            RuntimeParameters.ListNodes       = true;
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--var" && i + 1 < argc)

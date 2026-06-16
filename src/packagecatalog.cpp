@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <set>
 #include <filesystem>
+#include <algorithm>
 
 using namespace ManifestModel;   // LayerLocator / IsVfsLayer / ForEachVfsLayer / PackageHydrated / PackageIpfsCids
 
@@ -442,6 +443,29 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             SeedCover(G);                                                         // legacy game-level COVER
         }
 
+        //Node files (everything-is-a-node): seed VFS layers in LAYERS + the cover in META.COVER, same as above.
+        if (Frag.contains("NODE_ID") && Frag["NODE_ID"].is_string())
+        {
+            if (Frag.contains("LAYERS") && Frag["LAYERS"].is_array())
+            for (auto &S : Frag["LAYERS"])
+            {
+                if (!IsVfsLayer(LayerType(S))) continue;
+                ++Walked;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(S, Pkg, Local, Cid);
+                std::error_code Rc;
+                if (!Cid.empty()) continue;                                      // already addressed — idempotent
+                if (!std::filesystem::exists(Local, Rc)) continue;               // no local content to seed
+                std::string Err;
+                const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
+                if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
+                nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object()) ? S["SOURCE"] : nlohmann::ordered_json::object();
+                Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; S["SOURCE"] = std::move(Src);
+                Mutated = true; ++Seeded;
+            }
+            if (Frag.contains("META") && Frag["META"].is_object()) SeedCover(Frag["META"]);
+        }
+
         if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
             return Fail("could not write annotated manifest fragment: " + Entry.path().string());
     }
@@ -474,6 +498,104 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
         else ++Copied;
     }
     return Copied;
+}
+
+// ----- node-graph catalog (everything-is-a-node) -----
+
+NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::filesystem::path> Roots;
+    for (const auto &D : RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+    return ManifestModel::BuildNodeIndex(Roots);
+}
+
+std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
+{
+    std::map<std::string, std::vector<const Node*>> Groups;
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.IsLaunchable() && N.Presentable())
+            Groups[N.GroupKey()].push_back(&N);
+
+    std::vector<std::vector<const Node*>> Out;
+    for (auto &[K, V] : Groups)
+    {
+        std::sort(V.begin(), V.end(), [](const Node *A, const Node *B){
+            if (A->Recommended != B->Recommended) return A->Recommended;     // recommended edition first
+            return A->NodeId < B->NodeId;
+        });
+        Out.push_back(std::move(V));
+    }
+    auto Title = [](const Node *N){ return N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId; };
+    std::sort(Out.begin(), Out.end(), [&](const std::vector<const Node*> &A, const std::vector<const Node*> &B){
+        return Title(A.front()) < Title(B.front());
+    });
+    return Out;
+}
+
+//Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
+//path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
+static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
+    const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn)
+{
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, {}))
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (const auto &L : N->Layers)
+        {
+            if (!IsVfsLayer(LayerType(L))) continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(L, N->BundleDir, Local, Cid);
+            if (Local == N->BundleDir) continue;                                 // no PATH
+            Fn(L, Local, Cid);
+        }
+    }
+}
+
+bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
+{
+    if (!Idx.Find(LaunchNodeId)) return false;
+    bool AllPresent = true;
+    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string&){
+        std::error_code Ec;
+        if (!std::filesystem::exists(Local, Ec)) AllPresent = false;
+    });
+    return AllPresent;
+}
+
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, std::string *Error)
+{
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::HydrateNode", M); return false; };
+    const Node *Launch = Idx.Find(LaunchNodeId);
+    if (!Launch) return Fail("launch node not found: " + LaunchNodeId);
+
+    bool Failed = false; std::string Err; int Fetched = 0;
+    ForEachContentLayer(Idx, LaunchNodeId, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
+        if (Failed) return;
+        std::error_code Ec;
+        if (std::filesystem::exists(Local, Ec)) return;                          // already present
+        if (Cid.empty()) { Failed = true; Err = "missing local content with no IPFS source: " + Local.string(); return; }
+        std::string E;
+        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &E).empty()) { Failed = true; Err = "could not fetch layer CID " + Cid + " (" + E + ")"; return; }
+        ++Fetched;
+    });
+    if (Failed) return Fail(Err);
+
+    if (Launch->Meta.is_object() && Launch->Meta.contains("COVER") && Launch->Meta["COVER"].is_object())
+    {
+        std::filesystem::path Local; std::string Cid;
+        LayerLocator(Launch->Meta["COVER"], Launch->BundleDir, Local, Cid);
+        std::error_code Ec;
+        if (!Cid.empty() && Local != Launch->BundleDir && !std::filesystem::exists(Local, Ec))
+        {
+            std::string E;
+            if (IpfsWrapper::FetchToPath(Cid, Local.string(), &E).empty())
+                LogWarn("PackageCatalog::HydrateNode", "could not fetch cover CID " + Cid + " (" + E + ")");
+            else ++Fetched;
+        }
+    }
+    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Fetched) + " file(s) fetched).");
+    return true;
 }
 
 } // namespace PackageCatalog
