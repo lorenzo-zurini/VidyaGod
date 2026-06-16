@@ -9,12 +9,12 @@
 // RunnerWrapper — import-state helpers for runner *packages*, per runner VARIANT.
 //
 // A runner mirrors a game: `RUNNERS[].{RUNNER_ID, NAME, VARIANTS[]}` over the shared `COMPONENTS` pool.
-// Each runner VARIANT carries the execution params (TYPE/EXECUTABLE/ENV/ARGS/PREFIX_SUBPATH), the guest
-// platforms it serves (GUEST_PLATFORM) + its host (HOST_PLATFORM), and MODULES selecting its build
-// component(s) (VFSZipLayer(s) with SOURCE {TYPE:"ipfs",CID} — never extracted).
+// Each runner VARIANT declares its invocation as data (EXECUTABLE/ARGS/ENV/REMOVE_ENV + CONTENT_ROOT/
+// PREFIX_GENERATE), the guest platforms it serves (GUEST_PLATFORM) + its host (HOST_PLATFORM), and MODULES
+// selecting its build component(s) (VFSZipLayer(s) with SOURCE {TYPE:"ipfs",CID} — never extracted).
 //
 // "Imported" is therefore per (RUNNER_ID, VARIANT_ID): the variant's build CIDs are fetched+pinned, and
-// (for a wine variant) its one-time read-only DEFPREFIX artifact has been generated. These are pure helpers
+// (for a prefix-generating variant) its one-time read-only DEFPREFIX artifact has been generated. These are pure helpers
 // (no mounting / no wineboot); the install work lives in ContainerWrapper::ImportRunner.
 //
 // Single-runner-entity packages are assumed (RUNNERS[0] is the entity).
@@ -35,8 +35,8 @@ std::string              DefaultVariantId(const nlohmann::ordered_json &RunnerPk
 // The runner variant object (empty if not found). Pass "" for VariantId to get the default variant.
 nlohmann::ordered_json Variant(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
-// Whether the given runner variant is a wine/proton variant (needs a DEFPREFIX).
-bool IsWineRunner(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
+// Whether the given runner variant generates a one-time wine prefix (PREFIX_GENERATE → needs a DEFPREFIX).
+bool GeneratesPrefix(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);
 
 // Every ipfs CID the variant's build references (VFSZipLayer SOURCEs of the components its MODULES enable).
 std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId);

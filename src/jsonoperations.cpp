@@ -417,6 +417,11 @@ void JSONOps::ValidateManifest(const nlohmann::ordered_json &Assembled, std::vec
                     Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' has no HOST_PLATFORM");
                 if (!V.contains("GUEST_PLATFORM") || !V["GUEST_PLATFORM"].is_array() || V["GUEST_PLATFORM"].empty())
                     Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' has no GUEST_PLATFORM");
+                // A prefix-generating runner mounts game content inside a wine drive — its CONTENT_ROOT must
+                // route through drive_c (e.g. "drive_c/%PackageUID%" or "pfx/drive_c/%PackageUID%").
+                if (V.value("PREFIX_GENERATE", false)
+                    && Str(V, "CONTENT_ROOT").find("drive_c") == std::string::npos)
+                    Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' has PREFIX_GENERATE but its CONTENT_ROOT has no drive_c");
                 for (const auto &C : ModuleComponents(V))
                     if (!ComponentIds.count(C))
                         Warnings.push_back("Runner '" + RID + "' variant '" + VID + "' module '" + C + "' is not a component in this package");

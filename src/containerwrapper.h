@@ -24,12 +24,9 @@
 #include "manifestmodel.h"   // ModuleInfo/VariantInfo + pure manifest queries (moved out of this class)
 #include "packagecatalog.h"  // catalog/sharing service (moved out of this class)
 
-//Determines which execution backend is used for a subgame.
-//  Wine     — Windows executables via Wine/Proton (umu-run); needs a Wine prefix and VFS drive_c layout.
-//  Emulator — ROM-based games; runner receives the ROM path as its argument.
-//  Native   — Linux-native binaries; runner is the executable itself.
-//  Custom   — Any other runner; DATAPATH is passed instead of EXEPATH/ROM.
-enum class RunnerType { Wine, Emulator, Native, Custom };
+//(The RunnerType enum is gone — a runner declares its invocation as data: EXECUTABLE + ARGS with %Content%/
+//%ContentPath% tokens, CONTENT_ROOT for host mount placement, and PREFIX_GENERATE for a one-time wine prefix.
+//The runner's TYPE no longer drives any C++ branch.)
 
 //(ModuleInfo / VariantInfo and the pure manifest-query helpers now live in manifestmodel.h / ManifestModel.)
 
@@ -60,11 +57,13 @@ public:
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
     std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
     std::string RunnerVariantID;         //VARIANT_ID of the chosen runner variant (install artifact + exec params come from it)
-    std::string RunnerExecutable;        //Binary to exec (e.g. "umu-run", "snes9x")
-    RunnerType RunnerTypeEnum = RunnerType::Wine; //Determines argument order and Wine-specific steps
-    nlohmann::ordered_json RunnerEnv;    //Key/value env vars to set; values may contain %VARIABLE% tokens
-    std::vector<std::string> RunnerRemoveEnv; //Env keys to remove before launch (e.g. LD_LIBRARY_PATH)
-    std::vector<std::string> RunnerArgs; //Arguments prepended before the exe for emulator/custom runners
+    std::string RunnerExecutable;        //EXECUTABLE — binary to exec (e.g. "umu-run", "%RunnerMount%/proton"); %vars% expanded
+    std::string ContentRoot;             //CONTENT_ROOT (resolved) — where game content mounts under RuntimePath ("" = root; "pfx/drive_c/<UID>" = proton)
+    std::string PrefixRoot;              //DERIVED from ContentRoot (the part before /drive_c) — where a wine prefix's hives live ("" / "pfx")
+    bool PrefixGenerate = false;         //PREFIX_GENERATE — runner needs a one-time generated wine prefix (DEFPREFIX), mounted as base
+    nlohmann::ordered_json RunnerEnv;    //ENV — key/value env vars to set; values may contain %VARIABLE% tokens
+    std::vector<std::string> RunnerRemoveEnv; //REMOVE_ENV — env keys to remove before launch (e.g. LD_LIBRARY_PATH)
+    std::vector<std::string> RunnerArgs; //ARGS — the full argument vector (author composes %Content%/guest paths explicitly; no auto-append)
     std::vector<std::string> RunnerEndpoints; //RESOLVED — the selected runner's ENDPOINTS (its own components), mounted as recipe base
     nlohmann::ordered_json RunnerComponents = nlohmann::ordered_json::array(); //RESOLVED — COMPONENTS of the selected runner's registry package (empty for an embedded/PATH runner); folded into the component pool
     std::filesystem::path RunnerPackagePath; //RESOLVED — the selected runner package's LIBRARY dir; its build layers + DEFPREFIX hydrate/resolve here
@@ -94,6 +93,11 @@ public:
     //Variant resolution:
     std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
+    //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
+    //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.
+    const NodeIndex *NodeIdx = nullptr;                             //PASSED — the global cross-bundle node graph
+    std::string LaunchNodeId;                                       //PASSED — the ROLE:"launchable" node to run
+
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;
     std::string ScreenHeight;
@@ -104,14 +108,12 @@ public:
     //              RuntimePath, WriteLayerPath and DefPrefixPath are all nested inside it.
     //  DURABLE   — UserDataPath = PackagePath/USERDATA; survives Cleanup(), travels with the package.
     //              Holds only the persisted state declared by the PERSIST manifest object.
-    std::filesystem::path RuntimeBasePath;   //TempPath/RUNTIME — the runtime mount base (= STEAM_COMPAT_DATA_PATH for proton)
-    std::filesystem::path RuntimePath;       //RuntimeBasePath/<PREFIX_SUBPATH> — where the final unionfs VFS is mounted (the launch prefix)
+    std::filesystem::path RuntimePath;       //TempPath/RUNTIME — the single mount root (= %RuntimePath%; STEAM_COMPAT_DATA_PATH / WINEPREFIX point here)
     std::filesystem::path WriteLayerPath;    //TempPath/WRITELAYER — ephemeral copy-on-write layer at the top of the VFS stack
     std::filesystem::path TempPath;          //~/.VidyaGod/TEMP/PackageUID — prefix, per-layer pre-mount dirs, reg patches
     std::filesystem::path UserDataPath;      //PackagePath/USERDATA — durable persist store (PERSIST.ALL / DIRS / REGISTRY)
-    std::filesystem::path ProgramPath;       //Wine: RuntimePath/drive_c/PackageUID; others: RuntimePath
-    std::filesystem::path DefPrefixBasePath; //TempPath/DEFPREFIX — the def-prefix base (= STEAM_COMPAT_DATA_PATH for proton, at init)
-    std::filesystem::path DefPrefixPath;     //DefPrefixBasePath/<PREFIX_SUBPATH> — the Wine prefix directory built by wineboot
+    std::filesystem::path ProgramPath;       //RuntimePath / ContentRoot — where the game content sits (WORKDIR default)
+    std::filesystem::path DefPrefixPath;     //the wine-prefix artifact dir (TempPath/DEFPREFIX per-launch, or the installed __DEFPREFIX__/<variant>); mounted whole as the base layer when PrefixGenerate
     std::filesystem::path DefaultDataPath;   //TempPath/DEFAULTDATA — RO layer holding all package-encoded base edits (Reg/File), between the component layers and the WRITELAYER; regenerated each launch
     std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
     nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch
@@ -122,18 +124,8 @@ public:
     bool                                 UnifiedRuntime   = false; //mount the runner build INTO the game RUNTIME (rare; UNIFIED_RUNTIME)
     std::filesystem::path                RunnerMountPath;          //where the runner build is mounted — exposed as %RunnerMount%
     std::vector<nlohmann::ordered_json>  RunnerLayers;             //the runner's VFSZipLayer subcomponents to mount at RunnerMountPath
-    //Phase-context prefix: bound to the def-prefix during InitializeDefPrefix and to the runtime during Execute,
-    //so a runner ENV references %WinePrefix% (the prefix dir) / %PrefixBase% (its base) without code knowing umu vs proton.
-    std::filesystem::path ActivePrefix;      //current-phase prefix dir  → %WinePrefix% (defaults to RuntimePath)
-    std::filesystem::path ActivePrefixBase;  //current-phase prefix base → %PrefixBase% (defaults to RuntimeBasePath)
-    std::filesystem::path ExePathRelative;   //Exe/ROM/data path relative to ProgramPath, from MANIFEST
-    std::filesystem::path ExePathComplete;   //ProgramPath / ExePathRelative — absolute host path to the exe
-    std::filesystem::path ExePathInPrefix;   //Wine only: C:\PackageUID\ExePathRelative — Windows-style path for Wine
-
-    //Paths (that don't need to be created — derived or Windows-style strings)
-    std::string WindowsProgramPath;                    //C:\PackageUID — used in registry patches and file edits
-    std::string WindowsExePathComplete;                //C:\PackageUID\ExePathRelative — passed to Wine as the exe
-    std::string WindowsProgramPathDoubleBackSlash;     //C:\\PackageUID — double-escaped for .reg file values
+    std::filesystem::path ExePathRelative;   //CONTENTPATH — path relative to ProgramPath → %ContentPath% (compose guest paths from this)
+    std::filesystem::path ExePathComplete;   //ProgramPath / ExePathRelative — absolute host path → %Content%
     std::filesystem::path WorkDirPathRelative;         //Working directory relative to ProgramPath, from MANIFEST WORKDIR
     std::filesystem::path WorkDirPathComplete;         //Absolute working directory; falls back to ProgramPath if unset
 
@@ -208,6 +200,21 @@ public:
     //in the union, so they override earlier ones. Shared ancestors appear once. Falls back to
     //{component_id} when Endpoints is empty (direct/editor mode).
     static bool CreateRecipe(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
+
+    //Native node-graph entry: populates ContainerParams + the internal component pool (this->MANIFESTJSON)
+    //DIRECTLY from the global NodeIndex (ContainerParams.NodeIdx) and launch NODE_ID — runner picked from
+    //ROLE:"runner" nodes, exec from launch.EXEC, Recipe from ResolveNodeOrder. Replaces DecideComponent +
+    //DeriveContainerParams + CreateRecipe for the node path; invoked by InitializeContainer when NodeIdx is set.
+    bool InitializeFromNode();
+    //Derives the session paths (Temp/Runtime/WriteLayer/DefaultData/UserData/Program/DefPrefix + ContentRoot
+    //resolution + PrefixRoot + screen geometry) from already-set ContainerParams fields. Shared by the node
+    //path and DeriveContainerParams.
+    static bool DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
+    //Picks the best ROLE:"runner" node for a launch node from the global index (GUEST_PLATFORM ∋ launch host
+    //&& HOST_PLATFORM==MachinePlatform && executable available), honoring RunnerID pin / PREFERRED_RUNNER /
+    //RECOMMENDED. Returns nullptr if none. (Native replacement for the GatherRunners block.)
+    static const Node *PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
+                                      const nlohmann::ordered_json &GlobalConfigJSON);
     //(Catalog / RegistryRunners / LibraryRootDir / Import / Publish / Mirror / Sync moved to PackageCatalog —
     //see packagecatalog.h. ImportRunner stays here: it needs the launch engine's mount + wineboot machinery.)
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
@@ -245,7 +252,7 @@ private:
     //Builds the JSON layer-spec from the resolved container: DEFPREFIX base (Wine), each
     //VFSZipLayer/VFSDirLayer/VFSFileLayer rooted at its TARGET (logically, no staging dirs), PERSIST
     //dirs as RW passthrough layers, and the writable top branch (WriteLayerPath or UserDataPath).
-    static nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams, bool WineMode);
+    static nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
     //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, then polls mountinfo for readiness.
     //Registers RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
     static bool MountVFS(struct ContainerParams &ContainerParams);

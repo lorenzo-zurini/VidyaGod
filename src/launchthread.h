@@ -26,6 +26,7 @@ public:
     nlohmann::ordered_json MANIFESTJSON;
     std::string            PackagePath;
     std::string            SubgameID;
+    std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run (empty = old MANIFEST path)
     std::string                        ComponentID;       // Optional direct component (editor/CLI); usually empty
     std::string                        VariantID;         // VARIANT_ID of the selected variant
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (resolved before construction)

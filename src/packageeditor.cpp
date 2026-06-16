@@ -1111,8 +1111,8 @@ bool PackageEditor::BuildUI()
             }
 
             // VARIANTS — runner variants mirror game variants: each carries HOST_PLATFORM, the guests it
-            // serves (GUEST_PLATFORM), its exec params (TYPE/EXECUTABLE/PREFIX_SUBPATH/ARGS/ENV) and MODULES
-            // (its build components, via the shared editor).
+            // serves (GUEST_PLATFORM), its data-driven exec params (EXECUTABLE/ARGS/ENV + CONTENT_ROOT/
+            // PREFIX_GENERATE) and MODULES (its build components, via the shared editor).
             {
                 if (!R.contains("VARIANTS") || !R["VARIANTS"].is_array())
                     (*MANIFESTJSON)["RUNNERS"][ri]["VARIANTS"] = nlohmann::ordered_json::array();
@@ -1151,7 +1151,10 @@ bool PackageEditor::BuildUI()
                     });
                     VG->addWidget(Rec, vrow, 0, 1, 3); vrow++;
 
-                    for (const auto &FK : std::vector<std::string>{"HOST_PLATFORM", "EXECUTABLE", "PREFIX_SUBPATH"})
+                    // CONTENT_ROOT — host placement (relative to the runtime root) where game content mounts:
+                    // "" = root; "drive_c/%PackageUID%" maps it under Wine's C:; "pfx/drive_c/%PackageUID%"
+                    // places it inside Proton's pfx. The runner composes the launch target into ARGS itself.
+                    for (const auto &FK : std::vector<std::string>{"HOST_PLATFORM", "EXECUTABLE", "CONTENT_ROOT"})
                     {
                         VG->addWidget(new QLabel(QString::fromStdString(FK) + ":"), vrow, 0);
                         QLineEdit * FE = new QLineEdit(VCard);
@@ -1161,14 +1164,15 @@ bool PackageEditor::BuildUI()
                         VG->addWidget(FE, vrow, 1, 1, 2); vrow++;
                     }
 
-                    VG->addWidget(new QLabel("TYPE:"), vrow, 0);
-                    QComboBox * TC = new QComboBox(VCard); TC->addItems({"wine", "emulator", "native", "custom"});
-                    TC->setCurrentText(QString::fromStdString(V.value("TYPE", std::string("custom"))));
-                    QObject::connect(TC, &QComboBox::currentIndexChanged, this, [this, VPtr, TC](){
-                        (*MANIFESTJSON)[nlohmann::ordered_json::json_pointer(VPtr + "/TYPE")] = TC->currentText().toStdString();
+                    // PREFIX_GENERATE — the runner needs a one-time generated wine prefix (DEFPREFIX), built via
+                    // wineboot and mounted whole as the base layer. DLL overrides / registry edits apply only then.
+                    QCheckBox * PGen = new QCheckBox("PREFIX_GENERATE (build a wine prefix)", VCard);
+                    PGen->setChecked(V.value("PREFIX_GENERATE", false));
+                    QObject::connect(PGen, &QCheckBox::toggled, this, [this, VPtr, PGen](){
+                        (*MANIFESTJSON)[nlohmann::ordered_json::json_pointer(VPtr + "/PREFIX_GENERATE")] = PGen->isChecked();
                         SaveManifestJSON(); RefreshJSONView();
                     });
-                    VG->addWidget(TC, vrow, 1, 1, 2); vrow++;
+                    VG->addWidget(PGen, vrow, 0, 1, 3); vrow++;
 
                     // String-list editor (GUEST_PLATFORM, ARGS) addressed at the variant path. When Suggestions is
                     // non-empty, each row is an editable combo offering those values (GUEST_PLATFORM → known platforms).

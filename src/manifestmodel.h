@@ -38,7 +38,74 @@ struct VariantInfo {
     std::vector<ModuleInfo> Modules;   // MODULES array (toggleable component references, load order)
 };
 
+// ---------------------------------------------------------------------------
+// The unified node graph ("everything is a node"). The whole library is ONE flat graph of globally-
+// referenceable nodes; each node lives in its own <node_id>.json file inside a "bundle" directory
+// (the old package dir, which just groups node files + their shared content). A Node is equivalent for
+// every former taxonomy level (game / variant / component / runner / subcomponent-owner): it either
+// groups/selects other nodes (via PARENTS) or contributes concrete layers (via LAYERS), or both.
+// ---------------------------------------------------------------------------
+
+//One node, parsed from a <node_id>.json file. Edges are bare global NODE_IDs in Parents (later = higher
+//CFS priority). Selection attributes (Optional/Default/Exclude) live on the node itself, not on the edge.
+struct Node {
+    std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine", "gemrb")
+    std::string Role;                        // ROLE — "content" (default) | "launchable" | "runner"
+    std::string Uid;                         // UID — numeric id for launchable/presentable nodes (was GAMEUID)
+    nlohmann::ordered_json Meta;             // META — object present ⇒ a library-presentable node
+    std::string HostPlatform;                // PLATFORM.HOST
+    std::vector<std::string> GuestPlatform;  // PLATFORM.GUEST (runner nodes)
+    nlohmann::ordered_json Exec;             // EXEC — flat invocation/content block (object or null)
+    bool Optional = false;                   // OPTIONAL — a toggleable add-on when referenced as a parent
+    bool Default  = true;                    // DEFAULT — initial enabled state when OPTIONAL
+    std::vector<std::string> Exclude;        // EXCLUDE — node ids mutually exclusive with this one (symmetric)
+    std::vector<std::string> Parents;        // PARENTS — bare global node ids (load order: later = higher priority)
+    nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects)
+    std::filesystem::path File;              // source <node_id>.json path
+    std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
+
+    bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
+    bool IsRunner()     const { return Role == "runner"; }
+    bool IsLaunchable() const { return Role == "launchable"; }
+};
+
+//The global node graph: NODE_ID → Node, built by scanning bundle dirs for node files.
+struct NodeIndex {
+    std::map<std::string, Node> Nodes;
+    const Node *Find(const std::string &NodeId) const;
+};
+
 namespace ManifestModel {
+
+// ----- node graph (schema: everything is a node) -----
+// Parse a single node object (already-loaded JSON) sourced from File in BundleDir. False if it has no NODE_ID.
+bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
+               const std::filesystem::path &BundleDir, Node &Out);
+// Scan one bundle dir (non-recursive) for *.json node files (those carrying NODE_ID), adding them to Idx.
+// Duplicate NODE_IDs are reported and the first-seen wins.
+void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
+// Build the global index from library roots; each root holds bundle dirs (one level down).
+NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots);
+
+// Resolve the load-ordered node closure for launching LaunchNodeId: walk PARENTS across the global graph,
+// keeping required parents always and optional ones per Toggles (else DEFAULT), applying EXCLUDE (symmetric,
+// first-kept wins) and the hierarchy gate (a node only enters if a kept child pulls it). Output is topo-ordered
+// parents-before-children, so the launchable is LAST (= highest CFS priority); PARENTS list order is the
+// tie-break (later parent = higher). Detects cycles. Any PARENTS id missing from Idx is appended to Missing.
+std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                          const std::map<std::string, bool> &Toggles,
+                                          std::vector<std::string> *Missing = nullptr);
+
+// Synthesize an OLD-SHAPE manifest (GAMES/COMPONENTS/RUNNERS) for launching LaunchNodeId, so the existing
+// ContainerWrapper pipeline runs the node graph unchanged: content parents become a linear COMPONENT chain in
+// resolved order, the launchable becomes a GAME+variant (carrying its EXEC), and every ROLE:"runner" node
+// becomes a RUNNER (the engine then platform-selects). OutPackageDir = the launchable's bundle dir. Returns an
+// empty object if LaunchNodeId is missing or not launchable. (Bridge used while migrating; the native consumer
+// replaces it later.)
+nlohmann::ordered_json SynthesizeManifest(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                          const std::map<std::string, bool> &Toggles,
+                                          std::filesystem::path &OutPackageDir,
+                                          std::vector<std::string> *Missing = nullptr);
 
 // ----- VFS layer helpers (the dedup foundation) -----
 // True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File).

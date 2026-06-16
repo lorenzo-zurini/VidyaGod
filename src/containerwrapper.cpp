@@ -28,6 +28,21 @@ using namespace PackageCatalog;
 //installed-runner base-reg-edit pass in BuildContainerRuntime).
 static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool WantOverride);
 
+//True if a raw (pre-substitution) runner ARG references the launch target via a content token. Used to drop
+//the content-bearing args when swapping the target — an OverrideExe (tooling) or the wineboot prefix-init.
+static bool ArgReferencesContent(const std::string &RawArg)
+{
+    return RawArg.find("%Content%") != std::string::npos
+        || RawArg.find("%ContentPath%") != std::string::npos;
+}
+
+//The registry-hive directory under a layer/runtime root: the prefix root (CONTENT_ROOT up to /drive_c) is
+//where system.reg/user.reg/userdef.reg live. "" for plain wine (hives at the root), "pfx" for proton.
+static std::filesystem::path HiveDir(const struct ContainerParams &CP, const std::filesystem::path &Base)
+{
+    return CP.PrefixRoot.empty() ? Base : Base / CP.PrefixRoot;
+}
+
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
 ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
@@ -57,6 +72,10 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::
 bool ContainerWrapper::InitializeContainer()
 {
     LogOut("ContainerWrapper::InitializeContainer", "Initializing container...");
+    //Native node-graph path: resolve everything from the global node index, not a MANIFESTJSON.
+    if (this->ContainerParams.NodeIdx && !this->ContainerParams.LaunchNodeId.empty())
+        return this->InitializeFromNode();
+
     if(!this->DecideComponent(this->MANIFESTJSON, this->ContainerParams))
     {
         LogErr("ContainerWrapper::InitializeContainer", "ContainerWrapper::DecideComponent failed, aborting....");
@@ -167,18 +186,18 @@ bool ContainerWrapper::BuildContainerRuntime()
         }
     }
 
-    bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
+    const bool PrefixGen = ContainerParams.PrefixGenerate;
 
-    //Non-Wine packages without VFS layers have no content to run — treat as malformed.
-    if (!WineMode && !ContainerParams.UsesVFS)
+    //A runner that neither generates a prefix nor mounts VFS layers has no content to run — malformed.
+    if (!PrefixGen && !ContainerParams.UsesVFS)
     {
         LogWarn("ContainerWrapper::BuildContainerRuntime", "No VFS layers found. Package may be malformed.");
         return false;
     }
 
-    //Provision the Wine prefix (DEFPREFIX) — Wine only. Left pristine; base edits go to DEFAULTDATA below.
-    //One code path, no installed-vs-not branching for edits.
-    if (WineMode)
+    //Provision the Wine prefix (DEFPREFIX) — only when the runner asks for one. Left pristine; base edits
+    //go to DEFAULTDATA below. One code path, no installed-vs-not branching for edits.
+    if (PrefixGen)
     {
         if (ContainerParams.RunnerShipsBuild)
             //Installed runner: build is pre-provisioned. Mount it read-only at RunnerMountPath; DEFPREFIX is
@@ -218,7 +237,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
     //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
     this->ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true);
-    if (WineMode)
+    if (PrefixGen)
     {
         this->ProcessDLLOverrides(this->ContainerParams);
         this->ApplyOverrideRegEdits(this->ContainerParams);
@@ -525,44 +544,38 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
         LogWarn("ContainerWrapper::ResolveExecutableDefinition", "No VariantID set — skipping.");
         return true;
     }
-    // Find the variant with matching VARIANT_ID in the subgame.
-    int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
-    nlohmann::ordered_json Resolved;
-    if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS"))
+    // Source the exec definition: the launch node's EXEC (native node path) or the matching GAME variant (old path).
+    const bool NodePath = (ContainerParams.NodeIdx != nullptr);
+    nlohmann::ordered_json Resolved = nlohmann::ordered_json::object();
+    if (NodePath)
     {
-        for (auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
+        const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id);
+        if (L && L->Exec.is_object()) Resolved = L->Exec;     // empty EXEC = self-contained launchable (e.g. gemrb) — OK
+    }
+    else
+    {
+        int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
+        if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS"))
+            for (auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
+                if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID) { Resolved = V; break; }
+        if (Resolved.is_null() || Resolved.empty())
         {
-            if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID)
-            { Resolved = V; break; }
+            LogErr("ContainerWrapper::ResolveExecutableDefinition", "No variant found for VARIANT_ID='" + ContainerParams.VariantID + "' in subgame '" + ContainerParams.subgame_id + "'");
+            return false;
         }
     }
-    if (Resolved.is_null() || Resolved.empty())
-    {
-        LogErr("ContainerWrapper::ResolveExecutableDefinition", "No variant found for VARIANT_ID='" + ContainerParams.VariantID + "' in subgame '" + ContainerParams.subgame_id + "'");
-        return false;
-    }
-    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved variant: " + ContainerParams.VariantID);
+    LogSucc("ContainerWrapper::ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.subgame_id);
     // The variant declares ONE universal target path — CONTENTPATH: the path (relative to the program mount) to
-    // whatever the runner runs or loads (an exe, a ROM, a data root, or nothing for a self-contained runner). The
-    // runner's TYPE decides how it's interpreted (see the Wine Windows-path block below + FinalExe in Execute), so
-    // a single key suffices. Legacy EXEPATH/ROM/DATAPATH are read as fallbacks so old/shared packages keep working.
+    // whatever the runner runs or loads (an exe, a ROM, a data root, or nothing for a self-contained runner).
+    // The runner composes how it's used from %ContentPath% (relative) / %Content% (absolute host) in its ARGS.
     {
-        std::string ExeStr;
-        for (const char *Key : {"CONTENTPATH", "EXEPATH", "ROM", "DATAPATH"})
-            if (Resolved.contains(Key) && Resolved[Key].is_string() && !std::string(Resolved[Key]).empty())
-            { ExeStr = std::string(Resolved[Key]); break; }
+        std::string ExeStr = Resolved.value("CONTENTPATH", std::string());
         ContainerWrapper::StringVariableSubstitution(ExeStr, ContainerParams.GetVariablesMap());
         ContainerParams.ExePathRelative = std::filesystem::path(ExeStr);
     }
     ContainerParams.ExePathComplete = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
-    LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathRelative: " + ContainerParams.ExePathRelative.string());
-    LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathComplete: " + ContainerParams.ExePathComplete.string());
-    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-    {
-        ContainerParams.ExePathInPrefix        = std::filesystem::path("C:") / ContainerParams.PackageUID / ContainerParams.ExePathRelative;
-        ContainerParams.WindowsExePathComplete = "C:\\" + ContainerParams.PackageUID + "\\" + ContainerParams.ExePathRelative.string();
-        LogOut("ContainerWrapper::ResolveExecutableDefinition", "ExePathInPrefix: " + ContainerParams.ExePathInPrefix.string());
-    }
+    LogOut("ContainerWrapper::ResolveExecutableDefinition", "ContentPath: " + ContainerParams.ExePathRelative.string());
+    LogOut("ContainerWrapper::ResolveExecutableDefinition", "Content: " + ContainerParams.ExePathComplete.string());
     auto &WorkDirVal = Resolved["WORKDIR"];
     if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
     {
@@ -762,9 +775,6 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
         }
     }
 
-    //The selected runner's PREFIX_SUBPATH (default ""): the wine prefix (drive_c + hives) lives at
-    //<base>/<subpath>. "" → prefix == base (umu/wine, unchanged); "pfx" → Proton's STEAM_COMPAT_DATA_PATH/pfx.
-    std::string PrefixSubpath;
     const RunnerCandidate * Selected = nullptr;
     auto PickById = [&](const std::string &Id) -> bool
     {
@@ -788,17 +798,13 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
         ContainerParams.RunnerName       = (SelectedRunner.contains("NAME") && SelectedRunner["NAME"].is_string()) ? std::string(SelectedRunner["NAME"]) : ContainerParams.RunnerID;
         ContainerParams.RunnerVariantID  = SelectedVariant.value("VARIANT_ID", std::string("default"));
         ContainerParams.RunnerExecutable = (SelectedVariant.contains("EXECUTABLE") && SelectedVariant["EXECUTABLE"].is_string()) ? std::string(SelectedVariant["EXECUTABLE"]) : "";
-        std::string RunnerTypeStr        = (SelectedVariant.contains("TYPE") && SelectedVariant["TYPE"].is_string()) ? std::string(SelectedVariant["TYPE"]) : "custom";
-        //Map the string type to the enum so the rest of the code can branch without string comparisons.
-        if (RunnerTypeStr == "wine")           ContainerParams.RunnerTypeEnum = RunnerType::Wine;
-        else if (RunnerTypeStr == "emulator")  ContainerParams.RunnerTypeEnum = RunnerType::Emulator;
-        else if (RunnerTypeStr == "custom")    ContainerParams.RunnerTypeEnum = RunnerType::Custom;
-        else                                   ContainerParams.RunnerTypeEnum = RunnerType::Native;
+        //Data-driven invocation: the runner declares CONTENT_ROOT (where game content mounts under the runtime
+        //root) and PREFIX_GENERATE (it needs a one-time wine prefix). No TYPE enum, no auto-appended exe.
+        ContainerParams.ContentRoot    = (SelectedVariant.contains("CONTENT_ROOT") && SelectedVariant["CONTENT_ROOT"].is_string()) ? std::string(SelectedVariant["CONTENT_ROOT"]) : std::string();
+        ContainerParams.PrefixGenerate = SelectedVariant.value("PREFIX_GENERATE", false);
         if (SelectedVariant.contains("ENV"))        ContainerParams.RunnerEnv = SelectedVariant["ENV"];
         if (SelectedVariant.contains("REMOVE_ENV")) for (auto &E : SelectedVariant["REMOVE_ENV"]) ContainerParams.RunnerRemoveEnv.push_back(std::string(E));
         if (SelectedVariant.contains("ARGS"))       for (auto &A : SelectedVariant["ARGS"])       ContainerParams.RunnerArgs.push_back(std::string(A));
-        if (SelectedVariant.contains("PREFIX_SUBPATH") && SelectedVariant["PREFIX_SUBPATH"].is_string())
-            PrefixSubpath = std::string(SelectedVariant["PREFIX_SUBPATH"]);
         ContainerParams.UnifiedRuntime = SelectedVariant.value("UNIFIED_RUNTIME", false);
 
         //Installed-runner model: the runner build = the VFSZipLayer subcomponents of the components this
@@ -871,11 +877,9 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
     if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
         ContainerParams.RunnerMountPath = ContainerParams.TempPath / "RUNNER";
 
-    //The runtime mount base; the actual launch prefix is RuntimeBasePath/<PREFIX_SUBPATH> (empty for umu/wine
-    //→ prefix == base; "pfx" for Proton → STEAM_COMPAT_DATA_PATH=RuntimeBasePath, pfx==RuntimePath).
-    ContainerParams.RuntimeBasePath                     = ContainerParams.TempPath / "RUNTIME";
-    ContainerParams.RuntimePath                         = PrefixSubpath.empty() ? ContainerParams.RuntimeBasePath
-                                                                                : ContainerParams.RuntimeBasePath / PrefixSubpath;
+    //ONE mount root: the VFS mounts at TempPath/RUNTIME; the runner's ENV points STEAM_COMPAT_DATA_PATH / WINEPREFIX
+    //at it via %RuntimePath% (proton finds its own pfx/ underneath). No base-vs-prefix split.
+    ContainerParams.RuntimePath                         = ContainerParams.TempPath / "RUNTIME";
     LogOut("ContainerWrapper::DeriveContainerParams", "RuntimePath: " + ContainerParams.RuntimePath.string());
 
     ContainerParams.WriteLayerPath                      = ContainerParams.TempPath / "WRITELAYER";
@@ -888,35 +892,31 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
     ContainerParams.UserDataPath                        = ContainerParams.PackagePath / "USERDATA";
     LogOut("ContainerWrapper::DeriveContainerParams", "UserDataPath: " + ContainerParams.UserDataPath.string());
 
-    //Persistence is no longer a top-level object — it is derived from PersistDir/PersistFile/
-    //RegPersist subcomponents in DerivePersistence (called after the Recipe is built).
-
-    // Wine-specific: prefix lives under TEMP/DEFPREFIX, programs under drive_c/PackageUID
-    // Other runners: ProgramPath is the root of the RUNTIME mount
-    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    //CONTENT_ROOT — the HOST location (relative to RuntimePath) where game content mounts, declared by the runner
+    //("" = root; "pfx/drive_c/<UID>" = proton). Resolve %vars% now (PackageUID is known). ProgramPath = where the
+    //content sits (WORKDIR default). PrefixRoot = the wine-prefix root = ContentRoot up to "/drive_c" (the hives
+    //live there) — "" for plain wine, "pfx" for proton; empty when the runner has no drive_c.
+    StringVariableSubstitution(ContainerParams.ContentRoot, ContainerParams.GetVariablesMap());
+    ContainerParams.ProgramPath = ContainerParams.ContentRoot.empty()
+        ? ContainerParams.RuntimePath : ContainerParams.RuntimePath / ContainerParams.ContentRoot;
     {
-        //Game files sit at drive_c/PackageUID so Wine sees them as C:\PackageUID.
-        ContainerParams.ProgramPath                     = ContainerParams.RuntimePath / "drive_c" / ContainerParams.PackageUID;
-        //Def-prefix base + the prefix Wine actually uses (base/<PREFIX_SUBPATH>); mirrors the runtime layout.
-        //Installed runners use their one-time read-only DEFPREFIX artifact (generated at install); other wine
-        //runners build it per-launch under TempPath/DEFPREFIX (InitializeDefPrefix).
-        ContainerParams.DefPrefixBasePath               = ContainerParams.RunnerShipsBuild
+        const std::string &CR = ContainerParams.ContentRoot;
+        const auto Pos = CR.find("drive_c");
+        ContainerParams.PrefixRoot = (Pos == std::string::npos) ? std::string()
+            : (Pos == 0 ? std::string() : CR.substr(0, Pos - 1));   // strip the trailing '/'
+    }
+
+    //The wine-prefix artifact dir (mounted whole as the base layer when PrefixGenerate). Installed runners use
+    //their one-time read-only __DEFPREFIX__/<variant> artifact; other prefix runners build it per-launch under
+    //TempPath/DEFPREFIX (InitializeDefPrefix). The runner's own wineboot lays out the inner pfx/ if it needs one.
+    if (ContainerParams.PrefixGenerate)
+        ContainerParams.DefPrefixPath = ContainerParams.RunnerShipsBuild
             ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerPackagePath.string(), ContainerParams.RunnerVariantID))
             : ContainerParams.TempPath / "DEFPREFIX";
-        ContainerParams.DefPrefixPath                   = PrefixSubpath.empty() ? ContainerParams.DefPrefixBasePath
-                                                                                : ContainerParams.DefPrefixBasePath / PrefixSubpath;
-        ContainerParams.WindowsProgramPath              = "C:\\" + ContainerParams.PackageUID;
-        //Double-backslash variant for use in .reg file string values.
-        ContainerParams.WindowsProgramPathDoubleBackSlash = "C:\\\\" + ContainerParams.PackageUID;
-    }
-    else
-    {
-        ContainerParams.ProgramPath                     = ContainerParams.RuntimePath;
-    }
+
+    LogOut("ContainerWrapper::DeriveContainerParams", "ContentRoot: " + ContainerParams.ContentRoot + " (PrefixRoot: '" + ContainerParams.PrefixRoot + "')");
     LogOut("ContainerWrapper::DeriveContainerParams", "ProgramPath: " + ContainerParams.ProgramPath.string());
     LogOut("ContainerWrapper::DeriveContainerParams", "DefPrefixPath: " + ContainerParams.DefPrefixPath.string());
-    LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPath: " + ContainerParams.WindowsProgramPath);
-    LogOut("ContainerWrapper::DeriveContainerParams", "WindowsProgramPathDoubleBackSlash: " + ContainerParams.WindowsProgramPathDoubleBackSlash);
 
     //VariantID (and its Endpoints) are already resolved in DecideComponent.
     //Exe/args/workdir resolution is deferred to ResolveExecutableDefinition().
@@ -925,6 +925,195 @@ bool ContainerWrapper::DeriveContainerParams(const nlohmann::ordered_json &MANIF
         ContainerParams.WorkDirPathComplete             = ContainerParams.ProgramPath;
     }
     LogOut("ContainerWrapper::DeriveContainerParams", "Completed ContainerParams!");
+    return true;
+}
+
+//=====================================================================================================================
+//                                          NATIVE NODE-GRAPH LAUNCH
+//=====================================================================================================================
+
+//Derives the session paths from already-set ContainerParams fields (PackageUID/Platform/ContentRoot/
+//PrefixGenerate/RunnerShipsBuild/UnifiedRuntime/RunnerVariantID/RunnerPackagePath). Pure of MANIFESTJSON.
+bool ContainerWrapper::DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    if (ContainerParams.ScreenWidth.empty() || ContainerParams.ScreenHeight.empty())
+    {
+        if (qApp && QThread::currentThread() == qApp->thread())
+            if (QScreen * Scr = QGuiApplication::primaryScreen())
+            {
+                ContainerParams.ScreenWidth  = std::to_string(Scr->geometry().width());
+                ContainerParams.ScreenHeight = std::to_string(Scr->geometry().height());
+            }
+        if (ContainerParams.ScreenWidth.empty())  ContainerParams.ScreenWidth  = "0";
+        if (ContainerParams.ScreenHeight.empty()) ContainerParams.ScreenHeight = "0";
+    }
+    std::filesystem::path TempRoot = std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod" / "TEMP";
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+    {
+        const auto &S = GlobalConfigJSON["Settings"];
+        if (S.contains("Paths") && S["Paths"].is_object()
+            && S["Paths"].contains("TempRoot") && S["Paths"]["TempRoot"].is_string()
+            && !std::string(S["Paths"]["TempRoot"]).empty())
+            TempRoot = std::filesystem::path(std::string(S["Paths"]["TempRoot"]));
+    }
+    ContainerParams.TempPath = TempRoot / ContainerParams.PackageUID;
+    if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
+        ContainerParams.RunnerMountPath = ContainerParams.TempPath / "RUNNER";
+    ContainerParams.RuntimePath     = ContainerParams.TempPath / "RUNTIME";
+    ContainerParams.WriteLayerPath  = ContainerParams.TempPath / "WRITELAYER";
+    ContainerParams.DefaultDataPath = ContainerParams.TempPath / "DEFAULTDATA";
+    ContainerParams.UserDataPath    = ContainerParams.PackagePath / "USERDATA";
+    StringVariableSubstitution(ContainerParams.ContentRoot, ContainerParams.GetVariablesMap());
+    ContainerParams.ProgramPath = ContainerParams.ContentRoot.empty()
+        ? ContainerParams.RuntimePath : ContainerParams.RuntimePath / ContainerParams.ContentRoot;
+    {
+        const std::string &CR = ContainerParams.ContentRoot;
+        const auto Pos = CR.find("drive_c");
+        ContainerParams.PrefixRoot = (Pos == std::string::npos) ? std::string()
+            : (Pos == 0 ? std::string() : CR.substr(0, Pos - 1));
+    }
+    if (ContainerParams.PrefixGenerate)
+        ContainerParams.DefPrefixPath = ContainerParams.RunnerShipsBuild
+            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerPackagePath.string(), ContainerParams.RunnerVariantID))
+            : ContainerParams.TempPath / "DEFPREFIX";
+    ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
+    LogOut("ContainerWrapper::DerivePaths", "RuntimePath: " + ContainerParams.RuntimePath.string()
+           + " | ContentRoot: " + ContainerParams.ContentRoot + " (PrefixRoot: '" + ContainerParams.PrefixRoot + "')");
+    return true;
+}
+
+//Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available),
+//priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > first qualifying (sorted node-id order).
+const Node *ContainerWrapper::PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
+                                             const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::string Preferred;
+    {
+        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID);
+        if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
+            Preferred = std::string(US["PREFERRED_RUNNER"]);
+    }
+    auto Qualifies = [&](const Node &N) -> bool
+    {
+        if (!N.IsRunner()) return false;
+        bool Guest = false;
+        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Guest = true; break; }
+        if (!Guest) return false;
+        if (N.HostPlatform != MachinePlatform()) return false;
+        return RunnerWrapper::ExecutableAvailable(N.Exec);
+    };
+    if (!CP.RunnerID.empty()) { const Node *N = Idx.Find(CP.RunnerID); if (N && Qualifies(*N)) return N; }
+    if (!Preferred.empty())   { const Node *N = Idx.Find(Preferred);   if (N && Qualifies(*N)) return N; }
+    for (const auto &[Id, N] : Idx.Nodes) if (Qualifies(N)) return &N;
+    return nullptr;
+}
+
+//Native node-graph init — populates ContainerParams + the internal component pool DIRECTLY from the node graph.
+bool ContainerWrapper::InitializeFromNode()
+{
+    auto &CP = this->ContainerParams;
+    const NodeIndex &Idx = *CP.NodeIdx;
+    const std::string LaunchId = CP.LaunchNodeId;
+    const Node *Launch = Idx.Find(LaunchId);
+    if (!Launch) { LogErr("ContainerWrapper::InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
+    if (!Launch->IsLaunchable()) LogWarn("ContainerWrapper::InitializeFromNode", "Node '" + LaunchId + "' is not ROLE:launchable.");
+
+    CP.subgame_id = LaunchId;  CP.VariantID = "default";
+    CP.PackageUID = Launch->Uid.empty() ? LaunchId : Launch->Uid;
+    CP.PackageName= Launch->Meta.is_object() ? Launch->Meta.value("TITLE", LaunchId) : LaunchId;
+    CP.GameName   = CP.PackageName;
+    CP.Platform   = Launch->HostPlatform;
+    CP.PackagePath= Launch->BundleDir;
+    CP.UMUID      = Launch->Meta.is_object() ? Launch->Meta.value("UMUID", std::string("0")) : "0";
+
+    //Absolutize a node's LAYERS PATH/SOURCE.PATH against its OWN bundle dir (cross-bundle-correct).
+    auto AbsLayers = [](const Node *N) -> nlohmann::ordered_json
+    {
+        nlohmann::ordered_json Out = nlohmann::ordered_json::array();
+        if (!N->Layers.is_array()) return Out;
+        for (nlohmann::ordered_json L : N->Layers)
+        {
+            if (L.contains("PATH") && L["PATH"].is_string())
+            { std::filesystem::path P = std::string(L["PATH"]); if (!P.is_absolute()) L["PATH"] = (N->BundleDir / P).string(); }
+            if (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH") && L["SOURCE"]["PATH"].is_string())
+            { std::filesystem::path P = std::string(L["SOURCE"]["PATH"]); if (!P.is_absolute()) L["SOURCE"]["PATH"] = (N->BundleDir / P).string(); }
+            Out.push_back(std::move(L));
+        }
+        return Out;
+    };
+
+    nlohmann::ordered_json Components = nlohmann::ordered_json::array();
+    CP.Recipe.clear();
+    auto AddComponent = [&](const Node *N)
+    { Components.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}}); CP.Recipe.push_back(N->NodeId); };
+
+    //Pick the runner FIRST (paths + unified-fold depend on RunnerShipsBuild/UnifiedRuntime).
+    const Node *RunnerNode = PickRunnerNode(Idx, *Launch, CP, this->GlobalConfigJSON);
+    if (RunnerNode)
+    {
+        const auto &E = RunnerNode->Exec;
+        CP.RunnerID          = RunnerNode->NodeId;
+        CP.RunnerName        = RunnerNode->NodeId;
+        CP.RunnerVariantID   = "default";
+        CP.RunnerPackagePath = RunnerNode->BundleDir;
+        CP.RunnerExecutable  = E.is_object() ? E.value("EXECUTABLE", std::string()) : std::string();
+        CP.ContentRoot       = E.is_object() ? E.value("CONTENT_ROOT", std::string()) : std::string();
+        CP.PrefixGenerate    = E.is_object() ? E.value("PREFIX_GENERATE", false) : false;
+        if (E.is_object() && E.contains("ENV") && E["ENV"].is_object()) CP.RunnerEnv = E["ENV"];
+        if (E.is_object() && E.contains("REMOVE_ENV") && E["REMOVE_ENV"].is_array()) for (auto &X : E["REMOVE_ENV"]) CP.RunnerRemoveEnv.push_back(std::string(X));
+        if (E.is_object() && E.contains("ARGS") && E["ARGS"].is_array())             for (auto &X : E["ARGS"])       CP.RunnerArgs.push_back(std::string(X));
+        CP.UnifiedRuntime    = E.is_object() ? E.value("UNIFIED_RUNTIME", false) : false;
+
+        //Runner build = the runner node's content closure (its PARENTS).
+        std::vector<std::string> RunnerOrder = ManifestModel::ResolveNodeOrder(Idx, RunnerNode->NodeId, CP.ModuleStates);
+        nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
+        std::vector<std::string> RunnerBuildIds;
+        for (const std::string &Id : RunnerOrder)
+        {
+            if (Id == RunnerNode->NodeId) continue;
+            const Node *N = Idx.Find(Id);
+            if (!N || N->IsRunner()) continue;
+            nlohmann::ordered_json Subs = AbsLayers(N);
+            RunnerComps.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", Subs}});
+            RunnerBuildIds.push_back(N->NodeId);
+            for (auto &S : Subs) if (IsVfsLayer(S.value("TYPE", std::string()))) CP.RunnerLayers.push_back(S);
+        }
+        CP.RunnerComponents = RunnerComps;
+        CP.RunnerRecipe     = RunnerBuildIds;
+        CP.RunnerShipsBuild = !CP.RunnerLayers.empty();
+        CP.RunnerEndpoints  = CP.UnifiedRuntime ? RunnerBuildIds : std::vector<std::string>{};
+        //UNIFIED: fold the runner build into the game RUNTIME (mount first = lowest priority).
+        if (CP.UnifiedRuntime)
+            for (const std::string &Id : RunnerBuildIds) { const Node *N = Idx.Find(Id); if (N) AddComponent(N); }
+    }
+    else LogErr("ContainerWrapper::InitializeFromNode", "No runner found for platform '" + CP.Platform + "'.");
+
+    //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.
+    std::vector<std::string> Missing;
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates, &Missing))
+    {
+        if (Id == LaunchId) continue;
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner()) continue;
+        AddComponent(N);
+    }
+    for (const auto &M : Missing) LogWarn("ContainerWrapper::InitializeFromNode", "Unresolved parent: " + M);
+    if (Launch->Layers.is_array() && !Launch->Layers.empty())
+    { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
+
+    //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
+    //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.
+    this->MANIFESTJSON = nlohmann::ordered_json::object();
+    this->MANIFESTJSON["PACKAGEUID"]  = CP.PackageUID;
+    this->MANIFESTJSON["PACKAGENAME"] = CP.PackageName;
+    this->MANIFESTJSON["COMPONENTS"]  = Components;
+
+    DerivePaths(CP, this->GlobalConfigJSON);
+    this->ResolveCustomVariables(this->MANIFESTJSON, CP, this->GlobalConfigJSON);
+    this->BuildSubComponentsArray(this->MANIFESTJSON, CP);
+    this->DerivePersistence(this->MANIFESTJSON, CP);
+    LogSucc("ContainerWrapper::InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "
+            + std::to_string(CP.Recipe.size()) + " component(s)).");
     return true;
 }
 
@@ -941,27 +1130,21 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["UMUID"] = this->UMUID;
     VariablesMap["ScreenWidth"] = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
+    //The single mount root — where the VFS mounts; STEAM_COMPAT_DATA_PATH / WINEPREFIX point here.
     VariablesMap["RuntimePath"] = this->RuntimePath;
-    VariablesMap["RuntimeBasePath"] = this->RuntimeBasePath;
     VariablesMap["RunnerRuntimePath"] = this->RunnerRuntimePath;
     //The runner build's mount (installed-runner model); unified runners run from inside the game RUNTIME.
     VariablesMap["RunnerMount"] = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
-    //Phase-context prefix: %WinePrefix% is the prefix dir for the current phase (def-prefix at init, runtime
-    //at launch); %PrefixBase% its base (Proton's STEAM_COMPAT_DATA_PATH). Default to the runtime when unset.
-    VariablesMap["WinePrefix"] = this->ActivePrefix.empty() ? this->RuntimePath : this->ActivePrefix;
-    VariablesMap["PrefixBase"] = this->ActivePrefixBase.empty() ? this->RuntimeBasePath : this->ActivePrefixBase;
     VariablesMap["WriteLayerPath"] = this->WriteLayerPath;
     VariablesMap["UserDataPath"] = this->UserDataPath;
     VariablesMap["TempPath"] = this->TempPath;
     VariablesMap["ProgramPath"] = this->ProgramPath;
     VariablesMap["DefPrefixPath"] = this->DefPrefixPath;
     VariablesMap["DefaultData"] = this->DefaultDataPath;
-    VariablesMap["ExePathRelative"] = this->ExePathRelative;
-    VariablesMap["ExePathComplete"] = this->ExePathComplete;
-    VariablesMap["ExePathInPrefix"] = this->ExePathInPrefix;
-    VariablesMap["WindowsProgramPath"] = this->WindowsProgramPath;
-    VariablesMap["WindowsExePathComplete"] = this->WindowsExePathComplete;
-    VariablesMap["WindowsProgramPathDoubleBackSlash"] = this->WindowsProgramPathDoubleBackSlash;
+    //Content primitives: %ContentPath% (relative to the program mount) and %Content% (absolute host path).
+    //Authors compose guest paths from these, e.g. ARGS: "C:\\%PackageUID%\\%ContentPath%".
+    VariablesMap["ContentPath"] = this->ExePathRelative;
+    VariablesMap["Content"] = this->ExePathComplete;
     VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
     VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
     //Custom variables are appended last; they can shadow built-in names if needed.
@@ -1156,17 +1339,17 @@ static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool Want
 //MUST BE RUN AFTER VARIABLE SUBSTITUTION (BuildSubComponentsArray) and after DEFPREFIX is provisioned.
 bool ContainerWrapper::BuildDefaultData(struct ContainerParams &ContainerParams)
 {
-    const bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
+    const bool HavePrefix = ContainerParams.PrefixGenerate;
 
     bool HaveBaseFileEdits = false;
     for (const auto &S : ContainerParams.SubComponentsArray)
         if (S.value("TYPE", std::string()) == "FileEdit" && S.value("OVERRIDE", false) == false)
             { HaveBaseFileEdits = true; break; }
 
-    //Registry is Wine-only; emulator/native runners have no hives.
-    const bool HaveBaseReg = WineMode && HasRegEdits(ContainerParams, /*WantOverride=*/false);
+    //Registry only exists when the runner generates a wine prefix; ROM/native runners have no hives.
+    const bool HaveBaseReg = HavePrefix && HasRegEdits(ContainerParams, /*WantOverride=*/false);
     const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "__REGKEYS__";
-    const bool HavePersistKeys = WineMode && !ContainerParams.PersistAll && !ContainerParams.PersistRegKeys.empty()
+    const bool HavePersistKeys = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.PersistRegKeys.empty()
                                  && std::filesystem::exists(RegKeyStore);
 
     if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys) return true; // nothing to materialise
@@ -1184,7 +1367,7 @@ bool ContainerWrapper::BuildDefaultData(struct ContainerParams &ContainerParams)
         //No wineserver quiesce needed: InitializeDefPrefix / the installed artifact leave DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
-        RW.LoadPrefix(ContainerParams.DefPrefixPath);
+        RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>
         if (HaveBaseReg)
             RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
         if (HavePersistKeys)
@@ -1195,7 +1378,9 @@ bool ContainerWrapper::BuildDefaultData(struct ContainerParams &ContainerParams)
                 if (RW.MergeKeyFrom(Durable, RegPath))
                     LogOut("ContainerWrapper::BuildDefaultData", "Seeded persisted key " + RegPath);
         }
-        if (!RW.SavePrefix(ContainerParams.DefaultDataPath))
+        const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
+        std::filesystem::create_directories(HiveOut, Ec);
+        if (!RW.SavePrefix(HiveOut))                                                // mounts at root → lands at /<PrefixRoot>
             LogWarn("ContainerWrapper::BuildDefaultData", "Failed to write DEFAULTDATA hives.");
     }
     LogSucc("ContainerWrapper::BuildDefaultData", "DEFAULTDATA layer built at " + ContainerParams.DefaultDataPath.string());
@@ -1213,10 +1398,11 @@ bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerPa
 
     LogOut("ContainerWrapper::ApplyOverrideRegEdits", "Applying OVERRIDE RegEdits to mounted runtime hives.");
 
+    const std::filesystem::path Hives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
     RegistryWrapper RW;
-    RW.LoadPrefix(ContainerParams.RuntimePath);
+    RW.LoadPrefix(Hives);
     RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/true);
-    if (!RW.SavePrefix(ContainerParams.RuntimePath))
+    if (!RW.SavePrefix(Hives))
     {
         LogErr("ContainerWrapper::ApplyOverrideRegEdits", "Failed to write runtime hives.");
         return false;
@@ -1239,28 +1425,31 @@ bool ContainerWrapper::ApplyOverrideRegEdits(struct ContainerParams &ContainerPa
 bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerParams)
 {
     //Build the base wine prefix by running `wineboot` through the runner. Fully manifest-driven: the umu vs
-    //proton difference is just the runner's EXECUTABLE/ARGS/ENV plus the prefix layout. The phase-context
-    //prefix vars (%WinePrefix% / %PrefixBase%) bind to the DEF-prefix here so a runner ENV like
-    //WINEPREFIX=%WinePrefix% (umu) or STEAM_COMPAT_DATA_PATH=%PrefixBase% (proton) points at what we build.
-    ContainerParams.ActivePrefix     = ContainerParams.DefPrefixPath;
-    ContainerParams.ActivePrefixBase = ContainerParams.DefPrefixBasePath;
+    //proton difference is just the runner's EXECUTABLE/ARGS/ENV plus the prefix layout. The runner ENV points
+    //its prefix var (WINEPREFIX / STEAM_COMPAT_DATA_PATH) at %RuntimePath%; during init we bind %RuntimePath%
+    //to the DEF-prefix dir we're building, so the wineboot lands in DefPrefixPath (mounted whole as base later).
     LogOut("ContainerWrapper::InitializeDefPrefix", "Initialising DefPrefix, path: " + ContainerParams.DefPrefixPath.string());
-    std::filesystem::create_directories(ContainerParams.DefPrefixBasePath);
     std::filesystem::create_directories(ContainerParams.DefPrefixPath);
+
+    std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
+    Vars["RuntimePath"] = ContainerParams.DefPrefixPath.string();
 
     //EXECUTABLE may reference %RunnerRuntimePath% (e.g. the Proton build's proton script).
     std::string Program = ContainerParams.RunnerExecutable;
-    ContainerWrapper::StringVariableSubstitution(Program, ContainerParams.GetVariablesMap());
+    ContainerWrapper::StringVariableSubstitution(Program, Vars);
 
     QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
     QProcess * RunProcess = new QProcess;
     RunProcess->setProgram(QString::fromStdString(Program));
 
-    //Args: the runner's ARGS (the launcher verb, e.g. proton's "waitforexitandrun"; empty for umu) then wineboot.
+    //Args: the runner's ARGS with the content target swapped for "wineboot" — the launcher verb (e.g. proton's
+    //"waitforexitandrun"; empty for umu/wine) is kept, the content-bearing arg dropped, then wineboot appended.
     QStringList Arguments;
-    for (std::string Arg : ContainerParams.RunnerArgs)
+    for (const std::string &Raw : ContainerParams.RunnerArgs)
     {
-        ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
+        if (ArgReferencesContent(Raw)) continue;
+        std::string Arg = Raw;
+        ContainerWrapper::StringVariableSubstitution(Arg, Vars);
         Arguments.append(QString::fromStdString(Arg));
     }
     Arguments.append("wineboot");
@@ -1272,7 +1461,7 @@ bool ContainerWrapper::InitializeDefPrefix(struct ContainerParams &ContainerPara
     for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
     {
         std::string ExpandedValue = Value.get<std::string>();
-        ContainerWrapper::StringVariableSubstitution(ExpandedValue, ContainerParams.GetVariablesMap());
+        ContainerWrapper::StringVariableSubstitution(ExpandedValue, Vars);
         RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(ExpandedValue));
     }
 
@@ -1445,8 +1634,8 @@ bool ContainerWrapper::EnsureSources(struct ContainerParams &ContainerParams)
         LogErr("ContainerWrapper::EnsureSources", "Missing layer content (no local file, no source): " + Local.string());
     }
 
-    //An installed wine runner must have its one-time DEFPREFIX artifact (generated at import).
-    if (ContainerParams.RunnerShipsBuild && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
+    //An installed prefix-generating runner must have its one-time DEFPREFIX artifact (generated at import).
+    if (ContainerParams.RunnerShipsBuild && ContainerParams.PrefixGenerate)
     {
         std::error_code Ec;
         if (ContainerParams.DefPrefixPath.empty() || !std::filesystem::exists(ContainerParams.DefPrefixPath, Ec))
@@ -1486,10 +1675,11 @@ bool ContainerWrapper::MaterializeLayers(struct ContainerParams &ContainerParams
     return Ok;
 }
 
-//Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (Wine), every
-//VFS subcomponent rooted at its TARGET (logically — no staging dirs), the PERSIST dirs as RW
-//passthrough layers, and the writable top branch. Array order is union priority (lowest first).
-nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &ContainerParams, bool WineMode)
+//Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (when the runner
+//generates a prefix), every VFS subcomponent rooted at CONTENT_ROOT + its TARGET (logically — no staging
+//dirs), the PERSIST dirs as RW passthrough layers, and the writable top branch. Array order is union
+//priority (lowest first).
+nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = ContainerParams.RuntimePath.string();
@@ -1507,12 +1697,14 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
 
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
 
-    //DEFPREFIX base (Wine) — lowest priority, at the runtime root.
-    if (WineMode && !ContainerParams.DefPrefixPath.empty())
+    //DEFPREFIX base — lowest priority, at the runtime root. Mounted whole when the runner generates a prefix
+    //(its drive_c / pfx structure and compat-data bookkeeping show at the root the launcher's env points at).
+    if (ContainerParams.PrefixGenerate && !ContainerParams.DefPrefixPath.empty())
         Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefPrefixPath.string()}, {"target", ""}, {"rw", false}});
 
-    //In Wine mode game content lives under drive_c/PackageUID so Wine's C: maps correctly.
-    const std::string WineRoot = WineMode ? ("drive_c/" + ContainerParams.PackageUID) : std::string();
+    //Host content placement is a RUNNER property (CONTENT_ROOT, resolved): "" = root; "drive_c/<UID>" maps
+    //the game under Wine's C:; "pfx/drive_c/<UID>" places it inside Proton's pfx. Same game, different runner.
+    const std::string &ContentRoot = ContainerParams.ContentRoot;
 
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
@@ -1524,7 +1716,7 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
         else continue;
 
         std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
-        std::string Target = WineRoot;
+        std::string Target = ContentRoot;
         if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
         {
             std::string T = Sub["TARGET"];
@@ -1562,8 +1754,7 @@ nlohmann::ordered_json ContainerWrapper::BuildLayerSpec(struct ContainerParams &
 //the mount (PersistAll writelayer or any RW passthrough persist dir), else the lazy path.
 bool ContainerWrapper::MountVFS(struct ContainerParams &ContainerParams)
 {
-    const bool WineMode = (ContainerParams.RunnerTypeEnum == RunnerType::Wine);
-    nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams, WineMode);
+    nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams);
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
@@ -1707,12 +1898,17 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
         }
     }
     LogSucc("ContainerWrapper::ImportRunner", "Hydrated runner build for " + Label + " (" + std::to_string(FetchedLayers) + " layer(s))");
-    if (!RunnerWrapper::IsWineRunner(RunnerPkg, Vid)) return true;       // non-wine: no prefix to build
+    if (!RunnerWrapper::GeneratesPrefix(RunnerPkg, Vid)) return true;    // no PREFIX_GENERATE: no prefix to build
 
     //2. Generate the one-time DEFPREFIX in the runner's library dir (idempotent): PackageDir/__DEFPREFIX__/<vid>.
+    //The whole artifact is mounted at the runtime root later, so the prefix hives live at <artifact>/<PrefixRoot>,
+    //PrefixRoot = CONTENT_ROOT up to /drive_c ("" for wine, "pfx" for proton) — derived, no PREFIX_SUBPATH.
     const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixArtifact(PackageDir, Vid);
-    const std::string Subpath = R.value("PREFIX_SUBPATH", std::string());
-    const std::filesystem::path PrefixDir = Subpath.empty() ? DefArtifact : (DefArtifact / Subpath);
+    const std::string ContentRoot = R.value("CONTENT_ROOT", std::string());
+    std::string PrefixRoot;
+    { const auto Pos = ContentRoot.find("drive_c");
+      if (Pos != std::string::npos && Pos != 0) PrefixRoot = ContentRoot.substr(0, Pos - 1); }
+    const std::filesystem::path PrefixDir = PrefixRoot.empty() ? DefArtifact : (DefArtifact / PrefixRoot);
     if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
     { LogOut("ContainerWrapper::ImportRunner", "DEFPREFIX already present for " + Label); return true; }
 
@@ -1740,19 +1936,21 @@ bool ContainerWrapper::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, co
     if (!SpawnVidyagodfs(Spec, MountDir, Pkg / "__DEFPREFIX__" / (".buildmount-" + Vid + ".spec.json")))
         return Fail("could not mount runner build for install");
 
-    //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings (prefix → the artifact).
+    //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings. The runner ENV points its
+    //prefix var (WINEPREFIX / STEAM_COMPAT_DATA_PATH) at %RuntimePath%; bind it to the artifact root we're
+    //building, so proton writes <artifact>/pfx and wine writes <artifact>/drive_c (mounted whole at launch).
     std::map<std::string, std::string> Vars;
-    Vars["RunnerMount"]     = MountDir.string();
-    Vars["PrefixBase"]      = DefArtifact.string();        // STEAM_COMPAT_DATA_PATH
-    Vars["RuntimeBasePath"] = DefArtifact.string();
-    Vars["WinePrefix"]      = PrefixDir.string();
-    Vars["TempPath"]        = DefArtifact.string();
+    Vars["RunnerMount"]  = MountDir.string();
+    Vars["RuntimePath"]  = DefArtifact.string();
+    Vars["TempPath"]     = DefArtifact.string();
 
     std::string Program = R.value("EXECUTABLE", std::string("%RunnerMount%/proton"));
     ContainerWrapper::StringVariableSubstitution(Program, Vars);
+    //Args with the content target swapped for wineboot — keep the launcher verb, drop the content-bearing arg.
     QStringList Args;
     for (const auto &A : R.value("ARGS", nlohmann::ordered_json::array()))
-    { std::string a = std::string(A); ContainerWrapper::StringVariableSubstitution(a, Vars); Args << QString::fromStdString(a); }
+    { std::string a = std::string(A); if (ArgReferencesContent(a)) continue;
+      ContainerWrapper::StringVariableSubstitution(a, Vars); Args << QString::fromStdString(a); }
     Args << "wineboot";
 
     QProcessEnvironment Env = SystemToolEnv();                                   // system proton/wine, not AppImage libs
@@ -1790,13 +1988,15 @@ bool ContainerWrapper::SeedPersistRegistry(struct ContainerParams &ContainerPara
 {
     if (ContainerParams.PersistAll) return true; //durable RW branch already holds the reg files
     const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
+    //Shadow at the prefix root in the union (/<PrefixRoot>/*.reg) — "" for wine, "pfx" for proton.
+    const std::filesystem::path WriteHives = HiveDir(ContainerParams, ContainerParams.WriteLayerPath);
     std::error_code ec;
-    std::filesystem::create_directories(ContainerParams.WriteLayerPath, ec);
+    std::filesystem::create_directories(WriteHives, ec);
     for (const char *const Name : kRegFiles)
     {
         const std::filesystem::path SrcReg = RegStore / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
-        const std::filesystem::path DstReg = ContainerParams.WriteLayerPath / Name;
+        const std::filesystem::path DstReg = WriteHives / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) LogWarn("ContainerWrapper::SeedPersistRegistry", "Could not seed " + std::string(Name) + ": " + ec.message());
         else    LogOut("ContainerWrapper::SeedPersistRegistry", "Seeded persisted " + std::string(Name));
@@ -1812,9 +2012,10 @@ bool ContainerWrapper::CapturePersistRegistry(struct ContainerParams &ContainerP
     const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
     std::error_code ec;
     std::filesystem::create_directories(RegStore, ec);
+    const std::filesystem::path RunHives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
     for (const char *const Name : kRegFiles)
     {
-        const std::filesystem::path SrcReg = ContainerParams.RuntimePath / Name;
+        const std::filesystem::path SrcReg = RunHives / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
         const std::filesystem::path DstReg = RegStore / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
@@ -1875,7 +2076,7 @@ bool ContainerWrapper::CapturePersistRegKeys(struct ContainerParams &ContainerPa
     const std::filesystem::path Store = ContainerParams.UserDataPath / "__REGKEYS__";
 
     RegistryWrapper Session;
-    Session.LoadPrefix(ContainerParams.RuntimePath);
+    Session.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath));
 
     RegistryWrapper Durable;
     if (std::filesystem::exists(Store)) Durable.LoadPrefix(Store); // accumulate across sessions
@@ -2083,14 +2284,12 @@ bool ContainerWrapper::FileOverwrite(const std::string &Value, const std::filesy
 
 //Launches the game using the resolved runner and environment.
 //
-//Exe resolution order:
-//  1. OverrideExe if non-empty (used for tooling / install steps).
-//  2. ExePathInPrefix for Wine runners (Windows-style path passed to Wine).
-//  3. ExePathComplete for all other runners (absolute host path).
+//Fully data-driven: the runner's EXECUTABLE + ARGS ARE the command line. The author composes the launch
+//target into ARGS (a guest path "C:\%PackageUID%\%ContentPath%" for wine/proton, the absolute "%Content%"
+//for ROM/native runners, or nothing for a self-contained runner). The engine no longer auto-appends content.
 //
-//Argument ordering differs by runner type:
-//  Wine:     exe first, then ExeArgs (game's own arguments).
-//  Other:    RunnerArgs first (runner flags), then exe (ROM/data path).
+//OverrideExe (tooling / install steps) swaps just the target: content-bearing ARGS are dropped and the
+//override exe is appended after the launcher verb, leaving the rest of the runner's command line intact.
 //
 //Runner ENV values undergo %VARIABLE% substitution before being inserted into the
 //process environment, so tokens like %WINEPREFIX% are expanded at launch time.
@@ -2099,59 +2298,11 @@ bool ContainerWrapper::FileOverwrite(const std::string &Value, const std::filesy
 //does not exist in the mounted runtime.
 bool ContainerWrapper::Execute(std::string OverrideExe)
 {
-    //Launch phase: bind the context prefix vars to the mounted runtime (InitializeDefPrefix bound them to
-    //the def-prefix). %WinePrefix% → RuntimePath, %PrefixBase% → RuntimeBasePath (= proton STEAM_COMPAT_DATA_PATH).
-    ContainerParams.ActivePrefix     = ContainerParams.RuntimePath;
-    ContainerParams.ActivePrefixBase = ContainerParams.RuntimeBasePath;
-
-    //When the prefix lives in a subdir (PREFIX_SUBPATH, e.g. Proton's pfx), the launcher keeps compat-data
-    //bookkeeping (version / tracked_files / config_info) at the *base* level. Init wrote those into
-    //DefPrefixBasePath; seed them into RuntimeBasePath so the launcher sees an already-provisioned prefix and
-    //skips its launch-time upgrade (which would otherwise fail reading the missing base-level files). The pfx
-    //itself is the mounted union at RuntimePath; only the sibling base files are carried over.
-    if (ContainerParams.RuntimePath != ContainerParams.RuntimeBasePath
-        && std::filesystem::exists(ContainerParams.DefPrefixBasePath))
-    {
-        std::error_code Ec;
-        for (const auto &Entry : std::filesystem::directory_iterator(ContainerParams.DefPrefixBasePath, Ec))
-        {
-            if (!Entry.is_regular_file(Ec)) continue;          // skip pfx/ (the prefix dir / mountpoint)
-            const std::string Name = Entry.path().filename().string();
-            if (Name == "pfx.lock") continue;                  // don't carry a stale lock
-            std::filesystem::copy_file(Entry.path(), ContainerParams.RuntimeBasePath / Name,
-                                       std::filesystem::copy_options::overwrite_existing, Ec);
-        }
-    }
-
-    std::string FinalExe;
-    if (!OverrideExe.empty())
-    {
-        FinalExe = OverrideExe;
-    }
-    else if (ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-    {
-        //Pass the Windows-style path so Wine resolves it through its own drive mappings.
-        FinalExe = ContainerParams.ExePathInPrefix.string();
-    }
-    else if (!ContainerParams.ExePathRelative.empty())
-    {
-        //Non-Wine: only set FinalExe when the variant specified a CONTENTPATH (the exe/ROM/data the runner loads).
-        //If ExePathRelative is empty the runner is self-contained (e.g. a bare AppImage) and
-        //needs no positional argument — passing ProgramPath would be meaningless and likely fatal.
-        FinalExe = ContainerParams.ExePathComplete.string();
-    }
-
-    if (FinalExe.empty() && ContainerParams.RunnerTypeEnum == RunnerType::Wine)
-    {
-        LogErr("ContainerWrapper::Execute", "No exe to run (Wine requires a CONTENTPATH). Aborting.");
-        return false;
-    }
-
     //Substitute variables in the runner executable path — manifest runners reference
     //%ProgramPath% to point to a bundled binary mounted into RUNTIME via a VFS layer.
     ContainerWrapper::StringVariableSubstitution(ContainerParams.RunnerExecutable, ContainerParams.GetVariablesMap());
     LogOut("ContainerWrapper::Execute", "Runner: " + ContainerParams.RunnerExecutable);
-    LogOut("ContainerWrapper::Execute", "Executing: " + FinalExe);
+    if (!OverrideExe.empty()) LogOut("ContainerWrapper::Execute", "OverrideExe: " + OverrideExe);
     LogOut("ContainerWrapper::Execute", "WorkDirPath: " + ContainerParams.WorkDirPathComplete.string());
 
     QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
@@ -2170,9 +2321,9 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(ExpandedValue));
     }
 
-    // Wine-specific: WINEDLLOVERRIDES
+    // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix.
     //Joins all DLL override strings; umu-run/Wine interprets the combined value.
-    if (ContainerParams.RunnerTypeEnum == RunnerType::Wine && !ContainerParams.DLLOverrides.empty())
+    if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
     {
         RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
     }
@@ -2190,20 +2341,24 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     RunProcess.setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
     RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
 
-    //Unified argument order for every runner type: RunnerArgs (template-expanded) → exe/ROM path (if any)
-    //→ ExeArgs. This is data-driven: a launcher verb lives in the runner's ARGS (e.g. proton's
-    //"waitforexitandrun"), so umu (ARGS=[]) yields [exe, ExeArgs] exactly as before, while proton yields
-    //[waitforexitandrun, exe, ExeArgs]. Emulators/native put their flags in ARGS and the ROM as the exe.
+    //The runner's ARGS ARE the command line (template-expanded), with the launch target already composed in
+    //by the author (e.g. proton's ["waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"]; snes9x's
+    //["-fullscreen", "%Content%"]; gemrb's ["-f"]). Then the game variant's own EXEARGS.
+    //For an OverrideExe (tooling/install), the content-bearing ARGS are dropped and the override is appended
+    //after the launcher verb, so e.g. proton runs [waitforexitandrun, <override>] instead of the game.
+    const bool Override = !OverrideExe.empty();
     QStringList Arguments;
-    for (std::string Arg : ContainerParams.RunnerArgs)
+    for (const std::string &Raw : ContainerParams.RunnerArgs)
     {
+        if (Override && ArgReferencesContent(Raw)) continue;
+        std::string Arg = Raw;
         ContainerWrapper::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
         Arguments.append(QString::fromStdString(Arg));
     }
-    if (!FinalExe.empty())
-        Arguments.append(QString::fromStdString(FinalExe));
-    //ExeArgs from the VariantDefinition (e.g. -c config.cfg for GemRB); skipped for an OverrideExe (tooling).
-    if (OverrideExe.empty())
+    if (Override)
+        Arguments.append(QString::fromStdString(OverrideExe));
+    else
+        //Game variant's own EXEARGS (e.g. -c config.cfg). Skipped under OverrideExe (tooling).
         for (std::string Arg : ContainerParams.ExeArgs)
             Arguments.append(QString::fromStdString(Arg));
     RunProcess.setArguments(Arguments);

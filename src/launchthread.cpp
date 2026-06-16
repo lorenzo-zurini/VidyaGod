@@ -1,5 +1,7 @@
 #include "launchthread.h"
 #include "containerwrapper.h"
+#include "manifestmodel.h"
+#include "packagecatalog.h"
 #include "commonutils.h"
 
 #include <filesystem>
@@ -101,6 +103,18 @@ void LaunchThread::run()
     //uses these instead of querying QGuiApplication from this worker thread.
     Params.ScreenWidth  = this->ScreenWidth;
     Params.ScreenHeight = this->ScreenHeight;
+
+    //Native node-graph launch: build the global index here (worker thread) and point the engine at the launch
+    //node. Index is a local that outlives LocalWrapper (which holds ContainerParams by reference).
+    NodeIndex Index;
+    if (!this->LaunchNodeId.empty())
+    {
+        std::vector<std::filesystem::path> Roots;
+        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+        Index = ManifestModel::BuildNodeIndex(Roots);
+        Params.NodeIdx      = &Index;
+        Params.LaunchNodeId = this->LaunchNodeId;
+    }
 
     ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, Params);
 

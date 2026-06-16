@@ -34,6 +34,8 @@ struct LaunchParameters
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
     std::string HeadlessGameID;                                           //Game to launch (empty = use default)
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from game)
+    std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)
+    bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)

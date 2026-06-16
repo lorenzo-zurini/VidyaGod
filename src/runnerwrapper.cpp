@@ -59,9 +59,9 @@ nlohmann::ordered_json Variant(const nlohmann::ordered_json &RunnerPkg, const st
     return nlohmann::ordered_json::object();
 }
 
-bool IsWineRunner(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
+bool GeneratesPrefix(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
 {
-    return Variant(RunnerPkg, VariantId).value("TYPE", std::string()) == "wine";
+    return Variant(RunnerPkg, VariantId).value("PREFIX_GENERATE", false);
 }
 
 std::vector<std::string> BuildCids(const nlohmann::ordered_json &RunnerPkg, const std::string &VariantId)
@@ -131,7 +131,7 @@ bool IsImported(const nlohmann::ordered_json &RunnerPkg, const std::string &Pack
             if (!std::filesystem::exists(std::filesystem::path(PackageDir) / Path)) return false;
         }
     }
-    if (IsWineRunner(RunnerPkg, VariantId))
+    if (GeneratesPrefix(RunnerPkg, VariantId))
     {
         const std::string Vid = VariantId.empty() ? DefaultVariantId(RunnerPkg) : VariantId;
         QDir D(QString::fromStdString(DefPrefixArtifact(PackageDir, Vid)));

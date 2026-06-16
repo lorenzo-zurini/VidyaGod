@@ -1,5 +1,8 @@
 #include "main.h"
 #include "commonutils.h"
+#include "manifestmodel.h"
+#include "packagecatalog.h"
+#include "containerwrapper.h"
 
 #include <QComboBox>
 #include <QAbstractScrollArea>
@@ -16,7 +19,10 @@
 //bookkeeping is needed. The returned fd is intentionally kept open for the whole process lifetime.
 static int AcquireSingleInstanceLock(const std::string &LockPath)
 {
-    int Fd = ::open(LockPath.c_str(), O_CREAT | O_RDWR, 0644);
+    //O_CLOEXEC is essential: spawned children (wine/proton/git/vidyagodfs) must NOT inherit this fd, or a lingering
+    //wine background process (services.exe/wineserver/…) keeps the flock held after VidyaGod exits, making every
+    //later run falsely abort with "another instance is already running".
+    int Fd = ::open(LockPath.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (Fd < 0) return -1;
     if (::flock(Fd, LOCK_EX | LOCK_NB) != 0) { ::close(Fd); return -1; }
     return Fd;
@@ -54,6 +60,40 @@ protected:
         return QObject::eventFilter(Obj, Event);
     }
 };
+
+//Serializes the resolved ContainerParams that feed the (frozen) runtime — the exact input the engine produces
+//after the front-end resolution. Used by --resolve-only for golden-compare (synthesis bridge vs native consumer)
+//and as a hang-free verification (no mount, no game). Field order is stable for diffing.
+static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
+{
+    nlohmann::ordered_json J;
+    J["PackageUID"]        = CP.PackageUID;
+    J["GameName"]          = CP.GameName;
+    J["Platform"]          = CP.Platform;
+    J["Recipe"]            = CP.Recipe;
+    J["RunnerName"]        = CP.RunnerName;
+    J["RunnerExecutable"]  = CP.RunnerExecutable;
+    J["RunnerArgs"]        = CP.RunnerArgs;
+    J["RunnerEnv"]         = CP.RunnerEnv;
+    J["RunnerRemoveEnv"]   = CP.RunnerRemoveEnv;
+    J["ContentRoot"]       = CP.ContentRoot;
+    J["PrefixRoot"]        = CP.PrefixRoot;
+    J["PrefixGenerate"]    = CP.PrefixGenerate;
+    J["ContentPath"]       = CP.ExePathRelative.string();
+    J["Content"]           = CP.ExePathComplete.string();
+    J["ExeArgs"]           = CP.ExeArgs;
+    J["DLLOverrides"]      = CP.DLLOverrides;
+    J["PersistAll"]        = CP.PersistAll;
+    J["PersistDirs"]       = CP.PersistDirs;
+    J["PersistFiles"]      = CP.PersistFiles;
+    J["PersistRegistry"]   = CP.PersistRegistry;
+    J["PersistRegKeys"]    = CP.PersistRegKeys;
+    J["CustomVariables"]   = CP.CustomVariables;
+    J["RunnerShipsBuild"]  = CP.RunnerShipsBuild;
+    J["UnifiedRuntime"]    = CP.UnifiedRuntime;
+    J["SubComponentsArray"]= CP.SubComponentsArray;
+    return J;
+}
 
 int main(int argc, char *argv[])
 {
@@ -212,6 +252,44 @@ int main(int argc, char *argv[])
         const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err);
         LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
         return Ok ? 0 : 1;
+    }
+
+    //HEADLESS (node graph): launch a launchable node from the global, cross-bundle node index — the engine
+    //resolves EVERYTHING natively from the node graph (ContainerWrapper::InitializeFromNode). No manifest.
+    if (!LaunchParameters.LaunchNodeId.empty())
+    {
+        LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
+        std::vector<std::filesystem::path> Roots;
+        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        if (!Index.Find(LaunchParameters.LaunchNodeId))
+        { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog, aborting."); return 1; }
+
+        nlohmann::ordered_json MANIFESTJSON = nlohmann::ordered_json::object();   // engine fills this from the node graph
+        struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LaunchParameters.LaunchNodeId, std::string());
+        NewContainerParams.NodeIdx           = &Index;
+        NewContainerParams.LaunchNodeId      = LaunchParameters.LaunchNodeId;
+        NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
+        NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
+        NewContainerParams.VariantID         = "default";
+        NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
+        class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
+        if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
+        { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return 1; }
+        if (LaunchParameters.ResolveOnly)
+        {
+            //Dump the resolved params (no mount, no game) for golden-compare / hang-free verification.
+            const std::filesystem::path Out = std::filesystem::path("/tmp") / ("vg_resolve_" + LaunchParameters.LaunchNodeId + ".json");
+            std::ofstream OF(Out);
+            OF << DumpResolution(NewContainerWrapper.ContainerParams).dump(2) << std::endl;
+            LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());
+            return 0;
+        }
+        NewContainerWrapper.BuildContainerRuntime();
+        NewContainerWrapper.Execute();
+        if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
+            LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
+        return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
 
     //HEADLESS MODE: build the container and run the game without showing any window.
@@ -443,6 +521,19 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--component" && i + 1 < argc)
         {
             RuntimeParameters.HeadlessComponentID = argv[++i];
+        }
+        else if (arg == "--node" && i + 1 < argc)
+        {
+            //Launch a launchable node from the global node graph (everything-is-a-node schema).
+            RuntimeParameters.LaunchNodeId   = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--resolve-only" && i + 1 < argc)
+        {
+            //Resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch).
+            RuntimeParameters.LaunchNodeId   = argv[++i];
+            RuntimeParameters.ResolveOnly    = true;
+            RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--var" && i + 1 < argc)
         {
