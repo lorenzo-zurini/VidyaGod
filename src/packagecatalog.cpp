@@ -116,21 +116,42 @@ static bool RunGit(const QStringList &Args, const QString &WorkDir = QString())
     return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
 }
 
-//Clones (first run) or updates a git repository into CloneDir. Self-heals from a rewritten remote history: a plain
-//fast-forward pull fails there, so fall back to fetch + hard-reset, and re-clone only if even that fails.
+//Clones (first run) or updates a git repository into CloneDir, syncing ONLY the tracked files (the node JSONs).
+//CONTENT-SAFE: it NEVER deletes the clone dir, because hydrated game/runner content (build zips, generated
+//DEFPREFIX, fetched layers) lives here gitignored — a sync hiccup must never wipe it. `git reset --hard` realigns
+//tracked files to upstream and leaves untracked content untouched; if even that fails we keep the last-synced
+//clone rather than nuking it. An existing non-git dir with files is adopted in place (init+fetch+force-checkout).
 static bool SyncGitRepository(const std::string &Url, const std::string &CloneDir)
 {
     if (Url.empty()) return false;
     const QString Dir = QString::fromStdString(CloneDir);
+
+    // An existing clone: update tracked files only.
     if (QDir(Dir + "/.git").exists())
     {
         if (RunGit({"pull", "--ff-only"}, Dir)) return true;                      // normal fast-forward
         if (RunGit({"fetch", "origin"}, Dir) && RunGit({"reset", "--hard", "@{u}"}, Dir))
-            return true;                                                          // diverged/rewritten → realign
-        QDir(Dir).removeRecursively();                                            // unrecoverable → re-clone below
+            return true;                                                          // diverged/rewritten history → realign tracked files
+        LogWarn("PackageCatalog::SyncGitRepository",
+                "could not sync " + CloneDir + " — keeping the last-synced clone (hydrated content preserved).");
+        return false;                                                            // NEVER delete the clone
     }
-    else if (QDir(Dir).exists())
-        QDir(Dir).removeRecursively();                                           // a non-git dir (old copied mirror) → replace with a clone
+
+    // A non-git dir that already holds files (an old copied mirror, or content placed before any clone): adopt it
+    // in place so untracked content survives — init + fetch + force-checkout the tracked JSONs from origin.
+    if (QDir(Dir).exists() && !QDir(Dir).isEmpty())
+    {
+        if (RunGit({"init"}, Dir)
+            && RunGit({"remote", "add", "origin", QString::fromStdString(Url)}, Dir)
+            && RunGit({"fetch", "--depth", "1", "origin"}, Dir)
+            && RunGit({"checkout", "-f", "-B", "main", "origin/main"}, Dir))
+            return true;
+        LogWarn("PackageCatalog::SyncGitRepository",
+                "could not adopt existing dir " + CloneDir + " as a git clone — left untouched (content preserved).");
+        return false;
+    }
+
+    // Pristine first clone.
     QDir().mkpath(QString::fromStdString(std::filesystem::path(CloneDir).parent_path().string())); // LIBRARY root must exist
     return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), Dir});
 }
