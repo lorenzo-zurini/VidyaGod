@@ -664,7 +664,7 @@ void MainWindow::BuildAvailableTab()
     QVBoxLayout * v = new QVBoxLayout(AvailableTabWidget);
     v->setContentsMargins(0,0,0,0); v->setSpacing(0);
     AvailableTabWidget->setLayout(v);
-    MainWindowTabWidget->addTab(AvailableTabWidget, "Available");
+    MainWindowTabWidget->addTab(AvailableTabWidget, "Catalog");
 
     // Toolbar — mirrors the Library tab: Name/Date/Series sort (within each repo) + size picker.
     QWidget * toolbar = new QWidget(AvailableTabWidget);
@@ -800,7 +800,11 @@ void MainWindow::RebuildAvailableTab()
         AvailableGameCards->append(c);
     }
 
-    AvailableView->prescaleCovers(CardPixelWidth);   // scale every pool card's cover ONCE (not per keystroke)
+    // Point the view at the full pool, then scale every cover ONCE — BEFORE ApplyAvailableFilter shows them.
+    // (Scaling must happen while the view's card list IS the pool; otherwise CoverScaled stays null and the
+    // covers paint black until the next refreshVisuals — the "flash black on download complete" bug.)
+    AvailableView->setCards(AvailableGameCards);
+    AvailableView->prescaleCovers(CardPixelWidth);
     ApplyAvailableFilter();
 }
 
