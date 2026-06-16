@@ -96,6 +96,12 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
                                           const std::map<std::string, bool> &Toggles,
                                           std::vector<std::string> *Missing = nullptr);
 
+// Validate the whole node graph: every PARENTS id resolves + no cycles; VFS layers declare a PATH; each
+// launchable resolves a runner (platform match) + has content or is self-contained; runner nodes declare GUEST
+// platforms; a PREFIX_GENERATE runner routes content through drive_c; EXCLUDE is symmetric. Errors should block
+// (e.g. in the editor/CI), warnings advise. NODE_ID uniqueness is enforced earlier by the index (dups dropped).
+void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings);
+
 // Synthesize an OLD-SHAPE manifest (GAMES/COMPONENTS/RUNNERS) for launching LaunchNodeId, so the existing
 // ContainerWrapper pipeline runs the node graph unchanged: content parents become a linear COMPONENT chain in
 // resolved order, the launchable becomes a GAME+variant (carrying its EXEC), and every ROLE:"runner" node

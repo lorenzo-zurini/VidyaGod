@@ -3,6 +3,7 @@
 
 #include <set>
 #include <fstream>
+#include <algorithm>
 
 const Node *NodeIndex::Find(const std::string &NodeId) const
 {
@@ -139,6 +140,78 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
     };
     Emit(LaunchNodeId);
     return Order;
+}
+
+void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
+{
+    const std::string Machine = MachinePlatform();
+
+    //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
+    auto HasRunnerFor = [&](const std::string &Host) {
+        for (const auto &[Id, R] : Idx.Nodes)
+            if (R.IsRunner() && R.HostPlatform == Machine)
+                for (const auto &G : R.GuestPlatform) if (G == Host) return true;
+        return false;
+    };
+
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        const std::string Tag = "node '" + Id + "'";
+
+        //PARENTS resolve.
+        for (const std::string &P : N.Parents)
+            if (!Idx.Find(P)) Errors.push_back(Tag + ": PARENTS references missing node '" + P + "'");
+
+        //No cycles reachable from this node (DFS over PARENTS).
+        {
+            std::set<std::string> OnStack, Done;
+            std::function<bool(const std::string &)> HasCycle = [&](const std::string &Cur) -> bool {
+                if (Done.count(Cur)) return false;
+                if (OnStack.count(Cur)) return true;
+                OnStack.insert(Cur);
+                const Node *C = Idx.Find(Cur);
+                if (C) for (const std::string &P : C->Parents) if (Idx.Find(P) && HasCycle(P)) return true;
+                OnStack.erase(Cur); Done.insert(Cur);
+                return false;
+            };
+            if (HasCycle(Id)) Errors.push_back(Tag + ": PARENTS form a cycle");
+        }
+
+        //VFS layers must declare a local PATH (or SOURCE.PATH).
+        if (N.Layers.is_array())
+            for (const auto &L : N.Layers)
+                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())))
+                {
+                    const bool HasPath = (L.contains("PATH") && L["PATH"].is_string() && !std::string(L["PATH"]).empty())
+                        || (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH")
+                            && L["SOURCE"]["PATH"].is_string() && !std::string(L["SOURCE"]["PATH"]).empty());
+                    if (!HasPath) Errors.push_back(Tag + ": a " + L.value("TYPE", std::string("VFS")) + " layer has no PATH");
+                }
+
+        //EXCLUDE symmetry.
+        for (const std::string &E : N.Exclude)
+        {
+            const Node *Other = Idx.Find(E);
+            if (!Other) { Warnings.push_back(Tag + ": EXCLUDE references missing node '" + E + "'"); continue; }
+            if (std::find(Other->Exclude.begin(), Other->Exclude.end(), Id) == Other->Exclude.end())
+                Warnings.push_back(Tag + ": EXCLUDE '" + E + "' is not symmetric (the other node does not exclude this one)");
+        }
+
+        if (N.IsLaunchable())
+        {
+            if (N.HostPlatform.empty()) Warnings.push_back(Tag + ": launchable has no PLATFORM.HOST");
+            else if (!HasRunnerFor(N.HostPlatform))
+                Warnings.push_back(Tag + ": no runner node serves platform '" + N.HostPlatform + "' on this machine");
+        }
+        else if (N.IsRunner())
+        {
+            if (N.GuestPlatform.empty()) Warnings.push_back(Tag + ": runner declares no PLATFORM.GUEST");
+            const bool PrefixGen = N.Exec.is_object() && N.Exec.value("PREFIX_GENERATE", false);
+            const std::string CR = N.Exec.is_object() ? N.Exec.value("CONTENT_ROOT", std::string()) : std::string();
+            if (PrefixGen && CR.find("drive_c") == std::string::npos)
+                Warnings.push_back(Tag + ": PREFIX_GENERATE runner's CONTENT_ROOT has no drive_c");
+        }
+    }
 }
 
 nlohmann::ordered_json SynthesizeManifest(const NodeIndex &Idx, const std::string &LaunchNodeId,

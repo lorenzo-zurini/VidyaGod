@@ -254,6 +254,21 @@ int main(int argc, char *argv[])
         return Ok ? 0 : 1;
     }
 
+    //HEADLESS: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...).
+    if (LaunchParameters.ValidateNodes)
+    {
+        std::vector<std::filesystem::path> Roots;
+        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        std::vector<std::string> Errors, Warnings;
+        ManifestModel::ValidateNodeGraph(Index, Errors, Warnings);
+        for (const auto &W : Warnings) LogWarn("validate-nodes", W);
+        for (const auto &E : Errors)   LogErr ("validate-nodes", E);
+        LogOut("validate-nodes", "Validated " + std::to_string(Index.Nodes.size()) + " node(s): "
+               + std::to_string(Errors.size()) + " error(s), " + std::to_string(Warnings.size()) + " warning(s).");
+        return Errors.empty() ? 0 : 1;
+    }
+
     //HEADLESS (node graph): launch a launchable node from the global, cross-bundle node index — the engine
     //resolves EVERYTHING natively from the node graph (ContainerWrapper::InitializeFromNode). No manifest.
     if (!LaunchParameters.LaunchNodeId.empty())
@@ -533,6 +548,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             //Resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch).
             RuntimeParameters.LaunchNodeId   = argv[++i];
             RuntimeParameters.ResolveOnly    = true;
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--validate-nodes")
+        {
+            RuntimeParameters.ValidateNodes   = true;
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--var" && i + 1 < argc)

@@ -36,6 +36,7 @@ struct LaunchParameters
     std::string HeadlessComponentID;                                      //Component override (empty = resolved from game)
     std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)
     bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
+    bool ValidateNodes = false;                                          //--validate-nodes: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
