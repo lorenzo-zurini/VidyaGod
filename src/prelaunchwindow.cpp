@@ -374,6 +374,10 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             std::string Key = CV.value("KEY", std::string());
             if (Key.empty() || !CV.value("DISPLAY", true)) continue;
             if (ScanStr.find("%" + Key + "%") == std::string::npos) continue;   // not referenced — skip
+            //"random" vars are auto-picked from OPTIONS by the engine at launch; never show an editable picker —
+            //collecting its value would pass a VariableOverride that the engine honours OVER the random pick
+            //(e.g. an empty field → empty Warcraft III CD key). Leave it to the engine.
+            if (CV.value("VARTYPE", std::string("string")) == "random") continue;
 
             std::string Initial = CV.value("DEFAULT", std::string());
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);

@@ -190,17 +190,16 @@ void MainWindow::BuildStaticUI()
         SaveGlobalConfigJSON();
     });
 
-    // ── Packages tab ──────────────────────────────────────────────────────────
+    // ── Packages (built here, hosted as a Settings category — see BuildSettingsTab) ───────────
     PackagesTabWidget = new QWidget(MainWindowTabWidget);
     PackagesTabWidgetLayout = new QVBoxLayout(PackagesTabWidget);
     PackagesTabWidget->setLayout(PackagesTabWidgetLayout);
-    MainWindowTabWidget->addTab(PackagesTabWidget, "Packages");
 
     QGroupBox * ptb = new QGroupBox(PackagesTabWidget);
     QHBoxLayout * ptbl = new QHBoxLayout(ptb); ptb->setLayout(ptbl);
     PackagesTabWidgetLayout->addWidget(ptb);
 
-    QPushButton * addBtn = new QPushButton("+", ptb);
+    QPushButton * addBtn = new QPushButton("Add Local Package", ptb);
     addBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     ptbl->addWidget(addBtn);
     QObject::connect(addBtn, &QPushButton::clicked, this, &MainWindow::on_AddGameButton_clicked);
@@ -276,6 +275,7 @@ void MainWindow::BuildSettingsTab()
     SettingsCategoryList = new QListWidget(SettingsTabWidget);
     SettingsCategoryList->setFixedWidth(170);
     SettingsCategoryList->setFrameShape(QFrame::NoFrame);
+    SettingsCategoryList->addItem("Installed Packages");
     SettingsCategoryList->addItem("Runners");
     SettingsCategoryList->addItem("Repositories");
     SettingsCategoryList->addItem("Storage & Paths");
@@ -285,7 +285,10 @@ void MainWindow::BuildSettingsTab()
     SettingsStack = new QStackedWidget(SettingsTabWidget);
     outer->addWidget(SettingsStack, 1);
 
-    // Page 0 — Runners (a scroll area we rebuild in place on structural edits).
+    // Page 0 — Installed Packages (built in BuildStaticUI; the +Add Local Package / Package Editor / list).
+    SettingsStack->addWidget(PackagesTabWidget);
+
+    // Page 1 — Runners (a scroll area we rebuild in place on structural edits).
     {
         QWidget * page = new QWidget(SettingsStack);
         QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
@@ -298,7 +301,7 @@ void MainWindow::BuildSettingsTab()
         RebuildSettingsRunnersPage();
     }
 
-    // Page 1 — Repositories (a scroll area we rebuild in place on add/remove).
+    // Page 2 — Repositories (a scroll area we rebuild in place on add/remove).
     {
         QWidget * page = new QWidget(SettingsStack);
         QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
@@ -311,7 +314,7 @@ void MainWindow::BuildSettingsTab()
         RebuildSettingsReposPage();
     }
 
-    // Page 2 — Storage & Paths.
+    // Page 3 — Storage & Paths.
     SettingsStack->addWidget(BuildPathsSettingsPage());
 
     QObject::connect(SettingsCategoryList, &QListWidget::currentRowChanged,
@@ -431,7 +434,7 @@ void MainWindow::RebuildSettingsReposPage()
                 PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // git pull each repo + reindex LIBRARY
                 QMetaObject::invokeMethod(this, [this]{
                     SaveGlobalConfigJSON();
-                    RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
+                    RebuildDynamicUI(); RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab();
                 }, Qt::QueuedConnection);
             }).detach();
         });
@@ -499,7 +502,7 @@ void MainWindow::RebuildSettingsReposPage()
             PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
             QMetaObject::invokeMethod(this, [this]{
                 SaveGlobalConfigJSON();
-                RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab(); RebuildDynamicUI();
+                RebuildDynamicUI(); RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab();
             }, Qt::QueuedConnection);
         }).detach();
     });
@@ -1217,7 +1220,7 @@ void MainWindow::BuildPackagesDynamicUI()
     }
     if (row == 0)
     {
-        QLabel * none = new QLabel("No installed packages yet — download games from the Available tab.", w);
+        QLabel * none = new QLabel("No installed packages yet - download packages from the Catalog tab or add local packages.", w);
         none->setStyleSheet("color:#8f98a0;");
         g->addWidget(none, 0, 0, 1, 3);
     }
