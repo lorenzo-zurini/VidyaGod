@@ -134,7 +134,7 @@ void MainWindow::BuildStaticUI()
         QObject::connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
             if (!checked) return;
             CurrentSort = mode;
-            BuildLibraryDynamicUI();   // re-sort + re-filter + relayout
+            sortCards(); View->layoutCards(CardPixelWidth);   // cheap: re-sort + re-filter (covers already scaled)
         });
         tl->addWidget(b);
     };
@@ -151,7 +151,7 @@ void MainWindow::BuildStaticUI()
     searchEdit->setFixedWidth(180);
     QObject::connect(searchEdit, &QLineEdit::textChanged, this, [this](const QString & t){
         LibrarySearch = t.trimmed();
-        BuildLibraryDynamicUI();
+        sortCards(); View->layoutCards(CardPixelWidth);   // cheap: re-filter (covers already scaled)
     });
     tl->addWidget(searchEdit);
 
@@ -684,7 +684,7 @@ void MainWindow::BuildAvailableTab()
         sortGroup->addButton(b);
         connect(b, &QPushButton::toggled, this, [this, mode](bool checked){
             if (!checked) return;
-            AvailableSort = mode; RebuildAvailableTab();
+            AvailableSort = mode; ApplyAvailableFilter();   // cheap: re-sort the existing pool (no restat)
         });
         tl->addWidget(b);
     };
@@ -696,7 +696,7 @@ void MainWindow::BuildAvailableTab()
     availSearch->setFixedWidth(180);
     connect(availSearch, &QLineEdit::textChanged, this, [this](const QString & t){
         AvailableSearch = t.trimmed();
-        RebuildAvailableTab();
+        ApplyAvailableFilter();                             // cheap: re-filter the existing pool (no restat)
     });
     tl->addWidget(availSearch);
     auto makeSizeBtn = [&](const QString & lbl, int w) {
@@ -709,7 +709,11 @@ void MainWindow::BuildAvailableTab()
         connect(b, &QPushButton::clicked, this, [this,w,lbl,toolbar](){
             CardPixelWidth = w;
             for (auto * x : toolbar->findChildren<QPushButton*>()) if (x->isCheckable() && (x->text()=="Large"||x->text()=="Medium"||x->text()=="Small")) x->setChecked(x->text()==lbl);
-            if (AvailableView) { AvailableView->prescaleCovers(CardPixelWidth); AvailableView->layoutCards(CardPixelWidth); }
+            if (AvailableView) {
+                AvailableView->setCards(AvailableGameCards);   // point at the full pool so every cover is re-scaled
+                AvailableView->prescaleCovers(CardPixelWidth);
+                ApplyAvailableFilter();                        // repoint to the filtered subset + relayout
+            }
         });
         tl->addWidget(b);
     };
@@ -762,13 +766,14 @@ void MainWindow::BuildAvailableTab()
 }
 
 //(Re)builds the Available grid: one card per un-hydrated repo game, grouped by repository (collapsible).
+//EXPENSIVE — rebuilds the full Available card POOL: enumerate presentable groups + check hydration (filesystem
+//stats + graph walks) and create one card per un-hydrated, fetchable tile. Call only when the catalog actually
+//changes (sync / import / download complete), NOT on every sort/search keystroke — those call ApplyAvailableFilter.
 void MainWindow::RebuildAvailableTab()
 {
     if (!AvailableView) return;
+    AvailableVisible.clear();
     qDeleteAll(*AvailableGameCards); AvailableGameCards->clear();
-
-    // Repo name for a card (groups un-repo'd local entries under "Local").
-    auto RepoOf = [this](LibraryGameCard * c) -> QString { return RepoNameForBundle(c->PackagePath); };
 
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
@@ -785,8 +790,6 @@ void MainWindow::RebuildAvailableTab()
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
         auto * c = new LibraryGameCard(GlobalConfigJSON, &CatalogIndex, std::move(Ids));
         c->InitializeClassVariables();
-        if (!AvailableSearch.isEmpty() && !c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
-        { delete c; continue; }                                                  // filtered out by search
 
         const bool Busy = DownloadingUids.contains(c->GroupKey);
         double BusyPct = -1.0;                                                    // carry current progress across rebuilds
@@ -797,30 +800,47 @@ void MainWindow::RebuildAvailableTab()
         AvailableGameCards->append(c);
     }
 
+    AvailableView->prescaleCovers(CardPixelWidth);   // scale every pool card's cover ONCE (not per keystroke)
+    ApplyAvailableFilter();
+}
+
+//CHEAP — re-filters the existing pool by search, re-sorts + re-groups, and shows it. No card recreation, no
+//filesystem stats, no cover re-scaling. This is the sort/search path.
+void MainWindow::ApplyAvailableFilter()
+{
+    if (!AvailableView) return;
+
+    // Repo name for a card (groups un-repo'd local entries under "Local").
+    auto RepoOf = [this](LibraryGameCard * c) -> QString { return RepoNameForBundle(c->PackagePath); };
+
+    AvailableVisible.clear();
+    for (LibraryGameCard * c : *AvailableGameCards)
+        if (AvailableSearch.isEmpty() || c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
+            AvailableVisible.append(c);
+
     // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
     auto keyOf = [this](LibraryGameCard * a) -> QString {
         switch (AvailableSort) { case SortMode::Date:   return a->SortDate + "|" + a->SortTitle;
                                  case SortMode::Series: return a->SortSeriesKey;
                                  default:               return a->SortTitle; }
     };
-    std::sort(AvailableGameCards->begin(), AvailableGameCards->end(), [&](LibraryGameCard * a, LibraryGameCard * b){
+    std::sort(AvailableVisible.begin(), AvailableVisible.end(), [&](LibraryGameCard * a, LibraryGameCard * b){
         const QString ra = RepoOf(a), rb = RepoOf(b);
         if (ra != rb) return ra < rb;
         return keyOf(a) < keyOf(b);
     });
 
     QVector<LibraryView::Group> groups;
-    const int n = AvailableGameCards->count();
+    const int n = AvailableVisible.count();
     for (int s = 0; s < n; ) {
-        const QString r = RepoOf(AvailableGameCards->at(s));
-        int e = s; while (e + 1 < n && RepoOf(AvailableGameCards->at(e + 1)) == r) ++e;
+        const QString r = RepoOf(AvailableVisible.at(s));
+        int e = s; while (e + 1 < n && RepoOf(AvailableVisible.at(e + 1)) == r) ++e;
         groups.append({ r, s, e, AvailableCollapsedRepos.contains(r) });
         s = e + 1;
     }
 
-    AvailableView->setCards(AvailableGameCards);
+    AvailableView->setCards(&AvailableVisible);
     AvailableView->setGroups(groups);
-    AvailableView->prescaleCovers(CardPixelWidth);
     AvailableView->layoutCards(CardPixelWidth);
 }
 
@@ -846,13 +866,19 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         }
     DownloadUidCids[Key] = Cids;
 
-    RebuildAvailableTab();    // repaint this tile's card as "Downloading…"
+    // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
+    for (LibraryGameCard * c : *AvailableGameCards)
+        if (c && c->GroupKey == Key) { c->Downloading = true; c->DownloadPercent = 0.0; }
+    AvailableView->refreshVisuals();
     RefreshIpfsTab();
 
-    std::thread([this, LaunchIds, Key]{
+    // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while
+    // a completing download reassigns it (RebuildDynamicUI) — that was the multi-download crash.
+    NodeIndex Snapshot = CatalogIndex;
+    std::thread([this, LaunchIds, Key, Snapshot = std::move(Snapshot)]{
         std::string Err; bool Ok = true;
         for (const std::string & Lid : LaunchIds)
-            if (!PackageCatalog::HydrateNode(CatalogIndex, Lid, &Err)) { Ok = false; break; }
+            if (!PackageCatalog::HydrateNode(Snapshot, Lid, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

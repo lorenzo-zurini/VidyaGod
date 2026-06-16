@@ -99,7 +99,8 @@ private:
     // ── Available tab (repo games to discover + download over IPFS) — same grid as Library, grouped by repo ──
     QWidget     * AvailableTabWidget = nullptr;
     LibraryView * AvailableView      = nullptr;   // shares the Library card grid (download-on-hover, grouped)
-    QList<LibraryGameCard *> * AvailableGameCards = new QList<LibraryGameCard *>();
+    QList<LibraryGameCard *> * AvailableGameCards = new QList<LibraryGameCard *>();  // full pool (all un-hydrated tiles)
+    QList<LibraryGameCard *>   AvailableVisible;   // the search-filtered subset actually shown (no card recreation)
     QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
     QString       AvailableSearch;                // case-insensitive title filter for the Available grid
     QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
@@ -130,7 +131,8 @@ private:
     void RebuildSettingsReposPage();
     QWidget * BuildPathsSettingsPage();
     void BuildAvailableTab();
-    void RebuildAvailableTab();   // grouped grid of un-hydrated repo games; click a card to download over IPFS
+    void RebuildAvailableTab();   // EXPENSIVE: rebuild the full card pool (group enumeration + hydration stats); then filter
+    void ApplyAvailableFilter();  // CHEAP: filter the existing pool by search + sort + group; no rebuild/restat (sort/search path)
     void DownloadAvailable(LibraryGameCard * card);   // import (hydrate) the package behind an Available card
     void BuildIpfsTab();
     void RefreshIpfsTab();   // kicks an off-thread gather of status + seeded list (no-op when ipfs absent)
