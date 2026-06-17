@@ -262,7 +262,7 @@ std::vector<std::string> SplitPath(const std::string &S)
 // difference collapses to one report; GlobalSeen dedups the same collision across launchables that share the content.
 void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
         std::map<std::string, std::vector<std::string>> &ZipCache,
-        std::vector<std::string> &Warnings, std::set<std::string> &GlobalSeen)
+        std::vector<std::string> &Out, std::set<std::string> &GlobalSeen)
 {
     std::map<std::string, std::pair<std::string, std::string>> Seen;  // lowercased path -> (exact path, layer label)
     std::set<std::string> LocalReported;                             // collapse repeats within this launchable
@@ -281,8 +281,8 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
         if (!LocalReported.insert(Key).second) return;               // already reported this dir/file collision here
         if (!GlobalSeen.insert(Key + "|" + ToLowerAscii(PrevLbl) + "|" + ToLowerAscii(Lbl)).second) return;
         const bool IsDir = (i + 1 < A.size()) || (i + 1 < B.size());
-        Warnings.push_back(std::string("content case conflict across layers: ") + (IsDir ? "directory '" : "file '")
-                           + A[i] + "' (" + PrevLbl + ") vs '" + B[i] + "' (" + Lbl + ") — collide in the merged view");
+        Out.push_back(std::string("content case conflict across layers: ") + (IsDir ? "directory '" : "file '")
+                      + A[i] + "' (" + PrevLbl + ") vs '" + B[i] + "' (" + Lbl + ") — collide in the merged view");
     };
 
     for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
@@ -401,8 +401,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 }
             }
 
-            //Cross-layer case collisions in the merged content view (two layers' paths differing only in case).
-            FindCrossLayerCaseCollisions(Idx, N, ZipCache, Warnings, CrossLayerSeen);
+            //Cross-layer case collisions in the merged content view (two layers' paths differing only in case) are
+            //ERRORS: both files exist on the case-sensitive mount and a lookup can hit the wrong one → crashes.
+            FindCrossLayerCaseCollisions(Idx, N, ZipCache, Errors, CrossLayerSeen);
         }
         else if (N.IsRunner())
         {
