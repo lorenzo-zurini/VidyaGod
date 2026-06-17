@@ -246,12 +246,77 @@ void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
     }
 }
 
+// Path components of a slash path.
+std::vector<std::string> SplitPath(const std::string &S)
+{
+    std::vector<std::string> V; size_t P = 0, Q;
+    while ((Q = S.find('/', P)) != std::string::npos) { V.push_back(S.substr(P, Q - P)); P = Q + 1; }
+    V.push_back(S.substr(P));
+    return V;
+}
+
+// Reports case collisions across DIFFERENT layers in a launchable's merged content view: two layers contributing
+// paths that differ only in case (e.g. base ships 'MAPS/foo', a patch ships 'maps/foo'). On the case-sensitive mount
+// both exist, so a lookup can resolve to the wrong file → crashes / missing data. Collisions WITHIN one layer are the
+// upstream game's own content (unavoidable, merges fine on real Windows) and are deliberately ignored. A directory-case
+// difference collapses to one report; GlobalSeen dedups the same collision across launchables that share the content.
+void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
+        std::map<std::string, std::vector<std::string>> &ZipCache,
+        std::vector<std::string> &Warnings, std::set<std::string> &GlobalSeen)
+{
+    std::map<std::string, std::pair<std::string, std::string>> Seen;  // lowercased path -> (exact path, layer label)
+    std::set<std::string> LocalReported;                             // collapse repeats within this launchable
+
+    auto Consider = [&](const std::string &F, const std::string &Lbl)
+    {
+        const std::string Lw = ToLowerAscii(F);
+        auto It = Seen.find(Lw);
+        if (It == Seen.end()) { Seen.emplace(Lw, std::make_pair(F, Lbl)); return; }
+        const std::string Prev = It->second.first, PrevLbl = It->second.second;
+        if (Prev == F || PrevLbl == Lbl) return;                     // same case, or same layer → not a cross-layer case collision
+        const std::vector<std::string> A = SplitPath(Prev), B = SplitPath(F);
+        size_t i = 0; while (i < A.size() && i < B.size() && A[i] == B[i]) ++i;
+        if (i >= A.size() || i >= B.size()) return;
+        std::string Key; for (size_t k = 0; k <= i; ++k) { if (k) Key += '/'; Key += ToLowerAscii(A[k]); }
+        if (!LocalReported.insert(Key).second) return;               // already reported this dir/file collision here
+        if (!GlobalSeen.insert(Key + "|" + ToLowerAscii(PrevLbl) + "|" + ToLowerAscii(Lbl)).second) return;
+        const bool IsDir = (i + 1 < A.size()) || (i + 1 < B.size());
+        Warnings.push_back(std::string("content case conflict across layers: ") + (IsDir ? "directory '" : "file '")
+                           + A[i] + "' (" + PrevLbl + ") vs '" + B[i] + "' (" + Lbl + ") — collide in the merged view");
+    };
+
+    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (const auto &L : N->Layers)
+        {
+            if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(L, N->BundleDir, Local, Cid);
+            if (Local == N->BundleDir) continue;
+            std::error_code Ec;
+            if (!std::filesystem::exists(Local, Ec)) continue;
+            const std::string Lbl = N->NodeId + " (" + Local.filename().string() + ")";
+            const std::string Target = L.value("TARGET", std::string());
+            if (std::filesystem::is_directory(Local, Ec))
+                for (auto It2 = std::filesystem::recursive_directory_iterator(Local, Ec);
+                     !Ec && It2 != std::filesystem::recursive_directory_iterator(); It2.increment(Ec))
+                { if (It2->is_regular_file(Ec)) Consider(JoinTarget(Target, std::filesystem::relative(It2->path(), Local, Ec).generic_string()), Lbl); }
+            else
+                for (const std::string &Entry : ZipEntriesCached(Local.string(), ZipCache))
+                    Consider(JoinTarget(Target, Entry), Lbl);
+        }
+    }
+}
+
 } // namespace
 
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
 {
     const std::string Machine = MachinePlatform();
     std::map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
+    std::set<std::string> CrossLayerSeen;                       // dedup cross-layer case collisions across launchables
 
     //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
     auto HasRunnerFor = [&](const std::string &Host) {
@@ -335,6 +400,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found in the package content");
                 }
             }
+
+            //Cross-layer case collisions in the merged content view (two layers' paths differing only in case).
+            FindCrossLayerCaseCollisions(Idx, N, ZipCache, Warnings, CrossLayerSeen);
         }
         else if (N.IsRunner())
         {
