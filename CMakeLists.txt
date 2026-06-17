@@ -11,6 +11,8 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets)
 find_package(nlohmann_json REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
@@ -72,6 +74,7 @@ add_executable(VidyaGod ${PROJECT_SOURCES})
 
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(VidyaGod PRIVATE PkgConfig::LIBZIP)
 
 # ---- vidyagodfs: the custom FUSE filesystem, built from its own repo (git submodule) ----
 # It defines the `vidyagodfs` target (links libfuse3 + libzip). Place its binary next to VidyaGod in

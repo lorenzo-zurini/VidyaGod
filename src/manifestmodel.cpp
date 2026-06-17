@@ -2,8 +2,11 @@
 #include "commonutils.h"
 
 #include <set>
+#include <map>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
+#include <zip.h>   // node-graph validation reads content zips to case-check CONTENTPATH against real files
 
 const Node *NodeIndex::Find(const std::string &NodeId) const
 {
@@ -167,9 +170,88 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
     return Out;
 }
 
+namespace {
+
+std::string ToLowerAscii(std::string S) { for (char &c : S) c = (char)std::tolower((unsigned char)c); return S; }
+
+// The regular file paths inside a zip (slash-normalized, directory entries dropped). Empty on open failure.
+const std::vector<std::string> &ZipEntriesCached(const std::string &Path,
+        std::map<std::string, std::vector<std::string>> &Cache)
+{
+    auto It = Cache.find(Path);
+    if (It != Cache.end()) return It->second;
+    std::vector<std::string> Out;
+    int Err = 0;
+    if (zip_t *Za = zip_open(Path.c_str(), ZIP_RDONLY, &Err))
+    {
+        const zip_int64_t N = zip_get_num_entries(Za, 0);
+        for (zip_uint64_t i = 0; i < (zip_uint64_t)N; ++i)
+        {
+            const char *Name = zip_get_name(Za, i, ZIP_FL_ENC_RAW);
+            if (!Name || !*Name) continue;
+            std::string S = Name;
+            std::replace(S.begin(), S.end(), '\\', '/');
+            if (S.back() == '/') continue;                                   // directory entry
+            Out.push_back(std::move(S));
+        }
+        zip_close(Za);
+    }
+    return Cache.emplace(Path, std::move(Out)).first->second;
+}
+
+// Join a layer's TARGET (mount offset within the content root) and an in-layer relative path into one
+// content-root-relative slash path.
+std::string JoinTarget(std::string Target, std::string Rel)
+{
+    std::replace(Target.begin(), Target.end(), '\\', '/');
+    std::replace(Rel.begin(), Rel.end(), '\\', '/');
+    while (!Target.empty() && Target.front() == '/') Target.erase(Target.begin());
+    while (!Target.empty() && Target.back()  == '/') Target.pop_back();
+    while (!Rel.empty() && Rel.front() == '/') Rel.erase(Rel.begin());
+    return Target.empty() ? Rel : Target + "/" + Rel;
+}
+
+// The case-sensitive set of content-root-relative file paths a launchable's closure provides, from LOCALLY-present
+// VFS layers only (zips via libzip, dirs walked). AnyLocal=≥1 layer read; AllLocal=every VFS layer was on disk.
+void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
+        std::map<std::string, std::vector<std::string>> &ZipCache,
+        std::set<std::string> &Files, bool &AnyLocal, bool &AllLocal)
+{
+    AnyLocal = false; AllLocal = true;
+    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (const auto &L : N->Layers)
+        {
+            if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(L, N->BundleDir, Local, Cid);
+            if (Local == N->BundleDir) continue;                             // no PATH at all
+            std::error_code Ec;
+            if (!std::filesystem::exists(Local, Ec)) { AllLocal = false; continue; }   // remote-only / not hydrated
+            AnyLocal = true;
+            const std::string Target = L.value("TARGET", std::string());
+            if (std::filesystem::is_directory(Local, Ec))
+                for (auto It = std::filesystem::recursive_directory_iterator(Local, Ec);
+                     !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+                {
+                    if (!It->is_regular_file(Ec)) continue;
+                    Files.insert(JoinTarget(Target, std::filesystem::relative(It->path(), Local, Ec).generic_string()));
+                }
+            else
+                for (const std::string &Entry : ZipEntriesCached(Local.string(), ZipCache))
+                    Files.insert(JoinTarget(Target, Entry));
+        }
+    }
+}
+
+} // namespace
+
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
 {
     const std::string Machine = MachinePlatform();
+    std::map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
 
     //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
     auto HasRunnerFor = [&](const std::string &Host) {
@@ -227,6 +309,32 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (N.HostPlatform.empty()) Warnings.push_back(Tag + ": launchable has no PLATFORM.HOST");
             else if (!HasRunnerFor(N.HostPlatform))
                 Warnings.push_back(Tag + ": no runner node serves platform '" + N.HostPlatform + "' on this machine");
+
+            //CONTENTPATH must case-EXACTLY match a real content file: the runner sees a case-sensitive mount, so a
+            //typo'd case (e.g. MW4mercs.exe vs MW4Mercs.exe) means the exe is never found → silent crash on launch.
+            //Only checked where the content is locally present (skips remote/un-hydrated nodes and %var% paths).
+            std::string Cp = N.Exec.is_object() ? N.Exec.value("CONTENTPATH", std::string()) : std::string();
+            if (!Cp.empty() && Cp.find('%') == std::string::npos)
+            {
+                std::replace(Cp.begin(), Cp.end(), '\\', '/');
+                while (Cp.rfind("./", 0) == 0) Cp.erase(0, 2);
+                while (!Cp.empty() && Cp.front() == '/') Cp.erase(Cp.begin());
+
+                std::set<std::string> Files; bool AnyLocal = false, AllLocal = true;
+                GatherLaunchContentFiles(Idx, N, ZipCache, Files, AnyLocal, AllLocal);
+
+                if (AnyLocal && !Cp.empty() && !Files.count(Cp))
+                {
+                    const std::string CpL = ToLowerAscii(Cp);
+                    std::string Hit;
+                    for (const std::string &F : Files) if (ToLowerAscii(F) == CpL) { Hit = F; break; }
+                    if (!Hit.empty())
+                        Errors.push_back(Tag + ": CONTENTPATH '" + Cp + "' case-mismatches content file '" + Hit
+                                         + "' — the mount is case-sensitive, fix the casing");
+                    else if (AllLocal)
+                        Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found in the package content");
+                }
+            }
         }
         else if (N.IsRunner())
         {
