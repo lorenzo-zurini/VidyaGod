@@ -415,7 +415,15 @@ bool ContainerWrapper::ResolveExecutableDefinition(const nlohmann::ordered_json 
         ContainerParams.WorkDirPathRelative = std::filesystem::path(WorkDirStr);
         ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
     }
-    else ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
+    else if (!ContainerParams.ExePathRelative.empty())
+    {
+        // No explicit WORKDIR: default to the executable's OWN directory (not the content-mount root) — games
+        // resolve their data/DLLs via paths relative to the exe's folder. This is the historical default and is
+        // a no-op when the exe sits at the root (parent_path is empty → ProgramPath).
+        ContainerParams.WorkDirPathRelative = ContainerParams.ExePathRelative.parent_path();
+        ContainerParams.WorkDirPathComplete = ContainerParams.ExePathComplete.parent_path();
+    }
+    else ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;   // self-contained runner (no CONTENTPATH)
     LogOut("ContainerWrapper::ResolveExecutableDefinition", "WorkDirPathComplete: " + ContainerParams.WorkDirPathComplete.string());
     ContainerParams.ExeArgs.clear();
     auto &ExeArgsVal = Resolved["EXEARGS"];
