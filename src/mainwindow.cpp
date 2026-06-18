@@ -122,6 +122,14 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     BuildLibraryGameCards();
     BuildLibraryDynamicUI();
     BuildPackagesDynamicUI();
+
+    // Test/dev hook: open directly on a named tab (e.g. VIDYAGOD_START_TAB=IPFS) so a headless screenshot harness
+    // can land on it without coordinate-clicking. Selecting it fires currentChanged (e.g. starts the IPFS refresh).
+    const QString StartTab = qEnvironmentVariable("VIDYAGOD_START_TAB");
+    if (!StartTab.isEmpty() && MainWindowTabWidget)
+        for (int i = 0; i < MainWindowTabWidget->count(); ++i)
+            if (MainWindowTabWidget->tabText(i).compare(StartTab, Qt::CaseInsensitive) == 0)
+            { MainWindowTabWidget->setCurrentIndex(i); break; }
 }
 
 MainWindow::~MainWindow()
@@ -649,9 +657,18 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
     NodeIndex Idx = PackageCatalog::BuildCatalogIndex(gc);
     for (const auto & [NodeId, N] : Idx.Nodes)
     {
-        //A friendly bundle name for grouping: the node's title, else its GROUP/id.
-        std::string PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", std::string()) : std::string();
-        if (PkgName.empty()) PkgName = N.GroupKey();
+        //Package (group) name = the owning BUNDLE's display name (its folder minus the "[id][ver] " prefix), so the
+        //seeded list groups as Package > Node (each CID's child label below is the node id). Content nodes carry no
+        //META/TITLE, so grouping off their own id (the old behaviour) made every node its own group.
+        std::string PkgName;
+        {
+            std::string F = N.BundleDir.filename().string();
+            size_t i = 0;
+            while (i < F.size()) { if (F[i] == '[') { size_t c = F.find(']', i); if (c == std::string::npos) break; i = c + 1; }
+                                   else if (F[i] == ' ') ++i; else break; }
+            PkgName = (i < F.size()) ? F.substr(i) : F;
+        }
+        if (PkgName.empty()) PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", N.GroupKey()) : N.GroupKey();
 
         //Content layer CIDs → labelled by their node (the component-equivalent), grouped by bundle.
         if (N.Layers.is_array())
@@ -675,8 +692,8 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
                 const std::string Cid = Cv["SOURCE"].value("CID", std::string());
                 if (!Cid.empty())
                 {
-                    Labels.insert(QString::fromStdString(Cid), QString::fromStdString((PkgName.empty() ? NodeId : PkgName) + " — cover"));
-                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
+                    Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
+                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
                 }
             }
         }
@@ -1252,6 +1269,7 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     IpfsPins->resizeColumnToContents(2);
     IpfsPins->resizeColumnToContents(3);
     IpfsPins->resizeColumnToContents(4);
+    if (qEnvironmentVariableIsSet("VIDYAGOD_IPFS_EXPAND")) IpfsPins->expandAll();   // test hook (screenshot harness)
 
     GatherIpfsHealth();   // trickle in provider counts for any newly-seen pins
 }
