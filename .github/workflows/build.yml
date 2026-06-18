@@ -16,6 +16,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install Go (for the embedded IPFS node, external/VidyaGodIPFS → libvgipfs.so)
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache-dependency-path: external/VidyaGodIPFS/go.sum
+
       - name: Install dependencies
         run: |
           sudo apt update
@@ -27,9 +33,16 @@ jobs:
           export PATH=/usr/lib/qt6/bin:$PATH
           qmake -v
 
+      - name: Test embedded IPFS node (offline)
+        run: |
+          # Storage + fetch mechanics + CID parity, no network (the tests force VIDYAGOD_IPFS_OFFLINE).
+          cd external/VidyaGodIPFS
+          go test ./...
+
       - name: Build VidyaGod
         run: |
-          # Builds both targets: the GUI app (VidyaGod) and the FUSE helper (vidyagodfs).
+          # Builds all targets: the GUI app (VidyaGod), the FUSE helper (vidyagodfs), and the embedded IPFS node
+          # (libvgipfs.so, built by CMake via `go build -buildmode=c-shared` and linked into VidyaGod).
           mkdir -p build
           cd build
           cmake ..
@@ -40,12 +53,19 @@ jobs:
           set -euxo pipefail
 
           mkdir -p AppDir/usr/bin
+          mkdir -p AppDir/usr/lib
           mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
 
           # Copy the app binary AND the FUSE helper. vidyagodfs MUST sit beside VidyaGod in
           # usr/bin — the app locates it via /proc/self/exe (the binary's own directory).
           cp build/VidyaGod AppDir/usr/bin/
           cp build/vidyagodfs AppDir/usr/bin/
+
+          # The embedded IPFS node is linked into VidyaGod (DT_NEEDED libvgipfs.so, $ORIGIN rpath). Put it in
+          # usr/lib so AppRun's LD_LIBRARY_PATH=$APPDIR/usr/lib resolves it at runtime, AND beside the binary in
+          # usr/bin so the $ORIGIN rpath resolves it too (and linuxdeployqt finds it while bundling VidyaGod).
+          cp build/libvgipfs.so AppDir/usr/lib/
+          cp build/libvgipfs.so AppDir/usr/bin/
 
           # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
@@ -62,9 +82,11 @@ jobs:
           wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
 
-      - name: Bundle vidyagodfs (pulls in libzip + libfuse3)
+      - name: Bundle vidyagodfs (libzip + libfuse3) and libvgipfs (its deps)
         run: |
-          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/vidyagodfs
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --executable AppDir/usr/bin/vidyagodfs \
+            --library build/libvgipfs.so
 
       - name: Download linuxdeployqt
         run: |
@@ -74,6 +96,8 @@ jobs:
       - name: Bundle main app with linuxdeployqt
         run: |
           export PATH=/usr/lib/qt6/bin:$PATH
+          # Let linuxdeployqt resolve VidyaGod's NEEDED libvgipfs.so while processing the binary.
+          export LD_LIBRARY_PATH="$PWD/build:$PWD/AppDir/usr/lib:$LD_LIBRARY_PATH"
 
           # Bundle your Qt app
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
