@@ -61,6 +61,8 @@ set(PROJECT_SOURCES
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
+    src/vgipfsapi.h
+
     src/runnerwrapper.h
     src/runnerwrapper.cpp
 
@@ -87,3 +89,8 @@ set_target_properties(vidyagodfs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BIN
 # external Kubo `ipfs` CLI. It is LINKED + called from src/ipfswrapper.cpp in a later milestone; for now this just
 # ensures the node compiles as part of the project. Defines the imported `vgipfs` target.
 add_subdirectory(external/VidyaGodIPFS)
+
+# Link the embedded node in-process. $ORIGIN rpath so the running VidyaGod resolves libvgipfs.so beside itself
+# (build root, and AppDir/usr/bin after bundling). Started in main.cpp; the IPFS call sites swap over in M4.
+target_link_libraries(VidyaGod PRIVATE vgipfs)
+set_target_properties(VidyaGod PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")

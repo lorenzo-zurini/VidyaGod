@@ -3,6 +3,7 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "containerwrapper.h"
+#include "vgipfsapi.h"
 
 #include <QComboBox>
 #include <QAbstractScrollArea>
@@ -191,6 +192,26 @@ int main(int argc, char *argv[])
         //InitializeGlobalConfigJSON returns true on FAILURE (shell exit-code convention).
         LogErr("main.cpp", "Fatal error. GlobalConfigJSON initialization failed, aborting.");
         return 1;
+    }
+
+    //Embedded IPFS node (libvgipfs): open its private repo and hold it for this process's lifetime. The repo lives
+    //in the XDG data dir (NOT ~/.VidyaGod, which the user may wipe — the peer identity should survive that). Safe as
+    //a single opener because of the single-instance guard above. Non-fatal: if it fails the app still runs.
+    //M2: linked + started to validate the in-process Go runtime; the live fetch/seed path is swapped over in M4.
+    {
+        const QString IpfsRepo = Portable ? (AppDataDir.absolutePath() + "/ipfs")
+                                          : (QDir::homePath() + "/.local/share/VidyaGod/ipfs");
+        char *VgErr = nullptr;
+        if (VgStart(IpfsRepo.toUtf8().constData(), &VgErr) != 0)
+        {
+            LogErr("main.cpp", std::string("embedded IPFS node failed to start: ") + (VgErr ? VgErr : "?"));
+            if (VgErr) VgFree(VgErr);
+        }
+        else
+        {
+            LogOut("main.cpp", "embedded IPFS node started at " + IpfsRepo.toStdString());
+            std::atexit(VgStop);   // best-effort clean leveldb shutdown on any exit path
+        }
     }
 
     //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
