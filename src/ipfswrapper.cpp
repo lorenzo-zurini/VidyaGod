@@ -174,10 +174,38 @@ std::string RepoSizeHuman()
 {
     QString Out;
     if (!RunIpfs({"repo", "stat", "--human"}, &Out, 15000)) return std::string();
+    QString Size, Max;
     for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
-        if (Line.startsWith("RepoSize:"))
-            return Line.mid(QString("RepoSize:").size()).trimmed().toStdString();
-    return std::string();
+    {
+        if (Line.startsWith("RepoSize:"))   Size = Line.mid(QString("RepoSize:").size()).trimmed();
+        else if (Line.startsWith("StorageMax:")) Max = Line.mid(QString("StorageMax:").size()).trimmed();
+    }
+    if (Size.isEmpty()) return std::string();
+    return (Max.isEmpty() ? Size : Size + " / " + Max).toStdString();
+}
+
+StatInfo StatCid(const std::string &Cid)
+{
+    StatInfo Info;
+    if (Cid.empty()) return Info;
+    QString Out;
+    if (!RunIpfs({"files", "stat", "--with-local", QString::fromStdString("/ipfs/" + Cid)}, &Out, 20000)) return Info;
+    static const QRegularExpression PctRe(QStringLiteral("\\(([0-9.]+)%\\)"));
+    for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
+    {
+        if (Line.startsWith("CumulativeSize:"))
+        {
+            bool Ok = false;
+            const long long N = Line.mid(QString("CumulativeSize:").size()).trimmed().toLongLong(&Ok);
+            if (Ok) Info.SizeBytes = N;
+        }
+        else if (Line.startsWith("Local:"))   // "Local: 2.2 GB of 2.2 GB (100.00%)"
+        {
+            const auto M = PctRe.match(Line);
+            if (M.hasMatch()) Info.LocalPct = M.captured(1).toDouble();
+        }
+    }
+    return Info;
 }
 
 std::vector<PinEntry> Pins()

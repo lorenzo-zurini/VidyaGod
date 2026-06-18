@@ -113,14 +113,15 @@ private:
     // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
     QWidget       * IpfsTabWidget   = nullptr;
     QLabel        * IpfsStatusLabel = nullptr;
-    QTableWidget  * IpfsTransfers   = nullptr;   // Name | CID | Progress | Status — live fetches (sortable)
-    QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (sortable)
+    QTableWidget  * IpfsTransfers   = nullptr;   // Name | Size | Progress | Status | CID — live fetches (sortable)
+    QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (Name|Size|Health|CID)
     QTimer        * IpfsRefreshTimer = nullptr;
     bool            IpfsRefreshInFlight = false;   // a worker is already gathering ipfs status — skip re-entrancy
     QTimer        * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one card refresh
     QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
     QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)
+    QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + local-availability (cached; Refresh clears it)
 
     void BuildStaticUI();
     void BuildLibraryGameCards();
@@ -137,7 +138,8 @@ private:
     void BuildIpfsTab();
     void RefreshIpfsTab();   // kicks an off-thread gather of status + seeded list (no-op when ipfs absent)
     void ApplyIpfsSnapshot(bool daemon, int peers, const QString & repo,
-                           const std::vector<IpfsWrapper::PinEntry> & pins);  // GUI-thread paint of the gathered data
+                           const std::vector<IpfsWrapper::PinEntry> & pins,
+                           const QHash<QString, IpfsWrapper::StatInfo> & stats);  // GUI-thread paint of the gathered data
     void sortCards();
     bool SaveGlobalConfigJSON();
 

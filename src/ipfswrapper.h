@@ -54,7 +54,8 @@ void ClearCancel(const std::string &Cid);
 // Number of connected swarm peers (`ipfs swarm peers`), 0 if no daemon.
 int PeerCount();
 
-// Human-readable local repo size from `ipfs repo stat --human` (e.g. "1.2 GB"), "" if unknown.
+// Human-readable local repo usage from `ipfs repo stat --human` — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"),
+// "" if unknown.
 std::string RepoSizeHuman();
 
 // A locally-pinned (seeded) CID.
@@ -62,6 +63,12 @@ struct PinEntry { std::string Cid; };
 
 // Recursively-pinned CIDs (`ipfs pin ls --type=recursive`) — the seeded content.
 std::vector<PinEntry> Pins();
+
+// Size + local-availability ("file health") of a CID via `ipfs files stat --with-local /ipfs/<cid>`:
+// SizeBytes = CumulativeSize (-1 if unknown); LocalPct = % of the DAG present locally (0..100, -1 if unknown).
+// One cheap metadata call (reads block info, not content) — drives the IPFS tab's per-item size + health columns.
+struct StatInfo { long long SizeBytes = -1; double LocalPct = -1.0; };
+StatInfo StatCid(const std::string &Cid);
 
 // Unpins a CID (`ipfs pin rm`). Returns true on success.
 bool Unpin(const std::string &Cid);

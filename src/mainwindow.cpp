@@ -48,6 +48,24 @@ public:
     }
 };
 
+// Compact human-readable byte size ("—" for unknown/negative). Used by the IPFS tab's Size columns.
+static QString HumanBytes(long long N)
+{
+    if (N < 0) return QStringLiteral("—");
+    double B = double(N); const char * U[] = { "B", "KB", "MB", "GB", "TB" }; int I = 0;
+    while (B >= 1024.0 && I < 4) { B /= 1024.0; ++I; }
+    return QString::number(B, 'f', I == 0 ? 0 : 1) + " " + U[I];
+}
+
+// A sortable table item whose display text is human bytes but whose sort key is the raw byte count.
+class ByteSizeItem : public QTableWidgetItem
+{
+public:
+    explicit ByteSizeItem(long long Bytes) : QTableWidgetItem(HumanBytes(Bytes)) { setData(Qt::UserRole, (qlonglong)Bytes); }
+    bool operator<(const QTableWidgetItem & O) const override
+    { return data(Qt::UserRole).toLongLong() < O.data(Qt::UserRole).toLongLong(); }
+};
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MainWindow
@@ -976,7 +994,7 @@ void MainWindow::BuildIpfsTab()
     QHBoxLayout * statusRow = new QHBoxLayout();
     IpfsStatusLabel = new QLabel(QStringLiteral("…"), IpfsTabWidget);
     QPushButton * refreshBtn = new QPushButton("Refresh", IpfsTabWidget);
-    connect(refreshBtn, &QPushButton::clicked, this, &MainWindow::RefreshIpfsTab);
+    connect(refreshBtn, &QPushButton::clicked, this, [this]{ IpfsCidStat.clear(); RefreshIpfsTab(); });  // force re-stat (fresh size/health)
     statusRow->addWidget(IpfsStatusLabel, 1);
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
@@ -988,8 +1006,8 @@ void MainWindow::BuildIpfsTab()
     // delegate-drawn (no cell widget), so re-sorting can't desync it.
     QGroupBox * txBox = new QGroupBox("Transfers", IpfsTabWidget);
     QVBoxLayout * txl = new QVBoxLayout(txBox);
-    IpfsTransfers = new QTableWidget(0, 4, txBox);
-    IpfsTransfers->setHorizontalHeaderLabels({"Name", "CID", "Progress", "Status"});
+    IpfsTransfers = new QTableWidget(0, 5, txBox);
+    IpfsTransfers->setHorizontalHeaderLabels({"Name", "Size", "Progress", "Status", "CID"});
     IpfsTransfers->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsTransfers->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsTransfers));
     IpfsTransfers->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1004,8 +1022,8 @@ void MainWindow::BuildIpfsTab()
     QGroupBox * pinBox = new QGroupBox("Seeded content (pinned)", IpfsTabWidget);
     QVBoxLayout * pl = new QVBoxLayout(pinBox);
     IpfsPins = new QTreeWidget(pinBox);
-    IpfsPins->setColumnCount(3);
-    IpfsPins->setHeaderLabels({"Name", "CID", ""});
+    IpfsPins->setColumnCount(5);
+    IpfsPins->setHeaderLabels({"Name", "Size", "Health", "CID", ""});
     IpfsPins->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
@@ -1025,12 +1043,27 @@ void MainWindow::BuildIpfsTab()
             IpfsTransfers->setSortingEnabled(false);          // keep the row intact while we fill it
             const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
             IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
-            IpfsTransfers->setItem(row, 1, new QTableWidgetItem(cid));
+            IpfsTransfers->setItem(row, 1, new ByteSizeItem(IpfsCidStat.value(cid).SizeBytes));
             prog = new QTableWidgetItem(); prog->setData(Qt::DisplayRole, -1);   // indeterminate until first %
             IpfsTransfers->setItem(row, 2, prog);
             IpfsTransfers->setItem(row, 3, new QTableWidgetItem("Fetching…"));
+            IpfsTransfers->setItem(row, 4, new QTableWidgetItem(cid));
             IpfsTransfers->setSortingEnabled(true);
             IpfsTransferProgress.insert(cid, prog);
+
+            // Async-fill the total size if we don't have it cached (one cheap `files stat`, off the GUI thread).
+            if (IpfsCidStat.value(cid).SizeBytes < 0)
+                std::thread([this, cid]{
+                    const IpfsWrapper::StatInfo S = IpfsWrapper::StatCid(cid.toStdString());
+                    QMetaObject::invokeMethod(this, [this, cid, S]{
+                        if (S.SizeBytes >= 0) IpfsCidStat[cid] = S;
+                        QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr);
+                        const int r = p ? IpfsTransfers->row(p) : -1;
+                        if (r >= 0 && IpfsTransfers->item(r, 1))
+                        { IpfsTransfers->item(r, 1)->setData(Qt::UserRole, (qlonglong)S.SizeBytes);
+                          IpfsTransfers->item(r, 1)->setText(HumanBytes(S.SizeBytes)); }
+                    }, Qt::QueuedConnection);
+                }).detach();
         } else {
             const int row = IpfsTransfers->row(prog);
             if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText("Fetching…");
@@ -1063,33 +1096,58 @@ void MainWindow::RefreshIpfsTab()
     if (IpfsRefreshInFlight) return;                                       // a gather is already running
     IpfsRefreshInFlight = true;
 
-    // Gather the (subprocess-spawning) ipfs status + pins OFF the GUI thread, then apply on the GUI thread.
-    std::thread([this]{
+    // Gather the (subprocess-spawning) ipfs status + pins OFF the GUI thread, then apply on the GUI thread. Per-CID
+    // size/health (`files stat`) is computed only for pins not already cached (snapshot passed in), so steady-state
+    // refreshes are cheap; the Refresh button clears the cache to force a re-stat.
+    const QHash<QString, IpfsWrapper::StatInfo> CacheCopy = IpfsCidStat;
+    std::thread([this, CacheCopy]{
         const bool   Daemon = IpfsWrapper::DaemonRunning();
         const int    Peers  = Daemon ? IpfsWrapper::PeerCount() : 0;
         const QString Repo  = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
-        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins]{
+        QHash<QString, IpfsWrapper::StatInfo> Stats;
+        for (const auto & P : Pins)
+        {
+            const QString C = QString::fromStdString(P.Cid);
+            Stats[C] = CacheCopy.contains(C) ? CacheCopy.value(C) : IpfsWrapper::StatCid(P.Cid);
+        }
+        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins, Stats]{
             IpfsRefreshInFlight = false;
-            ApplyIpfsSnapshot(Daemon, Peers, Repo, Pins);
+            ApplyIpfsSnapshot(Daemon, Peers, Repo, Pins, Stats);
         }, Qt::QueuedConnection);
     }).detach();
 }
 
 // Paints the gathered IPFS status + grouped pins onto the IPFS tab (GUI thread only).
 void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
-                                   const std::vector<IpfsWrapper::PinEntry> & Pins)
+                                   const std::vector<IpfsWrapper::PinEntry> & Pins,
+                                   const QHash<QString, IpfsWrapper::StatInfo> & Stats)
 {
     if (!IpfsStatusLabel) return;
+    for (auto it = Stats.constBegin(); it != Stats.constEnd(); ++it) IpfsCidStat.insert(it.key(), it.value());  // merge into cache
+
+    // Total seeded size across the pins we have a size for.
+    long long Total = 0;
+    for (const auto & P : Pins) { const auto S = Stats.value(QString::fromStdString(P.Cid)); if (S.SizeBytes >= 0) Total += S.SizeBytes; }
+
     QString S = QString("Daemon: %1").arg(Daemon
         ? "<span style='color:#5fb55f;'>running</span>"
         : "<span style='color:#c0726a;'>stopped — run <code>ipfs daemon</code> to seed</span>");
     if (Daemon) S += QString("   •   Peers: %1").arg(Peers);
     if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
+    S += QString("   •   Seeded: %1 item%2 · %3").arg(Pins.size()).arg(Pins.size() == 1 ? "" : "s").arg(HumanBytes(Total));
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
     IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);   // keep names current with the catalog
+
+    // Renders a CID's local-availability ("health") as coloured text: green when fully present (seedable),
+    // amber when partial, "—" when unknown.
+    auto HealthFor = [](double Pct) -> std::pair<QString, QColor> {
+        if (Pct < 0)        return { QStringLiteral("—"),                      QColor("#8f98a0") };
+        if (Pct >= 99.95)   return { QStringLiteral("✓ 100%"),                 QColor("#5fb55f") };
+        return { QString("⚠ %1%").arg(QString::number(Pct, 'f', 0)),           QColor("#d6a23e") };
+    };
 
     // Group the pinned CIDs by owning package (QMap → keys already alphabetical; unknowns bucketed last).
     QMap<QString, QStringList> ByPackage;
@@ -1105,9 +1163,12 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     for (auto it = ByPackage.constBegin(); it != ByPackage.constEnd(); ++it)
     {
         const QString & PkgName = it.key();
+        long long GrpTotal = 0;
+        for (const QString & Cid : it.value()) { const auto St = IpfsCidStat.value(Cid); if (St.SizeBytes >= 0) GrpTotal += St.SizeBytes; }
         QTreeWidgetItem * grp = new QTreeWidgetItem(IpfsPins);
         grp->setText(0, QString("%1   (%2)").arg(PkgName).arg(it.value().size()));
-        QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f);
+        grp->setText(1, HumanBytes(GrpTotal));
+        QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
         grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
         for (const QString & Cid : it.value())
         {
@@ -1115,9 +1176,13 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
             QString Leaf = Label;                                          // child shows the layer, not the package
             if (Label.startsWith(PkgName + " — ")) Leaf = Label.mid(PkgName.size() + 3);
             else if (Label == PkgName)             Leaf = QStringLiteral("content");
+            const IpfsWrapper::StatInfo St = IpfsCidStat.value(Cid);
             QTreeWidgetItem * child = new QTreeWidgetItem(grp);
             child->setText(0, Leaf);
-            child->setText(1, Cid);
+            child->setText(1, HumanBytes(St.SizeBytes));
+            child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);     // numeric sort key for the Size column
+            { auto [Txt, Col] = HealthFor(St.LocalPct); child->setText(2, Txt); child->setForeground(2, Col); }
+            child->setText(3, Cid);
             QWidget * cell = new QWidget();
             QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
             QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
@@ -1125,13 +1190,15 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
             connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
             connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
             cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
-            IpfsPins->setItemWidget(child, 2, cell);
+            IpfsPins->setItemWidget(child, 4, cell);
         }
     }
     IpfsPins->setSortingEnabled(true);
     IpfsPins->expandAll();
-    IpfsPins->resizeColumnToContents(1);
-    IpfsPins->resizeColumnToContents(2);
+    IpfsPins->resizeColumnToContents(1);   // Size
+    IpfsPins->resizeColumnToContents(2);   // Health
+    IpfsPins->resizeColumnToContents(3);   // CID
+    IpfsPins->resizeColumnToContents(4);   // actions
 }
 
 QString MainWindow::RepoNameForBundle(const std::filesystem::path & BundleDir) const
