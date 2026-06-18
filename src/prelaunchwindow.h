@@ -96,7 +96,6 @@ private:
     QWidget*      EditionLabel      = nullptr; // the "Edition:" form label — hidden when only one edition
     QProgressBar* ProgressBar       = nullptr;
     QLabel*       StatusLabel       = nullptr;
-    QCheckBox*    NoCleanupCheck        = nullptr;
     QCheckBox*    RememberCheck         = nullptr;
     QCheckBox*    CloseAfterLaunchCheck = nullptr;
     QCheckBox*    DryRunCheck           = nullptr;

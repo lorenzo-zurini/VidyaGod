@@ -4,6 +4,8 @@
 #include "packagecatalog.h"
 #include "commonutils.h"
 
+#include <QApplication>
+#include <QMessageBox>
 #include <filesystem>
 
 // ============================================================================
@@ -168,16 +170,30 @@ void LaunchThread::run()
     const bool UserKilled = LocalWrapper->UserKilled;
 
     // -----------------------------------------------------------------
-    // Step 4: Cleanup (unless the user opted out).
+    // Step 4: Cleanup — but first ASK whether to preserve the runtime for inspection.
+    // The prompt runs on the GUI thread (blocking) so the worker waits for the answer; this is the GUI launch
+    // path only (the CLI --node path runs the engine directly, with no QApplication, and never reaches here).
     // -----------------------------------------------------------------
     std::filesystem::path WriteLayerPath = LocalWrapper->ContainerParams.WriteLayerPath;
-    if (!SkipCleanup)
+    const QString TempPath = QString::fromStdString(LocalWrapper->ContainerParams.TempPath.string());
+    bool Preserve = false;
+    QMetaObject::invokeMethod(qApp, [&Preserve, TempPath]{
+        Preserve = QMessageBox::question(QApplication::activeWindow(), "Preserve runtime?",
+            "Keep this run's runtime (mounts + files) at:\n\n" + TempPath +
+            "\n\nfor inspection?\n\nChoose \"No\" to clean it up now (unmount + delete).",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+    }, Qt::BlockingQueuedConnection);
+
+    if (Preserve)
+        LogOut("LaunchThread", "Runtime preserved for inspection at " + LocalWrapper->ContainerParams.TempPath.string()
+                               + " (left mounted; cleaned on the next launch).");
+    else
         LocalWrapper->Cleanup();
 
     if (this->DryRun)
     {
         //WRITELAYER is ephemeral and normally already removed by Cleanup(); this also covers
-        //the SkipCleanup case so a dry run never leaves write-layer state behind.
+        //the preserve case so a dry run never leaves write-layer state behind.
         std::error_code ec;
         std::filesystem::remove_all(WriteLayerPath, ec);
         if (ec) LogWarn("LaunchThread", "Dry run: could not remove WRITELAYER: " + ec.message());

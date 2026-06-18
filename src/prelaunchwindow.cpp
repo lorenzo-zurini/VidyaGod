@@ -123,11 +123,10 @@ PreLaunchWindow::PreLaunchWindow(
     CustomVarGroup->setVisible(false);
     CVContainerLayout->addWidget(CustomVarGroup);
 
-    NoCleanupCheck        = new QCheckBox("No cleanup (keep mounts after exit)", CVContainer);
     RememberCheck         = new QCheckBox("Hide this dialog next time",          CVContainer);
     CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",       CVContainer);
     DryRunCheck           = new QCheckBox("Dry test run (delete WRITELAYER on cleanup)", CVContainer);
-    CVContainerLayout->addWidget(NoCleanupCheck);
+    // (Runtime preservation is now asked via a dialog after the game exits, not a pre-checkbox.)
     CVContainerLayout->addWidget(RememberCheck);
     CVContainerLayout->addWidget(CloseAfterLaunchCheck);
     CVContainerLayout->addWidget(DryRunCheck);
@@ -511,7 +510,7 @@ void PreLaunchWindow::onLaunchClicked()
     // Disable controls + show progress.
     RunnerCombo->setEnabled(false); EditionCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
     ModuleGroup->setEnabled(false);
-    NoCleanupCheck->setEnabled(false); RememberCheck->setEnabled(false);
+    RememberCheck->setEnabled(false);
     CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false);
     LaunchButton->setEnabled(false); CloseButton->setEnabled(false);
     ProgressBar->setValue(0); ProgressBar->setVisible(true);
@@ -524,7 +523,6 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->ModuleStates      = CollectModuleStates();
     LaunchWorker->RunnerID          = SelectedRunnerID;
-    LaunchWorker->SkipCleanup       = NoCleanupCheck->isChecked();
     LaunchWorker->DryRun            = DryRunCheck->isChecked();
     if (QScreen* Scr = QGuiApplication::primaryScreen())
     {
@@ -580,7 +578,7 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
 
     RunnerCombo->setEnabled(true); EditionCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
     ModuleGroup->setEnabled(true);
-    NoCleanupCheck->setEnabled(true); RememberCheck->setEnabled(true);
+    RememberCheck->setEnabled(true);
     CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true);
     LaunchButton->setEnabled(true);
     ProgressBar->setValue(0); ProgressBar->setVisible(false);

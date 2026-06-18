@@ -30,7 +30,7 @@ public:
     std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()
     std::string                        ScreenHeight;      // (QGuiApplication screen access off the main thread is undefined behaviour)
     bool                               DryRun = false;    // If true, WRITELAYER is deleted after cleanup
-    bool                   SkipCleanup = false;
+    // (Runtime preservation is now a post-run dialog asked in run(), not a pre-set flag.)
 
     // Forcibly kills the running game process (if any).
     void kill();
