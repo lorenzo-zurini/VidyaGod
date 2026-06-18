@@ -22,8 +22,8 @@
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex / Node
 
-// True if IPFS can fetch content right NOW (binary present AND a daemon is running). Otherwise shows the reason
-// (a QMessageBox parented to `parent`) and returns false. VidyaGod never starts the daemon — only detects it.
+// True if the embedded in-process IPFS node can fetch content right NOW (started AND its network stack is up).
+// Otherwise shows the reason (a QMessageBox parented to `parent`) and returns false. There is no external daemon.
 // Lives here because the card grid's play()/download paths are its primary callers; MainWindow uses it too.
 bool IpfsFetchReady(QWidget * parent);
 

@@ -9,53 +9,52 @@
 #include <QString>
 
 // ---------------------------------------------------------------------------
-// IpfsWrapper — a thin wrapper around the Kubo `ipfs` CLI.
+// IpfsWrapper — a thin wrapper around the embedded in-process IPFS node
+// (external/VidyaGodIPFS → libvgipfs.so), called via its C ABI (vgipfsapi.h).
 //
-// Kubo is an OPTIONAL external dependency: every function degrades gracefully
-// when `ipfs` is absent (Available() is false; the rest return empty/false).
-// This is FETCH/SEED ONLY — no publishing. VidyaGod NEVER starts the daemon; it
-// only detects whether the user is running one (seeding requires their daemon).
+// There is NO external Kubo dependency any more: VidyaGod runs its own Boxo-based
+// node against a private repo, started once at process startup (VgStart in main).
+// FETCH/SEED + status only. The node fetches write-through to a filestore, so the
+// destination file is the only on-disk copy (no blockstore duplication).
 //
 // These are free functions usable off the GUI thread and in headless mode (the
-// launch worker calls FetchSync). The IPFS tab uses the status/pin helpers and
+// launch worker calls FetchToPath). The IPFS tab uses the status/pin helpers and
 // the IpfsManager signal hub (see ipfsmanager parts) for live transfer display.
 // ---------------------------------------------------------------------------
 namespace IpfsWrapper {
 
-// True if the `ipfs` binary is on PATH.
+// True if the embedded node started (its repo opened). The node is compiled in, so this is normally true.
 bool Available();
 
-// True if a local Kubo daemon is reachable (online mode) — pinned content only
-// actually seeds to peers while a daemon is running. Detect only; never started.
+// True if the embedded node's network stack is up (joined the swarm/DHT). Seeding/fetching peers needs this.
 bool DaemonRunning();
 
-// Fetches a CID's content directly to DestPath (creating parent dirs) and seeds it from there via
-// `ipfs add --nocopy` — one copy at the destination, no separate blockstore/cache copy. This is THE fetch
-// primitive: everything (game content, runner builds, covers) materializes in place at its local PATH inside
-// the package's LIBRARY dir. No-op (returns DestPath) if DestPath already exists. Returns DestPath on success,
-// "" on failure (with *Error set when provided). Reports lifecycle/progress through the TransferCallback.
+// Fetches a CID's content write-through to DestPath (creating parent dirs) and seeds it from there as a filestore
+// reference — one copy at the destination, no separate blockstore/cache copy. This is THE fetch primitive:
+// everything (game content, runner builds, covers) materializes in place at its local PATH inside the package's
+// LIBRARY dir. No-op (returns DestPath) if DestPath already exists. Returns DestPath on success, "" on failure
+// (with *Error set when provided). Reports lifecycle/progress through the TransferCallback.
 std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
 
-// Seeds a local file or directory by adding it to the Filestore via `ipfs add --nocopy --pin` (blocks REFERENCE
-// the file in place — no second copy) and returns its content-addressed CID, "" on failure (with *Error set when
-// provided). This is how publishing dehydrates a package: each layer's local content is added → its CID is
-// recorded in the manifest. Adding works offline (content enters the local repo); peers receive it once a daemon
-// runs. Degrades gracefully when `ipfs` is absent.
+// Seeds a local file by adding it to the node's filestore by reference (blocks REFERENCE the file in place — no
+// second copy) and returns its content-addressed CID, "" on failure (with *Error set when provided). This is how
+// publishing dehydrates a package: each layer's local content is added → its CID is recorded in the manifest.
+// Works offline (content enters the local repo); peers receive it once the node is online.
 std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
 
 // ----- cancellation: abort an in-flight FetchToPath for a CID at its next checkpoint -----
-// RequestCancel marks a CID so a running FetchToPath (its `ipfs get`) aborts; ClearCancel un-marks it (call
-// once the import has returned, so a later re-download isn't pre-cancelled). Best-effort, thread-safe.
+// RequestCancel marks a CID so a running FetchToPath aborts; ClearCancel un-marks it (call once the import has
+// returned, so a later re-download isn't pre-cancelled). Best-effort, thread-safe.
 void RequestCancel(const std::string &Cid);
 void ClearCancel(const std::string &Cid);
 
-// ----- best-effort status helpers for the IPFS tab (empty/0 when unavailable) -----
+// ----- best-effort status helpers for the IPFS tab (empty/0 when offline) -----
 
-// Number of connected swarm peers (`ipfs swarm peers`), 0 if no daemon.
+// Number of connected swarm peers, 0 if offline.
 int PeerCount();
 
-// Human-readable local repo usage from `ipfs repo stat --human` — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"),
-// "" if unknown.
+// Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
+// unknown.
 std::string RepoSizeHuman();
 
 // A locally-pinned (seeded) CID.

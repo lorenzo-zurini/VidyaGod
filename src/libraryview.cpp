@@ -13,21 +13,22 @@
 #include <QMessageBox>
 #include <QMetaObject>
 
-// True if IPFS can fetch content right NOW (binary present AND a daemon is running). Otherwise shows the reason
-// and returns false. VidyaGod never starts the daemon — it only detects and tells the user to.
+// True if the embedded IPFS node can fetch content right NOW (started AND its network stack is up). Otherwise
+// shows the reason and returns false. The node runs in-process — there is no external daemon to install or start.
 bool IpfsFetchReady(QWidget * parent)
 {
     if (!IpfsWrapper::Available())
     {
-        QMessageBox::warning(parent, "Kubo required",
-            "Downloading content over IPFS needs Kubo (the `ipfs` CLI), which isn't installed.");
+        QMessageBox::warning(parent, "IPFS unavailable",
+            "VidyaGod's IPFS node didn't start, so content can't be downloaded.\n\n"
+            "Check the logs and restart VidyaGod.");
         return false;
     }
     if (!IpfsWrapper::DaemonRunning())
     {
-        QMessageBox::warning(parent, "IPFS daemon not running",
-            "Your IPFS daemon isn't running, so content can't be downloaded.\n\n"
-            "Start it with `ipfs daemon`, or enable the ipfs systemd user service, then try again.");
+        QMessageBox::warning(parent, "No network connection",
+            "VidyaGod's IPFS node isn't connected to the network yet, so content can't be downloaded.\n\n"
+            "Check your internet connection and try again in a moment.");
         return false;
     }
     return true;

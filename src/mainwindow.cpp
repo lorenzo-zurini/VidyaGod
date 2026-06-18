@@ -416,7 +416,7 @@ void MainWindow::RebuildSettingsRunnersPage()
         {
             QPushButton * btn = new QPushButton("Import", card);
             connect(btn, &QPushButton::clicked, this, [this, rid, btn, st]{
-                if (!IpfsFetchReady(this)) return;              // need a running daemon to fetch
+                if (!IpfsFetchReady(this)) return;              // need the embedded node online to fetch
                 btn->setEnabled(false); btn->setText("Importing…");
                 st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
                 std::thread([this, rid]{
@@ -432,7 +432,7 @@ void MainWindow::RebuildSettingsRunnersPage()
         }
         else if (Ships && !Imported)
         {
-            QLabel * need = new QLabel("install Kubo", card);
+            QLabel * need = new QLabel("IPFS unavailable", card);
             need->setStyleSheet("color:#8f98a0;font-style:italic;");
             row->addWidget(need);
         }
@@ -643,9 +643,9 @@ QWidget * MainWindow::BuildPathsSettingsPage()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// IPFS tab — Kubo transfers + seeded (pinned) content. Kubo is OPTIONAL: when the
-// `ipfs` binary is absent the tab shows a greyed install message instead. VidyaGod
-// never starts the daemon — it only reports whether the user is running one.
+// IPFS tab — embedded-node transfers + seeded (pinned) content. The node runs in-process (libvgipfs); if it
+// failed to start the tab shows a greyed message instead. There is no external daemon — the node joins the
+// network itself and the tab reports its connection + seeded content.
 // ═════════════════════════════════════════════════════════════════════════════
 
 // Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>"), so the IPFS tab can
@@ -1100,9 +1100,8 @@ void MainWindow::BuildIpfsTab()
     {
         QLabel * msg = new QLabel(
             "<div style='color:#8f98a0;'><b>IPFS is unavailable</b><br><br>"
-            "Please install <b>Kubo</b> (the IPFS implementation) and make sure <code>ipfs</code> is on your "
-            "PATH to enable IPFS functionality.<br><br>"
-            "Run <code>ipfs daemon</code> afterwards to fetch and seed shared packages.</div>", IpfsTabWidget);
+            "VidyaGod's built-in IPFS node didn't start, so shared packages can't be fetched or seeded.<br><br>"
+            "Check the logs and restart VidyaGod.</div>", IpfsTabWidget);
         msg->setAlignment(Qt::AlignCenter); msg->setWordWrap(true);
         v->addStretch(1); v->addWidget(msg); v->addStretch(1);
         return;                                              // greyed/empty — no controls
@@ -1268,9 +1267,9 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     long long Total = 0;
     for (const auto & P : Pins) { const long long s = IpfsCidStat.value(QString::fromStdString(P.Cid)).SizeBytes; if (s >= 0) Total += s; }
 
-    QString S = QString("Daemon: %1").arg(Daemon
-        ? "<span style='color:#5fb55f;'>running</span>"
-        : "<span style='color:#c0726a;'>stopped — run <code>ipfs daemon</code> to seed</span>");
+    QString S = QString("Network: %1").arg(Daemon
+        ? "<span style='color:#5fb55f;'>connected</span>"
+        : "<span style='color:#c0726a;'>connecting…</span>");
     if (Daemon) S += QString("   •   Peers: %1").arg(Peers);
     if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
     S += QString("   •   Seeded: %1 item%2 · %3").arg(Pins.size()).arg(Pins.size() == 1 ? "" : "s").arg(HumanBytes(Total));

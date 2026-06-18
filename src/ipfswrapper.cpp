@@ -1,288 +1,173 @@
 #include "ipfswrapper.h"
 #include "commonutils.h"
-#include "processenv.h"
+#include "vgipfsapi.h"
 
-#include <QProcess>
-#include <QStandardPaths>
-#include <QDir>
-#include <QDirIterator>
-#include <QFile>
-#include <QFileInfo>
 #include <QString>
-#include <QStringList>
-#include <QElapsedTimer>
-#include <QRegularExpression>
+#include <QFileInfo>
 #include <QCoreApplication>
 
+#include <nlohmann/json.hpp>
+
+#include <cstdio>
+#include <string>
 #include <utility>
-#include <set>
-#include <mutex>
-#include <algorithm>
+
+// IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
+// (vgipfsapi.h) instead of shelling out to the external Kubo `ipfs` CLI. The public API and the IpfsManager signal
+// hub are unchanged, so every call site (hydration, launch-time layer fetch, cover cache, publish, the IPFS tab)
+// is untouched. The node is started once at process startup in main.cpp (VgStart) and torn down at exit.
 
 namespace IpfsWrapper {
 
-//Optional sink for transfer lifecycle events (installed by IpfsManager). Invoked on whatever thread the
+//Optional sink for transfer lifecycle events (installed by IpfsManager). Invoked on whatever thread the node's
 //fetch runs on — the installed callback is responsible for marshalling to the GUI thread.
 static TransferCallback g_TransferCb;
 void SetTransferCallback(TransferCallback Callback) { g_TransferCb = std::move(Callback); }
 static void Emit(const TransferEvent &E) { if (g_TransferCb) g_TransferCb(E); }
 
-//Cancellation: CIDs marked here make an in-flight FetchToPath abort at its next checkpoint (and kill `ipfs get`).
-static std::set<std::string> g_Cancel;
-static std::mutex            g_CancelMx;
-static bool IsCancelled(const std::string &Cid) { std::lock_guard<std::mutex> L(g_CancelMx); return g_Cancel.count(Cid) > 0; }
-void RequestCancel(const std::string &Cid) { std::lock_guard<std::mutex> L(g_CancelMx); g_Cancel.insert(Cid); }
-void ClearCancel(const std::string &Cid)   { std::lock_guard<std::mutex> L(g_CancelMx); g_Cancel.erase(Cid); }
-
-// Runs `ipfs` with the given args, blocking up to TimeoutMs (-1 = wait indefinitely). Captures stdout
-// into *Out when provided. Returns true on a clean (exit-0) finish.
-static bool RunIpfs(const QStringList &Args, QString *Out = nullptr, int TimeoutMs = 120000)
+// Bridge installed into the node (VgSetTransferCb): the node reports a fetch's Started/Progress/Finished through
+// this C callback; we repackage it as a TransferEvent and fan it out through Emit → the IpfsManager-installed
+// callback (which marshals to the GUI thread). C linkage so it matches the node's function-pointer type.
+extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, int ok, const char *err)
 {
-    QProcess P;
-    P.setProcessEnvironment(SystemToolEnv());                                   // system ipfs must not inherit the AppImage LD_LIBRARY_PATH
-    P.start("ipfs", Args);
-    if (!P.waitForStarted(10000)) return false;
-    if (!P.waitForFinished(TimeoutMs)) { P.kill(); P.waitForFinished(2000); return false; }
-    if (Out) *Out = QString::fromUtf8(P.readAllStandardOutput());
-    return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
+    TransferEvent E;
+    E.Kind = kind == 0 ? TransferEvent::Started
+           : kind == 1 ? TransferEvent::Progress
+                       : TransferEvent::Finished;
+    E.Cid     = cid ? cid : "";
+    E.Percent = percent;
+    E.Ok      = ok != 0;
+    E.Error   = err ? err : "";
+    Emit(E);
 }
+
+// Take ownership of a char* the node returned through an out-param: copy into std::string and free it.
+static std::string TakeStr(char *S) { std::string R = S ? S : std::string(); if (S) VgFree(S); return R; }
+
+// Format a byte count the way `ipfs repo stat --human` used to, for the IPFS tab.
+static std::string HumanBytes(long long B)
+{
+    if (B < 0) return "?";
+    static const char *U[] = { "B", "KB", "MB", "GB", "TB", "PB" };
+    double V = double(B); int I = 0;
+    while (V >= 1024.0 && I < 5) { V /= 1024.0; ++I; }
+    char Buf[32];
+    std::snprintf(Buf, sizeof Buf, (I > 0 && V < 10.0) ? "%.1f %s" : "%.0f %s", V, U[I]);
+    return Buf;
+}
+
+void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
+void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }
 
 bool Available()
 {
-    return !QStandardPaths::findExecutable("ipfs").isEmpty();
+    // The node is compiled in; "available" means it actually opened its repo at startup (VgStart succeeded).
+    return VgStarted() != 0;
 }
 
 bool DaemonRunning()
 {
-    // `ipfs swarm peers` only succeeds in online mode (a running daemon).
-    if (!Available()) return false;
-    return RunIpfs({"swarm", "peers"}, nullptr, 10000);
-}
-
-// Runs `ipfs get <Cid> -o <Dest>`, pumping stderr to report the latest progress percentage through Emit().
-// Long-but-finite overall timeout: a several-hundred-MB build can take a while, but a stuck DHT lookup must
-// not hang the launch forever.
-// Total bytes on disk at a path (file, or dir recursively) — used to track fetch progress.
-static qint64 PathSizeOnDisk(const QString &P)
-{
-    QFileInfo Fi(P);
-    if (Fi.isFile()) return Fi.size();
-    if (!Fi.isDir()) return 0;
-    qint64 S = 0;
-    QDirIterator It(P, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
-    while (It.hasNext()) { It.next(); S += It.fileInfo().size(); }
-    return S;
-}
-
-static bool RunIpfsGet(const std::string &Cid, const QString &Dest, std::string *Error)
-{
-    // `ipfs get` prints its progress bar ONLY to a TTY, so piped through QProcess it emits nothing. Track progress
-    // ourselves by watching the output path grow against the CID's known size (works regardless of TTY / Kubo version).
-    const qint64 Total = CidSize(Cid);   // CumulativeSize; -1 if unknown (then progress stays indeterminate)
-
-    QProcess P;
-    P.setProcessEnvironment(SystemToolEnv());
-    P.start("ipfs", {"get", QString::fromStdString(Cid), "-o", Dest});
-    if (!P.waitForStarted(10000)) { if (Error) *Error = "could not start `ipfs get`"; return false; }
-
-    QString ErrBuf;                                             // tail of ipfs stderr — carries the real failure reason
-    QElapsedTimer Timer; Timer.start();
-    while (!P.waitForFinished(700))                              // poll every ~0.7s until the fetch finishes
-    {
-        ErrBuf += QString::fromUtf8(P.readAllStandardError());  // drain so the pipe can't fill and block the process
-        if (ErrBuf.size() > 4096) ErrBuf = ErrBuf.right(4096);
-        if (Total > 0)
-        {
-            const qint64 Have = PathSizeOnDisk(Dest);
-            const double Pct = std::min(99.0, 100.0 * double(Have) / double(Total));
-            Emit({ TransferEvent::Progress, Cid, Pct, false });
-        }
-        if (IsCancelled(Cid))          { P.kill(); P.waitForFinished(2000); if (Error) *Error = "cancelled";  return false; }
-        if (Timer.hasExpired(1800000)) { P.kill(); P.waitForFinished(2000); if (Error) *Error = "timed out";  return false; }
-    }
-    ErrBuf += QString::fromUtf8(P.readAllStandardError());
-    if (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0) return true;
-
-    if (Error)   // the last non-empty stderr line is the reason (e.g. "Error: ... no space left on device")
-    {
-        QString Reason;
-        for (const QString &L : ErrBuf.split('\n', Qt::SkipEmptyParts)) { const QString T = L.trimmed(); if (!T.isEmpty()) Reason = T; }
-        Reason.remove(QRegularExpression(QStringLiteral("^Error:\\s*")));
-        *Error = Reason.isEmpty() ? ("`ipfs get` failed (exit " + std::to_string(P.exitCode()) + ")") : Reason.toStdString();
-    }
-    return false;
+    // There is no external daemon any more — this reports whether the in-process node's network stack is up.
+    return VgOnline() != 0;
 }
 
 std::string AddNoCopy(const std::string &PathStr, std::string *Error)
 {
-    auto Fail = [&](const std::string &Msg) -> std::string { if (Error) *Error = Msg; return std::string(); };
-
-    if (PathStr.empty())  return Fail("empty path");
-    if (!Available())     return Fail("Kubo (ipfs) is not installed — cannot add " + PathStr);
-    const QString Path = QString::fromStdString(PathStr);
-    if (!QFileInfo::exists(Path)) return Fail("path does not exist: " + PathStr);
-
-    QString Added;
-    if (!RunIpfs({"add", "--nocopy", "--pin=true", "-Q", Path}, &Added, 600000))
-        return Fail("`ipfs add --nocopy` failed for " + PathStr + " (is Filestore enabled?)");
-    const std::string Cid = Added.trimmed().toStdString();
-    if (Cid.empty()) return Fail("`ipfs add` produced no CID for " + PathStr);
-    return Cid;
+    if (PathStr.empty()) { if (Error) *Error = "empty path"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgAddNoCopy(PathStr.c_str(), &Cid, &Err);
+    const std::string CidS = TakeStr(Cid);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("add failed: " + PathStr) : ErrS; return std::string(); }
+    return CidS;
 }
 
 std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error)
 {
-    auto Fail = [&](const std::string &Msg) -> std::string {
-        if (Error) *Error = Msg;
-        LogErr("IpfsWrapper::FetchToPath", Msg);
-        Emit({ TransferEvent::Finished, Cid, -1.0, false, Msg });   // carry the reason to the IPFS tab's Failed row
-        return std::string();
-    };
+    if (Cid.empty())         { if (Error) *Error = "empty CID";              return std::string(); }
+    if (DestPathStr.empty()) { if (Error) *Error = "empty destination path"; return std::string(); }
 
-    if (Cid.empty())         return Fail("empty CID");
-    if (DestPathStr.empty()) return Fail("empty destination path");
-    const QString Dest = QString::fromStdString(DestPathStr);
-    if (QFileInfo::exists(Dest)) { LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr); return DestPathStr; }
-    if (IsCancelled(Cid))    return Fail("cancelled");
-    if (!Available())        return Fail("Kubo (ipfs) is not installed — cannot fetch CID " + Cid);
+    // Already materialized — no work, no transfer events (the common case during launch of installed content).
+    if (QFileInfo::exists(QString::fromStdString(DestPathStr)))
+    {
+        LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr);
+        return DestPathStr;
+    }
 
-    QDir().mkpath(QFileInfo(Dest).absolutePath());          // ensure the layer's parent dirs exist
-    const QString TmpDest = Dest + ".tmp";
-    QDir(TmpDest).removeRecursively();                       // clear any partial previous attempt
-    QFile::remove(TmpDest);
-
+    // The node fetches write-through to DestPath (no blockstore duplication), seeds it from there, and reports
+    // Started/Progress/Finished through the transfer callback installed below.
     LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
-    Emit({ TransferEvent::Started, Cid, -1.0, false });
-    std::string GetErr;
-    if (!RunIpfsGet(Cid, TmpDest, &GetErr))
+    char *Err = nullptr;
+    const int Rc = VgFetchToPath(Cid.c_str(), DestPathStr.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0)
     {
-        QDir(TmpDest).removeRecursively(); QFile::remove(TmpDest);
-        return Fail(GetErr.empty() ? ("`ipfs get` failed for CID " + Cid) : GetErr);
+        const std::string Msg = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
+        LogErr("IpfsWrapper::FetchToPath", Msg);
+        if (Error) *Error = Msg;
+        return std::string();
     }
-
-    // Atomically publish the fetched content at the destination.
-    QFile::remove(Dest);
-    QDir(Dest).removeRecursively();
-    if (!QDir().rename(TmpDest, Dest))
-        return Fail("failed to move fetched CID into place: " + DestPathStr);
-
-    // Seed from the destination via Filestore (--nocopy): the blocks REFERENCE the file in place — no second
-    // copy. If the re-add yields a different CID (content not nocopy-hostable), fall back to a normal pin so we
-    // still seed the correct CID. Best-effort — a missing daemon just defers it.
-    const std::string AddedCid = AddNoCopy(Dest.toStdString());                  // single seed implementation
-    const bool NocopyOk = !AddedCid.empty();
-    if (NocopyOk && AddedCid == Cid)
-        LogSucc("IpfsWrapper::FetchToPath", "Seeding " + Cid + " via Filestore from " + DestPathStr);
-    else
-    {
-        if (NocopyOk && !AddedCid.empty())
-        {
-            LogWarn("IpfsWrapper::FetchToPath", "nocopy add produced a different CID (" + AddedCid + ") — using a normal pin.");
-            RunIpfs({"pin", "rm", QString::fromStdString(AddedCid)}, nullptr, 30000);
-        }
-        if (!RunIpfs({"pin", "add", QString::fromStdString(Cid)}, nullptr, 60000))
-            LogWarn("IpfsWrapper::FetchToPath", "could not pin CID " + Cid + " (start `ipfs daemon` to seed it).");
-    }
-
     LogSucc("IpfsWrapper::FetchToPath", "Materialized CID " + Cid + " at " + DestPathStr);
-    Emit({ TransferEvent::Finished, Cid, 100.0, true });
     return DestPathStr;
 }
 
 int PeerCount()
 {
-    QString Out;
-    if (!RunIpfs({"swarm", "peers"}, &Out, 10000)) return 0;
-    const QStringList Lines = Out.split('\n', Qt::SkipEmptyParts);
-    return Lines.size();
+    return VgPeerCount();
 }
 
 std::string RepoSizeHuman()
 {
-    QString Out;
-    if (!RunIpfs({"repo", "stat", "--human"}, &Out, 15000)) return std::string();
-    QString Size, Max;
-    for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
-    {
-        if (Line.startsWith("RepoSize:"))   Size = Line.mid(QString("RepoSize:").size()).trimmed();
-        else if (Line.startsWith("StorageMax:")) Max = Line.mid(QString("StorageMax:").size()).trimmed();
-    }
-    if (Size.isEmpty()) return std::string();
-    return (Max.isEmpty() ? Size : Size + " / " + Max).toStdString();
+    char *J = nullptr, *Err = nullptr;
+    const int Rc = VgRepoStat(&J, &Err);
+    const std::string Js = TakeStr(J);
+    TakeStr(Err);
+    if (Rc != 0) return std::string();
+    try {
+        const auto D = nlohmann::json::parse(Js);
+        const long long Size = D.value("RepoSize",  (long long)-1);
+        const long long Max  = D.value("StorageMax", (long long)-1);
+        if (Size < 0) return std::string();
+        const std::string S = HumanBytes(Size);
+        return Max >= 0 ? (S + " / " + HumanBytes(Max)) : S;
+    } catch (...) { return std::string(); }
 }
 
 long long CidSize(const std::string &Cid)
 {
     if (Cid.empty()) return -1;
-    QString Out;
-    if (!RunIpfs({"files", "stat", QString::fromStdString("/ipfs/" + Cid)}, &Out, 20000)) return -1;
-    for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
-        if (Line.startsWith("CumulativeSize:"))
-        {
-            bool Ok = false;
-            const long long N = Line.mid(QString("CumulativeSize:").size()).trimmed().toLongLong(&Ok);
-            return Ok ? N : -1;
-        }
-    return -1;
+    return VgCidSize(Cid.c_str());
 }
 
 int ProviderCount(const std::string &Cid)
 {
     if (Cid.empty()) return -1;
-    // findprovs STREAMS one peer id per line, then keeps walking the DHT until --num-providers or exhaustion. For
-    // low-provider content that runs long, so we read the stream ourselves and stop at a cap or a short deadline —
-    // keeping whatever we found (RunIpfs would discard it on timeout). This is a "how replicated" signal, not a census.
-    QProcess P;
-    P.setProcessEnvironment(SystemToolEnv());
-    P.start("ipfs", {"routing", "findprovs", "--num-providers=10", QString::fromStdString(Cid)});
-    if (!P.waitForStarted(10000)) return -1;
-
-    std::set<std::string> Provs;
-    QByteArray Buf;
-    QElapsedTimer Timer; Timer.start();
-    auto Drain = [&] {
-        Buf += P.readAllStandardOutput();
-        int Nl;
-        while ((Nl = Buf.indexOf('\n')) >= 0)
-        {
-            const QString L = QString::fromUtf8(Buf.left(Nl)).trimmed();
-            Buf.remove(0, Nl + 1);
-            if (!L.isEmpty()) Provs.insert(L.toStdString());
-        }
-    };
-    while (P.state() != QProcess::NotRunning)
-    {
-        P.waitForReadyRead(400);
-        Drain();
-        if ((int)Provs.size() >= 10 || Timer.hasExpired(8000)) break;
-    }
-    const bool Killed = (P.state() != QProcess::NotRunning);
-    if (Killed) { P.kill(); P.waitForFinished(2000); }
-    Drain();
-    { const QString L = QString::fromUtf8(Buf).trimmed(); if (!L.isEmpty()) Provs.insert(L.toStdString()); }
-
-    if (!Provs.empty()) return (int)Provs.size();
-    if (!Killed && P.exitCode() != 0) return -1;   // exited on its own with an error (e.g. no daemon) → unknown
-    return 0;                                       // ran the deadline with none found → genuinely 0
+    // "How replicated" signal via the DHT — a slow walk, so cap it at a short deadline (mirrors the old findprovs).
+    return VgProviderCount(Cid.c_str(), 8000);
 }
 
 std::vector<PinEntry> Pins()
 {
     std::vector<PinEntry> Result;
-    QString Out;
-    if (!RunIpfs({"pin", "ls", "--type=recursive"}, &Out, 30000)) return Result;
-    for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
-    {
-        const QString Cid = Line.section(' ', 0, 0).trimmed();   // "<cid> recursive"
-        if (!Cid.isEmpty()) Result.push_back({ Cid.toStdString() });
-    }
+    char *J = nullptr, *Err = nullptr;
+    const int Rc = VgPinLs(&J, &Err);
+    const std::string Js = TakeStr(J);
+    TakeStr(Err);
+    if (Rc != 0) return Result;
+    try {
+        for (const auto &C : nlohmann::json::parse(Js))
+            Result.push_back({ C.get<std::string>() });
+    } catch (...) {}
     return Result;
 }
 
 bool Unpin(const std::string &Cid)
 {
-    if (Cid.empty() || !Available()) return false;
-    return RunIpfs({"pin", "rm", QString::fromStdString(Cid)}, nullptr, 30000);
+    if (Cid.empty()) return false;
+    char *Err = nullptr;
+    const int Rc = VgPinRm(Cid.c_str(), &Err);
+    TakeStr(Err);
+    return Rc == 0;
 }
 
 } // namespace IpfsWrapper
@@ -292,7 +177,7 @@ bool Unpin(const std::string &Cid)
 // ---------------------------------------------------------------------------
 IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
 {
-    //Relay backend transfer events (which may fire on a launch-worker thread) onto this object's thread
+    //Relay backend transfer events (which fire on the node's fetch thread) onto this object's thread
     //(the GUI thread) as Qt signals, via a queued invocation.
     IpfsWrapper::SetTransferCallback([this](const IpfsWrapper::TransferEvent &E) {
         const QString Cid = QString::fromStdString(E.Cid);
@@ -312,6 +197,9 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
             break; }
         }
     });
+
+    //Route the embedded node's fetch lifecycle into the callback just installed (→ these signals).
+    VgSetTransferCb(&IpfsWrapper::IpfsNodeTransferCb);
 }
 
 IpfsManager * IpfsManager::instance()

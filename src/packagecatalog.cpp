@@ -287,7 +287,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 
     if (!IpfsWrapper::DaemonRunning())
         LogWarn("PackageCatalog::PublishPackage",
-                "no IPFS daemon running — CIDs will be computed but content seeds to peers only once `ipfs daemon` is up.");
+                "IPFS node not online yet — CIDs will be computed but content seeds to peers only once it connects.");
 
     int Seeded = 0, Walked = 0, Covers = 0;
 

@@ -14,6 +14,8 @@ typedef void (*VgTransferCb)(const char *cid, int kind, double percent, int ok, 
 
 int  VgStart(const char *repoPath, char **errOut);   // open/create the private repo; idempotent
 void VgStop(void);
+int  VgStarted(void);   // 1 if the node repo is open
+int  VgOnline(void);    // 1 if the node's network stack is up (joined the swarm/DHT)
 
 int  VgAddNoCopy(const char *path, char **outCid, char **errOut);   // seed a file by reference (filestore --nocopy)
 int  VgFetchToPath(const char *cid, const char *dest, char **errOut); // materialize + seed in place (no duplication)

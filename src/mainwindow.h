@@ -110,7 +110,7 @@ private:
     QHash<QString, double>       DownloadCidPct;   // in-flight CID → latest percent (0..100)
     SortMode      AvailableSort = SortMode::Name;  // within-group ordering on the Available grid
 
-    // ── IPFS tab (Kubo transfers + seeded content; greyed when ipfs is absent) ──
+    // ── IPFS tab (embedded-node transfers + seeded content; greyed if the node didn't start) ──
     QWidget       * IpfsTabWidget   = nullptr;
     QLabel        * IpfsStatusLabel = nullptr;
     QTableWidget  * IpfsTransfers   = nullptr;   // Name | Size | Progress | Status | CID — live fetches (sortable)
