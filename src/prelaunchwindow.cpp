@@ -336,13 +336,26 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     const Node* L = CurrentLaunch();
     if (!L) { CustomVarGroup->setVisible(false); return; }
 
-    // The enabled content-node closure (honouring the current module toggles).
-    const std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, CollectModuleStates());
+    const std::map<std::string, bool> Toggles = CollectModuleStates();
 
-    // Build a scan string so we only surface CustomVars actually referenced by %KEY% somewhere in the closure
-    // (its layers) or the selected runner's EXEC (ARGS/ENV — how a game seeds knobs to its runner).
+    // The enabled content-node closure (honouring the current module toggles).
+    const std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, Toggles);
+
+    // The selected runner's content closure — its CustomVars are tweakable knobs the engine resolves too
+    // (ResolveCustomVariables, scoped to RunnerRecipe), so surface them here as if they were package vars.
+    std::vector<std::string> RunnerOrder;
+    if (RunnerCombo->currentIndex() >= 0)
+        RunnerOrder = ManifestModel::ResolveNodeOrder(*Index, RunnerCombo->currentData().toString().toStdString(), Toggles);
+
+    // Build a scan string so we only surface CustomVars actually referenced by %KEY% somewhere in the closure /
+    // runner closure (their layers) or the selected runner's EXEC (ARGS/ENV — how a game seeds knobs to its runner).
     std::string ScanStr;
     for (const std::string& Id : Order)
+    {
+        const Node* N = Index->Find(Id);
+        if (N && N->Layers.is_array()) ScanStr += N->Layers.dump();
+    }
+    for (const std::string& Id : RunnerOrder)
     {
         const Node* N = Index->Find(Id);
         if (N && N->Layers.is_array()) ScanStr += N->Layers.dump();
@@ -356,15 +369,17 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                                               ? US["VARIABLES"] : nlohmann::ordered_json::object();
 
     bool AnyVisible = false;
-    for (const std::string& Id : Order)
+    std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes are walked first so they win on collision
+
+    // Emit a group of CustomVar pickers for one node's LAYERS. GroupPrefix distinguishes runner-provided knobs.
+    auto EmitNodeVars = [&](const Node* N, const QString& GroupPrefix)
     {
-        const Node* N = Index->Find(Id);
-        if (!N || !N->Layers.is_array()) continue;
+        if (!N || !N->Layers.is_array()) return;
         QGroupBox*   Box  = nullptr;
         QFormLayout* Form = nullptr;
         auto EnsureBox = [&]() {
             if (Box) return;
-            Box  = new QGroupBox(QString::fromStdString(N->Label.empty() ? N->NodeId : N->Label), CustomVarGroup);
+            Box  = new QGroupBox(GroupPrefix + QString::fromStdString(N->Label.empty() ? N->NodeId : N->Label), CustomVarGroup);
             Form = new QFormLayout(Box);
         };
         for (const auto& CV : N->Layers)
@@ -372,6 +387,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
             std::string Key = CV.value("KEY", std::string());
             if (Key.empty() || !CV.value("DISPLAY", true)) continue;
+            if (SeenKeys.count(Key)) continue;                                  // already surfaced (package wins)
             if (ScanStr.find("%" + Key + "%") == std::string::npos) continue;   // not referenced — skip
             //"random" vars are auto-picked from OPTIONS by the engine at launch; never show an editable picker —
             //collecting its value would pass a VariableOverride that the engine honours OVER the random pick
@@ -382,7 +398,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);
             { ContainerParams TmpP("", "", ""); ContainerWrapper::StringVariableSubstitution(Initial, TmpP.GetVariablesMap()); }
 
-            AnyVisible = true; EnsureBox();
+            AnyVisible = true; SeenKeys.insert(Key); EnsureBox();
             const std::string VarType = CV.value("VARTYPE", std::string("string"));
             const QString Label = QString::fromStdString(CV.value("LABEL", Key));
 
@@ -425,7 +441,16 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             }
         }
         if (Box) CustomVarForm->addRow(Box);
+    };
+
+    // Package closure first (so a KEY declared by both wins from the package), then the runner's own knobs.
+    for (const std::string& Id : Order) EmitNodeVars(Index->Find(Id), QString());
+    for (const std::string& Id : RunnerOrder)
+    {
+        const Node* N = Index->Find(Id);
+        if (N && !N->IsRunner()) EmitNodeVars(N, "Runner · ");   // skip runner nodes (match engine's RunnerComponents)
     }
+
     CustomVarGroup->setVisible(AnyVisible);
 }
 
