@@ -5,6 +5,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QString>
@@ -16,6 +17,7 @@
 #include <utility>
 #include <set>
 #include <mutex>
+#include <algorithm>
 
 namespace IpfsWrapper {
 
@@ -60,30 +62,42 @@ bool DaemonRunning()
 // Runs `ipfs get <Cid> -o <Dest>`, pumping stderr to report the latest progress percentage through Emit().
 // Long-but-finite overall timeout: a several-hundred-MB build can take a while, but a stuck DHT lookup must
 // not hang the launch forever.
+// Total bytes on disk at a path (file, or dir recursively) — used to track fetch progress.
+static qint64 PathSizeOnDisk(const QString &P)
+{
+    QFileInfo Fi(P);
+    if (Fi.isFile()) return Fi.size();
+    if (!Fi.isDir()) return 0;
+    qint64 S = 0;
+    QDirIterator It(P, QDir::Files | QDir::NoSymLinks, QDirIterator::Subdirectories);
+    while (It.hasNext()) { It.next(); S += It.fileInfo().size(); }
+    return S;
+}
+
 static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
 {
+    // `ipfs get` prints its progress bar ONLY to a TTY, so piped through QProcess it emits nothing. Track progress
+    // ourselves by watching the output path grow against the CID's known size (works regardless of TTY / Kubo version).
+    const qint64 Total = CidSize(Cid);   // CumulativeSize; -1 if unknown (then progress stays indeterminate)
+
     QProcess P;
     P.setProcessEnvironment(SystemToolEnv());
     P.start("ipfs", {"get", QString::fromStdString(Cid), "-o", Dest});
     if (!P.waitForStarted(10000)) return false;
 
-    static const QRegularExpression PctRe(QStringLiteral("([0-9]+(?:\\.[0-9]+)?)%"));
     QElapsedTimer Timer; Timer.start();
-    while (P.state() != QProcess::NotRunning)
+    while (!P.waitForFinished(700))                              // poll every ~0.7s until the fetch finishes
     {
-        P.waitForReadyRead(500);
-        const QString Err = QString::fromUtf8(P.readAllStandardError());
-        if (!Err.isEmpty())
+        P.readAllStandardError();                               // drain so the pipe can't fill and block the process
+        if (Total > 0)
         {
-            double Pct = -1.0;                                   // Kubo prints a CR progress bar; take the last %
-            auto It = PctRe.globalMatch(Err);
-            while (It.hasNext()) Pct = It.next().captured(1).toDouble();
-            if (Pct >= 0.0) Emit({ TransferEvent::Progress, Cid, Pct, false });
+            const qint64 Have = PathSizeOnDisk(Dest);
+            const double Pct = std::min(99.0, 100.0 * double(Have) / double(Total));
+            Emit({ TransferEvent::Progress, Cid, Pct, false });
         }
         if (IsCancelled(Cid))          { P.kill(); P.waitForFinished(2000); return false; }   // user cancelled
         if (Timer.hasExpired(1800000)) { P.kill(); P.waitForFinished(2000); return false; }
     }
-    P.waitForFinished(2000);
     return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
 }
 

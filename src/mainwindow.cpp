@@ -423,7 +423,7 @@ void MainWindow::RebuildSettingsRunnersPage()
                     std::string Err;
                     bool Ok = ContainerWrapper::ImportRunnerNode(*GlobalConfigJSON, CatalogIndex, rid, &Err);
                     QMetaObject::invokeMethod(this, [this, Ok, Err]{
-                        if (!Ok) QMessageBox::warning(this, "Runner import failed", QString::fromStdString(Err));
+                        if (!Ok) LogErr("MainWindow", "Runner import failed: " + Err);   // no dialog — see the IPFS tab
                         RebuildSettingsRunnersPage(); RefreshIpfsTab();
                     }, Qt::QueuedConnection);
                 }).detach();
@@ -997,7 +997,8 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             { IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
             DownloadUidCids.remove(Key);
             if (Ok) RebuildDynamicUI();
-            else if (!Cancelled) QMessageBox::warning(this, "Download failed", QString::fromStdString(Err));
+            else if (!Cancelled) LogErr("MainWindow::DownloadAvailable", "Download failed: " + Err);   // no dialog — the
+                                                                          // failure shows as a "Failed" row in the IPFS tab
             RebuildAvailableTab(); RefreshIpfsTab();
         }, Qt::QueuedConnection);
     }).detach();
