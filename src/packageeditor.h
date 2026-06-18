@@ -48,6 +48,39 @@
 
 
 // ---------------------------------------------------------------------------
+// NodeGraphView — a compact, clickable DAG of a bundle's nodes. Laid out left→right: launchables on the left, their
+// PARENTS chain flowing right, deepest base content on the right. A linear dependency chain stays on one row; extra
+// parents branch onto new rows (so it reads "linear with branches"). Clicking a node chip emits nodeClicked(NODE_ID),
+// which the editor uses to jump to that node's tab. Refreshed via SetGraph() on every edit.
+// ---------------------------------------------------------------------------
+class NodeGraphView : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit NodeGraphView(QWidget * parent = nullptr);
+    void SetGraph(const nlohmann::ordered_json & NodesArray);   // the working { NODES:[...] } array
+    void SetCurrent(const std::string & NodeId);                // highlight the open node
+    QSize sizeHint() const override;
+
+signals:
+    void nodeClicked(const QString & NodeId);
+
+protected:
+    void paintEvent(QPaintEvent *) override;
+    void mousePressEvent(QMouseEvent *) override;
+    void mouseMoveEvent(QMouseEvent *) override;
+
+private:
+    struct GNode { std::string Id; QString Label; std::string Role; int Col = 0, Row = 0; QRect Rect; };
+    std::vector<GNode> Nodes;
+    std::vector<std::pair<int,int>> Edges;   // (child index, parent index)
+    std::string Current;
+    int ContentW = 0, ContentH = 0;
+    void Relayout();
+};
+
+
+// ---------------------------------------------------------------------------
 // PackageEditor — the node-native bundle editor ("everything is a node"). A bundle is a directory of
 // <node_id>.json files; this dialog lists them as tabs and edits each node's fields (NODE_ID / ROLE / GROUP /
 // LABEL / META / PLATFORM / EXEC / OPTIONAL / DEFAULT / EXCLUDE), its global PARENTS (a catalog-wide id picker),
@@ -151,6 +184,10 @@ private:
 
     std::vector<std::string> ValErrors, ValWarnings;
 
+    //Selects the tab editing the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
+    void SelectNodeTab(const std::string & NodeId);
+
+    NodeGraphView * GraphView = nullptr;   // clickable DAG above the tabs
     QTabWidget * PackageEditorTabWidget = nullptr;
     //Persistent validation panel docked below the tabs (always visible), refreshed by UpdateValidationBox().
     QGroupBox * ValidationBox  = nullptr;

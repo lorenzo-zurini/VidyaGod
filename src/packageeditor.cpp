@@ -3,6 +3,10 @@
 #include "registrywrapper.h"
 #include "covercache.h"
 #include <QPushButton>
+#include <QPainter>
+#include <QPainterPath>
+#include <QMouseEvent>
+#include <QScrollArea>
 #include <QBuffer>
 #include <QImage>
 #include <QInputDialog>
@@ -10,6 +14,8 @@
 #include <QAbstractButton>
 #include <algorithm>
 #include <set>
+#include <map>
+#include <functional>
 #include <filesystem>
 
 using json = nlohmann::ordered_json;
@@ -100,8 +106,29 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
         else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
     });
 
+    // Node graph overview — a clickable DAG above the tabs. Left-aligned; scrolls horizontally when wide. Clicking a
+    // node chip jumps to that node's editor tab.
+    GraphView = new NodeGraphView(this);
+    QScrollArea * GraphScroll = new QScrollArea(this);
+    GraphScroll->setWidget(GraphView);
+    GraphScroll->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    GraphScroll->setFrameShape(QFrame::StyledPanel);
+    GraphScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    GraphScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    GraphScroll->setMinimumHeight(80);
+    GraphScroll->setMaximumHeight(230);
+    MainLayout->addWidget(GraphScroll, 0);
+    connect(GraphView, &NodeGraphView::nodeClicked, this, [this](const QString & Id){ SelectNodeTab(Id.toStdString()); });
+
     PackageEditorTabWidget = new QTabWidget(this);
     MainLayout->addWidget(PackageEditorTabWidget, 1);
+    // Keep the graph's highlight in sync with the open tab.
+    connect(PackageEditorTabWidget, &QTabWidget::currentChanged, this, [this](int Idx){
+        if (!GraphView || !MANIFESTJSON) return;
+        const auto & A = (*MANIFESTJSON)["NODES"];
+        const int NodeI = Idx - 1;   // tab 0 = JSON
+        GraphView->SetCurrent(NodeI >= 0 && NodeI < (int)A.size() ? A[NodeI].value("NODE_ID", std::string()) : std::string());
+    });
 
     // Validation panel — a persistent box docked beneath all tabs, refreshed by UpdateValidationBox().
     ValidationBox = new QGroupBox("Validation", this);
@@ -1073,7 +1100,25 @@ bool PackageEditor::BuildUI()
 
     int MainCount = PackageEditorTabWidget->count();
     PackageEditorTabWidget->setCurrentIndex(qBound(0, SavedMainTab, MainCount - 1));
+
+    // Refresh the node-graph overview and highlight the open node.
+    if (GraphView && MANIFESTJSON)
+    {
+        GraphView->SetGraph((*MANIFESTJSON)["NODES"]);
+        const auto & A = (*MANIFESTJSON)["NODES"];
+        const int NodeI = PackageEditorTabWidget->currentIndex() - 1;
+        GraphView->SetCurrent(NodeI >= 0 && NodeI < (int)A.size() ? A[NodeI].value("NODE_ID", std::string()) : std::string());
+    }
     return true;
+}
+
+//Jumps the tab widget to the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
+void PackageEditor::SelectNodeTab(const std::string & NodeId)
+{
+    if (!MANIFESTJSON || !PackageEditorTabWidget) return;
+    const auto & A = (*MANIFESTJSON)["NODES"];
+    for (int I = 0; I < (int)A.size(); ++I)
+        if (A[I].value("NODE_ID", std::string()) == NodeId) { PackageEditorTabWidget->setCurrentIndex(I + 1); return; }
 }
 
 // ============================================================================
@@ -1443,4 +1488,143 @@ bool PackageEditor::eventFilter(QObject *obj, QEvent *event)
         return true;
     }
     return QDialog::eventFilter(obj, event);
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// NodeGraphView — clickable left→right DAG of the bundle's nodes (launchable on the left, parents to the right).
+// ═════════════════════════════════════════════════════════════════════════════
+namespace { constexpr int ChipW = 132, ChipH = 30, GapX = 46, GapY = 12, MargX = 12, MargY = 10; }
+
+NodeGraphView::NodeGraphView(QWidget * parent) : QWidget(parent)
+{
+    setMouseTracking(true);                         // hover → pointing-hand cursor over chips
+    setAutoFillBackground(true);
+    QPalette Pal = palette(); Pal.setColor(QPalette::Window, QColor("#15181c")); setPalette(Pal);
+}
+
+QSize NodeGraphView::sizeHint() const { return QSize(std::max(ContentW, 1), std::max(ContentH, 1)); }
+
+void NodeGraphView::SetCurrent(const std::string & NodeId) { Current = NodeId; update(); }
+
+void NodeGraphView::SetGraph(const nlohmann::ordered_json & NodesArray)
+{
+    Nodes.clear(); Edges.clear();
+    if (NodesArray.is_array())
+    {
+        std::map<std::string, int> Ix;
+        for (const auto & N : NodesArray)
+        {
+            if (!N.is_object()) continue;
+            GNode G;
+            G.Id    = N.value("NODE_ID", std::string());
+            G.Role  = N.value("ROLE", std::string("content"));
+            G.Label = QString::fromStdString(G.Id);   // match the tab labels (which key off NODE_ID) for click-to-tab
+            if (G.Id.empty()) continue;
+            Ix[G.Id] = (int)Nodes.size();
+            Nodes.push_back(std::move(G));
+        }
+        // Edges: a node → each of its PARENTS that lives in THIS bundle.
+        for (const auto & N : NodesArray)
+        {
+            if (!N.is_object()) continue;
+            auto It = Ix.find(N.value("NODE_ID", std::string()));
+            if (It == Ix.end() || !N.contains("PARENTS") || !N["PARENTS"].is_array()) continue;
+            for (const auto & P : N["PARENTS"])
+            {
+                auto Pit = Ix.find(P.is_string() ? std::string(P) : std::string());
+                if (Pit != Ix.end()) Edges.emplace_back(It->second, Pit->second);
+            }
+        }
+    }
+    Relayout();
+}
+
+void NodeGraphView::Relayout()
+{
+    const int N = (int)Nodes.size();
+    // Column = longest child→parent chain from a launchable (no incoming child edge) to this node, so launchables
+    // land at column 0 and the deepest base content on the right. Memoized longest-path over the DAG.
+    std::vector<int> Col(N, -1);
+    std::function<int(int)> ColOf = [&](int I) -> int {
+        if (Col[I] >= 0) return Col[I];
+        int M = 0; Col[I] = 0;                       // break any accidental cycle gracefully
+        for (const auto & [C, P] : Edges) if (P == I) M = std::max(M, ColOf(C) + 1);
+        return Col[I] = M;
+    };
+    for (int I = 0; I < N; ++I) ColOf(I);
+
+    // Row: process columns left→right; a node inherits a child's row to keep linear chains straight, else takes the
+    // next free row in its column. Extra parents thus branch onto fresh rows.
+    std::vector<int> Order(N); for (int I = 0; I < N; ++I) Order[I] = I;
+    std::stable_sort(Order.begin(), Order.end(), [&](int A, int B){ return Col[A] < Col[B]; });
+    std::vector<int> Row(N, -1);
+    std::map<int, std::set<int>> Used;               // column → taken rows
+    for (int I : Order)
+    {
+        int Want = -1;
+        for (const auto & [C, P] : Edges) if (P == I && Row[C] >= 0) Want = (Want < 0 ? Row[C] : std::min(Want, Row[C]));
+        if (Want < 0) Want = 0;
+        while (Used[Col[I]].count(Want)) ++Want;
+        Row[I] = Want; Used[Col[I]].insert(Want);
+    }
+
+    int MaxCol = 0, MaxRow = 0;
+    for (int I = 0; I < N; ++I)
+    {
+        Nodes[I].Col = Col[I]; Nodes[I].Row = Row[I];
+        Nodes[I].Rect = QRect(MargX + Col[I] * (ChipW + GapX), MargY + Row[I] * (ChipH + GapY), ChipW, ChipH);
+        MaxCol = std::max(MaxCol, Col[I]); MaxRow = std::max(MaxRow, Row[I]);
+    }
+    ContentW = N ? MargX * 2 + (MaxCol + 1) * (ChipW + GapX) - GapX : 0;
+    ContentH = N ? MargY * 2 + (MaxRow + 1) * (ChipH + GapY) - GapY : 0;
+    setFixedSize(std::max(ContentW, 1), std::max(ContentH, 1));
+    updateGeometry(); update();
+}
+
+void NodeGraphView::paintEvent(QPaintEvent *)
+{
+    QPainter P(this);
+    P.setRenderHint(QPainter::Antialiasing, true);
+
+    // Edges: child (left) → parent (right), a smooth horizontal cubic.
+    P.setPen(QPen(QColor("#4a5258"), 1.6));
+    for (const auto & [C, Par] : Edges)
+    {
+        const QRect &A = Nodes[C].Rect, &B = Nodes[Par].Rect;
+        QPointF S(A.right(), A.center().y()), E(B.left(), B.center().y());
+        const qreal Dx = (E.x() - S.x()) * 0.5;
+        QPainterPath Path(S);
+        Path.cubicTo(S.x() + Dx, S.y(), E.x() - Dx, E.y(), E.x(), E.y());
+        P.drawPath(Path);
+    }
+
+    // Chips.
+    for (const auto & G : Nodes)
+    {
+        const bool Cur = (G.Id == Current);
+        QColor Fill = G.Role == "launchable" ? QColor("#264b73")
+                    : G.Role == "runner"     ? QColor("#4a3a63")
+                                             : QColor("#2b3138");
+        P.setBrush(Fill);
+        P.setPen(QPen(Cur ? QColor("#4a90d9") : QColor("#3a424a"), Cur ? 2.2 : 1.2));
+        P.drawRoundedRect(G.Rect, 6, 6);
+        P.setPen(Cur ? QColor("#eaf2fb") : QColor("#c6d4df"));
+        QRect TextR = G.Rect.adjusted(8, 0, -8, 0);
+        P.drawText(TextR, Qt::AlignVCenter | Qt::AlignLeft,
+                   P.fontMetrics().elidedText(G.Label, Qt::ElideRight, TextR.width()));
+    }
+}
+
+void NodeGraphView::mousePressEvent(QMouseEvent * E)
+{
+    for (const auto & G : Nodes)
+        if (G.Rect.contains(E->pos())) { emit nodeClicked(QString::fromStdString(G.Id)); return; }
+}
+
+void NodeGraphView::mouseMoveEvent(QMouseEvent * E)
+{
+    bool Over = false;
+    for (const auto & G : Nodes) if (G.Rect.contains(E->pos())) { Over = true; break; }
+    setCursor(Over ? Qt::PointingHandCursor : Qt::ArrowCursor);
 }
