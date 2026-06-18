@@ -64,11 +64,19 @@ struct PinEntry { std::string Cid; };
 // Recursively-pinned CIDs (`ipfs pin ls --type=recursive`) — the seeded content.
 std::vector<PinEntry> Pins();
 
-// Size + local-availability ("file health") of a CID via `ipfs files stat --with-local /ipfs/<cid>`:
-// SizeBytes = CumulativeSize (-1 if unknown); LocalPct = % of the DAG present locally (0..100, -1 if unknown).
-// One cheap metadata call (reads block info, not content) — drives the IPFS tab's per-item size + health columns.
-struct StatInfo { long long SizeBytes = -1; double LocalPct = -1.0; };
-StatInfo StatCid(const std::string &Cid);
+// Per-CID stats for the IPFS tab's Size + Health columns. SizeBytes is cheap; Providers is a slow DHT query
+// (gather it off-thread and cache it).
+struct StatInfo {
+    long long SizeBytes = -1;   // CumulativeSize bytes (-1 = unknown)
+    int       Providers = -2;   // distinct peers announcing the CID: -2 not queried, -1 query failed/no daemon, >=0 count
+};
+
+// CumulativeSize of a CID via `ipfs files stat` (cheap metadata; -1 if unknown).
+long long CidSize(const std::string &Cid);
+
+// Network availability ("file health"): how many peers announce the CID, via `ipfs routing findprovs`. SLOW (a DHT
+// walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.
+int ProviderCount(const std::string &Cid);
 
 // Unpins a CID (`ipfs pin rm`). Returns true on success.
 bool Unpin(const std::string &Cid);

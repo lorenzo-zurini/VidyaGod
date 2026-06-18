@@ -9,6 +9,8 @@
 #include "covercache.h"
 
 #include <thread>
+#include <atomic>
+#include <memory>
 
 #include <QPainter>
 #include <QApplication>
@@ -20,6 +22,8 @@
 #include <QHeaderView>
 #include <QProgressBar>
 #include <QClipboard>
+#include <QScrollBar>
+#include <QTimer>
 #include <QTableWidgetItem>
 #include <QTreeWidgetItem>
 #include <QStyledItemDelegate>
@@ -65,6 +69,17 @@ public:
     bool operator<(const QTableWidgetItem & O) const override
     { return data(Qt::UserRole).toLongLong() < O.data(Qt::UserRole).toLongLong(); }
 };
+
+// Renders a CID's network availability ("health") = number of peers announcing it, as coloured text:
+//   …  not yet queried   ·   —  no daemon/failed   ·   ✗0 red (unavailable)   ·   ●1 amber (only you)   ·   ●N green
+static std::pair<QString, QColor> IpfsHealthText(int Providers)
+{
+    if (Providers <= -2) return { QStringLiteral("…"),               QColor("#8f98a0") };
+    if (Providers == -1) return { QStringLiteral("—"),               QColor("#8f98a0") };
+    if (Providers == 0)  return { QStringLiteral("✗ 0"),             QColor("#c0726a") };
+    if (Providers == 1)  return { QStringLiteral("● 1"),             QColor("#d6a23e") };
+    return { QString("● %1").arg(Providers),                         QColor("#5fb55f") };
+}
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1054,14 +1069,14 @@ void MainWindow::BuildIpfsTab()
             // Async-fill the total size if we don't have it cached (one cheap `files stat`, off the GUI thread).
             if (IpfsCidStat.value(cid).SizeBytes < 0)
                 std::thread([this, cid]{
-                    const IpfsWrapper::StatInfo S = IpfsWrapper::StatCid(cid.toStdString());
-                    QMetaObject::invokeMethod(this, [this, cid, S]{
-                        if (S.SizeBytes >= 0) IpfsCidStat[cid] = S;
+                    const long long Sz = IpfsWrapper::CidSize(cid.toStdString());
+                    QMetaObject::invokeMethod(this, [this, cid, Sz]{
+                        if (Sz >= 0) IpfsCidStat[cid].SizeBytes = Sz;
                         QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr);
                         const int r = p ? IpfsTransfers->row(p) : -1;
                         if (r >= 0 && IpfsTransfers->item(r, 1))
-                        { IpfsTransfers->item(r, 1)->setData(Qt::UserRole, (qlonglong)S.SizeBytes);
-                          IpfsTransfers->item(r, 1)->setText(HumanBytes(S.SizeBytes)); }
+                        { IpfsTransfers->item(r, 1)->setData(Qt::UserRole, (qlonglong)Sz);
+                          IpfsTransfers->item(r, 1)->setText(HumanBytes(Sz)); }
                     }, Qt::QueuedConnection);
                 }).detach();
         } else {
@@ -1075,9 +1090,21 @@ void MainWindow::BuildIpfsTab()
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok) {
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
-            prog->setData(Qt::DisplayRole, ok ? 100 : prog->data(Qt::DisplayRole).toInt());
             const int row = IpfsTransfers->row(prog);
-            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(ok ? "Done" : "Failed");
+            if (ok) {
+                prog->setData(Qt::DisplayRole, 100);
+                if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText("Done");
+                // Drop the finished row shortly after (a brief "Done" flash), so the list shows only in-flight fetches.
+                QTimer::singleShot(1500, this, [this, cid]{
+                    if (QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr)) {
+                        const int r = IpfsTransfers->row(p);
+                        if (r >= 0) IpfsTransfers->removeRow(r);
+                        IpfsTransferProgress.remove(cid);
+                    }
+                });
+            } else if (row >= 0 && IpfsTransfers->item(row, 3)) {
+                IpfsTransfers->item(row, 3)->setText("Failed");   // keep failures visible
+            }
         }
         RefreshIpfsTab();                                    // a finished fetch likely added a pin
     });
@@ -1097,38 +1124,41 @@ void MainWindow::RefreshIpfsTab()
     IpfsRefreshInFlight = true;
 
     // Gather the (subprocess-spawning) ipfs status + pins OFF the GUI thread, then apply on the GUI thread. Per-CID
-    // size/health (`files stat`) is computed only for pins not already cached (snapshot passed in), so steady-state
-    // refreshes are cheap; the Refresh button clears the cache to force a re-stat.
-    const QHash<QString, IpfsWrapper::StatInfo> CacheCopy = IpfsCidStat;
-    std::thread([this, CacheCopy]{
+    // SIZE (`files stat`, cheap) is computed only for pins whose size we don't already have; HEALTH (provider count,
+    // slow DHT) is gathered separately by GatherIpfsHealth. The Refresh button clears the cache to force a re-check.
+    QSet<QString> HaveSize;
+    for (auto it = IpfsCidStat.constBegin(); it != IpfsCidStat.constEnd(); ++it)
+        if (it.value().SizeBytes >= 0) HaveSize.insert(it.key());
+    std::thread([this, HaveSize]{
         const bool   Daemon = IpfsWrapper::DaemonRunning();
         const int    Peers  = Daemon ? IpfsWrapper::PeerCount() : 0;
         const QString Repo  = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
-        QHash<QString, IpfsWrapper::StatInfo> Stats;
+        QHash<QString, long long> Sizes;
         for (const auto & P : Pins)
         {
             const QString C = QString::fromStdString(P.Cid);
-            Stats[C] = CacheCopy.contains(C) ? CacheCopy.value(C) : IpfsWrapper::StatCid(P.Cid);
+            if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSize(P.Cid); if (S >= 0) Sizes[C] = S; }
         }
-        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins, Stats]{
+        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins, Sizes]{
             IpfsRefreshInFlight = false;
-            ApplyIpfsSnapshot(Daemon, Peers, Repo, Pins, Stats);
+            ApplyIpfsSnapshot(Daemon, Peers, Repo, Pins, Sizes);
         }, Qt::QueuedConnection);
     }).detach();
 }
 
-// Paints the gathered IPFS status + grouped pins onto the IPFS tab (GUI thread only).
+// INCREMENTALLY paints the gathered IPFS status + grouped pins (GUI thread only). The seeded tree is updated in
+// place — groups/leaves are reused (tracked by IpfsPinGroups / IpfsPinChildren), only added/removed/changed — so the
+// list never rebuilds, keeps its scroll position + expand/collapse state, and doesn't jump around on refresh.
 void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
                                    const std::vector<IpfsWrapper::PinEntry> & Pins,
-                                   const QHash<QString, IpfsWrapper::StatInfo> & Stats)
+                                   const QHash<QString, long long> & Sizes)
 {
     if (!IpfsStatusLabel) return;
-    for (auto it = Stats.constBegin(); it != Stats.constEnd(); ++it) IpfsCidStat.insert(it.key(), it.value());  // merge into cache
+    for (auto it = Sizes.constBegin(); it != Sizes.constEnd(); ++it) IpfsCidStat[it.key()].SizeBytes = it.value();  // merge sizes
 
-    // Total seeded size across the pins we have a size for.
     long long Total = 0;
-    for (const auto & P : Pins) { const auto S = Stats.value(QString::fromStdString(P.Cid)); if (S.SizeBytes >= 0) Total += S.SizeBytes; }
+    for (const auto & P : Pins) { const long long s = IpfsCidStat.value(QString::fromStdString(P.Cid)).SizeBytes; if (s >= 0) Total += s; }
 
     QString S = QString("Daemon: %1").arg(Daemon
         ? "<span style='color:#5fb55f;'>running</span>"
@@ -1141,64 +1171,123 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     if (!IpfsPins) return;
     IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);   // keep names current with the catalog
 
-    // Renders a CID's local-availability ("health") as coloured text: green when fully present (seedable),
-    // amber when partial, "—" when unknown.
-    auto HealthFor = [](double Pct) -> std::pair<QString, QColor> {
-        if (Pct < 0)        return { QStringLiteral("—"),                      QColor("#8f98a0") };
-        if (Pct >= 99.95)   return { QStringLiteral("✓ 100%"),                 QColor("#5fb55f") };
-        return { QString("⚠ %1%").arg(QString::number(Pct, 'f', 0)),           QColor("#d6a23e") };
-    };
-
-    // Group the pinned CIDs by owning package (QMap → keys already alphabetical; unknowns bucketed last).
+    // Desired grouping: package → its CIDs (QMap keys alphabetical; "Package > Node" comes from the col-0 sort).
     QMap<QString, QStringList> ByPackage;
+    QSet<QString> DesiredCids;
     const QString Unknown = QStringLiteral("Unknown / not in your library");
     for (const auto & P : Pins)
     {
         const QString Cid = QString::fromStdString(P.Cid);
         ByPackage[IpfsCidPackages.value(Cid, Unknown)].append(Cid);
+        DesiredCids.insert(Cid);
     }
 
-    IpfsPins->setSortingEnabled(false);                                    // batch-build, then let the header sort
-    IpfsPins->clear();
+    QScrollBar * VBar = IpfsPins->verticalScrollBar();
+    const int Scroll = VBar ? VBar->value() : 0;
+    IpfsPins->setSortingEnabled(false);                                   // mutate in place; re-enable to settle order
+
+    // Remove stale leaves (no longer pinned), then stale/empty groups (untracking any leaves Qt deletes with them).
+    for (const QString & Cid : IpfsPinChildren.keys())
+        if (!DesiredCids.contains(Cid)) delete IpfsPinChildren.take(Cid);
+    for (const QString & Pkg : IpfsPinGroups.keys())
+        if (!ByPackage.contains(Pkg))
+        {
+            QTreeWidgetItem * g = IpfsPinGroups.take(Pkg);
+            for (const QString & Cid : IpfsPinChildren.keys())
+                if (IpfsPinChildren.value(Cid) && IpfsPinChildren.value(Cid)->parent() == g) IpfsPinChildren.remove(Cid);
+            delete g;
+        }
+
+    // Add / update groups + leaves. Col-0 text (package / leaf name) is set ONCE and never changed, so the col-0
+    // sort key is stable → no row reordering ("jumping") on refresh; size/health updates go to cols 1/2.
     for (auto it = ByPackage.constBegin(); it != ByPackage.constEnd(); ++it)
     {
         const QString & PkgName = it.key();
+        QTreeWidgetItem * grp = IpfsPinGroups.value(PkgName, nullptr);
+        if (!grp)
+        {
+            grp = new QTreeWidgetItem(IpfsPins);
+            grp->setText(0, PkgName);
+            QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
+            grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
+            grp->setExpanded(false);                                      // NEW groups default collapsed
+            IpfsPinGroups.insert(PkgName, grp);
+        }
         long long GrpTotal = 0;
-        for (const QString & Cid : it.value()) { const auto St = IpfsCidStat.value(Cid); if (St.SizeBytes >= 0) GrpTotal += St.SizeBytes; }
-        QTreeWidgetItem * grp = new QTreeWidgetItem(IpfsPins);
-        grp->setText(0, QString("%1   (%2)").arg(PkgName).arg(it.value().size()));
-        grp->setText(1, HumanBytes(GrpTotal));
-        QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
-        grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
+        for (const QString & Cid : it.value()) { const long long s = IpfsCidStat.value(Cid).SizeBytes; if (s >= 0) GrpTotal += s; }
+        grp->setText(1, QString("%1 item%2 · %3").arg(it.value().size()).arg(it.value().size() == 1 ? "" : "s").arg(HumanBytes(GrpTotal)));
+
         for (const QString & Cid : it.value())
         {
-            const QString Label = IpfsCidLabels.value(Cid, QStringLiteral("(unknown)"));
-            QString Leaf = Label;                                          // child shows the layer, not the package
-            if (Label.startsWith(PkgName + " — ")) Leaf = Label.mid(PkgName.size() + 3);
-            else if (Label == PkgName)             Leaf = QStringLiteral("content");
+            QTreeWidgetItem * child = IpfsPinChildren.value(Cid, nullptr);
+            if (!child)
+            {
+                const QString Label = IpfsCidLabels.value(Cid, QStringLiteral("(unknown)"));
+                QString Leaf = Label;
+                if (Label.startsWith(PkgName + " — ")) Leaf = Label.mid(PkgName.size() + 3);
+                else if (Label == PkgName)             Leaf = QStringLiteral("content");
+                child = new QTreeWidgetItem(grp);
+                child->setText(0, Leaf);
+                child->setText(3, Cid);
+                QWidget * cell = new QWidget();
+                QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
+                QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
+                QPushButton * unpinBtn = new QPushButton("Unpin", cell);
+                connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
+                connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
+                cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
+                IpfsPins->setItemWidget(child, 4, cell);
+                IpfsPinChildren.insert(Cid, child);
+            }
             const IpfsWrapper::StatInfo St = IpfsCidStat.value(Cid);
-            QTreeWidgetItem * child = new QTreeWidgetItem(grp);
-            child->setText(0, Leaf);
             child->setText(1, HumanBytes(St.SizeBytes));
             child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);     // numeric sort key for the Size column
-            { auto [Txt, Col] = HealthFor(St.LocalPct); child->setText(2, Txt); child->setForeground(2, Col); }
-            child->setText(3, Cid);
-            QWidget * cell = new QWidget();
-            QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
-            QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
-            QPushButton * unpinBtn = new QPushButton("Unpin", cell);
-            connect(copyBtn,  &QPushButton::clicked, this, [Cid]{ QApplication::clipboard()->setText(Cid); });
-            connect(unpinBtn, &QPushButton::clicked, this, [this, Cid]{ IpfsWrapper::Unpin(Cid.toStdString()); RefreshIpfsTab(); });
-            cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
-            IpfsPins->setItemWidget(child, 4, cell);
+            const auto [Txt, Col] = IpfsHealthText(St.Providers);
+            child->setText(2, Txt); child->setForeground(2, Col);
         }
     }
-    IpfsPins->setSortingEnabled(true);
-    IpfsPins->expandAll();
-    IpfsPins->resizeColumnToContents(1);   // Size
-    IpfsPins->resizeColumnToContents(2);   // Health
-    IpfsPins->resizeColumnToContents(3);   // CID
-    IpfsPins->resizeColumnToContents(4);   // actions
+
+    IpfsPins->setSortingEnabled(true);                                    // settle into Package > Node order (col 0)
+    if (VBar) VBar->setValue(Scroll);                                     // restore scroll position
+    IpfsPins->resizeColumnToContents(2);
+    IpfsPins->resizeColumnToContents(3);
+    IpfsPins->resizeColumnToContents(4);
+
+    GatherIpfsHealth();   // trickle in provider counts for any newly-seen pins
+}
+
+// Off the GUI thread, query provider counts ("network availability") for pins not yet checked, updating each Health
+// cell as it lands. A few workers run concurrently (each findprovs can take seconds) so health fills in quickly;
+// results are cached so it's a one-time cost per CID — the Refresh button clears the cache to re-check.
+void MainWindow::GatherIpfsHealth()
+{
+    if (IpfsHealthInFlight) return;
+    auto Todo = std::make_shared<QStringList>();
+    for (const QString & Cid : IpfsPinChildren.keys())
+        if (IpfsCidStat.value(Cid).Providers == -2) *Todo << Cid;   // -2 = never queried (failures keep -1 until Refresh)
+    if (Todo->isEmpty()) return;
+    IpfsHealthInFlight = true;
+
+    const int Workers = std::min<int>(5, Todo->size());
+    auto Next      = std::make_shared<std::atomic<int>>(0);
+    auto Remaining = std::make_shared<std::atomic<int>>(Workers);
+    for (int w = 0; w < Workers; ++w)
+        std::thread([this, Todo, Next, Remaining]{
+            for (;;)
+            {
+                const int i = Next->fetch_add(1);
+                if (i >= Todo->size()) break;
+                const QString Cid = Todo->at(i);
+                const int N = IpfsWrapper::ProviderCount(Cid.toStdString());
+                QMetaObject::invokeMethod(this, [this, Cid, N]{
+                    IpfsCidStat[Cid].Providers = N;
+                    if (QTreeWidgetItem * child = IpfsPinChildren.value(Cid, nullptr))
+                    { const auto [Txt, Col] = IpfsHealthText(N); child->setText(2, Txt); child->setForeground(2, Col); }
+                }, Qt::QueuedConnection);
+            }
+            if (Remaining->fetch_sub(1) == 1)   // last worker → clear the in-flight flag
+                QMetaObject::invokeMethod(this, [this]{ IpfsHealthInFlight = false; }, Qt::QueuedConnection);
+        }).detach();
 }
 
 QString MainWindow::RepoNameForBundle(const std::filesystem::path & BundleDir) const

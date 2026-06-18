@@ -184,28 +184,59 @@ std::string RepoSizeHuman()
     return (Max.isEmpty() ? Size : Size + " / " + Max).toStdString();
 }
 
-StatInfo StatCid(const std::string &Cid)
+long long CidSize(const std::string &Cid)
 {
-    StatInfo Info;
-    if (Cid.empty()) return Info;
+    if (Cid.empty()) return -1;
     QString Out;
-    if (!RunIpfs({"files", "stat", "--with-local", QString::fromStdString("/ipfs/" + Cid)}, &Out, 20000)) return Info;
-    static const QRegularExpression PctRe(QStringLiteral("\\(([0-9.]+)%\\)"));
+    if (!RunIpfs({"files", "stat", QString::fromStdString("/ipfs/" + Cid)}, &Out, 20000)) return -1;
     for (const QString &Line : Out.split('\n', Qt::SkipEmptyParts))
-    {
         if (Line.startsWith("CumulativeSize:"))
         {
             bool Ok = false;
             const long long N = Line.mid(QString("CumulativeSize:").size()).trimmed().toLongLong(&Ok);
-            if (Ok) Info.SizeBytes = N;
+            return Ok ? N : -1;
         }
-        else if (Line.startsWith("Local:"))   // "Local: 2.2 GB of 2.2 GB (100.00%)"
+    return -1;
+}
+
+int ProviderCount(const std::string &Cid)
+{
+    if (Cid.empty()) return -1;
+    // findprovs STREAMS one peer id per line, then keeps walking the DHT until --num-providers or exhaustion. For
+    // low-provider content that runs long, so we read the stream ourselves and stop at a cap or a short deadline —
+    // keeping whatever we found (RunIpfs would discard it on timeout). This is a "how replicated" signal, not a census.
+    QProcess P;
+    P.setProcessEnvironment(SystemToolEnv());
+    P.start("ipfs", {"routing", "findprovs", "--num-providers=10", QString::fromStdString(Cid)});
+    if (!P.waitForStarted(10000)) return -1;
+
+    std::set<std::string> Provs;
+    QByteArray Buf;
+    QElapsedTimer Timer; Timer.start();
+    auto Drain = [&] {
+        Buf += P.readAllStandardOutput();
+        int Nl;
+        while ((Nl = Buf.indexOf('\n')) >= 0)
         {
-            const auto M = PctRe.match(Line);
-            if (M.hasMatch()) Info.LocalPct = M.captured(1).toDouble();
+            const QString L = QString::fromUtf8(Buf.left(Nl)).trimmed();
+            Buf.remove(0, Nl + 1);
+            if (!L.isEmpty()) Provs.insert(L.toStdString());
         }
+    };
+    while (P.state() != QProcess::NotRunning)
+    {
+        P.waitForReadyRead(400);
+        Drain();
+        if ((int)Provs.size() >= 10 || Timer.hasExpired(8000)) break;
     }
-    return Info;
+    const bool Killed = (P.state() != QProcess::NotRunning);
+    if (Killed) { P.kill(); P.waitForFinished(2000); }
+    Drain();
+    { const QString L = QString::fromUtf8(Buf).trimmed(); if (!L.isEmpty()) Provs.insert(L.toStdString()); }
+
+    if (!Provs.empty()) return (int)Provs.size();
+    if (!Killed && P.exitCode() != 0) return -1;   // exited on its own with an error (e.g. no daemon) → unknown
+    return 0;                                       // ran the deadline with none found → genuinely 0
 }
 
 std::vector<PinEntry> Pins()

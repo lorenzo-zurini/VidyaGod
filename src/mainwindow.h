@@ -121,7 +121,10 @@ private:
     QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
     QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)
-    QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + local-availability (cached; Refresh clears it)
+    QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + provider count (cached; Refresh clears it)
+    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // package name → group row (incremental tree, no rebuild)
+    QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row (so refresh updates in place, no jumping)
+    bool            IpfsHealthInFlight = false;         // a background provider-count pass is running
 
     void BuildStaticUI();
     void BuildLibraryGameCards();
@@ -139,7 +142,8 @@ private:
     void RefreshIpfsTab();   // kicks an off-thread gather of status + seeded list (no-op when ipfs absent)
     void ApplyIpfsSnapshot(bool daemon, int peers, const QString & repo,
                            const std::vector<IpfsWrapper::PinEntry> & pins,
-                           const QHash<QString, IpfsWrapper::StatInfo> & stats);  // GUI-thread paint of the gathered data
+                           const QHash<QString, long long> & sizes);  // GUI-thread incremental paint of the gathered data
+    void GatherIpfsHealth();   // off-thread provider-count ("network availability") pass for un-queried pins
     void sortCards();
     bool SaveGlobalConfigJSON();
 
