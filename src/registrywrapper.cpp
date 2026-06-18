@@ -577,10 +577,40 @@ ordered_json RegistryWrapper::ValueToManifestString(const RegistryValue &V)
     return V.RawPayload; // "dword:..", "hex:..", etc. — preserves the existing KEYVALUES encoding
 }
 
+//Re-applies WoW64 registry redirection that the manifest REGPATH dropped. On a 64-bit prefix, a 32-bit app's
+//HKLM/HKCU \Software access is redirected by Windows/wine under a "Wow6432Node" key (inserted right after the
+//"Software" segment). The manifest stores the natural, Wow6432Node-free REGPATH plus ARCHITECTURE; for a 32-bit
+//RegEdit we must re-insert Wow6432Node so the key lands exactly where the 32-bit app reads it. (No-op for 64-bit
+//edits, non-Software paths, or a path that already contains the node.) Without this, e.g. WipeoutXL's install-dir
+//keys were written to the 64-bit view and the game never found them.
+static std::string ArchRedirectRegPath(const std::string &RegPath, const std::string &Architecture)
+{
+    if (Architecture != "32") return RegPath;
+    std::vector<std::string> Segs; std::string Cur;
+    for (char C : RegPath) { if (C == '\\') { Segs.push_back(Cur); Cur.clear(); } else Cur.push_back(C); }
+    Segs.push_back(Cur);
+
+    std::vector<std::string> Out; bool Inserted = false;
+    for (size_t i = 0; i < Segs.size(); ++i)
+    {
+        Out.push_back(Segs[i]);
+        if (!Inserted && CIEqual(Segs[i], "Software"))
+        {
+            if (i + 1 >= Segs.size() || !CIEqual(Segs[i + 1], "Wow6432Node")) Out.emplace_back("Wow6432Node");
+            Inserted = true;
+        }
+    }
+    if (!Inserted) return RegPath;                                   // not a \Software path → no redirection
+    std::string Res;
+    for (size_t i = 0; i < Out.size(); ++i) { if (i) Res += "\\"; Res += Out[i]; }
+    return Res;
+}
+
 bool RegistryWrapper::ApplyRegEdit(const ordered_json &Sub)
 {
     std::string RegPath = Sub.value("REGPATH", std::string());
     if (RegPath.empty()) { LogWarn("RegistryWrapper::ApplyRegEdit", "RegEdit with empty REGPATH (skipped)."); return false; }
+    RegPath = ArchRedirectRegPath(RegPath, Sub.value("ARCHITECTURE", std::string()));   // 32-bit → under Wow6432Node
     EnsureKey(RegPath); // key-only creation when there are no KEYVALUES
     if (Sub.contains("KEYVALUES") && Sub["KEYVALUES"].is_object())
         for (auto &[K, Val] : Sub["KEYVALUES"].items())
