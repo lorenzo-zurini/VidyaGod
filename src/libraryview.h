@@ -56,6 +56,12 @@ public:
     QString                CoverCid;      // cover's ipfs CID while not yet local (drives lazy-load refresh)
     QString                ElidedTitle;   // cached — recomputed only when card width changes
 
+    // Catalog (Available) per-package rendering: a package's MAIN (base) game holds its other un-downloaded games as
+    // Secondaries, drawn as small tiles beneath it. Secondary cards are flagged so the top-level grid skips them.
+    bool                          IsSecondary = false;
+    std::vector<LibraryGameCard*> Secondaries;     // non-owning (all cards live in the AvailableGameCards pool)
+    QPixmap                       CoverSmall;       // cover scaled to the small secondary-tile size
+
     // Sort keys — populated in InitializeClassVariables()
     QString                SortTitle;     // title with leading "The " stripped, lowercased
     QString                SortDate;      // RELEASEDATE string (ISO → lexicographic = chronological)
@@ -123,6 +129,7 @@ private:
 
     QList<LibraryGameCard *> * Cards = nullptr;
     QVector<QRect>             Rects;
+    QVector<QVector<QRect>>    SecRects;     // SecRects[i] = small secondary-tile rects under card i (Catalog per-package)
     QVector<SeriesGroup>       SeriesGroups;
     QVector<Group>             Groups;       // collapsible repo sections; empty ⇒ flat grid
     QVector<QRect>             HeaderRects;  // one per Group (content coords); for collapse hit-testing
@@ -131,6 +138,7 @@ private:
     bool                       EmitDownload = false;          // card click → downloadRequested vs play()
     bool                       ShowEditCorner = true;         // draw/handle the "···" edit corner
     int HoveredIdx = -1;
+    int HoveredSecIdx = -1;   // when HoveredIdx is a package: which secondary sub-tile is hovered (-1 = the main tile)
     int SelectedIdx = -1;   // keyboard-focused card (-1 = none); painted with a focus ring
     int CardW = 0, CardH = 0;
     int LastCols = 0, LastHGap = 0;
@@ -141,6 +149,13 @@ private:
     static constexpr int EditW    = 30;
     static constexpr int LineH    = 30;
     static constexpr int HeaderH  = 34;   // collapsible section header band height
+    static constexpr int SecPerRow = 3;   // max secondary (smaller) tiles per row under a package's main game
+    static constexpr int SecGap    = 8;   // gap around/between secondary tiles
+    // Small secondary-tile width: ~45% of the main width, but never so wide that >SecPerRow won't fit.
+    int  secTileW() const { return qMin(int(CardW * 0.46), (CardW - (SecPerRow + 1) * SecGap) / SecPerRow); }
+    int  secTileH() const { return secTileW() * 3 / 2; }
+    // Extra cell height a package needs below its main tile for n secondary tiles (0 if none).
+    int  secBlockH(int n) const { return n <= 0 ? 0 : SecGap + ((n + SecPerRow - 1) / SecPerRow) * (secTileH() + SecGap); }
 
     QFont        TitleFont, PlayFont;
     QFontMetrics TitleFM;

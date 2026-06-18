@@ -853,6 +853,42 @@ void MainWindow::RebuildAvailableTab()
         AvailableGameCards->append(c);
     }
 
+    // ── Per-package grouping (Catalog diverges from Library): a bundle with several un-hydrated games shows its
+    // base game as the main tile and the rest as small secondaries beneath it. Base = the game all others build on,
+    // detected from its content-closure node set: the leanest closure is the base (validated as universally correct
+    // across the multi-game bundles; tie-break by representative node id). ──
+    auto ClosureSize = [this](LibraryGameCard * c) -> int {
+        const std::string & Lid = c->RepNodeId;
+        if (Lid.empty()) return 0;
+        int n = 0;
+        for (const std::string & Nid : ManifestModel::ResolveNodeOrder(CatalogIndex, Lid, {})) {
+            const Node * N = CatalogIndex.Find(Nid);
+            if (N && !N->IsRunner()) n++;
+        }
+        return n;
+    };
+    std::map<std::string, std::vector<LibraryGameCard*>> ByBundle;     // bundle dir → its un-hydrated game cards
+    std::vector<std::string> BundleOrder;
+    for (LibraryGameCard * c : *AvailableGameCards) {
+        const std::string Key = c->PackagePath.string();
+        if (ByBundle.find(Key) == ByBundle.end()) BundleOrder.push_back(Key);
+        ByBundle[Key].push_back(c);
+    }
+    for (const std::string & Key : BundleOrder) {
+        std::vector<LibraryGameCard*> & games = ByBundle[Key];
+        if (games.size() < 2) continue;                                // single-game package → normal full tile
+        std::sort(games.begin(), games.end(), [&](LibraryGameCard * a, LibraryGameCard * b){
+            const int sa = ClosureSize(a), sb = ClosureSize(b);
+            if (sa != sb) return sa < sb;                              // leanest closure = the base game
+            return a->RepNodeId < b->RepNodeId;
+        });
+        LibraryGameCard * Main = games.front();                       // most-base un-hydrated game anchors the package
+        for (size_t i = 1; i < games.size(); i++) {
+            games[i]->IsSecondary = true;
+            Main->Secondaries.push_back(games[i]);
+        }
+    }
+
     // Point the view at the full pool, then scale every cover ONCE — BEFORE ApplyAvailableFilter shows them.
     // (Scaling must happen while the view's card list IS the pool; otherwise CoverScaled stays null and the
     // covers paint black until the next refreshVisuals — the "flash black on download complete" bug.)
@@ -871,9 +907,14 @@ void MainWindow::ApplyAvailableFilter()
     auto RepoOf = [this](LibraryGameCard * c) -> QString { return RepoNameForBundle(c->PackagePath); };
 
     AvailableVisible.clear();
-    for (LibraryGameCard * c : *AvailableGameCards)
-        if (AvailableSearch.isEmpty() || c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive))
-            AvailableVisible.append(c);
+    for (LibraryGameCard * c : *AvailableGameCards) {
+        if (c->IsSecondary) continue;                                 // secondaries travel with their package's main tile
+        // A package matches if its main OR any secondary game matches the search (so a search keeps the whole package).
+        bool match = AvailableSearch.isEmpty() || c->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive);
+        for (LibraryGameCard * sc : c->Secondaries)
+            if (!match && sc->GameTitle.contains(AvailableSearch, Qt::CaseInsensitive)) match = true;
+        if (match) AvailableVisible.append(c);
+    }
 
     // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
     auto keyOf = [this](LibraryGameCard * a) -> QString {
