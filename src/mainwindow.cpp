@@ -813,7 +813,7 @@ void MainWindow::BuildAvailableTab()
     connect(IpfsManager::instance(), &IpfsManager::transferProgress, this,
             [applyProgress](QString cid, double pct){ applyProgress(cid, pct); });
     connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
-            [applyProgress](QString cid, bool){ applyProgress(cid, 100.0); });
+            [applyProgress](QString cid, bool, QString){ applyProgress(cid, 100.0); });
 
     RebuildAvailableTab();
 }
@@ -952,13 +952,57 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         }
         DL->addWidget(Box);
     }
+    // ── Disk-space display: free space at the library + the (async-gathered) size of the current selection ──
+    QLabel * SizeLabel = new QLabel(&Dlg);
+    DL->addWidget(SizeLabel);
+    std::error_code DiskEc;
+    const auto DiskSp = std::filesystem::space(PackageCatalog::LibraryRootDir(*GlobalConfigJSON), DiskEc);
+    const long long FreeBytes = DiskEc ? -1 : (long long)DiskSp.available;
+
+    auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
+    auto Alive     = std::make_shared<std::atomic<bool>>(true);             // false once the dialog closes
+    auto Recompute = [this, EdChecks, OptChecks, Editions, SizeCache, SizeLabel, FreeBytes]() {
+        std::map<std::string, bool> Tg; for (const auto & [Id, Cb] : OptChecks) Tg[Id] = Cb->isChecked();
+        std::set<std::string> Sel;
+        for (const std::string & Lid : Editions)
+            if (EdChecks.at(Lid)->isChecked())
+                for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, Tg)) Sel.insert(C);
+        long long Sum = 0; bool AllKnown = true;
+        for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
+        SizeLabel->setText(QString("Free space: %1      Download: %2%3")
+            .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytes(FreeBytes))
+            .arg(HumanBytes(Sum)).arg(AllKnown ? "" : " (estimating…)"));
+        SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;" : "color:#8f98a0;");
+    };
+    for (const auto & [Id, Cb] : EdChecks)  connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : OptChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    Recompute();
+    {   // gather each CID's size in the background (it's a remote `files stat` on the downloader) and update as they land
+        std::map<std::string, bool> AllOn; for (const auto & [Id, Cb] : OptChecks) AllOn[Id] = true;
+        std::set<std::string> All;
+        for (const std::string & Lid : Editions)
+            for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, AllOn)) All.insert(C);
+        std::thread([this, ToQuery = std::vector<std::string>(All.begin(), All.end()), SizeCache, Alive, Recompute]{
+            for (const std::string & C : ToQuery) {
+                if (!Alive->load()) return;
+                const long long S = IpfsWrapper::CidSize(C);
+                QMetaObject::invokeMethod(this, [SizeCache, C, S, Alive, Recompute]{
+                    if (!Alive->load()) return;                  // dialog closed — its widgets are gone, don't touch them
+                    (*SizeCache)[C] = S; Recompute();
+                }, Qt::QueuedConnection);
+            }
+        }).detach();
+    }
+
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
     QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);
     QPushButton * GoBtn = new QPushButton("Download", &Dlg); GoBtn->setDefault(true);
     BR->addWidget(CancelBtn); BR->addWidget(GoBtn);
     connect(CancelBtn, &QPushButton::clicked, &Dlg, &QDialog::reject);
     connect(GoBtn,     &QPushButton::clicked, &Dlg, &QDialog::accept);
-    if (Dlg.exec() != QDialog::Accepted) return;
+    const int Res = Dlg.exec();
+    Alive->store(false);                                         // stop the async size updater from touching dialog widgets
+    if (Res != QDialog::Accepted) return;
 
     std::vector<std::string> LaunchIds;                              // selected editions
     for (const std::string & Lid : Editions) if (EdChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
@@ -1106,7 +1150,7 @@ void MainWindow::BuildIpfsTab()
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
             prog->setData(Qt::DisplayRole, int(pct + 0.5));
     });
-    connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok) {
+    connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
             const int row = IpfsTransfers->row(prog);
             if (ok) {
@@ -1121,7 +1165,12 @@ void MainWindow::BuildIpfsTab()
                     }
                 });
             } else if (row >= 0 && IpfsTransfers->item(row, 3)) {
-                IpfsTransfers->item(row, 3)->setText("Failed");   // keep failures visible
+                // Keep failures visible WITH the reason (e.g. "no space left on device") in the Status cell + tooltip.
+                const QString Reason = error.isEmpty() ? QStringLiteral("Failed") : ("Failed: " + error.section('\n', -1).trimmed());
+                QTableWidgetItem * st = IpfsTransfers->item(row, 3);
+                st->setText(Reason);
+                st->setToolTip(error.isEmpty() ? QStringLiteral("Download failed") : error);
+                st->setForeground(QColor("#c0726a"));
             }
         }
         RefreshIpfsTab();                                    // a finished fetch likely added a pin
@@ -1184,6 +1233,11 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
     if (Daemon) S += QString("   •   Peers: %1").arg(Peers);
     if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
     S += QString("   •   Seeded: %1 item%2 · %3").arg(Pins.size()).arg(Pins.size() == 1 ? "" : "s").arg(HumanBytes(Total));
+    {
+        std::error_code Ec;
+        const auto Sp = std::filesystem::space(PackageCatalog::LibraryRootDir(*GlobalConfigJSON), Ec);
+        if (!Ec) S += QString("   •   Disk: %1 free of %2").arg(HumanBytes((long long)Sp.available)).arg(HumanBytes((long long)Sp.capacity));
+    }
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;

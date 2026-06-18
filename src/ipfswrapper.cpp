@@ -74,7 +74,7 @@ static qint64 PathSizeOnDisk(const QString &P)
     return S;
 }
 
-static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
+static bool RunIpfsGet(const std::string &Cid, const QString &Dest, std::string *Error)
 {
     // `ipfs get` prints its progress bar ONLY to a TTY, so piped through QProcess it emits nothing. Track progress
     // ourselves by watching the output path grow against the CID's known size (works regardless of TTY / Kubo version).
@@ -83,22 +83,34 @@ static bool RunIpfsGet(const std::string &Cid, const QString &Dest)
     QProcess P;
     P.setProcessEnvironment(SystemToolEnv());
     P.start("ipfs", {"get", QString::fromStdString(Cid), "-o", Dest});
-    if (!P.waitForStarted(10000)) return false;
+    if (!P.waitForStarted(10000)) { if (Error) *Error = "could not start `ipfs get`"; return false; }
 
+    QString ErrBuf;                                             // tail of ipfs stderr — carries the real failure reason
     QElapsedTimer Timer; Timer.start();
     while (!P.waitForFinished(700))                              // poll every ~0.7s until the fetch finishes
     {
-        P.readAllStandardError();                               // drain so the pipe can't fill and block the process
+        ErrBuf += QString::fromUtf8(P.readAllStandardError());  // drain so the pipe can't fill and block the process
+        if (ErrBuf.size() > 4096) ErrBuf = ErrBuf.right(4096);
         if (Total > 0)
         {
             const qint64 Have = PathSizeOnDisk(Dest);
             const double Pct = std::min(99.0, 100.0 * double(Have) / double(Total));
             Emit({ TransferEvent::Progress, Cid, Pct, false });
         }
-        if (IsCancelled(Cid))          { P.kill(); P.waitForFinished(2000); return false; }   // user cancelled
-        if (Timer.hasExpired(1800000)) { P.kill(); P.waitForFinished(2000); return false; }
+        if (IsCancelled(Cid))          { P.kill(); P.waitForFinished(2000); if (Error) *Error = "cancelled";  return false; }
+        if (Timer.hasExpired(1800000)) { P.kill(); P.waitForFinished(2000); if (Error) *Error = "timed out";  return false; }
     }
-    return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
+    ErrBuf += QString::fromUtf8(P.readAllStandardError());
+    if (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0) return true;
+
+    if (Error)   // the last non-empty stderr line is the reason (e.g. "Error: ... no space left on device")
+    {
+        QString Reason;
+        for (const QString &L : ErrBuf.split('\n', Qt::SkipEmptyParts)) { const QString T = L.trimmed(); if (!T.isEmpty()) Reason = T; }
+        Reason.remove(QRegularExpression(QStringLiteral("^Error:\\s*")));
+        *Error = Reason.isEmpty() ? ("`ipfs get` failed (exit " + std::to_string(P.exitCode()) + ")") : Reason.toStdString();
+    }
+    return false;
 }
 
 std::string AddNoCopy(const std::string &PathStr, std::string *Error)
@@ -123,7 +135,7 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     auto Fail = [&](const std::string &Msg) -> std::string {
         if (Error) *Error = Msg;
         LogErr("IpfsWrapper::FetchToPath", Msg);
-        Emit({ TransferEvent::Finished, Cid, -1.0, false });
+        Emit({ TransferEvent::Finished, Cid, -1.0, false, Msg });   // carry the reason to the IPFS tab's Failed row
         return std::string();
     };
 
@@ -141,10 +153,11 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
 
     LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
     Emit({ TransferEvent::Started, Cid, -1.0, false });
-    if (!RunIpfsGet(Cid, TmpDest))
+    std::string GetErr;
+    if (!RunIpfsGet(Cid, TmpDest, &GetErr))
     {
         QDir(TmpDest).removeRecursively(); QFile::remove(TmpDest);
-        return Fail("`ipfs get` failed for CID " + Cid + " (is the daemon running / CID reachable?)");
+        return Fail(GetErr.empty() ? ("`ipfs get` failed for CID " + Cid) : GetErr);
     }
 
     // Atomically publish the fetched content at the destination.
@@ -294,7 +307,8 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
             break; }
         case IpfsWrapper::TransferEvent::Finished: {
             const bool Ok = E.Ok;
-            QMetaObject::invokeMethod(this, [this, Cid, Ok]{ emit transferFinished(Cid, Ok); }, Qt::QueuedConnection);
+            const QString Err = QString::fromStdString(E.Error);
+            QMetaObject::invokeMethod(this, [this, Cid, Ok, Err]{ emit transferFinished(Cid, Ok, Err); }, Qt::QueuedConnection);
             break; }
         }
     });

@@ -89,6 +89,7 @@ struct TransferEvent {
     std::string Cid;
     double      Percent = -1.0;   // 0..100 for Progress; -1 if unknown
     bool        Ok = false;       // Finished only
+    std::string Error;            // Finished+!Ok: the failure reason (e.g. the ipfs error: "no space left on device")
 };
 using TransferCallback = std::function<void(const TransferEvent &)>;
 void SetTransferCallback(TransferCallback Callback);
@@ -109,7 +110,7 @@ public:
 signals:
     void transferStarted(QString cid);
     void transferProgress(QString cid, double percent);
-    void transferFinished(QString cid, bool ok);
+    void transferFinished(QString cid, bool ok, QString error);   // error is the reason when !ok (else empty)
 
 private:
     explicit IpfsManager(QObject * parent = nullptr);
