@@ -146,6 +146,12 @@ int ProviderCount(const std::string &Cid)
     return VgProviderCount(Cid.c_str(), 8000);
 }
 
+bool CidMissing(const std::string &Cid)
+{
+    if (Cid.empty()) return false;
+    return VgCidMissing(Cid.c_str()) == 1;
+}
+
 std::vector<PinEntry> Pins()
 {
     std::vector<PinEntry> Result;

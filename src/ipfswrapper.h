@@ -68,10 +68,15 @@ std::vector<PinEntry> Pins();
 struct StatInfo {
     long long SizeBytes = -1;   // CumulativeSize bytes (-1 = unknown)
     int       Providers = -2;   // distinct peers announcing the CID: -2 not queried, -1 query failed/no daemon, >=0 count
+    int       Missing    = -1;  // backing file gone (orphaned ref): -1 not checked, 0 present, 1 missing
 };
 
 // CumulativeSize of a CID via `ipfs files stat` (cheap metadata; -1 if unknown).
 long long CidSize(const std::string &Cid);
+
+// True if a pinned CID's content was seeded by reference but its backing file has since been deleted (orphaned ref).
+// Local + cheap (no network); surfaced in the IPFS tab as "Errored: missing files".
+bool CidMissing(const std::string &Cid);
 
 // Network availability ("file health"): how many peers announce the CID, via `ipfs routing findprovs`. SLOW (a DHT
 // walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.

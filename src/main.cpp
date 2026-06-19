@@ -320,7 +320,9 @@ int main(int argc, char *argv[])
         if (LaunchParameters.ResolveOnly)
         {
             //Dump the resolved params (no mount, no game) for golden-compare / hang-free verification.
-            const std::filesystem::path Out = std::filesystem::path("/tmp") / ("vg_resolve_" + LaunchParameters.LaunchNodeId + ".json");
+            //Under the app data dir so ALL VidyaGod-produced data lives in ~/.VidyaGod (a single delete = clean slate).
+            const std::filesystem::path Out = std::filesystem::path(AppDataDir.absolutePath().toStdString())
+                                              / ("vg_resolve_" + LaunchParameters.LaunchNodeId + ".json");
             std::ofstream OF(Out);
             OF << DumpResolution(NewContainerWrapper.ContainerParams).dump(2) << std::endl;
             LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());

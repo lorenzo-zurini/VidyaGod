@@ -72,8 +72,9 @@ public:
 
 // Renders a CID's network availability ("health") = number of peers announcing it, as coloured text:
 //   …  not yet queried   ·   —  no daemon/failed   ·   ✗0 red (unavailable)   ·   ●1 amber (only you)   ·   ●N green
-static std::pair<QString, QColor> IpfsHealthText(int Providers)
+static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 {
+    if (Missing == 1)    return { QStringLiteral("Errored: missing files"), QColor("#c0726a") };
     if (Providers <= -2) return { QStringLiteral("…"),               QColor("#8f98a0") };
     if (Providers == -1) return { QStringLiteral("—"),               QColor("#8f98a0") };
     if (Providers == 0)  return { QStringLiteral("✗ 0"),             QColor("#c0726a") };
@@ -1275,7 +1276,11 @@ void MainWindow::BuildIpfsTab()
                 });
             } else if (row >= 0 && IpfsTransfers->item(row, 4)) {
                 // Keep failures visible WITH the reason (e.g. "no space left on device") in the Status cell + tooltip.
-                const QString Reason = error.isEmpty() ? QStringLiteral("Failed") : ("Failed: " + error.section('\n', -1).trimmed());
+                // An orphaned filestore reference (the package file was deleted) gets a distinct "Errored" wording.
+                const QString Tail = error.section('\n', -1).trimmed();
+                const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
+                                     : error.isEmpty()           ? QStringLiteral("Failed")
+                                                                 : ("Failed: " + Tail);
                 QTableWidgetItem * st = IpfsTransfers->item(row, 4);
                 st->setText(Reason);
                 st->setToolTip(error.isEmpty() ? QStringLiteral("Download failed") : error);
@@ -1423,7 +1428,7 @@ void MainWindow::ApplyIpfsSnapshot(bool Daemon, int Peers, const QString & Repo,
             const IpfsWrapper::StatInfo St = IpfsCidStat.value(Cid);
             child->setText(1, HumanBytes(St.SizeBytes));
             child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);     // numeric sort key for the Size column
-            const auto [Txt, Col] = IpfsHealthText(St.Providers);
+            const auto [Txt, Col] = IpfsHealthText(St.Providers, St.Missing);
             child->setText(2, Txt); child->setForeground(2, Col);
         }
     }
@@ -1460,11 +1465,15 @@ void MainWindow::GatherIpfsHealth()
                 const int i = Next->fetch_add(1);
                 if (i >= Todo->size()) break;
                 const QString Cid = Todo->at(i);
-                const int N = IpfsWrapper::ProviderCount(Cid.toStdString());
-                QMetaObject::invokeMethod(this, [this, Cid, N]{
+                const std::string C = Cid.toStdString();
+                // Orphaned-reference check is local + cheap; if the backing file is gone, skip the slow DHT walk.
+                const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
+                const int N = (M == 1) ? -1 : IpfsWrapper::ProviderCount(C);
+                QMetaObject::invokeMethod(this, [this, Cid, N, M]{
                     IpfsCidStat[Cid].Providers = N;
+                    IpfsCidStat[Cid].Missing   = M;
                     if (QTreeWidgetItem * child = IpfsPinChildren.value(Cid, nullptr))
-                    { const auto [Txt, Col] = IpfsHealthText(N); child->setText(2, Txt); child->setForeground(2, Col); }
+                    { const auto [Txt, Col] = IpfsHealthText(N, M); child->setText(2, Txt); child->setForeground(2, Col); }
                 }, Qt::QueuedConnection);
             }
             if (Remaining->fetch_sub(1) == 1)   // last worker → clear the in-flight flag

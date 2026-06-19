@@ -23,6 +23,7 @@ int  VgFetchToPath(const char *cid, const char *dest, char **errOut); // materia
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
 int  VgPinRm(const char *cid, char **errOut);
 long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown
+int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
 
 int  VgPeerCount(void);                         // M3
 int  VgRepoStat(char **outJson, char **errOut); // M3 — {"RepoSize":n,"StorageMax":n}
