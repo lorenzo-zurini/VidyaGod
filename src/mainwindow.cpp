@@ -953,10 +953,18 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     const QString Key = card->GroupKey;
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
-    // ── Pre-download picker: choose which editions + optional content to fetch ──
-    const std::vector<std::string> Editions = card->GroupNodeIds;     // the tile's launchable nodes
-    std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across editions
-    for (const std::string & Lid : Editions)
+    // ── Pre-download picker (per PACKAGE): the base game's editions + the package's other games (the Catalog
+    // overlay "secondaries") as optionals + optional content. Each secondary contributes its recommended edition. ──
+    const std::vector<std::string> Editions = card->GroupNodeIds;     // the base game's launchable nodes
+    std::vector<std::pair<std::string, QString>> Secondaries;         // (recommended-edition launch id, title)
+    for (LibraryGameCard * sc : card->Secondaries)
+        if (sc && !sc->RepNodeId.empty()) Secondaries.push_back({ sc->RepNodeId, sc->GameTitle });
+
+    std::vector<std::string> AllLaunch = Editions;                    // every selectable launch node (base + secondaries)
+    for (const auto & [Lid, T] : Secondaries) AllLaunch.push_back(Lid);
+
+    std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across all of them
+    for (const std::string & Lid : AllLaunch)
         for (const Node * O : ManifestModel::OptionalNodes(CatalogIndex, Lid))
             if (OptSeen.insert(O->NodeId).second) Opts.push_back(O);
 
@@ -966,7 +974,7 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     QVBoxLayout * DL = new QVBoxLayout(&Dlg);
     DL->addWidget(new QLabel("Choose what to download:", &Dlg));
 
-    std::map<std::string, QCheckBox*> EdChecks;
+    std::map<std::string, QCheckBox*> GameChecks;                     // launch id → checkbox (base editions + secondaries)
     {
         QGroupBox * Box = new QGroupBox(Editions.size() > 1 ? "Editions" : "Game", &Dlg);
         QVBoxLayout * BL = new QVBoxLayout(Box);
@@ -978,7 +986,20 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             const int Items = (int)PackageCatalog::NodeContentCids(CatalogIndex, Lid).size();
             QCheckBox * cb = new QCheckBox(QString::fromStdString(Lbl) + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
             cb->setChecked(true);
-            EdChecks[Lid] = cb; BL->addWidget(cb);
+            GameChecks[Lid] = cb; BL->addWidget(cb);
+        }
+        DL->addWidget(Box);
+    }
+    if (!Secondaries.empty())                                         // the package's other games — optional, off by default
+    {
+        QGroupBox * Box = new QGroupBox("Other games in this package", &Dlg);
+        QVBoxLayout * BL = new QVBoxLayout(Box);
+        for (const auto & [Lid, Title] : Secondaries)
+        {
+            const int Items = (int)PackageCatalog::NodeContentCids(CatalogIndex, Lid).size();
+            QCheckBox * cb = new QCheckBox(Title + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
+            cb->setChecked(false);
+            GameChecks[Lid] = cb; BL->addWidget(cb);
         }
         DL->addWidget(Box);
     }
@@ -1004,11 +1025,11 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
 
     auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
     auto Alive     = std::make_shared<std::atomic<bool>>(true);             // false once the dialog closes
-    auto Recompute = [this, EdChecks, OptChecks, Editions, SizeCache, SizeLabel, FreeBytes]() {
+    auto Recompute = [this, GameChecks, OptChecks, AllLaunch, SizeCache, SizeLabel, FreeBytes]() {
         std::map<std::string, bool> Tg; for (const auto & [Id, Cb] : OptChecks) Tg[Id] = Cb->isChecked();
         std::set<std::string> Sel;
-        for (const std::string & Lid : Editions)
-            if (EdChecks.at(Lid)->isChecked())
+        for (const std::string & Lid : AllLaunch)
+            if (GameChecks.at(Lid)->isChecked())
                 for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, Tg)) Sel.insert(C);
         long long Sum = 0; bool AllKnown = true;
         for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
@@ -1017,13 +1038,13 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             .arg(HumanBytes(Sum)).arg(AllKnown ? "" : " (estimating…)"));
         SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;" : "color:#8f98a0;");
     };
-    for (const auto & [Id, Cb] : EdChecks)  connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
-    for (const auto & [Id, Cb] : OptChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : GameChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : OptChecks)  connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
     Recompute();
     {   // gather each CID's size in the background (it's a remote `files stat` on the downloader) and update as they land
         std::map<std::string, bool> AllOn; for (const auto & [Id, Cb] : OptChecks) AllOn[Id] = true;
         std::set<std::string> All;
-        for (const std::string & Lid : Editions)
+        for (const std::string & Lid : AllLaunch)
             for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, AllOn)) All.insert(C);
         std::thread([this, ToQuery = std::vector<std::string>(All.begin(), All.end()), SizeCache, Alive, Recompute]{
             for (const std::string & C : ToQuery) {
@@ -1047,8 +1068,8 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     Alive->store(false);                                         // stop the async size updater from touching dialog widgets
     if (Res != QDialog::Accepted) return;
 
-    std::vector<std::string> LaunchIds;                              // selected editions
-    for (const std::string & Lid : Editions) if (EdChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
+    std::vector<std::string> LaunchIds;                              // selected games (base editions + secondaries)
+    for (const std::string & Lid : AllLaunch) if (GameChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
     if (LaunchIds.empty()) return;                                    // nothing picked
     std::map<std::string, bool> Toggles;                             // optional-content selection
     for (auto & [Id, cb] : OptChecks) Toggles[Id] = cb->isChecked();

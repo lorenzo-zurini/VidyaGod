@@ -222,7 +222,7 @@ void LibraryView::prescaleCovers(int cardW)
     const int cardH = cardW * 3 / 2;
     const int textW = cardW - EditW - 12;
     if (!Cards) return;
-    const int sW = qMin(int(cardW * 0.46), (cardW - (SecPerRow + 1) * SecGap) / SecPerRow);   // small secondary tile
+    const int sW = cardW * 30 / 100;   // overlay thumbnail (matches secW() at this width)
     const int sH = sW * 3 / 2;
     auto scaleMain = [&](LibraryGameCard * c) {
         c->CoverScaled = c->CoverOriginal.isNull() ? QPixmap()
@@ -292,33 +292,29 @@ void LibraryView::layoutCards(int cardW)
             const int n = (g.last >= g.first) ? (g.last - g.first + 1) : 0;
             if (!g.collapsed && n > 0)
             {
-                // Variable-height cells: a package's main tile may carry a block of smaller secondary tiles below it,
-                // so each grid row's height is the tallest cell in it.
-                int rowMaxH = 0;
+                // Uniform-height cells. A package's secondary covers (Catalog) are OVERLAID along the bottom edge of
+                // its main tile — purely aesthetic — so they don't change the row height.
+                const int rows = (n + cols - 1) / cols;
                 for (int k = 0; k < n; k++)
                 {
-                    const int i = g.first + k;
-                    const int col = k % cols;
-                    if (col == 0 && k > 0) { y += rowMaxH + MinGap; rowMaxH = 0; }   // wrap to next row
+                    const int i   = g.first + k;
+                    const int col = k % cols, rrow = k / cols;
                     const int x = hGap + col * (cardW + hGap);
-                    Rects[i] = QRect(x, y, cardW, cardH);
+                    const int cy = y + rrow * (cardH + MinGap);
+                    Rects[i] = QRect(x, cy, cardW, cardH);
 
+                    // Overlay strip: small thumbnails anchored to the bottom of the main tile, left→right, capped.
                     SecRects[i].clear();
-                    const auto & secs = Cards->at(i)->Secondaries;
-                    if (!secs.empty())
+                    const int nsec = qMin((int)Cards->at(i)->Secondaries.size(), SecMax);
+                    if (nsec > 0)
                     {
-                        const int sW = secTileW(), sH = secTileH();
-                        int sy = y + cardH + SecGap;
-                        for (int s = 0; s < (int)secs.size(); s++)
-                        {
-                            const int scol = s % SecPerRow;
-                            if (scol == 0 && s > 0) sy += sH + SecGap;
-                            SecRects[i].append(QRect(x + SecGap + scol * (sW + SecGap), sy, sW, sH));
-                        }
+                        const int sW = secW(), sH = secH();
+                        const int sy = cy + cardH - SecGap - sH;
+                        for (int s = 0; s < nsec; s++)
+                            SecRects[i].append(QRect(x + SecGap + s * (sW + SecGap), sy, sW, sH));
                     }
-                    rowMaxH = qMax(rowMaxH, cardH + secBlockH((int)secs.size()));
                 }
-                y += rowMaxH + MinGap;
+                y += rows * cardH + (rows - 1) * MinGap + MinGap;
             }
             else
             {
@@ -432,6 +428,31 @@ void LibraryView::onPaint(QPaintEvent * e)
                        Qt::AlignCenter | Qt::TextWordWrap, card->GameTitle);
         }
 
+        // Secondary covers (Catalog per-package): small thumbnails overlaid along the bottom edge of the main cover,
+        // purely aesthetic (the games are pickable from the package's download dialog). Drawn UNDER the Downloading/
+        // hover overlays below, so those cover them.
+        if (i < SecRects.size() && !SecRects[i].isEmpty()) {
+            const auto & secs = card->Secondaries;
+            for (int s = 0; s < SecRects[i].size() && s < (int)secs.size(); s++) {
+                const QRect & sr = SecRects[i][s];
+                LibraryGameCard * sc = secs[s];
+                p.fillRect(sr.adjusted(-1,-1,1,1), QColor(0,0,0,120));     // subtle shadow/separation
+                if (!sc->CoverSmall.isNull()) p.drawPixmap(sr, sc->CoverSmall);
+                else { p.fillRect(sr, QApplication::palette().color(QPalette::Mid));
+                       p.setPen(QColor(0x8f,0x98,0xa0)); p.drawText(sr.adjusted(2,2,-2,-2), Qt::AlignCenter|Qt::TextWordWrap, sc->GameTitle); }
+                p.setPen(QColor(255,255,255,90)); p.setBrush(Qt::NoBrush); p.drawRect(sr.adjusted(0,0,-1,-1));  // thin border
+            }
+            // "+N" badge when there are more secondaries than overlay slots.
+            const int extra = (int)secs.size() - SecRects[i].size();
+            if (extra > 0) {
+                const QRect & last = SecRects[i].last();
+                p.fillRect(last, QColor(0,0,0,150));
+                p.setPen(Qt::white); p.setFont(PlayFont);
+                p.drawText(last, Qt::AlignCenter, QString("+%1").arg(extra));
+                p.setFont(TitleFont);
+            }
+        }
+
         // In-flight import (Available): darken + a centered "Downloading…" label and a progress bar; no hover.
         if (card->Downloading) {
             p.fillRect(r, QColor(0,0,0,150));
@@ -461,7 +482,7 @@ void LibraryView::onPaint(QPaintEvent * e)
             p.drawRoundedRect(r.adjusted(1,1,-2,-2), 4, 4);
         }
 
-        if (i != HoveredIdx || HoveredSecIdx >= 0) continue;   // a hovered secondary suppresses the main's hover
+        if (i != HoveredIdx) continue;
 
         // Hover: darken + action button (Play or Download) + title strip
         p.fillRect(r, QColor(0,0,0,110));
@@ -489,49 +510,6 @@ void LibraryView::onPaint(QPaintEvent * e)
                        Qt::AlignCenter, "···");
         }
     }
-
-    // Secondary sub-tiles (Catalog per-package): a package's other un-downloaded games, drawn small beneath the main.
-    for (int i = 0; i < count && i < SecRects.size(); i++)
-    {
-        const auto & secs = Cards->at(i)->Secondaries;
-        for (int s = 0; s < SecRects[i].size() && s < (int)secs.size(); s++)
-        {
-            const QRect & sr = SecRects[i][s];
-            if (!sr.intersects(cRect)) continue;
-            LibraryGameCard * sc = secs[s];
-
-            if (!sc->CoverSmall.isNull()) p.drawPixmap(sr, sc->CoverSmall);
-            else {
-                p.fillRect(sr, QApplication::palette().color(QPalette::Mid));
-                p.setPen(QColor(0x8f,0x98,0xa0)); p.setFont(TitleFont);
-                p.drawText(sr.adjusted(3,3,-3,-3), Qt::AlignCenter|Qt::TextWordWrap, sc->GameTitle);
-            }
-
-            if (sc->Downloading) {                                   // compact downloading overlay
-                p.fillRect(sr, QColor(0,0,0,150));
-                const int pct = sc->DownloadPercent >= 0 ? (int)(sc->DownloadPercent + 0.5) : -1;
-                p.setPen(Qt::white); p.setFont(TitleFont);
-                p.drawText(sr, Qt::AlignCenter, pct >= 0 ? QString("%1%").arg(pct) : QStringLiteral("…"));
-                const int bw = qMin(sr.width() - 8, 90);
-                const QRect bar(sr.left() + (sr.width()-bw)/2, sr.bottom() - 10, bw, 4);
-                p.setPen(Qt::NoPen); p.setBrush(QColor(255,255,255,60)); p.drawRoundedRect(bar, 2, 2);
-                p.setBrush(QColor(0x4a,0x90,0xd9,235));
-                const int fw = pct >= 0 ? bar.width() * pct / 100 : bar.width();
-                p.drawRoundedRect(QRect(bar.left(), bar.top(), fw, bar.height()), 2, 2);
-                continue;
-            }
-            if (i == HoveredIdx && s == HoveredSecIdx) {             // hovered secondary → download affordance + title
-                p.fillRect(sr, QColor(0,0,0,120));
-                p.setPen(Qt::white); p.setFont(PlayFont);
-                p.drawText(sr, Qt::AlignCenter, "⬇");
-                const QRect line(sr.left(), sr.bottom()-18, sr.width(), 18);
-                p.fillRect(line, QColor(0,0,0,170));
-                p.setPen(QColor(255,255,255,220)); p.setFont(TitleFont);
-                p.drawText(line.adjusted(4,0,-4,0), Qt::AlignVCenter|Qt::AlignLeft|Qt::TextSingleLine,
-                           TitleFM.elidedText(sc->GameTitle, Qt::ElideRight, sr.width()-8));
-            }
-        }
-    }
     p.setFont(TitleFont);
 }
 
@@ -539,27 +517,16 @@ void LibraryView::onMouseMove(QMouseEvent * e)
 {
     if (!Cards) return;
     const QPoint pos = e->pos() + QPoint(0, verticalScrollBar()->value());
-    int newHover = -1, newSec = -1;
+    int newHover = -1;
     const int count = Cards->count();
-    for (int i = 0; i < count; i++) {
-        if (Rects[i].contains(pos)) { newHover = i; break; }
-        // a package's small secondary tiles sit beneath its main rect — test them too
-        if (i < SecRects.size())
-            for (int s = 0; s < SecRects[i].size(); s++)
-                if (SecRects[i][s].contains(pos)) { newHover = i; newSec = s; break; }
-        if (newHover >= 0) break;
-    }
-    if (newHover == HoveredIdx && newSec == HoveredSecIdx) return;
+    for (int i = 0; i < count; i++)
+        if (Rects[i].contains(pos)) { newHover = i; break; }   // overlay thumbnails sit inside the main rect
+    if (newHover == HoveredIdx) return;
 
     const int sy = verticalScrollBar()->value();
-    auto cellRect = [&](int i) {
-        QRect r = Rects[i];
-        for (const QRect & sr : SecRects[i]) r = r.united(sr);
-        return r;
-    };
-    if (HoveredIdx >= 0) viewport()->update(cellRect(HoveredIdx).translated(0,-sy));
-    HoveredIdx = newHover; HoveredSecIdx = newSec;
-    if (HoveredIdx >= 0) viewport()->update(cellRect(HoveredIdx).translated(0,-sy));
+    if (HoveredIdx >= 0) viewport()->update(Rects[HoveredIdx].translated(0,-sy));
+    HoveredIdx = newHover;
+    if (HoveredIdx >= 0) viewport()->update(Rects[HoveredIdx].translated(0,-sy));
 }
 
 void LibraryView::onMousePress(QMouseEvent * e)
@@ -580,17 +547,7 @@ void LibraryView::onMousePress(QMouseEvent * e)
 
     const int count = Cards->count();
     for (int i = 0; i < count; i++) {
-        // Secondary sub-tile (Catalog per-package): download/cancel that specific game.
-        if (i < SecRects.size()) {
-            const auto & secs = Cards->at(i)->Secondaries;
-            for (int s = 0; s < SecRects[i].size() && s < (int)secs.size(); s++) {
-                if (!SecRects[i][s].contains(pos)) continue;
-                LibraryGameCard * sc = secs[s];
-                if (sc->Downloading) emit cancelRequested(sc);
-                else                 emit downloadRequested(sc);
-                return;
-            }
-        }
+        // A click anywhere on the card (including over the aesthetic secondary thumbnails) is the package action.
         if (!Rects[i].contains(pos)) continue;          // collapsed cards have empty rects → skipped
         SelectedIdx = i;                                // keep keyboard focus in sync with the click
         if (Cards->at(i)->Downloading) { emit cancelRequested(Cards->at(i)); return; }   // in flight → offer to cancel
@@ -605,10 +562,8 @@ void LibraryView::onMousePress(QMouseEvent * e)
 void LibraryView::onLeave()
 {
     if (HoveredIdx < 0) return;
-    const int old = HoveredIdx; HoveredIdx = -1; HoveredSecIdx = -1;
-    QRect r = Rects[old];
-    if (old < SecRects.size()) for (const QRect & sr : SecRects[old]) r = r.united(sr);
-    viewport()->update(r.translated(0, -verticalScrollBar()->value()));
+    const int old = HoveredIdx; HoveredIdx = -1;
+    viewport()->update(Rects[old].translated(0, -verticalScrollBar()->value()));
 }
 
 void LibraryView::keyPressEvent(QKeyEvent * e)

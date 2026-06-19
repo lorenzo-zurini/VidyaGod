@@ -138,7 +138,6 @@ private:
     bool                       EmitDownload = false;          // card click → downloadRequested vs play()
     bool                       ShowEditCorner = true;         // draw/handle the "···" edit corner
     int HoveredIdx = -1;
-    int HoveredSecIdx = -1;   // when HoveredIdx is a package: which secondary sub-tile is hovered (-1 = the main tile)
     int SelectedIdx = -1;   // keyboard-focused card (-1 = none); painted with a focus ring
     int CardW = 0, CardH = 0;
     int LastCols = 0, LastHGap = 0;
@@ -149,13 +148,12 @@ private:
     static constexpr int EditW    = 30;
     static constexpr int LineH    = 30;
     static constexpr int HeaderH  = 34;   // collapsible section header band height
-    static constexpr int SecPerRow = 3;   // max secondary (smaller) tiles per row under a package's main game
-    static constexpr int SecGap    = 8;   // gap around/between secondary tiles
-    // Small secondary-tile width: ~45% of the main width, but never so wide that >SecPerRow won't fit.
-    int  secTileW() const { return qMin(int(CardW * 0.46), (CardW - (SecPerRow + 1) * SecGap) / SecPerRow); }
-    int  secTileH() const { return secTileW() * 3 / 2; }
-    // Extra cell height a package needs below its main tile for n secondary tiles (0 if none).
-    int  secBlockH(int n) const { return n <= 0 ? 0 : SecGap + ((n + SecPerRow - 1) / SecPerRow) * (secTileH() + SecGap); }
+    // Catalog per-package: a package's secondary games' covers are drawn small, OVERLAID along the bottom edge of
+    // the main cover (purely aesthetic) — so every row keeps the uniform card height. SecMax = how many fit.
+    static constexpr int SecMax   = 3;    // max secondary thumbnails overlaid on a card
+    static constexpr int SecGap   = 6;    // gap between overlay thumbnails / from the card edges
+    int  secW() const { return CardW * 30 / 100; }   // overlay thumbnail width (~30% of the main)
+    int  secH() const { return secW() * 3 / 2; }     // cover aspect 2:3
 
     QFont        TitleFont, PlayFont;
     QFontMetrics TitleFM;
