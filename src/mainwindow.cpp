@@ -693,7 +693,9 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
                 if (!Cid.empty())
                 {
                     Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
-                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
+                    //Group ALL covers under one "Assets" group (the grouping key is the package value), so they
+                    //don't scatter across each game's group. The leaf keeps the "<package> — cover" label.
+                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
                 }
             }
         }
@@ -1062,6 +1064,11 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         }
     DownloadUidCids[Key] = Cids;
 
+    // Pre-show every CID as a "Queued" transfer; HydrateNode fetches them sequentially, and transferStarted flips
+    // each to "Fetching…" as it begins. Leftover queued rows are cleared when the worker finishes (below).
+    if (IpfsTransfers)
+        for (const QString & c : Cids) { EnsureTransferRow(c, QStringLiteral("Queued")); IpfsTransferQueued.insert(c); }
+
     // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
     for (LibraryGameCard * c : *AvailableGameCards)
         if (c && c->GroupKey == Key) { c->Downloading = true; c->DownloadPercent = 0.0; }
@@ -1079,7 +1086,14 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);
             for (const QString & c : DownloadUidCids.value(Key))
-            { IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); }
+            {
+                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c);
+                // Drop any row still "Queued" (never started — the CIDs after a failed/cancelled one).
+                if (IpfsTransferQueued.remove(c))
+                    if (QTableWidgetItem * p = IpfsTransferProgress.value(c, nullptr))
+                    { const int r = IpfsTransfers ? IpfsTransfers->row(p) : -1; if (r >= 0) IpfsTransfers->removeRow(r);
+                      IpfsTransferProgress.remove(c); IpfsTransferSpeed.remove(c); }
+            }
             DownloadUidCids.remove(Key);
             if (Ok) RebuildDynamicUI();
             else if (!Cancelled) LogErr("MainWindow::DownloadAvailable", "Download failed: " + Err);   // no dialog — the
@@ -1087,6 +1101,43 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             RebuildAvailableTab(); RefreshIpfsTab();
         }, Qt::QueuedConnection);
     }).detach();
+}
+
+// Ensure a transfers-table row exists for a CID (creating it with the given status if absent), and return its
+// progress item. Columns: Name | Size | Progress | Speed | Status | CID. Used both to pre-show "Queued" CIDs and to
+// open an active "Fetching…" row. Kicks an off-thread CidSize fill when the size isn't cached yet.
+QTableWidgetItem * MainWindow::EnsureTransferRow(const QString & cid, const QString & status)
+{
+    if (!IpfsTransfers) return nullptr;
+    if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) return prog;   // already have a row
+
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);
+    IpfsTransfers->setSortingEnabled(false);                       // keep the row intact while we fill it
+    const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
+    IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
+    IpfsTransfers->setItem(row, 1, new ByteSizeItem(IpfsCidStat.value(cid).SizeBytes));
+    QTableWidgetItem * prog = new QTableWidgetItem(); prog->setData(Qt::DisplayRole, -1);   // indeterminate until first %
+    IpfsTransfers->setItem(row, 2, prog);
+    IpfsTransfers->setItem(row, 3, new QTableWidgetItem());        // Speed — blank until progress arrives
+    IpfsTransfers->setItem(row, 4, new QTableWidgetItem(status));
+    IpfsTransfers->setItem(row, 5, new QTableWidgetItem(cid));
+    IpfsTransfers->setSortingEnabled(true);
+    IpfsTransferProgress.insert(cid, prog);
+
+    // Async-fill the total size if we don't have it cached (one cheap `files stat`, off the GUI thread).
+    if (IpfsCidStat.value(cid).SizeBytes < 0)
+        std::thread([this, cid]{
+            const long long Sz = IpfsWrapper::CidSize(cid.toStdString());
+            QMetaObject::invokeMethod(this, [this, cid, Sz]{
+                if (Sz >= 0) IpfsCidStat[cid].SizeBytes = Sz;
+                QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr);
+                const int r = p ? IpfsTransfers->row(p) : -1;
+                if (r >= 0 && IpfsTransfers->item(r, 1))
+                { IpfsTransfers->item(r, 1)->setData(Qt::UserRole, (qlonglong)Sz);
+                  IpfsTransfers->item(r, 1)->setText(HumanBytes(Sz)); }
+            }, Qt::QueuedConnection);
+        }).detach();
+    return prog;
 }
 
 void MainWindow::BuildIpfsTab()
@@ -1123,8 +1174,8 @@ void MainWindow::BuildIpfsTab()
     // delegate-drawn (no cell widget), so re-sorting can't desync it.
     QGroupBox * txBox = new QGroupBox("Transfers", IpfsTabWidget);
     QVBoxLayout * txl = new QVBoxLayout(txBox);
-    IpfsTransfers = new QTableWidget(0, 5, txBox);
-    IpfsTransfers->setHorizontalHeaderLabels({"Name", "Size", "Progress", "Status", "CID"});
+    IpfsTransfers = new QTableWidget(0, 6, txBox);
+    IpfsTransfers->setHorizontalHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "CID"});
     IpfsTransfers->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     IpfsTransfers->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsTransfers));
     IpfsTransfers->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1154,48 +1205,45 @@ void MainWindow::BuildIpfsTab()
     IpfsManager * mgr = IpfsManager::instance();
     connect(mgr, &IpfsManager::transferStarted, this, [this](QString cid) {
         if (!IpfsTransfers) return;
-        QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr);
-        if (!prog) {
-            if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*GlobalConfigJSON, &IpfsCidPackages);
-            IpfsTransfers->setSortingEnabled(false);          // keep the row intact while we fill it
-            const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
-            IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
-            IpfsTransfers->setItem(row, 1, new ByteSizeItem(IpfsCidStat.value(cid).SizeBytes));
-            prog = new QTableWidgetItem(); prog->setData(Qt::DisplayRole, -1);   // indeterminate until first %
-            IpfsTransfers->setItem(row, 2, prog);
-            IpfsTransfers->setItem(row, 3, new QTableWidgetItem("Fetching…"));
-            IpfsTransfers->setItem(row, 4, new QTableWidgetItem(cid));
-            IpfsTransfers->setSortingEnabled(true);
-            IpfsTransferProgress.insert(cid, prog);
-
-            // Async-fill the total size if we don't have it cached (one cheap `files stat`, off the GUI thread).
-            if (IpfsCidStat.value(cid).SizeBytes < 0)
-                std::thread([this, cid]{
-                    const long long Sz = IpfsWrapper::CidSize(cid.toStdString());
-                    QMetaObject::invokeMethod(this, [this, cid, Sz]{
-                        if (Sz >= 0) IpfsCidStat[cid].SizeBytes = Sz;
-                        QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr);
-                        const int r = p ? IpfsTransfers->row(p) : -1;
-                        if (r >= 0 && IpfsTransfers->item(r, 1))
-                        { IpfsTransfers->item(r, 1)->setData(Qt::UserRole, (qlonglong)Sz);
-                          IpfsTransfers->item(r, 1)->setText(HumanBytes(Sz)); }
-                    }, Qt::QueuedConnection);
-                }).detach();
-        } else {
-            const int row = IpfsTransfers->row(prog);
-            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText("Fetching…");
-        }
+        const bool Existed = IpfsTransferProgress.contains(cid);
+        EnsureTransferRow(cid, QStringLiteral("Fetching…"));
+        if (Existed)   // was a "Queued" (or re-transferred) row — flip its status to active
+            if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
+            { const int row = IpfsTransfers->row(prog);
+              if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Fetching…"); }
+        IpfsTransferQueued.remove(cid);
+        IpfsTransferSpeed.insert(cid, qMakePair((qlonglong)0, QDateTime::currentMSecsSinceEpoch()));  // start the rate clock
     });
     connect(mgr, &IpfsManager::transferProgress, this, [this](QString cid, double pct) {
-        if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
-            prog->setData(Qt::DisplayRole, int(pct + 0.5));
+        QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr);
+        if (!prog) return;
+        prog->setData(Qt::DisplayRole, int(pct + 0.5));
+
+        // Speed: bytes transferred so far vs the last sample, refreshed at most every ~0.5 s (the node emits
+        // progress per ~1 MB read, so per-event deltas would be jittery). Needs the cached total size.
+        const long long Size = IpfsCidStat.value(cid).SizeBytes;
+        if (Size < 0) return;
+        const qlonglong Bytes = (qlonglong)(pct / 100.0 * double(Size));
+        const qlonglong Now   = QDateTime::currentMSecsSinceEpoch();
+        const QPair<qlonglong,qlonglong> Sample = IpfsTransferSpeed.value(cid, qMakePair((qlonglong)0, Now));
+        const qlonglong Dt = Now - Sample.second;
+        if (Dt >= 500) {
+            const qlonglong Rate = Dt > 0 ? (Bytes - Sample.first) * 1000 / Dt : 0;
+            const int row = IpfsTransfers->row(prog);
+            if (row >= 0 && IpfsTransfers->item(row, 3))
+                IpfsTransfers->item(row, 3)->setText(Rate > 0 ? (HumanBytes(Rate) + "/s") : QString());
+            IpfsTransferSpeed.insert(cid, qMakePair(Bytes, Now));
+        }
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
+        IpfsTransferQueued.remove(cid);
+        IpfsTransferSpeed.remove(cid);
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
             const int row = IpfsTransfers->row(prog);
+            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());  // clear Speed
             if (ok) {
                 prog->setData(Qt::DisplayRole, 100);
-                if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText("Done");
+                if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Done");
                 // Drop the finished row shortly after (a brief "Done" flash), so the list shows only in-flight fetches.
                 QTimer::singleShot(1500, this, [this, cid]{
                     if (QTableWidgetItem * p = IpfsTransferProgress.value(cid, nullptr)) {
@@ -1204,10 +1252,10 @@ void MainWindow::BuildIpfsTab()
                         IpfsTransferProgress.remove(cid);
                     }
                 });
-            } else if (row >= 0 && IpfsTransfers->item(row, 3)) {
+            } else if (row >= 0 && IpfsTransfers->item(row, 4)) {
                 // Keep failures visible WITH the reason (e.g. "no space left on device") in the Status cell + tooltip.
                 const QString Reason = error.isEmpty() ? QStringLiteral("Failed") : ("Failed: " + error.section('\n', -1).trimmed());
-                QTableWidgetItem * st = IpfsTransfers->item(row, 3);
+                QTableWidgetItem * st = IpfsTransfers->item(row, 4);
                 st->setText(Reason);
                 st->setToolTip(error.isEmpty() ? QStringLiteral("Download failed") : error);
                 st->setForeground(QColor("#c0726a"));
