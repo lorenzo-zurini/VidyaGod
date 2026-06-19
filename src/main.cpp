@@ -195,12 +195,12 @@ int main(int argc, char *argv[])
     }
 
     //Embedded IPFS node (libvgipfs): open its private repo and hold it for this process's lifetime. The repo lives
-    //in the XDG data dir (NOT ~/.VidyaGod, which the user may wipe — the peer identity should survive that). Safe as
-    //a single opener because of the single-instance guard above. Non-fatal: if it fails the app still runs.
-    //M2: linked + started to validate the in-process Go runtime; the live fetch/seed path is swapped over in M4.
+    //INSIDE the app data dir (~/.VidyaGod/ipfs) so it shares the lifecycle of the content it references: deleting
+    //~/.VidyaGod wipes the node repo too (pins + filestore refs), giving a true clean slate. (A repo outside it
+    //would keep filestore references to now-deleted LIBRARY files, then hard-fail fetches it thinks it already has.)
+    //Safe as a single opener because of the single-instance guard above. Non-fatal: if it fails the app still runs.
     {
-        const QString IpfsRepo = Portable ? (AppDataDir.absolutePath() + "/ipfs")
-                                          : (QDir::homePath() + "/.local/share/VidyaGod/ipfs");
+        const QString IpfsRepo = AppDataDir.absolutePath() + "/ipfs";
         char *VgErr = nullptr;
         if (VgStart(IpfsRepo.toUtf8().constData(), &VgErr) != 0)
         {
