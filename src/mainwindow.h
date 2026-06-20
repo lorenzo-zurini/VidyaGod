@@ -121,6 +121,9 @@ private:
     QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
     QSet<QString>   IpfsTransferQueued;           // CIDs shown as "Queued" (in a download but not yet started)
     QHash<QString, QPair<qlonglong,qlonglong>> IpfsTransferSpeed;  // CID → {sampleBytes, sampleMs} for the rate calc
+    QHash<QString, qlonglong> IpfsTransferLastProgress;  // CID → ms of last forward progress (drives stall detection)
+    QSet<QString>   IpfsTransferStalled;          // CIDs currently shown as stalled (no progress) — avoids redundant UI churn
+    QTimer        * IpfsStallTimer = nullptr;     // ages out phantom speed + flags transfers with no recent progress
     QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
     QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)
     QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + provider count (cached; Refresh clears it)

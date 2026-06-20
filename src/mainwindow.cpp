@@ -1267,12 +1267,22 @@ void MainWindow::BuildIpfsTab()
             { const int row = IpfsTransfers->row(prog);
               if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Fetching…"); }
         IpfsTransferQueued.remove(cid);
-        IpfsTransferSpeed.insert(cid, qMakePair((qlonglong)0, QDateTime::currentMSecsSinceEpoch()));  // start the rate clock
+        const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
+        IpfsTransferSpeed.insert(cid, qMakePair((qlonglong)0, Now));  // start the rate clock
+        IpfsTransferLastProgress.insert(cid, Now);                    // start the stall clock
+        IpfsTransferStalled.remove(cid);
     });
     connect(mgr, &IpfsManager::transferProgress, this, [this](QString cid, double pct) {
         QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr);
         if (!prog) return;
         prog->setData(Qt::DisplayRole, int(pct + 0.5));
+
+        const qlonglong NowMs = QDateTime::currentMSecsSinceEpoch();
+        IpfsTransferLastProgress.insert(cid, NowMs);   // bytes are flowing → reset the stall clock
+        if (IpfsTransferStalled.remove(cid)) {         // was flagged stalled — peer(s) came back, flip status active
+            const int r = IpfsTransfers->row(prog);
+            if (r >= 0 && IpfsTransfers->item(r, 4)) IpfsTransfers->item(r, 4)->setText("Fetching…");
+        }
 
         // Speed: bytes transferred so far vs the last sample, refreshed at most every ~0.5 s (the node emits
         // progress per ~1 MB read, so per-event deltas would be jittery). Needs the cached total size.
@@ -1294,6 +1304,8 @@ void MainWindow::BuildIpfsTab()
         // All bytes are down; the node is re-referencing the file ("pinning"), which is slow for big files. Show it
         // so the row doesn't look stuck at 100%.
         IpfsTransferSpeed.remove(cid);
+        IpfsTransferLastProgress.remove(cid);   // finalizing isn't a stall — stop watching it
+        IpfsTransferStalled.remove(cid);
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
             prog->setData(Qt::DisplayRole, 100);
             const int row = IpfsTransfers->row(prog);
@@ -1304,6 +1316,8 @@ void MainWindow::BuildIpfsTab()
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
         IpfsTransferQueued.remove(cid);
         IpfsTransferSpeed.remove(cid);
+        IpfsTransferLastProgress.remove(cid);
+        IpfsTransferStalled.remove(cid);
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
             const int row = IpfsTransfers->row(prog);
             if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());  // clear Speed
@@ -1340,6 +1354,31 @@ void MainWindow::BuildIpfsTab()
     connect(IpfsRefreshTimer, &QTimer::timeout, this, &MainWindow::RefreshIpfsTab);
     if (MainWindowTabWidget && MainWindowTabWidget->currentWidget() == IpfsTabWidget)
     { IpfsRefreshTimer->start(5000); RefreshIpfsTab(); }
+
+    // Stall watchdog: the node reports progress only as bytes arrive, so a fetch whose only seeder vanished mid-transfer
+    // simply stops emitting events — the Speed cell would otherwise freeze at its last value (the "still 2 MB/s" bug).
+    // This cheap in-memory tick zeroes the phantom speed and flags such rows "Stalled — waiting for peers…". The fetch
+    // is NOT cancelled: bitswap keeps re-searching the DHT, so if the seeder (or any other peer) returns, transferProgress
+    // resumes and flips the row back to "Fetching…".
+    IpfsStallTimer = new QTimer(this);
+    IpfsStallTimer->setInterval(2000);
+    connect(IpfsStallTimer, &QTimer::timeout, this, [this]{
+        if (!IpfsTransfers || IpfsTransferLastProgress.isEmpty()) return;
+        const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
+        constexpr qlonglong StallMs = 6000;   // no forward progress for this long → treat as stalled
+        for (auto it = IpfsTransferLastProgress.constBegin(); it != IpfsTransferLastProgress.constEnd(); ++it) {
+            const QString & Cid = it.key();
+            if (Now - it.value() < StallMs || IpfsTransferStalled.contains(Cid)) continue;
+            QTableWidgetItem * prog = IpfsTransferProgress.value(Cid, nullptr);
+            if (!prog) continue;
+            const int row = IpfsTransfers->row(prog);
+            if (row < 0) continue;
+            IpfsTransferStalled.insert(Cid);
+            if (IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());            // clear phantom Speed
+            if (IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Stalled — waiting for peers…");
+        }
+    });
+    IpfsStallTimer->start();
 }
 
 void MainWindow::RefreshIpfsTab()
