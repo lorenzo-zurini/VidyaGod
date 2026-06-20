@@ -126,9 +126,10 @@ PreLaunchWindow::PreLaunchWindow(
     RememberCheck         = new QCheckBox("Hide this dialog next time",          CVContainer);
     CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",       CVContainer);
     DryRunCheck           = new QCheckBox("Dry test run (delete WRITELAYER on cleanup)", CVContainer);
-    PreserveRuntimeCheck  = new QCheckBox("Preserve runtime after exit (for inspection)", CVContainer);
-    PreserveRuntimeCheck->setToolTip("Keep this run's runtime (mounts + files) in place after the game exits, for "
-                                     "inspection. It's left mounted and cleaned up on the next launch.");
+    PreserveRuntimeCheck  = new QCheckBox("Inspect runtime after exit (pause before cleanup)", CVContainer);
+    PreserveRuntimeCheck->setToolTip("After the game exits, pause with a dialog while this run's runtime (mounts + "
+                                     "files) is still in place so you can inspect it. It's cleaned up (unmounted + "
+                                     "deleted) as soon as you close that dialog — never left dangling.");
     CVContainerLayout->addWidget(RememberCheck);
     CVContainerLayout->addWidget(CloseAfterLaunchCheck);
     CVContainerLayout->addWidget(DryRunCheck);

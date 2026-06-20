@@ -4,6 +4,8 @@
 #include "packagecatalog.h"
 #include "commonutils.h"
 
+#include <QApplication>
+#include <QMessageBox>
 #include <filesystem>
 
 // ============================================================================
@@ -168,17 +170,25 @@ void LaunchThread::run()
     const bool UserKilled = LocalWrapper->UserKilled;
 
     // -----------------------------------------------------------------
-    // Step 4: Cleanup — unless the user asked (via the prelaunch "Preserve runtime" checkbox) to keep the run's
-    // runtime (mounts + files) in place for inspection. Preserved runtimes are left mounted and cleaned on the next
-    // launch. (CLI --node path runs the engine directly and never reaches here.)
+    // Step 4: Cleanup. If the user ticked the prelaunch "Inspect runtime" checkbox, first pause here with a modal
+    // dialog while the runtime (mounts + files) is STILL in place, so they can examine it; cleanup runs the moment
+    // that dialog is dismissed. Cleanup ALWAYS happens either way — the runtime is never left dangling. The prompt
+    // runs on the GUI thread (blocking) so the worker waits for it. (CLI --node path never reaches here.)
     // -----------------------------------------------------------------
     std::filesystem::path WriteLayerPath = LocalWrapper->ContainerParams.WriteLayerPath;
 
     if (PreserveRuntime)
-        LogOut("LaunchThread", "Runtime preserved for inspection at " + LocalWrapper->ContainerParams.TempPath.string()
-                               + " (left mounted; cleaned on the next launch).");
-    else
-        LocalWrapper->Cleanup();
+    {
+        const QString TempPath = QString::fromStdString(LocalWrapper->ContainerParams.TempPath.string());
+        QMetaObject::invokeMethod(qApp, [TempPath]{
+            QMessageBox::information(QApplication::activeWindow(), "Inspect runtime",
+                "The run's runtime (mounts + files) is available for inspection at:\n\n" + TempPath +
+                "\n\nIt will be cleaned up (unmounted + deleted) as soon as you close this dialog.");
+        }, Qt::BlockingQueuedConnection);
+        LogOut("LaunchThread", "Runtime inspected at " + LocalWrapper->ContainerParams.TempPath.string()
+                               + "; cleaning up now.");
+    }
+    LocalWrapper->Cleanup();
 
     if (this->DryRun)
     {

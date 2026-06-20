@@ -30,10 +30,11 @@ public:
     std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()
     std::string                        ScreenHeight;      // (QGuiApplication screen access off the main thread is undefined behaviour)
     bool                               DryRun = false;    // If true, WRITELAYER is deleted after cleanup
-    bool                               PreserveRuntime = false; // If true, the run's runtime (mounts + files) is left
-                                                            // in place after exit for inspection (cleaned next launch);
-                                                            // otherwise it's unmounted+deleted. Set from the prelaunch
-                                                            // checkbox — no post-run dialog.
+    bool                               PreserveRuntime = false; // If true, pause after exit with a modal dialog while
+                                                            // the runtime (mounts + files) is still in place for
+                                                            // inspection; cleanup runs the moment it's dismissed.
+                                                            // Cleanup always happens — never left dangling. Set from
+                                                            // the prelaunch checkbox.
 
     // Forcibly kills the running game process (if any).
     void kill();
