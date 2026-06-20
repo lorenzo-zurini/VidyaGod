@@ -126,10 +126,13 @@ PreLaunchWindow::PreLaunchWindow(
     RememberCheck         = new QCheckBox("Hide this dialog next time",          CVContainer);
     CloseAfterLaunchCheck = new QCheckBox("Close window when game starts",       CVContainer);
     DryRunCheck           = new QCheckBox("Dry test run (delete WRITELAYER on cleanup)", CVContainer);
-    // (Runtime preservation is now asked via a dialog after the game exits, not a pre-checkbox.)
+    PreserveRuntimeCheck  = new QCheckBox("Preserve runtime after exit (for inspection)", CVContainer);
+    PreserveRuntimeCheck->setToolTip("Keep this run's runtime (mounts + files) in place after the game exits, for "
+                                     "inspection. It's left mounted and cleaned up on the next launch.");
     CVContainerLayout->addWidget(RememberCheck);
     CVContainerLayout->addWidget(CloseAfterLaunchCheck);
     CVContainerLayout->addWidget(DryRunCheck);
+    CVContainerLayout->addWidget(PreserveRuntimeCheck);
     CVContainerLayout->addStretch();
 
     ProgressBar = new QProgressBar(ControlWidget);
@@ -187,6 +190,22 @@ PreLaunchWindow::PreLaunchWindow(
     RebuildRunnerCombo();
     RebuildModuleTree();
     RebuildCustomVarPickers();
+
+    // Open at a size where every section is fully visible — no manual resize or splitter drag needed. The control
+    // pane lives in a scroll area (whose own sizeHint is small), so derive the height it needs from its actual
+    // content and seed the splitter to give the controls that height; the console takes the rest. Capped to the
+    // screen so it never opens off-screen.
+    CVContainer->adjustSize();
+    const int ControlsH = CVContainer->sizeHint().height() + 96;   // + the pickers + status line above the scroll area
+    int W = 980, H = ControlsH + 300 /*usable console*/ + 70 /*buttons + margins*/;
+    if (QScreen* Scr = QGuiApplication::primaryScreen())
+    {
+        const QRect A = Scr->availableGeometry();
+        W = std::min(W, A.width()  - 80);
+        H = std::min(H, A.height() - 80);
+    }
+    resize(std::max(W, 800), std::max(H, 600));
+    VSplitter->setSizes({ControlsH, std::max(200, height() - ControlsH)});
 }
 
 PreLaunchWindow::~PreLaunchWindow()
@@ -281,6 +300,17 @@ void PreLaunchWindow::RebuildModuleTree()
         for (const std::string& E : N->Exclude) { ModuleExcludes[N->NodeId].insert(E); ModuleExcludes[E].insert(N->NodeId); }
     }
     ModuleGroup->setVisible(ModuleTree->topLevelItemCount() > 0);
+    // Size the tree to its content (capped at 8 rows) so all modules are visible without an inner scrollbar — the
+    // group then claims its proper space in the control pane instead of being squashed to a couple of rows.
+    if (const int Rows = ModuleTree->topLevelItemCount(); Rows > 0)
+    {
+        int RowH = ModuleTree->sizeHintForRow(0);
+        if (RowH <= 0) RowH = 22;
+        const int VisibleRows = std::min(Rows, 8);
+        const int H = VisibleRows * RowH + 2 * ModuleTree->frameWidth() + 4;
+        ModuleTree->setMinimumHeight(H);
+        ModuleTree->setMaximumHeight(Rows <= 8 ? H : QWIDGETSIZE_MAX);   // exact fit if few; scroll if many
+    }
     RefreshModuleLocks();
 }
 
@@ -536,7 +566,7 @@ void PreLaunchWindow::onLaunchClicked()
     RunnerCombo->setEnabled(false); EditionCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
     ModuleGroup->setEnabled(false);
     RememberCheck->setEnabled(false);
-    CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false);
+    CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false); PreserveRuntimeCheck->setEnabled(false);
     LaunchButton->setEnabled(false); CloseButton->setEnabled(false);
     ProgressBar->setValue(0); ProgressBar->setVisible(true);
     StatusLabel->setText("Starting...");
@@ -549,6 +579,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->ModuleStates      = CollectModuleStates();
     LaunchWorker->RunnerID          = SelectedRunnerID;
     LaunchWorker->DryRun            = DryRunCheck->isChecked();
+    LaunchWorker->PreserveRuntime   = PreserveRuntimeCheck->isChecked();
     if (QScreen* Scr = QGuiApplication::primaryScreen())
     {
         LaunchWorker->ScreenWidth  = std::to_string(Scr->geometry().width());
@@ -604,7 +635,7 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     RunnerCombo->setEnabled(true); EditionCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
     ModuleGroup->setEnabled(true);
     RememberCheck->setEnabled(true);
-    CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true);
+    CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true); PreserveRuntimeCheck->setEnabled(true);
     LaunchButton->setEnabled(true);
     ProgressBar->setValue(0); ProgressBar->setVisible(false);
 }

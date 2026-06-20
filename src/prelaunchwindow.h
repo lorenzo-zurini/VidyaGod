@@ -99,6 +99,7 @@ private:
     QCheckBox*    RememberCheck         = nullptr;
     QCheckBox*    CloseAfterLaunchCheck = nullptr;
     QCheckBox*    DryRunCheck           = nullptr;
+    QCheckBox*    PreserveRuntimeCheck  = nullptr;
     QGroupBox*    CustomVarGroup        = nullptr;
     QFormLayout*  CustomVarForm         = nullptr;
     QGroupBox*    ModuleGroup           = nullptr;
