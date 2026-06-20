@@ -32,6 +32,7 @@
 #include <QVBoxLayout>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QSpinBox>
 
 
 // Paints a column's integer value (0..100) as a progress bar, so a transfers table stays sortable (the value
@@ -103,6 +104,8 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
         // Restore last saved geometry if present
         if ((*GlobalConfigJSON)["Settings"].contains("CardPixelWidth"))
             CardPixelWidth = int((*GlobalConfigJSON)["Settings"]["CardPixelWidth"]);
+        if ((*GlobalConfigJSON)["Settings"].contains("MaxConcurrentDownloads"))
+            IpfsWrapper::SetMaxConcurrentDownloads(int((*GlobalConfigJSON)["Settings"]["MaxConcurrentDownloads"]));
         if ((*GlobalConfigJSON)["Settings"].contains("SortMode"))
             CurrentSort = static_cast<SortMode>(int((*GlobalConfigJSON)["Settings"]["SortMode"]));
         if ((*GlobalConfigJSON)["Settings"].contains("WindowW"))
@@ -322,6 +325,7 @@ void MainWindow::BuildSettingsTab()
     SettingsCategoryList->addItem("Installed Packages");
     SettingsCategoryList->addItem("Runners");
     SettingsCategoryList->addItem("Repositories");
+    SettingsCategoryList->addItem("Downloads");
     SettingsCategoryList->addItem("Storage & Paths");
     outer->addWidget(SettingsCategoryList);
 
@@ -358,7 +362,10 @@ void MainWindow::BuildSettingsTab()
         RebuildSettingsReposPage();
     }
 
-    // Page 3 — Storage & Paths.
+    // Page 3 — Downloads.
+    SettingsStack->addWidget(BuildDownloadsSettingsPage());
+
+    // Page 4 — Storage & Paths.
     SettingsStack->addWidget(BuildPathsSettingsPage());
 
     QObject::connect(SettingsCategoryList, &QListWidget::currentRowChanged,
@@ -553,6 +560,40 @@ void MainWindow::RebuildSettingsReposPage()
     v->addWidget(add);
 
     v->addStretch(1);
+}
+
+QWidget * MainWindow::BuildDownloadsSettingsPage()
+{
+    QWidget * page = new QWidget(SettingsStack);
+    QVBoxLayout * pl = new QVBoxLayout(page); page->setLayout(pl);
+    pl->setContentsMargins(12,12,12,12);
+    QFormLayout * form = new QFormLayout();
+    pl->addLayout(form);
+
+    // Max simultaneous downloads — Settings.MaxConcurrentDownloads. Caps how many files fetch at once across ALL
+    // packages, so one slow/stalled file no longer holds up the rest of the queue.
+    QSpinBox * maxDl = new QSpinBox(page);
+    maxDl->setRange(1, 32);
+    maxDl->setValue(IpfsWrapper::MaxConcurrentDownloads());
+    {
+        auto & S = (*GlobalConfigJSON)["Settings"];
+        if (S.contains("MaxConcurrentDownloads") && S["MaxConcurrentDownloads"].is_number_integer())
+            maxDl->setValue(int(S["MaxConcurrentDownloads"]));
+    }
+    QObject::connect(maxDl, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v){
+        IpfsWrapper::SetMaxConcurrentDownloads(v);
+        (*GlobalConfigJSON)["Settings"]["MaxConcurrentDownloads"] = v;
+        SaveGlobalConfigJSON();
+    });
+    form->addRow("Max simultaneous downloads:", maxDl);
+
+    QLabel * note = new QLabel("Files download in parallel up to this limit. A stalled download keeps retrying in the "
+                               "background without blocking the others; raise this to fetch more at once.", page);
+    note->setWordWrap(true);
+    note->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    pl->addWidget(note);
+    pl->addStretch(1);
+    return page;
 }
 
 QWidget * MainWindow::BuildPathsSettingsPage()

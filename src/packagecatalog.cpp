@@ -15,6 +15,10 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 using namespace ManifestModel;   // LayerLocator / IsVfsLayer / ForEachVfsLayer / PackageHydrated / PackageIpfsCids
 
@@ -577,17 +581,20 @@ bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const st
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return Fail("launch node not found: " + LaunchNodeId);
 
-    bool Failed = false; std::string Err; int Fetched = 0;
+    // Collect every file to fetch first, then download them concurrently (bounded by the global download throttle)
+    // so a slow/stalled file doesn't block the rest. Required content failing is fatal; the cover is best-effort.
+    struct Target { std::string Cid; std::string Local; bool Optional; };
+    std::vector<Target> Targets;
+    bool MissingSource = false; std::string MissingErr;
+
     ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
-        if (Failed) return;
+        if (MissingSource) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present
-        if (Cid.empty()) { Failed = true; Err = "missing local content with no IPFS source: " + Local.string(); return; }
-        std::string E;
-        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &E).empty()) { Failed = true; Err = "could not fetch layer CID " + Cid + " (" + E + ")"; return; }
-        ++Fetched;
+        if (Cid.empty()) { MissingSource = true; MissingErr = "missing local content with no IPFS source: " + Local.string(); return; }
+        Targets.push_back({Cid, Local.string(), false});
     });
-    if (Failed) return Fail(Err);
+    if (MissingSource) return Fail(MissingErr);
 
     if (Launch->Meta.is_object() && Launch->Meta.contains("COVER") && Launch->Meta["COVER"].is_object())
     {
@@ -595,14 +602,37 @@ bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const st
         LayerLocator(Launch->Meta["COVER"], Launch->BundleDir, Local, Cid);
         std::error_code Ec;
         if (!Cid.empty() && Local != Launch->BundleDir && !std::filesystem::exists(Local, Ec))
-        {
-            std::string E;
-            if (IpfsWrapper::FetchToPath(Cid, Local.string(), &E).empty())
-                LogWarn("PackageCatalog::HydrateNode", "could not fetch cover CID " + Cid + " (" + E + ")");
-            else ++Fetched;
-        }
+            Targets.push_back({Cid, Local.string(), true});
     }
-    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Fetched) + " file(s) fetched).");
+
+    // Dispatch the fetches. Acquire a global download slot BEFORE spawning each worker, so the number of live worker
+    // threads (and concurrent FetchToPath calls) never exceeds MaxConcurrentDownloads — when one finishes and releases
+    // its slot, the dispatch loop unblocks and starts the next. A required fetch failing flips Failed, which stops
+    // dispatching further work (in-flight workers run to completion / get cancelled via RequestCancel separately).
+    std::atomic<bool> Failed{false};
+    std::atomic<int>  Fetched{0};
+    std::mutex ErrMu; std::string Err;
+    std::vector<std::thread> Workers;
+    Workers.reserve(Targets.size());
+
+    for (const Target &T : Targets)
+    {
+        if (Failed.load()) break;
+        IpfsWrapper::DownloadSlot Slot;        // blocks here until a concurrency slot frees (bounds live workers)
+        if (Failed.load()) break;              // a worker may have failed while we waited for the slot
+        Workers.emplace_back([&, T, Slot = std::move(Slot)]() mutable {
+            std::string E;
+            const bool Ok = !IpfsWrapper::FetchToPath(T.Cid, T.Local, &E).empty();
+            if (Ok) { Fetched.fetch_add(1); return; }
+            if (T.Optional) { LogWarn("PackageCatalog::HydrateNode", "could not fetch cover CID " + T.Cid + " (" + E + ")"); return; }
+            { std::lock_guard<std::mutex> Lk(ErrMu); if (Err.empty()) Err = "could not fetch layer CID " + T.Cid + " (" + E + ")"; }
+            Failed.store(true);
+        });
+    }
+    for (std::thread &W : Workers) W.join();
+
+    if (Failed.load()) return Fail(Err);
+    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Fetched.load()) + " file(s) fetched).");
     return true;
 }
 

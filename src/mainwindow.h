@@ -139,6 +139,7 @@ private:
     void RebuildSettingsRunnersPage();
     void RebuildSettingsReposPage();
     QWidget * BuildPathsSettingsPage();
+    QWidget * BuildDownloadsSettingsPage();
     void BuildAvailableTab();
     void RebuildAvailableTab();   // EXPENSIVE: rebuild the full card pool (group enumeration + hydration stats); then filter
     void ApplyAvailableFilter();  // CHEAP: filter the existing pool by search + sort + group; no rebuild/restat (sort/search path)

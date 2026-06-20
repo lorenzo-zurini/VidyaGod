@@ -42,6 +42,27 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // Works offline (content enters the local repo); peers receive it once the node is online.
 std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
 
+// ----- concurrency throttle: cap how many FetchToPath calls run at once (configurable) -----
+// A single global limit shared across all downloads (every package's hydrate worker draws from it), so the user can
+// trade bandwidth/peer-connections against parallelism. Changing it takes effect immediately for fetches not yet
+// started. Default 3. SetMaxConcurrentDownloads clamps to [1, 32].
+void SetMaxConcurrentDownloads(int N);
+int  MaxConcurrentDownloads();
+
+// RAII permit: construct to acquire a download slot (blocks until one is free), destruct to release it. Wrap each
+// FetchToPath in one of these so at most MaxConcurrentDownloads() fetches run concurrently. Movable so a slot can be
+// acquired by a dispatcher then handed to the worker thread that performs the fetch.
+class DownloadSlot {
+public:
+    DownloadSlot();
+    ~DownloadSlot();
+    DownloadSlot(DownloadSlot &&Other) noexcept : Owned(Other.Owned) { Other.Owned = false; }
+    DownloadSlot &operator=(const DownloadSlot &) = delete;
+    DownloadSlot(const DownloadSlot &) = delete;
+private:
+    bool Owned = true;   // false after being moved-from, so only the live instance releases on destruction
+};
+
 // ----- cancellation: abort an in-flight FetchToPath for a CID at its next checkpoint -----
 // RequestCancel marks a CID so a running FetchToPath aborts; ClearCancel un-marks it (call once the import has
 // returned, so a later re-download isn't pre-cancelled). Best-effort, thread-safe.

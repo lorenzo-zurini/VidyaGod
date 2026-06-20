@@ -11,6 +11,9 @@
 #include <cstdio>
 #include <string>
 #include <utility>
+#include <algorithm>
+#include <condition_variable>
+#include <mutex>
 
 // IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
 // (vgipfsapi.h) instead of shelling out to the external Kubo `ipfs` CLI. The public API and the IpfsManager signal
@@ -55,6 +58,45 @@ static std::string HumanBytes(long long B)
     char Buf[32];
     std::snprintf(Buf, sizeof Buf, (I > 0 && V < 10.0) ? "%.1f %s" : "%.0f %s", V, U[I]);
     return Buf;
+}
+
+// ----- download concurrency throttle -----
+// A resizable counting semaphore (mutex + condvar so the limit can change at runtime): DownloadSlot acquires before
+// a fetch and releases after, and at most g_MaxConcurrent slots are held at once. Raising the limit wakes waiters;
+// lowering it just lets the surplus drain as in-flight fetches finish (never interrupts a running one).
+static std::mutex              g_ThrottleMu;
+static std::condition_variable g_ThrottleCv;
+static int g_MaxConcurrent = 3;   // default; overridden from Settings at startup
+static int g_ActiveDownloads = 0;
+
+void SetMaxConcurrentDownloads(int N)
+{
+    std::lock_guard<std::mutex> Lk(g_ThrottleMu);
+    g_MaxConcurrent = std::clamp(N, 1, 32);
+    g_ThrottleCv.notify_all();   // a higher limit may let blocked acquirers through
+}
+
+int MaxConcurrentDownloads()
+{
+    std::lock_guard<std::mutex> Lk(g_ThrottleMu);
+    return g_MaxConcurrent;
+}
+
+DownloadSlot::DownloadSlot()
+{
+    std::unique_lock<std::mutex> Lk(g_ThrottleMu);
+    g_ThrottleCv.wait(Lk, []{ return g_ActiveDownloads < g_MaxConcurrent; });
+    ++g_ActiveDownloads;
+}
+
+DownloadSlot::~DownloadSlot()
+{
+    if (!Owned) return;   // moved-from: the slot now lives in another instance
+    {
+        std::lock_guard<std::mutex> Lk(g_ThrottleMu);
+        --g_ActiveDownloads;
+    }
+    g_ThrottleCv.notify_one();
 }
 
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
