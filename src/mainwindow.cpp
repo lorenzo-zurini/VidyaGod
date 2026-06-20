@@ -30,6 +30,8 @@
 #include <QStyleOptionProgressBar>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
+#include <QFileDialog>
+#include <QMessageBox>
 
 
 // Paints a column's integer value (0..100) as a progress bar, so a transfers table stays sortable (the value
@@ -1185,7 +1187,38 @@ void MainWindow::BuildIpfsTab()
     IpfsStatusLabel = new QLabel(QStringLiteral("…"), IpfsTabWidget);
     QPushButton * refreshBtn = new QPushButton("Refresh", IpfsTabWidget);
     connect(refreshBtn, &QPushButton::clicked, this, [this]{ IpfsCidStat.clear(); RefreshIpfsTab(); });  // force re-stat (fresh size/health)
+
+    // Seed a folder of published packages (e.g. ~/The Vidya, the publisher's master) into the node by reference, so
+    // it serves that content + reprovides it. Re-establishes seeding after a ~/.VidyaGod wipe; seeds only the files
+    // referenced by node SOURCE CIDs (layers + covers), not the whole tree.
+    QPushButton * seedBtn = new QPushButton("Seed folder…", IpfsTabWidget);
+    seedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
+    connect(seedBtn, &QPushButton::clicked, this, [this, seedBtn]{
+        const QString TheVidya = QDir::homePath() + "/The Vidya";
+        const QString Def = QDir(TheVidya).exists() ? TheVidya : QDir::homePath();
+        const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", Def);
+        if (Dir.isEmpty()) return;
+        seedBtn->setEnabled(false); seedBtn->setText("Seeding…");
+        std::thread([this, seedBtn, Dir]{
+            int Mismatched = 0;
+            const int Seeded = PackageCatalog::SeedDirectory(Dir.toStdString(),
+                [seedBtn](int done, int total, const std::string &){
+                    QMetaObject::invokeMethod(seedBtn, [seedBtn, done, total]{
+                        seedBtn->setText(QString("Seeding %1/%2…").arg(done).arg(total)); }, Qt::QueuedConnection);
+                }, &Mismatched);
+            QMetaObject::invokeMethod(this, [this, seedBtn, Seeded, Mismatched]{
+                seedBtn->setText("Seed folder…"); seedBtn->setEnabled(true);
+                RefreshIpfsTab();
+                QString Msg = QString("Seeded %1 referenced file%2.").arg(Seeded).arg(Seeded == 1 ? "" : "s");
+                if (Mismatched > 0) Msg += QString("\n\n%1 file%2 changed since publish (or couldn't be added), so the "
+                                                   "recorded CID couldn't be re-seeded.").arg(Mismatched).arg(Mismatched == 1 ? "" : "s");
+                QMessageBox::information(this, "Seed folder", Msg);
+            }, Qt::QueuedConnection);
+        }).detach();
+    });
+
     statusRow->addWidget(IpfsStatusLabel, 1);
+    statusRow->addWidget(seedBtn);
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 

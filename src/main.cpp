@@ -214,6 +214,20 @@ int main(int argc, char *argv[])
         }
     }
 
+    //HEADLESS: seed a folder of published packages into the IPFS node (re-establish seeding from a master), then exit.
+    if (!LaunchParameters.SeedDir.empty())
+    {
+        LogOut("main.cpp", "Seeding referenced content from: " + LaunchParameters.SeedDir);
+        int Mismatched = 0;
+        const int Seeded = PackageCatalog::SeedDirectory(LaunchParameters.SeedDir,
+            [](int done, int total, const std::string &name){
+                if (done == total || done % 10 == 0) LogOut("seed", std::to_string(done) + "/" + std::to_string(total) + "  " + name);
+            }, &Mismatched);
+        LogSucc("main.cpp", "Seeded " + std::to_string(Seeded) + " file(s)"
+                + (Mismatched ? ("; " + std::to_string(Mismatched) + " changed/un-seedable") : std::string()));
+        return 0;
+    }
+
     //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
     if (!LaunchParameters.ImportRunnerId.empty())
     {
@@ -534,6 +548,12 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--validate-nodes")
         {
             RuntimeParameters.ValidateNodes   = true;
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--seed" && i + 1 < argc)
+        {
+            //Seed a folder's published content (LAYER/COVER SOURCE CIDs) into the IPFS node by reference, then exit.
+            RuntimeParameters.SeedDir         = argv[++i];
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--list-nodes")

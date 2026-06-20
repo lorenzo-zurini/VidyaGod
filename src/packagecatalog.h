@@ -6,6 +6,7 @@
 #include <vector>
 #include <map>
 #include <utility>
+#include <functional>
 
 #include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
 
@@ -36,6 +37,15 @@ void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
+
+// Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
+// (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it
+// to the DHT). Use after wiping ~/.VidyaGod, pointing at e.g. ~/The Vidya. Progress(done, total, filename) is called
+// as it goes (off the GUI thread by the caller). Returns the number of files seeded whose recomputed CID matches the
+// recorded SOURCE; *Mismatched (if given) counts files whose bytes changed since publish (recorded CID un-seedable).
+int SeedDirectory(const std::string &Dir,
+                  const std::function<void(int, int, const std::string &)> &Progress = {},
+                  int *Mismatched = nullptr);
 // Copy a package's dehydrated manifest (top-level *.json only, no content/images) into DestDir. Returns count copied.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 

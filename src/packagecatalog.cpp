@@ -11,6 +11,8 @@
 #include <QProcess>
 #include <QStringList>
 #include <set>
+#include <map>
+#include <fstream>
 #include <filesystem>
 #include <algorithm>
 
@@ -403,6 +405,66 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 + " (" + std::to_string(Copied) + " JSON fragment(s))");
     }
     return true;
+}
+
+int SeedDirectory(const std::string &Dir,
+                  const std::function<void(int, int, const std::string &)> &Progress,
+                  int *Mismatched)
+{
+    namespace fs = std::filesystem;
+    if (Mismatched) *Mismatched = 0;
+
+    // 1) Collect every CID-referenced content file (path → recorded SOURCE CID) from the bundles' node JSONs.
+    //    De-duped by path so a file referenced by several nodes is seeded once.
+    std::map<std::string, std::string> ToSeed;   // local file path → recorded CID
+    std::error_code Ec;
+    for (fs::recursive_directory_iterator It(Dir, fs::directory_options::skip_permission_denied, Ec), End;
+         It != End; It.increment(Ec))
+    {
+        if (Ec) { Ec.clear(); continue; }
+        if (!It->is_regular_file(Ec) || It->path().extension() != ".json") continue;
+
+        nlohmann::ordered_json J;
+        { std::ifstream F(It->path()); if (!F) continue; try { F >> J; } catch (...) { continue; } }
+        if (!J.is_object()) continue;
+        const fs::path Bundle = It->path().parent_path();
+
+        auto Consider = [&](const nlohmann::ordered_json &Obj) {            // an object with PATH + SOURCE{ipfs,CID}
+            if (!Obj.is_object()) return;
+            const std::string Path = Obj.value("PATH", std::string());
+            if (Path.empty() || !Obj.contains("SOURCE") || !Obj["SOURCE"].is_object()) return;
+            const auto &S = Obj["SOURCE"];
+            if (S.value("TYPE", std::string()) != "ipfs") return;
+            const std::string Cid = S.value("CID", std::string());
+            if (Cid.empty()) return;
+            const fs::path Local = Bundle / Path;
+            if (fs::exists(Local, Ec)) ToSeed[Local.string()] = Cid;
+        };
+
+        if (J.contains("LAYERS") && J["LAYERS"].is_array())
+            for (const auto &L : J["LAYERS"]) Consider(L);
+        if (J.contains("META") && J["META"].is_object() && J["META"]["COVER"].is_object())
+            Consider(J["META"]["COVER"]);
+    }
+
+    // 2) Add each by reference (re-hash → filestore ref + pin + reprovide). Count parity matches vs changed files.
+    int Seeded = 0, Done = 0;
+    const int Total = (int)ToSeed.size();
+    for (const auto &[Path, Cid] : ToSeed)
+    {
+        std::string Err;
+        const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
+        if (Got == Cid)            ++Seeded;
+        else if (Mismatched) { ++*Mismatched;
+            LogWarn("PackageCatalog::SeedDirectory", "CID mismatch (file changed since publish?) for " + Path
+                    + (Got.empty() ? (" — add failed: " + Err) : (" — got " + Got + ", expected " + Cid)));
+        }
+        ++Done;
+        if (Progress) Progress(Done, Total, fs::path(Path).filename().string());
+    }
+    LogSucc("PackageCatalog::SeedDirectory",
+            "Seeded " + std::to_string(Seeded) + "/" + std::to_string(Total) + " referenced file(s) from " + Dir);
+    return Seeded;
 }
 
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
