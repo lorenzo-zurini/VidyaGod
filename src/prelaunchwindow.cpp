@@ -21,6 +21,7 @@
 #include <QScrollBar>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QResizeEvent>
 
 // ============================================================================
 // PreLaunchWindow — node-native launch dialog (one library tile = a GROUP of launchable nodes).
@@ -49,17 +50,19 @@ PreLaunchWindow::PreLaunchWindow(
     RootLayout->setContentsMargins(0, 0, 0, 0);
     RootLayout->setSpacing(0);
 
+    // Cover on the LEFT — shown large and centered vertically, scaled to fit its column (UpdateCoverScaled on resize)
+    // while preserving aspect ratio.
     CoverLabel = new QLabel(this);
-    CoverLabel->setFixedWidth(200);
-    CoverLabel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
-    CoverLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-    CoverLabel->setContentsMargins(6, 6, 6, 6);
-    RootLayout->addWidget(CoverLabel);
+    CoverLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    CoverLabel->setMinimumWidth(200);
+    CoverLabel->setAlignment(Qt::AlignCenter);
+    CoverLabel->setContentsMargins(8, 8, 8, 8);
+    RootLayout->addWidget(CoverLabel, 1);
 
-    QWidget*     RightWidget = new QWidget(this);
+    QWidget*     RightWidget = new QWidget(this);   // the RIGHT column (pickers/options/console/buttons)
     QVBoxLayout* RightLayout = new QVBoxLayout(RightWidget);
     RightLayout->setContentsMargins(0, 0, 0, 0);
-    RootLayout->addWidget(RightWidget, 1);
+    RootLayout->addWidget(RightWidget, 2);
 
     QSplitter* VSplitter = new QSplitter(Qt::Vertical, RightWidget);
     RightLayout->addWidget(VSplitter, 1);
@@ -103,9 +106,10 @@ PreLaunchWindow::PreLaunchWindow(
     CVScrollArea->setFrameShape(QFrame::NoFrame);
     QWidget*     CVContainer       = new QWidget();
     QVBoxLayout* CVContainerLayout = new QVBoxLayout(CVContainer);
-    CVContainerLayout->setContentsMargins(0, 0, 0, 0);
+    CVContainerLayout->setContentsMargins(8, 6, 8, 6);   // breathing room so the options aren't crammed
+    CVContainerLayout->setSpacing(12);
     CVScrollArea->setWidget(CVContainer);
-    ControlLayout->addWidget(CVScrollArea);
+    ControlLayout->addWidget(CVScrollArea, 1);            // stretch: fill the pane (no empty gap below the options)
 
     ModuleGroup = new QGroupBox("Modules", CVContainer);
     QVBoxLayout* ModuleLayout = new QVBoxLayout(ModuleGroup);
@@ -120,6 +124,9 @@ PreLaunchWindow::PreLaunchWindow(
 
     CustomVarGroup = new QGroupBox("Options", CVContainer);
     CustomVarForm  = new QFormLayout(CustomVarGroup);
+    CustomVarForm->setVerticalSpacing(8);
+    CustomVarForm->setHorizontalSpacing(12);
+    CustomVarForm->setContentsMargins(10, 8, 10, 8);
     CustomVarGroup->setVisible(false);
     CVContainerLayout->addWidget(CustomVarGroup);
 
@@ -144,7 +151,6 @@ PreLaunchWindow::PreLaunchWindow(
 
     StatusLabel = new QLabel(ControlWidget);
     ControlLayout->addWidget(StatusLabel);
-    ControlLayout->addStretch();
 
     ConsoleEdit = new QTextEdit(VSplitter);
     ConsoleEdit->setReadOnly(true);
@@ -232,12 +238,13 @@ void PreLaunchWindow::RebuildCover()
     setWindowTitle("Launch " + QString::fromStdString(Title));
 
     CoverLabel->clear();
+    CoverPixmap = QPixmap();
     if (!L->Meta.is_object() || !L->Meta.contains("COVER")) return;
     const nlohmann::ordered_json& CoverNode = L->Meta["COVER"];
     const QString Pkg = QString::fromStdString(L->BundleDir.string());
     auto setFrom = [this](const QString& Path){
         QPixmap Pix(Path);
-        if (!Pix.isNull()) CoverLabel->setPixmap(Pix.scaledToWidth(188, Qt::SmoothTransformation));
+        if (!Pix.isNull()) { CoverPixmap = Pix; UpdateCoverScaled(); }
     };
     const QString Now = CoverCache::instance()->resolve(CoverNode, Pkg);
     if (!Now.isEmpty()) { setFrom(Now); return; }
@@ -251,6 +258,22 @@ void PreLaunchWindow::RebuildCover()
             if (!P.isEmpty()) setFrom(P);
         });
     }
+}
+
+// Scale the full-res cover to fit CoverLabel's current content area, preserving aspect ratio. AlignCenter on the
+// label then centers it vertically (and horizontally) in its column. No-op until the label has a real size.
+void PreLaunchWindow::UpdateCoverScaled()
+{
+    if (!CoverLabel || CoverPixmap.isNull()) return;
+    const QSize Avail = CoverLabel->contentsRect().size();
+    if (Avail.width() <= 1 || Avail.height() <= 1) return;
+    CoverLabel->setPixmap(CoverPixmap.scaled(Avail, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+void PreLaunchWindow::resizeEvent(QResizeEvent* Event)
+{
+    QDialog::resizeEvent(Event);
+    UpdateCoverScaled();
 }
 
 void PreLaunchWindow::RebuildRunnerCombo()
@@ -412,6 +435,9 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (Box) return;
             Box  = new QGroupBox(GroupPrefix + QString::fromStdString(N->Label.empty() ? N->NodeId : N->Label), CustomVarGroup);
             Form = new QFormLayout(Box);
+            Form->setVerticalSpacing(8);
+            Form->setHorizontalSpacing(12);
+            Form->setContentsMargins(10, 8, 10, 8);
         };
         for (const auto& CV : N->Layers)
         {

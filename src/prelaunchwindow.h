@@ -17,6 +17,7 @@
 #include <QGroupBox>
 #include <QSpinBox>
 #include <QTreeWidget>
+#include <QPixmap>
 
 #include <set>
 #include <map>
@@ -51,6 +52,10 @@ public:
     //Rebuilds the edition combo + runner + module/CustomVar pickers (e.g. after the package was edited).
     void ReloadAndRebuild();
 
+protected:
+    //Rescale the (right-hand) cover to fit its column on every resize, keeping aspect ratio + vertical centering.
+    void resizeEvent(QResizeEvent* Event) override;
+
 private slots:
     void onLaunchClicked();
     void onKillClicked();
@@ -68,6 +73,8 @@ private:
     const Node* CurrentLaunch() const;
     // Refresh the cover from the current edition's META.COVER.
     void RebuildCover();
+    // Scale CoverPixmap to fit CoverLabel's current size (aspect-preserving) — called from RebuildCover + resizeEvent.
+    void UpdateCoverScaled();
     // Rebuilds the runner dropdown for the current edition (runner candidate nodes).
     void RebuildRunnerCombo();
     // Rebuilds the CustomVar picker section from the current edition's enabled node closure.
@@ -91,6 +98,7 @@ private:
 
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
+    QPixmap       CoverPixmap;                  // full-res cover; scaled to fit CoverLabel on resize
     QComboBox*    RunnerCombo       = nullptr;
     QComboBox*    EditionCombo      = nullptr;
     QWidget*      EditionLabel      = nullptr; // the "Edition:" form label — hidden when only one edition
