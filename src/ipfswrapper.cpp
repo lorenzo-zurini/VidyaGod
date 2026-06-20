@@ -239,9 +239,10 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
             const double Pct = E.Percent;
             QMetaObject::invokeMethod(this, [this, Cid, Pct]{ emit transferProgress(Cid, Pct); }, Qt::QueuedConnection);
             break; }
-        case IpfsWrapper::TransferEvent::Finalizing:
-            QMetaObject::invokeMethod(this, [this, Cid]{ emit transferFinalizing(Cid); }, Qt::QueuedConnection);
-            break;
+        case IpfsWrapper::TransferEvent::Finalizing: {
+            const double Pct = E.Percent;
+            QMetaObject::invokeMethod(this, [this, Cid, Pct]{ emit transferFinalizing(Cid, Pct); }, Qt::QueuedConnection);
+            break; }
         case IpfsWrapper::TransferEvent::Finished: {
             const bool Ok = E.Ok;
             const QString Err = QString::fromStdString(E.Error);

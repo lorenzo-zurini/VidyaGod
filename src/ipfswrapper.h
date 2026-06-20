@@ -135,7 +135,7 @@ public:
 signals:
     void transferStarted(QString cid);
     void transferProgress(QString cid, double percent);
-    void transferFinalizing(QString cid);                         // all bytes down; "pinning" (re-reference) step
+    void transferFinalizing(QString cid, double percent);         // all bytes down; "pinning" (re-reference) step; percent 0..100, -1 if indeterminate
     void transferFinished(QString cid, bool ok, QString error);   // error is the reason when !ok (else empty)
 
 private:

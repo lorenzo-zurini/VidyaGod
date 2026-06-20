@@ -1341,9 +1341,10 @@ void MainWindow::BuildIpfsTab()
             IpfsTransferSpeed.insert(cid, qMakePair(Bytes, Now));
         }
     });
-    connect(mgr, &IpfsManager::transferFinalizing, this, [this](QString cid) {
-        // All bytes are down; the node is re-referencing the file ("pinning"), which is slow for big files. Show it
-        // so the row doesn't look stuck at 100%.
+    connect(mgr, &IpfsManager::transferFinalizing, this, [this](QString cid, double percent) {
+        // All bytes are down; the node is re-referencing the file into the filestore ("pinning"), which is slow for
+        // big files. The download bar stays full; the pinning progress (0..100, or indeterminate) shows in Status so
+        // the row doesn't look stuck at 100%.
         IpfsTransferSpeed.remove(cid);
         IpfsTransferLastProgress.remove(cid);   // finalizing isn't a stall — stop watching it
         IpfsTransferStalled.remove(cid);
@@ -1351,7 +1352,9 @@ void MainWindow::BuildIpfsTab()
             prog->setData(Qt::DisplayRole, 100);
             const int row = IpfsTransfers->row(prog);
             if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());   // clear Speed
-            if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Pinning…");
+            if (row >= 0 && IpfsTransfers->item(row, 4))
+                IpfsTransfers->item(row, 4)->setText(percent >= 0 ? QString("Pinning… %1%").arg(int(percent + 0.5))
+                                                                  : QStringLiteral("Pinning…"));
         }
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
