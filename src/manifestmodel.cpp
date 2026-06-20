@@ -312,7 +312,8 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
 
 } // namespace
 
-void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings)
+void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings,
+                       const std::set<std::string> *OnlyNodes)
 {
     const std::string Machine = MachinePlatform();
     std::map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
@@ -328,6 +329,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
 
     for (const auto &[Id, N] : Idx.Nodes)
     {
+        if (OnlyNodes && !OnlyNodes->count(Id)) continue;   // scoped validation: skip nodes outside the requested set
         const std::string Tag = "node '" + Id + "'";
 
         //PARENTS resolve.

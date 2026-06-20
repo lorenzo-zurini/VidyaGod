@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <functional>
 #include <filesystem>
 
@@ -109,7 +110,11 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
 // launchable resolves a runner (platform match) + has content or is self-contained; runner nodes declare GUEST
 // platforms; a PREFIX_GENERATE runner routes content through drive_c; EXCLUDE is symmetric. Errors should block
 // (e.g. in the editor/CI), warnings advise. NODE_ID uniqueness is enforced earlier by the index (dups dropped).
-void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings);
+// When OnlyNodes is non-null, only those node ids are validated (the rest of Idx is still consulted for cross-
+// references like runner availability and PARENTS) — used by the launch gate to validate just the package being
+// launched, not the whole catalog.
+void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings,
+                       const std::set<std::string> *OnlyNodes = nullptr);
 
 // ----- VFS layer helpers (the dedup foundation) -----
 // True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File).

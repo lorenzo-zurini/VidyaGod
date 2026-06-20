@@ -97,10 +97,18 @@ void LibraryGameCard::play()
 {
     if (!Index || GroupNodeIds.empty()) return;
 
-    //Validate the node graph before launching; hard errors block launch.
+    //Validate the node graph before launching; hard errors block launch. Scope it to THIS package's own closure
+    //(its editions + their PARENTS) so an unrelated package's issues — e.g. another game's legitimate cross-layer
+    //case collisions — never surface here or block this launch.
     {
+        std::set<std::string> Scope;
+        for (const std::string &Ed : GroupNodeIds)
+        {
+            Scope.insert(Ed);
+            for (const std::string &Id : ManifestModel::ResolveNodeOrder(*Index, Ed, {})) Scope.insert(Id);
+        }
         std::vector<std::string> ValErr, ValWarn;
-        ManifestModel::ValidateNodeGraph(*Index, ValErr, ValWarn);
+        ManifestModel::ValidateNodeGraph(*Index, ValErr, ValWarn, &Scope);
         for (const auto &W : ValWarn) LogWarn("LibraryGameCard", "Node graph: " + W);
         if (!ValErr.empty())
         {
