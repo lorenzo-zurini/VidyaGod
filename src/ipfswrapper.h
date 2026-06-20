@@ -89,7 +89,7 @@ bool Unpin(const std::string &Cid);
 // FetchSync (which may run on a worker thread) reports its lifecycle through an optional callback —
 // mirrors the Log() callback hook. IpfsManager installs one to marshal events onto the GUI thread.
 struct TransferEvent {
-    enum Kind { Started, Progress, Finished } Kind;
+    enum Kind { Started, Progress, Finished, Finalizing } Kind;   // Finalizing: bytes down, re-referencing ("pinning")
     std::string Cid;
     double      Percent = -1.0;   // 0..100 for Progress; -1 if unknown
     bool        Ok = false;       // Finished only
@@ -114,6 +114,7 @@ public:
 signals:
     void transferStarted(QString cid);
     void transferProgress(QString cid, double percent);
+    void transferFinalizing(QString cid);                         // all bytes down; "pinning" (re-reference) step
     void transferFinished(QString cid, bool ok, QString error);   // error is the reason when !ok (else empty)
 
 private:

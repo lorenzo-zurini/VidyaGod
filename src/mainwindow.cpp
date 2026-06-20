@@ -1290,6 +1290,17 @@ void MainWindow::BuildIpfsTab()
             IpfsTransferSpeed.insert(cid, qMakePair(Bytes, Now));
         }
     });
+    connect(mgr, &IpfsManager::transferFinalizing, this, [this](QString cid) {
+        // All bytes are down; the node is re-referencing the file ("pinning"), which is slow for big files. Show it
+        // so the row doesn't look stuck at 100%.
+        IpfsTransferSpeed.remove(cid);
+        if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
+            prog->setData(Qt::DisplayRole, 100);
+            const int row = IpfsTransfers->row(prog);
+            if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());   // clear Speed
+            if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Pinning…");
+        }
+    });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
         IpfsTransferQueued.remove(cid);
         IpfsTransferSpeed.remove(cid);
