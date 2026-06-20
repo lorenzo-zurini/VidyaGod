@@ -35,8 +35,13 @@
 #include <QSpinBox>
 
 
+// Item role marking a transfer's progress cell as being in the "pinning" (post-download re-reference) phase, so the
+// delegate paints the same bar dark green instead of the default download colour.
+static constexpr int PinningRole = Qt::UserRole + 1;
+
 // Paints a column's integer value (0..100) as a progress bar, so a transfers table stays sortable (the value
-// lives in the item, not a fragile cell widget). A negative value renders an indeterminate "busy" bar.
+// lives in the item, not a fragile cell widget). A negative value renders an indeterminate "busy" bar. When the
+// PinningRole flag is set the progress chunk is painted dark green (the pinning phase reuses the same bar).
 class ProgressBarDelegate : public QStyledItemDelegate
 {
 public:
@@ -51,6 +56,9 @@ public:
         bar.textVisible = (v >= 0);
         bar.text = (v >= 0) ? QString::number(v) + "%" : QString();
         bar.textAlignment = Qt::AlignCenter;
+        bar.palette = opt.palette;
+        if (idx.data(PinningRole).toBool())
+            bar.palette.setColor(QPalette::Highlight, QColor(0x1B, 0x5E, 0x20));   // dark green during pinning
         QApplication::style()->drawControl(QStyle::CE_ProgressBar, &bar, p);
     }
 };
@@ -1303,6 +1311,8 @@ void MainWindow::BuildIpfsTab()
         if (!IpfsTransfers) return;
         const bool Existed = IpfsTransferProgress.contains(cid);
         EnsureTransferRow(cid, QStringLiteral("Fetching…"));
+        if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
+            prog->setData(PinningRole, false);   // fresh download → default bar colour (clears any prior pinning flag)
         if (Existed)   // was a "Queued" (or re-transferred) row — flip its status to active
             if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
             { const int row = IpfsTransfers->row(prog);
@@ -1343,18 +1353,17 @@ void MainWindow::BuildIpfsTab()
     });
     connect(mgr, &IpfsManager::transferFinalizing, this, [this](QString cid, double percent) {
         // All bytes are down; the node is re-referencing the file into the filestore ("pinning"), which is slow for
-        // big files. The download bar stays full; the pinning progress (0..100, or indeterminate) shows in Status so
-        // the row doesn't look stuck at 100%.
+        // big files. Reuse the same progress bar — now driven by the pinning percent and painted dark green (via
+        // PinningRole) — so the row doesn't look stuck at 100%.
         IpfsTransferSpeed.remove(cid);
         IpfsTransferLastProgress.remove(cid);   // finalizing isn't a stall — stop watching it
         IpfsTransferStalled.remove(cid);
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
-            prog->setData(Qt::DisplayRole, 100);
+            prog->setData(PinningRole, true);                                       // → delegate paints the bar dark green
+            prog->setData(Qt::DisplayRole, percent >= 0 ? int(percent + 0.5) : -1); // same bar; -1 = indeterminate "busy"
             const int row = IpfsTransfers->row(prog);
             if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());   // clear Speed
-            if (row >= 0 && IpfsTransfers->item(row, 4))
-                IpfsTransfers->item(row, 4)->setText(percent >= 0 ? QString("Pinning… %1%").arg(int(percent + 0.5))
-                                                                  : QStringLiteral("Pinning…"));
+            if (row >= 0 && IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Pinning…");
         }
     });
     connect(mgr, &IpfsManager::transferFinished, this, [this](QString cid, bool ok, QString error) {
