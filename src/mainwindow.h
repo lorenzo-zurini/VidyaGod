@@ -40,6 +40,7 @@
 
 
 class DownloadManager;   // owns the Catalog download lifecycle (extracted); a friend so it can drive the IPFS tab + cards
+class IpfsTab;           // the extracted IPFS tab widget; a friend so it can read the catalog/config
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MainWindow
@@ -48,6 +49,7 @@ class MainWindow : public QMainWindow
 {
     Q_OBJECT
     friend class DownloadManager;
+    friend class IpfsTab;
 public:
     MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
     ~MainWindow();
@@ -109,26 +111,9 @@ private:
     DownloadManager * DownloadMgr = nullptr;      // owns the Catalog download lifecycle (dialog + worker + bookkeeping)
     SortMode      AvailableSort = SortMode::Name;  // within-group ordering on the Available grid
 
-    // ── IPFS tab (embedded-node transfers + seeded content; greyed if the node didn't start) ──
-    QWidget       * IpfsTabWidget   = nullptr;
-    QLabel        * IpfsStatusLabel = nullptr;
-    QTableWidget  * IpfsTransfers   = nullptr;   // Name|Size|Progress|Speed|Status|CID — live + queued fetches (sortable)
-    QTreeWidget   * IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (Name|Size|Health|CID)
-    QTimer        * IpfsRefreshTimer = nullptr;
-    bool            IpfsRefreshInFlight = false;   // a worker is already gathering ipfs status — skip re-entrancy
+    // ── IPFS tab — extracted into its own widget class (src/ipfstab.{h,cpp}) ──
+    IpfsTab       * IpfsTabPtr       = nullptr;
     QTimer        * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one card refresh
-    QHash<QString, QTableWidgetItem*> IpfsTransferProgress; // CID → progress cell item (survives re-sorting)
-    QSet<QString>   IpfsTransferQueued;           // CIDs shown as "Queued" (in a download but not yet started)
-    QHash<QString, QPair<qlonglong,qlonglong>> IpfsTransferSpeed;  // CID → {sampleBytes, sampleMs} for the rate calc
-    QHash<QString, qlonglong> IpfsTransferLastProgress;  // CID → ms of last forward progress (drives stall detection)
-    QSet<QString>   IpfsTransferStalled;          // CIDs currently shown as stalled (no progress) — avoids redundant UI churn
-    QTimer        * IpfsStallTimer = nullptr;     // ages out phantom speed + flags transfers with no recent progress
-    QHash<QString, QString> IpfsCidLabels;        // CID → human label ("<package> — <component>")
-    QHash<QString, QString> IpfsCidPackages;      // CID → owning package name (for grouping)
-    QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + provider count (cached; Refresh clears it)
-    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // package name → group row (incremental tree, no rebuild)
-    QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row (so refresh updates in place, no jumping)
-    bool            IpfsHealthInFlight = false;         // a background provider-count pass is running
 
     void BuildStaticUI();
     void BuildLibraryGameCards();
@@ -142,15 +127,6 @@ private:
     void BuildAvailableTab();
     void RebuildAvailableTab();   // EXPENSIVE: rebuild the full card pool (group enumeration + hydration stats); then filter
     void ApplyAvailableFilter();  // CHEAP: filter the existing pool by search + sort + group; no rebuild/restat (sort/search path)
-    void DownloadAvailable(LibraryGameCard * card);   // import (hydrate) the package behind an Available card
-    void BuildIpfsTab();
-    // Ensure a transfers-table row exists for a CID (create it with `status` if absent); returns its progress item.
-    QTableWidgetItem * EnsureTransferRow(const QString & cid, const QString & status);
-    void RefreshIpfsTab();   // kicks an off-thread gather of status + seeded list (no-op when ipfs absent)
-    void ApplyIpfsSnapshot(bool daemon, int peers, const QString & repo,
-                           const std::vector<IpfsWrapper::PinEntry> & pins,
-                           const QHash<QString, long long> & sizes);  // GUI-thread incremental paint of the gathered data
-    void GatherIpfsHealth();   // off-thread provider-count ("network availability") pass for un-queried pins
     void sortCards();
     bool SaveGlobalConfigJSON();
 

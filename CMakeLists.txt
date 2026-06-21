@@ -82,6 +82,9 @@ set(PROJECT_SOURCES
     src/downloadmanager.h
     src/downloadmanager.cpp
 
+    src/ipfstab.h
+    src/ipfstab.cpp
+
     translations/${TS_FILES}
 )
 

@@ -1,5 +1,6 @@
 #include "downloadmanager.h"
 #include "mainwindow.h"        // full MainWindow (DownloadManager is its friend → reaches the IPFS tab + cards)
+#include "ipfstab.h"          // IpfsTab — transfer-row + refresh API
 #include "libraryview.h"       // LibraryGameCard + IpfsFetchReady()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
@@ -276,14 +277,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
 
     // Pre-show every CID as a "Queued" transfer; the worker fetches them, and transferStarted flips each to
     // "Fetching…" as it begins. Leftover queued rows are cleared when the worker finishes (below).
-    if (Mw.IpfsTransfers)
-        for (const QString & c : Cids) { Mw.EnsureTransferRow(c, QStringLiteral("Queued")); Mw.IpfsTransferQueued.insert(c); }
+    for (const QString & c : Cids) Mw.IpfsTabPtr->queueTransfer(c);
 
     // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
     for (LibraryGameCard * c : *Mw.AvailableGameCards)
         if (c && c->GroupKey == Key) { c->Downloading = true; c->DownloadPercent = 0.0; }
     Mw.AvailableView->refreshVisuals();
-    Mw.RefreshIpfsTab();
+    Mw.IpfsTabPtr->refresh();
 
     // Snapshot the node index + config for THIS worker: concurrent downloads must not read the shared
     // CatalogIndex while a completing download reassigns it (RebuildDynamicUI), and the worker must never touch the
@@ -305,17 +305,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             for (const QString & c : DownloadUidCids.value(Key))
             {
                 IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c);
-                // Drop any row still "Queued" (never started — the CIDs after a failed/cancelled one).
-                if (Mw.IpfsTransferQueued.remove(c))
-                    if (QTableWidgetItem * p = Mw.IpfsTransferProgress.value(c, nullptr))
-                    { const int r = Mw.IpfsTransfers ? Mw.IpfsTransfers->row(p) : -1; if (r >= 0) Mw.IpfsTransfers->removeRow(r);
-                      Mw.IpfsTransferProgress.remove(c); Mw.IpfsTransferSpeed.remove(c); }
+                Mw.IpfsTabPtr->clearQueuedTransfer(c);   // drop a row still "Queued" (never started)
             }
             DownloadUidCids.remove(Key);
             if (Ok) Mw.RebuildDynamicUI();
             else if (!Cancelled) LogErr("DownloadManager::startDownload", "Download failed: " + Err);   // no dialog — the
                                                                           // failure shows as a "Failed" row in the IPFS tab
-            Mw.RebuildAvailableTab(); Mw.RefreshIpfsTab();
+            Mw.RebuildAvailableTab(); Mw.IpfsTabPtr->refresh();
         }, Qt::QueuedConnection);
     }).detach();
 }
