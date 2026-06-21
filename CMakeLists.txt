@@ -88,6 +88,9 @@ set(PROJECT_SOURCES
     src/settingstab.h
     src/settingstab.cpp
 
+    src/catalogtab.h
+    src/catalogtab.cpp
+
     translations/${TS_FILES}
 )
 

@@ -1,6 +1,7 @@
 #include "downloadmanager.h"
 #include "mainwindow.h"        // full MainWindow (DownloadManager is its friend → reaches the IPFS tab + cards)
 #include "ipfstab.h"          // IpfsTab — transfer-row + refresh API
+#include "catalogtab.h"       // CatalogTab — Available cards live there now
 #include "libraryview.h"       // LibraryGameCard + IpfsFetchReady()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
@@ -63,11 +64,7 @@ void DownloadManager::applyProgress(const QString &cid, double pct)
     const QStringList & Cids = DownloadUidCids[Key];
     double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0);
     const double Avg = Cids.isEmpty() ? -1.0 : Sum / Cids.size();
-    bool Any = false;
-    for (LibraryGameCard * card : *Mw.AvailableGameCards)
-        if (card && card->Downloading && card->GroupKey == Key)
-        { card->DownloadPercent = Avg; Any = true; }
-    if (Any && Mw.AvailableView) Mw.AvailableView->refreshVisuals();
+    if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->setDownloadProgress(Key, Avg);   // the Available cards live in CatalogTab
 }
 
 double DownloadManager::busyPercent(const QString &groupKey) const
@@ -280,9 +277,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     for (const QString & c : Cids) Mw.IpfsTabPtr->queueTransfer(c);
 
     // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
-    for (LibraryGameCard * c : *Mw.AvailableGameCards)
-        if (c && c->GroupKey == Key) { c->Downloading = true; c->DownloadPercent = 0.0; }
-    Mw.AvailableView->refreshVisuals();
+    if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->markDownloading(Key);
     Mw.IpfsTabPtr->refresh();
 
     // Snapshot the node index + config for THIS worker: concurrent downloads must not read the shared
@@ -311,7 +306,8 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             if (Ok) Mw.RebuildDynamicUI();
             else if (!Cancelled) LogErr("DownloadManager::startDownload", "Download failed: " + Err);   // no dialog — the
                                                                           // failure shows as a "Failed" row in the IPFS tab
-            Mw.RebuildAvailableTab(); Mw.IpfsTabPtr->refresh();
+            if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->rebuild();
+            Mw.IpfsTabPtr->refresh();
         }, Qt::QueuedConnection);
     }).detach();
 }

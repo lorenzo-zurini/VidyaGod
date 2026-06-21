@@ -1,6 +1,7 @@
 #include "settingstab.h"
 #include "mainwindow.h"        // friend access: Mw.CatalogIndex / GlobalConfigJSON / PackagesTabWidget / rebuilds
 #include "ipfstab.h"          // Mw.IpfsTabPtr->refresh()
+#include "catalogtab.h"       // Mw.CatalogTabPtr->rebuild()
 #include "libraryview.h"       // IpfsFetchReady()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
@@ -225,7 +226,7 @@ void SettingsTab::rebuildReposPage()
                 QMetaObject::invokeMethod(this, [this, Cfg]{
                     (*Mw.GlobalConfigJSON)["LIBRARY"] = (*Cfg)["LIBRARY"];   // SyncRepositories only writes LIBRARY
                     Mw.SaveGlobalConfigJSON();
-                    Mw.RebuildDynamicUI(); rebuildReposPage(); rebuildRunnersPage(); Mw.RebuildAvailableTab();
+                    Mw.RebuildDynamicUI(); rebuildReposPage(); rebuildRunnersPage(); Mw.CatalogTabPtr->rebuild();
                 }, Qt::QueuedConnection);
             }).detach();
         });
@@ -259,7 +260,7 @@ void SettingsTab::rebuildReposPage()
             if (SS.contains("Repositories") && SS["Repositories"].is_array() && i < int(SS["Repositories"].size()))
                 SS["Repositories"].erase(SS["Repositories"].begin() + i);
             Mw.SaveGlobalConfigJSON();
-            rebuildReposPage(); rebuildRunnersPage(); Mw.RebuildAvailableTab();
+            rebuildReposPage(); rebuildRunnersPage(); Mw.CatalogTabPtr->rebuild();
         });
         row->addWidget(rm);
         v->addWidget(card);
@@ -296,7 +297,7 @@ void SettingsTab::rebuildReposPage()
             QMetaObject::invokeMethod(this, [this, Cfg]{
                 (*Mw.GlobalConfigJSON)["LIBRARY"] = (*Cfg)["LIBRARY"];
                 Mw.SaveGlobalConfigJSON();
-                Mw.RebuildDynamicUI(); rebuildReposPage(); rebuildRunnersPage(); Mw.RebuildAvailableTab();
+                Mw.RebuildDynamicUI(); rebuildReposPage(); rebuildRunnersPage(); Mw.CatalogTabPtr->rebuild();
             }, Qt::QueuedConnection);
         }).detach();
     });
