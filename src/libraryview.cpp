@@ -603,8 +603,10 @@ void LibraryView::moveSelection(int dx, int dy)
         if (i == SelectedIdx || Rects[i].isNull()) continue;
         const QPoint p = Rects[i].center();
         const int ex = p.x() - c.x(), ey = p.y() - c.y();
-        if (dx > 0 && ex <= 0) continue;  if (dx < 0 && ex >= 0) continue;
-        if (dy > 0 && ey <= 0) continue;  if (dy < 0 && ey >= 0) continue;
+        if (dx > 0 && ex <= 0) continue;
+        if (dx < 0 && ex >= 0) continue;
+        if (dy > 0 && ey <= 0) continue;
+        if (dy < 0 && ey >= 0) continue;
         // distance along the travel axis + a heavy penalty for drifting off it
         const double score = dx != 0 ? (qAbs(ex) + 3.0 * qAbs(ey)) : (qAbs(ey) + 3.0 * qAbs(ex));
         if (score < bestScore) { bestScore = score; best = i; }

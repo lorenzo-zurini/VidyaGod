@@ -43,10 +43,19 @@ jobs:
         run: |
           # Builds all targets: the GUI app (VidyaGod), the FUSE helper (vidyagodfs), and the embedded IPFS node
           # (libvgipfs.so, built by CMake via `go build -buildmode=c-shared` and linked into VidyaGod).
+          # -DVIDYAGOD_WERROR=ON: warnings fail the build in CI (local dev stays non-blocking) + export
+          # compile_commands.json for the clang-tidy step.
           mkdir -p build
           cd build
-          cmake ..
+          cmake .. -DVIDYAGOD_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           make -j$(nproc)
+
+      - name: clang-tidy (advisory)
+        continue-on-error: true   # advisory for now — surfaces issues without gating the build
+        run: |
+          sudo apt install -y clang-tidy
+          # Run over our own sources only (HeaderFilterRegex in .clang-tidy scopes headers to src/).
+          clang-tidy -p build $(git ls-files 'src/*.cpp')
 
       - name: Prepare AppDir
         run: |

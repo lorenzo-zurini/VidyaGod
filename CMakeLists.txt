@@ -5,6 +5,16 @@ project(VidyaGod)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---- Build hardening (applied to the VidyaGod target below) ----
+# Warnings are always on; -Werror is opt-in (CI sets VIDYAGOD_WERROR=ON so local dev isn't blocked).
+# VIDYAGOD_SANITIZE adds ASan+UBSan for a Debug "find real bugs" build. Qt/nlohmann come via -isystem so their
+# headers don't trip our warnings.
+option(VIDYAGOD_WERROR   "Treat C++ warnings as errors (CI)" OFF)
+option(VIDYAGOD_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+# -Wshadow=local (not full -Wshadow): high signal (local shadows local/param) without the noisy
+# ctor-param-named-like-member idiom. GCC flag (the project builds with g++).
+set(VG_WARNINGS -Wall -Wextra -Wshadow=local -Wnon-virtual-dtor)
+
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -77,6 +87,13 @@ add_executable(VidyaGod ${PROJECT_SOURCES})
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(VidyaGod PRIVATE PkgConfig::LIBZIP)
+
+# Warnings (+ optional -Werror) and optional sanitizers on our own code.
+target_compile_options(VidyaGod PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+if(VIDYAGOD_SANITIZE)
+    target_compile_options(VidyaGod PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(VidyaGod    PRIVATE -fsanitize=address,undefined)
+endif()
 
 # ---- vidyagodfs: the custom FUSE filesystem, built from its own repo (git submodule) ----
 # It defines the `vidyagodfs` target (links libfuse3 + libzip). Place its binary next to VidyaGod in

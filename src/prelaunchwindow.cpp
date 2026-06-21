@@ -252,7 +252,7 @@ void PreLaunchWindow::RebuildCover()
     if (!Cid.isEmpty())
     {
         const nlohmann::ordered_json CoverCopy = CoverNode;
-        connect(CoverCache::instance(), &CoverCache::coverReady, this, [this, Cid, CoverCopy, Pkg, setFrom](QString Ready){
+        connect(CoverCache::instance(), &CoverCache::coverReady, this, [Cid, CoverCopy, Pkg, setFrom](QString Ready){
             if (Ready != Cid) return;
             const QString P = CoverCache::instance()->resolve(CoverCopy, Pkg);
             if (!P.isEmpty()) setFrom(P);

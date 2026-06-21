@@ -46,7 +46,7 @@ static std::filesystem::path HiveDir(const struct ContainerParams &CP, const std
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
 ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
-    : GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON), ContainerParams(Passed_ContainerParams)
+    : ContainerParams(Passed_ContainerParams), GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON)   // match member declaration order (ContainerParams is declared first)
 {
     this->InitializeContainer();
 }
@@ -1791,7 +1791,7 @@ bool ContainerWrapper::CheckCaseConflicts(std::filesystem::path DirectoryPath)
 bool ContainerWrapper::ProcessDLLOverrides(struct ContainerParams &ContainerParams)
 {
     LogOut("ContainerWrapper::ProcessDLLOverrides", "Processing DLL Overrides.");
-    for (int i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    for (size_t i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
     {
         nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
         if (SubComponentJSON["TYPE"] == "DllOverride")

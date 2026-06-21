@@ -1,24 +1,7 @@
 #include "jsonoperations.h"
 #include "commonutils.h"
-#include <set>
-#include <unordered_set>
-#include <unordered_map>
 
 JSONOps::JSONOps() {}
-
-//Returns the ID field for an array given its key (and merge context). Arrays of objects carrying
-//this field are merged by ID; everything else is concatenated. Runner platform arrays (under
-//RUNNERS) are keyed by NAME, detected via the context path.
-static std::string ManifestArrayIdField(const std::string &ArrayKey, const std::string &Ctx)
-{
-    if (ArrayKey == "GAMES")      return "GAMEID";
-    if (ArrayKey == "COMPONENTS") return "COMPONENTID";
-    if (ArrayKey == "VARIANTS")   return "VARIANT_ID";
-    if (ArrayKey == "RUNNERS")    return "RUNNER_ID"; // flat top-level runner array
-    //CustomVars are SUBCOMPONENTS now (TYPE:"CustomVar"); SUBCOMPONENTS concatenate, no id-merge.
-    (void)Ctx;
-    return "";
-}
 
 //Parses the file at JSONFile into JSONDocument.
 //Uses nlohmann::ordered_json::accept() for a cheap validity pre-check before the full

@@ -451,7 +451,8 @@ bool PackageEditor::BuildUI()
         QPushButton * RemoveBtn = new QPushButton("Remove Node", NodeTab);
         Toolbar->addWidget(MoveUpBtn); Toolbar->addWidget(MoveDnBtn); Toolbar->addWidget(RemoveBtn);
         QObject::connect(MoveUpBtn, &QPushButton::clicked, this, [this, n](){
-            if (n <= 0) return; std::swap((*MANIFESTJSON)["NODES"][n - 1], (*MANIFESTJSON)["NODES"][n]);
+            if (n <= 0) return;
+            std::swap((*MANIFESTJSON)["NODES"][n - 1], (*MANIFESTJSON)["NODES"][n]);
             SavedMainTab = (n - 1) + 1; SaveNodes(); BuildUI();
         });
         QObject::connect(MoveDnBtn, &QPushButton::clicked, this, [this, n](){

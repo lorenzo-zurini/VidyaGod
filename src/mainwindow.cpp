@@ -99,7 +99,7 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 // ═════════════════════════════════════════════════════════════════════════════
 
 MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * parent)
-    : GlobalConfigJSON(gc), AppDataDir(appData), QMainWindow(parent)
+    : QMainWindow(parent), AppDataDir(appData), GlobalConfigJSON(gc)   // base first, then members in declaration order
 {
     setWindowTitle("Vidya God");
     setMinimumSize(640, 480);

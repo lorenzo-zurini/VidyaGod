@@ -1,0 +1,22 @@
+# Curated, high-signal check set for the C++ sources. Advisory in CI for now (not gating).
+# Noisy/low-value checks for this Qt codebase are disabled explicitly.
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  misc-*,
+  modernize-use-override,
+  modernize-use-nullptr,
+  modernize-use-equals-default,
+  readability-misleading-indentation,
+  readability-redundant-member-init,
+  readability-redundant-string-cstr,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone,
+  -misc-no-recursion,
+  -misc-non-private-member-variables-in-classes,
+  -misc-use-anonymous-namespace,
+  -misc-include-cleaner
+WarningsAsErrors: ''
+HeaderFilterRegex: '^src/.*'
