@@ -111,3 +111,16 @@ add_subdirectory(external/VidyaGodIPFS)
 # (build root, and AppDir/usr/bin after bundling). Started in main.cpp; the IPFS call sites swap over in M4.
 target_link_libraries(VidyaGod PRIVATE vgipfs)
 set_target_properties(VidyaGod PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
+
+# ---- Unit tests (ctest) — pure, Qt-free logic only, so the test exe stays light (no MOC/Widgets) ----
+enable_testing()
+add_executable(vg_tests
+    tests/main.cpp
+    tests/test_manifestmodel.cpp
+    src/manifestmodel.cpp
+    src/commonutils.cpp)
+target_include_directories(vg_tests PRIVATE src)
+target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
+target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+add_test(NAME vg_tests COMMAND vg_tests)

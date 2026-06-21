@@ -50,6 +50,9 @@ jobs:
           cmake .. -DVIDYAGOD_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           make -j$(nproc)
 
+      - name: C++ unit tests (ctest)
+        run: ctest --test-dir build --output-on-failure
+
       - name: clang-tidy (advisory)
         continue-on-error: true   # advisory for now — surfaces issues without gating the build
         run: |
