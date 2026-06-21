@@ -79,6 +79,9 @@ set(PROJECT_SOURCES
     src/covercache.h
     src/covercache.cpp
 
+    src/downloadmanager.h
+    src/downloadmanager.cpp
+
     translations/${TS_FILES}
 )
 

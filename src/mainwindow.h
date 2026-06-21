@@ -39,12 +39,15 @@
 #include "libraryview.h"   // LibraryGameCard + LibraryView + IpfsFetchReady (moved out of this header)
 
 
+class DownloadManager;   // owns the Catalog download lifecycle (extracted); a friend so it can drive the IPFS tab + cards
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MainWindow
 // ─────────────────────────────────────────────────────────────────────────────
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
+    friend class DownloadManager;
 public:
     MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
     ~MainWindow();
@@ -103,11 +106,7 @@ private:
     QList<LibraryGameCard *>   AvailableVisible;   // the search-filtered subset actually shown (no card recreation)
     QSet<QString> AvailableCollapsedRepos;        // repo names whose section is collapsed (persisted in Settings)
     QString       AvailableSearch;                // case-insensitive title filter for the Available grid
-    QSet<QString> DownloadingUids;                // PACKAGEUIDs with an import in flight (survives rebuilds)
-    QSet<QString> CancellingUids;                 // PACKAGEUIDs the user cancelled (suppresses the failure dialog)
-    QHash<QString, QString>      DownloadCidToUid; // in-flight content CID → its owning PACKAGEUID
-    QHash<QString, QStringList>  DownloadUidCids;  // PACKAGEUID → its content CIDs (for averaging progress)
-    QHash<QString, double>       DownloadCidPct;   // in-flight CID → latest percent (0..100)
+    DownloadManager * DownloadMgr = nullptr;      // owns the Catalog download lifecycle (dialog + worker + bookkeeping)
     SortMode      AvailableSort = SortMode::Name;  // within-group ordering on the Available grid
 
     // ── IPFS tab (embedded-node transfers + seeded content; greyed if the node didn't start) ──
