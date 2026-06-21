@@ -79,17 +79,38 @@ set(PROJECT_SOURCES
     src/covercache.h
     src/covercache.cpp
 
+    src/appmodel.h
+    src/appmodel.cpp
+
     src/downloadmanager.h
     src/downloadmanager.cpp
 
     src/ipfstab.h
     src/ipfstab.cpp
 
-    src/settingstab.h
-    src/settingstab.cpp
+    src/librarytab.h
+    src/librarytab.cpp
 
     src/catalogtab.h
     src/catalogtab.cpp
+
+    src/packagesview.h
+    src/packagesview.cpp
+
+    src/settingstab.h
+    src/settingstab.cpp
+
+    src/runnerspage.h
+    src/runnerspage.cpp
+
+    src/repositoriespage.h
+    src/repositoriespage.cpp
+
+    src/downloadspage.h
+    src/downloadspage.cpp
+
+    src/pathspage.h
+    src/pathspage.cpp
 
     translations/${TS_FILES}
 )

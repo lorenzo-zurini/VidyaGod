@@ -1,5 +1,5 @@
 #include "ipfstab.h"
-#include "mainwindow.h"        // friend access: Mw.GlobalConfigJSON
+#include "appmodel.h"           // AppModel — Mw.GlobalConfigJSON → Model.config()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
@@ -147,10 +147,11 @@ static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc,
 
 // ===== IpfsTab =====
 
-IpfsTab::IpfsTab(MainWindow &Owner, QWidget *parent)
-    : QWidget(parent), Mw(Owner)
+IpfsTab::IpfsTab(AppModel &model, QWidget *parent)
+    : QWidget(parent), Model(model)
 {
     buildUi();
+    connect(&Model, &AppModel::catalogChanged, this, &IpfsTab::refresh);   // pins change on import/sync/download
 }
 
 void IpfsTab::setActive(bool On)
@@ -184,7 +185,7 @@ QTableWidgetItem * IpfsTab::ensureTransferRow(const QString & cid, const QString
     if (!IpfsTransfers) return nullptr;
     if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) return prog;   // already have a row
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*Mw.GlobalConfigJSON, &IpfsCidPackages);
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);
     IpfsTransfers->setSortingEnabled(false);                       // keep the row intact while we fill it
     const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
     IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
@@ -266,7 +267,7 @@ void IpfsTab::buildUi()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    IpfsCidLabels = BuildCidLabels(*Mw.GlobalConfigJSON, &IpfsCidPackages);
+    IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);
 
     // Transfers (live fetches).
     QGroupBox * txBox = new QGroupBox("Transfers", this);
@@ -456,13 +457,13 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo,
     S += QString("   •   Seeded: %1 item%2 · %3").arg(Pins.size()).arg(Pins.size() == 1 ? "" : "s").arg(HumanBytes(Total));
     {
         std::error_code Ec;
-        const auto Sp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Mw.GlobalConfigJSON), Ec);
+        const auto Sp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), Ec);
         if (!Ec) S += QString("   •   Disk: %1 free of %2").arg(HumanBytes((long long)Sp.available)).arg(HumanBytes((long long)Sp.capacity));
     }
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(*Mw.GlobalConfigJSON, &IpfsCidPackages);   // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);   // keep names current with the catalog
 
     QMap<QString, QStringList> ByPackage;
     QSet<QString> DesiredCids;

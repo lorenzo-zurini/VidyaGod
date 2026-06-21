@@ -1,7 +1,5 @@
 #include "downloadmanager.h"
-#include "mainwindow.h"        // full MainWindow (DownloadManager is its friend → reaches the IPFS tab + cards)
-#include "ipfstab.h"          // IpfsTab — transfer-row + refresh API
-#include "catalogtab.h"       // CatalogTab — Available cards live there now
+#include "appmodel.h"          // AppModel — catalog/config + rebuildCatalog()
 #include "libraryview.h"       // LibraryGameCard + IpfsFetchReady()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
@@ -41,15 +39,15 @@ static QString HumanBytes(long long N)
     return QString::number(B, 'f', I == 0 ? 0 : 1) + " " + U[I];
 }
 
-DownloadManager::DownloadManager(MainWindow &Owner)
-    : QObject(&Owner), Mw(Owner) {}
+DownloadManager::DownloadManager(AppModel &model, QWidget *dialogParent, QObject *parent)
+    : QObject(parent), Model(model), DialogParent(dialogParent) {}
 
 void DownloadManager::requestCancel(LibraryGameCard *card)
 {
     if (!card) return;
     const QString Key = card->GroupKey;
     if (Key.isEmpty() || !DownloadingUids.contains(Key)) return;
-    if (QMessageBox::question(&Mw, "Cancel download?",
+    if (QMessageBox::question(DialogParent, "Cancel download?",
             "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
     CancellingUids.insert(Key);                                   // suppress the failure dialog on abort
     for (const QString & c : DownloadUidCids.value(Key)) IpfsWrapper::RequestCancel(c.toStdString());
@@ -64,21 +62,13 @@ void DownloadManager::applyProgress(const QString &cid, double pct)
     const QStringList & Cids = DownloadUidCids[Key];
     double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0);
     const double Avg = Cids.isEmpty() ? -1.0 : Sum / Cids.size();
-    if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->setDownloadProgress(Key, Avg);   // the Available cards live in CatalogTab
-}
-
-double DownloadManager::busyPercent(const QString &groupKey) const
-{
-    const QStringList & cs = DownloadUidCids.value(groupKey);
-    if (cs.isEmpty()) return -1.0;
-    double s = 0; for (const QString & cc : cs) s += DownloadCidPct.value(cc, 0.0);
-    return s / cs.size();
+    emit downloadProgress(Key, Avg);   // the Catalog card(s) connect to this
 }
 
 void DownloadManager::startDownload(LibraryGameCard *card)
 {
     if (!card) return;
-    if (!IpfsFetchReady(&Mw)) return;
+    if (!IpfsFetchReady(DialogParent)) return;
     const QString Key = card->GroupKey;
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
@@ -94,10 +84,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
 
     std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across all of them
     for (const std::string & Lid : AllLaunch)
-        for (const Node * O : ManifestModel::OptionalNodes(Mw.CatalogIndex, Lid))
+        for (const Node * O : ManifestModel::OptionalNodes(Model.catalogIndex(), Lid))
             if (OptSeen.insert(O->NodeId).second) Opts.push_back(O);
 
-    QDialog Dlg(&Mw);
+    QDialog Dlg(DialogParent);
     Dlg.setWindowTitle("Download — " + card->GameTitle);
     Dlg.setMinimumWidth(420);
     QVBoxLayout * DL = new QVBoxLayout(&Dlg);
@@ -109,10 +99,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         QVBoxLayout * BL = new QVBoxLayout(Box);
         for (const std::string & Lid : Editions)
         {
-            const Node * N = Mw.CatalogIndex.Find(Lid);
+            const Node * N = Model.catalogIndex().Find(Lid);
             std::string Lbl = (N && !N->Label.empty()) ? N->Label
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
-            const int Items = (int)PackageCatalog::NodeContentCids(Mw.CatalogIndex, Lid).size();
+            const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid).size();
             QCheckBox * cb = new QCheckBox(QString::fromStdString(Lbl) + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
             cb->setChecked(true);
             GameChecks[Lid] = cb; BL->addWidget(cb);
@@ -125,7 +115,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         QVBoxLayout * BL = new QVBoxLayout(Box);
         for (const auto & [Lid, Title] : Secondaries)
         {
-            const int Items = (int)PackageCatalog::NodeContentCids(Mw.CatalogIndex, Lid).size();
+            const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid).size();
             QCheckBox * cb = new QCheckBox(Title + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
             cb->setChecked(false);
             GameChecks[Lid] = cb; BL->addWidget(cb);
@@ -149,18 +139,18 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. ──
     std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox
     {
-        const Node * BaseGame = Editions.empty() ? nullptr : Mw.CatalogIndex.Find(Editions.front());
+        const Node * BaseGame = Editions.empty() ? nullptr : Model.catalogIndex().Find(Editions.front());
         if (BaseGame)
         {
             std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
-            for (const Node * R : PackageCatalog::CompatibleRunners(Mw.CatalogIndex, *BaseGame))
+            for (const Node * R : PackageCatalog::CompatibleRunners(Model.catalogIndex(), *BaseGame))
             {
                 const std::string rid = R->NodeId;
                 const bool Embedded   = (R->BundleDir == BaseGame->BundleDir);                    // embedded in THIS package
-                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(Mw.CatalogIndex, rid);  // not bundled in any game
+                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(Model.catalogIndex(), rid);  // not bundled in any game
                 if (!Embedded && !Standalone) continue;                                           // another game's embedded runner
-                if (PackageCatalog::RunnerInstalled(Mw.CatalogIndex, rid)) { AnyCompatInstalled = true; continue; }
-                if (PackageCatalog::NodeContentCids(Mw.CatalogIndex, rid).empty()) continue;      // PATH runner — not downloadable
+                if (PackageCatalog::RunnerInstalled(Model.catalogIndex(), rid)) { AnyCompatInstalled = true; continue; }
+                if (PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty()) continue;      // PATH runner — not downloadable
                 (Embedded ? EmbeddedR : GlobalR).push_back(R);
             }
             const bool ShowGlobal = !AnyCompatInstalled && !GlobalR.empty();
@@ -170,7 +160,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 QVBoxLayout * BL = new QVBoxLayout(Box);
                 auto addRunner = [&](const Node * R){
                     const std::string rid = R->NodeId;
-                    const int Items = (int)PackageCatalog::NodeContentCids(Mw.CatalogIndex, rid).size();
+                    const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).size();
                     QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label)
                         + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
                     cb->setChecked(true);
@@ -196,7 +186,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     QLabel * SizeLabel = new QLabel(&Dlg);
     DL->addWidget(SizeLabel);
     std::error_code DiskEc;
-    const auto DiskSp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Mw.GlobalConfigJSON), DiskEc);
+    const auto DiskSp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), DiskEc);
     const long long FreeBytes = DiskEc ? -1 : (long long)DiskSp.available;
 
     auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
@@ -206,10 +196,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         std::set<std::string> Sel;
         for (const std::string & Lid : AllLaunch)
             if (GameChecks.at(Lid)->isChecked())
-                for (const auto & C : PackageCatalog::NodeContentCids(Mw.CatalogIndex, Lid, Tg)) Sel.insert(C);
+                for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, Tg)) Sel.insert(C);
         for (const auto & [Rid, Cb] : RunnerChecks)
             if (Cb->isChecked())
-                for (const auto & C : PackageCatalog::NodeContentCids(Mw.CatalogIndex, Rid)) Sel.insert(C);
+                for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid)) Sel.insert(C);
         long long Sum = 0; bool AllKnown = true;
         for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
         SizeLabel->setText(QString("Free space: %1      Download: %2%3")
@@ -225,9 +215,9 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         std::map<std::string, bool> AllOn; for (const auto & [Id, Cb] : OptChecks) AllOn[Id] = true;
         std::set<std::string> All;
         for (const std::string & Lid : AllLaunch)
-            for (const auto & C : PackageCatalog::NodeContentCids(Mw.CatalogIndex, Lid, AllOn)) All.insert(C);
+            for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, AllOn)) All.insert(C);
         for (const auto & [Rid, Cb] : RunnerChecks)
-            for (const auto & C : PackageCatalog::NodeContentCids(Mw.CatalogIndex, Rid)) All.insert(C);
+            for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid)) All.insert(C);
         std::thread([this, ToQuery = std::vector<std::string>(All.begin(), All.end()), SizeCache, Alive, Recompute]{
             for (const std::string & C : ToQuery) {
                 if (!Alive->load()) return;
@@ -268,23 +258,23 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             Cids << Qc; DownloadCidToUid[Qc] = Key; DownloadCidPct[Qc] = 0.0;
         }
     };
-    for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Mw.CatalogIndex, Lid, Toggles));
-    for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(Mw.CatalogIndex, Rid));  // runner build CIDs
+    for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, Toggles));
+    for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid));  // runner build CIDs
     DownloadUidCids[Key] = Cids;
 
     // Pre-show every CID as a "Queued" transfer; the worker fetches them, and transferStarted flips each to
     // "Fetching…" as it begins. Leftover queued rows are cleared when the worker finishes (below).
-    for (const QString & c : Cids) Mw.IpfsTabPtr->queueTransfer(c);
+    for (const QString & c : Cids) emit transferQueued(c);
 
     // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
-    if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->markDownloading(Key);
-    Mw.IpfsTabPtr->refresh();
+    emit downloadStarted(Key);
+    emit transfersChanged();
 
     // Snapshot the node index + config for THIS worker: concurrent downloads must not read the shared
-    // CatalogIndex while a completing download reassigns it (RebuildDynamicUI), and the worker must never touch the
+    // CatalogIndex while a completing download reassigns it (rebuildCatalog), and the worker must never touch the
     // GUI-owned live GlobalConfigJSON.
-    NodeIndex Snapshot = Mw.CatalogIndex;
-    auto CfgSnap = std::make_shared<nlohmann::ordered_json>(*Mw.GlobalConfigJSON);
+    NodeIndex Snapshot = Model.catalogIndex();
+    auto CfgSnap = std::make_shared<nlohmann::ordered_json>(*Model.config());
     std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), CfgSnap]{
         std::string Err; bool Ok = true;
         for (const std::string & Lid : LaunchIds)
@@ -300,14 +290,14 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             for (const QString & c : DownloadUidCids.value(Key))
             {
                 IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c);
-                Mw.IpfsTabPtr->clearQueuedTransfer(c);   // drop a row still "Queued" (never started)
+                emit transferUnqueued(c);   // drop a row still "Queued" (never started)
             }
             DownloadUidCids.remove(Key);
-            if (Ok) Mw.RebuildDynamicUI();
-            else if (!Cancelled) LogErr("DownloadManager::startDownload", "Download failed: " + Err);   // no dialog — the
+            if (!Ok && !Cancelled) LogErr("DownloadManager::startDownload", "Download failed: " + Err);   // no dialog — the
                                                                           // failure shows as a "Failed" row in the IPFS tab
-            if (Mw.CatalogTabPtr) Mw.CatalogTabPtr->rebuild();
-            Mw.IpfsTabPtr->refresh();
+            emit downloadFinished(Key);   // the Catalog card(s) drop the "Downloading…" overlay BEFORE the rebuild reads state
+            Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild + IPFS refresh
+            emit transfersChanged();
         }, Qt::QueuedConnection);
     }).detach();
 }

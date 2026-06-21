@@ -27,6 +27,9 @@
 // Lives here because the card grid's play()/download paths are its primary callers; MainWindow uses it too.
 bool IpfsFetchReady(QWidget * parent);
 
+// Card ordering, shared by the Library and Catalog tabs (both render LibraryGameCards in a LibraryView).
+enum class SortMode { Name = 0, Date = 1, Series = 2 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // LibraryGameCard — plain data class (one tile), NOT a widget. A tile = a GROUP of launchable nodes (the
 // editions); it reads cover/title/sort from the group's representative (RECOMMENDED/first) node META and carries

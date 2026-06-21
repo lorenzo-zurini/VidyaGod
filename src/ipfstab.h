@@ -11,7 +11,7 @@
 
 #include "ipfswrapper.h"   // IpfsWrapper::StatInfo / PinEntry
 
-class MainWindow;
+class AppModel;
 class QLabel;
 class QTableWidget;
 class QTreeWidget;
@@ -20,24 +20,26 @@ class QTableWidgetItem;
 class QTreeWidgetItem;
 
 // ---------------------------------------------------------------------------
-// IpfsTab — the "IPFS" tab extracted out of MainWindow: live transfers table, seeded (pinned) content tree, node
-// status, the IpfsManager signal handling, the stall watchdog, and the periodic refresh. It's the tab QWidget
-// itself (MainWindow adds it). It reads the catalog/config from MainWindow (friend), and exposes a small API the
-// download flow uses to seed/clear transfer rows.
+// IpfsTab — the "IPFS" tab: live transfers table, seeded (pinned) content tree, node status, the IpfsManager signal
+// handling, the stall watchdog, and the periodic refresh. It reads the catalog/config through the AppModel and
+// exposes a small slot API the download flow (DownloadManager) drives by signal to seed/clear transfer rows.
 // ---------------------------------------------------------------------------
 class IpfsTab : public QWidget
 {
     Q_OBJECT
 public:
-    IpfsTab(MainWindow &Owner, QWidget *parent = nullptr);
+    IpfsTab(AppModel &model, QWidget *parent = nullptr);
 
+public slots:
     void refresh();                                                  // off-thread status + pin gather (no-op if ipfs absent)
     void setActive(bool On);                                         // start/stop the periodic refresh when the tab is shown
 
-    // Used by the Catalog download flow (DownloadManager):
-    QTableWidgetItem *ensureTransferRow(const QString &cid, const QString &status);
+    // Driven by the Catalog download flow (DownloadManager signals):
     void queueTransfer(const QString &cid);                          // pre-show a download CID as "Queued"
     void clearQueuedTransfer(const QString &cid);                    // drop a still-queued row (download finished/cancelled)
+
+public:
+    QTableWidgetItem *ensureTransferRow(const QString &cid, const QString &status);
 
 private:
     void buildUi();
@@ -46,7 +48,7 @@ private:
                        const QHash<QString, long long> &Sizes);
     void gatherHealth();
 
-    MainWindow &Mw;
+    AppModel &Model;
 
     QLabel       *IpfsStatusLabel = nullptr;
     QTableWidget *IpfsTransfers   = nullptr;   // Name|Size|Progress|Speed|Status|CID — live + queued fetches (sortable)

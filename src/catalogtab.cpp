@@ -1,8 +1,7 @@
 #include "catalogtab.h"
-#include "downloadmanager.h"   // Mw.DownloadMgr->{startDownload,requestCancel,isDownloading,busyPercent,applyProgress}
+#include "appmodel.h"          // AppModel — catalog/config + card size
 #include "packagecatalog.h"
 #include "manifestmodel.h"
-#include "ipfswrapper.h"       // IpfsManager
 #include "commonutils.h"
 
 #include <QVBoxLayout>
@@ -18,22 +17,37 @@
 #include <string>
 #include <vector>
 
-CatalogTab::CatalogTab(MainWindow &Owner, QWidget *parent)
-    : QWidget(parent), Mw(Owner) { buildUi(); }
+CatalogTab::CatalogTab(AppModel &model, QWidget *parent)
+    : QWidget(parent), Model(model)
+{
+    buildUi();   // calls rebuild() once
+    connect(&Model, &AppModel::catalogChanged,  this, &CatalogTab::rebuild);
+    connect(&Model, &AppModel::coversReady,     this, &CatalogTab::refreshCovers);
+    connect(&Model, &AppModel::cardSizeChanged, this, &CatalogTab::onCardSizeChanged);
+}
 
-// DownloadManager hooks — paint download state onto this tab's cards (the cards live here now).
+// Download-state hooks (driven by DownloadManager signals) — paint download state onto this tab's cards and track
+// the in-flight set so a rebuild() can restore the overlay without querying anyone.
 void CatalogTab::markDownloading(const QString &groupKey)
 {
+    ActiveDownloads[groupKey] = 0.0;
     for (LibraryGameCard * c : *AvailableGameCards)
         if (c && c->GroupKey == groupKey) { c->Downloading = true; c->DownloadPercent = 0.0; }
     if (AvailableView) AvailableView->refreshVisuals();
 }
 void CatalogTab::setDownloadProgress(const QString &groupKey, double avg)
 {
+    if (ActiveDownloads.contains(groupKey)) ActiveDownloads[groupKey] = avg;
     bool any = false;
     for (LibraryGameCard * c : *AvailableGameCards)
         if (c && c->Downloading && c->GroupKey == groupKey) { c->DownloadPercent = avg; any = true; }
     if (any && AvailableView) AvailableView->refreshVisuals();
+}
+void CatalogTab::clearDownloading(const QString &groupKey)
+{
+    ActiveDownloads.remove(groupKey);
+    for (LibraryGameCard * c : *AvailableGameCards)
+        if (c && c->GroupKey == groupKey) { c->Downloading = false; c->DownloadPercent = -1.0; }
 }
 void CatalogTab::refreshCovers()
 {
@@ -47,9 +61,9 @@ void CatalogTab::buildUi()
 {
     // Load persisted collapse state for repo sections.
     AvailableCollapsedRepos.clear();
-    if ((*Mw.GlobalConfigJSON)["Settings"].contains("AvailableCollapsedRepos")
-        && (*Mw.GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"].is_array())
-        for (const auto & R : (*Mw.GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"])
+    if ((*Model.config())["Settings"].contains("AvailableCollapsedRepos")
+        && (*Model.config())["Settings"]["AvailableCollapsedRepos"].is_array())
+        for (const auto & R : (*Model.config())["Settings"]["AvailableCollapsedRepos"])
             if (R.is_string()) AvailableCollapsedRepos.insert(QString::fromStdString(std::string(R)));
 
     QVBoxLayout * v = new QVBoxLayout(this);
@@ -66,7 +80,7 @@ void CatalogTab::buildUi()
         "QPushButton:hover{color:palette(highlighted-text);}";
     QButtonGroup * sortGroup = new QButtonGroup(toolbar);
     sortGroup->setExclusive(true);
-    auto makeSortBtn = [&](const QString & lbl, MainWindow::SortMode mode) {
+    auto makeSortBtn = [&](const QString & lbl, SortMode mode) {
         QPushButton * b = new QPushButton(lbl, toolbar);
         b->setCheckable(true); b->setChecked(AvailableSort == mode);
         b->setStyleSheet(sortBtnStyle);
@@ -77,7 +91,7 @@ void CatalogTab::buildUi()
         });
         tl->addWidget(b);
     };
-    makeSortBtn("Name", MainWindow::SortMode::Name); makeSortBtn("Date", MainWindow::SortMode::Date); makeSortBtn("Series", MainWindow::SortMode::Series);
+    makeSortBtn("Name", SortMode::Name); makeSortBtn("Date", SortMode::Date); makeSortBtn("Series", SortMode::Series);
     tl->addStretch();
     QLineEdit * availSearch = new QLineEdit(toolbar);
     availSearch->setPlaceholderText("Search…");
@@ -90,20 +104,13 @@ void CatalogTab::buildUi()
     tl->addWidget(availSearch);
     auto makeSizeBtn = [&](const QString & lbl, int w) {
         QPushButton * b = new QPushButton(lbl, toolbar);
-        b->setCheckable(true); b->setChecked(Mw.CardPixelWidth == w);
+        b->setObjectName("sizeBtn");
+        b->setCheckable(true); b->setChecked(Model.cardPixelWidth() == w);
         b->setStyleSheet(
             "QPushButton{color:#8f98a0;background:transparent;border:none;font-size:9pt;padding:2px 8px;}"
             "QPushButton:checked{color:#c6d4df;border-bottom:2px solid #4a90d9;}"
             "QPushButton:hover{color:#c6d4df;}");
-        connect(b, &QPushButton::clicked, this, [this,w,lbl,toolbar](){
-            Mw.CardPixelWidth = w;
-            for (auto * x : toolbar->findChildren<QPushButton*>()) if (x->isCheckable() && (x->text()=="Large"||x->text()=="Medium"||x->text()=="Small")) x->setChecked(x->text()==lbl);
-            if (AvailableView) {
-                AvailableView->setCards(AvailableGameCards);   // point at the full pool so every cover is re-scaled
-                AvailableView->prescaleCovers(Mw.CardPixelWidth);
-                applyFilter();                        // repoint to the filtered subset + relayout
-            }
-        });
+        connect(b, &QPushButton::clicked, this, [this,w](){ Model.setCardPixelWidth(w); });   // → cardSizeChanged → onCardSizeChanged
         tl->addWidget(b);
     };
     makeSizeBtn("Large",250); makeSizeBtn("Medium",185); makeSizeBtn("Small",120);
@@ -114,22 +121,29 @@ void CatalogTab::buildUi()
     AvailableView->setEmptyMessage("Nothing to download.\n\nAdd a repository in Settings → Repositories (or hit “Sync now”) to see shared games here.");
     v->addWidget(AvailableView);
 
-    connect(AvailableView, &LibraryView::downloadRequested, this, [this](LibraryGameCard * card){ Mw.DownloadMgr->startDownload(card); });
-    connect(AvailableView, &LibraryView::cancelRequested,   this, [this](LibraryGameCard * card){ Mw.DownloadMgr->requestCancel(card); });
+    // Card clicks are re-emitted as requests; MainWindow wires them to the DownloadManager (no direct coupling).
+    connect(AvailableView, &LibraryView::downloadRequested, this, &CatalogTab::downloadRequested);
+    connect(AvailableView, &LibraryView::cancelRequested,   this, &CatalogTab::cancelRequested);
     connect(AvailableView, &LibraryView::groupToggled, this, [this](const QString & name, bool collapsed){
         if (collapsed) AvailableCollapsedRepos.insert(name); else AvailableCollapsedRepos.remove(name);
-        auto & arr = (*Mw.GlobalConfigJSON)["Settings"]["AvailableCollapsedRepos"] = nlohmann::ordered_json::array();
+        auto & arr = (*Model.config())["Settings"]["AvailableCollapsedRepos"] = nlohmann::ordered_json::array();
         for (const QString & R : AvailableCollapsedRepos) arr.push_back(R.toStdString());
-        Mw.SaveGlobalConfigJSON();
+        Model.save();
     });
 
-    // Live download progress: average a package's content-CID transfer percents onto its Available card(s).
-    connect(IpfsManager::instance(), &IpfsManager::transferProgress, this,
-            [this](QString cid, double pct){ Mw.DownloadMgr->applyProgress(cid, pct); });
-    connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
-            [this](QString cid, bool, QString){ Mw.DownloadMgr->applyProgress(cid, 100.0); });
-
     rebuild();
+}
+
+// Model card-size changed (from either tab's size buttons) — re-check the matching button and re-scale + relayout.
+void CatalogTab::onCardSizeChanged(int cardW)
+{
+    const QString want = cardW >= 250 ? "Large" : cardW <= 120 ? "Small" : "Medium";
+    for (auto * b : findChildren<QPushButton*>("sizeBtn")) b->setChecked(b->text() == want);
+    if (AvailableView) {
+        AvailableView->setCards(AvailableGameCards);   // point at the full pool so every cover is re-scaled
+        AvailableView->prescaleCovers(Model.cardPixelWidth());
+        applyFilter();                                 // repoint to the filtered subset + relayout
+    }
 }
 
 //(Re)builds the Available grid: one card per un-hydrated repo game, grouped by repository (collapsible).
@@ -144,23 +158,23 @@ void CatalogTab::rebuild()
 
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
-    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Mw.CatalogIndex))
+    for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
         bool AnyMissing = false, AnyFetchable = false;
         for (const Node * N : Group)
         {
             Ids.push_back(N->NodeId);
-            if (!PackageCatalog::NodeHydrated(Mw.CatalogIndex, N->NodeId)) AnyMissing = true;
-            if (!PackageCatalog::NodeContentCids(Mw.CatalogIndex, N->NodeId).empty()) AnyFetchable = true;
+            if (!PackageCatalog::NodeHydrated(Model.catalogIndex(), N->NodeId)) AnyMissing = true;
+            if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()) AnyFetchable = true;
         }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
-        auto * c = new LibraryGameCard(Mw.GlobalConfigJSON, &Mw.CatalogIndex, std::move(Ids));
+        auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));
         c->InitializeClassVariables();
 
-        const bool Busy = Mw.DownloadMgr->isDownloading(c->GroupKey);
+        const bool Busy = ActiveDownloads.contains(c->GroupKey);
         c->Downloading = Busy;
-        c->DownloadPercent = Busy ? Mw.DownloadMgr->busyPercent(c->GroupKey) : -1.0;   // carry current progress across rebuilds
+        c->DownloadPercent = Busy ? ActiveDownloads.value(c->GroupKey) : -1.0;   // carry current progress across rebuilds
         AvailableGameCards->append(c);
     }
 
@@ -172,8 +186,8 @@ void CatalogTab::rebuild()
         const std::string & Lid = c->RepNodeId;
         if (Lid.empty()) return 0;
         int n = 0;
-        for (const std::string & Nid : ManifestModel::ResolveNodeOrder(Mw.CatalogIndex, Lid, {})) {
-            const Node * N = Mw.CatalogIndex.Find(Nid);
+        for (const std::string & Nid : ManifestModel::ResolveNodeOrder(Model.catalogIndex(), Lid, {})) {
+            const Node * N = Model.catalogIndex().Find(Nid);
             if (N && !N->IsRunner()) n++;
         }
         return n;
@@ -204,7 +218,7 @@ void CatalogTab::rebuild()
     // (Scaling must happen while the view's card list IS the pool; otherwise CoverScaled stays null and the
     // covers paint black until the next refreshVisuals — the "flash black on download complete" bug.)
     AvailableView->setCards(AvailableGameCards);
-    AvailableView->prescaleCovers(Mw.CardPixelWidth);
+    AvailableView->prescaleCovers(Model.cardPixelWidth());
     applyFilter();
 }
 
@@ -229,8 +243,8 @@ void CatalogTab::applyFilter()
 
     // Sort by (repo, within-group key) so each repo is a contiguous run; then build collapsible groups.
     auto keyOf = [this](LibraryGameCard * a) -> QString {
-        switch (AvailableSort) { case MainWindow::SortMode::Date:   return a->SortDate + "|" + a->SortTitle;
-                                 case MainWindow::SortMode::Series: return a->SortSeriesKey;
+        switch (AvailableSort) { case SortMode::Date:   return a->SortDate + "|" + a->SortTitle;
+                                 case SortMode::Series: return a->SortSeriesKey;
                                  default:               return a->SortTitle; }
     };
     std::sort(AvailableVisible.begin(), AvailableVisible.end(), [&](LibraryGameCard * a, LibraryGameCard * b){
@@ -250,7 +264,7 @@ void CatalogTab::applyFilter()
 
     AvailableView->setCards(&AvailableVisible);
     AvailableView->setGroups(groups);
-    AvailableView->layoutCards(Mw.CardPixelWidth);
+    AvailableView->layoutCards(Model.cardPixelWidth());
 }
 
 // Ensure a transfers-table row exists for a CID (creating it with the given status if absent), and return its
@@ -262,7 +276,7 @@ QString CatalogTab::repoNameForBundle(const std::filesystem::path & BundleDir) c
 {
     std::error_code Ec;
     const std::string B = std::filesystem::weakly_canonical(BundleDir, Ec).string();
-    for (const std::string & RepoDir : PackageCatalog::RepositoryDirs(*Mw.GlobalConfigJSON))
+    for (const std::string & RepoDir : PackageCatalog::RepositoryDirs(*Model.config()))
     {
         const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(RepoDir), Ec).string();
         if (!R.empty() && (B == R || B.rfind(R + "/", 0) == 0))
