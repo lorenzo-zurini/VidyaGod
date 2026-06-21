@@ -85,6 +85,9 @@ set(PROJECT_SOURCES
     src/ipfstab.h
     src/ipfstab.cpp
 
+    src/settingstab.h
+    src/settingstab.cpp
+
     translations/${TS_FILES}
 )
 

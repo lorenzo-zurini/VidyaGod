@@ -41,6 +41,7 @@
 
 class DownloadManager;   // owns the Catalog download lifecycle (extracted); a friend so it can drive the IPFS tab + cards
 class IpfsTab;           // the extracted IPFS tab widget; a friend so it can read the catalog/config
+class SettingsTab;       // the extracted Settings tab widget; a friend so it can read the catalog/config + rebuild
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MainWindow
@@ -50,6 +51,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
     friend class DownloadManager;
     friend class IpfsTab;
+    friend class SettingsTab;
 public:
     MainWindow(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir, QWidget * parent = nullptr);
     ~MainWindow();
@@ -93,13 +95,7 @@ private:
     QWidget     * PackagesTabWidget;
     QVBoxLayout * PackagesTabWidgetLayout;
     QScrollArea * PackagesScrollArea;
-
-    // ── Settings tab (global configurator: sidebar + stacked category forms) ──
-    QWidget        * SettingsTabWidget     = nullptr;
-    QListWidget    * SettingsCategoryList  = nullptr;
-    QStackedWidget * SettingsStack         = nullptr;
-    QScrollArea    * SettingsRunnersScroll = nullptr; // rebuilt in place by RebuildSettingsRunnersPage()
-    QScrollArea    * SettingsReposScroll   = nullptr; // rebuilt in place by RebuildSettingsReposPage()
+    // (the Settings tab — sidebar + Runners/Repos/Downloads/Paths pages — is now SettingsTab; see SettingsTabPtr)
 
     // ── Available tab (repo games to discover + download over IPFS) — same grid as Library, grouped by repo ──
     QWidget     * AvailableTabWidget = nullptr;
@@ -113,17 +109,13 @@ private:
 
     // ── IPFS tab — extracted into its own widget class (src/ipfstab.{h,cpp}) ──
     IpfsTab       * IpfsTabPtr       = nullptr;
+    SettingsTab   * SettingsTabPtr   = nullptr;   // Settings tab (src/settingstab.{h,cpp})
     QTimer        * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one card refresh
 
     void BuildStaticUI();
     void BuildLibraryGameCards();
     void BuildLibraryDynamicUI();
     void BuildPackagesDynamicUI();
-    void BuildSettingsTab();
-    void RebuildSettingsRunnersPage();
-    void RebuildSettingsReposPage();
-    QWidget * BuildPathsSettingsPage();
-    QWidget * BuildDownloadsSettingsPage();
     void BuildAvailableTab();
     void RebuildAvailableTab();   // EXPENSIVE: rebuild the full card pool (group enumeration + hydration stats); then filter
     void ApplyAvailableFilter();  // CHEAP: filter the existing pool by search + sort + group; no rebuild/restat (sort/search path)
