@@ -58,6 +58,18 @@ std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx);
 // Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
 // available), in sorted node-id order — for the prelaunch runner dropdown.
 std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);
+
+// Platform-compatible runners for a launchable on this machine (GUEST ∋ launch host, HOST==machine) WITHOUT any
+// install/executable gate — i.e. runners that COULD run it once installed. Sorted by node id.
+std::vector<const Node*> CompatibleRunners(const NodeIndex &Idx, const Node &Launch);
+// A runner is usable now: a PATH runner present on the system, OR a shipped-build runner fully imported
+// (build hydrated + DEFPREFIX). This is the gate for launching.
+bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId);
+// True if the runner is bundled INSIDE a game package (some launchable node shares its BundleDir), as opposed to a
+// standalone runner package (e.g. VidyaGodRunners/ge-proton10-30).
+bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId);
+// Compatible AND installed — the runners a game can actually launch with right now. Sorted by node id.
+std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch);
 // True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the

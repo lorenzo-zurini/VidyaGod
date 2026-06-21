@@ -119,13 +119,14 @@ void LibraryGameCard::play()
         }
     }
 
-    //Gate: at least one runner must be available on this machine for the (representative) edition.
+    //Gate: a USABLE runner must exist for the (representative) edition — a PATH runner present on the system or a
+    //hydrated build runner. A compatible-but-not-installed runner does NOT count (you can't launch without it).
     if (const Node * Rep = Index->Find(RepNodeId))
-        if (PackageCatalog::RunnerCandidates(*Index, *Rep).empty())
+        if (PackageCatalog::UsableRunners(*Index, *Rep).empty())
         {
             QMessageBox::warning(nullptr, "Runner unavailable",
                 "No installed runner can launch this game on this machine. "
-                "Add or download the required runner, then try again.");
+                "Download its runner from the Catalog (it's offered in the download dialog), then try again.");
             return;
         }
 

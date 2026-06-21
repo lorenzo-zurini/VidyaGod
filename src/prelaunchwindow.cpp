@@ -278,19 +278,31 @@ void PreLaunchWindow::resizeEvent(QResizeEvent* Event)
 
 void PreLaunchWindow::RebuildRunnerCombo()
 {
-    QSignalBlocker B(RunnerCombo);
-    RunnerCombo->clear();
-    const Node* L = CurrentLaunch();
-    if (!L) return;
-    for (const Node* R : PackageCatalog::RunnerCandidates(*Index, *L))
-        RunnerCombo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->NodeId));
-
-    // Pre-select USERSETTINGS PREFERRED_RUNNER, else the first candidate.
-    auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-    if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
+    static const QString NoRunnerMsg = "No installed runner — download one from the Catalog.";
     {
-        int Idx = RunnerCombo->findData(QString::fromStdString(std::string(US["PREFERRED_RUNNER"])));
-        if (Idx >= 0) RunnerCombo->setCurrentIndex(Idx);
+        QSignalBlocker B(RunnerCombo);
+        RunnerCombo->clear();
+        const Node* L = CurrentLaunch();
+        if (L)
+            for (const Node* R : PackageCatalog::UsableRunners(*Index, *L))   // only runners that can actually launch
+                RunnerCombo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->NodeId));
+
+        // Pre-select USERSETTINGS PREFERRED_RUNNER, else the first usable runner.
+        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
+        {
+            int Idx = RunnerCombo->findData(QString::fromStdString(std::string(US["PREFERRED_RUNNER"])));
+            if (Idx >= 0) RunnerCombo->setCurrentIndex(Idx);
+        }
+    }
+
+    // Hard gate: with no usable runner the game cannot launch — disable Launch and explain.
+    const bool HasRunner = RunnerCombo->count() > 0;
+    if (LaunchButton) LaunchButton->setEnabled(HasRunner);
+    if (StatusLabel)
+    {
+        if (!HasRunner) StatusLabel->setText(NoRunnerMsg);
+        else if (StatusLabel->text() == NoRunnerMsg) StatusLabel->clear();   // clear stale message when one appears
     }
 }
 

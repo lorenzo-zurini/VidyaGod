@@ -399,9 +399,18 @@ void MainWindow::RebuildSettingsRunnersPage()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    //Runners are the ROLE:"runner" nodes of the global catalog graph — one card per runner node.
+    //Runners are the ROLE:"runner" nodes of the global catalog graph — one card per runner node. An EMBEDDED runner
+    //(bundled inside a game package) is hidden until installed — it's offered in that game's download dialog instead;
+    //global runners always show (installed or installable via the Import button below).
     std::vector<const Node*> Runners;
-    for (const auto & [Id, N] : CatalogIndex.Nodes) { (void)Id; if (N.IsRunner()) Runners.push_back(&N); }
+    for (const auto & [Id, N] : CatalogIndex.Nodes)
+    {
+        (void)Id;
+        if (!N.IsRunner()) continue;
+        if (PackageCatalog::IsEmbeddedRunner(CatalogIndex, N.NodeId)
+            && !PackageCatalog::RunnerInstalled(CatalogIndex, N.NodeId)) continue;
+        Runners.push_back(&N);
+    }
     std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
     if (Runners.empty())
     {
@@ -1068,6 +1077,53 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
         }
         DL->addWidget(Box);
     }
+    // ── Available Runners: the package's EMBEDDED runner(s), plus a compatible GLOBAL runner only when none is
+    //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. ──
+    std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox
+    {
+        const Node * BaseGame = Editions.empty() ? nullptr : CatalogIndex.Find(Editions.front());
+        if (BaseGame)
+        {
+            std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
+            for (const Node * R : PackageCatalog::CompatibleRunners(CatalogIndex, *BaseGame))
+            {
+                const std::string rid = R->NodeId;
+                const bool Embedded   = (R->BundleDir == BaseGame->BundleDir);                 // embedded in THIS package
+                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(CatalogIndex, rid);  // not bundled in any game
+                if (!Embedded && !Standalone) continue;                                        // another game's embedded runner
+                if (PackageCatalog::RunnerInstalled(CatalogIndex, rid)) { AnyCompatInstalled = true; continue; }
+                if (PackageCatalog::NodeContentCids(CatalogIndex, rid).empty()) continue;      // PATH runner — not downloadable
+                (Embedded ? EmbeddedR : GlobalR).push_back(R);
+            }
+            const bool ShowGlobal = !AnyCompatInstalled && !GlobalR.empty();
+            if (!EmbeddedR.empty() || ShowGlobal)
+            {
+                QGroupBox * Box = new QGroupBox("Available Runners", &Dlg);
+                QVBoxLayout * BL = new QVBoxLayout(Box);
+                auto addRunner = [&](const Node * R){
+                    const std::string rid = R->NodeId;
+                    const int Items = (int)PackageCatalog::NodeContentCids(CatalogIndex, rid).size();
+                    QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label)
+                        + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
+                    cb->setChecked(true);
+                    RunnerChecks[rid] = cb; BL->addWidget(cb);
+                };
+                if (!EmbeddedR.empty())
+                {
+                    QLabel * h = new QLabel("Embedded", Box); h->setStyleSheet("color:#8f98a0; font-weight:bold;");
+                    BL->addWidget(h);
+                    for (const Node * R : EmbeddedR) addRunner(R);
+                }
+                if (ShowGlobal)
+                {
+                    QLabel * h = new QLabel("Global", Box); h->setStyleSheet("color:#8f98a0; font-weight:bold;");
+                    BL->addWidget(h);
+                    for (const Node * R : GlobalR) addRunner(R);
+                }
+                DL->addWidget(Box);
+            }
+        }
+    }
     // ── Disk-space display: free space at the library + the (async-gathered) size of the current selection ──
     QLabel * SizeLabel = new QLabel(&Dlg);
     DL->addWidget(SizeLabel);
@@ -1077,12 +1133,15 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
 
     auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
     auto Alive     = std::make_shared<std::atomic<bool>>(true);             // false once the dialog closes
-    auto Recompute = [this, GameChecks, OptChecks, AllLaunch, SizeCache, SizeLabel, FreeBytes]() {
+    auto Recompute = [this, GameChecks, OptChecks, RunnerChecks, AllLaunch, SizeCache, SizeLabel, FreeBytes]() {
         std::map<std::string, bool> Tg; for (const auto & [Id, Cb] : OptChecks) Tg[Id] = Cb->isChecked();
         std::set<std::string> Sel;
         for (const std::string & Lid : AllLaunch)
             if (GameChecks.at(Lid)->isChecked())
                 for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, Tg)) Sel.insert(C);
+        for (const auto & [Rid, Cb] : RunnerChecks)
+            if (Cb->isChecked())
+                for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Rid)) Sel.insert(C);
         long long Sum = 0; bool AllKnown = true;
         for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
         SizeLabel->setText(QString("Free space: %1      Download: %2%3")
@@ -1090,14 +1149,17 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
             .arg(HumanBytes(Sum)).arg(AllKnown ? "" : " (estimating…)"));
         SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;" : "color:#8f98a0;");
     };
-    for (const auto & [Id, Cb] : GameChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
-    for (const auto & [Id, Cb] : OptChecks)  connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : GameChecks)   connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : OptChecks)    connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
+    for (const auto & [Id, Cb] : RunnerChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
     Recompute();
     {   // gather each CID's size in the background (it's a remote `files stat` on the downloader) and update as they land
         std::map<std::string, bool> AllOn; for (const auto & [Id, Cb] : OptChecks) AllOn[Id] = true;
         std::set<std::string> All;
         for (const std::string & Lid : AllLaunch)
             for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, AllOn)) All.insert(C);
+        for (const auto & [Rid, Cb] : RunnerChecks)
+            for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Rid)) All.insert(C);
         std::thread([this, ToQuery = std::vector<std::string>(All.begin(), All.end()), SizeCache, Alive, Recompute]{
             for (const std::string & C : ToQuery) {
                 if (!Alive->load()) return;
@@ -1122,19 +1184,24 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
 
     std::vector<std::string> LaunchIds;                              // selected games (base editions + secondaries)
     for (const std::string & Lid : AllLaunch) if (GameChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
-    if (LaunchIds.empty()) return;                                    // nothing picked
+    std::vector<std::string> RunnerIds;                              // selected runners to download + install
+    for (auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) RunnerIds.push_back(Rid);
+    if (LaunchIds.empty() && RunnerIds.empty()) return;              // nothing picked
     std::map<std::string, bool> Toggles;                             // optional-content selection
     for (auto & [Id, cb] : OptChecks) Toggles[Id] = cb->isChecked();
 
     DownloadingUids.insert(Key);
     QStringList Cids;
-    for (const std::string & Lid : LaunchIds)
-        for (const auto & C : PackageCatalog::NodeContentCids(CatalogIndex, Lid, Toggles))
+    auto AddCids = [&](const std::vector<std::string> & CidList){
+        for (const auto & C : CidList)
         {
             const QString Qc = QString::fromStdString(C);
             if (DownloadCidToUid.contains(Qc)) continue;
             Cids << Qc; DownloadCidToUid[Qc] = Key; DownloadCidPct[Qc] = 0.0;
         }
+    };
+    for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(CatalogIndex, Lid, Toggles));
+    for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(CatalogIndex, Rid));  // runner build CIDs
     DownloadUidCids[Key] = Cids;
 
     // Pre-show every CID as a "Queued" transfer; HydrateNode fetches them sequentially, and transferStarted flips
@@ -1151,10 +1218,15 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while
     // a completing download reassigns it (RebuildDynamicUI) — that was the multi-download crash.
     NodeIndex Snapshot = CatalogIndex;
-    std::thread([this, LaunchIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
+    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
         std::string Err; bool Ok = true;
         for (const std::string & Lid : LaunchIds)
             if (!PackageCatalog::HydrateNode(Snapshot, Lid, Toggles, &Err)) { Ok = false; break; }
+        // Install the selected runners (hydrate the build + generate the DEFPREFIX for proton/wine) — same call the
+        // Settings "Import" button uses.
+        if (Ok)
+            for (const std::string & Rid : RunnerIds)
+                if (!ContainerWrapper::ImportRunnerNode(*GlobalConfigJSON, Snapshot, Rid, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

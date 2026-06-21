@@ -5,6 +5,7 @@
 #include "processenv.h"
 #include "ipfswrapper.h"
 #include "runnerwrapper.h"
+#include "containerwrapper.h"   // RunnerNodeImported (runner install state) — .cpp-only include avoids a header cycle
 
 #include <QDir>
 #include <QFile>
@@ -531,6 +532,49 @@ std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Laun
         if (Guest && RunnerWrapper::ExecutableAvailable(N.Exec)) Out.push_back(&N);
     }
     return Out;   // std::map iteration = sorted by node id
+}
+
+std::vector<const Node*> CompatibleRunners(const NodeIndex &Idx, const Node &Launch)
+{
+    std::vector<const Node*> Out;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        (void)Id;
+        if (!N.IsRunner() || N.HostPlatform != MachinePlatform()) continue;
+        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Out.push_back(&N); break; }
+    }
+    return Out;   // no executable/install gate — these are runners that COULD run it once installed
+}
+
+bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
+{
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) return false;
+    // Ships its own build (has content CIDs) → must be imported (build hydrated + DEFPREFIX). Otherwise it's a PATH
+    // runner → usable iff its executable resolves on this system.
+    if (!NodeContentCids(Idx, RunnerNodeId).empty())
+        return ContainerWrapper::RunnerNodeImported(Idx, RunnerNodeId);
+    return RunnerWrapper::ExecutableAvailable(R->Exec);
+}
+
+bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId)
+{
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) return false;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        (void)Id;
+        if (N.IsLaunchable() && N.BundleDir == R->BundleDir) return true;   // a game shares its bundle → embedded
+    }
+    return false;
+}
+
+std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch)
+{
+    std::vector<const Node*> Out;
+    for (const Node *R : CompatibleRunners(Idx, Launch))
+        if (RunnerInstalled(Idx, R->NodeId)) Out.push_back(R);
+    return Out;
 }
 
 //Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
