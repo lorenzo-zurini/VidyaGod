@@ -446,9 +446,13 @@ void MainWindow::RebuildSettingsRunnersPage()
                 if (!IpfsFetchReady(this)) return;              // need the embedded node online to fetch
                 btn->setEnabled(false); btn->setText("Importing…");
                 st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
-                std::thread([this, rid]{
+                // The worker reads config + index; hand it private copies so it never races the GUI thread (which
+                // owns the live GlobalConfigJSON/CatalogIndex and may mutate them concurrently).
+                auto Cfg = std::make_shared<nlohmann::ordered_json>(*GlobalConfigJSON);
+                NodeIndex Idx = CatalogIndex;
+                std::thread([this, rid, Cfg, Idx = std::move(Idx)]{
                     std::string Err;
-                    bool Ok = ContainerWrapper::ImportRunnerNode(*GlobalConfigJSON, CatalogIndex, rid, &Err);
+                    bool Ok = ContainerWrapper::ImportRunnerNode(*Cfg, Idx, rid, &Err);
                     QMetaObject::invokeMethod(this, [this, Ok, Err]{
                         if (!Ok) LogErr("MainWindow", "Runner import failed: " + Err);   // no dialog — see the IPFS tab
                         RebuildSettingsRunnersPage(); RefreshIpfsTab();
@@ -498,9 +502,13 @@ void MainWindow::RebuildSettingsReposPage()
         v->addLayout(syncRow);
         connect(syncBtn, &QPushButton::clicked, this, [this, syncBtn]{
             syncBtn->setEnabled(false); syncBtn->setText("Syncing…");
-            std::thread([this]{
-                PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // git pull each repo + reindex LIBRARY
-                QMetaObject::invokeMethod(this, [this]{
+            // Sync on a private config copy (it git-pulls + rebuilds LIBRARY), then apply just LIBRARY back on the
+            // GUI thread — so the worker never mutates the live GlobalConfigJSON the GUI may be reading/writing.
+            auto Cfg = std::make_shared<nlohmann::ordered_json>(*GlobalConfigJSON);
+            std::thread([this, Cfg]{
+                PackageCatalog::SyncRepositories(*Cfg);   // git pull each repo + reindex LIBRARY (into the copy)
+                QMetaObject::invokeMethod(this, [this, Cfg]{
+                    (*GlobalConfigJSON)["LIBRARY"] = (*Cfg)["LIBRARY"];   // SyncRepositories only writes LIBRARY
                     SaveGlobalConfigJSON();
                     RebuildDynamicUI(); RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab();
                 }, Qt::QueuedConnection);
@@ -565,10 +573,13 @@ void MainWindow::RebuildSettingsReposPage()
         SS["Repositories"].push_back(Entry);
         SaveGlobalConfigJSON();
         addBtn->setEnabled(false); addBtn->setText("Cloning…");
-        // Clone/pull + mirror + index off-thread (network); persist and refresh the pages when done.
-        std::thread([this]{
-            PackageCatalog::SyncRepositories(*GlobalConfigJSON);   // mutates LIBRARY/RUNNERS
-            QMetaObject::invokeMethod(this, [this]{
+        // Clone/pull + index off-thread on a private config copy (includes the entry just added above), then apply
+        // LIBRARY back on the GUI thread — no worker mutation of the live GlobalConfigJSON.
+        auto Cfg = std::make_shared<nlohmann::ordered_json>(*GlobalConfigJSON);
+        std::thread([this, Cfg]{
+            PackageCatalog::SyncRepositories(*Cfg);   // git clone/pull + reindex LIBRARY (into the copy)
+            QMetaObject::invokeMethod(this, [this, Cfg]{
+                (*GlobalConfigJSON)["LIBRARY"] = (*Cfg)["LIBRARY"];
                 SaveGlobalConfigJSON();
                 RebuildDynamicUI(); RebuildSettingsReposPage(); RebuildSettingsRunnersPage(); RebuildAvailableTab();
             }, Qt::QueuedConnection);
@@ -1218,15 +1229,16 @@ void MainWindow::DownloadAvailable(LibraryGameCard * card)
     // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while
     // a completing download reassigns it (RebuildDynamicUI) — that was the multi-download crash.
     NodeIndex Snapshot = CatalogIndex;
-    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
+    auto CfgSnap = std::make_shared<nlohmann::ordered_json>(*GlobalConfigJSON);   // private copy for the worker (read-only in ImportRunnerNode)
+    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), CfgSnap]{
         std::string Err; bool Ok = true;
         for (const std::string & Lid : LaunchIds)
             if (!PackageCatalog::HydrateNode(Snapshot, Lid, Toggles, &Err)) { Ok = false; break; }
         // Install the selected runners (hydrate the build + generate the DEFPREFIX for proton/wine) — same call the
-        // Settings "Import" button uses.
+        // Settings "Import" button uses. Reads the config snapshot, never the live GlobalConfigJSON.
         if (Ok)
             for (const std::string & Rid : RunnerIds)
-                if (!ContainerWrapper::ImportRunnerNode(*GlobalConfigJSON, Snapshot, Rid, &Err)) { Ok = false; break; }
+                if (!ContainerWrapper::ImportRunnerNode(*CfgSnap, Snapshot, Rid, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);
