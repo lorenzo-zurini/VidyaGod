@@ -47,6 +47,9 @@ set(PROJECT_SOURCES
     src/jsonoperations.h
     src/jsonoperations.cpp
 
+    src/launchparams.h
+    src/launchparams.cpp
+
     src/containerwrapper.h
     src/containerwrapper.cpp
 
