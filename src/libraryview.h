@@ -106,6 +106,9 @@ public:
     //Re-scale covers/titles at the CURRENT width and repaint, WITHOUT resetting the layout (used when a
     //card's data changed in place — e.g. after a package edit). No-op if the view hasn't been laid out yet.
     void refreshVisuals();
+    //Cheap repaint of the viewport only — NO cover/title re-scaling. For frequent, scale-invariant updates such as
+    //the per-tick download-progress overlay (calling refreshVisuals there re-scales every cover and pegs the CPU).
+    void repaintCards();
 
 signals:
     void downloadRequested(LibraryGameCard * card);   // Available tab: a card was clicked to import it

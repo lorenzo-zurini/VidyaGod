@@ -226,6 +226,11 @@ void LibraryView::refreshVisuals()
     viewport()->update();                 // repaint in place — Rects/SeriesGroups/CardW are untouched
 }
 
+void LibraryView::repaintCards()
+{
+    viewport()->update();                 // repaint only — covers/titles already scaled (NO prescaleCovers)
+}
+
 void LibraryView::prescaleCovers(int cardW)
 {
     const int cardH = cardW * 3 / 2;

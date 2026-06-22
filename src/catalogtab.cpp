@@ -33,7 +33,7 @@ void CatalogTab::markDownloading(const QString &groupKey)
     ActiveDownloads[groupKey] = 0.0;
     for (LibraryGameCard * c : *AvailableGameCards)
         if (c && c->GroupKey == groupKey) { c->Downloading = true; c->DownloadPercent = 0.0; }
-    if (AvailableView) AvailableView->refreshVisuals();
+    if (AvailableView) AvailableView->repaintCards();   // overlay only — must NOT re-scale covers (fires per progress tick)
 }
 void CatalogTab::setDownloadProgress(const QString &groupKey, double avg)
 {
@@ -41,7 +41,7 @@ void CatalogTab::setDownloadProgress(const QString &groupKey, double avg)
     bool any = false;
     for (LibraryGameCard * c : *AvailableGameCards)
         if (c && c->Downloading && c->GroupKey == groupKey) { c->DownloadPercent = avg; any = true; }
-    if (any && AvailableView) AvailableView->refreshVisuals();
+    if (any && AvailableView) AvailableView->repaintCards();   // overlay only — re-scaling every cover here pegged the GUI
 }
 void CatalogTab::clearDownloading(const QString &groupKey)
 {
