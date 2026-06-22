@@ -15,7 +15,7 @@
 //
 // "Imported" is therefore per (RUNNER_ID, VARIANT_ID): the variant's build CIDs are fetched+pinned, and
 // (for a prefix-generating variant) its one-time read-only DEFPREFIX artifact has been generated. These are pure helpers
-// (no mounting / no wineboot); the install work lives in ContainerWrapper::ImportRunner.
+// (no mounting / no wineboot); the install work lives in RunnerInstall::ImportRunner (runnerinstall.h).
 //
 // Single-runner-entity packages are assumed (RUNNERS[0] is the entity).
 // ---------------------------------------------------------------------------

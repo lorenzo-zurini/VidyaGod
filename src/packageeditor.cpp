@@ -2,6 +2,7 @@
 #include "commonutils.h"
 #include "registrywrapper.h"
 #include "covercache.h"
+#include "processenv.h"   // RunCommand (zip/unzip the package archive)
 #include <QPushButton>
 #include <QPainter>
 #include <QPainterPath>
@@ -855,7 +856,7 @@ bool PackageEditor::BuildUI()
                             std::filesystem::path SrcDir = std::filesystem::path(PackageDir->path().toStdString()) / Path;
                             std::string ZipName = Path + ".zip";
                             std::filesystem::path ZipFile = std::filesystem::path(PackageDir->path().toStdString()) / ZipName;
-                            ContainerWrapper::RunCommand("zip", {"-0", "-r", "-X", ZipFile.string(), "."},
+                            RunCommand("zip", {"-0", "-r", "-X", ZipFile.string(), "."},
                                                          QProcessEnvironment::systemEnvironment(), SrcDir.string());
                             std::filesystem::remove_all(SrcDir);
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSZipLayer";
@@ -873,7 +874,7 @@ bool PackageEditor::BuildUI()
                             std::string DirName = (Path.size() > 4 && Path.substr(Path.size() - 4) == ".zip") ? Path.substr(0, Path.size() - 4) : Path + "_dir";
                             std::filesystem::path DirPath = std::filesystem::path(PackageDir->path().toStdString()) / DirName;
                             std::filesystem::create_directories(DirPath);
-                            ContainerWrapper::RunCommand("unzip", {ZipFile.string(), "-d", DirPath.string()});
+                            RunCommand("unzip", {ZipFile.string(), "-d", DirPath.string()});
                             std::filesystem::remove(ZipFile);
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSDirLayer";
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["PATH"] = DirName;

@@ -4,6 +4,9 @@
 #include <QProcessEnvironment>
 #include <QStringList>
 
+#include <string>
+#include <vector>
+
 // ---------------------------------------------------------------------------
 // SystemToolEnv — environment for spawning SYSTEM binaries from inside an AppImage.
 //
@@ -32,5 +35,13 @@ inline QProcessEnvironment SystemToolEnv(QProcessEnvironment Env = QProcessEnvir
     else                Env.insert("LD_LIBRARY_PATH", Kept.join(':'));
     return Env;
 }
+
+// Synchronously runs Program with Arguments in ProcessEnvironment (waits indefinitely so long-running installers
+// and wine boots don't time out). Dumps the child's stdout/stderr to the log. Returns the process exit code, or
+// -1 if it failed to start or crashed. Defined in processenv.cpp. (Generic process runner — no container coupling;
+// lifted out of ContainerWrapper.)
+int RunCommand(std::string Program, std::vector<std::string> Arguments,
+               QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment(),
+               const std::string &WorkingDirectory = "");
 
 #endif // PROCESSENV_H

@@ -565,7 +565,7 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
     // Ships its own build (has content CIDs) → must be imported (build hydrated + DEFPREFIX). Otherwise it's a PATH
     // runner → usable iff its executable resolves on this system.
     if (!NodeContentCids(Idx, RunnerNodeId).empty())
-        return ContainerWrapper::RunnerNodeImported(Idx, RunnerNodeId);
+        return RunnerInstall::RunnerNodeImported(Idx, RunnerNodeId);
     return RunnerWrapper::ExecutableAvailable(R->Exec);
 }
 

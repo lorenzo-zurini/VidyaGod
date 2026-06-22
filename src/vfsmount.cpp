@@ -1,9 +1,10 @@
 #include "vfsmount.h"
-#include "containerwrapper.h"   // ContainerWrapper::RunCommand (moves to processenv in a later phase)
-#include "processenv.h"         // SystemToolEnv
+#include "processenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
 
+#include <QApplication>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QString>
 #include <QThread>
 
@@ -233,7 +234,7 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     const std::string Helper = VidyagodfsPath();
     LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
     //--watch-pid: the helper's watchdog auto-unmounts if this process dies, instead of leaking a mount.
-    int result = ContainerWrapper::RunCommand(Helper, {SpecPath, Mountpoint,
+    int result = RunCommand(Helper, {SpecPath, Mountpoint,
                                                        "--watch-pid", std::to_string(getpid()), "-o", "auto_cache"});
     LogOut("VfsMount::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
     for (int i = 0; i < 50; ++i)
@@ -405,7 +406,7 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
     //non-lazy unmount spews while a lingering wineserver still holds handles; the actual teardown
     //then finishes in the background, so we VERIFY it has fully cleared below before touching disk.
     for (const std::string &Mount : StaleMounts)
-        ContainerWrapper::RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
+        RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
 
     //Save-safety gate (mirrors Cleanup): poll until nothing under TempPath is mounted, so remove_all
     //can never traverse a still-live PERSIST bind into PackagePath/USERDATA. Wait, don't assume.

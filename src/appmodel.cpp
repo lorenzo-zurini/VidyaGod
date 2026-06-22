@@ -177,7 +177,7 @@ void AppModel::importRunner(const QString & runnerNodeId)
     NodeIndex Idx = CatalogIndex;
     std::thread([this, Rid, Cfg, Idx = std::move(Idx)]{
         std::string Err;
-        bool Ok = ContainerWrapper::ImportRunnerNode(*Cfg, Idx, Rid, &Err);
+        bool Ok = RunnerInstall::ImportRunnerNode(*Cfg, Idx, Rid, &Err);
         QMetaObject::invokeMethod(this, [this, Ok, Err]{
             if (!Ok) LogErr("AppModel::importRunner", "Runner import failed: " + Err);   // no dialog — see the IPFS tab
             rebuildCatalog();   // emits catalogChanged (Runners page + IPFS tab refresh)

@@ -84,7 +84,7 @@ void RunnersPage::rebuild()
 
         const bool Avail    = RunnerWrapper::ExecutableAvailable(R->Exec);
         const bool Ships    = !PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty();
-        const bool Imported = ContainerWrapper::RunnerNodeImported(Model.catalogIndex(), rid);
+        const bool Imported = RunnerInstall::RunnerNodeImported(Model.catalogIndex(), rid);
         QHBoxLayout * row = new QHBoxLayout();
         row->addWidget(new QLabel(Desc, card), 1);
         QLabel * st = new QLabel(card);

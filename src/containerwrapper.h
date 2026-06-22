@@ -31,6 +31,7 @@
 #include "persistlayer.h"    // PersistLayer — PersistFile seed/capture (moved out of this class)
 #include "vfsmount.h"        // VfsMount — vidyagodfs layer-spec build + mount/unmount (moved out)
 #include "launchsources.h"   // LaunchSources — dependency pre-flight + materialize (moved out)
+#include "runnerinstall.h"   // RunnerInstall — runner build install + DEFPREFIX generation (moved out)
 
 //Orchestrates the full lifecycle of a single game session:
 //  construction → InitializeContainer (DecideComponent, DeriveContainerParams, CreateRecipe, BuildSubComponentsArray)
@@ -71,32 +72,14 @@ public:
     //LaunchSources. Catalog/Sync/Publish to PackageCatalog. ImportRunner stays here — it needs the mount +
     //wineboot machinery.)
 
-public:
-    //Installs one runner VARIANT: hydrates its build layers IN PLACE into the runner's LIBRARY dir (PackageDir),
-    //and for a wine variant generates the one-time DEFPREFIX at PackageDir/__DEFPREFIX__/<variant>. VariantId "" =
-    //default variant. (Stays public: it's the runner-install entry point called by the UI / headless --import-runner.)
-    static bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
-                              const std::string &PackageDir, const std::string &VariantId = std::string(), std::string *Error = nullptr);
-    //Node-native runner install: synthesizes a minimal runner package from a ROLE:"runner" node + its content
-    //closure (the build) and runs ImportRunner — hydrating the build into the runner's bundle and generating the
-    //one-time DEFPREFIX at <bundle>/__DEFPREFIX__/default (where DerivePaths reads it). The runner-install entry
-    //point for the node world (Settings page / play-gate).
-    static bool ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
-                                 const std::string &RunnerNodeId, std::string *Error = nullptr);
-    //True when a runner node is installed: every build VFS layer hydrated locally AND (PREFIX_GENERATE) its
-    //DEFPREFIX artifact exists. A runner that ships no build is always "installed".
-    static bool RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId);
 private:
+    //(Runner install — ImportRunner/ImportRunnerNode/RunnerNodeImported — moved to RunnerInstall; see runnerinstall.h.)
     //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
     //InitializeDefPrefix/BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
     //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
 
-public:
-    //Misc
-    //Synchronously runs Program with Arguments in the given environment.
-    //Waits indefinitely for completion. Returns the exit code, or -1 on crash/start failure.
-    static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment(), const std::string &WorkingDirectory = "");
-    //(TranslateCustomVarValue / StringVariableSubstitution — the pure %token% engine — moved to VarSubst; see varsubst.h.)
+    //(RunCommand moved to processenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution
+    //— the pure %token% engine — moved to VarSubst; see varsubst.h.)
 
 private:
     //Runs DecideComponent → DeriveContainerParams → CreateRecipe → BuildSubComponentsArray

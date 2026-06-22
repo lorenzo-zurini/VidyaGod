@@ -317,7 +317,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         // Settings "Import" button uses. Reads the config snapshot, never the live GlobalConfigJSON.
         if (Ok)
             for (const std::string & Rid : RunnerIds)
-                if (!ContainerWrapper::ImportRunnerNode(*CfgSnap, Snapshot, Rid, &Err)) { Ok = false; break; }
+                if (!RunnerInstall::ImportRunnerNode(*CfgSnap, Snapshot, Rid, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

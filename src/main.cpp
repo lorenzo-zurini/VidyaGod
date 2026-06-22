@@ -285,7 +285,7 @@ int main(int argc, char *argv[])
         for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
         NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
         std::string Err;
-        const bool Ok = ContainerWrapper::ImportRunnerNode(GlobalConfigJSON, Index, Id, &Err);
+        const bool Ok = RunnerInstall::ImportRunnerNode(GlobalConfigJSON, Index, Id, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
         return Ok ? 0 : 1;
     }

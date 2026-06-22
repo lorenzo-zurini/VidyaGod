@@ -71,6 +71,12 @@ set(PROJECT_SOURCES
     src/launchsources.h
     src/launchsources.cpp
 
+    src/runnerinstall.h
+    src/runnerinstall.cpp
+
+    src/processenv.h
+    src/processenv.cpp
+
     src/containerwrapper.h
     src/containerwrapper.cpp
 
