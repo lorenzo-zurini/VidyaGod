@@ -100,16 +100,34 @@ void AppModel::syncRepositories()
     }).detach();
 }
 
-void AppModel::addRepository(const QString & name, const QString & url)
+// Normalize a git URL for duplicate detection: lowercased, trailing "/" and ".git" stripped (so
+// https://h/Repo.git and https://h/Repo/ are the same repo).
+static std::string NormalizeRepoUrl(const QString & Url)
 {
+    QString U = Url.trimmed().toLower();
+    while (U.endsWith('/')) U.chop(1);
+    if (U.endsWith(".git")) U.chop(4);
+    return U.toStdString();
+}
+
+bool AppModel::addRepository(const QString & name, const QString & url)
+{
+    if (url.trimmed().isEmpty()) return false;
+    auto & SS = (*Config)["Settings"];
+    if (!SS.contains("Repositories") || !SS["Repositories"].is_array()) SS["Repositories"] = nlohmann::ordered_json::array();
+
+    const std::string Key = NormalizeRepoUrl(url);
+    for (const auto & R : SS["Repositories"])
+        if (R.is_object() && NormalizeRepoUrl(QString::fromStdString(R.value("PATH", std::string()))) == Key)
+            return false;   // already configured — caller warns
+
     nlohmann::ordered_json Entry = nlohmann::ordered_json::object();
     if (!name.trimmed().isEmpty()) Entry["NAME"] = name.trimmed().toStdString();
     Entry["PATH"] = url.trimmed().toStdString();
-    auto & SS = (*Config)["Settings"];
-    if (!SS.contains("Repositories") || !SS["Repositories"].is_array()) SS["Repositories"] = nlohmann::ordered_json::array();
     SS["Repositories"].push_back(Entry);
     save();
     syncRepositories();   // clone/pull + reindex the freshly-added repo, then emit
+    return true;
 }
 
 void AppModel::removeRepository(int index)

@@ -103,8 +103,9 @@ void RepositoriesPage::rebuild()
     connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, urlEdit, addBtn]{
         const QString Url = urlEdit->text().trimmed();
         if (Url.isEmpty()) { QMessageBox::warning(this, "Add repository", "Enter a git URL."); return; }
-        addBtn->setEnabled(false); addBtn->setText("Cloning…");
-        Model.addRepository(nameEdit->text(), Url);   // appends + clones off-thread; repositoriesChanged rebuilds when done
+        if (!Model.addRepository(nameEdit->text(), Url))   // false = already configured (dedup by normalized URL)
+        { QMessageBox::warning(this, "Add repository", "That repository is already configured."); return; }
+        addBtn->setEnabled(false); addBtn->setText("Cloning…");   // success → page rebuilds (re-enabling) on repositoriesChanged
     });
     v->addWidget(add);
 

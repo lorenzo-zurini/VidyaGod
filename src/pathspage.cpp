@@ -92,9 +92,11 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     ll->addWidget(libBrowse);
     form->addRow("Library folder:", libRow);
 
-    // AppData dir (read-only, informational).
+    // AppData dir (read-only, informational — determined at launch, not settable here). Disabled so it's visibly
+    // non-editable, but kept text-selectable so the path can still be copied.
     QLineEdit * appDataLbl = new QLineEdit(Model.appDataDir()->path(), this);
     appDataLbl->setReadOnly(true);
+    appDataLbl->setStyleSheet("QLineEdit{color:palette(disabled-text);background:palette(window);}");
     form->addRow("App data directory:", appDataLbl);
 
     QLabel * note = new QLabel("Path changes apply to future launches.", this);

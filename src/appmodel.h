@@ -39,7 +39,7 @@ public:
 
     // ── Async repo / runner ops (do the git/IPFS work off-thread, then rebuild + emit on the GUI thread) ──
     void syncRepositories();                           // git-pull every repo + reindex LIBRARY
-    void addRepository(const QString & name, const QString & url);   // append + clone/pull + reindex
+    bool addRepository(const QString & name, const QString & url);   // append + clone/pull + reindex; false if empty/duplicate
     void removeRepository(int index);                  // drop the reference (disposable clone left on disk)
     void importRunner(const QString & runnerNodeId);   // fetch a runner's build + generate its DEFPREFIX
 
