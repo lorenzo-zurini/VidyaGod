@@ -100,10 +100,12 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 
 // Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>") and (optionally) its owning
 // package name, so the IPFS tab can show what each CID is and group the seeded list by package.
-static QHash<QString, QString> BuildCidLabels(const nlohmann::ordered_json & gc, QHash<QString, QString> * OutPackages = nullptr)
+// Build the CID → label/package maps from the ALREADY-BUILT in-memory catalog index. Must NOT re-scan the catalog
+// from disk (BuildCatalogIndex): this runs on the GUI thread (ensureTransferRow + applySnapshot, the latter on every
+// refresh), so a disk rescan here froze the UI for many seconds during downloads.
+static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, QHash<QString, QString> * OutPackages = nullptr)
 {
     QHash<QString, QString> Labels;
-    NodeIndex Idx = PackageCatalog::BuildCatalogIndex(gc);
     for (const auto & [NodeId, N] : Idx.Nodes)
     {
         std::string PkgName;
@@ -185,7 +187,7 @@ QTableWidgetItem * IpfsTab::ensureTransferRow(const QString & cid, const QString
     if (!IpfsTransfers) return nullptr;
     if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) return prog;   // already have a row
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);
     IpfsTransfers->setSortingEnabled(false);                       // keep the row intact while we fill it
     const int row = IpfsTransfers->rowCount(); IpfsTransfers->insertRow(row);
     IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
@@ -267,7 +269,7 @@ void IpfsTab::buildUi()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);
 
     // Transfers (live fetches).
     QGroupBox * txBox = new QGroupBox("Transfers", this);
@@ -372,15 +374,20 @@ void IpfsTab::buildUi()
                         IpfsTransferProgress.remove(cid);
                     }
                 });
-            } else if (row >= 0 && IpfsTransfers->item(row, 4)) {
+            } else {
                 const QString Tail = error.section('\n', -1).trimmed();
-                const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
-                                     : error.isEmpty()           ? QStringLiteral("Failed")
-                                                                 : ("Failed: " + Tail);
-                QTableWidgetItem * st = IpfsTransfers->item(row, 4);
-                st->setText(Reason);
-                st->setToolTip(error.isEmpty() ? QStringLiteral("Download failed") : error);
-                st->setForeground(QColor("#c0726a"));
+                if (Tail == "cancelled") {                          // user cancelled → drop the row (not a failure)
+                    if (row >= 0) IpfsTransfers->removeRow(row);
+                    IpfsTransferProgress.remove(cid);
+                } else if (row >= 0 && IpfsTransfers->item(row, 4)) {
+                    const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
+                                         : error.isEmpty()           ? QStringLiteral("Failed")
+                                                                     : ("Failed: " + Tail);
+                    QTableWidgetItem * st = IpfsTransfers->item(row, 4);
+                    st->setText(Reason);
+                    st->setToolTip(error.isEmpty() ? QStringLiteral("Download failed") : error);
+                    st->setForeground(QColor("#c0726a"));
+                }
             }
         }
         refresh();                                    // a finished fetch likely added a pin
@@ -463,7 +470,7 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo,
     IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(*Model.config(), &IpfsCidPackages);   // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);   // keep names current with the catalog
 
     QMap<QString, QStringList> ByPackage;
     QSet<QString> DesiredCids;
