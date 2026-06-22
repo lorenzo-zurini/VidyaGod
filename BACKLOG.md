@@ -8,7 +8,16 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
 
 ## Pending bugs
-- (none — #2/#3/#5/#8/#9 fixed; see "Done this session")
+- (none open — #2/#3/#5/#8/#9 + the remove-freeze fixed; see "Done this session")
+
+## Built but UNVERIFIED on hardware (resume testing here)
+- **Remove-flow** — managed remove now de-hydrates off-thread (was freezing the GUI: heavy DAG-walk +
+  per-block deletes + leveldb compaction on the GUI thread). Needs the laptop retest of: no freeze · TESTPLAN
+  item 27 (leaves Library/Installed, **returns to Catalog**) · #9 (IPFS pins tree: CIDs unpinned/dropped) ·
+  item 28 (local/portable remove keeps the user's own files).
+- **#2/#3/#5** also only laptop-spot-checked green earlier — fine, but re-confirm after the remove retest.
+- Deferred TESTPLAN: B11 (collapse-series, ≥2 in a series), I41 (edit-while-prelaunch), J42–45 (launch flow,
+  needs Proton-GE runner + hydrated Windows game).
 
 ## Deferred tests (need state we didn't have)
 - **B11** — collapse/expand a Series section: needs ≥2 games in one series in the Library.
