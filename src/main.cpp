@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
 
     //We are the sole instance, so every mount still present under TEMP is a leftover from a crash.
     //Sweep them all now (the per-launch CleanStaleRuntime only covers the one game about to run).
-    ContainerWrapper::CleanStaleRuntime((AppDataDir.absolutePath() + "/TEMP").toStdString());
+    VfsMount::CleanStaleRuntime((AppDataDir.absolutePath() + "/TEMP").toStdString());
 
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     //All runner definitions, library entries, and user settings live here.

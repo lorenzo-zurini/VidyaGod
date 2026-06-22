@@ -65,6 +65,12 @@ set(PROJECT_SOURCES
     src/persistlayer.h
     src/persistlayer.cpp
 
+    src/vfsmount.h
+    src/vfsmount.cpp
+
+    src/launchsources.h
+    src/launchsources.cpp
+
     src/containerwrapper.h
     src/containerwrapper.cpp
 

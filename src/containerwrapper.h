@@ -29,6 +29,8 @@
 #include "fileedits.h"       // FileEdits — FileEdit/DllOverride application (moved out of this class)
 #include "registrylayer.h"   // RegistryLayer — Wine prefix/registry/DEFAULTDATA + reg-persistence (moved out)
 #include "persistlayer.h"    // PersistLayer — PersistFile seed/capture (moved out of this class)
+#include "vfsmount.h"        // VfsMount — vidyagodfs layer-spec build + mount/unmount (moved out)
+#include "launchsources.h"   // LaunchSources — dependency pre-flight + materialize (moved out)
 
 //Orchestrates the full lifecycle of a single game session:
 //  construction → InitializeContainer (DecideComponent, DeriveContainerParams, CreateRecipe, BuildSubComponentsArray)
@@ -59,50 +61,16 @@ public:
     //Unmounts all paths in CleanupUnmountPaths (fusermount -uz) and removes RUNTIME and TEMP.
     bool Cleanup();
 
-    //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete
-    //run. A fresh ContainerWrapper has empty Cleanup*Paths and cannot know about a prior process's
-    //mounts, so this discovers them from /proc/self/mountinfo, unmounts deepest-first, and only then
-    //removes TempPath. Mirrors Cleanup()'s save-safety gate: if any mount under TempPath refuses to
-    //detach, TempPath is LEFT IN PLACE (a lingering PERSIST bind could otherwise let remove_all
-    //recurse into USERDATA). Run at the start of BuildContainerRuntime, before any mounting.
-    static void CleanStaleRuntime(const std::filesystem::path &TempPath);
-
     //(Per-package user settings + game/component/variant/module lookups moved out: PackageCatalog::Get/Set
     //PackageUserSetting and ManifestModel::Find*/variants/modules respectively — see those headers.)
 
     //(Container parameter/recipe/runner/exec/persistence resolution moved to LaunchResolver — see
-    //launchresolver.h: InitializeFromNode/PickRunnerNode/DerivePaths/ResolveExecutableDefinition/
-    //ResolveCustomVariables/BuildSubComponentsArray/DerivePersistence. The %token% engine moved to VarSubst.)
-    //(Catalog / RegistryRunners / LibraryRootDir / Import / Publish / Mirror / Sync moved to PackageCatalog —
-    //see packagecatalog.h. ImportRunner stays here: it needs the launch engine's mount + wineboot machinery.)
-    //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
-    //portable/standalone readiness warning. TODO(sharing): runner + RUNTIME + cross-package deps.
-    static std::vector<std::string> VerifyDependencies(const struct ContainerParams &ContainerParams);
-    //Pre-flight CHECK (never fetches; GUI-thread safe) that every dependency is satisfiable — runner build CIDs
-    //cached, the wine DEFPREFIX artifact present, and every game VFS layer either local or backend-fetchable.
-    //Returns false (blocking the launch) otherwise. Used by the play() gate and at the start of BuildContainerRuntime.
-    static bool EnsureSources(struct ContainerParams &ContainerParams);
-    //Worker-thread MATERIALIZER (may block on a download): fetches each game VFS layer whose local content is
-    //missing from a backend (IPFS) straight to its expected local PATH (self-healing). Runner builds stay cached.
-    //Run in BuildContainerRuntime after EnsureSources, before the mount. Returns false if a layer can't be fetched.
-    static bool MaterializeLayers(struct ContainerParams &ContainerParams);
+    //launchresolver.h. The %token% engine moved to VarSubst. The vidyagodfs mount subsystem (BuildLayerSpec/
+    //MountVFS/SpawnVidyagodfs/MountRunnerBuild/CheckCaseConflicts/MountpointsUnder/CleanStaleRuntime) moved to
+    //VfsMount; dependency pre-flight + materialize (VerifyDependencies/EnsureSources/MaterializeLayers) to
+    //LaunchSources. Catalog/Sync/Publish to PackageCatalog. ImportRunner stays here — it needs the mount +
+    //wineboot machinery.)
 
-private:
-    //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):
-    //Builds the JSON layer-spec from the resolved container: DEFPREFIX base (Wine), each
-    //VFSZipLayer/VFSDirLayer/VFSFileLayer rooted at its TARGET (logically, no staging dirs), PERSIST
-    //dirs as RW passthrough layers, and the writable top branch (WriteLayerPath or UserDataPath).
-    static nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
-    //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, then polls mountinfo for readiness.
-    //Registers RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
-    static bool MountVFS(struct ContainerParams &ContainerParams);
-    //Writes a layer spec to SpecPath, spawns vidyagodfs onto Mountpoint, polls until the mount is live.
-    //The low-level mount primitive shared by MountVFS, the runner mount, and runner install.
-    static bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
-                                const std::filesystem::path &SpecPath);
-    //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath (the separate-mount,
-    //installed-runner model). Registers it for cleanup. No-op when the runner ships no build.
-    bool MountRunnerBuild(struct ContainerParams &ContainerParams);
 public:
     //Installs one runner VARIANT: hydrates its build layers IN PLACE into the runner's LIBRARY dir (PackageDir),
     //and for a wine variant generates the one-time DEFPREFIX at PackageDir/__DEFPREFIX__/<variant>. VariantId "" =
@@ -122,9 +90,6 @@ private:
     //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
     //InitializeDefPrefix/BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
     //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
-    //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths
-    //differ only in case — these cause unpredictable behavior under Wine.
-    static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
 
 public:
     //Misc
@@ -138,10 +103,6 @@ private:
     //in the required order. Called from the constructor.
     bool InitializeContainer();
     bool BuildVirtualFilesystem(); //STUB — not yet implemented
-
-    //Returns every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first
-    //so children unmount before parents. Mountinfo octal escapes (\040 etc.) are decoded.
-    static std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
 
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;
