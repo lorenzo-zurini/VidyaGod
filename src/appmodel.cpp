@@ -65,18 +65,34 @@ void AppModel::removePackage(const QString & uid)
         if (Lib[k].value("PACKAGEUID", std::string()) == Uid) { idx = k; break; }
     if (idx < 0) return;
 
-    // A managed import (under the library folder) → delete its hydrated copy. A local/portable package added from
-    // elsewhere → only drop the reference (never touch the user's own files).
     const std::string Path    = Lib[idx].value("PATH", std::string());
     const std::string LibRoot = PackageCatalog::LibraryRootDir(*Config);
     std::error_code Ec;
+    bool Managed = false;
     if (!Path.empty() && !LibRoot.empty())
     {
         const std::string P = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
         const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(LibRoot), Ec).string();
-        if (P.rfind(R + "/", 0) == 0) std::filesystem::remove_all(P, Ec);   // P strictly under the library root
+        Managed = (P.rfind(R + "/", 0) == 0);   // strictly under the library root → a managed (repo-cloned) package
     }
-    Lib.erase(idx);
+
+    if (Managed)
+    {
+        // De-HYDRATE the managed package: delete its content + unpin/drop-ref its CIDs, but KEEP the manifests + cover
+        // so it drops back into the Catalog as re-downloadable (not deleted outright — that was the bug: it vanished
+        // from the catalog). Leave the LIBRARY index entry too (it's the repo package's record; Installed Packages
+        // filters by hydration, so the package disappears from there once its content is gone).
+        const std::string CanonPath = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
+        for (const auto & [NodeId, N] : CatalogIndex.Nodes)
+            if (N.IsLaunchable() &&
+                std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
+                PackageCatalog::DehydrateNode(CatalogIndex, NodeId);
+    }
+    else
+    {
+        // Local/portable package added from outside the library → only drop the reference; never touch the user's files.
+        Lib.erase(idx);
+    }
     save();
     rebuildCatalog();
 }

@@ -8,22 +8,7 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
 
 ## Pending bugs
-- **#2 — content-less package shows in Library AND Installed Packages.** A node with no content layers is
-  *vacuously* `NodeHydrated`=true. Needs a real "has content" guard shared by `LibraryTab::buildCards` and
-  `PackagesView::rebuildList`. (Surfaced by the intentional malformed "Dino Crisis 2" test case.)
-- **#3 — card download progress is staggered.** `DownloadManager::applyProgress` averages per-CID percent
-  *unweighted*; small files completing jerk the bar. Fix: weight each CID by its byte size (`CidSize`).
-- **#5 — transfer progress-bar colors not status-coded.** Want: queued = purple, downloading = blue, stalled =
-  yellow, errored = red (today queued + downloading are both light blue). In `ProgressBarDelegate` / IpfsTab.
-- **#8 — Remove deletes the manifest, not just content.** `AppModel::removePackage` `remove_all`s the whole bundle
-  dir incl. the git-tracked manifest/cover → the package vanishes from the Catalog instead of de-hydrating.
-  Should delete only the hydrated content (the untracked layer files), keep the manifest so it returns to Catalog.
-- **#9 — Remove doesn't unpin/dropRef.** The removed package's content CIDs stay pinned + become orphaned, still
-  shown "seeded" in the IPFS tab. Remove must: read the manifest CIDs → unpin + dropRef → delete content → rebuild.
-  (This is the root cause of the stale-ref "missing files" we kept hitting.)
-- **#8 + #9 are one cohesive remove-flow rework** — the next big ledger item after downloads.
-- Also for the remove rework: removing a **local/portable** package (added from outside LIBRARY) must NOT delete
-  the user's own files (only drop the reference). Preserve this (TESTPLAN E28).
+- (none — #2/#3/#5/#8/#9 fixed; see "Done this session")
 
 ## Deferred tests (need state we didn't have)
 - **B11** — collapse/expand a Series section: needs ≥2 games in one series in the Library.
@@ -40,6 +25,16 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 ## Done this session (for reference)
 - #1 dup repo rejected · #4 download UI freeze (cover re-scale per tick + BuildCidLabels disk-rescan on GUI thread +
   progress throttle) · #6 slow pinning (batched finalize) · #7 cancelled row dropped · #10 app-data field grayed.
+- **#2** content guard — `PackageCatalog::NodeHasContent` (closure defines ≥1 VFS content layer) gates
+  `LibraryTab::buildCards` + `PackagesView::rebuildList`, so vacuously-hydrated content-less packages are hidden.
+- **#3** size-weighted progress — `DownloadManager::applyProgress` weights each CID's % by its byte size
+  (`DownloadCidSize`, filled off-thread via `CidSize`), falling back to equal-weight; no more jerky bar.
+- **#5** status-coded transfer bars — `StatusRole` + `TransferStatus` enum; `ProgressBarDelegate` colours queued
+  purple / downloading blue / pinning dark-green / stalled amber / errored red, set at every transition.
+- **#8 + #9** remove-flow rework — `PackageCatalog::DehydrateNode` (inverse of HydrateNode: deletes content-layer
+  files, keeps manifest+cover, unpins+DropRefs the CIDs). `AppModel::removePackage` de-hydrates managed packages
+  (under LibraryRoot) keeping manifest+cover+LIBRARY entry → package returns to Catalog; local/portable packages
+  only drop the LIBRARY reference, never touch the user's files (TESTPLAN E28 preserved).
 - Cancel purges the partial (DropCached) · crash/close persists + resumes (Settings.ActiveDownloads) · download
   drops a stale/orphaned ref and re-fetches instead of "missing files".
 - Covers: re-pin by reference (additive/overwrite seed modes; orphans re-pointed); HydrateNode seeds a present

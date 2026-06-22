@@ -60,8 +60,20 @@ void DownloadManager::applyProgress(const QString &cid, double pct)
     const QString Key = it.value();
     if (pct >= 0) DownloadCidPct[cid] = pct;
     const QStringList & Cids = DownloadUidCids[Key];
-    double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0);
-    const double Avg = Cids.isEmpty() ? -1.0 : Sum / Cids.size();
+    if (Cids.isEmpty()) { emit downloadProgress(Key, -1.0); return; }
+    // SIZE-WEIGHTED average: a package's bar should reflect bytes downloaded, not files completed — otherwise a tiny
+    // file finishing jerks the bar disproportionately (the "staggered" bug). Falls back to an equal-weight average
+    // until the per-CID sizes have been gathered (off-thread in beginDownload).
+    double WeightedBytes = 0, TotalBytes = 0;
+    bool HaveSizes = false;
+    for (const QString & c : Cids)
+    {
+        const qlonglong Sz = DownloadCidSize.value(c, -1);
+        if (Sz > 0) { WeightedBytes += DownloadCidPct.value(c, 0.0) / 100.0 * double(Sz); TotalBytes += double(Sz); HaveSizes = true; }
+    }
+    double Avg;
+    if (HaveSizes && TotalBytes > 0) Avg = WeightedBytes / TotalBytes * 100.0;
+    else { double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0); Avg = Sum / Cids.size(); }
     emit downloadProgress(Key, Avg);   // the Catalog card(s) connect to this
 }
 
@@ -274,6 +286,16 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid));  // runner build CIDs
     DownloadUidCids[Key] = Cids;
 
+    // Gather each CID's byte size off-thread so applyProgress can SIZE-WEIGHT the package's progress bar (until these
+    // land it falls back to an equal-weight average). Marshalled back to the GUI thread (DownloadCidSize is GUI-only).
+    std::thread([this, Cids]{
+        QHash<QString, qlonglong> Sizes;
+        for (const QString & c : Cids) { const long long S = IpfsWrapper::CidSize(c.toStdString()); if (S > 0) Sizes[c] = S; }
+        QMetaObject::invokeMethod(this, [this, Sizes]{
+            for (auto It = Sizes.constBegin(); It != Sizes.constEnd(); ++It) DownloadCidSize[It.key()] = It.value();
+        }, Qt::QueuedConnection);
+    }).detach();
+
     // Pre-show every CID as a "Queued" transfer; the worker fetches them, and transferStarted flips each to
     // "Fetching…" as it begins. Leftover queued rows are cleared when the worker finishes (below).
     for (const QString & c : Cids) emit transferQueued(c);
@@ -302,7 +324,7 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             const QStringList DoneCids = DownloadUidCids.value(Key);
             for (const QString & c : DoneCids)
             {
-                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c);
+                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); DownloadCidSize.remove(c);
                 emit transferUnqueued(c);   // drop a row still "Queued" (never started)
             }
             DownloadUidCids.remove(Key);

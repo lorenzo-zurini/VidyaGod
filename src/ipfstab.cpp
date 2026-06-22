@@ -42,12 +42,13 @@
 
 // ===== IPFS-tab-local helpers (all formerly file-statics in mainwindow.cpp) =====
 
-// Item role marking a transfer's progress cell as being in the "pinning" (post-download re-reference) phase, so the
-// delegate paints the same bar dark green instead of the default download colour.
-static constexpr int PinningRole = Qt::UserRole + 1;
+// Item role carrying a transfer's lifecycle status, so the delegate colour-codes the progress bar.
+static constexpr int StatusRole = Qt::UserRole + 1;
+enum TransferStatus { StDownloading = 0, StQueued = 1, StPinning = 2, StStalled = 3, StErrored = 4 };
 
 // Paints a column's integer value (0..100) as a progress bar (value lives in the item, so the table stays sortable).
-// A negative value renders an indeterminate "busy" bar. PinningRole → the chunk is painted dark green.
+// A negative value renders an indeterminate "busy" bar. The bar is colour-coded by StatusRole:
+// queued = purple, downloading = default (blue), pinning = dark green, stalled = amber, errored = red.
 class ProgressBarDelegate : public QStyledItemDelegate
 {
 public:
@@ -63,8 +64,16 @@ public:
         bar.text = (v >= 0) ? QString::number(v) + "%" : QString();
         bar.textAlignment = Qt::AlignCenter;
         bar.palette = opt.palette;
-        if (idx.data(PinningRole).toBool())
-            bar.palette.setColor(QPalette::Highlight, QColor(0x1B, 0x5E, 0x20));   // dark green during pinning
+        QColor c;
+        switch (idx.data(StatusRole).toInt())
+        {
+        case StQueued:  c = QColor(0x7E, 0x57, 0xC2); break;   // purple
+        case StPinning: c = QColor(0x1B, 0x5E, 0x20); break;   // dark green
+        case StStalled: c = QColor(0xF9, 0xA8, 0x25); break;   // amber
+        case StErrored: c = QColor(0xC0, 0x39, 0x2B); break;   // red
+        default: break;                                        // downloading → default highlight (blue)
+        }
+        if (c.isValid()) bar.palette.setColor(QPalette::Highlight, c);
         QApplication::style()->drawControl(QStyle::CE_ProgressBar, &bar, p);
     }
 };
@@ -166,7 +175,8 @@ void IpfsTab::setActive(bool On)
 void IpfsTab::queueTransfer(const QString &cid)
 {
     if (!IpfsTransfers) return;
-    ensureTransferRow(cid, QStringLiteral("Queued"));
+    if (QTableWidgetItem * prog = ensureTransferRow(cid, QStringLiteral("Queued")))
+        prog->setData(StatusRole, StQueued);   // → delegate paints the bar purple
     IpfsTransferQueued.insert(cid);
 }
 
@@ -193,6 +203,7 @@ QTableWidgetItem * IpfsTab::ensureTransferRow(const QString & cid, const QString
     IpfsTransfers->setItem(row, 0, new QTableWidgetItem(IpfsCidLabels.value(cid, QStringLiteral("(unknown)"))));
     IpfsTransfers->setItem(row, 1, new ByteSizeItem(IpfsCidStat.value(cid).SizeBytes));
     QTableWidgetItem * prog = new QTableWidgetItem(); prog->setData(Qt::DisplayRole, -1);   // indeterminate until first %
+    prog->setData(StatusRole, StDownloading);   // default bar colour; queueTransfer/transitions override below
     IpfsTransfers->setItem(row, 2, prog);
     IpfsTransfers->setItem(row, 3, new QTableWidgetItem());        // Speed — blank until progress arrives
     IpfsTransfers->setItem(row, 4, new QTableWidgetItem(status));
@@ -307,7 +318,7 @@ void IpfsTab::buildUi()
         const bool Existed = IpfsTransferProgress.contains(cid);
         ensureTransferRow(cid, QStringLiteral("Fetching…"));
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
-            prog->setData(PinningRole, false);   // fresh download → default bar colour (clears any prior pinning flag)
+            prog->setData(StatusRole, StDownloading);   // fresh download → default bar colour (clears any prior status)
         if (Existed)   // was a "Queued" (or re-transferred) row — flip its status to active
             if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr))
             { const int row = IpfsTransfers->row(prog);
@@ -326,6 +337,7 @@ void IpfsTab::buildUi()
         const qlonglong NowMs = QDateTime::currentMSecsSinceEpoch();
         IpfsTransferLastProgress.insert(cid, NowMs);   // bytes are flowing → reset the stall clock
         if (IpfsTransferStalled.remove(cid)) {         // was flagged stalled — peer(s) came back, flip status active
+            prog->setData(StatusRole, StDownloading);  // → delegate repaints the bar default (clears amber)
             const int r = IpfsTransfers->row(prog);
             if (r >= 0 && IpfsTransfers->item(r, 4)) IpfsTransfers->item(r, 4)->setText("Fetching…");
         }
@@ -349,7 +361,7 @@ void IpfsTab::buildUi()
         IpfsTransferLastProgress.remove(cid);   // finalizing isn't a stall — stop watching it
         IpfsTransferStalled.remove(cid);
         if (QTableWidgetItem * prog = IpfsTransferProgress.value(cid, nullptr)) {
-            prog->setData(PinningRole, true);                                       // → delegate paints the bar dark green
+            prog->setData(StatusRole, StPinning);                                   // → delegate paints the bar dark green
             prog->setData(Qt::DisplayRole, percent >= 0 ? int(percent + 0.5) : -1); // same bar; -1 = indeterminate "busy"
             const int row = IpfsTransfers->row(prog);
             if (row >= 0 && IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());   // clear Speed
@@ -380,6 +392,7 @@ void IpfsTab::buildUi()
                     if (row >= 0) IpfsTransfers->removeRow(row);
                     IpfsTransferProgress.remove(cid);
                 } else if (row >= 0 && IpfsTransfers->item(row, 4)) {
+                    prog->setData(StatusRole, StErrored);   // → delegate paints the bar red
                     const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
                                          : error.isEmpty()           ? QStringLiteral("Failed")
                                                                      : ("Failed: " + Tail);
@@ -412,6 +425,7 @@ void IpfsTab::buildUi()
             const int row = IpfsTransfers->row(prog);
             if (row < 0) continue;
             IpfsTransferStalled.insert(Cid);
+            prog->setData(StatusRole, StStalled);   // → delegate paints the bar amber
             if (IpfsTransfers->item(row, 3)) IpfsTransfers->item(row, 3)->setText(QString());
             if (IpfsTransfers->item(row, 4)) IpfsTransfers->item(row, 4)->setText("Stalled — waiting for peers…");
         }

@@ -76,8 +76,9 @@ void PackagesView::rebuildList()
         NodeIndex BIdx; ManifestModel::ScanBundleNodes(LibPath, BIdx);
         bool AnyHydratedLaunchable = false;
         for (const auto & [NodeId, N] : BIdx.Nodes)
-            if (N.IsLaunchable() && PackageCatalog::NodeHydrated(Model.catalogIndex(), NodeId)) { AnyHydratedLaunchable = true; break; }
-        if (!AnyHydratedLaunchable) continue;
+            if (N.IsLaunchable() && PackageCatalog::NodeHasContent(Model.catalogIndex(), NodeId)
+                && PackageCatalog::NodeHydrated(Model.catalogIndex(), NodeId)) { AnyHydratedLaunchable = true; break; }
+        if (!AnyHydratedLaunchable) continue;   // require REAL content present (excludes content-less/malformed)
         g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);

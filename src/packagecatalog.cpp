@@ -621,6 +621,34 @@ bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
     return AllPresent;
 }
 
+bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
+{
+    // True iff the node's closure defines at least one VFS content layer. Distinguishes a real (downloadable) game
+    // from a content-less/malformed node, which is VACUOUSLY "hydrated" (no layers → nothing missing) and would
+    // otherwise show up in the Library + Installed Packages with nothing to launch.
+    bool Has = false;
+    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&){ Has = true; });
+    return Has;
+}
+
+int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
+{
+    // Inverse of HydrateNode: delete the node closure's local content-layer files (keeping the manifests + cover, so
+    // the package returns to the Catalog as re-downloadable) and unpin + drop the references for their CIDs (so the
+    // node stops "seeding" content that's no longer on disk). Cover art (META.COVER) is left in place — it's tiny,
+    // git-tracked, and needed to render the catalog tile.
+    int Removed = 0;
+    std::set<std::string> Cids;
+    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
+        if (!Cid.empty()) Cids.insert(Cid);
+        std::error_code Ec;
+        if (std::filesystem::exists(Local, Ec) && std::filesystem::is_regular_file(Local, Ec))
+        { std::filesystem::remove(Local, Ec); if (!Ec) ++Removed; }
+    });
+    for (const std::string &C : Cids) { IpfsWrapper::Unpin(C); IpfsWrapper::DropRef(C); }
+    return Removed;
+}
+
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles)
 {
     std::vector<std::string> Cids;

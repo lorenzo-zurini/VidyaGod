@@ -125,13 +125,14 @@ void LibraryTab::buildCards()
     for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
-        bool AllHydrated = true;
+        bool AllHydrated = true, HasContent = false;
         for (const Node * N : Group)
         {
             Ids.push_back(N->NodeId);
             if (!PackageCatalog::NodeHydrated(Model.catalogIndex(), N->NodeId)) AllHydrated = false;
+            if (PackageCatalog::NodeHasContent(Model.catalogIndex(), N->NodeId)) HasContent = true;
         }
-        if (!AllHydrated || Ids.empty()) continue;
+        if (!AllHydrated || Ids.empty() || !HasContent) continue;   // skip content-less/malformed (vacuously hydrated)
         auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));
         c->InitializeClassVariables();
         LibraryGameCards->append(c);

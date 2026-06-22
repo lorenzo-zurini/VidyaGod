@@ -61,6 +61,7 @@ private:
     QHash<QString, QString>     DownloadCidToUid;  // in-flight content CID → its owning PACKAGEUID
     QHash<QString, QStringList> DownloadUidCids;   // PACKAGEUID → its content CIDs (for averaging progress)
     QHash<QString, double>      DownloadCidPct;    // in-flight CID → latest percent (0..100)
+    QHash<QString, qlonglong>   DownloadCidSize;   // CID → byte size (for size-weighted progress; filled off-thread)
 };
 
 #endif // DOWNLOADMANAGER_H

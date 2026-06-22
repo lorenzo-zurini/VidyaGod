@@ -77,6 +77,13 @@ bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId);
 std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch);
 // True when every VFS layer in a launchable node's content closure is present locally (its game is installed).
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// True iff the node's closure defines at least one VFS content layer — i.e. it's a real, downloadable game and not a
+// content-less/malformed node (which is vacuously "hydrated"). Gate Library/Installed-Packages visibility on this.
+bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// Inverse of HydrateNode: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
+// drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
+// Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.
+int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Every distinct ipfs CID a launchable node's content closure must fetch (its layers' SOURCE CIDs). Drives the
 // Catalog download-progress aggregation. Excludes the runner build; cover CIDs are not included. Toggles select
 // optional content (node-id -> enabled; absent optional nodes fall back to their DEFAULT).
