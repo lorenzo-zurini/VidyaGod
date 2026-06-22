@@ -82,17 +82,29 @@ void AppModel::removePackage(const QString & uid)
         // so it drops back into the Catalog as re-downloadable (not deleted outright — that was the bug: it vanished
         // from the catalog). Leave the LIBRARY index entry too (it's the repo package's record; Installed Packages
         // filters by hydration, so the package disappears from there once its content is gone).
+        //
+        // The dehydrate itself is HEAVY (a real game's closure is thousands-to-hundreds-of-thousands of blocks: a full
+        // offline DAG walk + per-block filestore deletes + a leveldb compaction), so it MUST run off the GUI thread or
+        // the window freezes for its whole duration. Snapshot the node set + a private NodeIndex copy (the worker reads
+        // it; the GUI owns the live one), do the work on a thread, then rebuild on the GUI thread when it lands.
         const std::string CanonPath = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
+        std::vector<std::string> ToDehydrate;
         for (const auto & [NodeId, N] : CatalogIndex.Nodes)
             if (N.IsLaunchable() &&
                 std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
-                PackageCatalog::DehydrateNode(CatalogIndex, NodeId);
+                ToDehydrate.push_back(NodeId);
+        if (ToDehydrate.empty()) return;   // nothing hydrated under this bundle
+        NodeIndex Idx = CatalogIndex;      // private copy for the worker (mirrors importRunner)
+        std::thread([this, Idx = std::move(Idx), ToDehydrate = std::move(ToDehydrate)]{
+            for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(Idx, NodeId);
+            QMetaObject::invokeMethod(this, [this]{ rebuildCatalog(); }, Qt::QueuedConnection);  // emits catalogChanged
+        }).detach();
+        return;   // config unchanged (manifest kept); the worker rebuilds the catalog when the content is gone
     }
-    else
-    {
-        // Local/portable package added from outside the library → only drop the reference; never touch the user's files.
-        Lib.erase(idx);
-    }
+
+    // Local/portable package added from outside the library → only drop the reference; never touch the user's files.
+    // This is cheap (no IPFS work), so it stays synchronous.
+    Lib.erase(idx);
     save();
     rebuildCatalog();
 }
