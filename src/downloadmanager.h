@@ -7,6 +7,10 @@
 #include <QString>
 #include <QStringList>
 
+#include <map>
+#include <string>
+#include <vector>
+
 class AppModel;
 class LibraryGameCard;
 class QWidget;
@@ -30,6 +34,8 @@ public slots:
     void requestCancel(LibraryGameCard * card);
     // Average a content CID's transfer percent onto its package and emit downloadProgress (wired from IpfsManager).
     void applyProgress(const QString & cid, double pct);
+    // Re-launch any downloads that a previous run left interrupted (crash/close) — call once at startup when online.
+    void resumeAll();
 
 signals:
     void transferQueued(const QString & cid);      // pre-show a CID as "Queued" in the IPFS transfers table
@@ -40,6 +46,13 @@ signals:
     void downloadFinished(const QString & groupKey);           // clear the package's downloading state
 
 private:
+    // Non-interactive download core (shared by the dialog path + resumeAll); persists the selection for crash-resume.
+    void beginDownload(const QString & key, const std::vector<std::string> & launchIds,
+                       const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
+    void persistActive(const QString & key, const std::vector<std::string> & launchIds,
+                       const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
+    void unpersistActive(const QString & key);
+
     AppModel & Model;
     QWidget *  DialogParent;
 

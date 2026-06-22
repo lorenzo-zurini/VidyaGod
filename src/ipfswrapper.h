@@ -107,6 +107,10 @@ bool HasLocal(const std::string &Cid);
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
 bool DropRef(const std::string &Cid);
 
+// Purges a CID's locally-CACHED (bitswap) blocks — the partial data left by a cancelled/aborted download — and
+// compacts to reclaim the disk. Offline (never fetches); only touches plain cached blocks, not filestore references.
+bool DropCached(const std::string &Cid);
+
 // Network availability ("file health"): how many peers announce the CID, via `ipfs routing findprovs`. SLOW (a DHT
 // walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.
 int ProviderCount(const std::string &Cid);

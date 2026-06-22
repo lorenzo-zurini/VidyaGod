@@ -212,6 +212,15 @@ bool DropRef(const std::string &Cid)
     return Rc == 0;
 }
 
+bool DropCached(const std::string &Cid)
+{
+    if (Cid.empty()) return false;
+    char *Err = nullptr;
+    const int Rc = VgDropCached(Cid.c_str(), &Err);
+    TakeStr(Err);
+    return Rc == 0;
+}
+
 std::vector<PinEntry> Pins()
 {
     std::vector<PinEntry> Result;

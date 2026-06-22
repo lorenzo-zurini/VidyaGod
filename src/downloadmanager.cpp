@@ -248,7 +248,19 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     std::map<std::string, bool> Toggles;                             // optional-content selection
     for (auto & [Id, cb] : OptChecks) Toggles[Id] = cb->isChecked();
 
+    beginDownload(Key, LaunchIds, RunnerIds, Toggles);
+}
+
+// Kick off (or resume) a download for an already-decided selection — the non-interactive core shared by the dialog
+// path (startDownload) and crash/close resume (resumeAll). Persists the selection so an interrupted download survives
+// a restart; the completion handler un-persists it (so only a genuinely interrupted one is left to resume).
+void DownloadManager::beginDownload(const QString &Key, const std::vector<std::string> &LaunchIds,
+                                    const std::vector<std::string> &RunnerIds, const std::map<std::string, bool> &Toggles)
+{
+    if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
     DownloadingUids.insert(Key);
+    persistActive(Key, LaunchIds, RunnerIds, Toggles);               // survive a crash/close → resumed next launch
+
     QStringList Cids;
     auto AddCids = [&](const std::vector<std::string> & CidList){
         for (const auto & C : CidList)
@@ -287,17 +299,74 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);
-            for (const QString & c : DownloadUidCids.value(Key))
+            const QStringList DoneCids = DownloadUidCids.value(Key);
+            for (const QString & c : DoneCids)
             {
                 IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c);
                 emit transferUnqueued(c);   // drop a row still "Queued" (never started)
             }
             DownloadUidCids.remove(Key);
-            if (!Ok && !Cancelled) LogErr("DownloadManager::startDownload", "Download failed: " + Err);   // no dialog — the
-                                                                          // failure shows as a "Failed" row in the IPFS tab
+            unpersistActive(Key);           // it ended normally (success/cancel/fail) → don't resume it next launch
+            if (Cancelled)
+            {
+                // Voluntary abort → purge the partial's cached blocks off the GUI thread so a re-download is a real
+                // download (and we don't hoard the aborted bytes). A crash/close leaves them — they speed the resume.
+                std::thread([DoneCids]{ for (const QString & c : DoneCids) IpfsWrapper::DropCached(c.toStdString()); }).detach();
+            }
+            else if (!Ok) LogErr("DownloadManager::beginDownload", "Download failed: " + Err);   // shows as a "Failed" row
             emit downloadFinished(Key);   // the Catalog card(s) drop the "Downloading…" overlay BEFORE the rebuild reads state
             Model.rebuildCatalog();       // emits catalogChanged → Catalog rebuild + Library rebuild + IPFS refresh
             emit transfersChanged();
         }, Qt::QueuedConnection);
     }).detach();
+}
+
+// ── Persistence of in-flight downloads (Settings.ActiveDownloads) so a crash/close resumes them next launch ──
+
+void DownloadManager::persistActive(const QString &Key, const std::vector<std::string> &LaunchIds,
+                                    const std::vector<std::string> &RunnerIds, const std::map<std::string, bool> &Toggles)
+{
+    auto & S = (*Model.config())["Settings"];
+    if (!S.contains("ActiveDownloads") || !S["ActiveDownloads"].is_array()) S["ActiveDownloads"] = nlohmann::ordered_json::array();
+    auto & Arr = S["ActiveDownloads"];
+    for (auto It = Arr.begin(); It != Arr.end(); ++It)                 // replace any existing record for this Key
+        if (It->is_object() && It->value("GroupKey", std::string()) == Key.toStdString()) { Arr.erase(It); break; }
+    nlohmann::ordered_json Rec = nlohmann::ordered_json::object();
+    Rec["GroupKey"] = Key.toStdString();
+    Rec["Launch"]   = LaunchIds;
+    Rec["Runners"]  = RunnerIds;
+    Rec["Toggles"]  = Toggles;
+    Arr.push_back(Rec);
+    Model.save();
+}
+
+void DownloadManager::unpersistActive(const QString &Key)
+{
+    auto & S = (*Model.config())["Settings"];
+    if (!S.contains("ActiveDownloads") || !S["ActiveDownloads"].is_array()) return;
+    auto & Arr = S["ActiveDownloads"];
+    for (auto It = Arr.begin(); It != Arr.end(); ++It)
+        if (It->is_object() && It->value("GroupKey", std::string()) == Key.toStdString()) { Arr.erase(It); Model.save(); return; }
+}
+
+void DownloadManager::resumeAll()
+{
+    auto & S = (*Model.config())["Settings"];
+    if (!S.contains("ActiveDownloads") || !S["ActiveDownloads"].is_array()) return;
+    // Copy out first — beginDownload re-persists (mutating the array) as we iterate.
+    const nlohmann::ordered_json Records = S["ActiveDownloads"];
+    for (const auto & Rec : Records)
+    {
+        if (!Rec.is_object()) continue;
+        const QString Key = QString::fromStdString(Rec.value("GroupKey", std::string()));
+        if (Key.isEmpty()) continue;
+        std::vector<std::string> LaunchIds = Rec.value("Launch",  std::vector<std::string>{});
+        std::vector<std::string> RunnerIds = Rec.value("Runners", std::vector<std::string>{});
+        std::map<std::string, bool> Toggles;
+        if (Rec.contains("Toggles") && Rec["Toggles"].is_object())
+            for (auto It = Rec["Toggles"].begin(); It != Rec["Toggles"].end(); ++It)
+                if (It.value().is_boolean()) Toggles[It.key()] = It.value().get<bool>();
+        LogOut("DownloadManager::resumeAll", "Resuming interrupted download: " + Key.toStdString());
+        beginDownload(Key, LaunchIds, RunnerIds, Toggles);
+    }
 }

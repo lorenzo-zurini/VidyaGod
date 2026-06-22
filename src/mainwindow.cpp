@@ -117,6 +117,15 @@ void MainWindow::BuildStaticUI()
     connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](QString){
         if (CoverRefreshTimer && !CoverRefreshTimer->isActive()) CoverRefreshTimer->start();
     });
+
+    // Resume any downloads a previous run left interrupted (crash/close) — but only once the embedded node's network
+    // is up, so the fetch can actually proceed. Polls briefly then stops; a no-op when there's nothing to resume.
+    QTimer * ResumeTimer = new QTimer(this);
+    ResumeTimer->setInterval(1500);
+    connect(ResumeTimer, &QTimer::timeout, this, [this, ResumeTimer]{
+        if (IpfsWrapper::DaemonRunning()) { ResumeTimer->stop(); DownloadMgr->resumeAll(); }
+    });
+    ResumeTimer->start();
 }
 
 void MainWindow::RefreshPackage(const QString & PackagePath)
