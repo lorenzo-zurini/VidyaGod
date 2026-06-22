@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <condition_variable>
 #include <mutex>
+#include <chrono>
+#include <unordered_map>
 
 // IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
 // (vgipfsapi.h) instead of shelling out to the external Kubo `ipfs` CLI. The public API and the IpfsManager signal
@@ -252,6 +254,20 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
             break;
         case IpfsWrapper::TransferEvent::Progress: {
             const double Pct = E.Percent;
+            // Throttle progress to ~4/sec PER CID. The node emits per network chunk (many/sec); without this every
+            // consumer (Catalog overlay card-scan, IPFS table row + speed calc, progress averaging) runs per chunk.
+            // 100% is always let through (so the bar reaches full before Finished); Started/Finalizing/Finished are
+            // never throttled. Runs on the node's fetch thread(s), so the per-CID timestamps are mutex-guarded.
+            {
+                static std::mutex ProgMu;
+                static std::unordered_map<std::string, long long> LastMs;
+                const long long Now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now().time_since_epoch()).count();
+                std::lock_guard<std::mutex> Lk(ProgMu);
+                auto It = LastMs.find(E.Cid);
+                if (Pct < 100.0 && It != LastMs.end() && Now - It->second < 250) break;   // drop this tick
+                LastMs[E.Cid] = Now;
+            }
             QMetaObject::invokeMethod(this, [this, Cid, Pct]{ emit transferProgress(Cid, Pct); }, Qt::QueuedConnection);
             break; }
         case IpfsWrapper::TransferEvent::Finalizing: {
