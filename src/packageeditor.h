@@ -86,7 +86,7 @@ private:
 // LABEL / META / PLATFORM / EXEC / OPTIONAL / DEFAULT / EXCLUDE), its global PARENTS (a catalog-wide id picker),
 // and its LAYERS (the per-TYPE sub-editors: VFS / RegEdit / DllOverride / FileEdit / Persist* / CustomVar).
 // The authoring tooling (Run EXE / Browse / Regedit / Execute / Analyze) drives the native node engine
-// (ContainerWrapper::InitializeFromNode) against a freshly-saved-on-disk index of this bundle + the catalog.
+// (LaunchResolver::InitializeFromNode) against a freshly-saved-on-disk index of this bundle + the catalog.
 //
 // In-memory the working document is shaped { "NODES": [ <node>, ... ] } so the JSON-pointer field-edit machinery
 // is reused unchanged (paths like /NODES/3/EXEC/CONTENTPATH, /NODES/3/LAYERS/2/PATH). Each node carries an

@@ -356,7 +356,7 @@ int main(int argc, char *argv[])
     }
 
     //HEADLESS (node graph): launch a launchable node from the global, cross-bundle node index — the engine
-    //resolves EVERYTHING natively from the node graph (ContainerWrapper::InitializeFromNode). No manifest.
+    //resolves EVERYTHING natively from the node graph (LaunchResolver::InitializeFromNode). No manifest.
     if (!LaunchParameters.LaunchNodeId.empty())
     {
         LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
@@ -375,7 +375,7 @@ int main(int argc, char *argv[])
         NewContainerParams.VariantID         = "default";
         NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
-        if (!ContainerWrapper::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
+        if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return 1; }
         if (LaunchParameters.ResolveOnly)
         {

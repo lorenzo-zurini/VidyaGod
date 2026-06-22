@@ -131,7 +131,7 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 1: Resolve executable definition (reads the launch node's EXEC).
     // -----------------------------------------------------------------
-    if (!ContainerWrapper::ResolveExecutableDefinition(UnusedManifest, LocalWrapper->ContainerParams))
+    if (!LaunchResolver::ResolveExecutableDefinition(UnusedManifest, LocalWrapper->ContainerParams))
     {
         ClearLogCallback();
         {

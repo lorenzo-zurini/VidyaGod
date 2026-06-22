@@ -24,6 +24,8 @@
 #include "manifestmodel.h"   // ModuleInfo/VariantInfo + pure manifest queries (moved out of this class)
 #include "packagecatalog.h"  // catalog/sharing service (moved out of this class)
 #include "launchparams.h"    // ContainerParams — the shared resolved-session struct (moved out of this class)
+#include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
+#include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
 
 //Orchestrates the full lifecycle of a single game session:
 //  construction → InitializeContainer (DecideComponent, DeriveContainerParams, CreateRecipe, BuildSubComponentsArray)
@@ -65,25 +67,9 @@ public:
     //(Per-package user settings + game/component/variant/module lookups moved out: PackageCatalog::Get/Set
     //PackageUserSetting and ManifestModel::Find*/variants/modules respectively — see those headers.)
 
-    //Container initialization:
-    //Reads the launch node's EXEC (CONTENTPATH/EXEARGS/WORKDIR) into ExePathRelative/ExePathComplete/WorkDir/
-    //ExeArgs. Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
-    static bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-
-    //Native node-graph entry (the ONLY initialization path): populates ContainerParams + the internal component
-    //pool (this->MANIFESTJSON) DIRECTLY from the global NodeIndex (ContainerParams.NodeIdx) and launch NODE_ID —
-    //runner picked from ROLE:"runner" nodes, exec from launch.EXEC, Recipe from ResolveNodeOrder. Invoked by
-    //InitializeContainer.
-    bool InitializeFromNode();
-    //Derives the session paths (Temp/Runtime/WriteLayer/DefaultData/UserData/Program/DefPrefix + ContentRoot
-    //resolution + PrefixRoot + screen geometry) from already-set ContainerParams fields. Shared by the node
-    //path and DeriveContainerParams.
-    static bool DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
-    //Picks the best ROLE:"runner" node for a launch node from the global index (GUEST_PLATFORM ∋ launch host
-    //&& HOST_PLATFORM==MachinePlatform && executable available), honoring RunnerID pin / PREFERRED_RUNNER /
-    //RECOMMENDED. Returns nullptr if none. (Native replacement for the GatherRunners block.)
-    static const Node *PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
-                                      const nlohmann::ordered_json &GlobalConfigJSON);
+    //(Container parameter/recipe/runner/exec/persistence resolution moved to LaunchResolver — see
+    //launchresolver.h: InitializeFromNode/PickRunnerNode/DerivePaths/ResolveExecutableDefinition/
+    //ResolveCustomVariables/BuildSubComponentsArray/DerivePersistence. The %token% engine moved to VarSubst.)
     //(Catalog / RegistryRunners / LibraryRootDir / Import / Publish / Mirror / Sync moved to PackageCatalog —
     //see packagecatalog.h. ImportRunner stays here: it needs the launch engine's mount + wineboot machinery.)
     //Returns unresolved dependency locators (missing VFS layer sources) for a built container — drives the
@@ -97,20 +83,6 @@ public:
     //missing from a backend (IPFS) straight to its expected local PATH (self-healing). Runner builds stay cached.
     //Run in BuildContainerRuntime after EnsureSources, before the mount. Returns false if a layer can't be fetched.
     static bool MaterializeLayers(struct ContainerParams &ContainerParams);
-    //Scans all CustomVar subcomponents in the Recipe and resolves their values.
-    //Priority: VariableOverrides (CLI) > GlobalConfigJSON USERSETTINGS > DEFAULT.
-    //Must run BEFORE BuildSubComponentsArray so custom variables are available for substitution.
-    static bool ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
-    //Collects all SUBCOMPONENTS from components in the Recipe into SubComponentsArray.
-    //Performs %VARIABLE% substitution on each subcomponent's JSON at collection time.
-    //CustomVar and Persist* subcomponents are skipped here (handled by ResolveCustomVariables /
-    //DerivePersistence respectively).
-    static bool BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
-    //Walks the Recipe and derives persistence from PersistDir/PersistFile/RegPersist subcomponents
-    //into PersistDirs/PersistFiles/PersistRegistry. When NONE are declared, sets PersistAll=true
-    //(whole-runtime persist — the durable UserDataPath becomes the union's RW branch). PATH strings
-    //are %VARIABLE%-substituted. Must run after ResolveCustomVariables and before BuildContainerRuntime.
-    static bool DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
 
 private:
     //Filesystem management (single vidyagodfs FUSE mount — replaces unionfs/fuse-zip/bindfs):
@@ -205,11 +177,7 @@ public:
     //Synchronously runs Program with Arguments in the given environment.
     //Waits indefinitely for completion. Returns the exit code, or -1 on crash/start failure.
     static int RunCommand(std::string Program, std::vector<std::string> Arguments, QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment(), const std::string &WorkingDirectory = "");
-    //Translates a display-layer value to its raw storage format based on VARTYPE (dword/qword/bool).
-    static std::string TranslateCustomVarValue(const std::string &Value, const std::string &VarType);
-    //Replaces all %KEY% tokens in SourceString with values from VariablesMap.
-    //Leaves unrecognised tokens unchanged and logs a warning. Returns true if any replacement was made.
-    static bool StringVariableSubstitution(std::string &SourceString, const std::map<std::string, std::string> &VariablesMap);
+    //(TranslateCustomVarValue / StringVariableSubstitution — the pure %token% engine — moved to VarSubst; see varsubst.h.)
 
 private:
     //Runs DecideComponent → DeriveContainerParams → CreateRecipe → BuildSubComponentsArray

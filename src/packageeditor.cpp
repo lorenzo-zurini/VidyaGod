@@ -1033,7 +1033,7 @@ bool PackageEditor::BuildUI()
                         QLabel * Hint = new QLabel(LBox); Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
                         std::string VT = VarType;
                         auto Update = [Hint, VT](const QString &Raw){
-                            std::string Tr = ContainerWrapper::TranslateCustomVarValue(Raw.toStdString(), VT);
+                            std::string Tr = VarSubst::TranslateCustomVarValue(Raw.toStdString(), VT);
                             Hint->setText(Tr == Raw.toStdString() ? QString() : QString("→ stored as  %1").arg(QString::fromStdString(Tr)));
                         };
                         if (DefaultField) { Update(DefaultField->text()); QObject::connect(DefaultField, &QLineEdit::textChanged, this, [Update](const QString &T){ Update(T); }); }

@@ -50,6 +50,12 @@ set(PROJECT_SOURCES
     src/launchparams.h
     src/launchparams.cpp
 
+    src/varsubst.h
+    src/varsubst.cpp
+
+    src/launchresolver.h
+    src/launchresolver.cpp
+
     src/containerwrapper.h
     src/containerwrapper.cpp
 
@@ -153,7 +159,9 @@ enable_testing()
 add_executable(vg_tests
     tests/main.cpp
     tests/test_manifestmodel.cpp
+    tests/test_varsubst.cpp
     src/manifestmodel.cpp
+    src/varsubst.cpp
     src/commonutils.cpp)
 target_include_directories(vg_tests PRIVATE src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)

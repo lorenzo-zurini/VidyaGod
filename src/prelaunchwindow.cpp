@@ -465,7 +465,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
             std::string Initial = CV.value("DEFAULT", std::string());
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);
-            { ContainerParams TmpP("", "", ""); ContainerWrapper::StringVariableSubstitution(Initial, TmpP.GetVariablesMap()); }
+            { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap()); }
 
             AnyVisible = true; SeenKeys.insert(Key); EnsureBox();
             const std::string VarType = CV.value("VARTYPE", std::string("string"));
@@ -478,7 +478,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 for (const auto& Opt : CV["OPTIONS"])
                 {
                     std::string OptVal = Opt.value("VALUE", std::string());
-                    ContainerParams TmpP("", "", ""); ContainerWrapper::StringVariableSubstitution(OptVal, TmpP.GetVariablesMap());
+                    ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(OptVal, TmpP.GetVariablesMap());
                     Combo->addItem(QString::fromStdString(Opt.value("LABEL", std::string())), QString::fromStdString(OptVal));
                 }
                 for (int k = 0; k < Combo->count(); k++)
