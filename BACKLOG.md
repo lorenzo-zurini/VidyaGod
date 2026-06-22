@@ -27,9 +27,17 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 
 ## Larger tasks
 - **De-god `PackageEditor`** (1646 LOC) — same AppModel/section-widget treatment as MainWindow. User: "packageeditor
-  is a mess right now". Next de-god target; the resolver/`ContainerWrapper` (2212 LOC) is the other god object but
-  higher risk — harden + unit-test the pure resolver seam first.
+  is a mess right now". Now the last remaining god object.
 - **Commit `TESTPLAN.md`** (currently untracked).
+
+## De-god ContainerWrapper — DONE (built -Werror both machines; launch UNVERIFIED on hardware)
+- `containerwrapper.cpp` 2212 → 406 LOC: now a thin session orchestrator. Launch engine split into 11 cohesive
+  TUs: `launchparams` (ContainerParams), `varsubst` (pure %token%/value-encode — UNIT-TESTED, tests/test_varsubst),
+  `launchresolver` (param/recipe/runner/exec/persistence resolution), `fileedits`, `registrylayer`, `persistlayer`,
+  `vfsmount`, `launchsources` (IPFS pre-flight/materialize), `runnerinstall`, and `RunCommand` moved to `processenv`.
+- Pure-move refactor (verbatim bodies via brace-matching extraction); no behavior change intended. ctest green.
+- **NOT yet exercised on hardware** — a real game launch (TESTPLAN J42–45) is the verification; deferred to the
+  user's next hardware session (needs a Proton-GE runner + a hydrated Windows game), same as the remove-flow retest.
 
 ## Done this session (for reference)
 - #1 dup repo rejected · #4 download UI freeze (cover re-scale per tick + BuildCidLabels disk-rescan on GUI thread +
