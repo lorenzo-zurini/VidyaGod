@@ -111,6 +111,14 @@ bool DropRef(const std::string &Cid);
 // compacts to reclaim the disk. Offline (never fetches); only touches plain cached blocks, not filestore references.
 bool DropCached(const std::string &Cid);
 
+// ----- peer identity + explicit connectivity (diagnostics + direct peering) -----
+// This node's libp2p peer ID ("" if offline).
+std::string PeerID();
+// Dialable /p2p/ multiaddrs for this node (so another node can connect straight to it).
+std::vector<std::string> ListenAddrs();
+// Dial + hold a direct connection to a peer at a full /p2p/ multiaddr. True on success.
+bool Connect(const std::string &Multiaddr);
+
 // Network availability ("file health"): how many peers announce the CID, via `ipfs routing findprovs`. SLOW (a DHT
 // walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.
 int ProviderCount(const std::string &Cid);

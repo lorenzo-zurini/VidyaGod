@@ -3,12 +3,15 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "containerwrapper.h"
+#include "ipfswrapper.h"
 #include "vgipfsapi.h"
 
 #include <QComboBox>
 #include <QAbstractScrollArea>
 #include <QWheelEvent>
 
+#include <chrono>
+#include <thread>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -212,6 +215,44 @@ int main(int argc, char *argv[])
             LogOut("main.cpp", "embedded IPFS node started at " + IpfsRepo.toStdString());
             std::atexit(VgStop);   // best-effort clean leveldb shutdown on any exit path
         }
+    }
+
+    //HEADLESS: print this node's peer ID + dialable addrs, then exit (so another node can --connect to it).
+    if (LaunchParameters.PrintPeerId)
+    {
+        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogOut("main.cpp", "PeerID: " + IpfsWrapper::PeerID());
+        for (const std::string &A : IpfsWrapper::ListenAddrs()) LogOut("main.cpp", "addr: " + A);
+        return 0;
+    }
+
+    //HEADLESS: fetch a single CID to a destination path then exit — a download throughput probe (any public/private
+    //CID). Waits for the node's network to come up, times the transfer, and reports MB/s.
+    if (!LaunchParameters.FetchCid.empty())
+    {
+        LogOut("main.cpp", "Fetch test: " + LaunchParameters.FetchCid + " -> " + LaunchParameters.FetchDest);
+        // Warm up first: wait for a real peer set (or 30 s) so the timed fetch reflects a RUNNING node (the GUI),
+        // not a cold start with 0 peers + an empty DHT routing table.
+        for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 30; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        // Optional direct peering: dial a known seed so the transfer is peer-to-peer direct (no DHT/relay lottery).
+        if (!LaunchParameters.ConnectAddr.empty())
+        {
+            const bool Ok = IpfsWrapper::Connect(LaunchParameters.ConnectAddr);
+            LogOut("main.cpp", std::string("direct connect to ") + LaunchParameters.ConnectAddr + (Ok ? " : ok" : " : FAILED"));
+        }
+        LogOut("main.cpp", std::string("warmed: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()));
+        const auto T0 = std::chrono::steady_clock::now();
+        std::string Err;
+        const std::string Got = IpfsWrapper::FetchToPath(LaunchParameters.FetchCid, LaunchParameters.FetchDest, &Err);
+        const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
+        if (Got.empty()) { LogErr("main.cpp", "Fetch failed: " + Err); return 1; }
+        std::error_code Ec; const auto Sz = std::filesystem::file_size(LaunchParameters.FetchDest, Ec);
+        LogSucc("main.cpp", "Fetched " + std::to_string(Ec ? 0 : Sz) + " bytes in "
+                + std::to_string(Secs) + "s  (" + std::to_string((Ec ? 0.0 : double(Sz)) / 1048576.0 / Secs) + " MB/s)");
+        return 0;
     }
 
     //HEADLESS: seed a folder of published packages into the IPFS node (re-establish seeding from a master), then exit.
@@ -568,6 +609,24 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             //Modifier for --seed/--seed-covers: re-reference every file (default is additive — only new/orphaned).
             RuntimeParameters.SeedOverwrite = true;
+        }
+        else if (arg == "--fetch" && i + 2 < argc)
+        {
+            //Download-throughput probe: fetch a CID to a destination path then exit.
+            RuntimeParameters.FetchCid         = argv[++i];
+            RuntimeParameters.FetchDest        = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--peer-id")
+        {
+            RuntimeParameters.PrintPeerId      = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--connect" && i + 1 < argc)
+        {
+            //Dial a known peer (full /p2p/ multiaddr) before fetching — direct peering / controlled benchmark.
+            RuntimeParameters.ConnectAddr      = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--list-nodes")
         {

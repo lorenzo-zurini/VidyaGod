@@ -221,6 +221,32 @@ bool DropCached(const std::string &Cid)
     return Rc == 0;
 }
 
+std::string PeerID()
+{
+    char *Id = nullptr;
+    if (VgPeerID(&Id) != 0) { TakeStr(Id); return {}; }
+    return TakeStr(Id);
+}
+
+std::vector<std::string> ListenAddrs()
+{
+    char *J = nullptr;
+    if (VgListenAddrs(&J) != 0) { TakeStr(J); return {}; }
+    const std::string Js = TakeStr(J);
+    std::vector<std::string> Out;
+    try { for (const auto &A : nlohmann::json::parse(Js)) Out.push_back(A.get<std::string>()); } catch (...) {}
+    return Out;
+}
+
+bool Connect(const std::string &Multiaddr)
+{
+    if (Multiaddr.empty()) return false;
+    char *Err = nullptr;
+    const int Rc = VgConnect(Multiaddr.c_str(), &Err);
+    TakeStr(Err);
+    return Rc == 0;
+}
+
 std::vector<PinEntry> Pins()
 {
     std::vector<PinEntry> Result;

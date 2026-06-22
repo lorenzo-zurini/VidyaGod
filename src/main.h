@@ -41,6 +41,10 @@ struct LaunchParameters
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit
     bool SeedCoversOnly = false;                                          //--seed-covers <DIR>: like --seed but ONLY re-pins META.COVER refs (skips the big layers)
     bool SeedOverwrite = false;                                           //--overwrite: seed in OVERWRITE mode (re-reference every file; default is additive — only new/orphaned)
+    std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
+    std::string FetchDest;
+    bool PrintPeerId = false;                                             //--peer-id: print this node's peer ID + dialable addrs, then exit
+    std::string ConnectAddr;                                              //--connect <MULTIADDR>: dial this peer before fetching (direct peering / controlled benchmark)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
