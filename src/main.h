@@ -39,6 +39,8 @@ struct LaunchParameters
     bool ValidateNodes = false;                                          //--validate-nodes: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
     bool ListNodes = false;                                              //--list-nodes: print the presentable library tiles (grouped launchable nodes) + hydration status, then exit
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit
+    bool SeedCoversOnly = false;                                          //--seed-covers <DIR>: like --seed but ONLY re-pins META.COVER refs (skips the big layers)
+    bool SeedOverwrite = false;                                           //--overwrite: seed in OVERWRITE mode (re-reference every file; default is additive — only new/orphaned)
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)

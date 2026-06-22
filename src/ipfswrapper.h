@@ -99,6 +99,14 @@ long long CidSize(const std::string &Cid);
 // Local + cheap (no network); surfaced in the IPFS tab as "Errored: missing files".
 bool CidMissing(const std::string &Cid);
 
+// True if the node holds the CID's block locally (a filestore reference or a plain block), without a network fetch.
+// An orphaned reference (backing file gone) still counts as held — pair with CidMissing to tell them apart.
+bool HasLocal(const std::string &Cid);
+
+// Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
+// fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
+bool DropRef(const std::string &Cid);
+
 // Network availability ("file health"): how many peers announce the CID, via `ipfs routing findprovs`. SLOW (a DHT
 // walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.
 int ProviderCount(const std::string &Cid);

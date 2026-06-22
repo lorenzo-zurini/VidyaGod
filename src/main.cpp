@@ -217,12 +217,13 @@ int main(int argc, char *argv[])
     //HEADLESS: seed a folder of published packages into the IPFS node (re-establish seeding from a master), then exit.
     if (!LaunchParameters.SeedDir.empty())
     {
-        LogOut("main.cpp", "Seeding referenced content from: " + LaunchParameters.SeedDir);
+        LogOut("main.cpp", std::string(LaunchParameters.SeedCoversOnly ? "Seeding COVERS ONLY from: " : "Seeding referenced content from: ")
+                           + LaunchParameters.SeedDir);
         int Mismatched = 0;
         const int Seeded = PackageCatalog::SeedDirectory(LaunchParameters.SeedDir,
             [](int done, int total, const std::string &name){
                 if (done == total || done % 10 == 0) LogOut("seed", std::to_string(done) + "/" + std::to_string(total) + "  " + name);
-            }, &Mismatched);
+            }, &Mismatched, LaunchParameters.SeedCoversOnly, LaunchParameters.SeedOverwrite);
         LogSucc("main.cpp", "Seeded " + std::to_string(Seeded) + " file(s)"
                 + (Mismatched ? ("; " + std::to_string(Mismatched) + " changed/un-seedable") : std::string()));
         return 0;
@@ -555,6 +556,18 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             //Seed a folder's published content (LAYER/COVER SOURCE CIDs) into the IPFS node by reference, then exit.
             RuntimeParameters.SeedDir         = argv[++i];
             RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--seed-covers" && i + 1 < argc)
+        {
+            //Re-pin ONLY the cover art (META.COVER refs) by reference — skips re-hashing the large game layers.
+            RuntimeParameters.SeedDir         = argv[++i];
+            RuntimeParameters.SeedCoversOnly  = true;
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--overwrite")
+        {
+            //Modifier for --seed/--seed-covers: re-reference every file (default is additive — only new/orphaned).
+            RuntimeParameters.SeedOverwrite = true;
         }
         else if (arg == "--list-nodes")
         {

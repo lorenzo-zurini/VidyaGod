@@ -414,7 +414,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress,
-                  int *Mismatched)
+                  int *Mismatched, bool CoversOnly, bool Overwrite)
 {
     namespace fs = std::filesystem;
     if (Mismatched) *Mismatched = 0;
@@ -446,29 +446,41 @@ int SeedDirectory(const std::string &Dir,
             if (fs::exists(Local, Ec)) ToSeed[Local.string()] = Cid;
         };
 
-        if (J.contains("LAYERS") && J["LAYERS"].is_array())
+        if (!CoversOnly && J.contains("LAYERS") && J["LAYERS"].is_array())
             for (const auto &L : J["LAYERS"]) Consider(L);
         if (J.contains("META") && J["META"].is_object() && J["META"]["COVER"].is_object())
             Consider(J["META"]["COVER"]);
     }
 
     // 2) Add each by reference (re-hash → filestore ref + pin + reprovide). Count parity matches vs changed files.
-    int Seeded = 0, Done = 0;
+    //    Modes: ADDITIVE (default) skips a CID the node already holds with an intact backing file (no re-hash); it
+    //    still re-points ORPHANED references (backing file gone — the seed-source moved) and adds new content.
+    //    OVERWRITE re-references every file. Either way, a still-held reference is dropped first (the node's filestore
+    //    skips re-adding a block it already has, so the stale reference must go before AddNoCopy can re-point it).
+    int Seeded = 0, Skipped = 0, Done = 0;
     const int Total = (int)ToSeed.size();
     for (const auto &[Path, Cid] : ToSeed)
     {
-        std::string Err;
-        const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
-        if (Got == Cid)            ++Seeded;
-        else if (Mismatched) { ++*Mismatched;
-            LogWarn("PackageCatalog::SeedDirectory", "CID mismatch (file changed since publish?) for " + Path
-                    + (Got.empty() ? (" — add failed: " + Err) : (" — got " + Got + ", expected " + Cid)));
+        const bool Has     = IpfsWrapper::HasLocal(Cid);
+        const bool Orphan  = Has && IpfsWrapper::CidMissing(Cid);
+        if (Has && !Orphan && !Overwrite) { ++Skipped; ++Seeded; }   // already seeded + intact → leave it (counts as seeded)
+        else
+        {
+            if (Has) IpfsWrapper::DropRef(Cid);                       // clear the stale/old reference so the re-add isn't deduped
+            std::string Err;
+            const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
+            if (Got == Cid)            ++Seeded;
+            else if (Mismatched) { ++*Mismatched;
+                LogWarn("PackageCatalog::SeedDirectory", "CID mismatch (file changed since publish?) for " + Path
+                        + (Got.empty() ? (" — add failed: " + Err) : (" — got " + Got + ", expected " + Cid)));
+            }
         }
         ++Done;
         if (Progress) Progress(Done, Total, fs::path(Path).filename().string());
     }
     LogSucc("PackageCatalog::SeedDirectory",
-            "Seeded " + std::to_string(Seeded) + "/" + std::to_string(Total) + " referenced file(s) from " + Dir);
+            "Seeded " + std::to_string(Seeded) + "/" + std::to_string(Total) + " referenced file(s) from " + Dir
+            + " (" + std::to_string(Skipped) + " already-seeded skipped, mode=" + (Overwrite ? "overwrite" : "additive") + ")");
     return Seeded;
 }
 
@@ -645,8 +657,21 @@ bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const st
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Launch->Meta["COVER"], Launch->BundleDir, Local, Cid);
         std::error_code Ec;
-        if (!Cid.empty() && Local != Launch->BundleDir && !std::filesystem::exists(Local, Ec))
-            Targets.push_back({Cid, Local.string(), true});
+        if (!Cid.empty() && Local != Launch->BundleDir)
+        {
+            if (!std::filesystem::exists(Local, Ec))
+                Targets.push_back({Cid, Local.string(), true});            // not local → fetch over IPFS (FetchToPath seeds it)
+            else if (!IpfsWrapper::HasLocal(Cid) || IpfsWrapper::CidMissing(Cid))
+            {
+                // The cover file is already on disk (e.g. committed in the repo) but the node isn't seeding it (or its
+                // reference is orphaned). Seed it by reference so a downloader also serves the cover — otherwise covers
+                // are skipped as "already present" and never re-pinned. Best-effort (a cover never fails a hydrate).
+                if (IpfsWrapper::CidMissing(Cid)) IpfsWrapper::DropRef(Cid);   // re-point a stale reference
+                std::string E;
+                if (IpfsWrapper::AddNoCopy(Local.string(), &E).empty())
+                    LogWarn("PackageCatalog::HydrateNode", "could not seed local cover " + Local.string() + " (" + E + ")");
+            }
+        }
     }
 
     // Dispatch the fetches. Acquire a global download slot BEFORE spawning each worker, so the number of live worker

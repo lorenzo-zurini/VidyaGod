@@ -195,6 +195,21 @@ bool CidMissing(const std::string &Cid)
     return VgCidMissing(Cid.c_str()) == 1;
 }
 
+bool HasLocal(const std::string &Cid)
+{
+    if (Cid.empty()) return false;
+    return VgHasLocal(Cid.c_str()) == 1;
+}
+
+bool DropRef(const std::string &Cid)
+{
+    if (Cid.empty()) return false;
+    char *Err = nullptr;
+    const int Rc = VgDropRef(Cid.c_str(), &Err);
+    TakeStr(Err);
+    return Rc == 0;
+}
+
 std::vector<PinEntry> Pins()
 {
     std::vector<PinEntry> Result;

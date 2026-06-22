@@ -43,9 +43,14 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 // to the DHT). Use after wiping ~/.VidyaGod, pointing at e.g. ~/The Vidya. Progress(done, total, filename) is called
 // as it goes (off the GUI thread by the caller). Returns the number of files seeded whose recomputed CID matches the
 // recorded SOURCE; *Mismatched (if given) counts files whose bytes changed since publish (recorded CID un-seedable).
+// CoversOnly=true seeds only META.COVER references (skips LAYERS) — a fast re-pin of cover art without re-hashing
+// the (much larger) game layers, e.g. when a download flow hydrated layers but not the cover.
+// Modes: ADDITIVE (Overwrite=false, default) re-references only NEW or ORPHANED (backing-file-gone) content, skipping
+// CIDs already held with an intact file; OVERWRITE (Overwrite=true) re-references every file. Orphans are re-pointed
+// in BOTH modes.
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
-                  int *Mismatched = nullptr);
+                  int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false);
 // Copy a package's dehydrated manifest (top-level *.json only, no content/images) into DestDir. Returns count copied.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 
