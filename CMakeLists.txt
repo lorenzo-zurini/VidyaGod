@@ -56,6 +56,15 @@ set(PROJECT_SOURCES
     src/launchresolver.h
     src/launchresolver.cpp
 
+    src/fileedits.h
+    src/fileedits.cpp
+
+    src/registrylayer.h
+    src/registrylayer.cpp
+
+    src/persistlayer.h
+    src/persistlayer.cpp
+
     src/containerwrapper.h
     src/containerwrapper.cpp
 

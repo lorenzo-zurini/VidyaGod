@@ -10,6 +10,15 @@
 
 #include "manifestmodel.h"   // NodeIndex (native node-graph launch source)
 
+//True if a raw (pre-substitution) runner ARG references the launch target via a content token. Used to drop the
+//content-bearing args when swapping the target — an OverrideExe (tooling) or the wineboot prefix-init. Shared by
+//the registry layer (InitializeDefPrefix), runner install (ImportRunner), and the orchestrator (Execute).
+inline bool ArgReferencesContent(const std::string &RawArg)
+{
+    return RawArg.find("%Content%") != std::string::npos
+        || RawArg.find("%ContentPath%") != std::string::npos;
+}
+
 //(The RunnerType enum is gone — a runner declares its invocation as data: EXECUTABLE + ARGS with %Content%/
 //%ContentPath% tokens, CONTENT_ROOT for host mount placement, and PREFIX_GENERATE for a one-time wine prefix.
 //The runner's TYPE no longer drives any C++ branch.)

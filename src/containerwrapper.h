@@ -26,6 +26,9 @@
 #include "launchparams.h"    // ContainerParams — the shared resolved-session struct (moved out of this class)
 #include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
 #include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
+#include "fileedits.h"       // FileEdits — FileEdit/DllOverride application (moved out of this class)
+#include "registrylayer.h"   // RegistryLayer — Wine prefix/registry/DEFAULTDATA + reg-persistence (moved out)
+#include "persistlayer.h"    // PersistLayer — PersistFile seed/capture (moved out of this class)
 
 //Orchestrates the full lifecycle of a single game session:
 //  construction → InitializeContainer (DecideComponent, DeriveContainerParams, CreateRecipe, BuildSubComponentsArray)
@@ -116,61 +119,12 @@ public:
     //DEFPREFIX artifact exists. A runner that ships no build is always "installed".
     static bool RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId);
 private:
-    //Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath
-    //before MountVFS so they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
-    static bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
-    //Copies RuntimePath/{system,user,userdef}.reg into UserDataPath/__REGISTRY__/ on Cleanup,
-    //capturing the session's registry. Must run BEFORE the runtime is unmounted/wiped.
-    static bool CapturePersistRegistry(struct ContainerParams &ContainerParams);
-    //Seeds each previously-persisted PersistFile (UserDataPath/<rel>) into WriteLayerPath/<rel>
-    //before MountVFS so it shadows the lower layers. No-op when PersistAll or none persisted yet.
-    static bool SeedPersistFiles(struct ContainerParams &ContainerParams);
-    //Copies each PersistFile from RuntimePath/<rel> into UserDataPath/<rel> on Cleanup, capturing
-    //the session's writes. Must run BEFORE the runtime is unmounted/wiped. No-op when PersistAll.
-    static bool CapturePersistFiles(struct ContainerParams &ContainerParams);
-    //(The seed side of RegKeyPersist — merging persisted subtrees into the base hives — is done by
-    //BuildDefaultData, which writes them into the DEFAULTDATA hives rather than mutating DEFPREFIX.)
-    //Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the
-    //durable store UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op PersistAll.
-    static bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
+    //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
+    //InitializeDefPrefix/BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
+    //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
     //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths
     //differ only in case — these cause unpredictable behavior under Wine.
     static bool CheckCaseConflicts(std::filesystem::path RuntimePath);
-
-    //Registry handling:
-    //Initializes the Wine prefix at DefPrefixPath by running `wineboot` via the runner.
-    //DefPrefixPath becomes the base (root) layer of the spec built by BuildLayerSpec.
-    static bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
-    //Builds the DEFAULTDATA layer (TempPath/DEFAULTDATA): all package-encoded BASE (non-OVERRIDE) edits —
-    //FileEdits as files, RegEdits as full hives copied-from-and-shadowing DEFPREFIX, plus merged persisted
-    //RegKeyPersist subtrees. Mounts between the component layers and the WRITELAYER, so it overrides package
-    //content but the user's persisted writes shadow it. DEFPREFIX is never mutated. Wine-only, pre-VFS.
-    static bool BuildDefaultData(struct ContainerParams &ContainerParams);
-    //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime hives via RegistryWrapper,
-    //after VFS is up. Saving RuntimePath/*.reg COWs the whole file into the RW WRITELAYER, so the
-    //values win over DEFPREFIX and prior COW state. No wine runs on RuntimePath yet, so no quiesce.
-    static bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
-
-    //DLL overrides:
-    //Collects DLLOVERRIDE values from all DllOverride subcomponents into DLLOverrides.
-    //These are later joined and set as WINEDLLOVERRIDES in Execute().
-    static bool ProcessDLLOverrides(struct ContainerParams &ContainerParams);
-
-    //FileEdits:
-    //Processes FileEdit subcomponents. MUST BE RUN AFTER VARIABLE SUBSTITUTION.
-    //OverridePass selects WHICH edits run (the OVERRIDE flag must match it).
-    //BaseDir, when non-empty, is the directory the matched edits are written under; otherwise it
-    //defaults to RuntimePath for the override pass and DefPrefixPath for the base pass.
-    //  base pass  (OverridePass=false): written into BaseDir — normally the DEFAULTDATA layer, so the
-    //                                   WRITELAYER (user) can shadow them.
-    //  override pass (OverridePass=true): written into RuntimePath (post-VFS, COW to WRITELAYER — wins).
-    static bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass = false,
-                                 const std::filesystem::path &BaseDir = {});
-    //Reads FilePath line by line and replaces any line starting with Key with Key+Value.
-    //Useful for patching INI-style config files that use prefix-based key matching.
-    static bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);
-    //Writes Value as the complete content of FilePath, creating parent dirs if needed.
-    static bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
 
 public:
     //Misc
