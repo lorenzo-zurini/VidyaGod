@@ -160,6 +160,10 @@ int main(int argc, char *argv[])
         }
     }
 
+    //--data-dir override (testing: run a second instance with its own repo + lock alongside the main one).
+    if (!LaunchParameters.DataDir.empty())
+        AppDataPath = QString::fromStdString(LaunchParameters.DataDir);
+
     //Find and create AppDataDir. mkpath is a no-op if it already exists.
     QDir AppDataDir(AppDataPath);
     AppDataDir.mkpath(".");
@@ -621,6 +625,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.PrintPeerId      = true;
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--data-dir" && i + 1 < argc)
+        {
+            RuntimeParameters.DataDir          = argv[++i];
         }
         else if (arg == "--connect" && i + 1 < argc)
         {
