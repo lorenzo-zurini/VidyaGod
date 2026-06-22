@@ -1,31 +1,14 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
-#include "jsonoperations.h"
-#include "processenv.h"
-#include "registrywrapper.h"
-#include "ipfswrapper.h"
-#include "runnerwrapper.h"
-#include "packagecatalog.h"
-#include <random>
-#include <fstream>
-#include <sstream>
-#include <algorithm>
-#include <set>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/stat.h>
+#include "processenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
 #include <QThread>
 #include <QMetaObject>
 
-//Pure manifest queries + the VFS-layer helpers (IsVfsLayer/LayerType/ForEachVfsLayer/LayerLocator/
-//ResolveLayerSource/MachinePlatform/Find*/...) now live in ManifestModel; the catalog/sharing service
-//(Catalog/Sync/Import/Publish/RepositoryDirs/user-settings) lives in PackageCatalog. Bring both in unqualified
-//so the launch-engine code below (which calls RepositoryDirs / GetPackageUserSettings) reads naturally.
+//The launch-build subsystems were lifted out into their own units (LaunchResolver / VarSubst / FileEdits /
+//RegistryLayer / PersistLayer / VfsMount / LaunchSources / RunnerInstall — see their headers, all pulled in via
+//containerwrapper.h). What remains here is the thin session lifecycle that orchestrates them. The only pure helper
+//still referenced unqualified is IsVfsLayer, so bring ManifestModel in.
 using namespace ManifestModel;
-using namespace PackageCatalog;
-
-
-
 
 //Stores the JSON references and immediately runs the full initialization pipeline.
 //After construction, ContainerParams is fully populated and ready for BuildContainerRuntime().
@@ -35,10 +18,11 @@ ContainerWrapper::ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJS
     this->InitializeContainer();
 }
 
-//NOTE: the registry is now its own class (RegistryWrapper) and the filesystem is its own binary
-//(vidyagodfs, the VidyaGodFS submodule). The remaining refactor would be to lift the VFS orchestration
-//(BuildLayerSpec / MountVFS / CleanStaleRuntime / Cleanup) out of ContainerWrapper into a dedicated
-//class, but it's not blocking — left as a future cleanup.
+//ContainerWrapper is now a thin SESSION ORCHESTRATOR: it owns the live config/manifest/ContainerParams and a single
+//game session's lifecycle (construct → InitializeContainer → BuildContainerRuntime → Execute → Cleanup), delegating
+//every step to the extracted subsystems. The registry is RegistryWrapper, the filesystem is the vidyagodfs binary,
+//and the launch-engine logic lives in LaunchResolver/VfsMount/RegistryLayer/PersistLayer/FileEdits/LaunchSources/
+//RunnerInstall (with the pure %token% engine in VarSubst).
 
 //Runs the initialization steps in the required order:
 //  DecideComponent → DeriveContainerParams → CreateRecipe → ResolveCustomVariables → BuildSubComponentsArray

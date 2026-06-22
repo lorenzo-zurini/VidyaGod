@@ -2,27 +2,14 @@
 #define CONTAINERWRAPPER_H
 
 #include <nlohmann/json.hpp>
-#include <iostream>
-#include <fstream>
-#include <cstring>
-#include <ctime>
-#include <regex>
 #include <filesystem>
 #include <string>
-#include <unordered_set>
-#include <algorithm>
 
-#include <QDir>
-#include <QVector>
-#include <QMessageBox>
-#include <QGuiApplication>
-#include <QScreen>
 #include <QProcess>
 #include <QMutex>
 #include <QMutexLocker>
 
-#include "manifestmodel.h"   // ModuleInfo/VariantInfo + pure manifest queries (moved out of this class)
-#include "packagecatalog.h"  // catalog/sharing service (moved out of this class)
+#include "manifestmodel.h"   // NodeIndex (ContainerParams.NodeIdx) + pure manifest queries
 #include "launchparams.h"    // ContainerParams — the shared resolved-session struct (moved out of this class)
 #include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
 #include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
@@ -33,14 +20,14 @@
 #include "launchsources.h"   // LaunchSources — dependency pre-flight + materialize (moved out)
 #include "runnerinstall.h"   // RunnerInstall — runner build install + DEFPREFIX generation (moved out)
 
-//Orchestrates the full lifecycle of a single game session:
-//  construction → InitializeContainer (DecideComponent, DeriveContainerParams, CreateRecipe, BuildSubComponentsArray)
-//  BuildContainerRuntime() → registry, VFS mounts
-//  Execute()               → launches the runner with the correct arguments and environment
-//  Cleanup()               → unmounts all FUSE filesystems, removes RUNTIME and TEMP
-//
-//Static helpers are grouped into logical subsystems (Registry, VFS, Runner) and can
-//also be called standalone where the full wrapper is not needed.
+//Thin session orchestrator for a single game launch. It owns the live config/manifest/ContainerParams and drives
+//the lifecycle, delegating every step to the extracted launch-engine units:
+//  construction → InitializeContainer  → LaunchResolver::InitializeFromNode (resolve the whole container)
+//  BuildContainerRuntime()             → LaunchSources (sources) · RegistryLayer (prefix/DEFAULTDATA) · PersistLayer
+//                                         · VfsMount (mount) · FileEdits (edits)
+//  Execute()                           → launches the runner with the resolved args/env (%tokens% via VarSubst)
+//  Cleanup()                           → RegistryLayer/PersistLayer capture, then unmount + wipe RUNTIME/TEMP
+//(Runner install is RunnerInstall; the pure manifest/catalog services are ManifestModel/PackageCatalog.)
 class ContainerWrapper
 {
 public:
