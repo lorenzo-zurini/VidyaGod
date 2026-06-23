@@ -241,6 +241,7 @@ void MainWindow::applyNetworkingState(bool enabled)
     {
         if (ResumeTimer) ResumeTimer->stop();
         IpfsWrapper::StopNode();   // bring the node fully down — no network activity until re-enabled
+        if (IpfsTabPtr) IpfsTabPtr->refresh();   // reflect the "node off" state
     }
 }
 

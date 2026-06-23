@@ -232,16 +232,10 @@ void IpfsTab::buildUi()
     QVBoxLayout * v = new QVBoxLayout(this);
     v->setContentsMargins(12,12,12,12);
 
-    if (!IpfsWrapper::Available())
-    {
-        QLabel * msg = new QLabel(
-            "<div style='color:#8f98a0;'><b>IPFS is unavailable</b><br><br>"
-            "VidyaGod's built-in IPFS node didn't start, so shared packages can't be fetched or seeded.<br><br>"
-            "Check the logs and restart VidyaGod.</div>", this);
-        msg->setAlignment(Qt::AlignCenter); msg->setWordWrap(true);
-        v->addStretch(1); v->addWidget(msg); v->addStretch(1);
-        return;                                              // greyed/empty — no controls
-    }
+    // The full UI is ALWAYS built (networking is off by default, so the node may not be running yet — it starts when
+    // the user enables networking). When the node isn't up, refresh() shows an "off" status; once it comes up,
+    // MainWindow::onNodeReady() / the periodic tick populate the live status + tables. (Previously this built a
+    // permanent "unavailable" stub when the node wasn't running at construction, leaving the tab dead after enabling.)
 
     // Status row.
     QHBoxLayout * statusRow = new QHBoxLayout();
@@ -431,11 +425,19 @@ void IpfsTab::buildUi()
         }
     });
     IpfsStallTimer->start();
+
+    refresh();   // set the initial status (the "node off" message, or live data if it's already up)
 }
 
 void IpfsTab::refresh()
 {
-    if (!IpfsWrapper::Available() || !IpfsStatusLabel) return;
+    if (!IpfsStatusLabel) return;
+    if (!IpfsWrapper::Available())
+    {
+        // Node not running (networking off, or not started yet). Show why instead of leaving the tab blank.
+        IpfsStatusLabel->setText("<b>IPFS node is off.</b>  Enable networking in Settings → IPFS to download and seed.");
+        return;
+    }
     if (IpfsRefreshInFlight) return;                                       // a gather is already running
     IpfsRefreshInFlight = true;
 
