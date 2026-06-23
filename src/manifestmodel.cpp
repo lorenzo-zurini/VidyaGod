@@ -114,7 +114,15 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
         const std::string Cur = Frontier.front(); Frontier.erase(Frontier.begin());
         const Node *N = Idx.Find(Cur);
         if (!N) continue;
-        for (const std::string &Pid : N->Parents)
+        //Consider EXPLICITLY-toggled-on parents before the rest, so an explicit choice is kept before any
+        //conflicting DEFAULT-on sibling (first-kept wins the EXCLUDE). Otherwise toggling a mutually-exclusive
+        //option on would be silently dropped in favour of the other option's default. Stable: order is otherwise
+        //preserved (PARENTS list order).
+        auto ExplicitOn = [&](const std::string &Id) { auto It = Toggles.find(Id); return It != Toggles.end() && It->second; };
+        std::vector<std::string> Parents(N->Parents.begin(), N->Parents.end());
+        std::stable_sort(Parents.begin(), Parents.end(),
+                         [&](const std::string &A, const std::string &B) { return ExplicitOn(A) && !ExplicitOn(B); });
+        for (const std::string &Pid : Parents)
         {
             if (Enabled.count(Pid)) continue;
             const Node *P = Idx.Find(Pid);

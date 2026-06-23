@@ -77,6 +77,24 @@ TEST(resolve_order_exclude_is_mutually_exclusive)
     CHECK(Contains(Order, "a") != Contains(Order, "b"));   // exactly one of the mutually-exclusive pair
 }
 
+// Explicitly toggling a mutually-exclusive option ON wins over the conflicting DEFAULT-on option (the user's
+// explicit choice isn't silently dropped in favour of the other's default).
+TEST(resolve_order_explicit_toggle_beats_conflicting_default)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID", "hd"},   {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", true},  {"EXCLUDE", {"lo"}}});
+    Add(Idx, {{"NODE_ID", "lo"},   {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", false}, {"EXCLUDE", {"hd"}}});
+    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"hd", "lo"}}});
+
+    // Default: hd (default-on) kept, lo dropped.
+    const auto Def = ManifestModel::ResolveNodeOrder(Idx, "game", {});
+    CHECK(Contains(Def, "hd") && !Contains(Def, "lo"));
+
+    // Toggle lo ON → lo wins, hd dropped (was kept only by default).
+    const auto Tog = ManifestModel::ResolveNodeOrder(Idx, "game", {{"lo", true}});
+    CHECK(Contains(Tog, "lo") && !Contains(Tog, "hd"));
+}
+
 TEST(resolve_order_missing_parent_reported)
 {
     NodeIndex Idx;
