@@ -22,12 +22,8 @@ class NodeEditor : public QWidget
 public:
     NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget * parent = nullptr);
 
-protected:
-    bool eventFilter(QObject * obj, QEvent * event) override;   // META cover drop (image / file / URL)
-
 private slots:
-    void onFieldEdited();   // a bound QLineEdit finished editing → write its JSONPath into the doc + save
-    // LAYERS add-actions (append a TYPE-tagged layer to this node's LAYERS).
+    // LAYERS add-actions (the toolbar "+ Layer" menu) — append a TYPE-tagged layer to this node's LAYERS.
     void AddVFSDirLayer();
     void AddVFSZipLayer();
     void AddVFSFileLayer();

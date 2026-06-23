@@ -50,6 +50,12 @@ set(PROJECT_SOURCES
     src/nodeeditor.h
     src/nodeeditor.cpp
 
+    src/nodesection.h
+    src/nodesection.cpp
+
+    src/nodesections.h
+    src/nodesections.cpp
+
     src/validationpanel.h
     src/validationpanel.cpp
 
