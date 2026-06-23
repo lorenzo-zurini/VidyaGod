@@ -11,6 +11,10 @@
 #include "appmodel.h"
 #include "traycontroller.h"
 #include "generalpage.h"
+#include "apppaths.h"
+#include "autostart.h"
+
+#include <QStandardPaths>
 
 using json = nlohmann::ordered_json;
 
@@ -84,6 +88,63 @@ private slots:
         QCOMPARE(cfg["Settings"]["Tray"].value("CloseToTray", true), false);
         closeCb->setChecked(true);
         QCOMPARE(cfg["Settings"]["Tray"].value("CloseToTray", false), true);
+    }
+
+    // Run-mode gating: daemon allowed except In-package; autostart only in Normal.
+    void mode_gates_daemon_and_autostart()
+    {
+        AppPaths::SetMode(AppPaths::Mode::Normal);
+        QVERIFY(AppPaths::DaemonSupported());  QVERIFY(AppPaths::AutostartSupported());
+        AppPaths::SetMode(AppPaths::Mode::Portable);
+        QVERIFY(AppPaths::DaemonSupported());  QVERIFY(!AppPaths::AutostartSupported());
+        AppPaths::SetMode(AppPaths::Mode::CliPaths);
+        QVERIFY(AppPaths::DaemonSupported());  QVERIFY(!AppPaths::AutostartSupported());
+        AppPaths::SetMode(AppPaths::Mode::InPackage);
+        QVERIFY(!AppPaths::DaemonSupported()); QVERIFY(!AppPaths::AutostartSupported());
+        AppPaths::SetMode(AppPaths::Mode::Normal);   // restore for other tests
+    }
+
+    // The XDG autostart entry writes + removes, and the launcher carries the quiet --tray flag.
+    void autostart_enable_disable_roundtrip()
+    {
+        QTemporaryDir cfgHome; QVERIFY(cfgHome.isValid());
+        qputenv("XDG_CONFIG_HOME", cfgHome.path().toUtf8());
+
+        QVERIFY(!AutoStart::IsEnabled());
+        QString err;
+        QVERIFY2(AutoStart::SetEnabled(true, &err), qPrintable(err));
+        QVERIFY(AutoStart::IsEnabled());
+
+        const QString path = cfgHome.path() + "/autostart/org.vidyagod.VidyaGod.desktop";
+        QVERIFY(QFile::exists(path));
+        QFile f(path); QVERIFY(f.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString body = f.readAll(); f.close();
+        QVERIFY(body.contains("[Desktop Entry]"));
+        QVERIFY(body.contains("Exec="));
+        QVERIFY(body.contains("--tray"));               // login start goes quiet to the tray
+
+        QVERIFY(AutoStart::SetEnabled(false, &err));
+        QVERIFY(!AutoStart::IsEnabled());
+        QVERIFY(!QFile::exists(path));
+
+        qunsetenv("XDG_CONFIG_HOME");
+    }
+
+    // The GeneralPage greys out "Launch at login" outside Normal mode (e.g. portable).
+    void general_page_disables_login_in_portable()
+    {
+        AppPaths::SetMode(AppPaths::Mode::Portable);
+        QTemporaryDir d; QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        GeneralPage page(m);
+
+        QCheckBox * loginCb = nullptr;
+        for (QCheckBox * cb : page.findChildren<QCheckBox *>())
+            if (cb->text().contains("Launch at login")) loginCb = cb;
+        QVERIFY(loginCb != nullptr);
+        QVERIFY(!loginCb->isEnabled());   // greyed out in portable mode
+        AppPaths::SetMode(AppPaths::Mode::Normal);
     }
 };
 

@@ -167,6 +167,9 @@ set(SHARED_SOURCES
     src/traycontroller.h
     src/traycontroller.cpp
 
+    src/autostart.h
+    src/autostart.cpp
+
     src/pathspage.h
     src/pathspage.cpp
 )

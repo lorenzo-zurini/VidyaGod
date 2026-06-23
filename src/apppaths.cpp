@@ -10,6 +10,11 @@ std::filesystem::path &RootRef()
     static std::filesystem::path Root;
     return Root;
 }
+AppPaths::Mode &ModeRef()
+{
+    static AppPaths::Mode M = AppPaths::Mode::Normal;
+    return M;
+}
 }
 
 namespace AppPaths
@@ -21,4 +26,9 @@ std::filesystem::path DataRoot()
     if (!RootRef().empty()) return RootRef();
     return std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod";
 }
+
+void SetMode(Mode M)  { ModeRef() = M; }
+Mode GetMode()        { return ModeRef(); }
+bool DaemonSupported()    { return ModeRef() != Mode::InPackage; }
+bool AutostartSupported() { return ModeRef() == Mode::Normal; }
 }

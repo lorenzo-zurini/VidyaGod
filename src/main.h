@@ -30,6 +30,7 @@ struct LaunchParameters
     std::filesystem::path CurrentPath = std::filesystem::current_path(); //Working directory at launch — used to auto-detect package dirs
     bool RunningHeadless = false;                                         //True when no GUI should be shown
     bool RunningInPackageDir = false;                                     //True when auto-detected as running inside a package directory
+    bool StartInTray = false;                                            //--tray: come up hidden in the system tray (used by the start-on-login autostart entry)
     bool HasHeadlessPackagePath = false;                                  //True when a package path has been resolved (CLI or auto-detect)
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
     std::string HeadlessGameID;                                           //Game to launch (empty = use default)

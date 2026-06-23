@@ -1,5 +1,6 @@
 #include "traycontroller.h"
 #include "appmodel.h"
+#include "apppaths.h"
 
 #include <QSystemTrayIcon>
 #include <QMenu>
@@ -11,6 +12,7 @@
 TrayController::TrayController(AppModel & model, QWidget * window, QObject * parent)
     : QObject(parent), Model(model)
 {
+    if (!AppPaths::DaemonSupported()) return;                // In-package mode: run + exit, never a resident daemon.
     if (!QSystemTrayIcon::isSystemTrayAvailable()) return;   // no tray → available() stays false, normal behavior
 
     Tray = new QSystemTrayIcon(QIcon(":/vidyagod.png"), this);

@@ -33,9 +33,9 @@ public:
     //drive it.
     static void RefreshPackage(const QString & PackagePath);
 
-    //Show the window, or come up hidden in the tray if Start-in-tray / the remembered last state says so. Called by
-    //main() instead of show(), so a tray start never flashes the window.
-    void startup();
+    //Show the window, or come up hidden in the tray if forceTray (--tray) / Start-in-tray / the remembered last
+    //state says so. Called by main() instead of show(), so a tray start never flashes the window.
+    void startup(bool forceTray = false);
 
 protected:
     void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit

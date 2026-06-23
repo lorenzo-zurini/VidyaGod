@@ -171,6 +171,12 @@ int main(int argc, char *argv[])
     //Publish the resolved root as the single source of truth for every VidyaGod-produced path (launch TEMP, the
     //LIBRARY default, …) so portable / --data-dir relocate the WHOLE footprint — not just the ipfs repo + lock.
     AppPaths::SetDataRoot(AppDataDir.absolutePath().toStdString());
+    //Record the run mode — it gates daemon/tray + start-on-login (see AppPaths::Mode). In-package wins (run + exit,
+    //no daemon); then explicit CLI paths; then portable; else normal.
+    AppPaths::SetMode(LaunchParameters.RunningInPackageDir ? AppPaths::Mode::InPackage
+                      : !LaunchParameters.DataDir.empty()  ? AppPaths::Mode::CliPaths
+                      : Portable                           ? AppPaths::Mode::Portable
+                                                           : AppPaths::Mode::Normal);
     LogOut("main.cpp", (Portable ? "Portable mode — data dir: " : "Data dir: ") + AppDataPath.toStdString());
 
     //Single-instance guard (GUI and headless alike): VidyaGod may only run once at a time. This both
@@ -432,7 +438,7 @@ int main(int argc, char *argv[])
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
     MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
-    MainWindow.startup();   // show(), or come up hidden in the tray if Start-in-tray / the remembered state says so
+    MainWindow.startup(LaunchParameters.StartInTray);   // show(), or come up hidden if --tray / Start-in-tray / remembered
     return Application.exec();
 }
 
@@ -634,6 +640,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.PrintPeerId      = true;
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
+        {
+            RuntimeParameters.StartInTray = true;
         }
         else if (arg == "--data-dir" && i + 1 < argc)
         {

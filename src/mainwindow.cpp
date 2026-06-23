@@ -197,9 +197,9 @@ void MainWindow::changeEvent(QEvent * e)
     QMainWindow::changeEvent(e);
 }
 
-void MainWindow::startup()
+void MainWindow::startup(bool forceTray)
 {
-    if (Tray && Tray->shouldStartHidden())
+    if (Tray && Tray->available() && (forceTray || Tray->shouldStartHidden()))
     {
         Tray->notifyHidden();   // make the tray icon's presence obvious on a hidden start
         return;                 // stay hidden; the tray icon is already shown by the TrayController

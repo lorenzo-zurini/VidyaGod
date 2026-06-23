@@ -22,6 +22,19 @@ void SetDataRoot(const std::string &Path);
 
 //The app data root. Falls back to ~/.VidyaGod if SetDataRoot was never called (headless tooling / safety net).
 std::filesystem::path DataRoot();
+
+// The four run modes that decide AppDataDir + which daemon/persistence features are allowed (see the four-run-modes
+// note). Set once in main() alongside the data root.
+//   Normal    — default ~/.VidyaGod, no special path args: daemon YES, start-on-login YES.
+//   Portable  — portable.txt / VidyaGod_data beside the app → app dir is the data dir: daemon YES, login NO.
+//   InPackage — run inside a package dir (PreLaunchWindow only): daemon NO, login NO (run the game + exit).
+//   CliPaths  — --data-dir / explicit CLI paths: daemon possible if it reaches the GUI, login NO.
+enum class Mode { Normal, Portable, InPackage, CliPaths };
+void SetMode(Mode M);
+Mode GetMode();
+
+bool DaemonSupported();      // tray / stay-resident — allowed unless In-package.
+bool AutostartSupported();   // start-on-login (XDG autostart) — allowed only in Normal mode.
 }
 
 #endif // APPPATHS_H
