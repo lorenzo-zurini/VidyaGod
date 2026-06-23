@@ -3,6 +3,7 @@
 #include "commonutils.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
+#include "prelaunchwindow.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "vgipfsapi.h"
@@ -118,17 +119,23 @@ int main(int argc, char *argv[])
     //Auto-detect package-directory mode: if no --package flag was passed, check whether
     //the current working directory itself is a package. This lets users simply cd into a
     //package and run the binary directly without any extra flags.
-    if (!LaunchParameters.HasHeadlessPackagePath)
+    if (!LaunchParameters.HasHeadlessPackagePath && LaunchParameters.DataDir.empty())
     {
-        //Detect ./METADATA/MANIFEST.json to detemine if running in packagedir.
-        //Start in GUI-less mode if so.
+        //If the working directory is itself a package bundle (has node files), run it self-contained: a single
+        //PreLaunchWindow (no library, no IPFS), with ALL paths inside the package dir — equivalent to
+        //  --data-dir DIR --package-dir DIR --runtime-dir DIR --userdata-dir DIR.
+        //It is a GUI dialog (not headless) — even one game has runner/variant/module configs to choose.
         LogOut("main.cpp", "Checking if running in a PACKAGEDIR.");
-        if(IsRunningInPackageDir(LaunchParameters.CurrentPath))
+        if (IsRunningInPackageDir(LaunchParameters.CurrentPath))
         {
+            const std::string Dir = LaunchParameters.CurrentPath.string();
             LaunchParameters.HasHeadlessPackagePath = true;
             LaunchParameters.RunningInPackageDir = true;
             LaunchParameters.HeadlessPackagePath = LaunchParameters.CurrentPath;
-            LaunchParameters.RunningHeadless = true;
+            LaunchParameters.DataDir             = Dir;   // AppDataPath = package dir
+            LaunchParameters.PackageDirOverride  = Dir;
+            LaunchParameters.RuntimeDirOverride  = Dir;
+            LaunchParameters.UserDataDirOverride = Dir;
         }
     }
 
@@ -435,6 +442,33 @@ int main(int argc, char *argv[])
 
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
+
+    //IN-PACKAGE MODE: the working dir is a self-contained package bundle → run JUST its PreLaunchWindow (no library
+    //tabs, no IPFS node). Scan the bundle for its launchable nodes and open the prelaunch dialog on the first
+    //presentable group. (Multi-game packages — a bundle with several groups — get a picker later; for now the first
+    //group, which covers the common single-game-with-configs case.) The dialog's NodeIndex is this local, kept alive
+    //by Application.exec().
+    if (LaunchParameters.RunningInPackageDir)
+    {
+        NodeIndex PkgIndex;
+        ManifestModel::ScanBundleNodes(LaunchParameters.HeadlessPackagePath.string(), PkgIndex);
+        auto Groups = PackageCatalog::PresentableGroups(PkgIndex);
+        if (Groups.empty())
+        {
+            QMessageBox::critical(nullptr, "VidyaGod",
+                "This folder has no launchable game in it (no presentable node group).");
+            return 1;
+        }
+        std::vector<std::string> GroupNodeIds;
+        for (const Node *N : Groups.front()) GroupNodeIds.push_back(N->NodeId);
+        if (Groups.size() > 1)
+            LogWarn("main.cpp", "Package has " + std::to_string(Groups.size())
+                    + " games; opening the first (multi-game picker is a future feature).");
+        PreLaunchWindow Dialog(&GlobalConfigJSON, &PkgIndex, GroupNodeIds);
+        Dialog.show();
+        return Application.exec();
+    }
+
     MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
     MainWindow.startup(LaunchParameters.StartInTray);   // show(), or come up hidden if --tray / Start-in-tray / remembered
     return Application.exec();
@@ -553,7 +587,7 @@ bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
 {
     if (FSOps::CheckPackageValid(new QDir(CurrentPath))) //Convert FSOPS to stdlib! Remove unnecessary heap variable!
     {
-        LogOut("main.cpp", "Running in PACKAGEDIR, running headless.");
+        LogOut("main.cpp", "Running in PACKAGEDIR — opening its launcher (self-contained, no library/IPFS).");
         return true;
     }
     else
