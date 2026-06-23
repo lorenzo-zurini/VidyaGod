@@ -473,7 +473,16 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         if (CP.UnifiedRuntime)
             for (const std::string &Id : RunnerBuildIds) { const Node *N = Idx.Find(Id); if (N) AddComponent(N); }
     }
-    else LogErr("InitializeFromNode", "No runner found for platform '" + CP.Platform + "'.");
+    else
+    {
+        //No runner node serves this launchable's platform on this machine — the container cannot be built (there is
+        //no runnerless launch path in the node engine; even native games resolve through native-passthrough). Abort
+        //here rather than proceeding to build a runtime around an empty executable (which would "succeed" with an
+        //empty command and report a misleading clean exit).
+        LogErr("InitializeFromNode", "No runner found for platform '" + CP.Platform
+               + "' — cannot launch '" + LaunchId + "'. Install a compatible runner.");
+        return false;
+    }
 
     //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.
     std::vector<std::string> Missing;

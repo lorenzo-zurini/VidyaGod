@@ -78,7 +78,8 @@ private slots:
         ContainerParams cp("/tmp/vg_bundle");
         cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
         json pool = json::object();
-        LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+        // No runner serves win32 → resolution FAILS (must not "succeed" into an empty-runner launch).
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
         QVERIFY(cp.RunnerID.empty());
     }
 

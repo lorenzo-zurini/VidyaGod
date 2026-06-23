@@ -388,7 +388,12 @@ int main(int argc, char *argv[])
             LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());
             return 0;
         }
-        NewContainerWrapper.BuildContainerRuntime();
+        //Bail if the runtime couldn't be built (no compatible runner, unmountable/compressed layers, missing
+        //dependencies, …). Without this the engine would proceed to Execute() an empty/garbage command and report
+        //a misleading clean exit (code 0) for a launch that never actually ran.
+        if (!NewContainerWrapper.BuildContainerRuntime())
+        { LogErr("main.cpp", "Failed to build the container runtime for '" + LaunchParameters.LaunchNodeId
+                 + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup(); return 1; }
         NewContainerWrapper.Execute();
         if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
