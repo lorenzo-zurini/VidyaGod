@@ -47,6 +47,9 @@ set(PROJECT_SOURCES
     src/nodegraphview.h
     src/nodegraphview.cpp
 
+    src/nodeeditor.h
+    src/nodeeditor.cpp
+
     src/validationpanel.h
     src/validationpanel.cpp
 

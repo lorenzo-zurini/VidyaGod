@@ -49,6 +49,9 @@ public:
     //Replace one node's whole JSON (preserving its __FILE__ tag), persist, and request a structural rebuild. Used
     //by the raw-JSON tab's Save Node.
     void replaceNodeJson(int nodeIndex, nlohmann::ordered_json node);
+    //Ask the views to rebuild (emit documentReloaded) — used by a widget after a structural edit it made directly
+    //on doc() (node move/remove, layer add/remove, role change, …).
+    void requestReload() { emit documentReloaded(); }
 
     // ── Validation (ManifestModel::ValidateNodeGraph over this bundle + catalog) ──
     void Revalidate();

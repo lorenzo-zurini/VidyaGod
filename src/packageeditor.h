@@ -78,57 +78,23 @@ signals:
     //can reload and re-render. Carries the bundle directory path.
     void packageSaved(const QString &PackagePath);
 
-private slots:
-    void JSONQLineEditChanged();   // per-node field edit (sender's JSONPath property → working doc)
-    // LAYERS sub-editor add-actions (append a TYPE-tagged layer to the owning node's LAYERS array).
-    void AddVFSDirLayer();
-    void AddVFSZipLayer();
-    void AddVFSFileLayer();
-    void AddRegEdit();
-    void AddDllOverride();
-    void AddFileEdit();
-    void AddCustomVar();
-    void AddPersistDir();
-    void AddPersistFile();
-    void AddRegPersist();
-    void AddRegKeyPersist();
-
 private:
+    //Rebuilds the tab strip: tab 0 = JsonRawEditor, tabs 1.. = one NodeEditor per node. Called on documentReloaded.
     bool BuildUI();
-
-    //Appends a layer object to the LAYERS of the node owning `Sender` (the Add… button/menu), then persists +
-    //rebuilds. Shared body of the AddRegEdit/AddDllOverride/AddFileEdit/... slots.
-    void AppendLayer(QObject * Sender, const nlohmann::ordered_json & Layer);
-    //Brings the selected source file/dir into the bundle dir for a VFS layer: asks Copy or Move, aborts on a
-    //name collision. Returns the in-bundle basename to store as the layer PATH, or "" if cancelled/failed.
-    QString ImportLayerFile(const QString & Selected, bool IsDir);
-
-    //The NODE_ID of the node-tab that owns `Sender`, or "" (walks up the JSONPath property like AppendLayer).
-    std::string NodeIdOfSender(QObject * Sender) const;
-
-    //META cover drop ------------------------------------------------------------------------------
-    bool eventFilter(QObject *obj, QEvent *event) override;
-    void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int NodeIndexInArray);
-
-    //(Node I/O, validation, catalog/exec-index queries, and the authoring runs moved to PackageEditorModel.)
+    //Selects the tab editing the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
+    void SelectNodeTab(const std::string & NodeId);
 
     //Saved UI state — restored after BuildUI() to keep the user on the same tab.
     int SavedMainTab = 1;
 
-    QDir * PackageDir = nullptr;   // non-owning alias of Model->packageDir()
+    QDir *          PackageDir = nullptr;              // non-owning alias of Model->packageDir()
+    NodeGraphView * GraphView = nullptr;               // clickable DAG sidebar (left of the tabs)
+    QTabWidget *    PackageEditorTabWidget = nullptr;
 
-    //Selects the tab editing the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
-    void SelectNodeTab(const std::string & NodeId);
-
-    NodeGraphView * GraphView = nullptr;   // clickable DAG sidebar (left of the tabs)
-    QTabWidget * PackageEditorTabWidget = nullptr;
-
-    //The state/signal hub (owns the working document, node I/O, validation, authoring). The members below are
-    //non-owning aliases into it, kept so the existing BuildUI machinery reads them unchanged.
-    PackageEditorModel * Model = nullptr;
-    //Working document: { "NODES": [ <node>, ... ] } — alias of Model->doc().
+    //The state/signal hub: owns the working document, node I/O, validation, authoring. PackageEditor is the thin
+    //composition root over it; MANIFESTJSON is a non-owning alias of Model->doc() for the BuildUI tab loop.
+    PackageEditorModel *     Model = nullptr;
     nlohmann::ordered_json * MANIFESTJSON = nullptr;
-    QNetworkAccessManager * NetMgr = nullptr;
 };
 
 #endif // PACKAGEEDITOR_H
