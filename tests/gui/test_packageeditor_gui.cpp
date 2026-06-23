@@ -10,6 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "packageeditor.h"
 #include "packageeditormodel.h"
 #include "nodesections.h"
 #include "jsonoperations.h"
@@ -121,6 +122,35 @@ private slots:
 
         QCOMPARE(model.doc()["NODES"][0].value("NODE_ID", std::string()), std::string("renamed"));
         QCOMPARE(reloadSpy.count(), 1);
+    }
+
+    // Regression: renaming a NODE_ID with Enter (field still focused) triggers a tab rebuild that deleteLater()s the
+    // page holding that focused field. On destruction the field fired editingFinished → a slot on the half-destroyed
+    // section → Qt abort. BuildUI now blocks the old subtree's signals first. This must complete without crashing.
+    void rename_node_id_via_enter_does_not_crash_on_rebuild()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        WriteNode(dir.path(), "game");
+        const json cfg = MinimalConfig();
+
+        PackageEditor editor(&cfg, nullptr, dir.path());
+        editor.resize(900, 600);
+        editor.show();
+        QApplication::processEvents();
+
+        QLineEdit * idField = nullptr;
+        for (QLineEdit * le : editor.findChildren<QLineEdit *>())
+            if (le->property("JSONPath").toString() == "/NODES/0/NODE_ID") { idField = le; break; }
+        QVERIFY2(idField, "expected a /NODES/0/NODE_ID field in the open editor");
+
+        idField->setFocus();
+        idField->setText("renamed_via_enter");
+        QTest::keyClick(idField, Qt::Key_Return);   // → onFieldEdited + requestReload → BuildUI → deleteLater(old page)
+        QApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);  // run the deleteLater that would crash
+        QApplication::processEvents();
+
+        // Reaching here without aborting is the assertion; confirm the rename took (file re-filed).
+        QVERIFY(QFile::exists(dir.path() + "/renamed_via_enter.json"));
     }
 
     // The Layers section renders per-TYPE sub-editors for the node's existing layers.

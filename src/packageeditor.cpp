@@ -170,8 +170,16 @@ bool PackageEditor::BuildUI()
     // Free the old tab widgets. QTabWidget::clear() detaches but does NOT delete the pages, so without this they'd
     // leak (and stale JsonRawEditors would keep reacting to the model). deleteLater (not delete) because a child
     // NodeEditor's own button lambda may have triggered this rebuild — it must outlive the current call.
+    // Block the whole subtree's signals first: a focused QLineEdit fires editingFinished while losing focus during
+    // ~QWidget, which would invoke onFieldEdited on the half-destroyed section (Qt assert/abort). Common trigger:
+    // renaming a NODE_ID and pressing Enter, then the rebuild deletes the still-focused field.
     for (int i = PackageEditorTabWidget->count() - 1; i >= 0; --i)
-        PackageEditorTabWidget->widget(i)->deleteLater();
+    {
+        QWidget * Page = PackageEditorTabWidget->widget(i);
+        Page->blockSignals(true);
+        for (QObject * Child : Page->findChildren<QObject *>()) Child->blockSignals(true);
+        Page->deleteLater();
+    }
     PackageEditorTabWidget->clear();
 
     // ---- JSON tab: raw edit of one node file at a time (its own widget; self-refreshes via the model) ----

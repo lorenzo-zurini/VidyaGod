@@ -230,3 +230,13 @@ target_compile_options(vg_gui_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_W
 set_target_properties(vg_gui_tests PROPERTIES BUILD_RPATH "$ORIGIN")
 add_test(NAME vg_gui_tests COMMAND vg_gui_tests)
 set_tests_properties(vg_gui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
+add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)
+target_link_libraries(vg_screenshots PRIVATE
+    vidyagod_objs
+    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
+target_include_directories(vg_screenshots PRIVATE src)
+target_compile_options(vg_screenshots PRIVATE ${VG_WARNINGS})
+set_target_properties(vg_screenshots PROPERTIES BUILD_RPATH "$ORIGIN")
