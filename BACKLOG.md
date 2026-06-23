@@ -13,8 +13,9 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
   (documentReloaded / validationChanged / savedToDisk). Config taken by `const` throughout (ContainerWrapper ctor's
   GlobalConfigJSON param now `const&`). Phases: 1 model hub · 2 graph/validation/json widgets · 3 NodeEditor
   (per-node tab) · 4 shell slimming + include cleanup.
-- **Optional further polish**: `NodeEditor` (979 LOC) still builds its sections inline (Identity/Selection/Parents/
-  Platform/Exec/Meta/Layers) — could split into per-section widget classes later.
+- `NodeEditor` further decomposed: each section is now its own class — `NodeSection` base + `NodeIdentitySection`/
+  `NodeSelectionSection`/`NodeParentsSection`/`NodePlatformSection`/`NodeExecSection`/`NodeMetaSection`/
+  `NodeLayersSection` (nodesection.{h,cpp} + nodesections.{h,cpp}); NodeEditor is a 218-LOC toolbar+composer.
 - **UNVERIFIED**: open the editor on hardware (TESTPLAN I40/I41) — edit fields across sections, add/remove/move
   nodes, add each LAYER type, drop a cover, run authoring (Run EXE / Execute / Analyze), Publish; confirm
   packageSaved propagates. Same deferred-to-hardware bucket as the rest of this session's work.
