@@ -75,8 +75,18 @@ private:
     void RebuildCover();
     // Scale CoverPixmap to fit CoverLabel's current size (aspect-preserving) — called from RebuildCover + resizeEvent.
     void UpdateCoverScaled();
-    // Rebuilds the runner dropdown for the current variant (runner candidate nodes).
-    void RebuildRunnerCombo();
+    // Resolves the DEFAULT runner daisy-chain for the current variant (shortest route to this machine, terminated by
+    // the native runner) into CurrentChain, then renders the per-step combos. Called on variant change / construction.
+    void RebuildRunnerChain();
+    // (Re)builds the per-step combo stack from CurrentChain: one row per link ("<input platform> →" + a combo of the
+    // runners that can consume it), plus the target-platform hint. Also gates the Launch button on chain validity.
+    void RenderChainCombos();
+    // A chain step's combo changed: adopt the choice, BFS-re-resolve the tail from its HOST, re-render + refresh vars.
+    void onChainStepChanged(int Step);
+    // The input platform feeding chain step i (i==0 → the content's platform; else the previous link's HOST).
+    std::string ChainStepInput(int Step) const;
+    // True if a chosen runner id is a native terminal (HOST==GUEST==machine, or the synthesized passthrough sentinel).
+    bool ChainIdIsTerminal(const std::string& Id) const;
     // Rebuilds the CustomVar picker section from the current variant's enabled node closure.
     void RebuildCustomVarPickers();
     // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
@@ -99,7 +109,12 @@ private:
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
     QPixmap       CoverPixmap;                  // full-res cover; scaled to fit CoverLabel on resize
-    QComboBox*    RunnerCombo       = nullptr;
+    // Runner daisy-chain UI: a stack of per-step combos (innermost→outermost) + a target-platform hint.
+    QWidget*      ChainContainer    = nullptr;  // holds the per-step rows
+    QVBoxLayout*  ChainLayout       = nullptr;
+    QLabel*       ChainHint         = nullptr;  // "→ linux64" validity hint under the chain
+    std::vector<QComboBox*>  ChainCombos;       // one per chain step (rebuilt each render)
+    std::vector<std::string> CurrentChain;      // the chosen chain (innermost→outermost runner node ids)
     QComboBox*    VariantCombo      = nullptr;
     QWidget*      VariantLabel      = nullptr; // the "Variant:" form label — hidden when only one variant
     QProgressBar* ProgressBar       = nullptr;

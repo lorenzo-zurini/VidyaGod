@@ -219,31 +219,110 @@ bool ContainerWrapper::BuildVirtualFilesystem()
 //does not exist in the mounted runtime.
 bool ContainerWrapper::Execute(std::string OverrideExe)
 {
-    //Substitute variables in the runner executable path — manifest runners reference
-    //%ProgramPath% to point to a bundled binary mounted into RUNTIME via a VFS layer.
+    const bool Override = !OverrideExe.empty();
+    auto Subst = [&](std::string S){ VarSubst::StringVariableSubstitution(S, ContainerParams.GetVariablesMap()); return S; };
+
+    //----- CROSS-NAMESPACE NESTING: when an inner runner runs inside the boundary's guest fs (e.g. a win32 emulator
+    //under proton), redirect the boundary's content target at the inner runners' guest command. ComposeGuestTarget
+    //returns {CrossNamespace:false} for every classic chain, so this whole block is a no-op there. The inner runners'
+    //own args (the ROM, etc.) are appended after the boundary's ARGS. Not applied under an OverrideExe (tooling). -----
+    std::vector<std::string> CrossTrailingArgs;
+    if (!Override)
+    {
+        LaunchResolver::GuestTarget GT = LaunchResolver::ComposeGuestTarget(ContainerParams);
+        if (GT.CrossNamespace)
+        {
+            //Point the boundary's %ContentPath%/%Content% at the inner runner's guest exe (its ARGS template composes
+            //the guest path from these), and carry the inner args to append after the boundary's ARGS.
+            ContainerParams.ExePathRelative = std::filesystem::path(GT.ContentRel);
+            ContainerParams.ExePathComplete = ContainerParams.ProgramPath / GT.ContentRel;
+            CrossTrailingArgs = GT.TrailingArgs;
+            LogOut("ContainerWrapper::Execute", "Cross-namespace target: " + GT.ContentRel
+                   + " (+" + std::to_string(CrossTrailingArgs.size()) + " inner arg(s))");
+        }
+    }
+
+    //----- BASE command: the BOUNDARY runner runs the content (runner daisy-chaining) -----
+    //The legacy single-runner fields are the boundary runner's view (the link that owns the FUSE mount / prefix —
+    //proton for a win32 game, or the native terminal for native content). An EMPTY RunnerExecutable = native
+    //passthrough: run the content's own executable (%Content%) directly. Otherwise the runner's EXECUTABLE + ARGS ARE
+    //the command (author composes the guest path into ARGS, e.g. proton's ["waitforexitandrun","C:\\%PackageUID%\\..."]).
     VarSubst::StringVariableSubstitution(ContainerParams.RunnerExecutable, ContainerParams.GetVariablesMap());
-    LogOut("ContainerWrapper::Execute", "Runner: " + ContainerParams.RunnerExecutable);
+    const bool NativeBoundary = ContainerParams.RunnerExecutable.empty();
+    std::string Program;
+    QStringList Arguments;
+    if (NativeBoundary)
+    {
+        //Native passthrough boundary: exec the content directly (or the OverrideExe for tooling).
+        Program = Override ? OverrideExe : ContainerParams.ExePathComplete.string();
+        if (!Override) for (const std::string &A : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
+    }
+    else
+    {
+        Program = ContainerParams.RunnerExecutable;
+        //For an OverrideExe (tooling/install), drop the content-bearing ARGS and append the override after the verb.
+        for (const std::string &Raw : ContainerParams.RunnerArgs)
+        {
+            if (Override && ArgReferencesContent(Raw)) continue;
+            Arguments.append(QString::fromStdString(Subst(Raw)));
+        }
+        //Cross-namespace: after the boundary's ARGS (which now reference the inner runner's guest exe via the
+        //redirected %ContentPath%), append the inner runners' own guest args (e.g. the ROM path).
+        for (const std::string &A : CrossTrailingArgs) Arguments.append(QString::fromStdString(A));
+        if (Override) Arguments.append(QString::fromStdString(OverrideExe));
+        else for (const std::string &A : ContainerParams.ExeArgs) Arguments.append(QString::fromStdString(A));
+    }
+
+    //----- NESTING: wrap the base command with each OUTER same-namespace link (native wrappers + the native terminal) -----
+    //chain = innermost(content)→outermost(machine). The boundary is the last cross-namespace link (or the first link for
+    //a native chain); links AFTER it run IN THE HOST NAMESPACE and simply wrap the inner argv (`wrapper <args> <innercmd>`).
+    //An empty-EXECUTABLE link is a passthrough terminal (forwards unchanged). Cross-namespace nesting (an inner emulator
+    //inside this runner's guest fs) is Phase C — skipped here with a warning. Wrappers are not applied under OverrideExe.
+    int BoundaryIdx = 0;
+    for (int i = 0; i < (int)ContainerParams.RunnerChain.size(); ++i)
+        if (!ContainerParams.RunnerChain[i].NativeNamespace()) BoundaryIdx = i;
+    std::vector<const RunnerLink*> OuterWrappers;
+    if (!Override)
+        for (int i = BoundaryIdx + 1; i < (int)ContainerParams.RunnerChain.size(); ++i)
+        {
+            const RunnerLink &L = ContainerParams.RunnerChain[i];
+            if (!L.NativeNamespace())
+            { LogWarn("ContainerWrapper::Execute", "Cross-namespace wrapper '" + L.NodeId + "' not yet supported (Phase C) — skipped."); continue; }
+            //A native terminal whose EXECUTABLE is empty or runs %Content% is a passthrough — as an OUTER wrapper it
+            //forwards the inner argv unchanged (the inner command IS its content). Only a real wrapper TOOL (e.g.
+            //gamescope/mangohud, EXECUTABLE=a program) actually wraps. This keeps the appended native terminal a no-op
+            //for the common [proton, native] chain (byte-identical to a direct proton launch).
+            if (L.Executable.empty() || ArgReferencesContent(L.Executable)) continue;
+            QStringList Wrapped;
+            for (const std::string &Raw : L.Args) Wrapped.append(QString::fromStdString(Subst(Raw)));
+            Wrapped.append(QString::fromStdString(Program));                     // inner program ...
+            Wrapped.append(Arguments);                                          // ... then its args
+            Program   = Subst(L.Executable);
+            Arguments = Wrapped;
+            OuterWrappers.push_back(&L);
+            LogOut("ContainerWrapper::Execute", "Chain wrap: " + L.NodeId + " (" + Program + ")");
+        }
+
+    LogOut("ContainerWrapper::Execute", "Command: " + Program);
     if (!OverrideExe.empty()) LogOut("ContainerWrapper::Execute", "OverrideExe: " + OverrideExe);
     LogOut("ContainerWrapper::Execute", "WorkDirPath: " + ContainerParams.WorkDirPathComplete.string());
 
+    //----- ENV: one process tree, so every link's ENV/REMOVE_ENV applies. Boundary (legacy fields) first, then the
+    //outer same-namespace wrappers — boundary (innermost, content-proximate) WINS on key conflicts. -----
     QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
-
-    // Apply runner-level env removes first so they can't be re-added by the ENV block below.
     for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
-    {
         RunProcessEnvironment.remove(QString::fromStdString(Key));
-    }
-
-    // Apply runner ENV with template substitution — expands %VARIABLE% tokens in values.
     for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
+        RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
+    for (const RunnerLink *L : OuterWrappers)
     {
-        std::string ExpandedValue = Value.get<std::string>();
-        VarSubst::StringVariableSubstitution(ExpandedValue, ContainerParams.GetVariablesMap());
-        RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(ExpandedValue));
+        for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));
+        for (auto &[Key, Value] : L->Env.items())
+            if (!RunProcessEnvironment.contains(QString::fromStdString(Key)))    // innermost/boundary wins
+                RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
     }
 
     // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix.
-    //Joins all DLL override strings; umu-run/Wine interprets the combined value.
     if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
     {
         RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
@@ -259,29 +338,8 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     }
 
     QProcess RunProcess;
-    RunProcess.setProgram(QString::fromStdString(ContainerParams.RunnerExecutable));
+    RunProcess.setProgram(QString::fromStdString(Program));
     RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
-
-    //The runner's ARGS ARE the command line (template-expanded), with the launch target already composed in
-    //by the author (e.g. proton's ["waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"]; snes9x's
-    //["-fullscreen", "%Content%"]; gemrb's ["-f"]). Then the game variant's own EXEARGS.
-    //For an OverrideExe (tooling/install), the content-bearing ARGS are dropped and the override is appended
-    //after the launcher verb, so e.g. proton runs [waitforexitandrun, <override>] instead of the game.
-    const bool Override = !OverrideExe.empty();
-    QStringList Arguments;
-    for (const std::string &Raw : ContainerParams.RunnerArgs)
-    {
-        if (Override && ArgReferencesContent(Raw)) continue;
-        std::string Arg = Raw;
-        VarSubst::StringVariableSubstitution(Arg, ContainerParams.GetVariablesMap());
-        Arguments.append(QString::fromStdString(Arg));
-    }
-    if (Override)
-        Arguments.append(QString::fromStdString(OverrideExe));
-    else
-        //Game variant's own EXEARGS (e.g. -c config.cfg). Skipped under OverrideExe (tooling).
-        for (std::string Arg : ContainerParams.ExeArgs)
-            Arguments.append(QString::fromStdString(Arg));
     RunProcess.setArguments(Arguments);
     RunProcess.setProcessEnvironment(RunProcessEnvironment);
     //Stream the runner's output (and its grandchildren — proton's python wrapper, wine, the game) straight to our

@@ -79,6 +79,15 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
     J["Platform"]          = CP.Platform;
     J["Recipe"]            = CP.Recipe;
     J["RunnerName"]        = CP.RunnerName;
+    //Runner daisy-chain (innermost→outermost): each link's node id, host, and exec — the shortest route resolved to
+    //run this content on the machine, always ending in the native terminal.
+    {
+        nlohmann::ordered_json Chain = nlohmann::ordered_json::array();
+        for (const RunnerLink &L : CP.RunnerChain)
+            Chain.push_back({{"NodeId", L.NodeId}, {"Host", L.HostPlatform}, {"Guests", L.GuestPlatform},
+                             {"Executable", L.Executable}, {"Native", L.NativeNamespace()}});
+        J["RunnerChain"] = Chain;
+    }
     J["RunnerExecutable"]  = CP.RunnerExecutable;
     J["RunnerArgs"]        = CP.RunnerArgs;
     J["RunnerEnv"]         = CP.RunnerEnv;
@@ -390,6 +399,9 @@ int main(int argc, char *argv[])
         NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
         NewContainerParams.VariantID         = "default";
         NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
+        //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).
+        if (!LaunchParameters.RunnerChain.empty())   NewContainerParams.RunnerChainIds = LaunchParameters.RunnerChain;
+        else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
         { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return 1; }
@@ -751,7 +763,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         }
         else if (arg == "--runner" && i + 1 < argc)
         {
-            RuntimeParameters.RunnerID = argv[++i];
+            //Repeatable: each --runner appends one link to the daisy-chain (innermost→outermost). The first one also
+            //sets RunnerID for back-compat (single-runner pin).
+            std::string R = argv[++i];
+            if (RuntimeParameters.RunnerID.empty()) RuntimeParameters.RunnerID = R;
+            RuntimeParameters.RunnerChain.push_back(std::move(R));
         }
     }
     return RuntimeParameters;

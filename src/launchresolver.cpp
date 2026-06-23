@@ -10,7 +10,10 @@
 #include <QScreen>
 #include <QThread>
 
+#include <algorithm>
 #include <filesystem>
+#include <map>
+#include <queue>
 #include <random>
 #include <set>
 #include <sstream>
@@ -414,6 +417,288 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     return Best;
 }
 
+//=====================================================================================================================
+//                                          RUNNER DAISY-CHAINING
+//=====================================================================================================================
+//A runner is a directed edge GUEST→HOST in the platform graph. To run content whose platform has no direct-to-machine
+//runner (e.g. a SNES ROM whose only emulator, snes9x, is a win32 program), VidyaGod constructs the SHORTEST chain of
+//runners from the content's platform to the machine's platform, then ALWAYS appends a native terminal (HOST==GUEST==
+//machine) it execve's directly — the uniform wrap point ("the basic linux runner is the final link"). The chain nests
+//innermost→outermost: chain[0] runs the content, chain[i+1] runs chain[i]'s command, the terminal runs everything.
+namespace {
+
+//Strict-better ordering for the BFS default pick: RECOMMENDED > package-local (runner shipped in the launch's own
+//bundle) > lowest node-id. Runners are pre-sorted better-first so the first edge that discovers a platform is best.
+bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
+{
+    if (A->Recommended != B->Recommended) return A->Recommended;
+    const bool LA = !Launch.BundleDir.empty() && A->BundleDir == Launch.BundleDir;
+    const bool LB = !Launch.BundleDir.empty() && B->BundleDir == Launch.BundleDir;
+    if (LA != LB) return LA;
+    return A->NodeId < B->NodeId;
+}
+
+bool RunnerServes(const Node *R, const std::string &Platform)
+{ for (const auto &G : R->GuestPlatform) if (G == Platform) return true; return false; }
+
+//BFS shortest path of bridging runners carrying Start → Goal over the (pre-sorted better-first) runner edges. Empty
+//bridge when Start==Goal (native content). Returns false when Goal is unreachable.
+bool FindBridge(const std::string &Start, const std::string &Goal, const std::vector<const Node *> &Runners,
+                std::vector<std::string> &OutBridge)
+{
+    OutBridge.clear();
+    if (Start == Goal) return true;                                              // native content: terminal runs it directly
+    std::map<std::string, std::pair<std::string, std::string>> Prev;             // platform -> {viaRunnerId, prevPlatform}
+    std::set<std::string> Visited{Start};
+    std::queue<std::string> Q; Q.push(Start);
+    bool Found = false;
+    while (!Q.empty() && !Found)
+    {
+        const std::string Cur = Q.front(); Q.pop();
+        for (const Node *R : Runners)                                            // better-first → first discovery wins
+        {
+            if (!RunnerServes(R, Cur)) continue;
+            const std::string &Next = R->HostPlatform;
+            if (Visited.count(Next)) continue;
+            Visited.insert(Next);
+            Prev[Next] = {R->NodeId, Cur};
+            if (Next == Goal) { Found = true; break; }
+            Q.push(Next);
+        }
+    }
+    if (!Found) return false;
+    std::vector<std::string> Rev;
+    for (std::string P = Goal; P != Start; )
+    {
+        auto It = Prev.find(P);
+        if (It == Prev.end()) return false;
+        Rev.push_back(It->second.first);
+        P = It->second.second;
+    }
+    std::reverse(Rev.begin(), Rev.end());
+    OutBridge = Rev;
+    return true;
+}
+
+//The best authored native terminal (HOST==GUEST==machine) among the pre-sorted runners, or nullptr (→ synthesize).
+const Node *PickNativeTerminal(const std::vector<const Node *> &Runners, const std::string &Machine)
+{
+    for (const Node *R : Runners)
+        if (R->HostPlatform == Machine && RunnerServes(R, Machine)) return R;
+    return nullptr;
+}
+
+//Build a resolved RunnerLink for a runner node id (synthesizing a passthrough terminal for kNativeTerminalId or a
+//missing node). Build layers = the runner's content closure (PARENTS) minus the runner, in load order, absolutized.
+RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map<std::string, bool> &Toggles)
+{
+    RunnerLink L;
+    const std::string Machine = MachinePlatform();
+    if (Id == LaunchResolver::kNativeTerminalId)                                 // synthesized passthrough terminal
+    { L.NodeId = Id; L.Name = "native"; L.HostPlatform = Machine; L.GuestPlatform = {Machine}; return L; }
+    const Node *R = Idx.Find(Id);
+    if (!R) { L.NodeId = Id; L.Name = Id; L.HostPlatform = Machine; L.GuestPlatform = {Machine}; return L; }
+
+    const nlohmann::ordered_json E = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
+    L.NodeId = R->NodeId; L.Name = R->NodeId; L.PackagePath = R->BundleDir;
+    L.Executable = E.value("EXECUTABLE", std::string());
+    if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
+    if (E.contains("ENV") && E["ENV"].is_object())              L.Env = E["ENV"];
+    if (E.contains("REMOVE_ENV") && E["REMOVE_ENV"].is_array()) for (const auto &X : E["REMOVE_ENV"]) L.RemoveEnv.push_back(std::string(X));
+    L.ContentRoot      = E.value("CONTENT_ROOT", std::string());
+    L.PrefixGenerate   = E.value("PREFIX_GENERATE", false);
+    L.UnifiedRuntime   = E.value("UNIFIED_RUNTIME", false);
+    L.GuestPathTemplate= E.value("GUEST_PATH", std::string());
+    L.HostPlatform     = R->HostPlatform;
+    L.GuestPlatform    = R->GuestPlatform;
+    for (const std::string &Cid : ManifestModel::ResolveNodeOrder(Idx, R->NodeId, Toggles))
+    {
+        if (Cid == R->NodeId) continue;
+        const Node *N = Idx.Find(Cid);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (nlohmann::ordered_json Lay : N->Layers)
+        {
+            if (!IsVfsLayer(LayerType(Lay))) continue;
+            if (Lay.contains("PATH") && Lay["PATH"].is_string())
+            { std::filesystem::path P = std::string(Lay["PATH"]); if (!P.is_absolute()) Lay["PATH"] = (N->BundleDir / P).string(); }
+            if (Lay.contains("SOURCE") && Lay["SOURCE"].is_object() && Lay["SOURCE"].contains("PATH") && Lay["SOURCE"]["PATH"].is_string())
+            { std::filesystem::path P = std::string(Lay["SOURCE"]["PATH"]); if (!P.is_absolute()) Lay["SOURCE"]["PATH"] = (N->BundleDir / P).string(); }
+            L.Layers.push_back(std::move(Lay));
+        }
+    }
+    L.ShipsBuild = !L.Layers.empty();
+    return L;
+}
+
+} // namespace
+
+std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, const Node &Launch,
+                                                         const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    const std::string Machine = MachinePlatform();
+
+    //Available runners, sorted better-first (RECOMMENDED > package-local > node-id) for deterministic BFS.
+    std::vector<const Node *> Runners;
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.IsRunner() && RunnerWrapper::ExecutableAvailable(N.Exec)) Runners.push_back(&N);
+    std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
+
+    //1. Honor a pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) when it forms a valid path to
+    //   the machine. Append a terminal if the pin didn't include one.
+    std::vector<std::string> Pinned = CP.RunnerChainIds;
+    if (Pinned.empty())
+    {
+        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID);
+        if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
+            for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
+    }
+    if (!Pinned.empty())
+    {
+        std::string Cur = Launch.HostPlatform;
+        bool Ok = true;
+        for (const std::string &Id : Pinned)
+        {
+            if (Id == kNativeTerminalId) { Ok = (Cur == Machine); break; }       // synthetic terminal valid only at machine
+            const Node *R = Idx.Find(Id);
+            if (!R || !R->IsRunner() || !RunnerWrapper::ExecutableAvailable(R->Exec) || !RunnerServes(R, Cur)) { Ok = false; break; }
+            Cur = R->HostPlatform;
+        }
+        if (Ok && Cur == Machine)
+        {
+            //Ensure the last link is a native terminal (HOST==GUEST==machine); append one if not.
+            const std::string &Last = Pinned.back();
+            const Node *LastR = (Last == kNativeTerminalId) ? nullptr : Idx.Find(Last);
+            const bool LastIsTerminal = (Last == kNativeTerminalId) ||
+                (LastR && LastR->HostPlatform == Machine && RunnerServes(LastR, Machine));
+            if (!LastIsTerminal)
+            { const Node *T = PickNativeTerminal(Runners, Machine); Pinned.push_back(T ? T->NodeId : std::string(kNativeTerminalId)); }
+            return Pinned;
+        }
+    }
+
+    //2. BFS default: bridge content-platform → machine, then append the native terminal.
+    std::vector<std::string> Bridge;
+    if (!FindBridge(Launch.HostPlatform, Machine, Runners, Bridge)) return {};   // unreachable on this machine
+    const Node *Term = PickNativeTerminal(Runners, Machine);
+    Bridge.push_back(Term ? Term->NodeId : std::string(kNativeTerminalId));
+    return Bridge;
+}
+
+std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, const std::string &FromPlatform,
+                                                          const Node &Launch, const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    (void)GlobalConfigJSON;
+    const std::string Machine = MachinePlatform();
+    std::vector<const Node *> Runners;
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.IsRunner() && RunnerWrapper::ExecutableAvailable(N.Exec)) Runners.push_back(&N);
+    std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
+
+    std::vector<std::string> Bridge;
+    if (!FindBridge(FromPlatform, Machine, Runners, Bridge)) return {};          // FromPlatform can't reach the machine
+    const Node *Term = PickNativeTerminal(Runners, Machine);
+    Bridge.push_back(Term ? Term->NodeId : std::string(kNativeTerminalId));
+    return Bridge;
+}
+
+std::vector<RunnerLink> LaunchResolver::ResolveRunnerChain(const NodeIndex &Idx, const Node &Launch,
+                                                           const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<RunnerLink> Out;
+    for (const std::string &Id : ResolveChainIds(Idx, Launch, CP, GlobalConfigJSON))
+        Out.push_back(BuildLink(Idx, Id, CP.ModuleStates));
+    return Out;
+}
+
+//===================================================================================================================
+//                                         CROSS-NAMESPACE NESTING
+//===================================================================================================================
+
+int LaunchResolver::BoundaryLinkIndex(const struct ContainerParams &CP)
+{
+    int B = 0;
+    for (int i = 0; i < (int)CP.RunnerChain.size(); ++i) if (!CP.RunnerChain[i].NativeNamespace()) B = i;
+    return B;
+}
+
+bool LaunchResolver::ChainHasInnerLinks(const struct ContainerParams &CP)
+{
+    return BoundaryLinkIndex(CP) > 0;
+}
+
+std::string LaunchResolver::GuestPath(const std::string &Template, const std::string &Rel, struct ContainerParams &CP)
+{
+    if (Template.empty()) return Rel;                                            // identity (native namespace)
+    std::map<std::string, std::string> Vars = CP.GetVariablesMap();
+    Vars["REL"] = Rel;
+    std::string Out = Template;
+    VarSubst::StringVariableSubstitution(Out, Vars);
+    return Out;
+}
+
+LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerParams &CP)
+{
+    GuestTarget T;
+    const int B = BoundaryLinkIndex(CP);
+    if (B <= 0 || CP.RunnerChain.empty()) return T;                              // no inner links → classic (CrossNamespace=false)
+    T.CrossNamespace = true;
+
+    const RunnerLink &Boundary = CP.RunnerChain[B];
+    const std::string &Template = Boundary.GuestPathTemplate;
+
+    //The actual content (e.g. the ROM), as the boundary's guest path — what the innermost inner runner consumes.
+    const std::string ContentGuest = GuestPath(Template, CP.ExePathRelative.string(), CP);
+
+    //Compose the inner runners' guest command, innermost(content-runner) → just-inside-the-boundary. Each inner link
+    //Ri runs Ri-1's command (or the content for the innermost); its build lives at <CONTENT_ROOT>/__runner_<id>__.
+    //The result's program (the innermost-toward-boundary runner's guest exe) becomes the boundary's content target;
+    //the rest are trailing args. For the common single-inner case (snes9x under proton) this is exactly
+    //[snes9x_guest_exe, rom_guest].
+    std::vector<std::string> Argv;     // full guest argv of the inner stack (program first)
+    std::string PrevGuestCmd;          // inner command rendered as a single guest path token (for %Content% of the next)
+    for (int i = 0; i < B; ++i)
+    {
+        const RunnerLink &L = CP.RunnerChain[i];
+        //This inner runner's own executable, as a CONTENT_ROOT-relative path then a guest path. EXECUTABLE is a
+        //build-relative path for a nestable inner runner (no %RunnerMount% — that mount doesn't exist inside the guest).
+        std::string ExeRel = L.Executable;
+        { std::map<std::string, std::string> V = CP.GetVariablesMap(); VarSubst::StringVariableSubstitution(ExeRel, V); }
+        while (!ExeRel.empty() && (ExeRel.front() == '/' )) ExeRel.erase(ExeRel.begin());
+        const std::string ExeRelUnderRoot = InnerRunnerMountRel(L.NodeId) + (ExeRel.empty() ? "" : "/" + ExeRel);
+        const std::string ExeGuest = GuestPath(Template, ExeRelUnderRoot, CP);
+
+        //This runner's args: %Content%/%ContentPath% = what it runs (the previous inner command, or the content for
+        //the innermost), expressed as a guest path. Other %tokens% expand normally.
+        const std::string Target = (i == 0) ? ContentGuest : PrevGuestCmd;
+        std::vector<std::string> ThisArgs;
+        for (const std::string &Raw : L.Args)
+        {
+            std::map<std::string, std::string> V = CP.GetVariablesMap();
+            V["Content"] = Target; V["ContentPath"] = Target;
+            std::string A = Raw; VarSubst::StringVariableSubstitution(A, V);
+            ThisArgs.push_back(A);
+        }
+
+        //Nest: this runner's [exe, its args] runs the previous inner command, so prepend it to the growing argv.
+        std::vector<std::string> Nested;
+        Nested.push_back(ExeGuest);
+        for (const std::string &A : ThisArgs) Nested.push_back(A);
+        for (const std::string &A : Argv)     Nested.push_back(A);
+        Argv.swap(Nested);
+        PrevGuestCmd = ExeGuest;                                                 // outer runner targets this exe
+    }
+
+    //Argv[0] is the program the boundary must run; the boundary composes its guest path from %ContentPath%, so report
+    //the innermost-toward-boundary runner's CONTENT_ROOT-relative exe as ContentRel, and Argv[1..] as trailing args.
+    const RunnerLink &Outermost = CP.RunnerChain[B - 1];
+    std::string OuterExeRel = Outermost.Executable;
+    { std::map<std::string, std::string> V = CP.GetVariablesMap(); VarSubst::StringVariableSubstitution(OuterExeRel, V); }
+    while (!OuterExeRel.empty() && OuterExeRel.front() == '/') OuterExeRel.erase(OuterExeRel.begin());
+    T.ContentRel = InnerRunnerMountRel(Outermost.NodeId) + (OuterExeRel.empty() ? "" : "/" + OuterExeRel);
+    for (size_t i = 1; i < Argv.size(); ++i) T.TrailingArgs.push_back(Argv[i]);
+    return T;
+}
+
 //Native node-graph init — populates ContainerParams + the internal component pool DIRECTLY from the node graph.
 bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON)
 {
@@ -453,53 +738,60 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     auto AddComponent = [&](const Node *N)
     { Components.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}}); CP.Recipe.push_back(N->NodeId); };
 
-    //Pick the runner FIRST (paths + unified-fold depend on RunnerShipsBuild/UnifiedRuntime).
-    const Node *RunnerNode = PickRunnerNode(Idx, *Launch, CP, GlobalConfigJSON);
+    //Resolve the runner CHAIN (daisy-chaining): innermost→outermost runner links from the content platform to the
+    //machine, always terminated by a native runner. A length-1 bridge ([proton, native]) is the classic case.
+    CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON);
+    if (CP.RunnerChain.empty())
+    {
+        //No runner chain reaches this machine — the container cannot be built (there is no runnerless launch path;
+        //even native games resolve through native-passthrough). Abort rather than building around an empty command.
+        LogErr("InitializeFromNode", "No runner chain found for platform '" + CP.Platform
+               + "' — cannot launch '" + LaunchId + "'. Install a compatible runner.");
+        return false;
+    }
+
+    //The runtime BOUNDARY runner owns the FUSE mount / wine prefix: the OUTERMOST link that creates a guest fs
+    //(non-native namespace, e.g. proton). If the whole chain is native (native content), it's the first link (the
+    //terminal running content directly). The legacy single-runner fields below are this boundary runner's view —
+    //a length-1 [proton, native] chain populates them exactly as the old single-runner path did.
+    int BoundaryIdx = 0;
+    for (int i = 0; i < (int)CP.RunnerChain.size(); ++i) if (!CP.RunnerChain[i].NativeNamespace()) BoundaryIdx = i;
+    const RunnerLink &Boundary = CP.RunnerChain[BoundaryIdx];
+    const Node *RunnerNode = Idx.Find(Boundary.NodeId);                          // null for a synthesized native terminal
+
+    CP.RunnerID          = Boundary.NodeId;
+    CP.RunnerName        = Boundary.Name;
+    CP.RunnerPackagePath = Boundary.PackagePath;
+    CP.RunnerExecutable  = Boundary.Executable;
+    CP.ContentRoot       = Boundary.ContentRoot;
+    CP.PrefixGenerate    = Boundary.PrefixGenerate;
+    CP.RunnerEnv         = Boundary.Env;
+    CP.RunnerRemoveEnv   = Boundary.RemoveEnv;
+    CP.RunnerArgs        = Boundary.Args;
+    CP.UnifiedRuntime    = Boundary.UnifiedRuntime;
+    CP.RunnerLayers      = Boundary.Layers;
+    CP.RunnerShipsBuild  = Boundary.ShipsBuild;
+
     if (RunnerNode)
     {
-        const auto &E = RunnerNode->Exec;
-        CP.RunnerID          = RunnerNode->NodeId;
-        CP.RunnerName        = RunnerNode->NodeId;
-        CP.RunnerPackagePath = RunnerNode->BundleDir;
-        CP.RunnerExecutable  = E.is_object() ? E.value("EXECUTABLE", std::string()) : std::string();
-        CP.ContentRoot       = E.is_object() ? E.value("CONTENT_ROOT", std::string()) : std::string();
-        CP.PrefixGenerate    = E.is_object() ? E.value("PREFIX_GENERATE", false) : false;
-        if (E.is_object() && E.contains("ENV") && E["ENV"].is_object()) CP.RunnerEnv = E["ENV"];
-        if (E.is_object() && E.contains("REMOVE_ENV") && E["REMOVE_ENV"].is_array()) for (auto &X : E["REMOVE_ENV"]) CP.RunnerRemoveEnv.push_back(std::string(X));
-        if (E.is_object() && E.contains("ARGS") && E["ARGS"].is_array())             for (auto &X : E["ARGS"])       CP.RunnerArgs.push_back(std::string(X));
-        CP.UnifiedRuntime    = E.is_object() ? E.value("UNIFIED_RUNTIME", false) : false;
-
-        //Runner build = the runner node's content closure (its PARENTS).
-        std::vector<std::string> RunnerOrder = ManifestModel::ResolveNodeOrder(Idx, RunnerNode->NodeId, CP.ModuleStates);
+        //Runner build = the boundary runner node's content closure (its PARENTS) — for runner CustomVar resolution
+        //(RunnerComponents/RunnerRecipe) and the UNIFIED fold.
         nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
         std::vector<std::string> RunnerBuildIds;
-        for (const std::string &Id : RunnerOrder)
+        for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNode->NodeId, CP.ModuleStates))
         {
             if (Id == RunnerNode->NodeId) continue;
             const Node *N = Idx.Find(Id);
             if (!N || N->IsRunner()) continue;
-            nlohmann::ordered_json Subs = AbsLayers(N);
-            RunnerComps.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", Subs}});
+            RunnerComps.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}});
             RunnerBuildIds.push_back(N->NodeId);
-            for (auto &S : Subs) if (IsVfsLayer(S.value("TYPE", std::string()))) CP.RunnerLayers.push_back(S);
         }
         CP.RunnerComponents = RunnerComps;
         CP.RunnerRecipe     = RunnerBuildIds;
-        CP.RunnerShipsBuild = !CP.RunnerLayers.empty();
         CP.RunnerEndpoints  = CP.UnifiedRuntime ? RunnerBuildIds : std::vector<std::string>{};
         //UNIFIED: fold the runner build into the game RUNTIME (mount first = lowest priority).
         if (CP.UnifiedRuntime)
             for (const std::string &Id : RunnerBuildIds) { const Node *N = Idx.Find(Id); if (N) AddComponent(N); }
-    }
-    else
-    {
-        //No runner node serves this launchable's platform on this machine — the container cannot be built (there is
-        //no runnerless launch path in the node engine; even native games resolve through native-passthrough). Abort
-        //here rather than proceeding to build a runtime around an empty executable (which would "succeed" with an
-        //empty command and report a misleading clean exit).
-        LogErr("InitializeFromNode", "No runner found for platform '" + CP.Platform
-               + "' — cannot launch '" + LaunchId + "'. Install a compatible runner.");
-        return false;
     }
 
     //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.

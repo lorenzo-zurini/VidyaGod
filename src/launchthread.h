@@ -6,6 +6,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 #include "nlohmann/json.hpp"
 
@@ -24,7 +25,8 @@ public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
     std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run
-    std::string                        RunnerID;          // RUNNER_ID chosen in the picker (resolved before construction)
+    std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)
+    std::vector<std::string>           RunnerChain;       // Runner daisy-chain (innermost→outermost node ids); empty = auto-resolve
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds
     std::map<std::string, bool>        ModuleStates;      // Optional-module toggles from the prelaunch tree (component → enabled)
     std::string                        ScreenWidth;       // Captured on the MAIN thread before start() — never query Qt GUI from run()

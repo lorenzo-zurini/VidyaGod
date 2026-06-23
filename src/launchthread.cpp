@@ -105,9 +105,12 @@ void LaunchThread::run()
     struct ContainerParams Params(NoPath, std::string(), std::string());
     Params.VariableOverrides = this->VariableOverrides;
     Params.ModuleStates      = this->ModuleStates;
-    //The chosen runner is set BEFORE construction so PickRunnerNode honours it. Screen geometry was captured on
+    //The chosen runner chain is set BEFORE construction so the resolver honours it. Screen geometry was captured on
     //the main thread (see onLaunchClicked) — the engine uses these instead of querying QGuiApplication here.
     Params.RunnerID  = this->RunnerID;
+    //Runner daisy-chain: the explicit picker/CLI chain wins; else fall back to the single RunnerID as a 1-step pin.
+    if (!this->RunnerChain.empty())      Params.RunnerChainIds = this->RunnerChain;
+    else if (!this->RunnerID.empty())    Params.RunnerChainIds = { this->RunnerID };
     Params.ScreenWidth  = this->ScreenWidth;
     Params.ScreenHeight = this->ScreenHeight;
 

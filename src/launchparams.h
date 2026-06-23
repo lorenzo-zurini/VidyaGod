@@ -25,6 +25,36 @@ inline bool ArgReferencesContent(const std::string &RawArg)
 
 //(ModuleInfo / VariantInfo and the pure manifest-query helpers now live in manifestmodel.h / ManifestModel.)
 
+//One resolved runner in the launch CHAIN (runner daisy-chaining). A runner is a directed edge GUEST→HOST in the
+//platform graph; the chain nests them innermost→outermost: RunnerChain[0] runs the content, RunnerChain[i+1] runs
+//RunnerChain[i]'s command, and the last link is the native terminal (HOST==GUEST==machine) that VidyaGod execve's
+//directly. A length-1 chain ([content-runner, native]) reproduces the classic single-runner case. Resolved by
+//LaunchResolver::PickRunnerChain; consumed by BuildNestedInvocation (execution) + vfsmount (cross-namespace mounts).
+struct RunnerLink
+{
+    std::string NodeId;                          // runner NODE_ID
+    std::string Name;                            // human label (= NodeId today)
+    std::filesystem::path PackagePath;           // runner bundle dir (build layers + DEFPREFIX live here)
+    std::string Executable;                      // EXEC.EXECUTABLE ("" = native passthrough: forward the inner command)
+    std::vector<std::string> Args;               // EXEC.ARGS (raw, pre-substitution; %Content%/%ContentPath% = the inner target)
+    nlohmann::ordered_json Env = nlohmann::ordered_json::object();   // EXEC.ENV
+    std::vector<std::string> RemoveEnv;          // EXEC.REMOVE_ENV
+    std::string ContentRoot;                     // EXEC.CONTENT_ROOT (non-empty ⇒ namespace boundary, e.g. wine drive_c)
+    bool PrefixGenerate = false;                 // EXEC.PREFIX_GENERATE — this link needs a wine prefix
+    bool UnifiedRuntime = false;                 // EXEC.UNIFIED_RUNTIME
+    std::string GuestPathTemplate;               // EXEC.GUEST_PATH (Phase C: render an inner path into this runner's namespace; "" = identity)
+    std::string HostPlatform;                    // PLATFORM.HOST — the platform this runner runs ON
+    std::vector<std::string> GuestPlatform;      // PLATFORM.GUEST — the platforms this runner can run
+    std::vector<nlohmann::ordered_json> Layers;  // build VFS layers (this runner's content closure)
+    bool ShipsBuild = false;                     // has any build VFS layer
+
+    //True when this link runs in the host namespace (no guest fs, host paths verbatim) — the native terminal and
+    //native wrappers. Cross-namespace links (wine/proton via CONTENT_ROOT or PREFIX_GENERATE) need path translation.
+    bool NativeNamespace() const { return ContentRoot.empty() && !PrefixGenerate; }
+    //True for a pure passthrough terminal: forwards the inner command unchanged, only contributing env.
+    bool Passthrough() const { return Executable.empty(); }
+};
+
 //All resolved parameters needed to build and launch a single container session.
 //Populated in two stages:
 //  1. ContainerParams constructor — stores only the PASSED values (PackagePath, IDs).
@@ -48,6 +78,13 @@ public:
     std::string Platform;                //HOST_PLATFORM of the package (e.g. "win32", "snes", "custom") — matched against runner GUEST_PLATFORM
     std::vector<std::string> Recipe;     //Ordered list of ComponentIDs to apply, from leaf to root (reversed after build)
     nlohmann::ordered_json SubComponentsArray; //Flat, ordered array of all SUBCOMPONENTS across the Recipe's components
+
+    //Runner CHAIN (runner daisy-chaining): innermost→outermost resolved runner links. RunnerChain[0] runs the
+    //content; the last link is the native terminal VidyaGod execve's. Resolved by PickRunnerChain. A length-1
+    //chain is the classic single runner. The legacy single-runner fields below are the resolved view of the
+    //chain's runtime BOUNDARY runner (the one that owns the FUSE mount / prefix) for back-compat.
+    std::vector<RunnerLink> RunnerChain;
+    std::vector<std::string> RunnerChainIds;     //PASSED (picker/CLI) — pinned chain (innermost→outermost runner ids); empty = auto-resolve
 
     //Runner config (resolved from RUNNERS arrays — package's own + global registry — by GUEST_PLATFORM membership):
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)

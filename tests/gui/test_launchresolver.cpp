@@ -37,6 +37,24 @@ bool recipeHas(const std::vector<std::string> & r, const std::string & needle)
     for (const auto & s : r) if (s.find(needle) != std::string::npos) return true;
     return false;
 }
+// A runner edge GUEST→HOST for daisy-chain tests. A '%'-bearing or empty EXECUTABLE is always "available"
+// (ExecutableAvailable), so these resolve without a real binary on PATH.
+Node chainRunner(const std::string & id, const std::vector<std::string> & guests, const std::string & host,
+                 const std::string & exec = "%RunnerMount%/run")
+{
+    Node n; n.NodeId = id; n.Role = "runner"; n.GuestPlatform = guests; n.HostPlatform = host;
+    n.Exec = json{{"EXECUTABLE", exec}};
+    n.BundleDir = "/tmp/vg_runner"; return n;
+}
+// A resolved RunnerLink for cross-namespace composition tests.
+RunnerLink mkLink(const std::string & id, const std::string & host, const std::string & exec,
+                  const std::string & contentRoot = "", const std::vector<std::string> & args = {},
+                  const std::string & guestTpl = "")
+{
+    RunnerLink L; L.NodeId = id; L.Name = id; L.HostPlatform = host; L.GuestPlatform = {host};
+    L.Executable = exec; L.ContentRoot = contentRoot; L.Args = args; L.GuestPathTemplate = guestTpl;
+    return L;
+}
 }
 
 class LaunchResolverTest : public QObject
@@ -154,6 +172,166 @@ private slots:
         QVERIFY(!cp2.PersistAll);
         QCOMPARE((int)cp2.PersistDirs.size(), 1);
         QVERIFY(cp2.PersistRegistry);
+    }
+
+    // ---- Runner daisy-chaining (PickRunnerChain / ResolveChainIds / ResolveRunnerChain) ----
+
+    // win32 content with a direct proton (win32→linux64): chain is [proton, <native terminal>], terminal LAST.
+    void chain_win32_single_bridge_plus_native_terminal()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");   // explicit native passthrough
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        const json cfg = json{{"Settings", json::object()}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QCOMPARE((int)ids.size(), 2);
+        QCOMPARE(ids[0], std::string("proton"));
+        QCOMPARE(ids.back(), std::string("nativerun"));        // native terminal always last
+    }
+
+    // No authored native runner → the terminal is the synthesized passthrough sentinel.
+    void chain_synthesizes_native_terminal_when_unauthored()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, "linux64");
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE((int)ids.size(), 2);
+        QCOMPARE(ids[0], std::string("proton"));
+        QCOMPARE(ids.back(), std::string(LaunchResolver::kNativeTerminalId));
+    }
+
+    // Cross-platform: a SNES ROM whose only emulator is win32 → snes9x(snes→win32) under proton(win32→linux64) → native.
+    void chain_snes_through_win32_emulator()
+    {
+        NodeIndex idx;
+        idx.Nodes["snes9x"]    = chainRunner("snes9x", {"snes"}, "win32");
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        Node launch = launchNode("game", "snes", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE((int)ids.size(), 3);
+        QCOMPARE(ids[0], std::string("snes9x"));
+        QCOMPARE(ids[1], std::string("proton"));
+        QCOMPARE(ids[2], std::string("nativerun"));
+    }
+
+    // Native linux content: the chain is just the native terminal (it runs the content directly).
+    void chain_native_content_is_terminal_only()
+    {
+        NodeIndex idx;
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        Node launch = launchNode("game", "linux64", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE((int)ids.size(), 1);
+        QCOMPARE(ids[0], std::string("nativerun"));
+    }
+
+    // BFS tie-break: a RECOMMENDED bridge runner beats the alphabetically-first one.
+    void chain_bridge_prefers_recommended()
+    {
+        NodeIndex idx;
+        idx.Nodes["aaa_proton"] = chainRunner("aaa_proton", {"win32"}, "linux64");
+        Node rec = chainRunner("zzz_proton", {"win32"}, "linux64"); rec.Recommended = true;
+        idx.Nodes["zzz_proton"] = rec;
+        idx.Nodes["nativerun"]  = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE(ids[0], std::string("zzz_proton"));
+    }
+
+    // A persisted RUNNER_CHAIN pin is honored over the default bridge (terminal appended if the pin omits it).
+    void chain_honours_persisted_pin()
+    {
+        NodeIndex idx;
+        idx.Nodes["protonA"]   = chainRunner("protonA", {"win32"}, "linux64");
+        idx.Nodes["protonB"]   = chainRunner("protonB", {"win32"}, "linux64");
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+        const json cfg = json{{"LIBRARY", json::array({ json{{"PACKAGEUID", "pkg"},
+            {"USERSETTINGS", {{"RUNNER_CHAIN", json::array({"protonB"})}}}} })}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QCOMPARE((int)ids.size(), 2);
+        QCOMPARE(ids[0], std::string("protonB"));              // pin beats default (protonA sorts first)
+        QCOMPARE(ids.back(), std::string("nativerun"));
+    }
+
+    // An unreachable platform (no bridging runner) resolves to an empty chain (→ InitializeFromNode aborts).
+    void chain_unreachable_platform_is_empty()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, "linux64");
+        Node launch = launchNode("game", "ps2", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
+        QVERIFY(ids.empty());
+    }
+
+    // ResolveRunnerChain materializes RunnerLinks; the terminal link is a native-namespace passthrough.
+    void chain_resolves_links_with_native_terminal()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        Node launch = launchNode("game", "win32", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        auto links = LaunchResolver::ResolveRunnerChain(idx, launch, cp, json{{"Settings", json::object()}});
+        QCOMPARE((int)links.size(), 2);
+        QCOMPARE(links.front().NodeId, std::string("proton"));
+        QVERIFY(links.back().NativeNamespace());               // terminal runs in the host namespace
+        QVERIFY(links.back().Passthrough());                   // empty EXECUTABLE → forwards the inner command
+    }
+
+    // ---- Cross-namespace nesting (ComposeGuestTarget / BoundaryLinkIndex / GuestPath) ----
+
+    // A win32 emulator (snes9x) nested under proton: the boundary (proton) is redirected at snes9x's guest exe, and
+    // snes9x's own arg (the ROM, guest-translated) trails the boundary's ARGS.
+    void cross_namespace_composes_guest_target()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
+        cp.ExePathRelative = std::filesystem::path("roms/game.smc");
+        cp.RunnerChain = {
+            mkLink("snes9x", "win32", "snes9x.exe", "", {"%Content%"}),
+            mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
+                   {"waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"}, "C:\\%PackageUID%\\%REL%"),
+            mkLink("native", "linux64", "%Content%")
+        };
+        QCOMPARE(LaunchResolver::BoundaryLinkIndex(cp), 1);          // proton owns the guest fs
+        QVERIFY(LaunchResolver::ChainHasInnerLinks(cp));
+
+        auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        QVERIFY(gt.CrossNamespace);
+        QCOMPARE(gt.ContentRel, std::string("__runner_snes9x__/snes9x.exe"));   // boundary's %ContentPath% target
+        QCOMPARE((int)gt.TrailingArgs.size(), 1);
+        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms/game.smc"));   // ROM, guest-translated
+    }
+
+    // Every classic chain ([content-runner, native]) has no inner links → ComposeGuestTarget is a no-op.
+    void classic_chain_is_not_cross_namespace()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
+        cp.RunnerChain = {
+            mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%", {}, "C:\\%PackageUID%\\%REL%"),
+            mkLink("native", "linux64", "%Content%")
+        };
+        QCOMPARE(LaunchResolver::BoundaryLinkIndex(cp), 0);
+        QVERIFY(!LaunchResolver::ChainHasInnerLinks(cp));
+        QVERIFY(!LaunchResolver::ComposeGuestTarget(cp).CrossNamespace);
+    }
+
+    // GuestPath maps a CONTENT_ROOT-relative path into the boundary's namespace via its template; "" = identity.
+    void guest_path_translation()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
+        QCOMPARE(LaunchResolver::GuestPath("C:\\%PackageUID%\\%REL%", "a/b.exe", cp), std::string("C:\\game\\a/b.exe"));
+        QCOMPARE(LaunchResolver::GuestPath(std::string(), "a/b.exe", cp), std::string("a/b.exe"));
     }
 
     // ResolveCustomVariables priority: CLI override > USERSETTINGS > DEFAULT.

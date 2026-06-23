@@ -5,6 +5,7 @@
 #include "covercache.h"
 #include "packagecatalog.h"
 #include "containerwrapper.h"   // StringVariableSubstitution / ContainerParams (CustomVar preview substitution)
+#include "launchresolver.h"     // ResolveChainIds / ResolveChainTail / kNativeTerminalId (runner daisy-chain UI)
 #include "jsonoperations.h"
 
 #include <set>
@@ -96,9 +97,15 @@ PreLaunchWindow::PreLaunchWindow(
         if (VariantLabel) VariantLabel->setVisible(Multi);
     }
 
-    // Runner combo — populated per variant.
-    RunnerCombo = new QComboBox(ControlWidget);
-    PickerForm->addRow("Runner:", RunnerCombo);
+    // Runner daisy-chain — one combo per step (innermost→outermost), rebuilt per variant; plus a target hint.
+    ChainContainer = new QWidget(ControlWidget);
+    ChainLayout    = new QVBoxLayout(ChainContainer);
+    ChainLayout->setContentsMargins(0, 0, 0, 0);
+    ChainLayout->setSpacing(4);
+    PickerForm->addRow("Runners:", ChainContainer);
+    ChainHint = new QLabel(ControlWidget);
+    ChainHint->setStyleSheet("QLabel { color: #9aa0a6; }");
+    PickerForm->addRow(QString(), ChainHint);
 
     // Scrollable section: module toggles + CustomVar pickers.
     QScrollArea* CVScrollArea = new QScrollArea(ControlWidget);
@@ -189,13 +196,12 @@ PreLaunchWindow::PreLaunchWindow(
     BtnLayout->addWidget(CloseButton);
 
     connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onVariantChanged);
-    connect(RunnerCombo,  &QComboBox::currentIndexChanged, this, [this](int){ RebuildCustomVarPickers(); });
     connect(LaunchButton, &QPushButton::clicked, this, &PreLaunchWindow::onLaunchClicked);
     connect(KillButton,   &QPushButton::clicked, this, &PreLaunchWindow::onKillClicked);
     connect(CloseButton,  &QPushButton::clicked, this, &QDialog::accept);
 
     RebuildCover();
-    RebuildRunnerCombo();
+    RebuildRunnerChain();
     RebuildModuleTree();
     RebuildCustomVarPickers();
 
@@ -277,34 +283,129 @@ void PreLaunchWindow::resizeEvent(QResizeEvent* Event)
     UpdateCoverScaled();
 }
 
-void PreLaunchWindow::RebuildRunnerCombo()
+std::string PreLaunchWindow::ChainStepInput(int Step) const
 {
-    static const QString NoRunnerMsg = "No installed runner — download one from the Catalog.";
-    {
-        QSignalBlocker B(RunnerCombo);
-        RunnerCombo->clear();
-        const Node* L = CurrentLaunch();
-        if (L)
-            for (const Node* R : PackageCatalog::UsableRunners(*Index, *L))   // only runners that can actually launch
-                RunnerCombo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->NodeId));
+    if (Step <= 0) { const Node* L = CurrentLaunch(); return L ? L->HostPlatform : ManifestModel::MachinePlatform(); }
+    if (Step - 1 >= (int)CurrentChain.size()) return ManifestModel::MachinePlatform();
+    const std::string& Prev = CurrentChain[Step - 1];
+    if (Prev == LaunchResolver::kNativeTerminalId) return ManifestModel::MachinePlatform();
+    const Node* R = Index ? Index->Find(Prev) : nullptr;
+    return R ? R->HostPlatform : ManifestModel::MachinePlatform();
+}
 
-        // Pre-select USERSETTINGS PREFERRED_RUNNER, else the first usable runner.
-        auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-        if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
-        {
-            int Idx = RunnerCombo->findData(QString::fromStdString(std::string(US["PREFERRED_RUNNER"])));
-            if (Idx >= 0) RunnerCombo->setCurrentIndex(Idx);
-        }
+bool PreLaunchWindow::ChainIdIsTerminal(const std::string& Id) const
+{
+    if (Id == LaunchResolver::kNativeTerminalId) return true;
+    const Node* R = Index ? Index->Find(Id) : nullptr;
+    if (!R || R->HostPlatform != ManifestModel::MachinePlatform()) return false;
+    for (const auto& G : R->GuestPlatform) if (G == ManifestModel::MachinePlatform()) return true;
+    return false;
+}
+
+void PreLaunchWindow::RebuildRunnerChain()
+{
+    // Resolve the DEFAULT chain for this variant (honours a persisted RUNNER_CHAIN), then render the per-step combos.
+    CurrentChain.clear();
+    const Node* L = CurrentLaunch();
+    if (L)
+    {
+        ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
+        Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = PackageUID;
+        CurrentChain = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
+    }
+    RenderChainCombos();
+}
+
+void PreLaunchWindow::RenderChainCombos()
+{
+    static const QString NoRunnerMsg = "No installed runner chain — download a compatible runner from the Catalog.";
+
+    // Tear down the previous step rows.
+    ChainCombos.clear();
+    QLayoutItem* Item;
+    while ((Item = ChainLayout->takeAt(0)) != nullptr)
+    {
+        if (QWidget* W = Item->widget()) W->deleteLater();
+        delete Item;
     }
 
-    // Hard gate: with no usable runner the game cannot launch — disable Launch and explain.
-    const bool HasRunner = RunnerCombo->count() > 0;
-    if (LaunchButton) LaunchButton->setEnabled(HasRunner);
+    const std::string Machine = ManifestModel::MachinePlatform();
+    for (int i = 0; i < (int)CurrentChain.size(); ++i)
+    {
+        const std::string Input = ChainStepInput(i);
+
+        QWidget*     Row    = new QWidget(ChainContainer);
+        QHBoxLayout* RowLay = new QHBoxLayout(Row);
+        RowLay->setContentsMargins(0, 0, 0, 0);
+        RowLay->setSpacing(6);
+        QLabel* Arrow = new QLabel(QString::fromStdString(Input) + " →", Row);
+        Arrow->setMinimumWidth(64);
+        RowLay->addWidget(Arrow);
+
+        QComboBox* Combo = new QComboBox(Row);
+        {
+            QSignalBlocker B(Combo);
+            for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input))
+                Combo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->NodeId));
+            // The native terminal step also offers the built-in passthrough (used when no native runner is authored).
+            if (Input == Machine)
+                Combo->addItem("native (passthrough)", QString::fromStdString(LaunchResolver::kNativeTerminalId));
+            int Sel = Combo->findData(QString::fromStdString(CurrentChain[i]));
+            if (Sel < 0 && Combo->count() > 0)
+            {
+                // The resolved id isn't an installed candidate (e.g. synthesized terminal absent here) — show it anyway
+                // so the chain is faithful and selectable.
+                Combo->addItem(QString::fromStdString(CurrentChain[i]), QString::fromStdString(CurrentChain[i]));
+                Sel = Combo->count() - 1;
+            }
+            if (Sel >= 0) Combo->setCurrentIndex(Sel);
+        }
+        const int Step = i;
+        connect(Combo, &QComboBox::currentIndexChanged, this, [this, Step](int){ onChainStepChanged(Step); });
+        RowLay->addWidget(Combo, 1);
+        ChainLayout->addWidget(Row);
+        ChainCombos.push_back(Combo);
+    }
+
+    // Validity: a chain is runnable when it ends on the machine platform (the native terminal). Drive the hint + gate.
+    const bool Reaches = !CurrentChain.empty() && ChainIdIsTerminal(CurrentChain.back());
+    if (ChainHint)
+    {
+        if (CurrentChain.empty())
+            ChainHint->setText(QString("⚠ no chain reaches %1").arg(QString::fromStdString(Machine)));
+        else if (Reaches)
+            ChainHint->setText(QString("→ %1 ✓").arg(QString::fromStdString(Machine)));
+        else
+            ChainHint->setText(QString("⚠ chain does not reach %1").arg(QString::fromStdString(Machine)));
+    }
+    if (LaunchButton) LaunchButton->setEnabled(Reaches);
     if (StatusLabel)
     {
-        if (!HasRunner) StatusLabel->setText(NoRunnerMsg);
-        else if (StatusLabel->text() == NoRunnerMsg) StatusLabel->clear();   // clear stale message when one appears
+        if (!Reaches) StatusLabel->setText(NoRunnerMsg);
+        else if (StatusLabel->text() == NoRunnerMsg) StatusLabel->clear();
     }
+}
+
+void PreLaunchWindow::onChainStepChanged(int Step)
+{
+    if (Step < 0 || Step >= (int)ChainCombos.size()) return;
+    const std::string Chosen = ChainCombos[Step]->currentData().toString().toStdString();
+    if (Chosen.empty()) return;
+
+    // Adopt the choice as the new step, drop everything downstream, then BFS-re-resolve the tail from its HOST.
+    CurrentChain.resize(Step + 1);
+    CurrentChain[Step] = Chosen;
+    if (!ChainIdIsTerminal(Chosen))
+    {
+        const Node* R = Index ? Index->Find(Chosen) : nullptr;
+        const std::string Host = R ? R->HostPlatform : ManifestModel::MachinePlatform();
+        const Node* L = CurrentLaunch();
+        std::vector<std::string> Tail = L ? LaunchResolver::ResolveChainTail(*Index, Host, *L, *GlobalConfigJSON)
+                                          : std::vector<std::string>{};
+        for (const std::string& Id : Tail) CurrentChain.push_back(Id);
+    }
+    RenderChainCombos();
+    RebuildCustomVarPickers();
 }
 
 void PreLaunchWindow::RebuildModuleTree()
@@ -408,14 +509,18 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     // The enabled content-node closure (honouring the current module toggles).
     const std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, Toggles);
 
-    // The selected runner's content closure — its CustomVars are tweakable knobs the engine resolves too
-    // (ResolveCustomVariables, scoped to RunnerRecipe), so surface them here as if they were package vars.
+    // Every chain runner's content closure — their CustomVars are tweakable knobs the engine resolves too
+    // (ResolveCustomVariables, scoped to RunnerRecipe), so surface them here as if they were package vars. The whole
+    // daisy-chain contributes (each link can expose knobs); the synthesized native terminal has none.
     std::vector<std::string> RunnerOrder;
-    if (RunnerCombo->currentIndex() >= 0)
-        RunnerOrder = ManifestModel::ResolveNodeOrder(*Index, RunnerCombo->currentData().toString().toStdString(), Toggles);
+    for (const std::string& Rid : CurrentChain)
+    {
+        if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;
+        for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, Rid, Toggles)) RunnerOrder.push_back(Id);
+    }
 
     // Build a scan string so we only surface CustomVars actually referenced by %KEY% somewhere in the closure /
-    // runner closure (their layers) or the selected runner's EXEC (ARGS/ENV — how a game seeds knobs to its runner).
+    // runner closures (their layers) or any chain runner's EXEC (ARGS/ENV — how a game seeds knobs to its runner).
     std::string ScanStr;
     for (const std::string& Id : Order)
     {
@@ -427,9 +532,10 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         const Node* N = Index->Find(Id);
         if (N && N->Layers.is_array()) ScanStr += N->Layers.dump();
     }
-    if (RunnerCombo->currentIndex() >= 0)
-        if (const Node* R = Index->Find(RunnerCombo->currentData().toString().toStdString()))
-            if (R->Exec.is_object()) ScanStr += R->Exec.dump();
+    for (const std::string& Rid : CurrentChain)
+        if (Rid != LaunchResolver::kNativeTerminalId)
+            if (const Node* R = Index->Find(Rid))
+                if (R->Exec.is_object()) ScanStr += R->Exec.dump();
 
     auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
     const nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
@@ -530,7 +636,7 @@ void PreLaunchWindow::onVariantChanged()
     LaunchNodeId = VariantCombo->currentData().toString().toStdString();
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
     RebuildCover();
-    RebuildRunnerCombo();
+    RebuildRunnerChain();
     RebuildModuleTree();
     RebuildCustomVarPickers();
 }
@@ -564,8 +670,8 @@ void PreLaunchWindow::persistGlobalConfig()
 void PreLaunchWindow::onLaunchClicked()
 {
     if (LaunchNodeId.empty()) return;
-    const std::string SelectedRunnerID = (RunnerCombo->currentIndex() >= 0)
-                                         ? RunnerCombo->currentData().toString().toStdString() : std::string();
+    // The chosen runner daisy-chain (innermost→outermost). Persisted as RUNNER_CHAIN and passed to the worker.
+    const std::vector<std::string>& SelectedChain = CurrentChain;
 
     // Collect the visible CustomVar picker values (bare KEY -> value).
     std::map<std::string, std::string> PickerVars;
@@ -596,14 +702,18 @@ void PreLaunchWindow::onLaunchClicked()
         nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
         for (const auto& [N, On] : CollectModuleStates()) Mods[N] = On;
         PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);
-        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "PREFERRED_RUNNER", SelectedRunnerID);
+        //Persist the whole resolved chain (RUNNER_CHAIN supersedes the old single PREFERRED_RUNNER). The resolver
+        //honours it on the next launch (and the chain UI pre-selects it).
+        { nlohmann::ordered_json ChainJson = nlohmann::ordered_json::array();
+          for (const std::string& Id : SelectedChain) ChainJson.push_back(Id);
+          PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN", ChainJson); }
         if (RememberCheck->isChecked())
             PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
         persistGlobalConfig();
     }
 
     // Disable controls + show progress.
-    RunnerCombo->setEnabled(false); VariantCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
+    ChainContainer->setEnabled(false); VariantCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
     ModuleGroup->setEnabled(false);
     RememberCheck->setEnabled(false);
     CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false); PreserveRuntimeCheck->setEnabled(false);
@@ -617,7 +727,8 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->LaunchNodeId     = LaunchNodeId;
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->ModuleStates      = CollectModuleStates();
-    LaunchWorker->RunnerID          = SelectedRunnerID;
+    LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)
+    LaunchWorker->RunnerID          = SelectedChain.empty() ? std::string() : SelectedChain.front();  // back-compat
     LaunchWorker->DryRun            = DryRunCheck->isChecked();
     LaunchWorker->PreserveRuntime   = PreserveRuntimeCheck->isChecked();
     if (QScreen* Scr = QGuiApplication::primaryScreen())
@@ -672,7 +783,7 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     if (success) StatusLabel->setText("Finished.");
     else { StatusLabel->setText("Error: " + errorMsg); QMessageBox::warning(this, "Launch failed", errorMsg); }
 
-    RunnerCombo->setEnabled(true); VariantCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
+    ChainContainer->setEnabled(true); VariantCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
     ModuleGroup->setEnabled(true);
     RememberCheck->setEnabled(true);
     CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true); PreserveRuntimeCheck->setEnabled(true);

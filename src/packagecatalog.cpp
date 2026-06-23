@@ -587,6 +587,22 @@ std::vector<const Node*> UsableRunners(const NodeIndex &Idx, const Node &Launch)
     return Out;
 }
 
+std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::string &InputPlatform)
+{
+    //Installed runners that can consume InputPlatform (GUEST ∋ InputPlatform), regardless of HOST — a chain step's
+    //choices. Unlike UsableRunners, HOST may be an intermediate platform (e.g. snes9x: snes→win32). Sorted by node id.
+    std::vector<const Node*> Out;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        (void)Id;
+        if (!N.IsRunner()) continue;
+        bool Serves = false;
+        for (const auto &G : N.GuestPlatform) if (G == InputPlatform) { Serves = true; break; }
+        if (Serves && RunnerInstalled(Idx, N.NodeId)) Out.push_back(&N);
+    }
+    return Out;   // std::map iteration = sorted by node id
+}
+
 //Invoke Fn for every VFS layer in a launchable's content closure (runner build excluded), with its resolved local
 //path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,

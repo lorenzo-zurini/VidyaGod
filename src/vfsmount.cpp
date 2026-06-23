@@ -1,6 +1,7 @@
 #include "vfsmount.h"
 #include "processenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
+#include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
 
 #include <QApplication>
 #include <QMessageBox>
@@ -152,6 +153,28 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
                           {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }
+
+    //CROSS-NAMESPACE NESTING: an INNER chain runner (e.g. a win32 emulator under proton) runs inside the boundary's
+    //guest fs, so its build mounts as content under <CONTENT_ROOT>/__runner_<id>__. Gated on inner links existing —
+    //a complete no-op for every classic [content-runner, native] chain (BoundaryLinkIndex == 0).
+    if (const int B = LaunchResolver::BoundaryLinkIndex(ContainerParams); B > 0)
+        for (int i = 0; i < B; ++i)
+        {
+            const RunnerLink &L = ContainerParams.RunnerChain[i];
+            const std::string Base = ContentRoot.empty() ? LaunchResolver::InnerRunnerMountRel(L.NodeId)
+                                                         : (ContentRoot + "/" + LaunchResolver::InnerRunnerMountRel(L.NodeId));
+            for (const auto &Sub : L.Layers)
+            {
+                const std::string Type = Sub.value("TYPE", std::string());
+                const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
+                if (LType.empty()) continue;
+                std::string Target = Base;
+                if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
+                    Target = Base + "/" + std::string(Sub["TARGET"]);
+                Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},
+                                  {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
+            }
+        }
 
     //DEFAULTDATA — package-encoded base (non-OVERRIDE) Reg/File edits, at the runtime root. Above the
     //component layers (so the edits override the package's own content) but below the writelayer (so the

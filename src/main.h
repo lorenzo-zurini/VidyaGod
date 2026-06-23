@@ -9,6 +9,7 @@
 #include <fstream>
 #include <list>
 #include <map>
+#include <vector>
 
 #include <QCommandLineParser>
 #include <QCommandLineOption>
@@ -53,7 +54,8 @@ struct LaunchParameters
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
-    std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID)
+    std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID; = chain front, back-compat)
+    std::vector<std::string> RunnerChain;                                 //Runner daisy-chain from repeated --runner (innermost→outermost); empty = auto-resolve
     std::string ImportRunnerId;                                          //--import-runner: install this runner (fetch build + build DEFPREFIX) then exit
     std::string ImportPackageUid;                                        //--import-package: install this catalog game (fetch IPFS content + add to LIBRARY) then exit
     std::string PublishPackageDir;                                       //--publish <pkgdir>: dehydrate this local package (seed content -> CIDs into the manifest) then exit

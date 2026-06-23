@@ -19,6 +19,29 @@ AND the cross-network seeding question in one shot.
   150 MB/s bursts but periodic "waiting for peers" stalls (every ~3-4 s). Being benchmarked + optimized headlessly
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
 
+## Runner daisy-chaining — DONE (local `-Werror` + ctest; remote + cross-namespace runtime UNVERIFIED)
+Shortest-chain multi-platform launch: a runner is a directed edge GUEST→HOST; VidyaGod BFS-resolves the shortest
+chain from the content's platform to the machine, always terminated by an explicit native runner (the uniform wrap
+point — clone it for gamescope/mangohud/tweaked env). Enables content with no direct-to-linux runner (e.g. SNES via
+a win32 emulator under proton) and future ARM. Chain is exposed + editable in PreLaunchWindow (one combo per step,
+cascading, with a `→ linux64` target hint), persisted as USERSETTINGS `RUNNER_CHAIN`, and resolvable via repeatable
+`--runner` / printed by `--resolve-only`.
+- **Phase A** (resolver + model + UI + persistence): `RunnerLink`/`RunnerChain` (launchparams.h), `PickRunnerChain`/
+  `ResolveChainIds`/`ResolveChainTail`/`ResolveRunnerChain` (launchresolver, BFS + always-append native terminal,
+  synth `__native__` passthrough if none authored), `PackageCatalog::CandidateRunners`, per-step combo stack in
+  prelaunchwindow, CLI/launchthread `RunnerChain`. Back-compat verified: real packages resolve to `[proton, native]`
+  identically (`--resolve-only aoe2_aok`). 8 new unit tests.
+- **Phase B** (same-namespace nesting): `ContainerWrapper::Execute` rewritten to compose the nested command from the
+  chain — boundary runner runs the content (empty/`%Content%` EXECUTABLE = native passthrough), each OUTER
+  same-namespace link wraps it (`wrapper <args> <inner argv>`); env merged innermost-wins. `[proton, native]` is
+  byte-identical to a direct proton launch; native linux games now run through the `native-passthrough` runner.
+- **Phase C** (cross-namespace, gated on inner links so classic chains are untouched): inner runner builds mount at
+  `<CONTENT_ROOT>/__runner_<id>__` (vfsmount), `EXEC.GUEST_PATH` template translates inner exe/args into the
+  boundary's guest namespace (`ComposeGuestTarget`), inner builds hydrated in `EnsureSources`. 3 new unit tests
+  (BoundaryLinkIndex / ComposeGuestTarget / GuestPath). **UNVERIFIED at runtime** — no cross-platform package exists
+  yet; needs an authored win32-emulator-under-proton package + a hardware run (and possibly a GUEST_PATH convention
+  tweak). Remote `-Werror` build on the laptop also pending (laptop offline).
+
 ## De-god PackageEditor — DONE (local `-Werror`; remote + GUI UNVERIFIED)
 - 1647-LOC `QDialog` → thin 249-LOC composition root + a `PackageEditorModel` hub and per-concern widgets
   (`NodeGraphView`, `ValidationPanel`, `JsonRawEditor`, `NodeEditor`), all talking via the model's signals

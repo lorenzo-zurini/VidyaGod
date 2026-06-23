@@ -1,6 +1,7 @@
 #include "launchsources.h"
 #include "ipfswrapper.h"     // IpfsWrapper (backend fetch/has-local)
 #include "commonutils.h"     // Log*
+#include "launchresolver.h"  // BoundaryLinkIndex (cross-namespace inner-chain runner builds)
 
 #include <filesystem>
 #include <set>
@@ -64,6 +65,24 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
         Ok = false;
         LogErr("LaunchSources::EnsureSources", "Runner not imported: missing build " + Local.string());
     }
+
+    //Cross-namespace inner-chain runner builds (e.g. a win32 emulator nested under proton) must also be hydrated
+    //locally — they're imported runners like the boundary. No-op for classic chains (the boundary is link 0).
+    if (const int Boundary = LaunchResolver::BoundaryLinkIndex(ContainerParams); Boundary > 0)
+        for (int i = 0; i < Boundary; ++i)
+        {
+            const RunnerLink &Link = ContainerParams.RunnerChain[i];
+            for (const auto &Sub : Link.Layers)
+            {
+                if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(Sub, Link.PackagePath, Local, Cid);
+                std::error_code Ec;
+                if (std::filesystem::exists(Local, Ec)) continue;
+                Ok = false;
+                LogErr("LaunchSources::EnsureSources", "Inner runner '" + Link.NodeId + "' not imported: missing build " + Local.string());
+            }
+        }
 
     for (const auto &Sub : ContainerParams.SubComponentsArray)                   // game VFS layers: local OR fetchable
     {
