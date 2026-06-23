@@ -1,4 +1,5 @@
 #include "packagecatalog.h"
+#include "apppaths.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
@@ -62,7 +63,7 @@ static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
             && S["Paths"]["LibraryRoot"].is_string() && !std::string(S["Paths"]["LibraryRoot"]).empty())
             return QDir::cleanPath(QString::fromStdString(std::string(S["Paths"]["LibraryRoot"]))).toStdString();
     }
-    return QDir::cleanPath(QDir::homePath() + "/.VidyaGod/LIBRARY").toStdString();
+    return QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "LIBRARY").string())).toStdString();
 }
 
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON) { return LibraryDir(GlobalConfigJSON); }

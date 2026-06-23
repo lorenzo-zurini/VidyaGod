@@ -1,4 +1,5 @@
 #include "main.h"
+#include "apppaths.h"
 #include "commonutils.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
@@ -167,6 +168,9 @@ int main(int argc, char *argv[])
     //Find and create AppDataDir. mkpath is a no-op if it already exists.
     QDir AppDataDir(AppDataPath);
     AppDataDir.mkpath(".");
+    //Publish the resolved root as the single source of truth for every VidyaGod-produced path (launch TEMP, the
+    //LIBRARY default, …) so portable / --data-dir relocate the WHOLE footprint — not just the ipfs repo + lock.
+    AppPaths::SetDataRoot(AppDataDir.absolutePath().toStdString());
     LogOut("main.cpp", (Portable ? "Portable mode — data dir: " : "Data dir: ") + AppDataPath.toStdString());
 
     //Single-instance guard (GUI and headless alike): VidyaGod may only run once at a time. This both

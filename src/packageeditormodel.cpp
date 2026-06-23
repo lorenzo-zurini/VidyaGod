@@ -1,4 +1,5 @@
 #include "packageeditormodel.h"
+#include "apppaths.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "registrywrapper.h"
@@ -230,7 +231,7 @@ void PackageEditorModel::AnalyzeNodeRegistry(const std::string & NodeId)
 
     const Node * LaunchNode = Idx.Find(Launch);
     const std::string PackageUID = LaunchNode ? LaunchNode->Uid : PackageDir->dirName().toStdString();
-    std::filesystem::path SessionTemp = std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod" / "TEMP" / PackageUID;
+    std::filesystem::path SessionTemp = AppPaths::DataRoot() / "TEMP" / PackageUID;
 
     // Comparator: the launchable's baseline state in read-only mode, on isolated paths.
     ContainerParams ComparatorParams(PackageDir->path().toStdString());

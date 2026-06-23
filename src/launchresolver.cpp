@@ -1,4 +1,5 @@
 #include "launchresolver.h"
+#include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / TranslateCustomVarValue
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixArtifact
@@ -334,7 +335,7 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
         if (ContainerParams.ScreenWidth.empty())  ContainerParams.ScreenWidth  = "0";
         if (ContainerParams.ScreenHeight.empty()) ContainerParams.ScreenHeight = "0";
     }
-    std::filesystem::path TempRoot = std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod" / "TEMP";
+    std::filesystem::path TempRoot = AppPaths::DataRoot() / "TEMP";
     if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
     {
         const auto &S = GlobalConfigJSON["Settings"];

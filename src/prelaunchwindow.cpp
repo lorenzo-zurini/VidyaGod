@@ -1,4 +1,5 @@
 #include "prelaunchwindow.h"
+#include "apppaths.h"
 #include "packageeditor.h"
 #include "mainwindow.h"
 #include "covercache.h"
@@ -556,7 +557,7 @@ void PreLaunchWindow::ReloadAndRebuild()
 
 void PreLaunchWindow::persistGlobalConfig()
 {
-    QDir AppDataDir(QDir::homePath() + "/.VidyaGod");
+    QDir AppDataDir(QString::fromStdString(AppPaths::DataRoot().string()));
     JSONOps::SaveJSON(GlobalConfigJSON, new QFile(AppDataDir.filePath("GlobalConfig.JSON")));
 }
 

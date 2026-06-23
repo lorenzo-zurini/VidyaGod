@@ -1,4 +1,5 @@
 #include "pathspage.h"
+#include "apppaths.h"          // AppPaths::DataRoot — default TEMP/LIBRARY display roots
 #include "appmodel.h"          // AppModel — config + appDataDir + save
 
 #include <QVBoxLayout>
@@ -22,7 +23,7 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     QFormLayout * form = new QFormLayout();
     pl->addLayout(form);
 
-    const QString defaultTempRoot = QDir::cleanPath(QDir::homePath() + "/.VidyaGod/TEMP");
+    const QString defaultTempRoot = QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "TEMP").string()));
 
     // Temporary / runtime root — Settings.Paths.TempRoot (empty = default).
     QWidget * rootRow = new QWidget(this);
@@ -59,7 +60,7 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
 
     // Library folder — Settings.Paths.LibraryRoot (empty = default). Imported packages are hydrated here,
     // one subfolder per repo.
-    const QString defaultLibRoot = QDir::cleanPath(QDir::homePath() + "/.VidyaGod/library");
+    const QString defaultLibRoot = QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "LIBRARY").string()));
     QWidget * libRow = new QWidget(this);
     QHBoxLayout * ll = new QHBoxLayout(libRow); ll->setContentsMargins(0,0,0,0);
     libRow->setLayout(ll);

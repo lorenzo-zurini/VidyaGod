@@ -32,6 +32,9 @@ set(TS_FILES VidyaGod_en_US.ts)
 set(SHARED_SOURCES
     src/mainwindow.cpp
 
+    src/apppaths.h
+    src/apppaths.cpp
+
     src/libraryview.h
     src/libraryview.cpp
     src/mainwindow.h
