@@ -41,6 +41,9 @@ set(PROJECT_SOURCES
     src/packageeditor.h
     src/packageeditor.cpp
 
+    src/packageeditormodel.h
+    src/packageeditormodel.cpp
+
     src/filesystemoperations.h
     src/filesystemoperations.cpp
 

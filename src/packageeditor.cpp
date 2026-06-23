@@ -1,4 +1,5 @@
 #include "packageeditor.h"
+#include "packageeditormodel.h"
 #include "commonutils.h"
 #include "registrywrapper.h"
 #include "covercache.h"
@@ -41,29 +42,17 @@ static QString ResolveNodeJSONPath(QObject * Sender)
     return QString();
 }
 
-//The launchable node to run when authoring `nodeId`: the node itself if launchable, else the first launchable in
-//the index whose resolved closure includes it (so its layers are in the recipe). "" if none.
-static std::string LaunchableForNode(const NodeIndex & Idx, const std::string & nodeId)
-{
-    const Node * N = Idx.Find(nodeId);
-    if (!N) return "";
-    if (N->IsLaunchable()) return nodeId;
-    for (const auto & [Id, Node] : Idx.Nodes)
-    {
-        if (!Node.IsLaunchable()) continue;
-        const auto Order = ManifestModel::ResolveNodeOrder(Idx, Id, {});
-        if (std::find(Order.begin(), Order.end(), nodeId) != Order.end()) return Id;
-    }
-    return "";
-}
 
 // ============================================================================
 // Construction / teardown
 // ============================================================================
 
-PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
+PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
     : QDialog(parent)
 {
+    // The state/signal hub: owns the working document, node I/O, validation, and the authoring runs. Created first
+    // so the toolbar/Publish lambdas below can reach it; it parents its modal dialogs on this editor.
+    Model = new PackageEditorModel(GlobalConfigJSON, this, this);
     setWindowTitle("VidyaGod Package Editor");
     setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
     setWindowState(Qt::WindowMaximized);
@@ -86,21 +75,21 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     connect(AddNodeBtn, &QPushButton::clicked, this, [this](){
         json NewNode = json::object({ {"NODE_ID", "new_node"}, {"ROLE", "content"}, {"LAYERS", json::array()} });
         (*MANIFESTJSON)["NODES"].push_back(NewNode);
-        SaveNodes(); BuildUI();
+        Model->SaveNodes(); BuildUI();
     });
 
     //Publish (dehydrate): flush edits, seed each layer's content over IPFS + record its CID into the node files in
     //place, and export a manifest-only copy to a chosen folder (ready to commit into a sharing repo).
     connect(PublishBtn, &QPushButton::clicked, this, [this](){
         if (!PackageDir) return;
-        SaveNodes();
+        Model->SaveNodes();
         const QString Dest = QFileDialog::getExistingDirectory(
             this, "Export dehydrated copy to… (cancel to dehydrate in place only)");
         std::string Err;
         const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(), &Err);
         if (Ok)
         {
-            LoadNodes(); BuildUI(); RefreshJSONView();
+            Model->LoadNodes(); BuildUI(); RefreshJSONView();
             QMessageBox::information(this, "Publish",
                 Dest.isEmpty() ? "Bundle dehydrated (content seeded, CIDs written into the node files)."
                                : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
@@ -155,9 +144,18 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     Split->setSizes({ 300, 1200 });
     MainLayout->addWidget(Split, 1);
 
-    PackageEditor::GlobalConfigJSON = GlobalConfigJSON;
+    // Open the bundle (pick a dir if none was preselected), then point our working-doc/PackageDir aliases at the
+    // model's owned state so the existing BuildUI machinery reads them unchanged.
+    Model->initPackage(PreselectedPath, this);
+    MANIFESTJSON = &Model->doc();
+    PackageDir   = Model->packageDir();
 
-    InitPackage(PreselectedPath);
+    // React to the model: structural change → rebuild tabs; validation update → repaint the panel; a disk write →
+    // relay to packageSaved (so library tiles / prelaunch dialogs reload).
+    connect(Model, &PackageEditorModel::documentReloaded, this, [this]{ BuildUI(); RefreshJSONView(); });
+    connect(Model, &PackageEditorModel::validationChanged, this, &PackageEditor::UpdateValidationBox);
+    connect(Model, &PackageEditorModel::savedToDisk, this, &PackageEditor::packageSaved);
+
     BuildUI();
     RefreshJSONView();
 }
@@ -168,84 +166,9 @@ PackageEditor::~PackageEditor() = default;
 // Node I/O (one file per node)
 // ============================================================================
 
-void PackageEditor::InitPackage(const QString &PreselectedPath)
-{
-    QString ChosenPath = PreselectedPath.isEmpty()
-        ? QFileDialog::getExistingDirectory(this, "Select bundle directory...")
-        : PreselectedPath;
-    this->PackageDir = new QDir(ChosenPath);
-    this->MANIFESTJSON = new nlohmann::ordered_json;
-    LoadNodes();
-}
 
-QString PackageEditor::FileForNode(const nlohmann::ordered_json & Node) const
-{
-    //Prefer <NODE_ID>.json so a rename re-files the node (SaveNodes then cleans the stale file).
-    const std::string Id = Node.is_object() ? Node.value("NODE_ID", std::string()) : std::string();
-    if (!Id.empty()) return QString::fromStdString(Id) + ".json";
-    if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
-        && !std::string(Node["__FILE__"]).empty())
-        return QString::fromStdString(std::string(Node["__FILE__"]));
-    return "untitled_node.json";
-}
 
-void PackageEditor::LoadNodes()
-{
-    *MANIFESTJSON = json::object({ {"NODES", json::array()} });
 
-    const QStringList Files = PackageDir->entryList(QStringList() << "*.json", QDir::Files, QDir::Name);
-    for (const QString &FileName : Files)
-    {
-        nlohmann::ordered_json J;
-        QFile F(PackageDir->filePath(FileName));
-        if (JSONOps::LoadJSON(&F, &J) || !J.is_object()) continue;   // LoadJSON returns true on FAILURE
-        if (!J.contains("NODE_ID")) continue;                        // non-node json (legacy MANIFEST.json, etc.)
-        J["__FILE__"] = FileName.toStdString();
-        (*MANIFESTJSON)["NODES"].push_back(std::move(J));
-    }
-
-    if ((*MANIFESTJSON)["NODES"].empty())
-        (*MANIFESTJSON)["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"ROLE", "content"}, {"LAYERS", json::array()} }));
-
-    Revalidate();
-    LogSucc("PackageEditor", "Loaded " + std::to_string((*MANIFESTJSON)["NODES"].size()) + " node(s).");
-}
-
-void PackageEditor::SaveNodes()
-{
-    if (!PackageDir || !MANIFESTJSON) return;
-    auto &Nodes = (*MANIFESTJSON)["NODES"];
-
-    // Desired on-disk filenames for the current nodes.
-    std::set<QString> Desired;
-    for (auto &N : Nodes) { QString F = FileForNode(N); if (!F.isEmpty()) Desired.insert(F); }
-
-    // Delete orphaned node files (a *.json holding a NODE_ID no longer backed by a current node — rename/delete).
-    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
-    {
-        if (Desired.count(Existing)) continue;
-        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
-        if (!JSONOps::LoadJSON(&F, &J) && J.is_object() && J.contains("NODE_ID"))
-            PackageDir->remove(Existing);
-    }
-
-    // Write each node to its file (stripping the editor-only tag), keeping the tag synced to where we wrote it.
-    bool Ok = true;
-    for (auto &N : Nodes)
-    {
-        QString FileName = FileForNode(N);
-        if (FileName.isEmpty()) continue;
-        nlohmann::ordered_json Out = N; Out.erase("__FILE__");
-        N["__FILE__"] = FileName.toStdString();
-        QFile F(PackageDir->filePath(FileName));
-        if (!JSONOps::SaveJSON(&Out, &F)) Ok = false;
-    }
-    if (!Ok) LogErr("PackageEditor", "One or more node files failed to save.");
-
-    emit packageSaved(PackageDir->path());
-    Revalidate();
-    UpdateValidationBox();
-}
 
 void PackageEditor::RefreshJSONView()
 {
@@ -261,37 +184,31 @@ void PackageEditor::RefreshJSONView()
 // Validation
 // ============================================================================
 
-void PackageEditor::Revalidate()
-{
-    ValErrors.clear(); ValWarnings.clear();
-    NodeIndex Idx = BuildExecIndex();
-    ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings);
-}
 
 void PackageEditor::UpdateValidationBox()
 {
     if (!ValidationView || !ValidationBox) return;
 
-    if (ValErrors.empty() && ValWarnings.empty())
+    if (Model->validationErrors().empty() && Model->validationWarnings().empty())
         ValidationBox->setTitle("Validation  —  ✓ OK");
-    else if (ValErrors.empty())
-        ValidationBox->setTitle(QString("Validation  —  %1 warning(s)").arg(ValWarnings.size()));
+    else if (Model->validationErrors().empty())
+        ValidationBox->setTitle(QString("Validation  —  %1 warning(s)").arg(Model->validationWarnings().size()));
     else
         ValidationBox->setTitle(QString("⚠ Validation  —  %1 error(s), %2 warning(s)")
-                                    .arg(ValErrors.size()).arg(ValWarnings.size()));
+                                    .arg(Model->validationErrors().size()).arg(Model->validationWarnings().size()));
 
     QString Html;
-    if (ValErrors.empty() && ValWarnings.empty())
+    if (Model->validationErrors().empty() && Model->validationWarnings().empty())
         Html = "<span style='color:#3fae5a'>✓ No problems found.</span>";
     else
     {
-        for (const auto &E : ValErrors)
+        for (const auto &E : Model->validationErrors())
             Html += "<div style='color:#d9534f'><b>ERROR:</b> " + QString::fromStdString(E).toHtmlEscaped() + "</div>";
-        for (const auto &W : ValWarnings)
+        for (const auto &W : Model->validationWarnings())
             Html += "<div style='color:#c9a227'>warning: " + QString::fromStdString(W).toHtmlEscaped() + "</div>";
     }
     ValidationView->setHtml(Html);
-    ValidationBox->setStyleSheet(ValErrors.empty() ? QString()
+    ValidationBox->setStyleSheet(Model->validationErrors().empty() ? QString()
                                                    : "QGroupBox{border:1px solid #d9534f;border-radius:4px;margin-top:6px;}"
                                                      "QGroupBox::title{subcontrol-origin:margin;left:8px;color:#d9534f;}");
 }
@@ -300,45 +217,8 @@ void PackageEditor::UpdateValidationBox()
 // Catalog queries (PARENTS picker / platform suggestions / exec index)
 // ============================================================================
 
-NodeIndex PackageEditor::BuildExecIndex() const
-{
-    NodeIndex Idx;
-    if (PackageDir)
-        ManifestModel::ScanBundleNodes(PackageDir->path().toStdString(), Idx);   // this bundle wins (first-seen)
-    for (const std::string &RepoDir : PackageCatalog::RepositoryDirs(*GlobalConfigJSON))
-    {
-        QDir D(QString::fromStdString(RepoDir));
-        if (!D.exists()) continue;
-        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            ManifestModel::ScanBundleNodes(D.filePath(Sub).toStdString(), Idx);
-    }
-    return Idx;
-}
 
-std::vector<std::string> PackageEditor::KnownNodeIds()
-{
-    NodeIndex Idx = BuildExecIndex();
-    std::vector<std::string> Out;
-    for (const auto &[Id, N] : Idx.Nodes) { (void)N; Out.push_back(Id); }
-    std::sort(Out.begin(), Out.end());
-    return Out;   // (std::map already sorted, but keep explicit)
-}
 
-std::vector<std::string> PackageEditor::KnownPlatforms()
-{
-    NodeIndex Idx = BuildExecIndex();
-    std::set<std::string> Seen;
-    std::vector<std::string> Out;
-    for (const auto &[Id, N] : Idx.Nodes)
-    {
-        (void)Id;
-        if (!N.IsRunner()) continue;
-        for (const auto &P : N.GuestPlatform) if (Seen.insert(P).second) Out.push_back(P);
-    }
-    for (const char *Common : {"win32", "win64", "linux64", "snes", "custom"})
-        if (Seen.insert(Common).second) Out.push_back(Common);
-    return Out;
-}
 
 // ============================================================================
 // UI
@@ -346,7 +226,7 @@ std::vector<std::string> PackageEditor::KnownPlatforms()
 
 bool PackageEditor::BuildUI()
 {
-    Revalidate();
+    Model->Revalidate();
     SavedMainTab = PackageEditorTabWidget->currentIndex();
 
     PackageEditorTabWidget->clear();
@@ -416,12 +296,12 @@ bool PackageEditor::BuildUI()
         Toolbar->addWidget(RegBtn); Toolbar->addWidget(ExecBtn); Toolbar->addWidget(AnalyzeBtn);
         QObject::connect(RunExeBtn, &QPushButton::clicked, this, [this, NodeIdStr](){
             QString Exe = QFileDialog::getOpenFileName(this, "Select executable");
-            if (!Exe.isEmpty()) RunInNode(NodeIdStr, Exe.toStdString());
+            if (!Exe.isEmpty()) Model->RunInNode(NodeIdStr, Exe.toStdString());
         });
-        QObject::connect(BrowseBtn, &QPushButton::clicked, this, [this, NodeIdStr](){ RunInNode(NodeIdStr, "explorer.exe"); });
-        QObject::connect(RegBtn,    &QPushButton::clicked, this, [this, NodeIdStr](){ RunInNode(NodeIdStr, "regedit.exe"); });
-        QObject::connect(ExecBtn,   &QPushButton::clicked, this, [this, NodeIdStr](){ RunInNode(NodeIdStr, ""); });
-        QObject::connect(AnalyzeBtn,&QPushButton::clicked, this, [this, NodeIdStr](){ AnalyzeNodeRegistry(NodeIdStr); });
+        QObject::connect(BrowseBtn, &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, "explorer.exe"); });
+        QObject::connect(RegBtn,    &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, "regedit.exe"); });
+        QObject::connect(ExecBtn,   &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, ""); });
+        QObject::connect(AnalyzeBtn,&QPushButton::clicked, this, [this, NodeIdStr](){ Model->AnalyzeNodeRegistry(NodeIdStr); });
 
         Toolbar->addStretch();
 
@@ -454,16 +334,16 @@ bool PackageEditor::BuildUI()
         QObject::connect(MoveUpBtn, &QPushButton::clicked, this, [this, n](){
             if (n <= 0) return;
             std::swap((*MANIFESTJSON)["NODES"][n - 1], (*MANIFESTJSON)["NODES"][n]);
-            SavedMainTab = (n - 1) + 1; SaveNodes(); BuildUI();
+            SavedMainTab = (n - 1) + 1; Model->SaveNodes(); BuildUI();
         });
         QObject::connect(MoveDnBtn, &QPushButton::clicked, this, [this, n](){
             auto &A = (*MANIFESTJSON)["NODES"]; if (n + 1 >= (int)A.size()) return;
-            std::swap(A[n], A[n + 1]); SavedMainTab = (n + 1) + 1; SaveNodes(); BuildUI();
+            std::swap(A[n], A[n + 1]); SavedMainTab = (n + 1) + 1; Model->SaveNodes(); BuildUI();
         });
         QObject::connect(RemoveBtn, &QPushButton::clicked, this, [this, n, NodeIdStr](){
             if (QMessageBox::question(this, "Remove node",
                     "Delete node “" + QString::fromStdString(NodeIdStr) + "” and its file?") != QMessageBox::Yes) return;
-            (*MANIFESTJSON)["NODES"].erase(n); SaveNodes(); BuildUI();
+            (*MANIFESTJSON)["NODES"].erase(n); Model->SaveNodes(); BuildUI();
         });
 
         QScrollArea * Scroll = new QScrollArea(NodeTab);
@@ -493,7 +373,7 @@ bool PackageEditor::BuildUI()
             RoleCombo->setCurrentText(QString::fromStdString(NodeRef.value("ROLE", std::string("content"))));
             QObject::connect(RoleCombo, &QComboBox::currentTextChanged, this, [this, NodePtr](const QString &T){
                 (*MANIFESTJSON)[json::json_pointer(NodePtr + "/ROLE")] = T.toStdString();
-                SaveNodes(); BuildUI();   // re-render so role-specific sections (GROUP/LABEL/GUEST) adapt
+                Model->SaveNodes(); BuildUI();   // re-render so role-specific sections (GROUP/LABEL/GUEST) adapt
             });
             Form->addRow("ROLE", RoleCombo);
 
@@ -523,7 +403,7 @@ bool PackageEditor::BuildUI()
                 QCheckBox * RecChk = new QCheckBox("Recommended (default edition in its GROUP)", Box);
                 RecChk->setChecked(NodeRef.value("RECOMMENDED", false));
                 QObject::connect(RecChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                    (*MANIFESTJSON)[json::json_pointer(NodePtr + "/RECOMMENDED")] = On; SaveNodes(); RefreshJSONView();
+                    (*MANIFESTJSON)[json::json_pointer(NodePtr + "/RECOMMENDED")] = On; Model->SaveNodes(); RefreshJSONView();
                 });
                 Form->addRow("", RecChk);
             }
@@ -538,14 +418,14 @@ bool PackageEditor::BuildUI()
             QCheckBox * OptChk = new QCheckBox("OPTIONAL (user-toggleable add-on)", Box);
             OptChk->setChecked(NodeRef.value("OPTIONAL", false));
             QObject::connect(OptChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/OPTIONAL")] = On; SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/OPTIONAL")] = On; Model->SaveNodes(); RefreshJSONView();
             });
             BL->addWidget(OptChk);
 
             QCheckBox * DefChk = new QCheckBox("DEFAULT (enabled by default when optional)", Box);
             DefChk->setChecked(NodeRef.value("DEFAULT", true));
             QObject::connect(DefChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/DEFAULT")] = On; SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/DEFAULT")] = On; Model->SaveNodes(); RefreshJSONView();
             });
             BL->addWidget(DefChk);
 
@@ -560,7 +440,7 @@ bool PackageEditor::BuildUI()
                 { std::string Id = Part.trimmed().toStdString(); if (!Id.empty()) Arr.push_back(Id); }
                 if (Arr.empty()) (*MANIFESTJSON)[json::json_pointer(NodePtr)].erase("EXCLUDE");
                 else             (*MANIFESTJSON)[json::json_pointer(NodePtr + "/EXCLUDE")] = Arr;
-                SaveNodes(); RefreshJSONView();
+                Model->SaveNodes(); RefreshJSONView();
             });
             BL->addWidget(ExcludeField);
             Body->addWidget(Box);
@@ -575,7 +455,7 @@ bool PackageEditor::BuildUI()
 
             QGroupBox * Box = new QGroupBox("PARENTS (load order — later overrides earlier)", Contents);
             QVBoxLayout * BL = new QVBoxLayout(Box);
-            const std::vector<std::string> AllIds = KnownNodeIds();
+            const std::vector<std::string> AllIds = Model->KnownNodeIds();
 
             for (int k = 0; k < (int)Parents.size(); k++)
             {
@@ -586,26 +466,26 @@ bool PackageEditor::BuildUI()
                 { QSignalBlocker B(Pick); Pick->setCurrentText(QString::fromStdString(Parents[k].is_string() ? std::string(Parents[k]) : "")); }
                 const std::string ItemPtr = PPtr + "/" + std::to_string(k);
                 QObject::connect(Pick, &QComboBox::currentTextChanged, this, [this, ItemPtr](const QString &T){
-                    (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); SaveNodes(); RefreshJSONView();
+                    (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes(); RefreshJSONView();
                 });
                 QPushButton * Up = new QPushButton("▲", Box); Up->setFixedWidth(28);
                 QPushButton * Dn = new QPushButton("▼", Box); Dn->setFixedWidth(28);
                 QPushButton * Del = new QPushButton("✕", Box); Del->setFixedWidth(28);
                 QObject::connect(Up, &QPushButton::clicked, this, [this, PPtr, k](){
-                    auto &A = (*MANIFESTJSON)[json::json_pointer(PPtr)]; if (k <= 0) return; std::swap(A[k - 1], A[k]); SaveNodes(); BuildUI();
+                    auto &A = (*MANIFESTJSON)[json::json_pointer(PPtr)]; if (k <= 0) return; std::swap(A[k - 1], A[k]); Model->SaveNodes(); BuildUI();
                 });
                 QObject::connect(Dn, &QPushButton::clicked, this, [this, PPtr, k](){
-                    auto &A = (*MANIFESTJSON)[json::json_pointer(PPtr)]; if (k + 1 >= (int)A.size()) return; std::swap(A[k], A[k + 1]); SaveNodes(); BuildUI();
+                    auto &A = (*MANIFESTJSON)[json::json_pointer(PPtr)]; if (k + 1 >= (int)A.size()) return; std::swap(A[k], A[k + 1]); Model->SaveNodes(); BuildUI();
                 });
                 QObject::connect(Del, &QPushButton::clicked, this, [this, PPtr, k](){
-                    (*MANIFESTJSON)[json::json_pointer(PPtr)].erase(k); SaveNodes(); BuildUI();
+                    (*MANIFESTJSON)[json::json_pointer(PPtr)].erase(k); Model->SaveNodes(); BuildUI();
                 });
                 Row->addWidget(Pick, 1); Row->addWidget(Up); Row->addWidget(Dn); Row->addWidget(Del);
                 BL->addLayout(Row);
             }
             QPushButton * AddParent = new QPushButton("+ Add Parent", Box);
             QObject::connect(AddParent, &QPushButton::clicked, this, [this, PPtr](){
-                (*MANIFESTJSON)[json::json_pointer(PPtr)].push_back(""); SaveNodes(); BuildUI();
+                (*MANIFESTJSON)[json::json_pointer(PPtr)].push_back(""); Model->SaveNodes(); BuildUI();
             });
             BL->addWidget(AddParent);
             Body->addWidget(Box);
@@ -615,7 +495,7 @@ bool PackageEditor::BuildUI()
         {
             QGroupBox * Box = new QGroupBox("Platform", Contents);
             QVBoxLayout * BL = new QVBoxLayout(Box);
-            const std::vector<std::string> Plats = KnownPlatforms();
+            const std::vector<std::string> Plats = Model->KnownPlatforms();
 
             QHBoxLayout * HostRow = new QHBoxLayout();
             HostRow->addWidget(new QLabel("HOST:", Box));
@@ -629,7 +509,7 @@ bool PackageEditor::BuildUI()
                 const QString Tr = T.trimmed();
                 if (Tr.isEmpty()) { if ((*MANIFESTJSON).contains(json::json_pointer(NodePtr + "/PLATFORM"))) (*MANIFESTJSON)[json::json_pointer(NodePtr + "/PLATFORM")].erase("HOST"); }
                 else (*MANIFESTJSON)[json::json_pointer(NodePtr + "/PLATFORM/HOST")] = Tr.toStdString();
-                SaveNodes(); RefreshJSONView();
+                Model->SaveNodes(); RefreshJSONView();
             });
             HostRow->addWidget(Host, 1);
             BL->addLayout(HostRow);
@@ -652,17 +532,17 @@ bool PackageEditor::BuildUI()
                     { QSignalBlocker B(CB); CB->setCurrentText(QString::fromStdString(Guests[k].is_string() ? std::string(Guests[k]) : "")); }
                     const std::string ItemPtr = GPtr + "/" + std::to_string(k);
                     QObject::connect(CB, &QComboBox::currentTextChanged, this, [this, ItemPtr](const QString &T){
-                        (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); SaveNodes(); RefreshJSONView();
+                        (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes(); RefreshJSONView();
                     });
                     QPushButton * Del = new QPushButton("✕", GBox); Del->setFixedWidth(28);
                     QObject::connect(Del, &QPushButton::clicked, this, [this, GPtr, k](){
-                        (*MANIFESTJSON)[json::json_pointer(GPtr)].erase(k); SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)[json::json_pointer(GPtr)].erase(k); Model->SaveNodes(); BuildUI();
                     });
                     Row->addWidget(CB, 1); Row->addWidget(Del); GBL->addLayout(Row);
                 }
                 QPushButton * AddG = new QPushButton("+ Add Guest", GBox);
                 QObject::connect(AddG, &QPushButton::clicked, this, [this, GPtr](){
-                    (*MANIFESTJSON)[json::json_pointer(GPtr)].push_back(""); SaveNodes(); BuildUI();
+                    (*MANIFESTJSON)[json::json_pointer(GPtr)].push_back(""); Model->SaveNodes(); BuildUI();
                 });
                 GBL->addWidget(AddG);
                 BL->addWidget(GBox);
@@ -692,7 +572,7 @@ bool PackageEditor::BuildUI()
             QCheckBox * PGen = new QCheckBox("PREFIX_GENERATE (build a wine prefix)", Box);
             PGen->setChecked(Exec.value("PREFIX_GENERATE", false));
             QObject::connect(PGen, &QCheckBox::toggled, this, [this, EPtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(EPtr + "/PREFIX_GENERATE")] = On; SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(EPtr + "/PREFIX_GENERATE")] = On; Model->SaveNodes(); RefreshJSONView();
             });
             G->addWidget(PGen, row, 0, 1, 3); row++;
 
@@ -713,13 +593,13 @@ bool PackageEditor::BuildUI()
                     QObject::connect(LE, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                     QPushButton * Del = new QPushButton("✕", LBox); Del->setFixedWidth(28);
                     QObject::connect(Del, &QPushButton::clicked, this, [this, AP, k](){
-                        (*MANIFESTJSON)[json::json_pointer(AP)].erase(k); SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)[json::json_pointer(AP)].erase(k); Model->SaveNodes(); BuildUI();
                     });
                     Row->addWidget(LE, 1); Row->addWidget(Del); LBL->addLayout(Row);
                 }
                 QPushButton * Add = new QPushButton("+ Add", LBox);
                 QObject::connect(Add, &QPushButton::clicked, this, [this, AP](){
-                    (*MANIFESTJSON)[json::json_pointer(AP)].push_back(""); SaveNodes(); BuildUI();
+                    (*MANIFESTJSON)[json::json_pointer(AP)].push_back(""); Model->SaveNodes(); BuildUI();
                 });
                 LBL->addWidget(Add);
                 G->addWidget(LBox, row, 0, 1, -1); row++;
@@ -748,17 +628,17 @@ bool PackageEditor::BuildUI()
                         std::string NewKey = KeyField->text().toStdString();
                         if (NewKey == KeyCopy || NewKey.empty()) return;
                         auto &O = (*MANIFESTJSON)[json::json_pointer(EnvPtr)];
-                        auto Val = O[KeyCopy]; O.erase(KeyCopy); O[NewKey] = Val; SaveNodes(); BuildUI();
+                        auto Val = O[KeyCopy]; O.erase(KeyCopy); O[NewKey] = Val; Model->SaveNodes(); BuildUI();
                     });
                     QPushButton * Del = new QPushButton("✕", EnvBox); Del->setFixedWidth(28);
                     QObject::connect(Del, &QPushButton::clicked, this, [this, EnvPtr, KeyCopy](){
-                        (*MANIFESTJSON)[json::json_pointer(EnvPtr)].erase(KeyCopy); SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)[json::json_pointer(EnvPtr)].erase(KeyCopy); Model->SaveNodes(); BuildUI();
                     });
                     Row->addWidget(KeyField); Row->addWidget(ValField); Row->addWidget(Del); EL->addLayout(Row);
                 }
                 QPushButton * AddEnv = new QPushButton("+ Add Env Var", EnvBox);
                 QObject::connect(AddEnv, &QPushButton::clicked, this, [this, EnvPtr](){
-                    (*MANIFESTJSON)[json::json_pointer(EnvPtr)]["NEW_KEY"] = ""; SaveNodes(); BuildUI();
+                    (*MANIFESTJSON)[json::json_pointer(EnvPtr)]["NEW_KEY"] = ""; Model->SaveNodes(); BuildUI();
                 });
                 EL->addWidget(AddEnv);
                 G->addWidget(EnvBox, row, 0, 1, -1); row++;
@@ -833,7 +713,7 @@ bool PackageEditor::BuildUI()
                 {
                     QPushButton * Rem = new QPushButton("✕", LBox); Rem->setFixedWidth(28);
                     QObject::connect(Rem, &QPushButton::clicked, this, [this, n, j](){
-                        (*MANIFESTJSON)["NODES"][n]["LAYERS"].erase(j); SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)["NODES"][n]["LAYERS"].erase(j); Model->SaveNodes(); BuildUI();
                     });
                     LG->addWidget(Rem, 0, 2);
                 }
@@ -861,7 +741,7 @@ bool PackageEditor::BuildUI()
                             std::filesystem::remove_all(SrcDir);
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSZipLayer";
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["PATH"] = ZipName;
-                            SaveNodes(); BuildUI();
+                            Model->SaveNodes(); BuildUI();
                         });
                         LG->addWidget(Conv, 1, 2);
                     }
@@ -878,7 +758,7 @@ bool PackageEditor::BuildUI()
                             std::filesystem::remove(ZipFile);
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSDirLayer";
                             (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["PATH"] = DirName;
-                            SaveNodes(); BuildUI();
+                            Model->SaveNodes(); BuildUI();
                         });
                         LG->addWidget(Conv, 1, 2);
                     }
@@ -904,7 +784,7 @@ bool PackageEditor::BuildUI()
                             for (const QString &Line : SubMounts->toPlainText().split('\n')) { QString T = Line.trimmed(); if (!T.isEmpty()) Arr.push_back(T.toStdString()); }
                             auto Ptr = json::json_pointer(LPath.toStdString());
                             if (Arr.empty()) (*MANIFESTJSON)[Ptr].erase("SUBMOUNTS"); else (*MANIFESTJSON)[Ptr]["SUBMOUNTS"] = Arr;
-                            SaveNodes();
+                            Model->SaveNodes();
                         });
                         LG->addWidget(SubMounts, 3, 1);
                     }
@@ -942,7 +822,7 @@ bool PackageEditor::BuildUI()
                             if (OldKey == NewKey || NewKey.isEmpty()) return;
                             auto &KV = (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"];
                             auto Val = KV[OldKey.toStdString()]; KV.erase(OldKey.toStdString()); KV[NewKey.toStdString()] = Val;
-                            KeyEdit->setProperty("OriginalKey", NewKey); SaveNodes(); RefreshJSONView();
+                            KeyEdit->setProperty("OriginalKey", NewKey); Model->SaveNodes(); RefreshJSONView();
                         });
                         KG->addWidget(KeyEdit, k, 0);
                         QLineEdit * ValField = new QLineEdit(KeysBox);
@@ -953,13 +833,13 @@ bool PackageEditor::BuildUI()
                         KG->addWidget(ValField, k, 1);
                         QPushButton * KeyDel = new QPushButton("✕", KeysBox); KeyDel->setFixedWidth(28);
                         QObject::connect(KeyDel, &QPushButton::clicked, this, [this, n, j, OrigKey](){
-                            (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"].erase(OrigKey); SaveNodes(); BuildUI();
+                            (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"].erase(OrigKey); Model->SaveNodes(); BuildUI();
                         });
                         KG->addWidget(KeyDel, k, 2); k++;
                     }
                     QPushButton * AddKey = new QPushButton("+ Add Key", KeysBox);
                     QObject::connect(AddKey, &QPushButton::clicked, this, [this, n, j](){
-                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"]["new_key"] = ""; SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"]["new_key"] = ""; Model->SaveNodes(); BuildUI();
                     });
                     KG->addWidget(AddKey, k, 0, 1, -1);
                     LG->addWidget(KeysBox, 3, 0, 1, -1);
@@ -1045,7 +925,7 @@ bool PackageEditor::BuildUI()
                     VT->addItems({"string", "number", "dword", "qword", "bool", "options", "random"});
                     VT->setCurrentText(QString::fromStdString(VarType));
                     QObject::connect(VT, &QComboBox::currentIndexChanged, this, [this, n, j, VT](){
-                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["VARTYPE"] = VT->currentText().toStdString(); SaveNodes(); BuildUI();
+                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["VARTYPE"] = VT->currentText().toStdString(); Model->SaveNodes(); BuildUI();
                     });
                     LG->addWidget(VT, cvrow, 1, 1, 2); cvrow++;
 
@@ -1053,7 +933,7 @@ bool PackageEditor::BuildUI()
                     QCheckBox * Disp = new QCheckBox(LBox);
                     Disp->setChecked(Layers[j].value("DISPLAY", true));
                     QObject::connect(Disp, &QCheckBox::toggled, this, [this, n, j](bool On){
-                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["DISPLAY"] = On; SaveNodes(); RefreshJSONView();
+                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["DISPLAY"] = On; Model->SaveNodes(); RefreshJSONView();
                     });
                     LG->addWidget(Disp, cvrow, 1, 1, 2); cvrow++;
 
@@ -1082,7 +962,7 @@ bool PackageEditor::BuildUI()
                             QObject::connect(OptValue, &QLineEdit::editingFinished, this, &PackageEditor::JSONQLineEditChanged);
                             QPushButton * OptDel = new QPushButton("✕", OptsBox); OptDel->setFixedWidth(28);
                             QObject::connect(OptDel, &QPushButton::clicked, this, [this, n, j, oi](){
-                                (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["OPTIONS"].erase(oi); SaveNodes(); BuildUI();
+                                (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["OPTIONS"].erase(oi); Model->SaveNodes(); BuildUI();
                             });
                             OptRow->addWidget(OptValue); OptRow->addWidget(OptDel); OptsLayout->addLayout(OptRow);
                         }
@@ -1090,7 +970,7 @@ bool PackageEditor::BuildUI()
                         QObject::connect(AddOpt, &QPushButton::clicked, this, [this, n, j, IsRandom](){
                             if (IsRandom) (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["OPTIONS"].push_back(json::object({{"VALUE", ""}}));
                             else          (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["OPTIONS"].push_back(json::object({{"LABEL", ""}, {"VALUE", ""}}));
-                            SaveNodes(); BuildUI();
+                            Model->SaveNodes(); BuildUI();
                         });
                         OptsLayout->addWidget(AddOpt);
                         LG->addWidget(OptsBox, cvrow, 0, 1, -1); cvrow++;
@@ -1147,7 +1027,7 @@ void PackageEditor::JSONQLineEditChanged()
     if (!Editor) return;
     nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
     (*MANIFESTJSON)[JSONPointer] = Editor->text().toStdString();
-    SaveNodes();
+    Model->SaveNodes();
     RefreshJSONView();
 }
 
@@ -1176,7 +1056,7 @@ void PackageEditor::SaveJSONButtonPressed()
     // Preserve the editor-only provenance tag.
     if ((*MANIFESTJSON)["NODES"][Idx].contains("__FILE__")) Doc["__FILE__"] = (*MANIFESTJSON)["NODES"][Idx]["__FILE__"];
     (*MANIFESTJSON)["NODES"][Idx] = Doc;
-    SaveNodes(); BuildUI();
+    Model->SaveNodes(); BuildUI();
 }
 
 // ============================================================================
@@ -1191,7 +1071,7 @@ void PackageEditor::AppendLayer(QObject * Sender, const nlohmann::ordered_json &
     if (!(*MANIFESTJSON)[JSONPointer].contains("LAYERS") || !(*MANIFESTJSON)[JSONPointer]["LAYERS"].is_array())
         (*MANIFESTJSON)[JSONPointer]["LAYERS"] = json::array();
     (*MANIFESTJSON)[JSONPointer]["LAYERS"].push_back(Layer);
-    SaveNodes(); BuildUI();
+    Model->SaveNodes(); BuildUI();
 }
 
 QString PackageEditor::ImportLayerFile(const QString & Selected, bool IsDir)
@@ -1299,103 +1179,8 @@ std::string PackageEditor::NodeIdOfSender(QObject * Sender) const
     } catch (...) { return ""; }
 }
 
-void PackageEditor::RunInNode(const std::string & NodeId, const std::string & Exe)
-{
-    SaveNodes();
-    NodeIndex Idx = BuildExecIndex();
-    const std::string Launch = LaunchableForNode(Idx, NodeId);
-    if (Launch.empty())
-    {
-        QMessageBox::warning(this, "Run",
-            "This node isn't launchable and no launchable node in the bundle includes it.\n"
-            "Add a launchable node (with this one as a parent) to test it.");
-        return;
-    }
 
-    ContainerParams Params(PackageDir->path().toStdString());
-    Params.NodeIdx = &Idx;
-    Params.LaunchNodeId = Launch;
-    nlohmann::ordered_json Dummy = nlohmann::ordered_json::object();
-    ContainerWrapper Container(*GlobalConfigJSON, Dummy, Params);
 
-    Container.Cleanup();
-    if (!Container.BuildContainerRuntime())
-    { QMessageBox::critical(this, "Run", "Failed to build the container runtime. Check the log."); Container.Cleanup(); return; }
-    if (!Container.Execute(Exe))
-        QMessageBox::warning(this, "Run", "Process exited with an error. Check the log.");
-    Container.Cleanup();
-}
-
-void PackageEditor::AnalyzeNodeRegistry(const std::string & NodeId)
-{
-    SaveNodes();
-    NodeIndex Idx = BuildExecIndex();
-    const std::string Launch = LaunchableForNode(Idx, NodeId);
-    if (Launch.empty())
-    { QMessageBox::warning(this, "Analyze Registry", "No launchable node includes this one — nothing to analyze against."); return; }
-
-    const Node * LaunchNode = Idx.Find(Launch);
-    const std::string PackageUID = LaunchNode ? LaunchNode->Uid : PackageDir->dirName().toStdString();
-    std::filesystem::path SessionTemp = std::filesystem::path(QDir::homePath().toStdString()) / ".VidyaGod" / "TEMP" / PackageUID;
-
-    // Comparator: the launchable's baseline state in read-only mode, on isolated paths.
-    ContainerParams ComparatorParams(PackageDir->path().toStdString());
-    ComparatorParams.NodeIdx = &Idx;
-    ComparatorParams.LaunchNodeId = Launch;
-    nlohmann::ordered_json Dummy = nlohmann::ordered_json::object();
-    ContainerWrapper Comparator(*GlobalConfigJSON, Dummy, ComparatorParams);
-    Comparator.ContainerParams.TempPath      = SessionTemp / "COMPARATOR_TEMP";
-    Comparator.ContainerParams.DefPrefixPath = SessionTemp / "COMPARATOR_TEMP" / "DEFPREFIX";
-    Comparator.ContainerParams.RuntimePath   = SessionTemp / "COMPARATOR";
-    Comparator.ContainerParams.ReadOnlyVFS   = true;
-    Comparator.Cleanup();
-    Comparator.BuildContainerRuntime();
-
-    RegistryWrapper Baseline;
-    Baseline.LoadPrefix(Comparator.ContainerParams.RuntimePath);
-    Comparator.Cleanup();
-
-    RegistryWrapper After;
-    After.LoadPrefix(SessionTemp / "WRITELAYER");
-
-    nlohmann::ordered_json Delta = After.DiffToRegEdits(Baseline);
-    LogOut("PackageEditor::AnalyzeNodeRegistry", "Delta: " + std::to_string(Delta.size()) + " RegEdit layer(s).");
-
-    if (!Delta.empty())
-    {
-        // Locate NodeId's array index in the working document.
-        int ArrIdx = -1;
-        for (int n = 0; n < (int)(*MANIFESTJSON)["NODES"].size(); n++)
-            if ((*MANIFESTJSON)["NODES"][n].value("NODE_ID", std::string()) == NodeId) { ArrIdx = n; break; }
-        if (ArrIdx >= 0) MergeRegistryDeltaInNode(&Delta, ArrIdx);
-    }
-
-    SaveNodes(); RefreshJSONView(); BuildUI();
-}
-
-void PackageEditor::MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray)
-{
-    if (NodeIndexInArray < 0 || NodeIndexInArray >= (int)(*MANIFESTJSON)["NODES"].size()) return;
-    auto &Layers = (*MANIFESTJSON)["NODES"][NodeIndexInArray]["LAYERS"];
-    if (!Layers.is_array()) Layers = json::array();
-
-    for (int i = 0; i < (int)Delta->size(); i++)
-    {
-        auto &DeltaLayer = (*Delta)[i];
-        bool Merged = false;
-        for (int j = 0; j < (int)Layers.size(); j++)
-        {
-            auto &Existing = Layers[j];
-            if (!Existing.is_object() || Existing.value("TYPE", std::string()) != "RegEdit") continue;
-            if (DeltaLayer.value("REGPATH", std::string()) == Existing.value("REGPATH", std::string()))
-            {
-                for (auto KV : DeltaLayer["KEYVALUES"].items()) Existing["KEYVALUES"][KV.key()] = KV.value();
-                Merged = true; break;
-            }
-        }
-        if (!Merged) Layers.push_back(DeltaLayer);
-    }
-}
 
 // ============================================================================
 // META — cover drop
@@ -1414,7 +1199,7 @@ void PackageEditor::ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, 
     OutFile.write(Data); OutFile.close();
 
     (*MANIFESTJSON)[nlohmann::ordered_json::json_pointer(QString("/NODES/%1/META/COVER").arg(NodeIndexInArray).toStdString())] = FileName.toStdString();
-    SaveNodes();
+    Model->SaveNodes();
 
     QPixmap Pix; Pix.loadFromData(Data);
     if (!Pix.isNull()) CoverLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));

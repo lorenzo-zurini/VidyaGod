@@ -31,7 +31,9 @@
 class ContainerWrapper
 {
 public:
-    ContainerWrapper(nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
+    //GlobalConfigJSON is read-only here — the wrapper copies it into its own member, never writing back to the
+    //caller's config — so it's taken by const ref (lets read-only callers like the package editor pass a const config).
+    ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, ContainerParams &Passed_ContainerParams);
     struct ContainerParams ContainerParams;
 
     //Mounts VFS layers, applies registry patches and DLL overrides, checks for case conflicts.

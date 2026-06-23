@@ -92,13 +92,15 @@ private:
 // is reused unchanged (paths like /NODES/3/EXEC/CONTENTPATH, /NODES/3/LAYERS/2/PATH). Each node carries an
 // editor-only "__FILE__" tag (its on-disk filename) so a NODE_ID rename re-files it. Save writes one file per node.
 // ---------------------------------------------------------------------------
+class PackageEditorModel;   // the state/signal hub (packageeditormodel.h) — owned by PackageEditor
+
 class PackageEditor : public QDialog
 {
     Q_OBJECT
 
 public:
     //If PackagePath is non-empty, the directory picker is skipped and that bundle is opened directly.
-    explicit PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
+    explicit PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QWidget *parent = nullptr, const QString &PackagePath = "");
     ~PackageEditor();
 
 signals:
@@ -124,9 +126,7 @@ private slots:
     void AddRegKeyPersist();
 
 private:
-    void SaveNodes();
     void RefreshJSONView();
-    void InitPackage(const QString &PreselectedPath = "");
     bool BuildUI();
 
     //Appends a layer object to the LAYERS of the node owning `Sender` (the Add… button/menu), then persists +
@@ -136,41 +136,18 @@ private:
     //name collision. Returns the in-bundle basename to store as the layer PATH, or "" if cancelled/failed.
     QString ImportLayerFile(const QString & Selected, bool IsDir);
 
-    //NODE I/O (one file per node) ------------------------------------------------------------------
-    //Loads every <node_id>.json fragment in the bundle into the in-memory NODES array, tagging each node with a
-    //hidden "__FILE__" provenance key. Non-node *.json files (e.g. legacy MANIFEST.json) are ignored.
-    void LoadNodes();
-    //The on-disk filename a node should live in: its "__FILE__" tag, else <NODE_ID>.json.
-    QString FileForNode(const nlohmann::ordered_json & Node) const;
-
-    //AUTHORING EXECUTE (native node engine) -------------------------------------------------------
-    //Builds a NodeIndex covering THIS bundle (authoritative — freshly saved) plus the catalog repos, so a node's
-    //PARENTS (e.g. cross-bundle runner builds) resolve. The returned index is owned by the caller.
-    NodeIndex BuildExecIndex() const;
     //The NODE_ID of the node-tab that owns `Sender`, or "" (walks up the JSONPath property like AppendLayer).
     std::string NodeIdOfSender(QObject * Sender) const;
-    //Runs `Exe` (default = the launchable's CONTENTPATH) inside NodeId's resolved container (build → execute →
-    //cleanup), node-natively. Used by Run-EXE / Browse / Regedit / Execute.
-    void RunInNode(const std::string & NodeId, const std::string & Exe = "");
-    //Registry-diff authoring: build NodeId's container, snapshot its baseline registry vs the carried-over
-    //WRITELAYER, and merge the delta back into NodeId's LAYERS as RegEdit layers.
-    void AnalyzeNodeRegistry(const std::string & NodeId);
-    void MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray);
 
-    //VALIDATION -----------------------------------------------------------------------------------
-    //Runs ManifestModel::ValidateNodeGraph over this bundle's nodes (plus catalog, for cross-bundle parents).
-    void Revalidate();
+    //VALIDATION ----------------------------------------------------------------------------------- (repaints the
+    //persistent panel from the model's latest results; the validation itself runs in PackageEditorModel.)
     void UpdateValidationBox();
 
     //META cover drop ------------------------------------------------------------------------------
     bool eventFilter(QObject *obj, QEvent *event) override;
     void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int NodeIndexInArray);
 
-    //The union of every platform some runner can serve (GUEST across the catalog runners + this bundle's runner
-    //nodes) — drives the HOST / GUEST platform dropdown suggestions.
-    std::vector<std::string> KnownPlatforms();
-    //Every node id known (this bundle + catalog) — the global PARENTS picker source.
-    std::vector<std::string> KnownNodeIds();
+    //(Node I/O, validation, catalog/exec-index queries, and the authoring runs moved to PackageEditorModel.)
 
     //Saved UI state — restored after BuildUI() to keep the user on the same tab.
     int SavedMainTab = 1;
@@ -180,9 +157,7 @@ private:
     QTextEdit * JSONTextEdit = nullptr;
     QComboBox * JSONFileCombo = nullptr;   // selects which node file the raw JSON tab edits
 
-    QDir * PackageDir = nullptr;
-
-    std::vector<std::string> ValErrors, ValWarnings;
+    QDir * PackageDir = nullptr;   // non-owning alias of Model->packageDir()
 
     //Selects the tab editing the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
     void SelectNodeTab(const std::string & NodeId);
@@ -193,9 +168,11 @@ private:
     QGroupBox * ValidationBox  = nullptr;
     QTextEdit * ValidationView = nullptr;
 
-    //Working document: { "NODES": [ <node>, ... ] } (each node carries an editor-only "__FILE__" tag).
+    //The state/signal hub (owns the working document, node I/O, validation, authoring). The members below are
+    //non-owning aliases into it, kept so the existing BuildUI machinery reads them unchanged.
+    PackageEditorModel * Model = nullptr;
+    //Working document: { "NODES": [ <node>, ... ] } — alias of Model->doc().
     nlohmann::ordered_json * MANIFESTJSON = nullptr;
-    nlohmann::ordered_json * GlobalConfigJSON = nullptr;
     QNetworkAccessManager * NetMgr = nullptr;
 };
 
