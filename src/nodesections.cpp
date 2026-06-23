@@ -1,6 +1,7 @@
 #include "nodesections.h"
 #include "packageeditormodel.h"
 #include "covercache.h"
+#include "manifestmodel.h"   // ManifestModel::ZipFullyStored (STORE-zip check for the re-store action)
 #include "processenv.h"   // RunCommand (LAYERS zip<->dir convert)
 #include "varsubst.h"     // VarSubst::TranslateCustomVarValue (CustomVar "stored as" hint)
 #include "commonutils.h"
@@ -411,6 +412,44 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                             Model->SaveNodes(); Model->requestReload();
                         });
                         LG->addWidget(Conv, 1, 2);
+
+                        //If the zip is DEFLATE-compressed it cannot mount (VidyaGodFS reads entries at their
+                        //backing offset and can't inflate). Offer a one-click fix that unzips + re-zips STORE.
+                        {
+                            std::string ZipPathStr = Layers[j].value("PATH", std::string());
+                            std::filesystem::path ZipFile = std::filesystem::path(Model->packageDir()->path().toStdString()) / ZipPathStr;
+                            if (!ZipPathStr.empty() && std::filesystem::exists(ZipFile)
+                                && !ManifestModel::ZipFullyStored(ZipFile.string()))
+                            {
+                                QPushButton * Fix = new QPushButton("⚠ Re-store", LBox);
+                                Fix->setToolTip("This zip is DEFLATE-compressed and will not mount — re-pack it uncompressed (STORE).");
+                                QObject::connect(Fix, &QPushButton::clicked, this, [this, n, j](){
+                                    std::string Path = Model->doc()["NODES"][n]["LAYERS"][j].value("PATH", std::string());
+                                    std::filesystem::path PkgDir = std::filesystem::path(Model->packageDir()->path().toStdString());
+                                    std::filesystem::path ZipTarget = PkgDir / Path;
+                                    const QString Msg =
+                                        "“" + QString::fromStdString(Path) + "” is DEFLATE-compressed.\n\n"
+                                        "VidyaGod mounts zip layers by reading each file at its position inside the zip — it "
+                                        "cannot decompress on the fly, so a compressed zip mounts to garbage and the game "
+                                        "won't launch.\n\nRe-pack it uncompressed (STORE) now? The contents are unchanged; "
+                                        "only the on-disk packing differs (the file may get larger).";
+                                    if (QMessageBox::question(this, "Re-pack zip as STORE", Msg,
+                                            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+                                        return;
+                                    //Unzip to a sibling temp dir, then re-zip STORE (`-0`) with files at the root (`.`).
+                                    std::filesystem::path Tmp = PkgDir / (Path + ".restore.tmp");
+                                    std::error_code Ec; std::filesystem::remove_all(Tmp, Ec);
+                                    std::filesystem::create_directories(Tmp);
+                                    RunCommand("unzip", {"-o", ZipTarget.string(), "-d", Tmp.string()});
+                                    std::filesystem::remove(ZipTarget, Ec);
+                                    RunCommand("zip", {"-0", "-r", "-X", ZipTarget.string(), "."},
+                                               QProcessEnvironment::systemEnvironment(), Tmp.string());
+                                    std::filesystem::remove_all(Tmp, Ec);
+                                    Model->SaveNodes(); Model->requestReload();   // re-runs validation → error clears
+                                });
+                                LG->addWidget(Fix, 1, 3);
+                            }
+                        }
                     }
 
                     if (LayerType == "VFSZipLayer" || LayerType == "VFSDirLayer")

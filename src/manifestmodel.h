@@ -117,6 +117,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                        const std::set<std::string> *OnlyNodes = nullptr);
 
 // ----- VFS layer helpers (the dedup foundation) -----
+// True if every file entry in the zip at ZipPath is STOREd (uncompressed) — the form VidyaGodFS can mount (it
+// reads entries at their backing offset and cannot inflate DEFLATE). A missing/unreadable zip is treated as true
+// (other checks cover presence). If FirstCompressed is non-null, it receives the first compressed entry's name.
+bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed = nullptr);
 // True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File).
 bool IsVfsLayer(const std::string &Type);
 // A subcomponent's TYPE ("" if absent).

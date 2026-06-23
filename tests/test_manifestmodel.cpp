@@ -177,6 +177,18 @@ TEST(validate_flags_compressed_zip_layer)
     std::error_code Ec; fs::remove_all(Dir, Ec);
 }
 
+// A VFSDirLayer is an unzipped authoring intermediary — warn (not error) so the node still test-runs from the
+// editor, but the author is told to zip it before publishing (dir layers can't be seeded to IPFS).
+TEST(validate_warns_unzipped_dir_layer)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID", "d"}, {"ROLE", "content"}, {"LAYERS", {{{"TYPE", "VFSDirLayer"}, {"PATH", "payload"}}}}});
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Warnings, "unzipped authoring layer"));
+    CHECK(!AnyContains(Errors, "VFSDirLayer"));   // warning, never an error
+}
+
 TEST(validate_flags_asymmetric_exclude)
 {
     NodeIndex Idx;
