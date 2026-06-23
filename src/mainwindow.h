@@ -10,6 +10,7 @@ class QTabWidget;
 class QTimer;
 class AppModel;
 class DownloadManager;
+class TrayController;
 class LibraryTab;
 class CatalogTab;
 class SettingsTab;
@@ -32,14 +33,23 @@ public:
     //drive it.
     static void RefreshPackage(const QString & PackagePath);
 
+    //Show the window, or come up hidden in the tray if Start-in-tray / the remembered last state says so. Called by
+    //main() instead of show(), so a tray start never flashes the window.
+    void startup();
+
 protected:
-    void closeEvent(QCloseEvent * e) override;
+    void closeEvent(QCloseEvent * e) override;     // close → hide to tray (if enabled), else quit
+    void changeEvent(QEvent * e) override;         // minimize → hide to tray (if enabled)
 
 private:
     void BuildStaticUI();
+    void restoreFromTray();                        // un-hide + raise + focus
+    void hideToTray();                             // hide window, remember the hidden state, hint once
 
     AppModel        * Model       = nullptr;   // owns config + catalog + persisted UI state; the signal hub
     DownloadManager * DownloadMgr = nullptr;   // owns the Catalog download lifecycle
+    TrayController  * Tray        = nullptr;    // tray icon + close/minimize/start-in-tray behavior
+    bool              ReallyQuitting = false;   // set by the tray "Quit" path so closeEvent quits instead of hiding
 
     QTabWidget * MainWindowTabWidget = nullptr;
     LibraryTab  * LibraryTabPtr  = nullptr;

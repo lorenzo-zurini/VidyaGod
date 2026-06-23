@@ -432,7 +432,7 @@ int main(int argc, char *argv[])
     //Create and launch MainWindow. Passes GlobalConfigJSON and AppDataDir by pointer so
     //the window can persist changes (add/remove packages, save settings) to disk.
     MainWindow MainWindow(&GlobalConfigJSON, &AppDataDir);
-    MainWindow.show();
+    MainWindow.startup();   // show(), or come up hidden in the tray if Start-in-tray / the remembered state says so
     return Application.exec();
 }
 

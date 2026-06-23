@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="vidyagod.png">org.vidyagod.VidyaGod.png</file>
+    </qresource>
+</RCC>

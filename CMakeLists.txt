@@ -161,6 +161,12 @@ set(SHARED_SOURCES
     src/downloadspage.h
     src/downloadspage.cpp
 
+    src/generalpage.h
+    src/generalpage.cpp
+
+    src/traycontroller.h
+    src/traycontroller.cpp
+
     src/pathspage.h
     src/pathspage.cpp
 )
@@ -176,7 +182,7 @@ if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
 endif()
 
-add_executable(VidyaGod src/main.cpp src/main.h translations/${TS_FILES})
+add_executable(VidyaGod src/main.cpp src/main.h resources/vidyagod.qrc translations/${TS_FILES})
 target_link_libraries(VidyaGod PRIVATE vidyagod_objs)
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
@@ -240,6 +246,7 @@ endfunction()
 
 add_gui_test(test_packageeditor_gui)
 add_gui_test(test_packageeditormodel)
+add_gui_test(test_tray)
 add_gui_test(test_launchresolver)
 add_gui_test(test_packagecatalog)
 add_gui_test(test_appmodel)

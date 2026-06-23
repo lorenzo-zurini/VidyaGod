@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "appmodel.h"
 #include "downloadmanager.h"
+#include "traycontroller.h"
 #include "librarytab.h"
 #include "catalogtab.h"
 #include "settingstab.h"
@@ -17,6 +18,8 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QCloseEvent>
+#include <QEvent>
+#include <QIcon>
 #include <QDir>
 
 #include <nlohmann/json.hpp>
@@ -29,6 +32,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     : QMainWindow(parent)
 {
     setWindowTitle("Vidya God");
+    setWindowIcon(QIcon(":/vidyagod.png"));
     setMinimumSize(640, 480);
 
     Model = new AppModel(gc, appData, this);   // owns config + catalog + persisted UI state (card size, etc.)
@@ -54,6 +58,14 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     setCentralWidget(cw);
 
     DownloadMgr = new DownloadManager(*Model, this, this);   // dialog parent = this; lifetime = this
+
+    // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
+    // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.
+    Tray = new TrayController(*Model, this, this);
+    if (Tray->available())
+        QApplication::setQuitOnLastWindowClosed(false);
+    connect(Tray, &TrayController::restoreRequested, this, [this]{ restoreFromTray(); });
+    connect(Tray, &TrayController::quitRequested,    this, [this]{ ReallyQuitting = true; close(); });
 
     BuildStaticUI();
 
@@ -147,11 +159,64 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
 
 void MainWindow::closeEvent(QCloseEvent * e)
 {
+    // Persist geometry on every close (hide or quit) so the window reopens where it was.
     auto * cfg = Model->config();
-    (*cfg)["Settings"]["WindowW"] = width();
-    (*cfg)["Settings"]["WindowH"] = height();
-    (*cfg)["Settings"]["WindowX"] = x();
-    (*cfg)["Settings"]["WindowY"] = y();
+    if (!isMinimized() && isVisible())   // a minimized/hidden window reports bogus geometry — keep the last good one
+    {
+        (*cfg)["Settings"]["WindowW"] = width();
+        (*cfg)["Settings"]["WindowH"] = height();
+        (*cfg)["Settings"]["WindowX"] = x();
+        (*cfg)["Settings"]["WindowY"] = y();
+    }
     Model->save();   // card size + sort mode are persisted by their owners on change
+
+    // Close-to-tray: hide instead of quitting (the node keeps seeding). The tray "Quit" sets ReallyQuitting first.
+    if (!ReallyQuitting && Tray && Tray->available() && Tray->closeToTray())
+    {
+        e->ignore();
+        hideToTray();
+        return;
+    }
+    if (Tray) Tray->rememberHidden(false);   // exiting from a visible window → relaunch visible
     QMainWindow::closeEvent(e);
+    QApplication::quit();                     // quitOnLastWindowClosed is off when a tray is active
+}
+
+void MainWindow::changeEvent(QEvent * e)
+{
+    // Minimize-to-tray: when the window is minimized, hide it to the tray instead of leaving a taskbar entry.
+    if (e->type() == QEvent::WindowStateChange && isMinimized()
+        && Tray && Tray->available() && Tray->minimizeToTray())
+    {
+        // Defer the hide so the minimize animation/state settles first; clear the minimized bit so the next show
+        // comes up normal rather than minimized.
+        QTimer::singleShot(0, this, [this]{ setWindowState(windowState() & ~Qt::WindowMinimized); hideToTray(); });
+        e->accept();
+        return;
+    }
+    QMainWindow::changeEvent(e);
+}
+
+void MainWindow::startup()
+{
+    if (Tray && Tray->shouldStartHidden())
+    {
+        Tray->notifyHidden();   // make the tray icon's presence obvious on a hidden start
+        return;                 // stay hidden; the tray icon is already shown by the TrayController
+    }
+    show();
+}
+
+void MainWindow::restoreFromTray()
+{
+    showNormal();
+    raise();
+    activateWindow();
+    if (Tray) Tray->rememberHidden(false);
+}
+
+void MainWindow::hideToTray()
+{
+    hide();
+    if (Tray) { Tray->rememberHidden(true); Tray->notifyHidden(); }
 }
