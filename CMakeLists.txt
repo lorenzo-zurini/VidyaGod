@@ -143,6 +143,9 @@ set(SHARED_SOURCES
     src/librarytab.h
     src/librarytab.cpp
 
+    src/gamepicker.h
+    src/gamepicker.cpp
+
     src/catalogtab.h
     src/catalogtab.cpp
 

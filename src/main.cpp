@@ -4,6 +4,7 @@
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "prelaunchwindow.h"
+#include "gamepicker.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "vgipfsapi.h"
@@ -459,11 +460,15 @@ int main(int argc, char *argv[])
                 "This folder has no launchable game in it (no presentable node group).");
             return 1;
         }
+        //Multi-game bundle → a picker grid (clicking a game opens its PreLaunchWindow). Single game → straight to it.
+        if (Groups.size() > 1)
+        {
+            GamePicker Picker(&GlobalConfigJSON, &PkgIndex);
+            Picker.show();
+            return Application.exec();
+        }
         std::vector<std::string> GroupNodeIds;
         for (const Node *N : Groups.front()) GroupNodeIds.push_back(N->NodeId);
-        if (Groups.size() > 1)
-            LogWarn("main.cpp", "Package has " + std::to_string(Groups.size())
-                    + " games; opening the first (multi-game picker is a future feature).");
         PreLaunchWindow Dialog(&GlobalConfigJSON, &PkgIndex, GroupNodeIds);
         Dialog.show();
         return Application.exec();

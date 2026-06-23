@@ -12,6 +12,7 @@
 #include "packagesview.h"
 #include "settingstab.h"
 #include "ipfstab.h"
+#include "gamepicker.h"
 
 using json = nlohmann::ordered_json;
 
@@ -44,6 +45,21 @@ private slots:
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
     void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsTab     t(m); QVERIFY(renders(&t)); }
+
+    // The in-package multi-game picker builds a card per presentable group over a bundle index and renders.
+    void game_picker_constructs()
+    {
+        NodeIndex idx;
+        for (const char * id : {"g1", "g2"})
+        {
+            Node n; n.NodeId = id; n.Role = "launchable"; n.Group = id;
+            n.Meta = json{{"TITLE", std::string("Game ") + id}};
+            idx.Nodes[id] = n;
+        }
+        json cfg = json{{"Settings", json::object()}};
+        GamePicker p(&cfg, &idx);
+        QVERIFY(renders(&p));   // two game cards laid out
+    }
 
     // Switching the Settings subpages must not crash (each subpage is its own widget).
     void settings_subpages_switch()
