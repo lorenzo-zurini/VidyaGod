@@ -18,6 +18,68 @@
 //VFS layer helpers (IsVfsLayer/LayerType/ResolveNodeOrder/...) live in ManifestModel; bring them in unqualified.
 using namespace ManifestModel;
 
+namespace {
+//Synthesize the minimal runner "package" json from a ROLE:runner node + its content closure (the build). Shared by
+//the node-level install (ImportRunnerNode) and node-level target collection (CollectRunnerNodeTargets).
+bool BuildRunnerPkgFromNode(const NodeIndex &Idx, const std::string &RunnerNodeId,
+                            nlohmann::ordered_json &Pkg, std::string &PackageDir, std::string &Vid, std::string *Error)
+{
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) { if (Error) *Error = "not a runner node: " + RunnerNodeId; return false; }
+
+    nlohmann::ordered_json Components = nlohmann::ordered_json::array();
+    nlohmann::ordered_json Modules    = nlohmann::ordered_json::array();
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
+    {
+        if (Id == RunnerNodeId) continue;
+        const Node *C = Idx.Find(Id);
+        if (!C || !C->Layers.is_array() || C->Layers.empty()) continue;
+        Components.push_back(nlohmann::ordered_json{{"COMPONENTID", Id}, {"SUBCOMPONENTS", C->Layers}});
+        Modules.push_back(nlohmann::ordered_json{{"COMPONENT", Id}});
+    }
+    nlohmann::ordered_json Variant = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
+    Variant["VARIANT_ID"]     = "default";
+    Variant["HOST_PLATFORM"]  = R->HostPlatform;
+    Variant["GUEST_PLATFORM"] = R->GuestPlatform;
+    Variant["MODULES"]        = Modules;
+    Variant["RECOMMENDED"]    = true;
+
+    Pkg = nlohmann::ordered_json::object();
+    Pkg["PACKAGEUID"] = R->Uid.empty() ? R->NodeId : R->Uid;
+    Pkg["RUNNERS"]    = nlohmann::ordered_json::array({ nlohmann::ordered_json{
+        {"RUNNER_ID", R->NodeId}, {"NAME", R->NodeId}, {"VARIANTS", nlohmann::ordered_json::array({Variant})} } });
+    Pkg["COMPONENTS"] = Components;
+    PackageDir = R->BundleDir.string();
+    Vid = "default";
+    return true;
+}
+
+//Gather a runner variant's MISSING build-layer fetch targets (no fetching). Shared by ImportRunner (fetch loop) and
+//the node-level collection. The runner build = the VFS layers of the components this variant's MODULES enable.
+void CollectBuildTargets(const nlohmann::ordered_json &RunnerPkg, const std::filesystem::path &Pkg,
+                         const nlohmann::ordered_json &Variant, std::vector<IpfsWrapper::FetchTarget> &Out)
+{
+    std::vector<std::string> WantComps;
+    for (const auto &M : Variant.value("MODULES", nlohmann::ordered_json::array()))
+        if (M.is_object()) { std::string C = M.value("COMPONENT", std::string()); if (!C.empty()) WantComps.push_back(C); }
+    auto Wanted = [&](const nlohmann::ordered_json &C){ for (const auto &W : WantComps) if (C.value("COMPONENTID", std::string()) == W) return true; return false; };
+
+    std::error_code Ec;
+    for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
+    {
+        if (!Wanted(C) || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
+        for (const auto &S : C["SUBCOMPONENTS"])
+        {
+            if (!IsVfsLayer(S.value("TYPE", std::string()))) continue;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(S, Pkg, Local, Cid);
+            if (Cid.empty() || Local == Pkg || std::filesystem::exists(Local, Ec)) continue;
+            Out.push_back({Cid, Local.string(), false});
+        }
+    }
+}
+} // namespace
+
 //Installs a runner package: fetches its VFSZipLayer CIDs (IPFS), and for wine runners generates the
 //one-time read-only DEFPREFIX artifact by mounting the build and running `wineboot` once. Idempotent.
 bool RunnerInstall::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg, const std::string &PackageDir, const std::string &VariantId, std::string *Error)
@@ -42,25 +104,12 @@ bool RunnerInstall::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const
         if (M.is_object()) { std::string C = M.value("COMPONENT", std::string()); if (!C.empty()) WantComps.push_back(C); }
     auto Wanted = [&](const nlohmann::ordered_json &C){ for (const auto &W : WantComps) if (C.value("COMPONENTID", std::string()) == W) return true; return false; };
 
-    //1. Hydrate this variant's build layers IN PLACE in the runner's library dir (FetchToPath to PackageDir/PATH).
-    int FetchedLayers = 0;
-    for (const auto &C : RunnerPkg.value("COMPONENTS", nlohmann::ordered_json::array()))
-    {
-        if (!Wanted(C) || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : C["SUBCOMPONENTS"])
-        {
-            const std::string T = S.value("TYPE", std::string());
-            if (!IsVfsLayer(T)) continue;
-            std::filesystem::path Local; std::string Cid;
-            LayerLocator(S, Pkg, Local, Cid);
-            if (Cid.empty() || Local == Pkg || std::filesystem::exists(Local, Ec)) continue;
-            std::string Err;
-            if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
-                return Fail("could not fetch runner build CID " + Cid + " (" + Err + ")");
-            ++FetchedLayers;
-        }
-    }
-    LogSucc("RunnerInstall::ImportRunner", "Hydrated runner build for " + Label + " (" + std::to_string(FetchedLayers) + " layer(s))");
+    //1. Hydrate this variant's build layers IN PLACE in the runner's library dir, concurrently (bounded by the
+    //global download throttle), so a multi-layer runner build downloads in parallel instead of one-at-a-time.
+    std::vector<IpfsWrapper::FetchTarget> Targets;
+    CollectBuildTargets(RunnerPkg, Pkg, R, Targets);
+    { std::string E; if (!IpfsWrapper::FetchTargetsConcurrent(Targets, &E)) return Fail("could not fetch runner build (" + E + ")"); }
+    LogSucc("RunnerInstall::ImportRunner", "Hydrated runner build for " + Label + " (" + std::to_string(Targets.size()) + " layer(s))");
     if (!RunnerWrapper::GeneratesPrefix(RunnerPkg, Vid)) return true;    // no PREFIX_GENERATE: no prefix to build
 
     //2. Generate the one-time DEFPREFIX in the runner's library dir (idempotent): PackageDir/__DEFPREFIX__/<vid>.
@@ -143,35 +192,18 @@ bool RunnerInstall::ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const
 bool RunnerInstall::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
                                         const std::string &RunnerNodeId, std::string *Error)
 {
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("RunnerInstall::ImportRunnerNode", M); return false; };
-    const Node *R = Idx.Find(RunnerNodeId);
-    if (!R || !R->IsRunner()) return Fail("not a runner node: " + RunnerNodeId);
+    nlohmann::ordered_json Pkg; std::string PackageDir, Vid;
+    if (!BuildRunnerPkgFromNode(Idx, RunnerNodeId, Pkg, PackageDir, Vid, Error)) return false;
+    return ImportRunner(GlobalConfigJSON, Pkg, PackageDir, Vid, Error);
+}
 
-    nlohmann::ordered_json Components = nlohmann::ordered_json::array();
-    nlohmann::ordered_json Modules    = nlohmann::ordered_json::array();
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
-    {
-        if (Id == RunnerNodeId) continue;
-        const Node *C = Idx.Find(Id);
-        if (!C || !C->Layers.is_array() || C->Layers.empty()) continue;
-        Components.push_back(nlohmann::ordered_json{{"COMPONENTID", Id}, {"SUBCOMPONENTS", C->Layers}});
-        Modules.push_back(nlohmann::ordered_json{{"COMPONENT", Id}});
-    }
-
-    nlohmann::ordered_json Variant = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
-    Variant["VARIANT_ID"]    = "default";
-    Variant["HOST_PLATFORM"] = R->HostPlatform;
-    Variant["GUEST_PLATFORM"] = R->GuestPlatform;
-    Variant["MODULES"]       = Modules;
-    Variant["RECOMMENDED"]   = true;
-
-    nlohmann::ordered_json Pkg = nlohmann::ordered_json::object();
-    Pkg["PACKAGEUID"] = R->Uid.empty() ? R->NodeId : R->Uid;
-    Pkg["RUNNERS"]    = nlohmann::ordered_json::array({ nlohmann::ordered_json{
-        {"RUNNER_ID", R->NodeId}, {"NAME", R->NodeId}, {"VARIANTS", nlohmann::ordered_json::array({Variant})} } });
-    Pkg["COMPONENTS"] = Components;
-
-    return ImportRunner(GlobalConfigJSON, Pkg, R->BundleDir.string(), "default", Error);
+bool RunnerInstall::CollectRunnerNodeTargets(const NodeIndex &Idx, const std::string &RunnerNodeId,
+                                             std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
+{
+    nlohmann::ordered_json Pkg; std::string PackageDir, Vid;
+    if (!BuildRunnerPkgFromNode(Idx, RunnerNodeId, Pkg, PackageDir, Vid, Error)) return false;
+    CollectBuildTargets(Pkg, std::filesystem::path(PackageDir), RunnerWrapper::Variant(Pkg, Vid), Out);
+    return true;
 }
 
 bool RunnerInstall::RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId)

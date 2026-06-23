@@ -8,9 +8,12 @@
 
 #include "packagecatalog.h"
 #include "manifestmodel.h"
+#include "runnerinstall.h"
+#include "ipfswrapper.h"
 
 #include <fstream>
 #include <string>
+#include <vector>
 
 using json = nlohmann::ordered_json;
 
@@ -107,6 +110,36 @@ private slots:
         for (const Node * r : runners) { if (r->NodeId == "wine") hasWine = true; if (r->NodeId == "snes9x") hasSnes = true; }
         QVERIFY(hasWine);
         QVERIFY(!hasSnes);   // snes runner doesn't serve win32
+    }
+
+    // A package download pools the game's content layers AND its runner's build layers into ONE fetch batch (so they
+    // download concurrently). CollectContentTargets + CollectRunnerNodeTargets append to the same Targets vector.
+    void download_pools_content_and_runner_into_one_batch()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        // Dehydrated game: content zip has an IPFS CID but the file is absent → a fetch target.
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"UID", "g"},
+            {"PLATFORM", {{"HOST", "win32"}}}, {"EXEC", {{"CONTENTPATH", "g.exe"}}}, {"PARENTS", json::array({"content"})}});
+        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"ROLE", "content"}, {"LAYERS", json::array({
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_GAME"}}}} })}});
+        // Runner with a dehydrated build (its build is a PARENT content node, per the runner closure).
+        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"}, {"ROLE", "runner"},
+            {"PLATFORM", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"win32"})}}},
+            {"EXEC", {{"EXECUTABLE", "x"}}}, {"PARENTS", json::array({"winebuild"})}});
+        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"ROLE", "content"}, {"LAYERS", json::array({
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "wine.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_WINE"}}}} })}});
+
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
+
+        std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
+        QVERIFY(PackageCatalog::CollectContentTargets(idx, "game", {}, targets, &err));
+        QVERIFY(RunnerInstall::CollectRunnerNodeTargets(idx, "wine", targets, &err));
+
+        bool hasGame = false, hasWine = false;
+        for (const auto & t : targets) { if (t.Cid == "CID_GAME") hasGame = true; if (t.Cid == "CID_WINE") hasWine = true; }
+        QVERIFY(hasGame);                       // game content target
+        QVERIFY(hasWine);                       // runner build target — in the SAME batch
+        QVERIFY(targets.size() >= 2);
     }
 };
 

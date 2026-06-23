@@ -63,6 +63,16 @@ private:
     bool Owned = true;   // false after being moved-from, so only the live instance releases on destruction
 };
 
+// One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
+struct FetchTarget { std::string Cid; std::string LocalPath; bool Optional = false; };
+
+// Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once
+// across the whole batch (the dispatcher acquires a slot before spawning each worker; a freed slot starts the next).
+// Already-present destinations are skipped by FetchToPath. The FIRST non-optional failure stops dispatching further
+// work, makes the call return false, and sets *Error; optional failures are logged and skipped. This is the single
+// download pump — one batch can mix a game's content layers AND its runners' build layers so they download together.
+bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string *Error = nullptr);
+
 // ----- cancellation: abort an in-flight FetchToPath for a CID at its next checkpoint -----
 // RequestCancel marks a CID so a running FetchToPath aborts; ClearCancel un-marks it (call once the import has
 // returned, so a later re-download isn't pre-cancelled). Best-effort, thread-safe.

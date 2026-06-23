@@ -311,10 +311,19 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     auto CfgSnap = std::make_shared<nlohmann::ordered_json>(*Model.config());
     std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), CfgSnap]{
         std::string Err; bool Ok = true;
+        // Pool EVERY fetch — all selected launchables' content layers + all selected runners' build layers — into
+        // ONE concurrent batch, so the game and its runner(s) download TOGETHER (bounded by MaxConcurrentDownloads)
+        // instead of phase-by-phase (which left a runner's big build "Queued" behind the game content).
+        std::vector<IpfsWrapper::FetchTarget> Targets;
         for (const std::string & Lid : LaunchIds)
-            if (!PackageCatalog::HydrateNode(Snapshot, Lid, Toggles, &Err)) { Ok = false; break; }
-        // Install the selected runners (hydrate the build + generate the DEFPREFIX for proton/wine) — same call the
-        // Settings "Import" button uses. Reads the config snapshot, never the live GlobalConfigJSON.
+            if (!PackageCatalog::CollectContentTargets(Snapshot, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
+        if (Ok)
+            for (const std::string & Rid : RunnerIds)
+                if (!RunnerInstall::CollectRunnerNodeTargets(Snapshot, Rid, Targets, &Err)) { Ok = false; break; }
+        if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
+        // Builds are now present locally → generate each runner's DEFPREFIX (proton/wine wineboot — the post-fetch
+        // step; ImportRunnerNode's own fetch loop sees the layers already there and skips straight to the prefix).
+        // Same call the Settings "Import" button uses; reads the config snapshot, never the live GlobalConfigJSON.
         if (Ok)
             for (const std::string & Rid : RunnerIds)
                 if (!RunnerInstall::ImportRunnerNode(*CfgSnap, Snapshot, Rid, &Err)) { Ok = false; break; }

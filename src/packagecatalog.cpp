@@ -17,9 +17,6 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
-#include <atomic>
-#include <mutex>
-#include <thread>
 #include <vector>
 
 using namespace ManifestModel;   // LayerLocator / IsVfsLayer / ForEachVfsLayer / PackageHydrated / PackageIpfsCids
@@ -660,27 +657,26 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
     return Cids;
 }
 
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles, std::string *Error)
+bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles,
+                           std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
 {
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::HydrateNode", M); return false; };
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::CollectContentTargets", M); return false; };
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return Fail("launch node not found: " + LaunchNodeId);
 
-    // Collect every file to fetch first, then download them concurrently (bounded by the global download throttle)
-    // so a slow/stalled file doesn't block the rest. Required content failing is fatal; the cover is best-effort.
-    struct Target { std::string Cid; std::string Local; bool Optional; };
-    std::vector<Target> Targets;
+    // Required content layers: fetch any that aren't already on disk; a missing layer with no IPFS source is fatal.
     bool MissingSource = false; std::string MissingErr;
-
     ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
         if (MissingSource) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present
         if (Cid.empty()) { MissingSource = true; MissingErr = "missing local content with no IPFS source: " + Local.string(); return; }
-        Targets.push_back({Cid, Local.string(), false});
+        Out.push_back({Cid, Local.string(), false});
     });
     if (MissingSource) return Fail(MissingErr);
 
+    // Cover: fetch if remote; if already on disk but un-seeded/orphaned, seed it by reference so a downloader serves
+    // it too. Best-effort (a cover never fails a hydrate).
     if (Launch->Meta.is_object() && Launch->Meta.contains("COVER") && Launch->Meta["COVER"].is_object())
     {
         std::filesystem::path Local; std::string Cid;
@@ -689,48 +685,26 @@ bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const st
         if (!Cid.empty() && Local != Launch->BundleDir)
         {
             if (!std::filesystem::exists(Local, Ec))
-                Targets.push_back({Cid, Local.string(), true});            // not local → fetch over IPFS (FetchToPath seeds it)
+                Out.push_back({Cid, Local.string(), true});                 // not local → fetch over IPFS (FetchToPath seeds it)
             else if (!IpfsWrapper::HasLocal(Cid) || IpfsWrapper::CidMissing(Cid))
             {
-                // The cover file is already on disk (e.g. committed in the repo) but the node isn't seeding it (or its
-                // reference is orphaned). Seed it by reference so a downloader also serves the cover — otherwise covers
-                // are skipped as "already present" and never re-pinned. Best-effort (a cover never fails a hydrate).
                 if (IpfsWrapper::CidMissing(Cid)) IpfsWrapper::DropRef(Cid);   // re-point a stale reference
                 std::string E;
                 if (IpfsWrapper::AddNoCopy(Local.string(), &E).empty())
-                    LogWarn("PackageCatalog::HydrateNode", "could not seed local cover " + Local.string() + " (" + E + ")");
+                    LogWarn("PackageCatalog::CollectContentTargets", "could not seed local cover " + Local.string() + " (" + E + ")");
             }
         }
     }
+    return true;
+}
 
-    // Dispatch the fetches. Acquire a global download slot BEFORE spawning each worker, so the number of live worker
-    // threads (and concurrent FetchToPath calls) never exceeds MaxConcurrentDownloads — when one finishes and releases
-    // its slot, the dispatch loop unblocks and starts the next. A required fetch failing flips Failed, which stops
-    // dispatching further work (in-flight workers run to completion / get cancelled via RequestCancel separately).
-    std::atomic<bool> Failed{false};
-    std::atomic<int>  Fetched{0};
-    std::mutex ErrMu; std::string Err;
-    std::vector<std::thread> Workers;
-    Workers.reserve(Targets.size());
-
-    for (const Target &T : Targets)
-    {
-        if (Failed.load()) break;
-        IpfsWrapper::DownloadSlot Slot;        // blocks here until a concurrency slot frees (bounds live workers)
-        if (Failed.load()) break;              // a worker may have failed while we waited for the slot
-        Workers.emplace_back([&, T, Slot = std::move(Slot)]() mutable {
-            std::string E;
-            const bool Ok = !IpfsWrapper::FetchToPath(T.Cid, T.Local, &E).empty();
-            if (Ok) { Fetched.fetch_add(1); return; }
-            if (T.Optional) { LogWarn("PackageCatalog::HydrateNode", "could not fetch cover CID " + T.Cid + " (" + E + ")"); return; }
-            { std::lock_guard<std::mutex> Lk(ErrMu); if (Err.empty()) Err = "could not fetch layer CID " + T.Cid + " (" + E + ")"; }
-            Failed.store(true);
-        });
-    }
-    for (std::thread &W : Workers) W.join();
-
-    if (Failed.load()) return Fail(Err);
-    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Fetched.load()) + " file(s) fetched).");
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles, std::string *Error)
+{
+    std::vector<IpfsWrapper::FetchTarget> Targets;
+    if (!CollectContentTargets(Idx, LaunchNodeId, Toggles, Targets, Error)) return false;
+    if (!IpfsWrapper::FetchTargetsConcurrent(Targets, Error))
+    { LogErr("PackageCatalog::HydrateNode", "hydrate failed for '" + LaunchNodeId + "'"); return false; }
+    LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Targets.size()) + " file(s)).");
     return true;
 }
 

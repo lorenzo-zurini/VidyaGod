@@ -15,6 +15,9 @@
 #include <condition_variable>
 #include <mutex>
 #include <chrono>
+#include <atomic>
+#include <thread>
+#include <vector>
 #include <unordered_map>
 
 // IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
@@ -154,6 +157,35 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     }
     LogSucc("IpfsWrapper::FetchToPath", "Materialized CID " + Cid + " at " + DestPathStr);
     return DestPathStr;
+}
+
+bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string *Error)
+{
+    std::atomic<bool> Failed{false};
+    std::mutex ErrMu; std::string Err;
+    std::vector<std::thread> Workers;
+    Workers.reserve(Targets.size());
+
+    // Acquire a global download slot BEFORE spawning each worker, so live workers (and concurrent FetchToPath
+    // calls) never exceed MaxConcurrentDownloads — when one finishes and releases its slot, the loop unblocks and
+    // starts the next. A required fetch failing flips Failed, which stops dispatching further work.
+    for (const FetchTarget &T : Targets)
+    {
+        if (Failed.load()) break;
+        DownloadSlot Slot;                     // blocks here until a concurrency slot frees
+        if (Failed.load()) break;              // a worker may have failed while we waited for the slot
+        Workers.emplace_back([&, T, Slot = std::move(Slot)]() mutable {
+            std::string E;
+            if (!FetchToPath(T.Cid, T.LocalPath, &E).empty()) return;
+            if (T.Optional) { LogWarn("IpfsWrapper::FetchTargetsConcurrent", "optional fetch failed for CID " + T.Cid + " (" + E + ")"); return; }
+            { std::lock_guard<std::mutex> Lk(ErrMu); if (Err.empty()) Err = "could not fetch CID " + T.Cid + " (" + E + ")"; }
+            Failed.store(true);
+        });
+    }
+    for (std::thread &W : Workers) W.join();
+
+    if (Failed.load()) { if (Error) *Error = Err; return false; }
+    return true;
 }
 
 int PeerCount()

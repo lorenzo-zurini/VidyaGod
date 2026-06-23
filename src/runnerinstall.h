@@ -6,6 +6,9 @@
 #include <string>
 
 #include "manifestmodel.h"   // NodeIndex
+#include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
+
+#include <vector>
 
 // RunnerInstall — installs a runner's build + generates its one-time DEFPREFIX, lifted out of ContainerWrapper.
 // It needs the launch engine's mount (VfsMount::SpawnVidyagodfs) + wineboot machinery, hence its own unit rather
@@ -22,6 +25,13 @@ bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::orde
 //<bundle>/__DEFPREFIX__/default. The runner-install entry point for the node world (Settings page / play-gate).
 bool ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
                       const std::string &RunnerNodeId, std::string *Error = nullptr);
+
+//Gather (without fetching) a runner node's missing build-layer download targets, appending to Out — so a download
+//can pool a game's content with its runners' builds into ONE concurrent batch. After that batch fetches them,
+//ImportRunnerNode just generates the DEFPREFIX (its own fetch loop sees the layers already present). Returns false
+//(with *Error) only on a malformed runner node; "nothing to fetch" is success with Out unchanged.
+bool CollectRunnerNodeTargets(const NodeIndex &Idx, const std::string &RunnerNodeId,
+                              std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 
 //True when a runner node is installed: every build VFS layer hydrated locally AND (PREFIX_GENERATE) its DEFPREFIX
 //artifact exists. A runner that ships no build is always "installed".

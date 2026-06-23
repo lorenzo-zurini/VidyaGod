@@ -9,6 +9,7 @@
 #include <functional>
 
 #include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
+#include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
 
 // ---------------------------------------------------------------------------
 // PackageCatalog — the sharing service: where packages live on disk (the LIBRARY + git repos), the catalog of
@@ -89,8 +90,16 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // optional content (node-id -> enabled; absent optional nodes fall back to their DEFAULT).
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                          const std::map<std::string, bool> &Toggles = {});
+// Gather (without fetching) every missing content-layer + cover target for a launchable's closure, appending to Out.
+// Lets a caller pool a game's content with its runners' build layers into ONE concurrent download batch. Returns
+// false (with *Error) if a required layer is locally missing AND has no IPFS source. Also seeds an already-present
+// cover by reference (best-effort) so a downloader serves it too.
+bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                           const std::map<std::string, bool> &Toggles,
+                           std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
-// bundle PATH. Worker-thread (may block on downloads). Returns false (with *Error) on a failed fetch.
+// bundle PATH, concurrently (bounded by MaxConcurrentDownloads). Worker-thread (blocks). False (with *Error) on a
+// failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.)
 bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
                  const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr);
 
