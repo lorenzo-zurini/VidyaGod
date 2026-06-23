@@ -88,6 +88,16 @@ void PackageEditorModel::LoadNodes()
     LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc["NODES"].size()) + " node(s).");
 }
 
+void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json node)
+{
+    if (nodeIndex < 0 || nodeIndex >= (int)Doc["NODES"].size()) return;
+    // Preserve the editor-only provenance tag so a raw-JSON save doesn't re-file the node.
+    if (Doc["NODES"][nodeIndex].contains("__FILE__")) node["__FILE__"] = Doc["NODES"][nodeIndex]["__FILE__"];
+    Doc["NODES"][nodeIndex] = std::move(node);
+    SaveNodes();
+    emit documentReloaded();
+}
+
 void PackageEditorModel::SaveNodes()
 {
     if (!PackageDir) return;
@@ -120,8 +130,7 @@ void PackageEditorModel::SaveNodes()
     if (!Ok) LogErr("PackageEditorModel", "One or more node files failed to save.");
 
     emit savedToDisk(PackageDir->path());
-    Revalidate();
-    emit validationChanged();
+    Revalidate();   // emits validationChanged
 }
 
 // ============================================================================
@@ -133,6 +142,7 @@ void PackageEditorModel::Revalidate()
     ValErrors.clear(); ValWarnings.clear();
     NodeIndex Idx = BuildExecIndex();
     ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings);
+    emit validationChanged();
 }
 
 // ============================================================================

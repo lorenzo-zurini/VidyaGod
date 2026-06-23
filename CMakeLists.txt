@@ -44,6 +44,15 @@ set(PROJECT_SOURCES
     src/packageeditormodel.h
     src/packageeditormodel.cpp
 
+    src/nodegraphview.h
+    src/nodegraphview.cpp
+
+    src/validationpanel.h
+    src/validationpanel.cpp
+
+    src/jsonraweditor.h
+    src/jsonraweditor.cpp
+
     src/filesystemoperations.h
     src/filesystemoperations.cpp
 

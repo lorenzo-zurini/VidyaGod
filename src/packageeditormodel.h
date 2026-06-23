@@ -46,6 +46,9 @@ public:
     void LoadNodes();
     void SaveNodes();                                              // write files → emit savedToDisk + validationChanged
     QString FileForNode(const nlohmann::ordered_json & Node) const;
+    //Replace one node's whole JSON (preserving its __FILE__ tag), persist, and request a structural rebuild. Used
+    //by the raw-JSON tab's Save Node.
+    void replaceNodeJson(int nodeIndex, nlohmann::ordered_json node);
 
     // ── Validation (ManifestModel::ValidateNodeGraph over this bundle + catalog) ──
     void Revalidate();

@@ -1,5 +1,7 @@
 #include "packageeditor.h"
 #include "packageeditormodel.h"
+#include "jsonraweditor.h"
+#include "validationpanel.h"
 #include "commonutils.h"
 #include "registrywrapper.h"
 #include "covercache.h"
@@ -89,7 +91,7 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
         const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(), &Err);
         if (Ok)
         {
-            Model->LoadNodes(); BuildUI(); RefreshJSONView();
+            Model->LoadNodes(); BuildUI();
             QMessageBox::information(this, "Publish",
                 Dest.isEmpty() ? "Bundle dehydrated (content seeded, CIDs written into the node files)."
                                : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
@@ -125,15 +127,8 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
         GraphView->SetCurrent(NodeI >= 0 && NodeI < (int)A.size() ? A[NodeI].value("NODE_ID", std::string()) : std::string());
     });
 
-    // Validation panel — a persistent box docked beneath the tabs, refreshed by UpdateValidationBox().
-    ValidationBox = new QGroupBox("Validation", RightPanel);
-    QVBoxLayout * ValBoxLayout = new QVBoxLayout(ValidationBox);
-    ValBoxLayout->setContentsMargins(6, 2, 6, 6);
-    ValidationView = new QTextEdit(ValidationBox);
-    ValidationView->setReadOnly(true);
-    ValidationView->setMaximumHeight(150);
-    ValBoxLayout->addWidget(ValidationView);
-    RightLayout->addWidget(ValidationBox, 0);
+    // Validation panel — a persistent box docked beneath the tabs; self-refreshes on the model's validationChanged.
+    RightLayout->addWidget(new ValidationPanel(Model, RightPanel), 0);
 
     // Graph sidebar (left) | tabs+validation (right) — resizable.
     QSplitter * Split = new QSplitter(Qt::Horizontal, this);
@@ -152,12 +147,11 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
 
     // React to the model: structural change → rebuild tabs; validation update → repaint the panel; a disk write →
     // relay to packageSaved (so library tiles / prelaunch dialogs reload).
-    connect(Model, &PackageEditorModel::documentReloaded, this, [this]{ BuildUI(); RefreshJSONView(); });
-    connect(Model, &PackageEditorModel::validationChanged, this, &PackageEditor::UpdateValidationBox);
+    connect(Model, &PackageEditorModel::documentReloaded, this, [this]{ BuildUI(); });
     connect(Model, &PackageEditorModel::savedToDisk, this, &PackageEditor::packageSaved);
 
     BuildUI();
-    RefreshJSONView();
+
 }
 
 PackageEditor::~PackageEditor() = default;
@@ -170,48 +164,12 @@ PackageEditor::~PackageEditor() = default;
 
 
 
-void PackageEditor::RefreshJSONView()
-{
-    if (!JSONTextEdit || !JSONFileCombo) return;
-    const int Idx = JSONFileCombo->currentIndex();
-    QSignalBlocker B(JSONTextEdit);
-    if (Idx < 0 || Idx >= (int)(*MANIFESTJSON)["NODES"].size()) { JSONTextEdit->setText("{}"); return; }
-    nlohmann::ordered_json Out = (*MANIFESTJSON)["NODES"][Idx]; Out.erase("__FILE__");
-    JSONTextEdit->setText(QString::fromStdString(Out.dump(4)));
-}
 
 // ============================================================================
 // Validation
 // ============================================================================
 
 
-void PackageEditor::UpdateValidationBox()
-{
-    if (!ValidationView || !ValidationBox) return;
-
-    if (Model->validationErrors().empty() && Model->validationWarnings().empty())
-        ValidationBox->setTitle("Validation  —  ✓ OK");
-    else if (Model->validationErrors().empty())
-        ValidationBox->setTitle(QString("Validation  —  %1 warning(s)").arg(Model->validationWarnings().size()));
-    else
-        ValidationBox->setTitle(QString("⚠ Validation  —  %1 error(s), %2 warning(s)")
-                                    .arg(Model->validationErrors().size()).arg(Model->validationWarnings().size()));
-
-    QString Html;
-    if (Model->validationErrors().empty() && Model->validationWarnings().empty())
-        Html = "<span style='color:#3fae5a'>✓ No problems found.</span>";
-    else
-    {
-        for (const auto &E : Model->validationErrors())
-            Html += "<div style='color:#d9534f'><b>ERROR:</b> " + QString::fromStdString(E).toHtmlEscaped() + "</div>";
-        for (const auto &W : Model->validationWarnings())
-            Html += "<div style='color:#c9a227'>warning: " + QString::fromStdString(W).toHtmlEscaped() + "</div>";
-    }
-    ValidationView->setHtml(Html);
-    ValidationBox->setStyleSheet(Model->validationErrors().empty() ? QString()
-                                                   : "QGroupBox{border:1px solid #d9534f;border-radius:4px;margin-top:6px;}"
-                                                     "QGroupBox::title{subcontrol-origin:margin;left:8px;color:#d9534f;}");
-}
 
 // ============================================================================
 // Catalog queries (PARENTS picker / platform suggestions / exec index)
@@ -231,35 +189,8 @@ bool PackageEditor::BuildUI()
 
     PackageEditorTabWidget->clear();
 
-    // ---- JSON tab: raw edit of one node file at a time ----
-    JSONTabWidget = new QWidget(PackageEditorTabWidget);
-    QVBoxLayout * JSONTabWidgetLayout = new QVBoxLayout(JSONTabWidget);
-    JSONTabWidget->setLayout(JSONTabWidgetLayout);
-
-    QHBoxLayout * JSONFileRow = new QHBoxLayout();
-    JSONFileRow->addWidget(new QLabel("Node:", JSONTabWidget));
-    JSONFileCombo = new QComboBox(JSONTabWidget);
-    for (int n = 0; n < (int)(*MANIFESTJSON)["NODES"].size(); n++)
-    {
-        const std::string Id = (*MANIFESTJSON)["NODES"][n].value("NODE_ID", std::string());
-        JSONFileCombo->addItem(QString::fromStdString(Id.empty() ? ("node " + std::to_string(n + 1)) : Id));
-    }
-    JSONFileRow->addWidget(JSONFileCombo, 1);
-    JSONTabWidgetLayout->addLayout(JSONFileRow);
-
-    JSONTextEdit = new QTextEdit(JSONTabWidget);
-    JSONTabWidgetLayout->addWidget(JSONTextEdit);
-    QObject::connect(JSONTextEdit, &QTextEdit::textChanged, this, &PackageEditor::JSONQTextEditChanged);
-
-    SaveJSONButton = new QPushButton("Save Node", JSONTabWidget);
-    JSONTabWidgetLayout->addWidget(SaveJSONButton);
-    QObject::connect(SaveJSONButton, &QPushButton::clicked, this, &PackageEditor::SaveJSONButtonPressed);
-
-    QObject::connect(JSONFileCombo, &QComboBox::currentIndexChanged, this, [this](){ RefreshJSONView(); });
-    RefreshJSONView();
-    PackageEditorTabWidget->addTab(JSONTabWidget, "JSON");
-
-    UpdateValidationBox();
+    // ---- JSON tab: raw edit of one node file at a time (its own widget; self-refreshes via the model) ----
+    PackageEditorTabWidget->addTab(new JsonRawEditor(Model, PackageEditorTabWidget), "JSON");
 
     // ---- one tab per node ----
     static const std::vector<std::string> MetadataFields = {
@@ -403,7 +334,7 @@ bool PackageEditor::BuildUI()
                 QCheckBox * RecChk = new QCheckBox("Recommended (default edition in its GROUP)", Box);
                 RecChk->setChecked(NodeRef.value("RECOMMENDED", false));
                 QObject::connect(RecChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                    (*MANIFESTJSON)[json::json_pointer(NodePtr + "/RECOMMENDED")] = On; Model->SaveNodes(); RefreshJSONView();
+                    (*MANIFESTJSON)[json::json_pointer(NodePtr + "/RECOMMENDED")] = On; Model->SaveNodes();
                 });
                 Form->addRow("", RecChk);
             }
@@ -418,14 +349,14 @@ bool PackageEditor::BuildUI()
             QCheckBox * OptChk = new QCheckBox("OPTIONAL (user-toggleable add-on)", Box);
             OptChk->setChecked(NodeRef.value("OPTIONAL", false));
             QObject::connect(OptChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/OPTIONAL")] = On; Model->SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/OPTIONAL")] = On; Model->SaveNodes();
             });
             BL->addWidget(OptChk);
 
             QCheckBox * DefChk = new QCheckBox("DEFAULT (enabled by default when optional)", Box);
             DefChk->setChecked(NodeRef.value("DEFAULT", true));
             QObject::connect(DefChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/DEFAULT")] = On; Model->SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(NodePtr + "/DEFAULT")] = On; Model->SaveNodes();
             });
             BL->addWidget(DefChk);
 
@@ -440,7 +371,7 @@ bool PackageEditor::BuildUI()
                 { std::string Id = Part.trimmed().toStdString(); if (!Id.empty()) Arr.push_back(Id); }
                 if (Arr.empty()) (*MANIFESTJSON)[json::json_pointer(NodePtr)].erase("EXCLUDE");
                 else             (*MANIFESTJSON)[json::json_pointer(NodePtr + "/EXCLUDE")] = Arr;
-                Model->SaveNodes(); RefreshJSONView();
+                Model->SaveNodes();
             });
             BL->addWidget(ExcludeField);
             Body->addWidget(Box);
@@ -466,7 +397,7 @@ bool PackageEditor::BuildUI()
                 { QSignalBlocker B(Pick); Pick->setCurrentText(QString::fromStdString(Parents[k].is_string() ? std::string(Parents[k]) : "")); }
                 const std::string ItemPtr = PPtr + "/" + std::to_string(k);
                 QObject::connect(Pick, &QComboBox::currentTextChanged, this, [this, ItemPtr](const QString &T){
-                    (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes(); RefreshJSONView();
+                    (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes();
                 });
                 QPushButton * Up = new QPushButton("▲", Box); Up->setFixedWidth(28);
                 QPushButton * Dn = new QPushButton("▼", Box); Dn->setFixedWidth(28);
@@ -509,7 +440,7 @@ bool PackageEditor::BuildUI()
                 const QString Tr = T.trimmed();
                 if (Tr.isEmpty()) { if ((*MANIFESTJSON).contains(json::json_pointer(NodePtr + "/PLATFORM"))) (*MANIFESTJSON)[json::json_pointer(NodePtr + "/PLATFORM")].erase("HOST"); }
                 else (*MANIFESTJSON)[json::json_pointer(NodePtr + "/PLATFORM/HOST")] = Tr.toStdString();
-                Model->SaveNodes(); RefreshJSONView();
+                Model->SaveNodes();
             });
             HostRow->addWidget(Host, 1);
             BL->addLayout(HostRow);
@@ -532,7 +463,7 @@ bool PackageEditor::BuildUI()
                     { QSignalBlocker B(CB); CB->setCurrentText(QString::fromStdString(Guests[k].is_string() ? std::string(Guests[k]) : "")); }
                     const std::string ItemPtr = GPtr + "/" + std::to_string(k);
                     QObject::connect(CB, &QComboBox::currentTextChanged, this, [this, ItemPtr](const QString &T){
-                        (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes(); RefreshJSONView();
+                        (*MANIFESTJSON)[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes();
                     });
                     QPushButton * Del = new QPushButton("✕", GBox); Del->setFixedWidth(28);
                     QObject::connect(Del, &QPushButton::clicked, this, [this, GPtr, k](){
@@ -572,7 +503,7 @@ bool PackageEditor::BuildUI()
             QCheckBox * PGen = new QCheckBox("PREFIX_GENERATE (build a wine prefix)", Box);
             PGen->setChecked(Exec.value("PREFIX_GENERATE", false));
             QObject::connect(PGen, &QCheckBox::toggled, this, [this, EPtr](bool On){
-                (*MANIFESTJSON)[json::json_pointer(EPtr + "/PREFIX_GENERATE")] = On; Model->SaveNodes(); RefreshJSONView();
+                (*MANIFESTJSON)[json::json_pointer(EPtr + "/PREFIX_GENERATE")] = On; Model->SaveNodes();
             });
             G->addWidget(PGen, row, 0, 1, 3); row++;
 
@@ -822,7 +753,7 @@ bool PackageEditor::BuildUI()
                             if (OldKey == NewKey || NewKey.isEmpty()) return;
                             auto &KV = (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["KEYVALUES"];
                             auto Val = KV[OldKey.toStdString()]; KV.erase(OldKey.toStdString()); KV[NewKey.toStdString()] = Val;
-                            KeyEdit->setProperty("OriginalKey", NewKey); Model->SaveNodes(); RefreshJSONView();
+                            KeyEdit->setProperty("OriginalKey", NewKey); Model->SaveNodes();
                         });
                         KG->addWidget(KeyEdit, k, 0);
                         QLineEdit * ValField = new QLineEdit(KeysBox);
@@ -933,7 +864,7 @@ bool PackageEditor::BuildUI()
                     QCheckBox * Disp = new QCheckBox(LBox);
                     Disp->setChecked(Layers[j].value("DISPLAY", true));
                     QObject::connect(Disp, &QCheckBox::toggled, this, [this, n, j](bool On){
-                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["DISPLAY"] = On; Model->SaveNodes(); RefreshJSONView();
+                        (*MANIFESTJSON)["NODES"][n]["LAYERS"][j]["DISPLAY"] = On; Model->SaveNodes();
                     });
                     LG->addWidget(Disp, cvrow, 1, 1, 2); cvrow++;
 
@@ -1028,36 +959,10 @@ void PackageEditor::JSONQLineEditChanged()
     nlohmann::ordered_json::json_pointer JSONPointer(Editor->property("JSONPath").toString().toStdString());
     (*MANIFESTJSON)[JSONPointer] = Editor->text().toStdString();
     Model->SaveNodes();
-    RefreshJSONView();
+   
 }
 
-void PackageEditor::JSONQTextEditChanged()
-{
-    if (!JSONTextEdit || !SaveJSONButton) return;
-    if (nlohmann::ordered_json::accept(JSONTextEdit->toPlainText().toUtf8()))
-    {
-        JSONTextEdit->setStyleSheet("");
-        SaveJSONButton->setDisabled(false);
-    }
-    else
-    {
-        JSONTextEdit->setStyleSheet("background-color:#58111A; color: white;");
-        SaveJSONButton->setDisabled(true);
-    }
-}
 
-void PackageEditor::SaveJSONButtonPressed()
-{
-    const int Idx = JSONFileCombo ? JSONFileCombo->currentIndex() : -1;
-    if (Idx < 0 || Idx >= (int)(*MANIFESTJSON)["NODES"].size()) return;
-    QByteArray Data = JSONTextEdit->toPlainText().toUtf8();
-    if (!nlohmann::ordered_json::accept(Data)) { QMessageBox::warning(this, "Save Node", "Invalid JSON — not saved."); return; }
-    nlohmann::ordered_json Doc = nlohmann::ordered_json::parse(Data);
-    // Preserve the editor-only provenance tag.
-    if ((*MANIFESTJSON)["NODES"][Idx].contains("__FILE__")) Doc["__FILE__"] = (*MANIFESTJSON)["NODES"][Idx]["__FILE__"];
-    (*MANIFESTJSON)["NODES"][Idx] = Doc;
-    Model->SaveNodes(); BuildUI();
-}
 
 // ============================================================================
 // LAYERS — add-actions
@@ -1292,141 +1197,3 @@ bool PackageEditor::eventFilter(QObject *obj, QEvent *event)
 }
 
 
-// ═════════════════════════════════════════════════════════════════════════════
-// NodeGraphView — clickable left→right DAG of the bundle's nodes (launchable on the left, parents to the right).
-// ═════════════════════════════════════════════════════════════════════════════
-// Vertical layout (fits a left sidebar): depth grows DOWN (Col → y), branches spread RIGHT (Row → x).
-namespace { constexpr int ChipW = 138, ChipH = 28, GapX = 16, GapY = 30, MargX = 12, MargY = 10; }
-
-NodeGraphView::NodeGraphView(QWidget * parent) : QWidget(parent)
-{
-    setMouseTracking(true);                         // hover → pointing-hand cursor over chips
-    setAutoFillBackground(true);
-    QPalette Pal = palette(); Pal.setColor(QPalette::Window, QColor("#15181c")); setPalette(Pal);
-}
-
-QSize NodeGraphView::sizeHint() const { return QSize(std::max(ContentW, 1), std::max(ContentH, 1)); }
-
-void NodeGraphView::SetCurrent(const std::string & NodeId) { Current = NodeId; update(); }
-
-void NodeGraphView::SetGraph(const nlohmann::ordered_json & NodesArray)
-{
-    Nodes.clear(); Edges.clear();
-    if (NodesArray.is_array())
-    {
-        std::map<std::string, int> Ix;
-        for (const auto & N : NodesArray)
-        {
-            if (!N.is_object()) continue;
-            GNode G;
-            G.Id    = N.value("NODE_ID", std::string());
-            G.Role  = N.value("ROLE", std::string("content"));
-            G.Label = QString::fromStdString(G.Id);   // match the tab labels (which key off NODE_ID) for click-to-tab
-            if (G.Id.empty()) continue;
-            Ix[G.Id] = (int)Nodes.size();
-            Nodes.push_back(std::move(G));
-        }
-        // Edges: a node → each of its PARENTS that lives in THIS bundle.
-        for (const auto & N : NodesArray)
-        {
-            if (!N.is_object()) continue;
-            auto It = Ix.find(N.value("NODE_ID", std::string()));
-            if (It == Ix.end() || !N.contains("PARENTS") || !N["PARENTS"].is_array()) continue;
-            for (const auto & P : N["PARENTS"])
-            {
-                auto Pit = Ix.find(P.is_string() ? std::string(P) : std::string());
-                if (Pit != Ix.end()) Edges.emplace_back(It->second, Pit->second);
-            }
-        }
-    }
-    Relayout();
-}
-
-void NodeGraphView::Relayout()
-{
-    const int N = (int)Nodes.size();
-    // Column = longest child→parent chain from a launchable (no incoming child edge) to this node, so launchables
-    // land at column 0 and the deepest base content on the right. Memoized longest-path over the DAG.
-    std::vector<int> Col(N, -1);
-    std::function<int(int)> ColOf = [&](int I) -> int {
-        if (Col[I] >= 0) return Col[I];
-        int M = 0; Col[I] = 0;                       // break any accidental cycle gracefully
-        for (const auto & [C, P] : Edges) if (P == I) M = std::max(M, ColOf(C) + 1);
-        return Col[I] = M;
-    };
-    for (int I = 0; I < N; ++I) ColOf(I);
-
-    // Row: process columns left→right; a node inherits a child's row to keep linear chains straight, else takes the
-    // next free row in its column. Extra parents thus branch onto fresh rows.
-    std::vector<int> Order(N); for (int I = 0; I < N; ++I) Order[I] = I;
-    std::stable_sort(Order.begin(), Order.end(), [&](int A, int B){ return Col[A] < Col[B]; });
-    std::vector<int> Row(N, -1);
-    std::map<int, std::set<int>> Used;               // column → taken rows
-    for (int I : Order)
-    {
-        int Want = -1;
-        for (const auto & [C, P] : Edges) if (P == I && Row[C] >= 0) Want = (Want < 0 ? Row[C] : std::min(Want, Row[C]));
-        if (Want < 0) Want = 0;
-        while (Used[Col[I]].count(Want)) ++Want;
-        Row[I] = Want; Used[Col[I]].insert(Want);
-    }
-
-    int MaxCol = 0, MaxRow = 0;
-    for (int I = 0; I < N; ++I)
-    {
-        Nodes[I].Col = Col[I]; Nodes[I].Row = Row[I];   // Col = depth (down), Row = branch (right)
-        Nodes[I].Rect = QRect(MargX + Row[I] * (ChipW + GapX), MargY + Col[I] * (ChipH + GapY), ChipW, ChipH);
-        MaxCol = std::max(MaxCol, Col[I]); MaxRow = std::max(MaxRow, Row[I]);
-    }
-    ContentW = N ? MargX * 2 + (MaxRow + 1) * (ChipW + GapX) - GapX : 0;
-    ContentH = N ? MargY * 2 + (MaxCol + 1) * (ChipH + GapY) - GapY : 0;
-    setFixedSize(std::max(ContentW, 1), std::max(ContentH, 1));
-    updateGeometry(); update();
-}
-
-void NodeGraphView::paintEvent(QPaintEvent *)
-{
-    QPainter P(this);
-    P.setRenderHint(QPainter::Antialiasing, true);
-
-    // Edges: child (above) → parent (below), a smooth vertical cubic.
-    P.setPen(QPen(QColor("#4a5258"), 1.6));
-    for (const auto & [C, Par] : Edges)
-    {
-        const QRect &A = Nodes[C].Rect, &B = Nodes[Par].Rect;
-        QPointF S(A.center().x(), A.bottom()), E(B.center().x(), B.top());
-        const qreal Dy = (E.y() - S.y()) * 0.5;
-        QPainterPath Path(S);
-        Path.cubicTo(S.x(), S.y() + Dy, E.x(), E.y() - Dy, E.x(), E.y());
-        P.drawPath(Path);
-    }
-
-    // Chips.
-    for (const auto & G : Nodes)
-    {
-        const bool Cur = (G.Id == Current);
-        QColor Fill = G.Role == "launchable" ? QColor("#264b73")
-                    : G.Role == "runner"     ? QColor("#4a3a63")
-                                             : QColor("#2b3138");
-        P.setBrush(Fill);
-        P.setPen(QPen(Cur ? QColor("#4a90d9") : QColor("#3a424a"), Cur ? 2.2 : 1.2));
-        P.drawRoundedRect(G.Rect, 6, 6);
-        P.setPen(Cur ? QColor("#eaf2fb") : QColor("#c6d4df"));
-        QRect TextR = G.Rect.adjusted(8, 0, -8, 0);
-        P.drawText(TextR, Qt::AlignVCenter | Qt::AlignLeft,
-                   P.fontMetrics().elidedText(G.Label, Qt::ElideRight, TextR.width()));
-    }
-}
-
-void NodeGraphView::mousePressEvent(QMouseEvent * E)
-{
-    for (const auto & G : Nodes)
-        if (G.Rect.contains(E->pos())) { emit nodeClicked(QString::fromStdString(G.Id)); return; }
-}
-
-void NodeGraphView::mouseMoveEvent(QMouseEvent * E)
-{
-    bool Over = false;
-    for (const auto & G : Nodes) if (G.Rect.contains(E->pos())) { Over = true; break; }
-    setCursor(Over ? Qt::PointingHandCursor : Qt::ArrowCursor);
-}

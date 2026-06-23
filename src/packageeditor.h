@@ -44,40 +44,10 @@
 #include "containerwrapper.h"
 #include "packagecatalog.h"
 #include "manifestmodel.h"
+#include "nodegraphview.h"
 #include "nlohmann/json.hpp"
 
 
-// ---------------------------------------------------------------------------
-// NodeGraphView — a compact, clickable DAG of a bundle's nodes. Laid out left→right: launchables on the left, their
-// PARENTS chain flowing right, deepest base content on the right. A linear dependency chain stays on one row; extra
-// parents branch onto new rows (so it reads "linear with branches"). Clicking a node chip emits nodeClicked(NODE_ID),
-// which the editor uses to jump to that node's tab. Refreshed via SetGraph() on every edit.
-// ---------------------------------------------------------------------------
-class NodeGraphView : public QWidget
-{
-    Q_OBJECT
-public:
-    explicit NodeGraphView(QWidget * parent = nullptr);
-    void SetGraph(const nlohmann::ordered_json & NodesArray);   // the working { NODES:[...] } array
-    void SetCurrent(const std::string & NodeId);                // highlight the open node
-    QSize sizeHint() const override;
-
-signals:
-    void nodeClicked(const QString & NodeId);
-
-protected:
-    void paintEvent(QPaintEvent *) override;
-    void mousePressEvent(QMouseEvent *) override;
-    void mouseMoveEvent(QMouseEvent *) override;
-
-private:
-    struct GNode { std::string Id; QString Label; std::string Role; int Col = 0, Row = 0; QRect Rect; };
-    std::vector<GNode> Nodes;
-    std::vector<std::pair<int,int>> Edges;   // (child index, parent index)
-    std::string Current;
-    int ContentW = 0, ContentH = 0;
-    void Relayout();
-};
 
 
 // ---------------------------------------------------------------------------
@@ -109,9 +79,7 @@ signals:
     void packageSaved(const QString &PackagePath);
 
 private slots:
-    void JSONQTextEditChanged();
-    void JSONQLineEditChanged();
-    void SaveJSONButtonPressed();
+    void JSONQLineEditChanged();   // per-node field edit (sender's JSONPath property → working doc)
     // LAYERS sub-editor add-actions (append a TYPE-tagged layer to the owning node's LAYERS array).
     void AddVFSDirLayer();
     void AddVFSZipLayer();
@@ -126,7 +94,6 @@ private slots:
     void AddRegKeyPersist();
 
 private:
-    void RefreshJSONView();
     bool BuildUI();
 
     //Appends a layer object to the LAYERS of the node owning `Sender` (the Add… button/menu), then persists +
@@ -139,10 +106,6 @@ private:
     //The NODE_ID of the node-tab that owns `Sender`, or "" (walks up the JSONPath property like AppendLayer).
     std::string NodeIdOfSender(QObject * Sender) const;
 
-    //VALIDATION ----------------------------------------------------------------------------------- (repaints the
-    //persistent panel from the model's latest results; the validation itself runs in PackageEditorModel.)
-    void UpdateValidationBox();
-
     //META cover drop ------------------------------------------------------------------------------
     bool eventFilter(QObject *obj, QEvent *event) override;
     void ApplyCoverImage(QLabel *CoverLabel, const QByteArray &Data, const QString &Extension, int NodeIndexInArray);
@@ -152,21 +115,13 @@ private:
     //Saved UI state — restored after BuildUI() to keep the user on the same tab.
     int SavedMainTab = 1;
 
-    QWidget * JSONTabWidget = nullptr;
-    QPushButton * SaveJSONButton = nullptr;
-    QTextEdit * JSONTextEdit = nullptr;
-    QComboBox * JSONFileCombo = nullptr;   // selects which node file the raw JSON tab edits
-
     QDir * PackageDir = nullptr;   // non-owning alias of Model->packageDir()
 
     //Selects the tab editing the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
     void SelectNodeTab(const std::string & NodeId);
 
-    NodeGraphView * GraphView = nullptr;   // clickable DAG above the tabs
+    NodeGraphView * GraphView = nullptr;   // clickable DAG sidebar (left of the tabs)
     QTabWidget * PackageEditorTabWidget = nullptr;
-    //Persistent validation panel docked below the tabs (always visible), refreshed by UpdateValidationBox().
-    QGroupBox * ValidationBox  = nullptr;
-    QTextEdit * ValidationView = nullptr;
 
     //The state/signal hub (owns the working document, node I/O, validation, authoring). The members below are
     //non-owning aliases into it, kept so the existing BuildUI machinery reads them unchanged.
