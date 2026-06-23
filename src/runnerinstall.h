@@ -10,19 +10,15 @@
 
 #include <vector>
 
-// RunnerInstall — installs a runner's build + generates its one-time DEFPREFIX, lifted out of ContainerWrapper.
-// It needs the launch engine's mount (VfsMount::SpawnVidyagodfs) + wineboot machinery, hence its own unit rather
-// than living in RunnerWrapper (which is pure data/predicates).
+// RunnerInstall — node-native runner installer: hydrates a ROLE:"runner" node's build (its PARENT content closure's
+// VFS layers) and, for a PREFIX_GENERATE runner, generates the one-time read-only DEFPREFIX by mounting the build +
+// running `wineboot` once. Needs the launch engine's mount (VfsMount) + wineboot machinery, hence its own unit
+// rather than living in RunnerWrapper (path/predicate helpers).
 namespace RunnerInstall
 {
-//Installs one runner VARIANT: hydrates its build layers IN PLACE into the runner's LIBRARY dir (PackageDir), and
-//for a wine variant generates the one-time DEFPREFIX at PackageDir/__DEFPREFIX__/<variant>. VariantId "" = default.
-bool ImportRunner(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &RunnerPkg,
-                  const std::string &PackageDir, const std::string &VariantId = std::string(), std::string *Error = nullptr);
-
-//Node-native runner install: synthesizes a minimal runner package from a ROLE:"runner" node + its content closure
-//(the build) and runs ImportRunner — hydrating the build and generating the one-time DEFPREFIX at
-//<bundle>/__DEFPREFIX__/default. The runner-install entry point for the node world (Settings page / play-gate).
+//Install a runner NODE: hydrate its build layers IN PLACE into the runner's LIBRARY bundle dir, and (PREFIX_GENERATE)
+//generate the one-time DEFPREFIX at <bundle>/__DEFPREFIX__/default. Idempotent. The runner-install entry point for
+//the node world (Settings page / play-gate / the download flow). GlobalConfigJSON is currently unused.
 bool ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
                       const std::string &RunnerNodeId, std::string *Error = nullptr);
 

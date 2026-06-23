@@ -2,7 +2,7 @@
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / TranslateCustomVarValue
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
-#include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixArtifact
+#include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
 
 #include <QDir>
@@ -321,7 +321,7 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
 //=====================================================================================================================
 
 //Derives the session paths from already-set ContainerParams fields (PackageUID/Platform/ContentRoot/
-//PrefixGenerate/RunnerShipsBuild/UnifiedRuntime/RunnerVariantID/RunnerPackagePath). Pure of MANIFESTJSON.
+//PrefixGenerate/RunnerShipsBuild/UnifiedRuntime/RunnerPackagePath). Pure of MANIFESTJSON.
 bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     if (ContainerParams.ScreenWidth.empty() || ContainerParams.ScreenHeight.empty())
@@ -366,7 +366,7 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     }
     if (ContainerParams.PrefixGenerate)
         ContainerParams.DefPrefixPath = ContainerParams.RunnerShipsBuild
-            ? std::filesystem::path(RunnerWrapper::DefPrefixArtifact(ContainerParams.RunnerPackagePath.string(), ContainerParams.RunnerVariantID))
+            ? std::filesystem::path(RunnerWrapper::DefPrefixDir(ContainerParams.RunnerPackagePath.string()))
             : ContainerParams.TempPath / "DEFPREFIX";
     ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;
     LogOut("DerivePaths", "RuntimePath: " + ContainerParams.RuntimePath.string()
@@ -460,7 +460,6 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         const auto &E = RunnerNode->Exec;
         CP.RunnerID          = RunnerNode->NodeId;
         CP.RunnerName        = RunnerNode->NodeId;
-        CP.RunnerVariantID   = "default";
         CP.RunnerPackagePath = RunnerNode->BundleDir;
         CP.RunnerExecutable  = E.is_object() ? E.value("EXECUTABLE", std::string()) : std::string();
         CP.ContentRoot       = E.is_object() ? E.value("CONTENT_ROOT", std::string()) : std::string();

@@ -52,7 +52,6 @@ public:
     //Runner config (resolved from RUNNERS arrays — package's own + global registry — by GUEST_PLATFORM membership):
     std::string RunnerID;                //RUNNER_ID — selected/pinned runner id (PASSED by picker/CLI, or resolved)
     std::string RunnerName;              //Human-readable runner name (e.g. "umu-proton")
-    std::string RunnerVariantID;         //VARIANT_ID of the chosen runner variant (install artifact + exec params come from it)
     std::string RunnerExecutable;        //EXECUTABLE — binary to exec (e.g. "umu-run", "%RunnerMount%/proton"); %vars% expanded
     std::string ContentRoot;             //CONTENT_ROOT (resolved) — where game content mounts under RuntimePath ("" = root; "pfx/drive_c/<UID>" = proton)
     std::string PrefixRoot;              //DERIVED from ContentRoot (the part before /drive_c) — where a wine prefix's hives live ("" / "pfx")
