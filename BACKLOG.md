@@ -31,9 +31,10 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 - **Still UNVERIFIED on hardware**: the full editor GUI pass (TESTPLAN I40/I41 — add/remove/move nodes, each LAYER
   type, cover drop, the authoring runs Run EXE / Execute / Analyze, Publish) + a real game launch. Deferred to hardware.
 
-## Remote build PENDING (laptop offline since the PackageEditor work)
-- All PE phases (1–4) are committed + **local `-Werror` clean**, but NOT yet built on 192.168.1.134 (it went "No
-  route to host" mid-phase-2). Catch up a remote `-Werror` build + ctest of latest `main` when the laptop returns.
+## Remote build — CAUGHT UP (2026-06-23)
+- Laptop (now `10.10.0.5` over WireGuard) synced to `main` @ 2d57f52, built clean `-Werror`, full ctest 7/7 green.
+  Everything since the PackageEditor de-god (incl. this session's launch/path/validation fixes) is verified on
+  BOTH machines. Default remote address is `10.10.0.5` (WG) — see [[feedback_build_both_machines]].
 
 ## Pending bugs
 - (none open — #2/#3/#5/#8/#9 + the remove-freeze fixed; see "Done this session")
@@ -83,7 +84,7 @@ Drove the whole engine via the CLI (`--node`/`--resolve-only`/`--publish`/`--fet
 - **Still open / by design**: VFSDirLayer can't be published (M1, files/zips only — now a warning, intentional);
   unreachable-repo git-sync still `git init`s the dir + double WARN (cosmetic).
 - GUI-UNVERIFIED on hardware: the editor's "⚠ Re-store" button + "→ ZIP" flow (logic mirrors proven RunCommand
-  machinery; compiles `-Werror`). Remote `-Werror` build still pending (192.168.1.134 offline).
+  machinery; built `-Werror` on both machines). Runtime GUI click-through still deferred to a hardware session.
 
 ### Heterogeneous-package pass (2026-06-23) — 8 packages × 6 runners, edge cases
 Verified working: embedded runners (picked from the package bundle + launched), optional/default/EXCLUDE modules,
