@@ -177,6 +177,10 @@ int main(int argc, char *argv[])
                       : !LaunchParameters.DataDir.empty()  ? AppPaths::Mode::CliPaths
                       : Portable                           ? AppPaths::Mode::Portable
                                                            : AppPaths::Mode::Normal);
+    //Per-launch path overrides (--package-dir / --runtime-dir / --userdata-dir), read by the launch engine.
+    if (!LaunchParameters.PackageDirOverride.empty())  AppPaths::SetPackagePathOverride(LaunchParameters.PackageDirOverride);
+    if (!LaunchParameters.RuntimeDirOverride.empty())  AppPaths::SetRuntimePathOverride(LaunchParameters.RuntimeDirOverride);
+    if (!LaunchParameters.UserDataDirOverride.empty()) AppPaths::SetUserDataPathOverride(LaunchParameters.UserDataDirOverride);
     LogOut("main.cpp", (Portable ? "Portable mode — data dir: " : "Data dir: ") + AppDataPath.toStdString());
 
     //Single-instance guard (GUI and headless alike): VidyaGod may only run once at a time. This both
@@ -642,6 +646,18 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--data-dir" && i + 1 < argc)
         {
             RuntimeParameters.DataDir          = argv[++i];
+        }
+        else if (arg == "--package-dir" && i + 1 < argc)
+        {
+            RuntimeParameters.PackageDirOverride = argv[++i];
+        }
+        else if (arg == "--runtime-dir" && i + 1 < argc)
+        {
+            RuntimeParameters.RuntimeDirOverride = argv[++i];
+        }
+        else if (arg == "--userdata-dir" && i + 1 < argc)
+        {
+            RuntimeParameters.UserDataDirOverride = argv[++i];
         }
         else if (arg == "--connect" && i + 1 < argc)
         {

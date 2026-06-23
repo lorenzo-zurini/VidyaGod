@@ -15,6 +15,9 @@ AppPaths::Mode &ModeRef()
     static AppPaths::Mode M = AppPaths::Mode::Normal;
     return M;
 }
+std::filesystem::path &PkgOverrideRef()      { static std::filesystem::path P; return P; }
+std::filesystem::path &RuntimeOverrideRef()  { static std::filesystem::path P; return P; }
+std::filesystem::path &UserDataOverrideRef() { static std::filesystem::path P; return P; }
 }
 
 namespace AppPaths
@@ -31,4 +34,11 @@ void SetMode(Mode M)  { ModeRef() = M; }
 Mode GetMode()        { return ModeRef(); }
 bool DaemonSupported()    { return ModeRef() != Mode::InPackage; }
 bool AutostartSupported() { return ModeRef() == Mode::Normal; }
+
+void SetPackagePathOverride(const std::string & Path)  { PkgOverrideRef()      = std::filesystem::path(Path); }
+void SetRuntimePathOverride(const std::string & Path)  { RuntimeOverrideRef()  = std::filesystem::path(Path); }
+void SetUserDataPathOverride(const std::string & Path) { UserDataOverrideRef() = std::filesystem::path(Path); }
+std::filesystem::path PackagePathOverride()  { return PkgOverrideRef(); }
+std::filesystem::path RuntimePathOverride()  { return RuntimeOverrideRef(); }
+std::filesystem::path UserDataPathOverride() { return UserDataOverrideRef(); }
 }

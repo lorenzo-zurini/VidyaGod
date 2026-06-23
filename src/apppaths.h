@@ -35,6 +35,16 @@ Mode GetMode();
 
 bool DaemonSupported();      // tray / stay-resident — allowed unless In-package.
 bool AutostartSupported();   // start-on-login (XDG autostart) — allowed only in Normal mode.
+
+// Optional per-launch path overrides (CLI: --package-dir / --runtime-dir / --userdata-dir; in-package sets all three
+// = the package dir). Empty = derive normally (the default). Read by the launch engine: PackagePath in
+// InitializeFromNode, RuntimePath + UserDataPath in DerivePaths. (--data-dir is handled via SetDataRoot above.)
+void SetPackagePathOverride(const std::string & Path);
+void SetRuntimePathOverride(const std::string & Path);
+void SetUserDataPathOverride(const std::string & Path);
+std::filesystem::path PackagePathOverride();    // empty if unset
+std::filesystem::path RuntimePathOverride();     // empty if unset
+std::filesystem::path UserDataPathOverride();    // empty if unset
 }
 
 #endif // APPPATHS_H

@@ -351,6 +351,10 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     ContainerParams.WriteLayerPath  = ContainerParams.TempPath / "WRITELAYER";
     ContainerParams.DefaultDataPath = ContainerParams.TempPath / "DEFAULTDATA";
     ContainerParams.UserDataPath    = ContainerParams.PackagePath / "USERDATA";
+    //CLI / in-package overrides (--runtime-dir / --userdata-dir): point these exact paths wherever asked (in-package
+    //sets both = the package dir, making the package a self-contained, portable runnable unit).
+    if (!AppPaths::RuntimePathOverride().empty())  ContainerParams.RuntimePath  = AppPaths::RuntimePathOverride();
+    if (!AppPaths::UserDataPathOverride().empty()) ContainerParams.UserDataPath = AppPaths::UserDataPathOverride();
     VarSubst::StringVariableSubstitution(ContainerParams.ContentRoot, ContainerParams.GetVariablesMap());
     ContainerParams.ProgramPath = ContainerParams.ContentRoot.empty()
         ? ContainerParams.RuntimePath : ContainerParams.RuntimePath / ContainerParams.ContentRoot;
@@ -425,7 +429,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.PackageName= Launch->Meta.is_object() ? Launch->Meta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
     CP.Platform   = Launch->HostPlatform;
-    CP.PackagePath= Launch->BundleDir;
+    CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Launch->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
     CP.UMUID      = Launch->Meta.is_object() ? Launch->Meta.value("UMUID", std::string("0")) : "0";
 
     //Absolutize a node's LAYERS PATH/SOURCE.PATH against its OWN bundle dir (cross-bundle-correct).
