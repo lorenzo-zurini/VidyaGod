@@ -12,6 +12,10 @@
 #include "packageeditormodel.h"
 #include "nodesections.h"
 #include "jsonoperations.h"
+#include "mainwindow.h"
+
+#include <QTabWidget>
+#include <QRegularExpression>
 
 using json = nlohmann::ordered_json;
 
@@ -85,6 +89,34 @@ int main(int argc, char ** argv)
     { NodeExecSection     s(&model, 0); shot(&s, 620, 480, out + "/04_section_exec.png"); }
     { NodeMetaSection     s(&model, 0); shot(&s, 620, 560, out + "/05_section_meta.png"); }
     { NodeLayersSection   s(&model, 0); shot(&s, 680, 760, out + "/06_section_layers.png"); }
+
+    // ---- the real MainWindow against the live ~/.VidyaGod (read-only render; IPFS node is NOT started, so the
+    // IPFS tab shows "unavailable" — everything else renders with the real library/catalog/settings) ----
+    const QString dataDir = QDir::homePath() + "/.VidyaGod";
+    if (QFile::exists(dataDir + "/GlobalConfig.JSON"))
+    {
+        static nlohmann::ordered_json gcfg;
+        QFile cf(dataDir + "/GlobalConfig.JSON");
+        JSONOps::LoadJSON(&cf, &gcfg);   // true == failure; gcfg stays {} then, still fine to render
+        static QDir appDir(dataDir);
+        MainWindow * mw = new MainWindow(&gcfg, &appDir);
+        mw->resize(1500, 950);
+        mw->show();
+        QApplication::processEvents(); QApplication::processEvents();
+        mw->grab().save(out + "/10_mainwindow.png");
+        if (QTabWidget * tabs = mw->findChild<QTabWidget *>())
+        {
+            for (int i = 0; i < tabs->count(); ++i)
+            {
+                tabs->setCurrentIndex(i);
+                QApplication::processEvents(); QApplication::processEvents();
+                QString name = tabs->tabText(i).remove(QRegularExpression("[^A-Za-z0-9]"));
+                mw->grab().save(out + QString("/1%1_tab_%2.png").arg(i + 1).arg(name));
+                qInfo("saved tab %s", qUtf8Printable(name));
+            }
+        }
+        // leak mw on purpose: tearing the real MainWindow down here can touch IPFS/threads; the process exits next.
+    }
 
     return 0;
 }
