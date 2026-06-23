@@ -25,6 +25,12 @@ bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FileP
 
 //Writes Value as the complete content of FilePath, creating parent dirs if needed.
 bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);
+
+//Appends Value as its own line at the end of FilePath, IDEMPOTENTLY (skips if an identical line already exists).
+//Creates the file + parent dirs if absent, and inserts a separating newline if the file didn't end with one. The
+//load-order primitive: each enabled node appends in recipe (topological) order, so the resulting config's order
+//(openmw.cfg `content=`, a mod manifest, …) falls out of the node graph automatically.
+bool AppendLine(const std::string &Value, const std::filesystem::path &FilePath);
 }
 
 #endif // FILEEDITS_H

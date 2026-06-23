@@ -225,9 +225,11 @@ add_executable(vg_tests
     tests/test_manifestmodel.cpp
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
+    tests/test_fileedits.cpp
     src/manifestmodel.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
+    src/fileedits.cpp
     src/commonutils.cpp)
 target_include_directories(vg_tests PRIVATE src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)

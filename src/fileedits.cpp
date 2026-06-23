@@ -3,6 +3,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <iterator>
 #include <string>
 
 //Collects DLLOVERRIDE values from all DllOverride subcomponents into DLLOverrides.
@@ -58,6 +60,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             FileEdits::ConfigWrite(Sub.value("KEY", std::string()), Value, FilePath);
         else if (Mode == "Overwrite")
             FileEdits::FileOverwrite(Value, FilePath);
+        else if (Mode == "AppendLine")
+            FileEdits::AppendLine(Value, FilePath);
         else
             LogWarn("FileEdits::ProcessFileEdits", "Unknown MODE: '" + Mode + "' — skipping.");
     }
@@ -125,5 +129,34 @@ bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::p
     std::ofstream Out(FilePath, std::ios::out | std::ios::trunc);
     if (!Out) { LogErr("FileEdits::FileOverwrite", "Could not open for writing: " + FilePath.string()); return false; }
     Out << Value;
+    return true;
+}
+
+bool FileEdits::AppendLine(const std::string &Value, const std::filesystem::path &FilePath)
+{
+    std::error_code Ec;
+    std::filesystem::create_directories(FilePath.parent_path(), Ec);   // no-op for an existing dir
+
+    // Read the current content: check for an identical line (idempotency) and whether it ends with a newline.
+    std::string Content;
+    {
+        std::ifstream In(FilePath, std::ios::binary);
+        if (In) Content.assign(std::istreambuf_iterator<char>(In), std::istreambuf_iterator<char>());
+    }
+    {
+        std::istringstream Ss(Content);
+        std::string Line;
+        while (std::getline(Ss, Line))
+        {
+            if (!Line.empty() && Line.back() == '\r') Line.pop_back();   // tolerate CRLF
+            if (Line == Value) { LogOut("FileEdits::AppendLine", "already present in " + FilePath.string() + ": " + Value); return true; }
+        }
+    }
+
+    std::ofstream Out(FilePath, std::ios::app);
+    if (!Out) { LogErr("FileEdits::AppendLine", "Could not open for append: " + FilePath.string()); return false; }
+    if (!Content.empty() && Content.back() != '\n') Out << '\n';        // don't fuse onto an unterminated last line
+    Out << Value << '\n';
+    LogOut("FileEdits::AppendLine", "Appended to " + FilePath.string() + ": " + Value);
     return true;
 }

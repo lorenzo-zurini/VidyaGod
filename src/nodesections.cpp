@@ -545,7 +545,9 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                 else if (LayerType == "FileEdit")
                 {
                     std::string Mode = Layers[j].value("MODE", std::string("ConfigWrite"));
-                    QStringList Fields = (Mode == "Overwrite") ? QStringList{"MODE", "FILE", "VALUE"} : QStringList{"MODE", "FILE", "KEY", "VALUE"};
+                    // ConfigWrite needs a KEY (prefix-replace); Overwrite/AppendLine just take a VALUE.
+                    QStringList Fields = (Mode == "Overwrite" || Mode == "AppendLine")
+                        ? QStringList{"MODE", "FILE", "VALUE"} : QStringList{"MODE", "FILE", "KEY", "VALUE"};
                     int ferow = 1;
                     for (const QString &Field : Fields)
                     {
