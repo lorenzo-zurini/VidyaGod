@@ -19,7 +19,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets)
+find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets Test)
 find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
@@ -27,11 +27,9 @@ pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validat
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
 
-# Sources
-set(PROJECT_SOURCES
-    src/main.cpp
-    src/main.h
-
+# Everything except the entry point (main.cpp) + translations. Compiled once into an OBJECT library so both the
+# VidyaGod executable and the GUI test exe reuse the same objects.
+set(SHARED_SOURCES
     src/mainwindow.cpp
 
     src/libraryview.h
@@ -162,12 +160,21 @@ set(PROJECT_SOURCES
 
     src/pathspage.h
     src/pathspage.cpp
-
-    translations/${TS_FILES}
 )
 
-add_executable(VidyaGod ${PROJECT_SOURCES})
+# Shared object library (AUTOMOC/UIC/RCC are global, so QObject classes here get MOC'd). Linking the Qt/json/zip
+# imported targets propagates their include dirs to the object compilation.
+add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
+target_link_libraries(vidyagod_objs PUBLIC
+    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
+target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+if(VIDYAGOD_SANITIZE)
+    target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+endif()
 
+add_executable(VidyaGod src/main.cpp src/main.h translations/${TS_FILES})
+target_link_libraries(VidyaGod PRIVATE vidyagod_objs)
 target_link_libraries(VidyaGod PRIVATE Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets)
 target_link_libraries(VidyaGod PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(VidyaGod PRIVATE PkgConfig::LIBZIP)
@@ -210,3 +217,16 @@ target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::L
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
+
+# ---- GUI tests (Qt Test) — drive the real widgets in-process; reuse the app objects via vidyagod_objs.
+# Runs headless under the offscreen QPA platform. $ORIGIN rpath so it finds libvgipfs.so beside itself.
+add_executable(vg_gui_tests tests/gui/test_packageeditor_gui.cpp)
+target_link_libraries(vg_gui_tests PRIVATE
+    vidyagod_objs
+    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
+target_include_directories(vg_gui_tests PRIVATE src)
+target_compile_options(vg_gui_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+set_target_properties(vg_gui_tests PROPERTIES BUILD_RPATH "$ORIGIN")
+add_test(NAME vg_gui_tests COMMAND vg_gui_tests)
+set_tests_properties(vg_gui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
