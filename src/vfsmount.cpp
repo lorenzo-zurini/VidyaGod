@@ -19,6 +19,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 //VFS layer helpers (IsVfsLayer/LayerType/ResolveLayerSource/...) live in ManifestModel; bring them in unqualified.

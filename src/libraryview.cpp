@@ -6,6 +6,8 @@
 #include "ipfswrapper.h"
 #include "commonutils.h"
 
+#include <set>
+
 #include <QPainter>
 #include <QApplication>
 #include <QGuiApplication>

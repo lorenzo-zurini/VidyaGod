@@ -5,6 +5,9 @@
 #include <QMouseEvent>
 
 #include <algorithm>
+#include <functional>
+#include <map>
+#include <set>
 
 // ═════════════════════════════════════════════════════════════════════════════
 // NodeGraphView — clickable left→right DAG of the bundle's nodes (launchable on the left, parents to the right).

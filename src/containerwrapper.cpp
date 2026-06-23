@@ -1,6 +1,9 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include "processenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
+
+#include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
+
 #include <QThread>
 #include <QMetaObject>
 

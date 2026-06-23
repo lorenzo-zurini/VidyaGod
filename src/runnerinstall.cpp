@@ -12,6 +12,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 
 //VFS layer helpers (IsVfsLayer/LayerType/ResolveNodeOrder/...) live in ManifestModel; bring them in unqualified.
