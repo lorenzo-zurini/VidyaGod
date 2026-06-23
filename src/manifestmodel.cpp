@@ -199,6 +199,29 @@ const std::vector<std::string> &ZipEntriesCached(const std::string &Path,
     return Cache.emplace(Path, std::move(Out)).first->second;
 }
 
+// True if every file entry in the zip is STOREd (uncompressed). VidyaGodFS serves zip entries by reading the
+// backing file at the entry's offset — it does NOT inflate DEFLATE — so a compressed zip layer mounts to garbage
+// and is rejected at launch (VfsMount: "Compressed zip layer (not STORE)"). Catch it at authoring/validate time.
+// On the first compressed file entry, returns false and reports its name. Missing/unreadable zip → treated as OK
+// (the PATH/local-presence checks cover that separately).
+bool ZipAllStored(const std::string &Path, std::string &FirstCompressed)
+{
+    int Err = 0; bool AllStored = true;
+    if (zip_t *Za = zip_open(Path.c_str(), ZIP_RDONLY, &Err))
+    {
+        const zip_int64_t N = zip_get_num_entries(Za, 0);
+        for (zip_uint64_t i = 0; i < (zip_uint64_t)N; ++i)
+        {
+            zip_stat_t St; zip_stat_init(&St);
+            if (zip_stat_index(Za, i, 0, &St) != 0) continue;
+            if ((St.valid & ZIP_STAT_COMP_METHOD) && St.comp_method != ZIP_CM_STORE)
+            { AllStored = false; FirstCompressed = St.name ? St.name : ""; break; }
+        }
+        zip_close(Za);
+    }
+    return AllStored;
+}
+
 // Join a layer's TARGET (mount offset within the content root) and an in-layer relative path into one
 // content-root-relative slash path.
 std::string JoinTarget(std::string Target, std::string Rel)
@@ -360,6 +383,18 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         || (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH")
                             && L["SOURCE"]["PATH"].is_string() && !std::string(L["SOURCE"]["PATH"]).empty());
                     if (!HasPath) Errors.push_back(Tag + ": a " + L.value("TYPE", std::string("VFS")) + " layer has no PATH");
+
+                    //A locally-present zip layer must be STOREd (uncompressed) or it will not mount. Catch it here
+                    //(authoring/validate/publish) rather than at launch.
+                    if (HasPath && L.value("TYPE", std::string()) == "VFSZipLayer")
+                    {
+                        const std::string Local = ResolveLayerSource(L, N.BundleDir);
+                        std::string FirstCompressed;
+                        if (!Local.empty() && std::filesystem::exists(Local) && !ZipAllStored(Local, FirstCompressed))
+                            Errors.push_back(Tag + ": VFSZipLayer '" + std::string(L.value("PATH", std::string()))
+                                + "' is DEFLATE-compressed (entry '" + FirstCompressed + "') — VidyaGodFS requires a "
+                                "STORE (uncompressed) zip; it will not mount. Re-create it with `zip -0`.");
+                    }
                 }
 
         //EXCLUDE symmetry.

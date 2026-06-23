@@ -1,9 +1,14 @@
 #include "vgtest.h"
 #include "manifestmodel.h"
 
+#include <zip.h>
+
 #include <algorithm>
 #include <vector>
 #include <string>
+#include <cstring>
+#include <filesystem>
+#include <unistd.h>
 
 using nlohmann::ordered_json;
 
@@ -123,6 +128,53 @@ TEST(validate_flags_vfs_layer_without_path)
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "PATH"));
+}
+
+// A VFSZipLayer present on disk must be STORE (uncompressed) — VidyaGodFS cannot inflate DEFLATE, so a compressed
+// zip mounts to garbage. Validation must flag it (regression for the "exit 0 on unmountable layer" footgun found
+// via headless launch testing). Build real zips with libzip so the on-disk compression check has something to read.
+static void MakeZip(const std::string &Path, bool Stored)
+{
+    static const char *Data = "vgtest payload aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";   // compressible
+    int Err = 0;
+    zip_t *Za = zip_open(Path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Err);
+    CHECK(Za != nullptr);
+    if (!Za) return;
+    zip_source_t *S = zip_source_buffer(Za, Data, std::strlen(Data), 0);
+    zip_int64_t Idx = zip_file_add(Za, "hello.sh", S, ZIP_FL_OVERWRITE);
+    zip_set_file_compression(Za, Idx, Stored ? ZIP_CM_STORE : ZIP_CM_DEFLATE, 0);
+    zip_close(Za);
+}
+
+TEST(validate_flags_compressed_zip_layer)
+{
+    namespace fs = std::filesystem;
+    fs::path Dir = fs::temp_directory_path() / ("vgtest_zip_" + std::to_string(::getpid()));
+    fs::create_directories(Dir);
+
+    // Compressed → flagged.
+    MakeZip((Dir / "c.zip").string(), /*Stored=*/false);
+    {
+        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"}, {"ROLE", "content"},
+            {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "c.zip"}}}}}, "f.json", Dir.string(), N);
+        NodeIndex Idx; Idx.Nodes["z"] = N;
+        std::vector<std::string> Errors, Warnings;
+        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        CHECK(AnyContains(Errors, "STORE"));
+    }
+
+    // Stored → clean.
+    MakeZip((Dir / "s.zip").string(), /*Stored=*/true);
+    {
+        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"}, {"ROLE", "content"},
+            {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "s.zip"}}}}}, "f.json", Dir.string(), N);
+        NodeIndex Idx; Idx.Nodes["z"] = N;
+        std::vector<std::string> Errors, Warnings;
+        ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+        CHECK(!AnyContains(Errors, "STORE"));
+    }
+
+    std::error_code Ec; fs::remove_all(Dir, Ec);
 }
 
 TEST(validate_flags_asymmetric_exclude)
