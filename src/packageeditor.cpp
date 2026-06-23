@@ -1,28 +1,21 @@
 #include "packageeditor.h"
-#include "packageeditormodel.h"
-#include "nodeeditor.h"
-#include "jsonraweditor.h"
-#include "validationpanel.h"
-#include "commonutils.h"
-#include "registrywrapper.h"
-#include "covercache.h"
-#include "processenv.h"   // RunCommand (zip/unzip the package archive)
+#include "packageeditormodel.h"   // the state/signal hub
+#include "nodeeditor.h"           // per-node tab widget
+#include "jsonraweditor.h"        // raw-JSON tab widget
+#include "validationpanel.h"      // docked validation panel
+#include "packagecatalog.h"       // PackageCatalog::PublishPackage (the Publish button)
+// NodeGraphView comes via packageeditor.h.
+
+#include <QGuiApplication>
+#include <QScreen>
+#include <QFileDialog>
+#include <QMessageBox>
 #include <QPushButton>
-#include <QPainter>
-#include <QPainterPath>
-#include <QMouseEvent>
 #include <QScrollArea>
 #include <QSplitter>
-#include <QBuffer>
-#include <QImage>
-#include <QInputDialog>
-#include <QMessageBox>
-#include <QAbstractButton>
-#include <algorithm>
-#include <set>
-#include <map>
-#include <functional>
-#include <filesystem>
+#include <QTabWidget>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 
 using json = nlohmann::ordered_json;
 

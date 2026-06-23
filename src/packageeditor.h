@@ -1,68 +1,23 @@
 #ifndef PACKAGEEDITOR_H
 #define PACKAGEEDITOR_H
 
-#include <QWidget>
-#include <iostream>
 #include <QDialog>
-#include <QScreen>
-#include <QToolButton>
-#include <QMenu>
-
 #include <QDir>
-#include <QFileDialog>
-#include <QLineEdit>
+#include <QString>
 
-#include <QLabel>
-#include <QLayout>
-#include <QScrollArea>
-
-#include <QVBoxLayout>
-#include <QFormLayout>
-#include <QStackedLayout>
-
-#include <QBoxLayout>
-#include <QGroupBox>
-#include <QComboBox>
-#include <QCheckBox>
-
-#include <QTextEdit>
-#include <QAbstractItemModel>
-#include <QItemDelegate>
-
-#include <QSettings>
-#include <QDragEnterEvent>
-#include <QDropEvent>
-#include <QMimeData>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QEventLoop>
-#include <QPixmap>
-#include <QFileInfo>
-
-#include "filesystemoperations.h"
-#include "jsonoperations.h"
-#include "containerwrapper.h"
-#include "packagecatalog.h"
-#include "manifestmodel.h"
-#include "nodegraphview.h"
+#include "nodegraphview.h"     // NodeGraphView — the clickable DAG sidebar (member)
 #include "nlohmann/json.hpp"
 
-
-
-
 // ---------------------------------------------------------------------------
-// PackageEditor — the node-native bundle editor ("everything is a node"). A bundle is a directory of
-// <node_id>.json files; this dialog lists them as tabs and edits each node's fields (NODE_ID / ROLE / GROUP /
-// LABEL / META / PLATFORM / EXEC / OPTIONAL / DEFAULT / EXCLUDE), its global PARENTS (a catalog-wide id picker),
-// and its LAYERS (the per-TYPE sub-editors: VFS / RegEdit / DllOverride / FileEdit / Persist* / CustomVar).
-// The authoring tooling (Run EXE / Browse / Regedit / Execute / Analyze) drives the native node engine
-// (LaunchResolver::InitializeFromNode) against a freshly-saved-on-disk index of this bundle + the catalog.
-//
-// In-memory the working document is shaped { "NODES": [ <node>, ... ] } so the JSON-pointer field-edit machinery
-// is reused unchanged (paths like /NODES/3/EXEC/CONTENTPATH, /NODES/3/LAYERS/2/PATH). Each node carries an
-// editor-only "__FILE__" tag (its on-disk filename) so a NODE_ID rename re-files it. Save writes one file per node.
+// PackageEditor — the node-native bundle editor ("everything is a node"), now a THIN COMPOSITION ROOT. A bundle is
+// a directory of <node_id>.json files; the dialog frames a NodeGraphView sidebar + a tab strip (tab 0 =
+// JsonRawEditor, tabs 1.. = one NodeEditor per node) + a docked ValidationPanel. All state and logic live in
+// PackageEditorModel (the working { "NODES":[...] } document, node I/O, validation, catalog/exec queries, the
+// authoring runs); the editor owns the model, rebuilds its tabs on documentReloaded, and relays savedToDisk →
+// packageSaved. The per-concern widgets talk only to the model — never to each other or back to this shell.
 // ---------------------------------------------------------------------------
 class PackageEditorModel;   // the state/signal hub (packageeditormodel.h) — owned by PackageEditor
+class QTabWidget;
 
 class PackageEditor : public QDialog
 {
