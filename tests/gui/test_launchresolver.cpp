@@ -102,6 +102,39 @@ private slots:
         QCOMPARE(pinned->NodeId, std::string("wineB"));
     }
 
+    // The default pick prefers a RECOMMENDED runner over the alphabetically-first one (no arbitrary default).
+    void pick_runner_prefers_recommended()
+    {
+        NodeIndex idx;
+        idx.Nodes["aaa_wine"] = runnerNode("aaa_wine", {"win32"});   // sorts first
+        Node rec = runnerNode("zzz_wine", {"win32"}); rec.Recommended = true;
+        idx.Nodes["zzz_wine"] = rec;
+        Node launch = launchNode("game", "win32", {});
+        const json cfg = json{{"Settings", json::object()}};
+
+        ContainerParams cp("/tmp/vg_bundle");
+        const Node * def = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
+        QVERIFY(def != nullptr);
+        QCOMPARE(def->NodeId, std::string("zzz_wine"));   // recommended beats alphabetical
+    }
+
+    // Between equally-(non-)recommended runners, one shipped in the launch node's own package wins (embedded > global).
+    void pick_runner_prefers_package_local()
+    {
+        NodeIndex idx;
+        Node global = runnerNode("aaa_wine", {"win32"}); global.BundleDir = "/repo/global";   // sorts first, but global
+        idx.Nodes["aaa_wine"] = global;
+        Node local = runnerNode("zzz_wine", {"win32"}); local.BundleDir = "/repo/mygame";      // same bundle as launch
+        idx.Nodes["zzz_wine"] = local;
+
+        Node launch = launchNode("game", "win32", {}); launch.BundleDir = "/repo/mygame";
+        const json cfg = json{{"Settings", json::object()}};
+        ContainerParams cp("/tmp/vg_bundle");
+        const Node * def = LaunchResolver::PickRunnerNode(idx, launch, cp, cfg);
+        QVERIFY(def != nullptr);
+        QCOMPARE(def->NodeId, std::string("zzz_wine"));   // package-local beats alphabetical global
+    }
+
     // DerivePersistence: no Persist* subcomponents → whole-runtime persist (PersistAll). Declared → selective.
     void derive_persistence_all_vs_declared()
     {

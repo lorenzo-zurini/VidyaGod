@@ -434,7 +434,24 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                         Errors.push_back(Tag + ": CONTENTPATH '" + Cp + "' case-mismatches content file '" + Hit
                                          + "' — the mount is case-sensitive, fix the casing");
                     else if (AllLocal)
-                        Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found in the package content");
+                    {
+                        //Common authoring slip: a hand-made zip nests the content under a top dir (e.g. "payload/"),
+                        //so CONTENTPATH "game.exe" lands at "payload/game.exe". If exactly the same basename exists
+                        //nested, suggest the full path rather than just "not found".
+                        const std::string Base = Cp.substr(Cp.find_last_of('/') + 1);
+                        const std::string BaseL = ToLowerAscii(Base);
+                        std::string Suggest; int Matches = 0;
+                        for (const std::string &F : Files)
+                        {
+                            const std::string FB = F.substr(F.find_last_of('/') + 1);
+                            if (ToLowerAscii(FB) == BaseL) { Suggest = F; ++Matches; }
+                        }
+                        if (Matches == 1 && Suggest != Cp)
+                            Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found at the content root — did you "
+                                "mean '" + Suggest + "'? (a zip layer that nests its files under a top folder shifts the path)");
+                        else
+                            Warnings.push_back(Tag + ": CONTENTPATH '" + Cp + "' not found in the package content");
+                    }
                 }
             }
 

@@ -370,8 +370,11 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     return true;
 }
 
-//Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available),
-//priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > first qualifying (sorted node-id order).
+//Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available).
+//Priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > best qualifying default, where "best" ranks
+//RECOMMENDED runners first, then a runner shipped in the launch node's OWN package (embedded > global — a package
+//that carries a runner uses its own copy; runners are global wherever they live, there is no embedded flag), then
+//the lowest node-id for determinism. This keeps the default from being an arbitrary alphabetical accident.
 const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Launch, const struct ContainerParams &CP,
                                              const nlohmann::ordered_json &GlobalConfigJSON)
 {
@@ -392,8 +395,19 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     };
     if (!CP.RunnerID.empty()) { const Node *N = Idx.Find(CP.RunnerID); if (N && Qualifies(*N)) return N; }
     if (!Preferred.empty())   { const Node *N = Idx.Find(Preferred);   if (N && Qualifies(*N)) return N; }
-    for (const auto &[Id, N] : Idx.Nodes) if (Qualifies(N)) return &N;
-    return nullptr;
+
+    //Default pick — rank by (RECOMMENDED, package-local, node-id).
+    auto Local  = [&](const Node &N) { return !Launch.BundleDir.empty() && N.BundleDir == Launch.BundleDir; };
+    auto Better = [&](const Node &A, const Node *B) -> bool
+    {
+        if (!B) return true;
+        if (A.Recommended != B->Recommended) return A.Recommended;   // RECOMMENDED runner wins
+        if (Local(A) != Local(*B))           return Local(A);        // runner in the launch's own package wins
+        return A.NodeId < B->NodeId;                                 // deterministic last resort
+    };
+    const Node *Best = nullptr;
+    for (const auto &[Id, N] : Idx.Nodes) if (Qualifies(N) && Better(N, Best)) Best = &N;
+    return Best;
 }
 
 //Native node-graph init — populates ContainerParams + the internal component pool DIRECTLY from the node graph.
