@@ -23,7 +23,16 @@
 // ---------------------------------------------------------------------------
 namespace IpfsWrapper {
 
-// True if the embedded node started (its repo opened). The node is compiled in, so this is normally true.
+// Open the embedded node's repo + bring its network up. In the GUI this is DEFERRED to after the window shows (so
+// startup isn't blocked) and GATED on the user's "Enable networking" toggle (OFF by default — launching already-
+// hydrated games reads files by path through the VFS, no node needed; only download/seed needs the network).
+// Headless CLI modes that need the node (--fetch/--seed/--node/…) start it up front. Idempotent. False (+*Error) on
+// a repo-open failure.
+bool StartNode(const std::string & RepoPath, std::string * Error = nullptr);
+// Close the node (network down, repo closed). Called when the user disables networking, and at exit.
+void StopNode();
+
+// True if the embedded node started (its repo opened). False before StartNode (e.g. networking disabled).
 bool Available();
 
 // True if the embedded node's network stack is up (joined the swarm/DHT). Seeding/fetching peers needs this.

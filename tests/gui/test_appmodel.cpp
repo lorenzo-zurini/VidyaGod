@@ -131,6 +131,28 @@ private slots:
         QCOMPARE((int)cfg["Settings"]["Repositories"].size(), 1);
     }
 
+    // Networking is OFF by default and toggles persist Settings.IPFS.Enabled + emit networkingChanged once.
+    void networking_off_by_default_and_toggles()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        QVERIFY(!m.networkingEnabled());                  // off by default
+
+        QSignalSpy spy(&m, &AppModel::networkingChanged);
+        m.setNetworkingEnabled(true);
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(m.networkingEnabled());
+        QCOMPARE(cfg["Settings"]["IPFS"].value("Enabled", false), true);
+
+        m.setNetworkingEnabled(true);                     // unchanged → no signal
+        QCOMPARE(spy.count(), 1);
+        m.setNetworkingEnabled(false);
+        QCOMPARE(spy.count(), 2);
+        QVERIFY(!m.networkingEnabled());
+    }
+
     // rebuildCatalog emits catalogChanged (empty config → empty index, but the signal still fires).
     void rebuild_catalog_signals()
     {

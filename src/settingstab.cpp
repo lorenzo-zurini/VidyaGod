@@ -4,7 +4,7 @@
 #include "packagesview.h"
 #include "runnerspage.h"
 #include "repositoriespage.h"
-#include "downloadspage.h"
+#include "ipfssettingspage.h"
 #include "pathspage.h"
 
 #include <QListWidget>
@@ -26,7 +26,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     CategoryList->addItem("Installed Packages");
     CategoryList->addItem("Runners");
     CategoryList->addItem("Repositories");
-    CategoryList->addItem("Downloads");
+    CategoryList->addItem("IPFS");
     CategoryList->addItem("Storage & Paths");
     outer->addWidget(CategoryList);
 
@@ -37,7 +37,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     Stack->addWidget(new PackagesView(Model, Stack));
     Stack->addWidget(new RunnersPage(Model, Stack));
     Stack->addWidget(new RepositoriesPage(Model, Stack));
-    Stack->addWidget(new DownloadsPage(Model, Stack));
+    Stack->addWidget(new IpfsSettingsPage(Model, Stack));
     Stack->addWidget(new PathsPage(Model, Stack));
 
     connect(CategoryList, &QListWidget::currentRowChanged, Stack, &QStackedWidget::setCurrentIndex);

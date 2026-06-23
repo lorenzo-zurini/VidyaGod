@@ -45,6 +45,10 @@ private:
     void BuildStaticUI();
     void restoreFromTray();                        // un-hide + raise + focus
     void hideToTray();                             // hide window, remember the hidden state, hint once
+    void setNetworkTabsEnabled(bool enabled);      // grey/un-grey the network-dependent tabs (Catalog, IPFS)
+    void applyNetworkingState(bool enabled);       // setNetworkTabsEnabled + start/stop the node (runtime toggle)
+    void startNodeAsync();                         // open the IPFS repo off-thread (deferred so startup isn't blocked)
+    void onNodeReady();                            // node repo opened → start resuming interrupted downloads
 
     AppModel        * Model       = nullptr;   // owns config + catalog + persisted UI state; the signal hub
     DownloadManager * DownloadMgr = nullptr;   // owns the Catalog download lifecycle
@@ -57,6 +61,7 @@ private:
     SettingsTab * SettingsTabPtr  = nullptr;
     IpfsTab     * IpfsTabPtr       = nullptr;
     QTimer      * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one model notification
+    QTimer      * ResumeTimer       = nullptr;  // polls for the node's network coming up, then resumes downloads once
 };
 
 #endif // MAINWINDOW_H

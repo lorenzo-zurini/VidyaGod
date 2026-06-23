@@ -7,8 +7,11 @@
 #include "settingstab.h"
 #include "ipfstab.h"
 #include "covercache.h"
-#include "ipfswrapper.h"       // IpfsManager (transfer progress signals)
+#include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
+#include "apppaths.h"            // AppPaths::DataRoot (the IPFS repo lives at <DataRoot>/ipfs)
 #include "prelaunchwindow.h"
+
+#include <thread>
 
 #include <QApplication>
 #include <QGuiApplication>
@@ -132,12 +135,17 @@ void MainWindow::BuildStaticUI()
 
     // Resume any downloads a previous run left interrupted (crash/close) — but only once the embedded node's network
     // is up, so the fetch can actually proceed. Polls briefly then stops; a no-op when there's nothing to resume.
-    QTimer * ResumeTimer = new QTimer(this);
+    // Started by onNodeReady() (only after the node is brought up — networking is opt-in), not at construction.
+    ResumeTimer = new QTimer(this);
     ResumeTimer->setInterval(1500);
-    connect(ResumeTimer, &QTimer::timeout, this, [this, ResumeTimer]{
+    connect(ResumeTimer, &QTimer::timeout, this, [this]{
         if (IpfsWrapper::DaemonRunning()) { ResumeTimer->stop(); DownloadMgr->resumeAll(); }
     });
-    ResumeTimer->start();
+
+    // Networking is opt-in (Settings → IPFS). Grey the network-dependent tabs until it's on, and react to the toggle
+    // (start/stop the node, re-enable/disable the tabs).
+    setNetworkTabsEnabled(Model->networkingEnabled());
+    connect(Model, &AppModel::networkingChanged, this, [this](bool on){ applyNetworkingState(on); });
 }
 
 void MainWindow::RefreshPackage(const QString & PackagePath)
@@ -202,9 +210,55 @@ void MainWindow::startup(bool forceTray)
     if (Tray && Tray->available() && (forceTray || Tray->shouldStartHidden()))
     {
         Tray->notifyHidden();   // make the tray icon's presence obvious on a hidden start
-        return;                 // stay hidden; the tray icon is already shown by the TrayController
     }
-    show();
+    else
+    {
+        show();
+    }
+
+    // Defer the IPFS node start until AFTER the window is up (opening the repo + joining the swarm delays startup),
+    // and only when the user has opted into networking. singleShot(0) runs it once the event loop is processing.
+    if (Model->networkingEnabled())
+        QTimer::singleShot(0, this, [this]{ startNodeAsync(); });
+}
+
+void MainWindow::setNetworkTabsEnabled(bool enabled)
+{
+    if (!MainWindowTabWidget) return;
+    for (int i = 0; i < MainWindowTabWidget->count(); ++i)
+    {
+        QWidget * W = MainWindowTabWidget->widget(i);
+        if (W == CatalogTabPtr || W == IpfsTabPtr) MainWindowTabWidget->setTabEnabled(i, enabled);
+    }
+}
+
+void MainWindow::applyNetworkingState(bool enabled)
+{
+    setNetworkTabsEnabled(enabled);
+    if (enabled)
+        startNodeAsync();
+    else
+    {
+        if (ResumeTimer) ResumeTimer->stop();
+        IpfsWrapper::StopNode();   // bring the node fully down — no network activity until re-enabled
+    }
+}
+
+void MainWindow::startNodeAsync()
+{
+    if (IpfsWrapper::Available()) { onNodeReady(); return; }   // already running (e.g. re-enabled)
+    const std::string Repo = (AppPaths::DataRoot() / "ipfs").string();
+    std::thread([this, Repo]{
+        std::string Err;
+        const bool Ok = IpfsWrapper::StartNode(Repo, &Err);   // off-thread: repo open + swarm join can take a moment
+        QMetaObject::invokeMethod(this, [this, Ok]{ if (Ok) onNodeReady(); }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void MainWindow::onNodeReady()
+{
+    // The node's network comes up asynchronously after the repo opens; poll for it, then resume interrupted downloads.
+    if (ResumeTimer && !ResumeTimer->isActive()) ResumeTimer->start();
 }
 
 void MainWindow::restoreFromTray()

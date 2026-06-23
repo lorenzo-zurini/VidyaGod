@@ -211,25 +211,19 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    //Embedded IPFS node (libvgipfs): open its private repo and hold it for this process's lifetime. The repo lives
-    //INSIDE the app data dir (~/.VidyaGod/ipfs) so it shares the lifecycle of the content it references: deleting
-    //~/.VidyaGod wipes the node repo too (pins + filestore refs), giving a true clean slate. (A repo outside it
-    //would keep filestore references to now-deleted LIBRARY files, then hard-fail fetches it thinks it already has.)
-    //Safe as a single opener because of the single-instance guard above. Non-fatal: if it fails the app still runs.
-    {
-        const QString IpfsRepo = AppDataDir.absolutePath() + "/ipfs";
-        char *VgErr = nullptr;
-        if (VgStart(IpfsRepo.toUtf8().constData(), &VgErr) != 0)
-        {
-            LogErr("main.cpp", std::string("embedded IPFS node failed to start: ") + (VgErr ? VgErr : "?"));
-            if (VgErr) VgFree(VgErr);
-        }
-        else
-        {
-            LogOut("main.cpp", "embedded IPFS node started at " + IpfsRepo.toStdString());
-            std::atexit(VgStop);   // best-effort clean leveldb shutdown on any exit path
-        }
-    }
+    //Embedded IPFS node (libvgipfs): its private repo lives INSIDE the app data dir (<AppDataDir>/ipfs) so it shares
+    //the lifecycle of the content it references (deleting the data dir wipes pins/refs = true clean slate).
+    //Networking is OFF by default in the GUI and the node start is DEFERRED to after the window shows (it delays
+    //startup) — MainWindow brings it up when the user enables networking. Headless CLI modes that actually need the
+    //node (fetch/seed/import/publish/peer-id/--node launch) start it up front here; the path-only modes
+    //(validate/list/resolve) and in-package launch never touch it.
+    const std::string IpfsRepo = (AppDataDir.absolutePath() + "/ipfs").toStdString();
+    const bool HeadlessNeedsNode =
+        LaunchParameters.PrintPeerId || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
+        || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
+        || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.LaunchNodeId.empty();
+    if (HeadlessNeedsNode)
+        IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
 
     //HEADLESS: print this node's peer ID + dialable addrs, then exit (so another node can --connect to it).
     if (LaunchParameters.PrintPeerId)

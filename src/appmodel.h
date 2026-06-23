@@ -34,6 +34,10 @@ public:
     bool save();                                       // write GlobalConfigJSON to disk
     void rebuildCatalog();                             // re-scan CatalogIndex from disk → emit catalogChanged()
     void setCardPixelWidth(int w);                     // persist + emit cardSizeChanged(w) (no-op if unchanged)
+
+    // ── Networking (IPFS) — OFF by default; all download/seed activity is opt-in (Settings.IPFS.Enabled) ──
+    bool networkingEnabled() const;                    // Settings.IPFS.Enabled (default false)
+    void setNetworkingEnabled(bool on);                // persist + emit networkingChanged(on) (no-op if unchanged)
     void removePackage(const QString & uid);           // drop a LIBRARY entry (+ its managed files) → rebuild
     void notifyCoversReady();                          // a batch of covers finished loading → emit coversReady()
 
@@ -48,6 +52,7 @@ signals:
     void cardSizeChanged(int w);    // card pixel width changed — Library/Catalog relayout
     void coversReady();             // lazy cover load(s) landed — repaint visible cards
     void repositoriesChanged();     // the repo list was edited — the Repositories page rebuilds
+    void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
 
 private:
     nlohmann::ordered_json * Config;

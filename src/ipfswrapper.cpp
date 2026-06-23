@@ -18,6 +18,7 @@
 #include <atomic>
 #include <thread>
 #include <vector>
+#include <cstdlib>
 #include <unordered_map>
 
 // IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
@@ -107,9 +108,29 @@ DownloadSlot::~DownloadSlot()
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
 void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }
 
+bool StartNode(const std::string &RepoPath, std::string *Error)
+{
+    char *Err = nullptr;
+    if (VgStart(RepoPath.c_str(), &Err) != 0)
+    {
+        const std::string E = TakeStr(Err);
+        const std::string Msg = E.empty() ? ("node failed to start at " + RepoPath) : E;
+        if (Error) *Error = Msg;
+        LogErr("IpfsWrapper::StartNode", Msg);
+        return false;
+    }
+    static bool AtexitSet = false;
+    if (!AtexitSet) { std::atexit(VgStop); AtexitSet = true; }   // best-effort clean leveldb shutdown on any exit path
+    LogSucc("IpfsWrapper::StartNode", "embedded IPFS node started at " + RepoPath);
+    return true;
+}
+
+void StopNode() { VgStop(); }
+
 bool Available()
 {
-    // The node is compiled in; "available" means it actually opened its repo at startup (VgStart succeeded).
+    // The node is compiled in; "available" means it actually opened its repo (StartNode succeeded). False before that
+    // (deferred start) or after StopNode (networking disabled).
     return VgStarted() != 0;
 }
 

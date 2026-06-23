@@ -56,6 +56,20 @@ void AppModel::notifyCoversReady()
     emit coversReady();
 }
 
+bool AppModel::networkingEnabled() const
+{
+    const auto & S = (*Config)["Settings"];
+    return S.contains("IPFS") && S["IPFS"].is_object() && S["IPFS"].value("Enabled", false);
+}
+
+void AppModel::setNetworkingEnabled(bool on)
+{
+    if (on == networkingEnabled()) return;
+    (*Config)["Settings"]["IPFS"]["Enabled"] = on;
+    save();
+    emit networkingChanged(on);
+}
+
 void AppModel::removePackage(const QString & uid)
 {
     const std::string Uid = uid.toStdString();
