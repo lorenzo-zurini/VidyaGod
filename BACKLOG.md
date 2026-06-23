@@ -2,6 +2,12 @@
 
 Living list of what's queued. Done items kept for context. Test plan checklist is in `TESTPLAN.md`.
 
+## 🏁 Milestone — cross-network P2P VERIFIED IN THE WILD (2026-06-23)
+Real GUI download over **work wifi** (a separate, NAT'd/firewalled network — the hostile case) from a remote
+seeder, **steady 10MB/s**. This closes the last open question that gated the whole P2P flywheel: AutoRelay/hole-punch
+discovery + bitswap throughput work between *different* LANs, not just same-LAN mDNS. The kubo-free embedded node is
+discoverable + served cross-net. (See [[project_embedded_ipfs]].)
+
 ## In progress
 - **Download throughput** — sequential fetch was RTT-bound ~4 MB/s; parallel/windowed/session attempts gave
   150 MB/s bursts but periodic "waiting for peers" stalls (every ~3-4 s). Being benchmarked + optimized headlessly
