@@ -2,11 +2,17 @@
 
 Living list of what's queued. Done items kept for context. Test plan checklist is in `TESTPLAN.md`.
 
-## 🏁 Milestone — cross-network P2P VERIFIED IN THE WILD (2026-06-23)
-Real GUI download over **work wifi** (a separate, NAT'd/firewalled network — the hostile case) from a remote
-seeder, **steady 10MB/s**. This closes the last open question that gated the whole P2P flywheel: AutoRelay/hole-punch
-discovery + bitswap throughput work between *different* LANs, not just same-LAN mDNS. The kubo-free embedded node is
-discoverable + served cross-net. (See [[project_embedded_ipfs]].)
+## 🏁🏁 Milestone — FULL STACK VERIFIED IN THE WILD (2026-06-23)
+**Played Age of Mythology (real win32 game, Proton) on a work laptop, with content fetched over IPFS cross-network
+from the home PC.** This is the complete end-to-end proof: cross-net P2P fetch + runner install (Proton DEFPREFIX) +
+FUSE VFS overlay (game + runtime) + container exec + real gameplay, all at once, on a real commercial title. Closes
+the long-standing "launch UNVERIFIED on hardware" flags (TESTPLAN J42–45; the de-god ContainerWrapper launch path)
+AND the cross-network seeding question in one shot.
+- Earlier same day: download over **work wifi** (separate NAT'd/firewalled network — the hostile case) at steady
+  **10MB/s**, proving AutoRelay/hole-punch + bitswap work between *different* LANs (not just same-LAN mDNS).
+- The kubo-free embedded Boxo node is discoverable + served cross-net. (See [[project_embedded_ipfs]],
+  [[project_degod_containerwrapper]].)
+- Still nice-to-have for the flywheel: always-on seeding (headless `--serve`) + graceful zero-seeder behavior.
 
 ## In progress
 - **Download throughput** — sequential fetch was RTT-bound ~4 MB/s; parallel/windowed/session attempts gave
