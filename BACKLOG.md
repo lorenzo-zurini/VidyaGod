@@ -3,9 +3,25 @@
 Living list of what's queued. Done items kept for context. Test plan checklist is in `TESTPLAN.md`.
 
 ## In progress
+- **De-god PackageEditor** (MainWindow/AppModel pattern) — phases 1–2 DONE, 3–4 queued.
+  - **Phase 1 (done)**: `PackageEditorModel` hub (packageeditormodel.{h,cpp}) owns the working doc + node I/O +
+    validation + catalog/exec queries + authoring runs; PackageEditor delegates. Config taken by `const` end-to-end
+    (incl. ContainerWrapper ctor's GlobalConfigJSON param now `const&`).
+  - **Phase 2 (done)**: extracted `NodeGraphView`, `ValidationPanel`, `JsonRawEditor` into their own widget TUs;
+    PackageEditor reacts to model signals (documentReloaded / validationChanged / savedToDisk).
+  - **Phase 3 (TODO, the big one)**: extract `NodeEditor` (per-node tab, ~720 LOC of BuildUI) + its section widgets
+    (Identity/Selection/Parents/Platform/Exec/Meta/Layers). ~40 lambdas; structural edits must drive the shell
+    rebuild via a signal (e.g. `NodeEditor::rebuildRequested(tab)`) instead of calling BuildUI directly.
+  - **Phase 4 (TODO)**: slim PackageEditor to a composition root + shared field-bind helper; finalize.
+  - **Checkpointed before Phase 3** because the laptop (2nd-machine build + only runtime-test path) is OFFLINE —
+    resume Phase 3 when it's back so the 720-LOC move can be verified on both machines, or push it locally if desired.
 - **Download throughput** — sequential fetch was RTT-bound ~4 MB/s; parallel/windowed/session attempts gave
   150 MB/s bursts but periodic "waiting for peers" stalls (every ~3-4 s). Being benchmarked + optimized headlessly
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
+
+## Remote build PENDING (laptop offline since the PackageEditor work)
+- PE phases 1–2 are committed + **local `-Werror` clean**, but NOT yet built on 192.168.1.134 (it went "No route to
+  host" mid-phase-2). Catch up a remote `-Werror` build + ctest of latest `main` when the laptop returns.
 
 ## Pending bugs
 - (none open — #2/#3/#5/#8/#9 + the remove-freeze fixed; see "Done this session")
