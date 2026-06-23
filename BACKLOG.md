@@ -67,6 +67,24 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 - **NOT yet exercised on hardware** — a real game launch (TESTPLAN J42–45) is the verification; deferred to the
   user's next hardware session (needs a Proton-GE runner + a hydrated Windows game), same as the remove-flow retest.
 
+## Headless E2E testing campaign (2026-06-23) — real runtime path verified + fixed
+Drove the whole engine via the CLI (`--node`/`--resolve-only`/`--publish`/`--fetch`/`--validate-nodes`, isolated
+`--data-dir`) on a synthetic native-passthrough Linux package — see the [[reference_headless_e2e_testing]] memory.
+- **Verified working**: full launch (FUSE mount + execute + clean exit), publish→fetch IPFS round-trip (byte/CID
+  parity), cross-node P2P fetch, dehydrated write-through fetch-on-demand, validate/list, resolve dump.
+- **Fixed: launch didn't fail loudly** — no-runner or unmountable-layer launches ran an empty command and reported
+  "exit 0". `InitializeFromNode` now returns false on no-runner; the headless `--node` path checks
+  `BuildContainerRuntime()` before `Execute()`. (GUI path already gated.)
+- **Fixed: AppPaths::DataRoot** — every app-produced path (launch TEMP/RUNTIME/DEFPREFIX, LIBRARY default, prelaunch
+  save) now hangs off the resolved data dir, so portable / `--data-dir` relocate the WHOLE footprint (was hardcoded
+  `~/.VidyaGod/TEMP`, leaking out of a portable/test instance). USERDATA stays beside the package (by design).
+- **Fixed: VFS layer publishability validation** — VFSDirLayer → warning (unzipped authoring intermediary; use
+  "→ ZIP"); DEFLATE-compressed VFSZipLayer → error (won't mount), with a "⚠ Re-store" one-click fix in the editor.
+- **Still open / by design**: VFSDirLayer can't be published (M1, files/zips only — now a warning, intentional);
+  unreachable-repo git-sync still `git init`s the dir + double WARN (cosmetic).
+- GUI-UNVERIFIED on hardware: the editor's "⚠ Re-store" button + "→ ZIP" flow (logic mirrors proven RunCommand
+  machinery; compiles `-Werror`). Remote `-Werror` build still pending (192.168.1.134 offline).
+
 ## Done this session (for reference)
 - #1 dup repo rejected · #4 download UI freeze (cover re-scale per tick + BuildCidLabels disk-rescan on GUI thread +
   progress throttle) · #6 slow pinning (batched finalize) · #7 cancelled row dropped · #10 app-data field grayed.
