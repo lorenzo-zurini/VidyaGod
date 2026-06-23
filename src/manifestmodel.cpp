@@ -352,6 +352,19 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (HasCycle(Id)) Errors.push_back(Tag + ": PARENTS form a cycle");
         }
 
+        //A runner's BUILD comes from its PARENT content nodes (the runner node itself is excluded from the runner
+        //closure), so VFS layers placed directly on a runner node are silently IGNORED — never mounted. Authors who
+        //ship the runtime as the runner's own LAYERS get a runner with no build. Warn and point at the fix.
+        if (N.IsRunner() && N.Layers.is_array())
+            for (const auto &L : N.Layers)
+                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())))
+                {
+                    Warnings.push_back(Tag + ": a runner node carries its own VFS layer ('" + LayerType(L)
+                        + "') — runner layers are IGNORED (the build is taken from the runner's PARENT content nodes). "
+                        "Move it to a content node and add that node to the runner's PARENTS.");
+                    break;
+                }
+
         //VFS layers must declare a local PATH (or SOURCE.PATH).
         if (N.Layers.is_array())
             for (const auto &L : N.Layers)

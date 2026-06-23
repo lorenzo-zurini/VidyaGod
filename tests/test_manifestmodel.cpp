@@ -189,6 +189,20 @@ TEST(validate_warns_unzipped_dir_layer)
     CHECK(!AnyContains(Errors, "VFSDirLayer"));   // warning, never an error
 }
 
+// A runner's build comes from its PARENT content nodes; VFS layers on the runner node itself are silently ignored.
+// Validation must warn so authors don't ship a runner with a never-mounted build.
+TEST(validate_warns_runner_self_layers)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID", "r"}, {"ROLE", "runner"},
+              {"PLATFORM", {{"HOST", "linux64"}, {"GUEST", {"win64"}}}},
+              {"EXEC", {{"EXECUTABLE", "x"}}},
+              {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "rt.zip"}}}}});
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Warnings, "runner layers are IGNORED"));
+}
+
 TEST(validate_flags_asymmetric_exclude)
 {
     NodeIndex Idx;
