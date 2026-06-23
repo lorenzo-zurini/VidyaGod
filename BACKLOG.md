@@ -16,9 +16,11 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 - `NodeEditor` further decomposed: each section is now its own class — `NodeSection` base + `NodeIdentitySection`/
   `NodeSelectionSection`/`NodeParentsSection`/`NodePlatformSection`/`NodeExecSection`/`NodeMetaSection`/
   `NodeLayersSection` (nodesection.{h,cpp} + nodesections.{h,cpp}); NodeEditor is a 218-LOC toolbar+composer.
-- **UNVERIFIED**: open the editor on hardware (TESTPLAN I40/I41) — edit fields across sections, add/remove/move
-  nodes, add each LAYER type, drop a cover, run authoring (Run EXE / Execute / Analyze), Publish; confirm
-  packageSaved propagates. Same deferred-to-hardware bucket as the rest of this session's work.
+- **Now partly covered by tests**: `vg_gui_tests` (headless Qt Test, offscreen — see the GUI-harness memory) drives
+  the real PackageEditorModel + sections and asserts the de-god wiring (field edits → doc, replaceNodeJson/SaveNodes
+  signals, Identity field edit → rebuild, Layers render). So the model+widget wiring is regression-tested.
+- **Still UNVERIFIED on hardware**: the full editor GUI pass (TESTPLAN I40/I41 — add/remove/move nodes, each LAYER
+  type, cover drop, the authoring runs Run EXE / Execute / Analyze, Publish) + a real game launch. Deferred to hardware.
 
 ## Remote build PENDING (laptop offline since the PackageEditor work)
 - All PE phases (1–4) are committed + **local `-Werror` clean**, but NOT yet built on 192.168.1.134 (it went "No
