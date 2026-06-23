@@ -85,6 +85,19 @@ Drove the whole engine via the CLI (`--node`/`--resolve-only`/`--publish`/`--fet
 - GUI-UNVERIFIED on hardware: the editor's "⚠ Re-store" button + "→ ZIP" flow (logic mirrors proven RunCommand
   machinery; compiles `-Werror`). Remote `-Werror` build still pending (192.168.1.134 offline).
 
+### Heterogeneous-package pass (2026-06-23) — 8 packages × 6 runners, edge cases
+Verified working: embedded runners (picked from the package bundle + launched), optional/default/EXCLUDE modules,
+UnifiedRuntime build-fold, wine-heterogeneous (selective persist + CustomVars), multi-edition GROUP, diamond-dep
+dedup, win32 + native launch (mocked). Improvements implemented this pass:
+- **Runner default pick** no longer arbitrary (was first-by-node-id-sort) — `PickRunnerNode` ranks RECOMMENDED >
+  package-local (runner in the launch node's own bundle; runners stay global, no embedded flag) > node-id.
+- **Module EXCLUDE** — an explicit toggle-on now beats a conflicting default-on option (was silently dropped).
+- **Validation**: runner-self-VFS-layers warning (silently ignored — build comes from PARENT nodes); CONTENTPATH
+  nesting hint ("did you mean 'payload/game.exe'?").
+- Open by design (user): runners are global wherever they live; duplicates resolve package-local > global.
+- NOT YET: a RECOMMENDED edition driving the default launch within a GROUP (verify on hardware); persist paths
+  appearing to resolve under the package source dir (verify the capture maps to USERDATA).
+
 ## Done this session (for reference)
 - #1 dup repo rejected · #4 download UI freeze (cover re-scale per tick + BuildCidLabels disk-rescan on GUI thread +
   progress throttle) · #6 slow pinning (batched finalize) · #7 cancelled row dropped · #10 app-data field grayed.
