@@ -125,7 +125,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, QHash<QStri
                                    else if (F[i] == ' ') ++i; else break; }
             PkgName = (i < F.size()) ? F.substr(i) : F;
         }
-        if (PkgName.empty()) PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", N.GroupKey()) : N.GroupKey();
+        if (PkgName.empty()) PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", N.GameKey()) : N.GameKey();
 
         if (N.Layers.is_array())
             for (const auto & L : N.Layers)

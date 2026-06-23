@@ -42,7 +42,7 @@ PreLaunchWindow::PreLaunchWindow(
     setMinimumSize(800, 600);
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // Initial edition = the first in the group (PresentableGroups put RECOMMENDED first).
+    // Initial variant = the first in the group (PresentableGroups put RECOMMENDED first).
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
 
@@ -75,10 +75,10 @@ PreLaunchWindow::PreLaunchWindow(
     QFormLayout* PickerForm = new QFormLayout();
     ControlLayout->addLayout(PickerForm);
 
-    // Edition combo (the group's launchable nodes) — hidden when there's only one.
-    EditionCombo = new QComboBox(ControlWidget);
-    PickerForm->addRow("Edition:", EditionCombo);
-    EditionLabel = PickerForm->labelForField(EditionCombo);
+    // Variant combo (the group's launchable nodes) — hidden when there's only one.
+    VariantCombo = new QComboBox(ControlWidget);
+    PickerForm->addRow("Variant:", VariantCombo);
+    VariantLabel = PickerForm->labelForField(VariantCombo);
     for (const std::string& Id : this->GroupNodeIds)
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
@@ -86,17 +86,17 @@ PreLaunchWindow::PreLaunchWindow(
         std::string Lbl = !N->Label.empty() ? N->Label
                           : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
         if (N->Recommended) Lbl = "⭐ " + Lbl;
-        EditionCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
+        VariantCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
     }
     {
-        int Sel = EditionCombo->findData(QString::fromStdString(LaunchNodeId));
-        if (Sel >= 0) EditionCombo->setCurrentIndex(Sel);
-        bool Multi = EditionCombo->count() > 1;
-        EditionCombo->setVisible(Multi);
-        if (EditionLabel) EditionLabel->setVisible(Multi);
+        int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
+        if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
+        bool Multi = VariantCombo->count() > 1;
+        VariantCombo->setVisible(Multi);
+        if (VariantLabel) VariantLabel->setVisible(Multi);
     }
 
-    // Runner combo — populated per edition.
+    // Runner combo — populated per variant.
     RunnerCombo = new QComboBox(ControlWidget);
     PickerForm->addRow("Runner:", RunnerCombo);
 
@@ -188,7 +188,7 @@ PreLaunchWindow::PreLaunchWindow(
     CloseButton = new QPushButton("Close", BtnWidget);
     BtnLayout->addWidget(CloseButton);
 
-    connect(EditionCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onEditionChanged);
+    connect(VariantCombo, &QComboBox::currentIndexChanged, this, &PreLaunchWindow::onVariantChanged);
     connect(RunnerCombo,  &QComboBox::currentIndexChanged, this, [this](int){ RebuildCustomVarPickers(); });
     connect(LaunchButton, &QPushButton::clicked, this, &PreLaunchWindow::onLaunchClicked);
     connect(KillButton,   &QPushButton::clicked, this, &PreLaunchWindow::onKillClicked);
@@ -524,10 +524,10 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     CustomVarGroup->setVisible(AnyVisible);
 }
 
-void PreLaunchWindow::onEditionChanged()
+void PreLaunchWindow::onVariantChanged()
 {
-    if (EditionCombo->currentIndex() < 0) return;
-    LaunchNodeId = EditionCombo->currentData().toString().toStdString();
+    if (VariantCombo->currentIndex() < 0) return;
+    LaunchNodeId = VariantCombo->currentData().toString().toStdString();
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
     RebuildCover();
     RebuildRunnerCombo();
@@ -541,18 +541,18 @@ void PreLaunchWindow::ReloadAndRebuild()
     std::vector<std::string> Live;
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
-    QSignalBlocker B(EditionCombo);
-    EditionCombo->clear();
+    QSignalBlocker B(VariantCombo);
+    VariantCombo->clear();
     for (const std::string& Id : GroupNodeIds)
     {
         const Node* N = Index->Find(Id);
         std::string Lbl = !N->Label.empty() ? N->Label : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
         if (N->Recommended) Lbl = "⭐ " + Lbl;
-        EditionCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
+        VariantCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
     }
-    int Sel = EditionCombo->findData(QString::fromStdString(LaunchNodeId));
-    EditionCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
-    onEditionChanged();
+    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
+    VariantCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
+    onVariantChanged();
 }
 
 void PreLaunchWindow::persistGlobalConfig()
@@ -603,7 +603,7 @@ void PreLaunchWindow::onLaunchClicked()
     }
 
     // Disable controls + show progress.
-    RunnerCombo->setEnabled(false); EditionCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
+    RunnerCombo->setEnabled(false); VariantCombo->setEnabled(false); CustomVarGroup->setEnabled(false);
     ModuleGroup->setEnabled(false);
     RememberCheck->setEnabled(false);
     CloseAfterLaunchCheck->setEnabled(false); DryRunCheck->setEnabled(false); PreserveRuntimeCheck->setEnabled(false);
@@ -672,7 +672,7 @@ void PreLaunchWindow::onLaunchFinished(bool success, QString errorMsg)
     if (success) StatusLabel->setText("Finished.");
     else { StatusLabel->setText("Error: " + errorMsg); QMessageBox::warning(this, "Launch failed", errorMsg); }
 
-    RunnerCombo->setEnabled(true); EditionCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
+    RunnerCombo->setEnabled(true); VariantCombo->setEnabled(true); CustomVarGroup->setEnabled(true);
     ModuleGroup->setEnabled(true);
     RememberCheck->setEnabled(true);
     CloseAfterLaunchCheck->setEnabled(true); DryRunCheck->setEnabled(true); PreserveRuntimeCheck->setEnabled(true);

@@ -32,7 +32,7 @@
 
 // ---------------------------------------------------------------------------
 // PreLaunchWindow — node-native launch dialog. Built from a library tile = a GROUP of launchable nodes
-// (the editions). Lets the user pick edition + runner + optional-node toggles + CustomVars, shows live log,
+// (the editions). Lets the user pick variant + runner + optional-node toggles + CustomVars, shows live log,
 // and launches the selected node via LaunchThread.LaunchNodeId (the engine resolves the rest from the graph).
 // ---------------------------------------------------------------------------
 class PreLaunchWindow : public QDialog
@@ -47,9 +47,9 @@ public:
 
     ~PreLaunchWindow() override;
 
-    //The owning bundle dir of the current edition — used by MainWindow::RefreshPackage to target this dialog.
+    //The owning bundle dir of the current variant — used by MainWindow::RefreshPackage to target this dialog.
     const std::string & packagePath() const { return BundleDir; }
-    //Rebuilds the edition combo + runner + module/CustomVar pickers (e.g. after the package was edited).
+    //Rebuilds the variant combo + runner + module/CustomVar pickers (e.g. after the package was edited).
     void ReloadAndRebuild();
 
 protected:
@@ -59,7 +59,7 @@ protected:
 private slots:
     void onLaunchClicked();
     void onKillClicked();
-    void onEditionChanged();
+    void onVariantChanged();
     void onLogLine(int level, QString context, QString message);
     void onStatusChanged(QString status);
     void onProgressChanged(int value);
@@ -69,17 +69,17 @@ private:
     // Saves PREFERRED_RUNNER / SKIP_LAUNCH_DIALOG / VARIABLES / MODULES to GlobalConfigJSON (keyed by the
     // bundle UID) and flushes it to ~/.VidyaGod/GlobalConfig.JSON.
     void persistGlobalConfig();
-    // The currently-selected launchable node (the chosen edition). nullptr if the group is empty.
+    // The currently-selected launchable node (the chosen variant). nullptr if the group is empty.
     const Node* CurrentLaunch() const;
-    // Refresh the cover from the current edition's META.COVER.
+    // Refresh the cover from the current variant's META.COVER.
     void RebuildCover();
     // Scale CoverPixmap to fit CoverLabel's current size (aspect-preserving) — called from RebuildCover + resizeEvent.
     void UpdateCoverScaled();
-    // Rebuilds the runner dropdown for the current edition (runner candidate nodes).
+    // Rebuilds the runner dropdown for the current variant (runner candidate nodes).
     void RebuildRunnerCombo();
-    // Rebuilds the CustomVar picker section from the current edition's enabled node closure.
+    // Rebuilds the CustomVar picker section from the current variant's enabled node closure.
     void RebuildCustomVarPickers();
-    // Rebuilds the optional-node toggle tree from the current edition's optional ancestors.
+    // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
     void RebuildModuleTree();
     void PropagateModuleItem(QTreeWidgetItem* Item);
     void RefreshModuleLocks();
@@ -90,9 +90,9 @@ private:
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
     const NodeIndex*        Index            = nullptr;
     std::vector<std::string> GroupNodeIds;
-    std::string             LaunchNodeId;   // current edition's node id
-    std::string             BundleDir;      // current edition's bundle dir
-    std::string             PackageUID;     // current edition's UID — USERSETTINGS key
+    std::string             LaunchNodeId;   // current variant's node id
+    std::string             BundleDir;      // current variant's bundle dir
+    std::string             PackageUID;     // current variant's UID — USERSETTINGS key
 
     LaunchThread* LaunchWorker = nullptr;
 
@@ -100,8 +100,8 @@ private:
     QLabel*       CoverLabel        = nullptr;
     QPixmap       CoverPixmap;                  // full-res cover; scaled to fit CoverLabel on resize
     QComboBox*    RunnerCombo       = nullptr;
-    QComboBox*    EditionCombo      = nullptr;
-    QWidget*      EditionLabel      = nullptr; // the "Edition:" form label — hidden when only one edition
+    QComboBox*    VariantCombo      = nullptr;
+    QWidget*      VariantLabel      = nullptr; // the "Variant:" form label — hidden when only one variant
     QProgressBar* ProgressBar       = nullptr;
     QLabel*       StatusLabel       = nullptr;
     QCheckBox*    RememberCheck         = nullptr;

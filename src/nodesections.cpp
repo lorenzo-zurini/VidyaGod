@@ -83,12 +83,12 @@ NodeIdentitySection::NodeIdentitySection(PackageEditorModel * model, int nodeInd
             const bool Launchable = NodeRef.value("ROLE", std::string()) == "launchable";
             if (Launchable)
             {
-                QLineEdit * GroupField = new QLineEdit(this);
-                GroupField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/GROUP"));
-                GroupField->setPlaceholderText("library-tile grouping key (defaults to NODE_ID)");
-                if (NodeRef.contains("GROUP") && NodeRef["GROUP"].is_string()) GroupField->setText(QString::fromStdString(std::string(NodeRef["GROUP"])));
-                QObject::connect(GroupField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                Form->addRow("GROUP", GroupField);
+                QLineEdit * GameField = new QLineEdit(this);
+                GameField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/GAME"));
+                GameField->setPlaceholderText("the game this is a VARIANT of — groups variants into one tile (defaults to NODE_ID)");
+                if (NodeRef.contains("GAME") && NodeRef["GAME"].is_string()) GameField->setText(QString::fromStdString(std::string(NodeRef["GAME"])));
+                QObject::connect(GameField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                Form->addRow("GAME", GameField);
 
                 QLineEdit * LabelField = new QLineEdit(this);
                 LabelField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/LABEL"));

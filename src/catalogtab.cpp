@@ -32,7 +32,7 @@ void CatalogTab::markDownloading(const QString &groupKey)
 {
     ActiveDownloads[groupKey] = 0.0;
     for (LibraryGameCard * c : *AvailableGameCards)
-        if (c && c->GroupKey == groupKey) { c->Downloading = true; c->DownloadPercent = 0.0; }
+        if (c && c->GameKey == groupKey) { c->Downloading = true; c->DownloadPercent = 0.0; }
     if (AvailableView) AvailableView->repaintCards();   // overlay only — must NOT re-scale covers (fires per progress tick)
 }
 void CatalogTab::setDownloadProgress(const QString &groupKey, double avg)
@@ -40,14 +40,14 @@ void CatalogTab::setDownloadProgress(const QString &groupKey, double avg)
     if (ActiveDownloads.contains(groupKey)) ActiveDownloads[groupKey] = avg;
     bool any = false;
     for (LibraryGameCard * c : *AvailableGameCards)
-        if (c && c->Downloading && c->GroupKey == groupKey) { c->DownloadPercent = avg; any = true; }
+        if (c && c->Downloading && c->GameKey == groupKey) { c->DownloadPercent = avg; any = true; }
     if (any && AvailableView) AvailableView->repaintCards();   // overlay only — re-scaling every cover here pegged the GUI
 }
 void CatalogTab::clearDownloading(const QString &groupKey)
 {
     ActiveDownloads.remove(groupKey);
     for (LibraryGameCard * c : *AvailableGameCards)
-        if (c && c->GroupKey == groupKey) { c->Downloading = false; c->DownloadPercent = -1.0; }
+        if (c && c->GameKey == groupKey) { c->Downloading = false; c->DownloadPercent = -1.0; }
 }
 void CatalogTab::refreshCovers()
 {
@@ -172,9 +172,9 @@ void CatalogTab::rebuild()
         auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));
         c->InitializeClassVariables();
 
-        const bool Busy = ActiveDownloads.contains(c->GroupKey);
+        const bool Busy = ActiveDownloads.contains(c->GameKey);
         c->Downloading = Busy;
-        c->DownloadPercent = Busy ? ActiveDownloads.value(c->GroupKey) : -1.0;   // carry current progress across rebuilds
+        c->DownloadPercent = Busy ? ActiveDownloads.value(c->GameKey) : -1.0;   // carry current progress across rebuilds
         AvailableGameCards->append(c);
     }
 

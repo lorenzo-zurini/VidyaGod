@@ -53,9 +53,9 @@ struct Node {
     std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine", "gemrb")
     std::string Role;                        // ROLE — "content" (default) | "launchable" | "runner"
     std::string Uid;                         // UID — numeric id for launchable/presentable nodes (was GAMEUID/PACKAGEUID)
-    std::string Group;                       // GROUP — library-tile grouping key for launchables (was GAMEID); defaults to NodeId
-    std::string Label;                       // LABEL — edition/variant label for the picker dropdown (was VARIANT_ID/NAME)
-    bool Recommended = false;                // RECOMMENDED — the default edition within its GROUP
+    std::string Game;                        // GAME — the game a launchable is a VARIANT of; groups variants into one library tile (read from "GAME", legacy "GROUP"); defaults to NodeId
+    std::string Label;                       // LABEL — variant label for the picker dropdown (was VARIANT_ID/NAME)
+    bool Recommended = false;                // RECOMMENDED — the default variant within its GAME
     nlohmann::ordered_json Meta;             // META — object present ⇒ a library-presentable node
     std::string HostPlatform;                // PLATFORM.HOST
     std::vector<std::string> GuestPlatform;  // PLATFORM.GUEST (runner nodes)
@@ -71,7 +71,7 @@ struct Node {
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return Role == "runner"; }
     bool IsLaunchable() const { return Role == "launchable"; }
-    std::string GroupKey() const { return Group.empty() ? NodeId : Group; }   // library-tile grouping key
+    std::string GameKey() const { return Game.empty() ? NodeId : Game; }   // the game this variant belongs to (library-tile key)
 };
 
 //The global node graph: NODE_ID → Node, built by scanning bundle dirs for node files.

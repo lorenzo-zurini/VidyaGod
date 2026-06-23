@@ -45,7 +45,7 @@ DownloadManager::DownloadManager(AppModel &model, QWidget *dialogParent, QObject
 void DownloadManager::requestCancel(LibraryGameCard *card)
 {
     if (!card) return;
-    const QString Key = card->GroupKey;
+    const QString Key = card->GameKey;
     if (Key.isEmpty() || !DownloadingUids.contains(Key)) return;
     if (QMessageBox::question(DialogParent, "Cancel download?",
             "Stop downloading “" + card->GameTitle + "”?") != QMessageBox::Yes) return;
@@ -81,17 +81,17 @@ void DownloadManager::startDownload(LibraryGameCard *card)
 {
     if (!card) return;
     if (!IpfsFetchReady(DialogParent)) return;
-    const QString Key = card->GroupKey;
+    const QString Key = card->GameKey;
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
     // ── Pre-download picker (per PACKAGE): the base game's editions + the package's other games (the Catalog
     // overlay "secondaries") as optionals + optional content. Each secondary contributes its recommended edition. ──
-    const std::vector<std::string> Editions = card->GroupNodeIds;     // the base game's launchable nodes
+    const std::vector<std::string> Variants = card->GroupNodeIds;     // the base game's launchable nodes
     std::vector<std::pair<std::string, QString>> Secondaries;         // (recommended-edition launch id, title)
     for (LibraryGameCard * sc : card->Secondaries)
         if (sc && !sc->RepNodeId.empty()) Secondaries.push_back({ sc->RepNodeId, sc->GameTitle });
 
-    std::vector<std::string> AllLaunch = Editions;                    // every selectable launch node (base + secondaries)
+    std::vector<std::string> AllLaunch = Variants;                    // every selectable launch node (base + secondaries)
     for (const auto & [Lid, T] : Secondaries) AllLaunch.push_back(Lid);
 
     std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across all of them
@@ -107,9 +107,9 @@ void DownloadManager::startDownload(LibraryGameCard *card)
 
     std::map<std::string, QCheckBox*> GameChecks;                     // launch id → checkbox (base editions + secondaries)
     {
-        QGroupBox * Box = new QGroupBox(Editions.size() > 1 ? "Editions" : "Game", &Dlg);
+        QGroupBox * Box = new QGroupBox(Variants.size() > 1 ? "Variants" : "Game", &Dlg);
         QVBoxLayout * BL = new QVBoxLayout(Box);
-        for (const std::string & Lid : Editions)
+        for (const std::string & Lid : Variants)
         {
             const Node * N = Model.catalogIndex().Find(Lid);
             std::string Lbl = (N && !N->Label.empty()) ? N->Label
@@ -151,7 +151,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. ──
     std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox
     {
-        const Node * BaseGame = Editions.empty() ? nullptr : Model.catalogIndex().Find(Editions.front());
+        const Node * BaseGame = Variants.empty() ? nullptr : Model.catalogIndex().Find(Variants.front());
         if (BaseGame)
         {
             std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
@@ -361,9 +361,9 @@ void DownloadManager::persistActive(const QString &Key, const std::vector<std::s
     if (!S.contains("ActiveDownloads") || !S["ActiveDownloads"].is_array()) S["ActiveDownloads"] = nlohmann::ordered_json::array();
     auto & Arr = S["ActiveDownloads"];
     for (auto It = Arr.begin(); It != Arr.end(); ++It)                 // replace any existing record for this Key
-        if (It->is_object() && It->value("GroupKey", std::string()) == Key.toStdString()) { Arr.erase(It); break; }
+        if (It->is_object() && It->value("GameKey", std::string()) == Key.toStdString()) { Arr.erase(It); break; }
     nlohmann::ordered_json Rec = nlohmann::ordered_json::object();
-    Rec["GroupKey"] = Key.toStdString();
+    Rec["GameKey"] = Key.toStdString();
     Rec["Launch"]   = LaunchIds;
     Rec["Runners"]  = RunnerIds;
     Rec["Toggles"]  = Toggles;
@@ -377,7 +377,7 @@ void DownloadManager::unpersistActive(const QString &Key)
     if (!S.contains("ActiveDownloads") || !S["ActiveDownloads"].is_array()) return;
     auto & Arr = S["ActiveDownloads"];
     for (auto It = Arr.begin(); It != Arr.end(); ++It)
-        if (It->is_object() && It->value("GroupKey", std::string()) == Key.toStdString()) { Arr.erase(It); Model.save(); return; }
+        if (It->is_object() && It->value("GameKey", std::string()) == Key.toStdString()) { Arr.erase(It); Model.save(); return; }
 }
 
 void DownloadManager::resumeAll()
@@ -389,7 +389,7 @@ void DownloadManager::resumeAll()
     for (const auto & Rec : Records)
     {
         if (!Rec.is_object()) continue;
-        const QString Key = QString::fromStdString(Rec.value("GroupKey", std::string()));
+        const QString Key = QString::fromStdString(Rec.value("GameKey", std::string()));
         if (Key.isEmpty()) continue;
         std::vector<std::string> LaunchIds = Rec.value("Launch",  std::vector<std::string>{});
         std::vector<std::string> RunnerIds = Rec.value("Runners", std::vector<std::string>{});

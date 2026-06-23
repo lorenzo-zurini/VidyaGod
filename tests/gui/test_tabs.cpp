@@ -74,7 +74,7 @@ private slots:
         NodeIndex idx;
         for (const char * id : {"g1", "g2"})
         {
-            Node n; n.NodeId = id; n.Role = "launchable"; n.Group = id;
+            Node n; n.NodeId = id; n.Role = "launchable"; n.Game = id;
             n.Meta = json{{"TITLE", std::string("Game ") + id}};
             idx.Nodes[id] = n;
         }

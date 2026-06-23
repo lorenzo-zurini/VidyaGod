@@ -48,7 +48,7 @@ public:
     const NodeIndex *        Index = nullptr;          // shared global node graph (owned by MainWindow)
     std::vector<std::string> GroupNodeIds;             // the tile's launchable node ids (editions; RECOMMENDED first)
     std::string              RepNodeId;                // representative node (front of GroupNodeIds) for meta/cover/sort
-    QString                  GroupKey;                 // tile grouping key (download tracking, repo grouping)
+    QString                  GameKey;                 // tile grouping key (download tracking, repo grouping)
     std::string              RepUid;                   // representative node UID (USERSETTINGS key)
     QString                  GameTitle;
     std::filesystem::path    PackagePath;              // representative node's bundle dir

@@ -362,11 +362,11 @@ int main(int argc, char *argv[])
         for (const auto &G : Groups)
         {
             const Node *Rep = G.front();
-            std::string Editions;
+            std::string Variants;
             for (const Node *N : G)
-                Editions += " " + N->NodeId + (PackageCatalog::NodeHydrated(Index, N->NodeId) ? "[hydrated]" : "[remote]");
+                Variants += " " + N->NodeId + (PackageCatalog::NodeHydrated(Index, N->NodeId) ? "[hydrated]" : "[remote]");
             LogOut("list-nodes", "  " + (Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId)
-                   + "  (group " + Rep->GroupKey() + "):" + Editions);
+                   + "  (game " + Rep->GameKey() + "):" + Variants);
         }
         return 0;
     }

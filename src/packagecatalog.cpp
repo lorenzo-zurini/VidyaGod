@@ -513,7 +513,7 @@ std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
     std::map<std::string, std::vector<const Node*>> Groups;
     for (const auto &[Id, N] : Idx.Nodes)
         if (N.IsLaunchable() && N.Presentable())
-            Groups[N.GroupKey()].push_back(&N);
+            Groups[N.GameKey()].push_back(&N);
 
     std::vector<std::vector<const Node*>> Out;
     for (auto &[K, V] : Groups)

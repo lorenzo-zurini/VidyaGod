@@ -27,7 +27,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     if (Out.NodeId.empty()) return false;
     Out.Role     = J.value("ROLE", std::string("content"));
     Out.Uid      = J.value("UID", std::string());
-    Out.Group    = J.value("GROUP", std::string());
+    Out.Game     = J.value("GAME", std::string());   // GAME — groups a game's VARIANTs into one tile (was GROUP)
     Out.Label    = J.value("LABEL", std::string());
     Out.Recommended = J.value("RECOMMENDED", false);
     if (J.contains("META")    && J["META"].is_object())  Out.Meta  = J["META"];

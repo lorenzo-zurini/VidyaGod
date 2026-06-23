@@ -53,7 +53,7 @@ void LibraryGameCard::InitializeClassVariables()
     if (!Rep) return;
 
     PackagePath = Rep->BundleDir;
-    GroupKey    = QString::fromStdString(Rep->GroupKey());
+    GameKey    = QString::fromStdString(Rep->GameKey());
     RepUid      = Rep->Uid;
 
     const nlohmann::ordered_json & Meta = Rep->Meta;
