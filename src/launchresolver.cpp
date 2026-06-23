@@ -441,6 +441,26 @@ bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 bool RunnerServes(const Node *R, const std::string &Platform)
 { for (const auto &G : R->GuestPlatform) if (G == Platform) return true; return false; }
 
+//True if a runner SHIPS ITS OWN BUILD: any VFS layer in its content closure (its PARENTS). Such a runner's executable
+//resolves from the mounted build, not the system PATH — so it's "available" even when EXECUTABLE is a bare command
+//(e.g. a win32 emulator "snes9x.exe" nested under proton). Local-PATH or CID layers both count.
+bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
+{
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, R.NodeId, {}))
+    {
+        if (Id == R.NodeId) continue;
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) return true;
+    }
+    return false;
+}
+
+//A runner can be used on this machine when its executable resolves on the system PATH OR it ships its own build (the
+//exe lives in the build). Used to filter the runner-edge graph in chain resolution.
+bool RunnerAvailable(const NodeIndex &Idx, const Node &R)
+{ return RunnerWrapper::ExecutableAvailable(R.Exec) || RunnerShipsBuild(Idx, R); }
+
 //BFS shortest path of bridging runners carrying Start → Goal over the (pre-sorted better-first) runner edges. Empty
 //bridge when Start==Goal (native content). Returns false when Goal is unreachable.
 bool FindBridge(const std::string &Start, const std::string &Goal, const std::vector<const Node *> &Runners,
@@ -540,7 +560,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     //Available runners, sorted better-first (RECOMMENDED > package-local > node-id) for deterministic BFS.
     std::vector<const Node *> Runners;
     for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsRunner() && RunnerWrapper::ExecutableAvailable(N.Exec)) Runners.push_back(&N);
+        if (N.IsRunner() && RunnerAvailable(Idx, N)) Runners.push_back(&N);
     std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
 
     //1. Honor a pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) when it forms a valid path to
@@ -560,7 +580,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
         {
             if (Id == kNativeTerminalId) { Ok = (Cur == Machine); break; }       // synthetic terminal valid only at machine
             const Node *R = Idx.Find(Id);
-            if (!R || !R->IsRunner() || !RunnerWrapper::ExecutableAvailable(R->Exec) || !RunnerServes(R, Cur)) { Ok = false; break; }
+            if (!R || !R->IsRunner() || !RunnerAvailable(Idx, *R) || !RunnerServes(R, Cur)) { Ok = false; break; }
             Cur = R->HostPlatform;
         }
         if (Ok && Cur == Machine)
@@ -591,7 +611,7 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
     const std::string Machine = MachinePlatform();
     std::vector<const Node *> Runners;
     for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsRunner() && RunnerWrapper::ExecutableAvailable(N.Exec)) Runners.push_back(&N);
+        if (N.IsRunner() && RunnerAvailable(Idx, N)) Runners.push_back(&N);
     std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
 
     std::vector<std::string> Bridge;
@@ -626,11 +646,30 @@ bool LaunchResolver::ChainHasInnerLinks(const struct ContainerParams &CP)
     return BoundaryLinkIndex(CP) > 0;
 }
 
+//The effective guest-path template for a boundary runner: its explicit EXEC.GUEST_PATH, else DERIVED from CONTENT_ROOT
+//for a wine-family runner (a "…/drive_c/<sub>" mount means the guest sees it at C:\<sub>\…), else "" (identity). The
+//derivation makes cross-namespace nesting work for proton/wine/umu with zero authoring — it falls out of CONTENT_ROOT.
+static std::string EffectiveGuestTemplate(const RunnerLink &Boundary)
+{
+    if (!Boundary.GuestPathTemplate.empty()) return Boundary.GuestPathTemplate;
+    const std::string &CR = Boundary.ContentRoot;                                // raw, e.g. "pfx/drive_c/%PackageUID%"
+    const std::string Key = "drive_c/";
+    const auto Pos = CR.find(Key);
+    if (Pos == std::string::npos) return std::string();                          // not a wine drive → identity
+    std::string After = CR.substr(Pos + Key.size());                             // "%PackageUID%"
+    std::replace(After.begin(), After.end(), '/', '\\');                         // guest uses backslashes
+    return "C:\\" + After + (After.empty() ? "" : "\\") + "%REL%";               // → "C:\\%PackageUID%\\%REL%"
+}
+
 std::string LaunchResolver::GuestPath(const std::string &Template, const std::string &Rel, struct ContainerParams &CP)
 {
     if (Template.empty()) return Rel;                                            // identity (native namespace)
+    std::string R = Rel;
+    //Wine-style template (drive letter / backslashes) → the relative path's separators must be backslashes too.
+    if (Template.find('\\') != std::string::npos || Template.find("C:") != std::string::npos)
+        std::replace(R.begin(), R.end(), '/', '\\');
     std::map<std::string, std::string> Vars = CP.GetVariablesMap();
-    Vars["REL"] = Rel;
+    Vars["REL"] = R;
     std::string Out = Template;
     VarSubst::StringVariableSubstitution(Out, Vars);
     return Out;
@@ -644,7 +683,7 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     T.CrossNamespace = true;
 
     const RunnerLink &Boundary = CP.RunnerChain[B];
-    const std::string &Template = Boundary.GuestPathTemplate;
+    const std::string Template = EffectiveGuestTemplate(Boundary);   // explicit GUEST_PATH, else derived from CONTENT_ROOT
 
     //The actual content (e.g. the ROM), as the boundary's guest path — what the innermost inner runner consumes.
     const std::string ContentGuest = GuestPath(Template, CP.ExePathRelative.string(), CP);

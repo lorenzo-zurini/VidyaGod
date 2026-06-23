@@ -297,10 +297,11 @@ private slots:
     {
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
         cp.ExePathRelative = std::filesystem::path("roms/game.smc");
+        //proton has NO explicit GUEST_PATH — the wine-drive template is DERIVED from CONTENT_ROOT (drive_c → C:\).
         cp.RunnerChain = {
             mkLink("snes9x", "win32", "snes9x.exe", "", {"%Content%"}),
             mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
-                   {"waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"}, "C:\\%PackageUID%\\%REL%"),
+                   {"waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"}),
             mkLink("native", "linux64", "%Content%")
         };
         QCOMPARE(LaunchResolver::BoundaryLinkIndex(cp), 1);          // proton owns the guest fs
@@ -310,7 +311,7 @@ private slots:
         QVERIFY(gt.CrossNamespace);
         QCOMPARE(gt.ContentRel, std::string("__runner_snes9x__/snes9x.exe"));   // boundary's %ContentPath% target
         QCOMPARE((int)gt.TrailingArgs.size(), 1);
-        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms/game.smc"));   // ROM, guest-translated
+        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms\\game.smc"));  // ROM, guest-translated (derived C:\ + backslashes)
     }
 
     // Every classic chain ([content-runner, native]) has no inner links → ComposeGuestTarget is a no-op.
@@ -330,8 +331,24 @@ private slots:
     void guest_path_translation()
     {
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
-        QCOMPARE(LaunchResolver::GuestPath("C:\\%PackageUID%\\%REL%", "a/b.exe", cp), std::string("C:\\game\\a/b.exe"));
-        QCOMPARE(LaunchResolver::GuestPath(std::string(), "a/b.exe", cp), std::string("a/b.exe"));
+        // Wine-style template → REL separators become backslashes.
+        QCOMPARE(LaunchResolver::GuestPath("C:\\%PackageUID%\\%REL%", "a/b.exe", cp), std::string("C:\\game\\a\\b.exe"));
+        QCOMPARE(LaunchResolver::GuestPath(std::string(), "a/b.exe", cp), std::string("a/b.exe"));   // identity
+    }
+
+    // The wine-drive guest template is derived from CONTENT_ROOT when a boundary declares no explicit GUEST_PATH.
+    void derived_guest_template_from_content_root()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
+        cp.ExePathRelative = std::filesystem::path("rom.sfc");
+        cp.RunnerChain = {
+            mkLink("emu", "win32", "emu.exe", "", {"%Content%"}),
+            mkLink("umu", "linux64", "umu-run", "drive_c/%PackageUID%", {"C:\\%PackageUID%\\%ContentPath%"}),
+            mkLink("native", "linux64", "%Content%")
+        };
+        auto gt = LaunchResolver::ComposeGuestTarget(cp);
+        QVERIFY(gt.CrossNamespace);
+        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\rom.sfc"));         // derived from "drive_c/%PackageUID%"
     }
 
     // ResolveCustomVariables priority: CLI override > USERSETTINGS > DEFAULT.

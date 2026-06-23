@@ -560,9 +560,18 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     const Node *R = Idx.Find(RunnerNodeId);
     if (!R || !R->IsRunner()) return false;
-    // Ships its own build (has content CIDs) → must be imported (build hydrated + DEFPREFIX). Otherwise it's a PATH
-    // runner → usable iff its executable resolves on this system.
-    if (!NodeContentCids(Idx, RunnerNodeId).empty())
+    // Ships its own build (any VFS layer in its content closure — local PATH or a remote CID) → must be imported
+    // (build hydrated + DEFPREFIX). Otherwise it's a PATH runner → usable iff its executable resolves on this system.
+    bool ShipsBuild = false;
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
+    {
+        if (Id == RunnerNodeId) continue;
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) { ShipsBuild = true; break; }
+        if (ShipsBuild) break;
+    }
+    if (ShipsBuild)
         return RunnerInstall::RunnerNodeImported(Idx, RunnerNodeId);
     return RunnerWrapper::ExecutableAvailable(R->Exec);
 }
