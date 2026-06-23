@@ -13,6 +13,9 @@
 #include "settingstab.h"
 #include "ipfstab.h"
 #include "gamepicker.h"
+#include "ipfssettingspage.h"
+
+#include <QCheckBox>
 
 using json = nlohmann::ordered_json;
 
@@ -45,6 +48,25 @@ private slots:
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
     void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsTab     t(m); QVERIFY(renders(&t)); }
+
+    // The Settings → IPFS "Enable networking" checkbox drives the model (which starts the node + un-greys tabs).
+    void ipfs_page_networking_toggle_drives_model()
+    {
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &AppDir);
+        IpfsSettingsPage page(m);
+
+        QCheckBox * netCb = nullptr;
+        for (QCheckBox * cb : page.findChildren<QCheckBox *>())
+            if (cb->text().contains("Enable networking")) netCb = cb;
+        QVERIFY(netCb != nullptr);
+        QVERIFY(!netCb->isChecked());            // off by default
+
+        QSignalSpy spy(&m, &AppModel::networkingChanged);
+        netCb->setChecked(true);                 // emits toggled → Model.setNetworkingEnabled(true)
+        QCOMPARE(spy.count(), 1);
+        QVERIFY(m.networkingEnabled());
+    }
 
     // The in-package multi-game picker builds a card per presentable group over a bundle index and renders.
     void game_picker_constructs()

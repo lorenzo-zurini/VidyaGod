@@ -257,7 +257,10 @@ void MainWindow::startNodeAsync()
 
 void MainWindow::onNodeReady()
 {
-    // The node's network comes up asynchronously after the repo opens; poll for it, then resume interrupted downloads.
+    // The node's repo is open now (Available()==true); refresh the IPFS tab immediately so it's functional the moment
+    // networking is enabled, instead of waiting for its periodic tick. Its network stack comes up shortly after — the
+    // ResumeTimer polls for that, then resumes any interrupted downloads.
+    if (IpfsTabPtr) IpfsTabPtr->refresh();
     if (ResumeTimer && !ResumeTimer->isActive()) ResumeTimer->start();
 }
 
