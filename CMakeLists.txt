@@ -203,14 +203,16 @@ add_subdirectory(external/VidyaGodIPFS)
 target_link_libraries(VidyaGod PRIVATE vgipfs)
 set_target_properties(VidyaGod PROPERTIES BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN")
 
-# ---- Unit tests (ctest) — pure, Qt-free logic only, so the test exe stays light (no MOC/Widgets) ----
+# ---- Unit tests (ctest) — pure, Qt-free logic (no MOC/Widgets), so the exe stays light ----
 enable_testing()
 add_executable(vg_tests
     tests/main.cpp
     tests/test_manifestmodel.cpp
     tests/test_varsubst.cpp
+    tests/test_registrywrapper.cpp
     src/manifestmodel.cpp
     src/varsubst.cpp
+    src/registrywrapper.cpp
     src/commonutils.cpp)
 target_include_directories(vg_tests PRIVATE src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
@@ -218,18 +220,27 @@ target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERRO
 set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
 
-# ---- GUI tests (Qt Test) — drive the real widgets in-process; reuse the app objects via vidyagod_objs.
-# Runs headless under the offscreen QPA platform. $ORIGIN rpath so it finds libvgipfs.so beside itself.
-add_executable(vg_gui_tests tests/gui/test_packageeditor_gui.cpp)
-target_link_libraries(vg_gui_tests PRIVATE
-    vidyagod_objs
-    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-target_include_directories(vg_gui_tests PRIVATE src)
-target_compile_options(vg_gui_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
-set_target_properties(vg_gui_tests PROPERTIES BUILD_RPATH "$ORIGIN")
-add_test(NAME vg_gui_tests COMMAND vg_gui_tests)
-set_tests_properties(vg_gui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+# ---- GUI / integration tests (Qt Test) — drive real widgets + models + services in-process, reusing the app
+# objects via vidyagod_objs, headless under the offscreen QPA platform. One exe per subsystem (add_gui_test).
+function(add_gui_test name)
+    add_executable(${name} tests/gui/${name}.cpp)
+    target_link_libraries(${name} PRIVATE
+        vidyagod_objs
+        Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test
+        nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
+    target_include_directories(${name} PRIVATE src)
+    target_compile_options(${name} PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+    set_target_properties(${name} PROPERTIES BUILD_RPATH "$ORIGIN")
+    add_test(NAME ${name} COMMAND ${name})
+    set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endfunction()
+
+add_gui_test(test_packageeditor_gui)
+add_gui_test(test_packageeditormodel)
+add_gui_test(test_launchresolver)
+add_gui_test(test_packagecatalog)
+add_gui_test(test_appmodel)
+add_gui_test(test_tabs)
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)

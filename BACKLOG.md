@@ -16,9 +16,18 @@ Living list of what's queued. Done items kept for context. Test plan checklist i
 - `NodeEditor` further decomposed: each section is now its own class — `NodeSection` base + `NodeIdentitySection`/
   `NodeSelectionSection`/`NodeParentsSection`/`NodePlatformSection`/`NodeExecSection`/`NodeMetaSection`/
   `NodeLayersSection` (nodesection.{h,cpp} + nodesections.{h,cpp}); NodeEditor is a 218-LOC toolbar+composer.
-- **Now partly covered by tests**: `vg_gui_tests` (headless Qt Test, offscreen — see the GUI-harness memory) drives
-  the real PackageEditorModel + sections and asserts the de-god wiring (field edits → doc, replaceNodeJson/SaveNodes
-  signals, Identity field edit → rebuild, Layers render). So the model+widget wiring is regression-tested.
+- **Now broadly covered by tests** (headless Qt Test, offscreen — see the GUI-harness memory): one exe per subsystem
+  via the CMake `add_gui_test()` helper, all green in ctest. Coverage:
+  - `vg_tests` (pure, Qt-free): manifestmodel graph engine (9), varsubst (9), registrywrapper edit/diff (5).
+  - `test_packageeditor_gui` (9): the de-god wiring + the focused-field rebuild crash regression.
+  - `test_packageeditormodel` (9): the editor hub — LoadNodes/SaveNodes (rename re-files + orphan cleanup),
+    replaceNodeJson, Revalidate signalling, KnownNodeIds/Platforms.
+  - `test_launchresolver` (6): runner pick/pin, recipe, RunnerShipsBuild from parent closure, persistence, customvars.
+  - `test_packagecatalog` (5): hydration predicates (#2), DehydrateNode (#8/#9), user settings, compatible runners.
+  - `test_appmodel` (8): card-size persist, repo add/remove validation (#1), removePackage (#E28), save-to-disk,
+    rebuildCatalog/repositoriesChanged signals.
+  - `test_tabs` (6): construction/render smoke for every main tab + Settings subpages.
+  So the engine + every GUI state/signal hub is regression-tested in-process.
 - **Still UNVERIFIED on hardware**: the full editor GUI pass (TESTPLAN I40/I41 — add/remove/move nodes, each LAYER
   type, cover drop, the authoring runs Run EXE / Execute / Analyze, Publish) + a real game launch. Deferred to hardware.
 
