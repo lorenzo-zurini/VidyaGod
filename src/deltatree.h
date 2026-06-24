@@ -3,6 +3,7 @@
 
 #include <QTreeWidget>
 #include <QStringList>
+#include <QSet>
 
 // ---------------------------------------------------------------------------
 // DeltaTree — a checkable tree built from a flat list of separator-delimited paths (the authoring session's write-
@@ -39,11 +40,13 @@ private:
     static void                  setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St);
     QString                      fullPath(const QTreeWidgetItem * It) const;
     QList<QTreeWidgetItem *>     rootItems() const;       // maximal fully-checked items (the capture roots)
-    void                         highlightRoots();        // bold the current capture-root rows (untrack the old)
+    void                         restyleSelection();      // bold the capture roots + dim their stripped ancestors
 
     QChar                        Separator = '/';
     bool                         Updating  = false;       // re-entrancy guard (check propagation + restyle)
     QList<QTreeWidgetItem *>     BoldRoots;               // currently-bolded root rows (to un-bold on change)
+    QList<QTreeWidgetItem *>     Dimmed;                  // currently-dimmed ancestor rows (to restore on change)
+    QSet<QTreeWidgetItem *>      Captured;                // captured (green) items — persist; win over dim
 };
 
 #endif // DELTATREE_H

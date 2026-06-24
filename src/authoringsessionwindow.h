@@ -27,11 +27,15 @@ public:
     AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & TargetNodeId, QWidget * parent = nullptr);
 
 private:
+    void updateCapturePreview();           // "Morrowind → mounts at <contentRoot>/<target>/Morrowind" per checked root
+
     AuthoringSessionModel * Model = nullptr;
     DeltaTree *  Tree         = nullptr;   // changed files
     DeltaTree *  RegTree      = nullptr;   // changed registry keys (mirror)
     QLabel *     StatusLabel  = nullptr;
     QLabel *     InfoLabel    = nullptr;
+    QLabel *     FilesPreview = nullptr;   // live capture-level + mount-path preview
+    QString      ContentRootStr;           // the runner's content root (for the mount-path preview)
     QComboBox *  RunnerCombo  = nullptr;
     QComboBox *  TargetCombo  = nullptr;
     QLineEdit *  TargetEdit   = nullptr;

@@ -18,7 +18,7 @@ DeltaTree::DeltaTree(QWidget * parent) : QTreeWidget(parent)
 void DeltaTree::setPaths(const QStringList & Paths)
 {
     Updating = true;                  // bulk build: don't run the propagation handler per inserted item
-    BoldRoots.clear();                // clear() below deletes the items these point at
+    BoldRoots.clear(); Dimmed.clear(); Captured.clear();   // clear() below deletes the items these point at
     clear();
 
     // parent item (nullptr = top level) → (segment text → child item), so building is O(total segments), not O(n²).
@@ -58,7 +58,7 @@ void DeltaTree::checkAll(bool On)
     const Qt::CheckState St = On ? Qt::Checked : Qt::Unchecked;
     for (int i = 0; i < topLevelItemCount(); ++i) { topLevelItem(i)->setCheckState(0, St); setSubtreeChecked(topLevelItem(i), St); }
     Updating = false;
-    highlightRoots();
+    restyleSelection();
     emit checkedChanged();
 }
 
@@ -73,7 +73,7 @@ void DeltaTree::onItemChanged(QTreeWidgetItem * It, int /*Col*/)
             Updating = true; setSubtreeChecked(It, St); Updating = false;
         }
     }
-    highlightRoots();                                  // re-bold the capture-root rows (the "levels")
+    restyleSelection();                                  // re-bold the capture-root rows (the "levels")
     emit checkedChanged();
 }
 
@@ -89,29 +89,43 @@ QList<QTreeWidgetItem *> DeltaTree::rootItems() const
     return Out;
 }
 
-void DeltaTree::highlightRoots()
+void DeltaTree::restyleSelection()
 {
-    Updating = true;                                   // setFont fires itemChanged — suppress re-entry
+    static const QBrush Green(QColor(120, 200, 120));   // captured
+    static const QBrush Dim(QColor(115, 122, 132));     // a stripped ancestor of a capture root
+    Updating = true;                                    // setFont/setForeground fire itemChanged — suppress re-entry
+    // Clear the previous bold roots + dimmed ancestors (restoring the base colour: green if captured, else default).
     for (QTreeWidgetItem * It : BoldRoots) { QFont F = It->font(0); F.setBold(false); It->setFont(0, F); }
+    for (QTreeWidgetItem * It : Dimmed)    It->setForeground(0, Captured.contains(It) ? Green : QBrush());
+    Dimmed.clear();
+    // The capture roots: bold them (this is the exact level the capture roots at).
     BoldRoots = rootItems();
     for (QTreeWidgetItem * It : BoldRoots) { QFont F = It->font(0); F.setBold(true); It->setFont(0, F); }
+    // Dim each root's ancestors — the parent folders that get stripped — so the "captured at this level" is visible.
+    for (QTreeWidgetItem * Root : BoldRoots)
+        for (QTreeWidgetItem * P = Root->parent(); P; P = P->parent())
+        {
+            if (Captured.contains(P)) continue;          // captured-green wins over dim
+            P->setForeground(0, Dim);
+            Dimmed << P;
+        }
     Updating = false;
 }
 
 void DeltaTree::markCaptured(const QStringList & Paths)
 {
     if (Paths.isEmpty()) return;
-    const QBrush Green(QColor(120, 200, 120));
-    Updating = true;                                   // setForeground fires itemChanged — suppress re-entry
+    static const QBrush Green(QColor(120, 200, 120));
+    Updating = true;                                    // setForeground fires itemChanged — suppress re-entry
     std::function<void(QTreeWidgetItem *, bool)> Walk = [&](QTreeWidgetItem * It, bool Under){
-        bool Captured = Under;
-        if (!Captured)
+        bool IsCap = Under;
+        if (!IsCap)
         {
             const QString FP = fullPath(It);
-            for (const QString & P : Paths) if (FP == P || FP.startsWith(P + Separator)) { Captured = true; break; }
+            for (const QString & P : Paths) if (FP == P || FP.startsWith(P + Separator)) { IsCap = true; break; }
         }
-        if (Captured) It->setForeground(0, Green);
-        for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i), Captured);
+        if (IsCap) { It->setForeground(0, Green); Captured.insert(It); }
+        for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i), IsCap);
     };
     for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i), false);
     Updating = false;

@@ -80,20 +80,17 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     Tree = new DeltaTree(FilesTab);
     FLay->addWidget(Tree, 1);
     FLay->addLayout(checkRow(Tree, FilesTab));
-    auto * Preview = new QLabel(FilesTab);   // live "you picked this level" feedback
-    Preview->setWordWrap(true);
-    Preview->setStyleSheet("color:#7ec699;font-size:9pt;");
-    FLay->addWidget(Preview);
-    connect(Tree, &DeltaTree::checkedChanged, this, [this, Preview]{
-        const QStringList Roots = Tree->checkedRoots();
-        Preview->setText(Roots.isEmpty() ? "Nothing checked."
-                                         : "Will capture at this level → " + Roots.join("   ·   "));
-    });
+    FilesPreview = new QLabel(FilesTab);     // live "you picked this level" + where it mounts
+    FilesPreview->setWordWrap(true);
+    FilesPreview->setStyleSheet("color:#7ec699;font-size:9pt;");
+    FLay->addWidget(FilesPreview);
+    connect(Tree, &DeltaTree::checkedChanged, this, &AuthoringSessionWindow::updateCapturePreview);
     auto * FForm = new QFormLayout();
     DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
     FForm->addRow("Captured dir (in bundle)", DestNameEdit);
     TargetEdit = new QLineEdit(FilesTab);
     TargetEdit->setToolTip("Where the captured layer mounts, relative to the content root ('' = at the content root).");
+    connect(TargetEdit, &QLineEdit::textChanged, this, [this]{ updateCapturePreview(); });
     FForm->addRow("Mount TARGET", TargetEdit);
     FLay->addLayout(FForm);
     CaptureFilesBtn = new QPushButton("Capture files →", FilesTab);
@@ -151,7 +148,9 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         else if (!Busy)             StatusLabel->setText("Session live.");
     });
     connect(Model, &AuthoringSessionModel::sessionReady, this, [this, Tabs, RegTabIdx](const QString & Rt, const QString & Cr, bool Wine){
+        ContentRootStr = Cr;
         TargetEdit->setText("");
+        updateCapturePreview();
         for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn}) B->setVisible(Wine);
         Tabs->setTabVisible(RegTabIdx, Wine);   // registry capture is wine-only
         InfoLabel->setText("Live runtime: " + Rt +
@@ -181,4 +180,21 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     });
 
     Model->start();
+}
+
+void AuthoringSessionWindow::updateCapturePreview()
+{
+    if (!FilesPreview) return;
+    const QStringList Roots = Tree->checkedRoots();
+    if (Roots.isEmpty()) { FilesPreview->setText("Nothing checked — tick a folder/file to capture it at that level."); return; }
+    QString MountBase = ContentRootStr;
+    const QString Target = TargetEdit->text().trimmed();
+    if (!Target.isEmpty()) MountBase += "/" + Target;
+    QStringList Lines;
+    for (const QString & R : Roots)
+    {
+        const QString Base = R.section('/', -1);   // the ticked level's name (parents stripped)
+        Lines << Base + "  →  " + MountBase + "/" + Base;
+    }
+    FilesPreview->setText("Captures at the ticked level (and where each mounts):\n  " + Lines.join("\n  "));
 }

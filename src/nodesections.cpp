@@ -263,9 +263,17 @@ NodeExecSection::NodeExecSection(PackageEditorModel * model, int nodeIndex, QWid
                 Model->doc()[json::json_pointer(EPtr)] = json::object();
             auto &Exec = Model->doc()[json::json_pointer(EPtr)];
 
+            // EXEC is read by the engine only from the role that owns it: a launchable's CONTENTPATH/EXEARGS/WORKDIR
+            // (what to run + how), a runner's EXECUTABLE/CONTENT_ROOT/PREFIX_GENERATE/ARGS/ENV (the invocation). Show
+            // only that role's fields. (The section isn't built for content nodes at all — see NodeEditor.)
+            const bool IsRunner = NodeRef.value("ROLE", std::string()) == "runner";
+            const std::vector<const char *> Fields = IsRunner
+                ? std::vector<const char *>{"EXECUTABLE", "CONTENT_ROOT"}
+                : std::vector<const char *>{"CONTENTPATH", "EXEARGS", "WORKDIR"};
+
             QGridLayout * G = new QGridLayout(this);
             int row = 0;
-            for (const char *FK : {"CONTENTPATH", "EXEARGS", "WORKDIR", "EXECUTABLE", "CONTENT_ROOT"})
+            for (const char *FK : Fields)
             {
                 G->addWidget(new QLabel(QString(FK) + ":"), row, 0);
                 QLineEdit * FE = new QLineEdit(this);
@@ -274,6 +282,8 @@ NodeExecSection::NodeExecSection(PackageEditorModel * model, int nodeIndex, QWid
                 QObject::connect(FE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
                 G->addWidget(FE, row, 1, 1, 2); row++;
             }
+            if (IsRunner)
+            {
             QCheckBox * PGen = new QCheckBox("PREFIX_GENERATE (build a wine prefix)", this);
             PGen->setChecked(Exec.value("PREFIX_GENERATE", false));
             QObject::connect(PGen, &QCheckBox::toggled, this, [this, EPtr](bool On){
@@ -347,6 +357,7 @@ NodeExecSection::NodeExecSection(PackageEditorModel * model, int nodeIndex, QWid
                 });
                 EL->addWidget(AddEnv);
                 G->addWidget(EnvBox, row, 0, 1, -1); row++;
+            }
             }}
 
 NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, QWidget * parent)

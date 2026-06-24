@@ -110,7 +110,10 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         Body->addWidget(new NodeSelectionSection(Model, n, Contents));
         Body->addWidget(new NodeParentsSection(Model, n, Contents));
         Body->addWidget(new NodePlatformSection(Model, n, Contents));
-        Body->addWidget(new NodeExecSection(Model, n, Contents));
+        // EXEC only matters for the roles the engine reads it from — a launchable (what to run) or a runner (how to
+        // invoke). A content node is only ever mounted as its LAYERS, so its EXEC is dead data; don't offer it.
+        if (const std::string Role = Model->doc()["NODES"][n].value("ROLE", std::string("content")); Role == "launchable" || Role == "runner")
+            Body->addWidget(new NodeExecSection(Model, n, Contents));
         Body->addWidget(new NodeMetaSection(Model, n, Contents));
         Body->addWidget(new NodeLayersSection(Model, n, Contents));
         Body->addStretch();
