@@ -26,21 +26,57 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     Out = Node{};
     Out.NodeId   = J["NODE_ID"].get<std::string>();
     if (Out.NodeId.empty()) return false;
-    Out.Role     = J.value("ROLE", std::string("content"));
-    Out.Uid      = J.value("UID", std::string());
-    Out.Game     = J.value("GAME", std::string());   // GAME — groups a game's VARIANTs into one tile (was GROUP)
-    Out.Label    = J.value("LABEL", std::string());
-    Out.Recommended = J.value("RECOMMENDED", false);
-    if (J.contains("META")    && J["META"].is_object())  Out.Meta  = J["META"];
-    if (J.contains("EXEC")    && J["EXEC"].is_object())  Out.Exec  = J["EXEC"];
     if (J.contains("LAYERS")  && J["LAYERS"].is_array()) Out.Layers = J["LAYERS"];
     else                                                  Out.Layers = nlohmann::ordered_json::array();
-    if (J.contains("PLATFORM") && J["PLATFORM"].is_object())
+
+    //--- LEGACY top-level fields (transitional — read until packages are migrated to Declare* layers; the Declare*
+    //--- layers below override them). Drop this block once the library is fully migrated. ---
     {
-        const auto &P = J["PLATFORM"];
-        Out.HostPlatform = P.value("HOST", std::string());
-        if (P.contains("GUEST") && P["GUEST"].is_array())
-            for (const auto &G : P["GUEST"]) if (G.is_string()) Out.GuestPlatform.push_back(G.get<std::string>());
+        const std::string Role = J.value("ROLE", std::string("content"));
+        Out.HasExec   = (Role == "launchable");
+        Out.HasRunner = (Role == "runner");
+        Out.Uid       = J.value("UID", std::string());
+        Out.Game      = J.value("GAME", std::string());
+        Out.Label     = J.value("LABEL", std::string());
+        Out.Recommended = J.value("RECOMMENDED", false);
+        if (J.contains("META") && J["META"].is_object()) Out.Meta = J["META"];
+        if (J.contains("EXEC") && J["EXEC"].is_object()) Out.Exec = J["EXEC"];
+        if (J.contains("PLATFORM") && J["PLATFORM"].is_object())
+        {
+            const auto &P = J["PLATFORM"];
+            Out.HostPlatform = P.value("HOST", std::string());
+            if (P.contains("GUEST") && P["GUEST"].is_array())
+                for (const auto &G : P["GUEST"]) if (G.is_string()) Out.GuestPlatform.push_back(G.get<std::string>());
+        }
+    }
+
+    //--- Identity DERIVED from Declare* layers (the node-native form). A layer overrides any legacy field above. ---
+    for (const auto &L : Out.Layers)
+    {
+        if (!L.is_object()) continue;
+        const std::string T = L.value("TYPE", std::string());
+        if (T == "DeclareExec")
+        {
+            Out.HasExec = true;
+            Out.Exec = L; Out.Exec.erase("TYPE");                       // CONTENTPATH/EXEARGS/WORKDIR (+ PLATFORM/LABEL/RECOMMENDED)
+            Out.HostPlatform = L.value("PLATFORM", Out.HostPlatform);
+            Out.Label        = L.value("LABEL", Out.Label);
+            Out.Recommended  = L.value("RECOMMENDED", Out.Recommended);
+        }
+        else if (T == "DeclareRunner")
+        {
+            Out.HasRunner = true;
+            Out.Exec = L; Out.Exec.erase("TYPE"); Out.Exec.erase("HOST"); Out.Exec.erase("GUEST");   // EXECUTABLE/ARGS/ENV/…
+            Out.HostPlatform = L.value("HOST", Out.HostPlatform);
+            Out.GuestPlatform.clear();
+            if (L.contains("GUEST") && L["GUEST"].is_array())
+                for (const auto &G : L["GUEST"]) if (G.is_string()) Out.GuestPlatform.push_back(G.get<std::string>());
+        }
+        else if (T == "DeclareLibraryItem")
+        {
+            Out.Meta = L; Out.Meta.erase("TYPE");                       // TITLE/COVER/UID + descriptive metadata
+            Out.Uid  = L.value("UID", Out.Uid);
+        }
     }
     Out.Optional = J.value("OPTIONAL", false);
     Out.Default  = J.value("DEFAULT", true);
@@ -84,9 +120,39 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots)
         for (const auto &Bundle : std::filesystem::directory_iterator(Root, Ec))
             if (Bundle.is_directory(Ec)) ScanBundleNodes(Bundle.path(), Idx);
     }
+    LinkGames(Idx);
     LogOut("ManifestModel::BuildNodeIndex", "Indexed " + std::to_string(Idx.Nodes.size()) + " node(s) across "
            + std::to_string(LibraryRoots.size()) + " root(s).");
     return Idx;
+}
+
+void LinkGames(NodeIndex &Idx)
+{
+    // A "game node" is a node with its own library metadata (Presentable). A launchable VARIANT that lacks its own
+    // metadata belongs to the game node nearest in its PARENTS closure: it inherits that tile's Meta/UID and records it
+    // as its Game key — so the library groups variants under one tile via the graph edge (no GAME string). A launchable
+    // that IS already presentable (or carries a legacy GAME) is a self-contained single-variant tile; left as-is.
+    struct Link { std::string Game; nlohmann::ordered_json Meta; std::string Uid; };
+    std::map<std::string, Link> Links;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        if (!N.IsLaunchable() || N.Presentable() || !N.Game.empty()) continue;   // not a variant needing a game link
+        // Nearest presentable ancestor (closure is parents-before-children, this node last → scan back from the end).
+        const std::vector<std::string> Order = ResolveNodeOrder(Idx, Id, {});
+        for (auto It = Order.rbegin(); It != Order.rend(); ++It)
+        {
+            if (*It == Id) continue;
+            const Node *A = Idx.Find(*It);
+            if (A && A->Presentable()) { Links[Id] = { A->NodeId, A->Meta, A->Uid }; break; }
+        }
+    }
+    for (auto &[Id, L] : Links)
+    {
+        Node &N = Idx.Nodes[Id];
+        N.Game = L.Game;
+        if (!N.Presentable()) N.Meta = L.Meta;   // inherit the tile metadata so the variant is presentable + grouped
+        if (N.Uid.empty())    N.Uid  = L.Uid;
+    }
 }
 
 std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,

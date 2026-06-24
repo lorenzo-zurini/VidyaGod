@@ -38,6 +38,7 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
         for (const QString & Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             ManifestModel::ScanBundleNodes(Dir.filePath(Sub).toStdString(), Idx);
     }
+    ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
 
     // Candidate runners: those serving the target node's platform on this machine.
     QStringList Runners;

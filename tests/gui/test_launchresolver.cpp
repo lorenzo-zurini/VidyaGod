@@ -13,11 +13,11 @@ using json = nlohmann::ordered_json;
 namespace {
 Node contentNode(const std::string & id, const json & layers = json::array())
 {
-    Node n; n.NodeId = id; n.Role = "content"; n.Layers = layers; n.BundleDir = "/tmp/vg_bundle"; return n;
+    Node n; n.NodeId = id; n.Layers = layers; n.BundleDir = "/tmp/vg_bundle"; return n;
 }
 Node launchNode(const std::string & id, const std::string & host, const std::vector<std::string> & parents)
 {
-    Node n; n.NodeId = id; n.Role = "launchable"; n.HostPlatform = host; n.Parents = parents;
+    Node n; n.NodeId = id; n.HasExec = true; n.HostPlatform = host; n.Parents = parents;
     n.Meta = json{{"TITLE", id}};
     n.Exec = json{{"CONTENTPATH", "game.exe"}};
     n.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "game"}} });
@@ -26,7 +26,7 @@ Node launchNode(const std::string & id, const std::string & host, const std::vec
 Node runnerNode(const std::string & id, const std::vector<std::string> & guests,
                 const std::vector<std::string> & parents = {})
 {
-    Node n; n.NodeId = id; n.Role = "runner"; n.GuestPlatform = guests; n.Parents = parents;
+    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; n.Parents = parents;
     n.HostPlatform = ManifestModel::MachinePlatform();
     n.Exec = json{{"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
                   {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})}};
@@ -42,7 +42,7 @@ bool recipeHas(const std::vector<std::string> & r, const std::string & needle)
 Node chainRunner(const std::string & id, const std::vector<std::string> & guests, const std::string & host,
                  const std::string & exec = "%RunnerMount%/run")
 {
-    Node n; n.NodeId = id; n.Role = "runner"; n.GuestPlatform = guests; n.HostPlatform = host;
+    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; n.HostPlatform = host;
     n.Exec = json{{"EXECUTABLE", exec}};
     n.BundleDir = "/tmp/vg_runner"; return n;
 }

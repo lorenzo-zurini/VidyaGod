@@ -96,11 +96,11 @@ private slots:
     void compatible_runners_by_platform()
     {
         NodeIndex idx;
-        Node launch; launch.NodeId = "game"; launch.Role = "launchable"; launch.HostPlatform = "win32";
-        Node wine;  wine.NodeId = "wine"; wine.Role = "runner"; wine.GuestPlatform = {"win32", "win64"};
+        Node launch; launch.NodeId = "game"; launch.HasExec = true; launch.HostPlatform = "win32";
+        Node wine;  wine.NodeId = "wine"; wine.HasRunner = true; wine.GuestPlatform = {"win32", "win64"};
         wine.HostPlatform = ManifestModel::MachinePlatform();
         wine.Exec = json{{"EXECUTABLE", "%RunnerMount%/proton"}};
-        Node snes;  snes.NodeId = "snes9x"; snes.Role = "runner"; snes.GuestPlatform = {"snes"};
+        Node snes;  snes.NodeId = "snes9x"; snes.HasRunner = true; snes.GuestPlatform = {"snes"};
         snes.HostPlatform = ManifestModel::MachinePlatform();
         snes.Exec = json{{"EXECUTABLE", "%RunnerMount%/snes9x"}};
         idx.Nodes["game"] = launch; idx.Nodes["wine"] = wine; idx.Nodes["snes9x"] = snes;

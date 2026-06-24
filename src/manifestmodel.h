@@ -51,26 +51,31 @@ struct VariantInfo {
 //CFS priority). Selection attributes (Optional/Default/Exclude) live on the node itself, not on the edge.
 struct Node {
     std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine", "gemrb")
-    std::string Role;                        // ROLE — "content" (default) | "launchable" | "runner"
-    std::string Uid;                         // UID — numeric id for launchable/presentable nodes (was GAMEUID/PACKAGEUID)
-    std::string Game;                        // GAME — the game a launchable is a VARIANT of; groups variants into one library tile (read from "GAME", legacy "GROUP"); defaults to NodeId
-    std::string Label;                       // LABEL — variant label for the picker dropdown (was VARIANT_ID/NAME)
-    bool Recommended = false;                // RECOMMENDED — the default variant within its GAME
-    nlohmann::ordered_json Meta;             // META — object present ⇒ a library-presentable node
-    std::string HostPlatform;                // PLATFORM.HOST
-    std::vector<std::string> GuestPlatform;  // PLATFORM.GUEST (runner nodes)
-    nlohmann::ordered_json Exec;             // EXEC — flat invocation/content block (object or null)
+    // Identity is DERIVED from the node's Declare* layers (no ROLE field): DeclareExec ⇒ launchable, DeclareRunner ⇒
+    // runner, DeclareLibraryItem ⇒ a library tile. The fields below are populated by ParseNode from those layers (or,
+    // transitionally, from the legacy top-level ROLE/EXEC/META/PLATFORM until packages are migrated).
+    bool HasExec   = false;                  // a DeclareExec layer (or legacy ROLE:launchable) ⇒ this node is launchable
+    bool HasRunner = false;                  // a DeclareRunner layer (or legacy ROLE:runner) ⇒ this node is a runner
+    std::string Uid;                         // UID — numeric id for presentable nodes (from DeclareLibraryItem)
+    std::string Game;                        // the game-node id this variant belongs to (linked by LinkGames via the
+                                             // DeclareLibraryItem ancestor edge; "" ⇒ self = single-variant tile)
+    std::string Label;                       // variant label for the picker (DeclareExec.LABEL)
+    bool Recommended = false;                // RECOMMENDED — the default variant within its game (DeclareExec.RECOMMENDED)
+    nlohmann::ordered_json Meta;             // the library tile metadata (DeclareLibraryItem); inherited onto variants by LinkGames
+    std::string HostPlatform;                // DeclareExec.PLATFORM (launchable) or DeclareRunner.HOST
+    std::vector<std::string> GuestPlatform;  // DeclareRunner.GUEST[]
+    nlohmann::ordered_json Exec;             // the resolved invocation block: DeclareExec (CONTENTPATH/…) or DeclareRunner (EXECUTABLE/…)
     bool Optional = false;                   // OPTIONAL — a toggleable add-on when referenced as a parent
     bool Default  = true;                    // DEFAULT — initial enabled state when OPTIONAL
     std::vector<std::string> Exclude;        // EXCLUDE — node ids mutually exclusive with this one (symmetric)
     std::vector<std::string> Parents;        // PARENTS — bare global node ids (load order: later = higher priority)
-    nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects)
+    nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects, incl. Declare*)
     std::filesystem::path File;              // source <node_id>.json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
 
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
-    bool IsRunner()     const { return Role == "runner"; }
-    bool IsLaunchable() const { return Role == "launchable"; }
+    bool IsRunner()     const { return HasRunner; }
+    bool IsLaunchable() const { return HasExec; }
     std::string GameKey() const { return Game.empty() ? NodeId : Game; }   // the game this variant belongs to (library-tile key)
 };
 
@@ -89,8 +94,14 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
 // Scan one bundle dir (non-recursive) for *.json node files (those carrying NODE_ID), adding them to Idx.
 // Duplicate NODE_IDs are reported and the first-seen wins.
 void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
-// Build the global index from library roots; each root holds bundle dirs (one level down).
+// Build the global index from library roots; each root holds bundle dirs (one level down). Runs LinkGames.
 NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots);
+
+// Post-parse pass over a fully-assembled index: link each launchable variant that lacks its own library metadata to
+// its game node (the nearest DeclareLibraryItem ancestor via PARENTS) — setting its Game key and inheriting the tile's
+// Meta/UID — so the catalog/library group + present variants under one tile by a graph edge, not a GAME string. Called
+// by BuildNodeIndex and must be re-run by any caller that assembles an index manually (ScanBundleNodes).
+void LinkGames(NodeIndex &Idx);
 
 // Resolve the load-ordered node closure for launching LaunchNodeId: walk PARENTS across the global graph,
 // keeping required parents always and optional ones per Toggles (else DEFAULT), applying EXCLUDE (symmetric,

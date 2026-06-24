@@ -37,7 +37,15 @@ void NodeGraphView::SetGraph(const nlohmann::ordered_json & NodesArray)
             if (!N.is_object()) continue;
             GNode G;
             G.Id    = N.value("NODE_ID", std::string());
+            // Identity (for the node colour) is derived from the Declare* layers; legacy ROLE is the transitional fallback.
             G.Role  = N.value("ROLE", std::string("content"));
+            if (N.contains("LAYERS") && N["LAYERS"].is_array())
+                for (const auto &L : N["LAYERS"])
+                {
+                    const std::string T = L.is_object() ? L.value("TYPE", std::string()) : std::string();
+                    if      (T == "DeclareExec")   G.Role = "launchable";
+                    else if (T == "DeclareRunner") G.Role = "runner";
+                }
             G.Label = QString::fromStdString(G.Id);   // match the tab labels (which key off NODE_ID) for click-to-tab
             if (G.Id.empty()) continue;
             Ix[G.Id] = (int)Nodes.size();

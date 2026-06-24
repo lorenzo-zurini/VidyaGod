@@ -40,7 +40,7 @@ TEST(parse_rejects_missing_node_id)
     CHECK(!ManifestModel::ParseNode(ordered_json{{"ROLE", "content"}}, "f.json", "/b", N));      // no NODE_ID
     CHECK(!ManifestModel::ParseNode(ordered_json{{"NODE_ID", ""}}, "f.json", "/b", N));           // empty NODE_ID
     CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID", "ok"}}, "f.json", "/b", N));
-    CHECK_EQ(N.Role, std::string("content"));   // default role
+    CHECK(!N.IsLaunchable() && !N.IsRunner());   // a bare node is content (no Declare* identity)
 }
 
 TEST(resolve_order_parents_before_launchable)

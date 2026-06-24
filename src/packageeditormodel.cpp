@@ -180,6 +180,7 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
         for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
             ManifestModel::ScanBundleNodes(D.filePath(Sub).toStdString(), Idx);
     }
+    ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
     return Idx;
 }
 

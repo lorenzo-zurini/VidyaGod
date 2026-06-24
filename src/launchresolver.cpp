@@ -367,7 +367,8 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             if (Subs[j].is_object())
             {
                 std::string T = Subs[j].value("TYPE", std::string());
-                if (T == "CustomVar" || T == "Persist") continue;
+                if (T == "CustomVar" || T == "Persist"
+                    || T == "DeclareExec" || T == "DeclareLibraryItem" || T == "DeclareRunner") continue;
             }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
