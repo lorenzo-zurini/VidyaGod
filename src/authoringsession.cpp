@@ -57,6 +57,7 @@ bool AuthoringSession::Begin(const NodeIndex &SrcIdx, const std::string &TargetN
 }
 
 bool AuthoringSession::PrefixGenerate() const { return Wrapper && Wrapper->ContainerParams.PrefixGenerate; }
+std::string AuthoringSession::RunnerId() const { return Wrapper ? Wrapper->ContainerParams.RunnerID : std::string{}; }
 fs::path AuthoringSession::RuntimePath() const { return Wrapper ? Wrapper->ContainerParams.RuntimePath : fs::path{}; }
 fs::path AuthoringSession::WriteLayerPath() const { return Wrapper ? Wrapper->ContainerParams.WriteLayerPath : fs::path{}; }
 std::string AuthoringSession::ContentRoot() const { return Wrapper ? Wrapper->ContainerParams.ContentRoot : std::string{}; }

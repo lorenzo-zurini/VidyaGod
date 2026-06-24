@@ -37,7 +37,9 @@ protected:
     void closeEvent(QCloseEvent * e) override;   // ends the session (cleanup) on close
 
 private:
-    void beginSession();          // build + mount the runtime (blocking), populate the UI
+    void initialStart();          // first build (auto runner) + one-time UI population
+    void populateRunnerCombo();   // list runners serving the target node's platform
+    void startSession(const std::vector<std::string> & RunnerChainIds);  // (re)build the runtime; empty = auto-resolve
     void refreshDelta();          // re-enumerate the WRITELAYER delta into the list
     void onRunExe();              // pick + run an installer in the live prefix
     void onCaptureFiles();        // copy selected delta subtrees → VFSDirLayer on the target node
@@ -55,6 +57,8 @@ private:
     QLineEdit *   StripEdit    = nullptr;
     QLineEdit *   TargetEdit   = nullptr;
     QLineEdit *   DestNameEdit = nullptr;
+    QComboBox *   RunnerCombo  = nullptr;
+    bool          DefaultsDone = false;        // one-time target-combo + capture-defaults population
     QPushButton * RunExeBtn    = nullptr;
     QPushButton * RegBtn       = nullptr;
     QPushButton * BrowseBtn    = nullptr;

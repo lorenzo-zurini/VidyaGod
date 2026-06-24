@@ -51,6 +51,7 @@ public:
 
     bool Live() const { return Wrapper != nullptr; }
     bool PrefixGenerate() const;                       // wine prefix session → gates the wine-only tools
+    std::string RunnerId() const;                      // the boundary runner actually resolved for this session
     std::filesystem::path RuntimePath() const;         // the live mount root
     std::filesystem::path WriteLayerPath() const;      // the COW delta (capture source)
     std::string ContentRoot() const;                   // where the runner roots game content (for TARGET derivation)

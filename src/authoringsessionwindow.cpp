@@ -37,15 +37,24 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * M, const std
     InfoLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
     Root->addWidget(InfoLabel);
 
-    // ── Run tools (wine-gated) ──
+    // ── Run tools (wine-gated) + the runner picker ──
     auto * ToolRow = new QHBoxLayout();
     RunExeBtn = new QPushButton("Run EXE…", this);
     BrowseBtn = new QPushButton("Open Explorer", this);
     RegBtn    = new QPushButton("Edit Registry", this);
     RefreshBtn= new QPushButton("Refresh changes", this);
     ToolRow->addWidget(RunExeBtn); ToolRow->addWidget(BrowseBtn); ToolRow->addWidget(RegBtn);
+    ToolRow->addWidget(new QLabel("Runner:", this));
+    RunnerCombo = new QComboBox(this);
+    RunnerCombo->setToolTip("The runner this authoring session runs under. Switching rebuilds the runtime "
+                            "(discarding any uncaptured changes).");
+    ToolRow->addWidget(RunnerCombo);
     ToolRow->addStretch(); ToolRow->addWidget(RefreshBtn);
     Root->addLayout(ToolRow);
+    // textActivated fires only on a user pick (not on setCurrentText), so reflecting the auto-resolved runner won't loop.
+    QObject::connect(RunnerCombo, &QComboBox::textActivated, this, [this](const QString & Rid){
+        startSession({ Rid.toStdString() });
+    });
 
     // ── The WRITELAYER delta (what the runs changed) ──
     auto * DeltaBox = new QGroupBox("Changed files (the session's write-delta) — check what to capture", this);
@@ -100,7 +109,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * M, const std
 
     setBusy(true, "building runtime");
     // Paint the window first, then build the runtime (blocking, like the editor's existing authoring runs).
-    QTimer::singleShot(0, this, &AuthoringSessionWindow::beginSession);
+    QTimer::singleShot(0, this, &AuthoringSessionWindow::initialStart);
 }
 
 AuthoringSessionWindow::~AuthoringSessionWindow() = default;
@@ -120,29 +129,61 @@ void AuthoringSessionWindow::setBusy(bool On, const QString & What)
     QApplication::processEvents();
 }
 
-void AuthoringSessionWindow::beginSession()
+void AuthoringSessionWindow::initialStart()
 {
+    populateRunnerCombo();
+    startSession({});   // auto-resolve the runner for the first build
+}
+
+void AuthoringSessionWindow::populateRunnerCombo()
+{
+    // Runners that can run this node: those serving the node's platform on this machine. (Direct runners; daisy-chained
+    // multi-hop runners are auto-resolved when none is pinned.)
+    const NodeIndex Idx = Model->BuildExecIndex();
+    const Node * N = Idx.Find(TargetNodeId);
+    const std::string Plat = N ? N->HostPlatform : std::string();
+    const std::string Machine = ManifestModel::MachinePlatform();
+    RunnerCombo->clear();
+    for (const auto & [Id, R] : Idx.Nodes)
+    {
+        if (!R.IsRunner() || R.HostPlatform != Machine) continue;
+        for (const std::string & G : R.GuestPlatform)
+            if (G == Plat) { RunnerCombo->addItem(QString::fromStdString(Id)); break; }
+    }
+}
+
+void AuthoringSessionWindow::startSession(const std::vector<std::string> & RunnerChainIds)
+{
+    setBusy(true, RunnerChainIds.empty() ? "building runtime" : "switching runner");
+    if (Session) Session->End();
     Session = std::make_unique<AuthoringSession>(*Model->globalConfig(), QDir(Model->packagePath()));
-    const bool Ok = Session->Begin(Model->BuildExecIndex(), TargetNodeId);
+    const bool Ok = Session->Begin(Model->BuildExecIndex(), TargetNodeId, {}, RunnerChainIds);
     QApplication::restoreOverrideCursor();
     if (!Ok)
     {
         QMessageBox::critical(this, "Authoring session",
             "Couldn't build the runtime for '" + QString::fromStdString(TargetNodeId) +
-            "'.\n\nThe node needs a PLATFORM.HOST that a runner serves (or a pinned runner). Check the log.");
+            "'.\n\nThe node needs a PLATFORM.HOST that a runner serves (or pick a runner). Check the log.");
         close();
         return;
     }
 
-    // Target-node picker (default: the node we started on) + smart capture defaults.
-    TargetCombo->clear();
-    for (const std::string & Id : Model->bundleNodeIds()) TargetCombo->addItem(QString::fromStdString(Id));
-    TargetCombo->setCurrentText(QString::fromStdString(TargetNodeId));
-    DestNameEdit->setText(QString::fromStdString(TargetNodeId + "_files"));
+    // One-time: target-node picker (default: the node we started on) + capture dest name.
+    if (!DefaultsDone)
+    {
+        TargetCombo->clear();
+        for (const std::string & Id : Model->bundleNodeIds()) TargetCombo->addItem(QString::fromStdString(Id));
+        TargetCombo->setCurrentText(QString::fromStdString(TargetNodeId));
+        DestNameEdit->setText(QString::fromStdString(TargetNodeId + "_files"));
+        DefaultsDone = true;
+    }
+    // Reflect the resolved runner (no rebuild loop — textActivated ignores setCurrentText).
+    RunnerCombo->setCurrentText(QString::fromStdString(Session->RunnerId()));
+
+    // Runner-dependent: the content root (and so the strip-prefix default) + wine gating.
+    const bool Wine = Session->PrefixGenerate();
     StripEdit->setText(QString::fromStdString(Session->ContentRoot()));
     TargetEdit->setText("");
-
-    const bool Wine = Session->PrefixGenerate();
     RunExeBtn->setVisible(Wine); BrowseBtn->setVisible(Wine); RegBtn->setVisible(Wine);
     CaptureRegBtn->setVisible(Wine);
 
