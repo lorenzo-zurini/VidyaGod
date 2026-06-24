@@ -544,6 +544,37 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         }
     }
 
+    //----- Declare* identity lint: at most one of each per node; a DeclareExec needs a CONTENTPATH (or it can't run);
+    //a DeclareLibraryItem tile needs at least one launchable (its own DeclareExec, or a variant that parents it). -----
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        if (OnlyNodes && !OnlyNodes->count(Id)) continue;
+        if (!N.Layers.is_array()) continue;
+        const std::string Tag = "node '" + Id + "'";
+        int NExec = 0, NLib = 0, NRun = 0;
+        const nlohmann::ordered_json *Exec = nullptr;
+        for (const auto &L : N.Layers)
+        {
+            if (!L.is_object()) continue;
+            const std::string T = L.value("TYPE", std::string());
+            if      (T == "DeclareExec")        { ++NExec; Exec = &L; }
+            else if (T == "DeclareLibraryItem") ++NLib;
+            else if (T == "DeclareRunner")      ++NRun;
+        }
+        if (NExec > 1) Errors.push_back(Tag + ": more than one DeclareExec layer (a node has a single identity)");
+        if (NLib  > 1) Errors.push_back(Tag + ": more than one DeclareLibraryItem layer");
+        if (NRun  > 1) Errors.push_back(Tag + ": more than one DeclareRunner layer");
+        if (NExec && NRun) Warnings.push_back(Tag + ": both DeclareExec and DeclareRunner — a node is usually one or the other");
+        (void)Exec;   // (a DeclareExec with no CONTENTPATH is valid — self-contained launchable, e.g. gemrb runs a data dir)
+        if (NLib && !N.IsLaunchable())   // a tile node: needs a launchable variant somewhere that parents it
+        {
+            bool HasVariant = false;
+            for (const auto &[VId, V] : Idx.Nodes)
+                if (V.IsLaunchable() && V.GameKey() == Id) { HasVariant = true; break; }
+            if (!HasVariant) Warnings.push_back(Tag + ": DeclareLibraryItem tile has no launchable variant (no DeclareExec node parents it)");
+        }
+    }
+
     //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
     //The built-in tokens always available at substitution time (mirrors ContainerParams::GetVariablesMap). A %KEY%
     //that is neither a built-in nor declared by some CustomVar is almost always a typo and would survive as a literal.

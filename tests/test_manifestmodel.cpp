@@ -230,3 +230,54 @@ TEST(validate_flags_asymmetric_exclude)
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Warnings, "symmetric"));
 }
+
+// ---- Role collapse: identity DERIVED from Declare* layers ----
+
+TEST(declare_layers_derive_identity)
+{
+    Node N;
+    ordered_json lj; lj["NODE_ID"] = "g";
+    lj["LAYERS"] = ordered_json::array({ ordered_json{{"TYPE","DeclareExec"},{"PLATFORM","win32"},
+                    {"CONTENTPATH","game.exe"},{"LABEL","Vanilla"},{"RECOMMENDED",true}} });
+    CHECK(ManifestModel::ParseNode(lj, "f.json", "/b", N));
+    CHECK(N.IsLaunchable()); CHECK(!N.IsRunner());
+    CHECK_EQ(N.HostPlatform, std::string("win32"));
+    CHECK_EQ(N.Exec.value("CONTENTPATH", std::string()), std::string("game.exe"));
+    CHECK_EQ(N.Label, std::string("Vanilla")); CHECK(N.Recommended);
+
+    Node R;
+    ordered_json rj; rj["NODE_ID"] = "wine";
+    rj["LAYERS"] = ordered_json::array({ ordered_json{{"TYPE","DeclareRunner"},{"HOST","linux64"},
+                    {"GUEST", ordered_json::array({"win32","win64"})},{"EXECUTABLE","wine"}} });
+    CHECK(ManifestModel::ParseNode(rj, "f.json", "/b", R));
+    CHECK(R.IsRunner()); CHECK(!R.IsLaunchable());
+    CHECK_EQ(R.HostPlatform, std::string("linux64"));
+    CHECK_EQ((int)R.GuestPlatform.size(), 2);
+    CHECK_EQ(R.Exec.value("EXECUTABLE", std::string()), std::string("wine"));
+
+    Node L;
+    ordered_json tj; tj["NODE_ID"] = "tile";
+    tj["LAYERS"] = ordered_json::array({ ordered_json{{"TYPE","DeclareLibraryItem"},{"UID","42"},{"TITLE","My Game"}} });
+    CHECK(ManifestModel::ParseNode(tj, "f.json", "/b", L));
+    CHECK(L.Presentable()); CHECK(!L.IsLaunchable());
+    CHECK_EQ(L.Uid, std::string("42"));
+    CHECK_EQ(L.Meta.value("TITLE", std::string()), std::string("My Game"));
+}
+
+TEST(link_games_groups_variants_under_tile)
+{
+    auto exec = [](const char *label){ return ordered_json{{"TYPE","DeclareExec"},{"PLATFORM","win32"},{"CONTENTPATH","g.exe"},{"LABEL",label}}; };
+    NodeIndex Idx;
+    { ordered_json g; g["NODE_ID"]="mygame"; g["LAYERS"]=ordered_json::array({ ordered_json{{"TYPE","DeclareLibraryItem"},{"UID","7"},{"TITLE","My Game"}} }); Add(Idx, g); }
+    { ordered_json v; v["NODE_ID"]="mygame_v1"; v["PARENTS"]=ordered_json::array({"mygame"}); v["LAYERS"]=ordered_json::array({ exec("v1") }); Add(Idx, v); }
+    { ordered_json v; v["NODE_ID"]="mygame_v2"; v["PARENTS"]=ordered_json::array({"mygame"}); v["LAYERS"]=ordered_json::array({ exec("v2") }); Add(Idx, v); }
+    ManifestModel::LinkGames(Idx);
+    const Node *v1 = Idx.Find("mygame_v1");
+    CHECK(v1->IsLaunchable());
+    CHECK_EQ(v1->GameKey(), std::string("mygame"));      // grouped under the tile by the PARENTS edge
+    CHECK(v1->Presentable());                             // inherited the tile metadata
+    CHECK_EQ(v1->Meta.value("TITLE", std::string()), std::string("My Game"));
+    CHECK_EQ(v1->Uid, std::string("7"));
+    CHECK(Idx.Find("mygame")->Presentable());            // the tile is presentable
+    CHECK(!Idx.Find("mygame")->IsLaunchable());          // but not launchable itself
+}
