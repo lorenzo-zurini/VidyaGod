@@ -102,6 +102,7 @@ void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json n
 void PackageEditorModel::SaveNodes()
 {
     if (!PackageDir) return;
+    InvalidateExecIndex();   // the bundle's nodes are changing — drop the cached catalog index
     auto &Nodes = Doc["NODES"];
 
     // Desired on-disk filenames for the current nodes.
@@ -138,11 +139,28 @@ void PackageEditorModel::SaveNodes()
 // Validation
 // ============================================================================
 
+const NodeIndex & PackageEditorModel::ExecIndex() const
+{
+    if (!ExecIndexValid) { ExecIndexCache = BuildExecIndex(); ExecIndexValid = true; }
+    return ExecIndexCache;
+}
+
 void PackageEditorModel::Revalidate()
 {
     ValErrors.clear(); ValWarnings.clear();
-    NodeIndex Idx = BuildExecIndex();
-    ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings);
+    const NodeIndex & Idx = ExecIndex();
+    // Scope validation to THIS bundle's own nodes + their PARENTS closures, so unrelated packages' legitimate issues
+    // (e.g. another game's cross-layer case collisions) never surface while editing — mirrors LibraryGameCard::play.
+    std::set<std::string> Scope;
+    if (Doc.contains("NODES") && Doc["NODES"].is_array())
+        for (const auto & N : Doc["NODES"])
+        {
+            const std::string Id = N.value("NODE_ID", std::string());
+            if (Id.empty()) continue;
+            Scope.insert(Id);
+            for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
+        }
+    ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings, &Scope);
     emit validationChanged();
 }
 
@@ -167,7 +185,7 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
 
 std::vector<std::string> PackageEditorModel::KnownNodeIds()
 {
-    NodeIndex Idx = BuildExecIndex();
+    const NodeIndex & Idx = ExecIndex();
     std::vector<std::string> Out;
     for (const auto &[Id, N] : Idx.Nodes) { (void)N; Out.push_back(Id); }
     std::sort(Out.begin(), Out.end());
@@ -176,7 +194,7 @@ std::vector<std::string> PackageEditorModel::KnownNodeIds()
 
 std::vector<std::string> PackageEditorModel::KnownPlatforms()
 {
-    NodeIndex Idx = BuildExecIndex();
+    const NodeIndex & Idx = ExecIndex();
     std::set<std::string> Seen;
     std::vector<std::string> Out;
     for (const auto &[Id, N] : Idx.Nodes)

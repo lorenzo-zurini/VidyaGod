@@ -35,6 +35,9 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
     // The state/signal hub: owns the working document, node I/O, validation, and the authoring runs. Created first
     // so the toolbar/Publish lambdas below can reach it; it parents its modal dialogs on this editor.
     Model = new PackageEditorModel(GlobalConfigJSON, this, this);
+    // A first-class top-level window: a parented QDialog gets _NET_WM_WINDOW_TYPE_DIALOG (no taskbar entry, rides the
+    // parent's minimize/tray). Qt::Window makes it a normal window — its own taskbar button + ordinary minimize.
+    setWindowFlags(Qt::Window);
     setWindowTitle("VidyaGod Package Editor");
     setGeometry(0, 0, QGuiApplication::primaryScreen()->geometry().width(), QGuiApplication::primaryScreen()->geometry().height());
     setWindowState(Qt::WindowMaximized);

@@ -202,12 +202,17 @@ NodePlatformSection::NodePlatformSection(PackageEditorModel * model, int nodeInd
             { QSignalBlocker B(Host);
               Host->setCurrentText(QString::fromStdString((NodeRef.contains("PLATFORM") && NodeRef["PLATFORM"].is_object()
                                    && NodeRef["PLATFORM"].value("HOST", std::string()).size()) ? std::string(NodeRef["PLATFORM"]["HOST"]) : "")); }
-            QObject::connect(Host, &QComboBox::currentTextChanged, this, [this, NodePtr](const QString &T){
-                const QString Tr = T.trimmed();
+            // Commit on COMMIT, not on every transient currentTextChanged — an editable combo emits that signal on
+            // each previewed item while navigating the popup, and SaveNodes()→Revalidate() is heavy, so the dropdown
+            // would lag per item. textActivated (popup pick) + editingFinished (typed) fire only on a real choice.
+            auto CommitHost = [this, NodePtr, Host]{
+                const QString Tr = Host->currentText().trimmed();
                 if (Tr.isEmpty()) { if (Model->doc().contains(json::json_pointer(NodePtr + "/PLATFORM"))) Model->doc()[json::json_pointer(NodePtr + "/PLATFORM")].erase("HOST"); }
                 else Model->doc()[json::json_pointer(NodePtr + "/PLATFORM/HOST")] = Tr.toStdString();
                 Model->SaveNodes();
-            });
+            };
+            QObject::connect(Host, &QComboBox::textActivated, this, [CommitHost](const QString &){ CommitHost(); });
+            QObject::connect(Host->lineEdit(), &QLineEdit::editingFinished, this, CommitHost);
             HostRow->addWidget(Host, 1);
             BL->addLayout(HostRow);
 
@@ -228,9 +233,12 @@ NodePlatformSection::NodePlatformSection(PackageEditorModel * model, int nodeInd
                     for (const auto &P : Plats) CB->addItem(QString::fromStdString(P));
                     { QSignalBlocker B(CB); CB->setCurrentText(QString::fromStdString(Guests[k].is_string() ? std::string(Guests[k]) : "")); }
                     const std::string ItemPtr = GPtr + "/" + std::to_string(k);
-                    QObject::connect(CB, &QComboBox::currentTextChanged, this, [this, ItemPtr](const QString &T){
-                        Model->doc()[json::json_pointer(ItemPtr)] = T.trimmed().toStdString(); Model->SaveNodes();
-                    });
+                    // Commit on a real choice, not transient popup-navigation highlights (see HOST above).
+                    auto CommitGuest = [this, ItemPtr, CB]{
+                        Model->doc()[json::json_pointer(ItemPtr)] = CB->currentText().trimmed().toStdString(); Model->SaveNodes();
+                    };
+                    QObject::connect(CB, &QComboBox::textActivated, this, [CommitGuest](const QString &){ CommitGuest(); });
+                    QObject::connect(CB->lineEdit(), &QLineEdit::editingFinished, this, CommitGuest);
                     QPushButton * Del = new QPushButton("✕", GBox); Del->setFixedWidth(28);
                     QObject::connect(Del, &QPushButton::clicked, this, [this, GPtr, k](){
                         Model->doc()[json::json_pointer(GPtr)].erase(k); Model->SaveNodes(); Model->requestReload();

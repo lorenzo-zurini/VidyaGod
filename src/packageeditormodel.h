@@ -72,12 +72,19 @@ signals:
 
 private:
     void MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray);
+    // Cached BuildExecIndex(): the catalog scan (this bundle + every repo) is expensive and was rebuilt per node
+    // section (KnownPlatforms) AND per save (Revalidate). The cache rebuilds once, invalidated whenever the bundle's
+    // nodes change (SaveNodes). Returns a stable reference for callers that only read.
+    const NodeIndex &              ExecIndex() const;
+    void                           InvalidateExecIndex() { ExecIndexValid = false; }
 
     nlohmann::ordered_json         Doc;                       // working document { "NODES": [...] }
     QDir *                         PackageDir = nullptr;
     const nlohmann::ordered_json * GlobalConfigJSON = nullptr;
     QWidget *                      DialogParent = nullptr;
     std::vector<std::string>       ValErrors, ValWarnings;
+    mutable NodeIndex              ExecIndexCache;            // BuildExecIndex() result, lazily (re)built by ExecIndex()
+    mutable bool                   ExecIndexValid = false;
 };
 
 #endif // PACKAGEEDITORMODEL_H
