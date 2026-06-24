@@ -71,8 +71,12 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         LayerMenu->addAction("FileEdit",      this, &NodeEditor::AddFileEdit);
         LayerMenu->addSeparator();
         LayerMenu->addAction("Persist",       this, &NodeEditor::AddPersist);
-        LayerMenu->addSeparator();
         LayerMenu->addAction("CustomVar",     this, &NodeEditor::AddCustomVar);
+        LayerMenu->addSeparator();
+        // Identity layers — what the node IS (was ROLE/EXEC/META/PLATFORM).
+        LayerMenu->addAction("DeclareExec (launchable)",     this, &NodeEditor::AddDeclareExec);
+        LayerMenu->addAction("DeclareLibraryItem (tile)",    this, &NodeEditor::AddDeclareLibraryItem);
+        LayerMenu->addAction("DeclareRunner (runner)",       this, &NodeEditor::AddDeclareRunner);
         AddLayerBtn->setMenu(LayerMenu);
         Toolbar->addWidget(AddLayerBtn);
 
@@ -109,12 +113,8 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         Body->addWidget(new NodeIdentitySection(Model, n, Contents));
         Body->addWidget(new NodeSelectionSection(Model, n, Contents));
         Body->addWidget(new NodeParentsSection(Model, n, Contents));
-        Body->addWidget(new NodePlatformSection(Model, n, Contents));
-        // EXEC only matters for the roles the engine reads it from — a launchable (what to run) or a runner (how to
-        // invoke). A content node is only ever mounted as its LAYERS, so its EXEC is dead data; don't offer it.
-        if (const std::string Role = Model->doc()["NODES"][n].value("ROLE", std::string("content")); Role == "launchable" || Role == "runner")
-            Body->addWidget(new NodeExecSection(Model, n, Contents));
-        Body->addWidget(new NodeMetaSection(Model, n, Contents));
+        // PLATFORM / EXEC / META are no longer top-level node fields — a node's identity (launchable / runner / library
+        // tile) is declared by adding a DeclareExec / DeclareRunner / DeclareLibraryItem layer in the Layers section.
         Body->addWidget(new NodeLayersSection(Model, n, Contents));
         Body->addStretch();
 }
@@ -205,6 +205,9 @@ void NodeEditor::AddDllOverride()  { appendLayer(json::object({ {"TYPE", "DllOve
 void NodeEditor::AddFileEdit()     { appendLayer(json::object({ {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""} })); }
 void NodeEditor::AddCustomVar()    { appendLayer(json::object({ {"TYPE", "CustomVar"}, {"KEY", ""}, {"DEFAULT", ""} })); }   // a binding by default; tick "User option" to add a UI facet
 void NodeEditor::AddPersist()      { appendLayer(json::object({ {"TYPE", "Persist"}, {"KEEP", ""} })); }
+void NodeEditor::AddDeclareExec()        { appendLayer(json::object({ {"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", ""} })); }
+void NodeEditor::AddDeclareLibraryItem() { appendLayer(json::object({ {"TYPE", "DeclareLibraryItem"}, {"TITLE", ""}, {"UID", ""} })); }
+void NodeEditor::AddDeclareRunner()      { appendLayer(json::object({ {"TYPE", "DeclareRunner"}, {"HOST", "linux64"}, {"GUEST", json::array()}, {"EXECUTABLE", ""} })); }
 
 // ============================================================================
 // META — cover drop

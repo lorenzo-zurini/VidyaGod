@@ -65,45 +65,27 @@ NodeIdentitySection::NodeIdentitySection(PackageEditorModel * model, int nodeInd
             });
             Form->addRow("NODE_ID", IdField);
 
-            QComboBox * RoleCombo = new QComboBox(this);
-            RoleCombo->addItems({"content", "launchable", "runner"});
-            RoleCombo->setCurrentText(QString::fromStdString(NodeRef.value("ROLE", std::string("content"))));
-            QObject::connect(RoleCombo, &QComboBox::currentTextChanged, this, [this, NodePtr](const QString &T){
-                Model->doc()[json::json_pointer(NodePtr + "/ROLE")] = T.toStdString();
-                Model->SaveNodes(); Model->requestReload();   // re-render so role-specific sections (GROUP/LABEL/GUEST) adapt
-            });
-            Form->addRow("ROLE", RoleCombo);
-
-            QLineEdit * UidField = new QLineEdit(this);
-            UidField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/UID"));
-            if (NodeRef.contains("UID") && NodeRef["UID"].is_string()) UidField->setText(QString::fromStdString(std::string(NodeRef["UID"])));
-            QObject::connect(UidField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-            Form->addRow("UID", UidField);
-
-            const bool Launchable = NodeRef.value("ROLE", std::string()) == "launchable";
-            if (Launchable)
-            {
-                QLineEdit * GameField = new QLineEdit(this);
-                GameField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/GAME"));
-                GameField->setPlaceholderText("the game this is a VARIANT of — groups variants into one tile (defaults to NODE_ID)");
-                if (NodeRef.contains("GAME") && NodeRef["GAME"].is_string()) GameField->setText(QString::fromStdString(std::string(NodeRef["GAME"])));
-                QObject::connect(GameField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                Form->addRow("GAME", GameField);
-
-                QLineEdit * LabelField = new QLineEdit(this);
-                LabelField->setProperty("JSONPath", QString::fromStdString(NodePtr + "/LABEL"));
-                LabelField->setPlaceholderText("edition label for the picker dropdown");
-                if (NodeRef.contains("LABEL") && NodeRef["LABEL"].is_string()) LabelField->setText(QString::fromStdString(std::string(NodeRef["LABEL"])));
-                QObject::connect(LabelField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                Form->addRow("LABEL", LabelField);
-
-                QCheckBox * RecChk = new QCheckBox("Recommended (default edition in its GROUP)", this);
-                RecChk->setChecked(NodeRef.value("RECOMMENDED", false));
-                QObject::connect(RecChk, &QCheckBox::toggled, this, [this, NodePtr](bool On){
-                    Model->doc()[json::json_pointer(NodePtr + "/RECOMMENDED")] = On; Model->SaveNodes();
-                });
-                Form->addRow("", RecChk);
-            }}
+            // Identity is DERIVED from the node's Declare* layers (no ROLE field): a DeclareExec ⇒ launchable, a
+            // DeclareRunner ⇒ runner, a DeclareLibraryItem ⇒ a library tile; none ⇒ content. Show it as a read-only
+            // badge so the node's nature stays legible — add the matching Declare* layer below to give it an identity.
+            bool HasExec = false, HasRunner = false, HasLib = false;
+            if (NodeRef.contains("LAYERS") && NodeRef["LAYERS"].is_array())
+                for (const auto & L : NodeRef["LAYERS"])
+                {
+                    const std::string T = L.is_object() ? L.value("TYPE", std::string()) : std::string();
+                    if      (T == "DeclareExec")        HasExec = true;
+                    else if (T == "DeclareRunner")      HasRunner = true;
+                    else if (T == "DeclareLibraryItem") HasLib = true;
+                }
+            QStringList Tags;
+            if (HasRunner) Tags << "runner";
+            if (HasExec)   Tags << "launchable";
+            if (HasLib)    Tags << "library tile";
+            if (Tags.isEmpty()) Tags << "content";
+            QLabel * Badge = new QLabel(Tags.join(" · "), this);
+            Badge->setStyleSheet("font-weight:bold;color:#8fbcd4;");
+            Form->addRow("Identity", Badge);
+}
 
 NodeSelectionSection::NodeSelectionSection(PackageEditorModel * model, int nodeIndex, QWidget * parent)
     : NodeSection("Selection (when referenced as a parent)", model, nodeIndex, parent)
@@ -608,6 +590,58 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                                                "KEEP %RuntimePath% to persist everything; DROP carves an ephemeral hole.", LBox);
                     Hint->setStyleSheet("color:#8f98a0;font-size:9pt;"); Hint->setWordWrap(true);
                     LG->addWidget(Hint, prow, 1, 1, 2);
+                }
+                else if (LayerType == "DeclareExec" || LayerType == "DeclareLibraryItem" || LayerType == "DeclareRunner")
+                {
+                    // Identity layers: a simple field form per kind (lists/objects on a runner go through the raw JSON tab).
+                    auto AddText = [&](int Row, const char *FK, const char *Hint = ""){
+                        LG->addWidget(new QLabel(QString(FK) + ":"), Row, 0);
+                        QLineEdit * FE = new QLineEdit(LBox);
+                        FE->setProperty("JSONPath", LPath + "/" + FK);
+                        if (Hint[0]) FE->setPlaceholderText(Hint);
+                        if (Layers[j].contains(FK) && Layers[j][FK].is_string()) FE->setText(QString::fromStdString(std::string(Layers[j][FK])));
+                        QObject::connect(FE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                        LG->addWidget(FE, Row, 1, 1, 2);
+                    };
+                    int r = 1;
+                    if (LayerType == "DeclareExec")
+                    {
+                        AddText(r++, "PLATFORM", "win32 / linux64 / snes …  (the content's platform)");
+                        AddText(r++, "CONTENTPATH", "exe/ROM path relative to the content mount");
+                        AddText(r++, "EXEARGS"); AddText(r++, "WORKDIR");
+                        AddText(r++, "LABEL", "variant label for the picker (when grouped under a game)");
+                        QCheckBox * Rec = new QCheckBox("RECOMMENDED (default variant of its game)", LBox);
+                        Rec->setChecked(Layers[j].value("RECOMMENDED", false));
+                        QObject::connect(Rec, &QCheckBox::toggled, this, [this, n, j](bool On){
+                            Model->doc()["NODES"][n]["LAYERS"][j]["RECOMMENDED"] = On; Model->SaveNodes(); });
+                        LG->addWidget(Rec, r, 0, 1, 3);
+                    }
+                    else if (LayerType == "DeclareLibraryItem")
+                    {
+                        AddText(r++, "TITLE", "the game's display title (the library tile)");
+                        AddText(r++, "UID", "numeric package id");
+                        QLabel * H = new QLabel("Variants of one game are nodes with a DeclareExec that PARENT this tile node. "
+                                                "COVER + extra metadata (DEVELOPER, SERIES, …) are editable in the raw JSON tab.", LBox);
+                        H->setStyleSheet("color:#8f98a0;font-size:9pt;"); H->setWordWrap(true);
+                        LG->addWidget(H, r, 0, 1, 3);
+                    }
+                    else // DeclareRunner
+                    {
+                        AddText(r++, "HOST", "the platform the runner runs ON (e.g. linux64)");
+                        AddText(r++, "EXECUTABLE"); AddText(r++, "CONTENT_ROOT"); AddText(r++, "GUEST_PATH");
+                        for (const char *CK : {"PREFIX_GENERATE", "UNIFIED_RUNTIME"})
+                        {
+                            QCheckBox * C = new QCheckBox(CK, LBox);
+                            C->setChecked(Layers[j].value(CK, false));
+                            const std::string Key = CK;
+                            QObject::connect(C, &QCheckBox::toggled, this, [this, n, j, Key](bool On){
+                                Model->doc()["NODES"][n]["LAYERS"][j][Key] = On; Model->SaveNodes(); });
+                            LG->addWidget(C, r++, 0, 1, 3);
+                        }
+                        QLabel * H = new QLabel("GUEST (platforms served), ARGS, ENV, REMOVE_ENV are lists/objects — edit them in the raw JSON tab.", LBox);
+                        H->setStyleSheet("color:#8f98a0;font-size:9pt;"); H->setWordWrap(true);
+                        LG->addWidget(H, r, 0, 1, 3);
+                    }
                 }
                 else if (LayerType == "CustomVar")
                 {

@@ -32,6 +32,9 @@ private slots:
     void AddFileEdit();
     void AddCustomVar();
     void AddPersist();
+    void AddDeclareExec();          // make this node launchable (PLATFORM + CONTENTPATH/…)
+    void AddDeclareLibraryItem();   // make this node a library tile (TITLE/COVER/UID)
+    void AddDeclareRunner();        // make this node a runner (HOST/GUEST + EXECUTABLE/…)
 
 private:
     void    appendLayer(const nlohmann::ordered_json & layer);                 // push onto this node's LAYERS + reload
