@@ -7,17 +7,13 @@
 #include <sstream>
 #include <string>
 
-//Replaces all %KEY% tokens in SourceString with values from VariablesMap.
-//Scans left-to-right looking for paired '%' delimiters; an unmatched '%' stops
-//Translates a display-layer value into its raw storage format based on VARTYPE.
-//Called after Layer-1 substitution so the value is already a concrete string.
-//  dword  : decimal integer → "dword:XXXXXXXX" (8-digit hex, 32-bit unsigned)
-//  qword  : decimal integer → "hex(b):XX,XX,...,XX" (8 bytes little-endian)
-//  bool   : "1"/"true"/"yes" → "dword:00000001"; anything else → "dword:00000000"
-//  string / number / options / unknown → returned unchanged
-std::string VarSubst::TranslateCustomVarValue(const std::string &Value, const std::string &VarType)
+//Renders a raw value into a consumer-specific form, requested at the point of use as %KEY:format%.
+//See the header for the format table. "" / unknown format returns the value unchanged.
+std::string VarSubst::RenderValue(const std::string &Value, const std::string &Format)
 {
-    if (VarType == "dword")
+    if (Format.empty()) return Value;
+
+    if (Format == "dword")
     {
         try {
             uint32_t n = static_cast<uint32_t>(std::stoul(Value));
@@ -25,11 +21,11 @@ std::string VarSubst::TranslateCustomVarValue(const std::string &Value, const st
             oss << "dword:" << std::hex << std::setw(8) << std::setfill('0') << n;
             return oss.str();
         } catch (...) {
-            LogWarn("TranslateCustomVarValue", "Could not parse dword value: '" + Value + "', leaving unchanged.");
+            LogWarn("RenderValue", "Could not parse dword value: '" + Value + "', leaving unchanged.");
             return Value;
         }
     }
-    else if (VarType == "qword")
+    if (Format == "qword")
     {
         try {
             uint64_t n = std::stoull(Value);
@@ -41,18 +37,26 @@ std::string VarSubst::TranslateCustomVarValue(const std::string &Value, const st
             }
             return oss.str();
         } catch (...) {
-            LogWarn("TranslateCustomVarValue", "Could not parse qword value: '" + Value + "', leaving unchanged.");
+            LogWarn("RenderValue", "Could not parse qword value: '" + Value + "', leaving unchanged.");
             return Value;
         }
     }
-    else if (VarType == "bool")
+    if (Format == "bool")
     {
         std::string lower = Value;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        bool isTrue = (lower == "1" || lower == "true" || lower == "yes");
-        return isTrue ? "dword:00000001" : "dword:00000000";
+        return (lower == "1" || lower == "true" || lower == "yes") ? "true" : "false";
     }
-    // string, number, options — no translation
+    if (Format == "winpath")
+    {
+        std::string Out = Value;
+        std::replace(Out.begin(), Out.end(), '/', '\\');
+        return Out;
+    }
+    if (Format == "upper") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::toupper); return O; }
+    if (Format == "lower") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::tolower); return O; }
+
+    LogWarn("RenderValue", "Unknown render format ':" + Format + "' — leaving value unchanged.");
     return Value;
 }
 
@@ -94,22 +98,28 @@ bool VarSubst::StringVariableSubstitution(
         // Append text before variable
         result += SourceString.substr(pos, start - pos);
 
-        std::string key = SourceString.substr(start + 1, end - start - 1);
+        const std::string token = SourceString.substr(start + 1, end - start - 1);
 
-        LogOut("StringVariableSubstitution", "Found variable: %" + key + "%");
+        //A token may carry a use-site render format: %KEY:format%. Split on the first ':'.
+        std::string key = token, format;
+        if (const auto colon = token.find(':'); colon != std::string::npos)
+        { key = token.substr(0, colon); format = token.substr(colon + 1); }
+
+        LogOut("StringVariableSubstitution", "Found variable: %" + token + "%");
 
         auto it = VariablesMap.find(key);
         if (it != VariablesMap.end())
         {
-            LogOut("StringVariableSubstitution", "Replacing with: \"" + it->second + "\"");
-            result += it->second;
+            const std::string rendered = format.empty() ? it->second : RenderValue(it->second, format);
+            LogOut("StringVariableSubstitution", "Replacing with: \"" + rendered + "\"");
+            result += rendered;
             replaced = true;
         }
         else
         {
-            //Leave the token in place so the caller can diagnose the missing variable.
+            //Leave the whole token in place so the caller can diagnose the missing variable.
             LogWarn("StringVariableSubstitution", "Variable not found in map. Leaving unchanged.");
-            result += "%" + key + "%";
+            result += "%" + token + "%";
         }
 
         pos = end + 1;

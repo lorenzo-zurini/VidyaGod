@@ -205,7 +205,7 @@ void NodeEditor::AddVFSFileLayer()
 void NodeEditor::AddRegEdit()      { appendLayer(json::object({ {"TYPE", "RegEdit"}, {"REGPATH", ""}, {"ARCHITECTURE", "32"}, {"KEYVALUES", json::object()} })); }
 void NodeEditor::AddDllOverride()  { appendLayer(json::object({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", ""} })); }
 void NodeEditor::AddFileEdit()     { appendLayer(json::object({ {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""} })); }
-void NodeEditor::AddCustomVar()    { appendLayer(json::object({ {"TYPE", "CustomVar"}, {"KEY", ""}, {"LABEL", ""}, {"DEFAULT", ""}, {"VARTYPE", "string"}, {"DISPLAY", true} })); }
+void NodeEditor::AddCustomVar()    { appendLayer(json::object({ {"TYPE", "CustomVar"}, {"KEY", ""}, {"DEFAULT", ""} })); }   // a binding by default; tick "User option" to add a UI facet
 void NodeEditor::AddPersistDir()   { appendLayer(json::object({ {"TYPE", "PersistDir"},  {"PATH", ""} })); }
 void NodeEditor::AddPersistFile()  { appendLayer(json::object({ {"TYPE", "PersistFile"}, {"PATH", ""} })); }
 void NodeEditor::AddRegPersist()   { appendLayer(json::object({ {"TYPE", "RegPersist"} })); }

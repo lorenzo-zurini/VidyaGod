@@ -5,6 +5,7 @@
 #include <map>
 #include <fstream>
 #include <algorithm>
+#include <regex>
 #include <cctype>
 #include <zip.h>   // node-graph validation reads content zips to case-check CONTENTPATH against real files
 
@@ -476,6 +477,53 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 Warnings.push_back(Tag + ": PREFIX_GENERATE runner's CONTENT_ROOT has no drive_c");
         }
     }
+
+    //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
+    //The built-in tokens always available at substitution time (mirrors ContainerParams::GetVariablesMap). A %KEY%
+    //that is neither a built-in nor declared by some CustomVar is almost always a typo and would survive as a literal.
+    static const std::set<std::string> Builtins = {
+        "PackagePath","PackageName","PackageUID","GameName","UMUID","ScreenWidth","ScreenHeight","RuntimePath",
+        "RunnerRuntimePath","RunnerMount","WriteLayerPath","UserDataPath","TempPath","ProgramPath","DefPrefixPath",
+        "DefaultData","ContentPath","Content","WorkDirPathRelative","WorkDirPathComplete","REL" };
+
+    std::set<std::string> Declared;                       // every CustomVar KEY in the graph
+    std::map<std::string, std::string> UiDeclared;        // UI-facet option KEY -> its declaring node id
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.Layers.is_array())
+            for (const auto &L : N.Layers)
+                if (L.is_object() && L.value("TYPE", std::string()) == "CustomVar")
+                {
+                    const std::string K = L.value("KEY", std::string());
+                    if (K.empty()) continue;
+                    Declared.insert(K);
+                    if (L.contains("UI") && L["UI"].is_object()) UiDeclared.emplace(K, Id);
+                }
+
+    const std::regex Tok(R"(%([A-Za-z0-9_]+)(?::[A-Za-z0-9]+)?%)");   // %KEY% or %KEY:format%
+    std::set<std::string> ReferencedAll;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        std::string Scan;
+        if (N.Layers.is_array()) Scan += N.Layers.dump();
+        if (N.Exec.is_object())  Scan += N.Exec.dump();
+        std::set<std::string> Refs;
+        for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
+            Refs.insert((*It)[1].str());
+        for (const std::string &R : Refs)
+        {
+            ReferencedAll.insert(R);
+            if (!Builtins.count(R) && !Declared.count(R) && (!OnlyNodes || OnlyNodes->count(Id)))
+                Errors.push_back("node '" + Id + "': references undefined variable %" + R
+                                 + "% — no CustomVar declares it (typo?)");
+        }
+    }
+
+    //Orphan options (a declared user knob nobody reads) only matter for full-graph validation, not the launch gate.
+    if (!OnlyNodes)
+        for (const auto &[K, Owner] : UiDeclared)
+            if (!ReferencedAll.count(K))
+                Warnings.push_back("node '" + Owner + "': option %" + K
+                                   + "% has a UI but is referenced nowhere (dead knob)");
 }
 
 

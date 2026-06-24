@@ -3,7 +3,6 @@
 #include "covercache.h"
 #include "manifestmodel.h"   // ManifestModel::ZipFullyStored (STORE-zip check for the re-store action)
 #include "processenv.h"   // RunCommand (LAYERS zip<->dir convert)
-#include "varsubst.h"     // VarSubst::TranslateCustomVarValue (CustomVar "stored as" hint)
 #include "commonutils.h"
 
 #include <QBuffer>
@@ -29,6 +28,7 @@
 #include <QNetworkRequest>
 #include <QPixmap>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QSignalBlocker>
 #include <QTextEdit>
 #include <QUrl>
@@ -587,87 +587,129 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                 }
                 else if (LayerType == "CustomVar")
                 {
-                    std::string VarType = Layers[j].value("VARTYPE", std::string("string"));
                     int cvrow = 1;
-                    QLineEdit * DefaultField = nullptr;
-                    for (const auto &FK : std::vector<std::string>{"KEY", "LABEL", "DEFAULT"})
+                    // Value identity: KEY (the %token%) + DEFAULT (its value — fixed for a binding, the initial for a knob).
+                    for (const auto &FK : std::vector<std::string>{"KEY", "DEFAULT"})
                     {
                         LG->addWidget(new QLabel(QString::fromStdString(FK) + ":"), cvrow, 0);
                         QLineEdit * FE = new QLineEdit(LBox);
                         FE->setProperty("JSONPath", LPath + "/" + QString::fromStdString(FK));
                         if (Layers[j].contains(FK) && Layers[j][FK].is_string()) FE->setText(QString::fromStdString(std::string(Layers[j][FK])));
                         QObject::connect(FE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                        LG->addWidget(FE, cvrow, 1, 1, 2);
-                        if (FK == "DEFAULT") DefaultField = FE;
-                        cvrow++;
+                        LG->addWidget(FE, cvrow, 1, 1, 2); cvrow++;
                     }
-                    {
-                        QLabel * Hint = new QLabel(LBox); Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
-                        std::string VT = VarType;
-                        auto Update = [Hint, VT](const QString &Raw){
-                            std::string Tr = VarSubst::TranslateCustomVarValue(Raw.toStdString(), VT);
-                            Hint->setText(Tr == Raw.toStdString() ? QString() : QString("→ stored as  %1").arg(QString::fromStdString(Tr)));
-                        };
-                        if (DefaultField) { Update(DefaultField->text()); QObject::connect(DefaultField, &QLineEdit::textChanged, this, [Update](const QString &T){ Update(T); }); }
-                        LG->addWidget(Hint, cvrow, 1, 1, 2); cvrow++;
-                    }
-                    LG->addWidget(new QLabel("VARTYPE:"), cvrow, 0);
-                    QComboBox * VT = new QComboBox(LBox);
-                    VT->addItems({"string", "number", "dword", "qword", "bool", "options", "random"});
-                    VT->setCurrentText(QString::fromStdString(VarType));
-                    QObject::connect(VT, &QComboBox::currentIndexChanged, this, [this, n, j, VT](){
-                        Model->doc()["NODES"][n]["LAYERS"][j]["VARTYPE"] = VT->currentText().toStdString(); Model->SaveNodes(); Model->requestReload();
-                    });
-                    LG->addWidget(VT, cvrow, 1, 1, 2); cvrow++;
 
-                    LG->addWidget(new QLabel("DISPLAY:"), cvrow, 0);
-                    QCheckBox * Disp = new QCheckBox(LBox);
-                    Disp->setChecked(Layers[j].value("DISPLAY", true));
-                    QObject::connect(Disp, &QCheckBox::toggled, this, [this, n, j](bool On){
-                        Model->doc()["NODES"][n]["LAYERS"][j]["DISPLAY"] = On; Model->SaveNodes();
+                    // A `UI` facet makes it a user-facing option (shown in prelaunch); absent ⇒ an internal binding.
+                    const bool HasUI = Layers[j].contains("UI") && Layers[j]["UI"].is_object();
+                    LG->addWidget(new QLabel("User option:"), cvrow, 0);
+                    QCheckBox * UiToggle = new QCheckBox("show a control in the launch dialog", LBox);
+                    UiToggle->setChecked(HasUI);
+                    QObject::connect(UiToggle, &QCheckBox::toggled, this, [this, n, j](bool On){
+                        if (On) Model->doc()["NODES"][n]["LAYERS"][j]["UI"] = json::object({{"LABEL", ""}, {"CONTROL", "text"}});
+                        else    Model->doc()["NODES"][n]["LAYERS"][j].erase("UI");
+                        Model->SaveNodes(); Model->requestReload();
                     });
-                    LG->addWidget(Disp, cvrow, 1, 1, 2); cvrow++;
+                    LG->addWidget(UiToggle, cvrow, 1, 1, 2); cvrow++;
 
-                    if (VarType == "options" || VarType == "random")
+                    if (HasUI)
                     {
-                        if (!Layers[j].contains("OPTIONS") || !Layers[j]["OPTIONS"].is_array())
-                            Model->doc()["NODES"][n]["LAYERS"][j]["OPTIONS"] = json::array();
-                        bool IsRandom = (VarType == "random");
-                        QGroupBox * OptsBox = new QGroupBox(IsRandom ? "Value Pool" : "OPTIONS", LBox);
-                        QVBoxLayout * OptsLayout = new QVBoxLayout(OptsBox);
-                        auto &Opts = Model->doc()["NODES"][n]["LAYERS"][j]["OPTIONS"];
-                        for (int oi = 0; oi < (int)Opts.size(); oi++)
+                        const json UI = Layers[j]["UI"];
+                        const std::string Control = UI.value("CONTROL", std::string("text"));
+                        const QString UPath = LPath + "/UI";
+
+                        for (const auto &FK : std::vector<std::string>{"LABEL", "GROUP", "WHEN"})
                         {
-                            QHBoxLayout * OptRow = new QHBoxLayout();
-                            if (!IsRandom)
-                            {
-                                QLineEdit * OptLabel = new QLineEdit(OptsBox); OptLabel->setPlaceholderText("Label");
-                                OptLabel->setProperty("JSONPath", QString("%1/OPTIONS/%2/LABEL").arg(LPath).arg(oi));
-                                if (Opts[oi].contains("LABEL") && Opts[oi]["LABEL"].is_string()) OptLabel->setText(QString::fromStdString(std::string(Opts[oi]["LABEL"])));
-                                QObject::connect(OptLabel, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                                OptRow->addWidget(OptLabel);
-                            }
-                            QLineEdit * OptValue = new QLineEdit(OptsBox); OptValue->setPlaceholderText("Value");
-                            OptValue->setProperty("JSONPath", QString("%1/OPTIONS/%2/VALUE").arg(LPath).arg(oi));
-                            if (Opts[oi].contains("VALUE") && Opts[oi]["VALUE"].is_string()) OptValue->setText(QString::fromStdString(std::string(Opts[oi]["VALUE"])));
-                            QObject::connect(OptValue, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                            QPushButton * OptDel = new QPushButton("✕", OptsBox); OptDel->setFixedWidth(28);
-                            QObject::connect(OptDel, &QPushButton::clicked, this, [this, n, j, oi](){
-                                Model->doc()["NODES"][n]["LAYERS"][j]["OPTIONS"].erase(oi); Model->SaveNodes(); Model->requestReload();
-                            });
-                            OptRow->addWidget(OptValue); OptRow->addWidget(OptDel); OptsLayout->addLayout(OptRow);
+                            LG->addWidget(new QLabel(QString::fromStdString(FK) + ":"), cvrow, 0);
+                            QLineEdit * FE = new QLineEdit(LBox);
+                            FE->setProperty("JSONPath", UPath + "/" + QString::fromStdString(FK));
+                            if (FK == "WHEN")  FE->setPlaceholderText("%OTHER_KEY% == value   (optional — show only when true)");
+                            if (FK == "GROUP") FE->setPlaceholderText("Graphics   (optional — UI section)");
+                            if (UI.contains(FK) && UI[FK].is_string()) FE->setText(QString::fromStdString(std::string(UI[FK])));
+                            QObject::connect(FE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                            LG->addWidget(FE, cvrow, 1, 1, 2); cvrow++;
                         }
-                        QPushButton * AddOpt = new QPushButton(IsRandom ? "+ Add Value" : "+ Add Option", OptsBox);
-                        QObject::connect(AddOpt, &QPushButton::clicked, this, [this, n, j, IsRandom](){
-                            if (IsRandom) Model->doc()["NODES"][n]["LAYERS"][j]["OPTIONS"].push_back(json::object({{"VALUE", ""}}));
-                            else          Model->doc()["NODES"][n]["LAYERS"][j]["OPTIONS"].push_back(json::object({{"LABEL", ""}, {"VALUE", ""}}));
+
+                        LG->addWidget(new QLabel("CONTROL:"), cvrow, 0);
+                        QComboBox * CC = new QComboBox(LBox);
+                        CC->addItems({"text", "bool", "int", "float", "enum", "secret"});
+                        CC->setCurrentText(QString::fromStdString(Control));
+                        QObject::connect(CC, &QComboBox::currentIndexChanged, this, [this, n, j, CC](){
+                            Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["CONTROL"] = CC->currentText().toStdString();
                             Model->SaveNodes(); Model->requestReload();
                         });
-                        OptsLayout->addWidget(AddOpt);
-                        LG->addWidget(OptsBox, cvrow, 0, 1, -1); cvrow++;
+                        LG->addWidget(CC, cvrow, 1, 1, 2); cvrow++;
+
+                        if (Control == "int" || Control == "float")   // numeric constraints
+                        {
+                            LG->addWidget(new QLabel("MIN / MAX:"), cvrow, 0);
+                            QHBoxLayout * MM = new QHBoxLayout();
+                            QSpinBox * MinS = new QSpinBox(LBox); MinS->setRange(-2147483647, 2147483647); MinS->setValue(UI.value("MIN", 0));
+                            QSpinBox * MaxS = new QSpinBox(LBox); MaxS->setRange(-2147483647, 2147483647); MaxS->setValue(UI.value("MAX", 0));
+                            QObject::connect(MinS, &QSpinBox::valueChanged, this, [this, n, j](int v){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["MIN"] = v; Model->SaveNodes(); });
+                            QObject::connect(MaxS, &QSpinBox::valueChanged, this, [this, n, j](int v){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["MAX"] = v; Model->SaveNodes(); });
+                            MM->addWidget(MinS); MM->addWidget(MaxS);
+                            QWidget * MMW = new QWidget(LBox); MMW->setLayout(MM); LG->addWidget(MMW, cvrow, 1, 1, 2); cvrow++;
+                        }
+                        else if (Control == "text")   // input pattern
+                        {
+                            LG->addWidget(new QLabel("PATTERN:"), cvrow, 0);
+                            QLineEdit * PF = new QLineEdit(LBox); PF->setPlaceholderText("^[A-Z0-9]+$   (optional regex)");
+                            PF->setProperty("JSONPath", UPath + "/PATTERN");
+                            if (UI.contains("PATTERN") && UI["PATTERN"].is_string()) PF->setText(QString::fromStdString(std::string(UI["PATTERN"])));
+                            QObject::connect(PF, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                            LG->addWidget(PF, cvrow, 1, 1, 2); cvrow++;
+                        }
+                        else if (Control == "enum")   // CHOICES (label/value pairs)
+                        {
+                            if (!Layers[j]["UI"].contains("CHOICES") || !Layers[j]["UI"]["CHOICES"].is_array())
+                                Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["CHOICES"] = json::array();
+                            QGroupBox * CB = new QGroupBox("CHOICES", LBox); QVBoxLayout * CL = new QVBoxLayout(CB);
+                            auto &Ch = Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["CHOICES"];
+                            for (int oi = 0; oi < (int)Ch.size(); oi++)
+                            {
+                                QHBoxLayout * Row = new QHBoxLayout();
+                                QLineEdit * LblE = new QLineEdit(CB); LblE->setPlaceholderText("Label");
+                                LblE->setProperty("JSONPath", QString("%1/UI/CHOICES/%2/LABEL").arg(LPath).arg(oi));
+                                if (Ch[oi].contains("LABEL") && Ch[oi]["LABEL"].is_string()) LblE->setText(QString::fromStdString(std::string(Ch[oi]["LABEL"])));
+                                QObject::connect(LblE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                                QLineEdit * ValE = new QLineEdit(CB); ValE->setPlaceholderText("Value");
+                                ValE->setProperty("JSONPath", QString("%1/UI/CHOICES/%2/VALUE").arg(LPath).arg(oi));
+                                if (Ch[oi].contains("VALUE") && Ch[oi]["VALUE"].is_string()) ValE->setText(QString::fromStdString(std::string(Ch[oi]["VALUE"])));
+                                QObject::connect(ValE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                                QPushButton * Del = new QPushButton("✕", CB); Del->setFixedWidth(28);
+                                QObject::connect(Del, &QPushButton::clicked, this, [this, n, j, oi](){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["CHOICES"].erase(oi); Model->SaveNodes(); Model->requestReload(); });
+                                Row->addWidget(LblE); Row->addWidget(ValE); Row->addWidget(Del); CL->addLayout(Row);
+                            }
+                            QPushButton * Add = new QPushButton("+ Add choice", CB);
+                            QObject::connect(Add, &QPushButton::clicked, this, [this, n, j](){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["CHOICES"].push_back(json::object({{"LABEL", ""}, {"VALUE", ""}})); Model->SaveNodes(); Model->requestReload(); });
+                            CL->addWidget(Add); LG->addWidget(CB, cvrow, 0, 1, -1); cvrow++;
+                        }
+                        else if (Control == "secret")   // POOL (plain values rotated each launch)
+                        {
+                            if (!Layers[j]["UI"].contains("POOL") || !Layers[j]["UI"]["POOL"].is_array())
+                                Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["POOL"] = json::array();
+                            QGroupBox * PB = new QGroupBox("POOL (one picked per launch; empty ⇒ user enters their own)", LBox); QVBoxLayout * PL = new QVBoxLayout(PB);
+                            auto &Pool = Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["POOL"];
+                            for (int oi = 0; oi < (int)Pool.size(); oi++)
+                            {
+                                QHBoxLayout * Row = new QHBoxLayout();
+                                QLineEdit * ValE = new QLineEdit(PB); ValE->setPlaceholderText("value");
+                                ValE->setProperty("JSONPath", QString("%1/UI/POOL/%2").arg(LPath).arg(oi));
+                                if (Pool[oi].is_string()) ValE->setText(QString::fromStdString(std::string(Pool[oi])));
+                                QObject::connect(ValE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                                QPushButton * Del = new QPushButton("✕", PB); Del->setFixedWidth(28);
+                                QObject::connect(Del, &QPushButton::clicked, this, [this, n, j, oi](){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["POOL"].erase(oi); Model->SaveNodes(); Model->requestReload(); });
+                                Row->addWidget(ValE); Row->addWidget(Del); PL->addLayout(Row);
+                            }
+                            QPushButton * Add = new QPushButton("+ Add value", PB);
+                            QObject::connect(Add, &QPushButton::clicked, this, [this, n, j](){ Model->doc()["NODES"][n]["LAYERS"][j]["UI"]["POOL"].push_back(std::string()); Model->SaveNodes(); Model->requestReload(); });
+                            PL->addWidget(Add); LG->addWidget(PB, cvrow, 0, 1, -1); cvrow++;
+                        }
                     }
-                    QLabel * Hint = new QLabel("Reference as  %" + QString::fromStdString(Layers[j].value("KEY", std::string("KEY"))) + "%", LBox);
-                    Hint->setStyleSheet("color:#8f98a0;font-size:9pt;");
+
+                    QLabel * Hint = new QLabel("Reference as  %" + QString::fromStdString(Layers[j].value("KEY", std::string("KEY")))
+                                               + "%   ·   encode at the use site:  %KEY:dword%  %KEY:bool%  %KEY:winpath%", LBox);
+                    Hint->setStyleSheet("color:#8f98a0;font-size:9pt;"); Hint->setWordWrap(true);
                     LG->addWidget(Hint, cvrow, 0, 1, -1);
                 }
                 else

@@ -1,6 +1,6 @@
 #include "launchresolver.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
-#include "varsubst.h"        // VarSubst::StringVariableSubstitution / TranslateCustomVarValue
+#include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
 #include "commonutils.h"     // Log*
@@ -26,17 +26,20 @@
 using namespace ManifestModel;
 using namespace PackageCatalog;
 
-//Resolves every CustomVar SUBCOMPONENT (TYPE:"CustomVar") of the components in the Recipe into
-//ContainerParams.CustomVariables, keyed by the bare global token "KEY" (no COMPONENTID prefix).
-//Components are walked in Recipe order, so a later component's var overrides an earlier one with the
-//same KEY — bare keys are one shared knob: intentional sharing (a game seeding a runner's knob via
-//FORCEVARS) is the feature, and the same logical knob declared across many version components collapses
-//to one because only the selected variant's enabled components are ever in a recipe.
+//Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
+//keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside
+//another var's DEFAULT — regardless of declaration order. Hierarchy is respected: the LATER (most-specific) declaration
+//of a key wins (closure order: parents before children, the launchable last; then the active runner components). Bare
+//keys are one shared knob, so a game seeding a runner's knob (re-declaring its KEY) is the feature.
 //
-//Resolution priority for each variable (highest to lowest):
+//Done in two phases (see body): (1) collect each key's winning RAW source by priority; (2) fixpoint-substitute all
+//sources against the built-in tokens + every other var until stable, so forward references and post-override values
+//resolve. No encoding here — that is a use-site concern (%KEY:format%). A reference cycle leaves a residual %token%.
+//
+//Per-key source priority (highest to lowest):
 //  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
-//  3. DEFAULT from the CustomVar definition
+//  3. the winning DEFAULT (or, for a secret+POOL var, one pool entry picked per launch)
 bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
@@ -58,61 +61,35 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         return DefaultValue;
     };
 
-    //Resolve a single CustomVar subcomponent into its bare global %KEY% — two-layer pipeline:
-    //  Layer 1: StringVariableSubstitution expands %ScreenWidth%, %PackagePath%, and any
-    //           already-resolved CustomVar (GetVariablesMap() is rebuilt per-var).
-    //  Layer 2: TranslateCustomVarValue converts the display value to raw storage (e.g. dword).
-    //DISPLAY is a UI-only flag; all vars resolve here regardless.
-    auto ResolveCustomVar = [&](const nlohmann::ordered_json &CV)
+    //----- ABSOLUTE SCOPE: resolve every CustomVar into ONE global namespace where each key's hierarchy-final value
+    //is visible to every reference (including inside other vars' DEFAULTs), independent of declaration order. Two
+    //phases: (1) collect each key's WINNING raw source respecting hierarchy (later/most-specific declaration wins);
+    //(2) fixpoint-substitute all sources against built-ins + every var until stable. No encoding here — that's a
+    //use-site concern (%KEY:format%). -----
+    LogOut("ResolveCustomVariables", "Resolving CustomVar subcomponents (absolute scope)...");
+
+    //Phase 1 — the winning declaration per key (last in the combined closure order: the game Recipe, then the active
+    //runner components). A reference cycle is harmless (Phase 2 leaves the residual %token%).
+    std::vector<std::string> KeyOrder;                              // first-seen order, for deterministic logging
+    std::map<std::string, nlohmann::ordered_json> Winning;          // key -> its winning CustomVar declaration
+    auto Collect = [&](const nlohmann::ordered_json &S)
     {
-        std::string Key = CV.value("KEY", std::string());           // bare global token name
+        if (!S.is_object() || S.value("TYPE", std::string()) != "CustomVar") return;
+        const std::string Key = S.value("KEY", std::string());
         if (Key.empty()) return;
-        std::string VarType = CV.value("VARTYPE", std::string("string"));
-
-        // random: pick a fresh value from OPTIONS each launch (CLI override still wins).
-        if (VarType == "random")
-        {
-            if (ContainerParams.VariableOverrides.count(Key))
-                ContainerParams.CustomVariables[Key] = ContainerParams.VariableOverrides.at(Key);
-            else if (CV.contains("OPTIONS") && CV["OPTIONS"].is_array() && !CV["OPTIONS"].empty())
-            {
-                const auto &Opts = CV["OPTIONS"];
-                static std::mt19937 Rng(std::random_device{}());
-                std::uniform_int_distribution<size_t> Dist(0, Opts.size() - 1);
-                std::string Picked = Opts[Dist(Rng)].value("VALUE", std::string());
-                VarSubst::StringVariableSubstitution(Picked, ContainerParams.GetVariablesMap());
-                ContainerParams.CustomVariables[Key] = Picked;
-            }
-            else { LogWarn("ResolveCustomVariables", "  " + Key + ": random has no OPTIONS."); ContainerParams.CustomVariables[Key] = ""; }
-            LogOut("ResolveCustomVariables", "  " + Key + " = [random] " + ContainerParams.CustomVariables[Key]);
-            return;
-        }
-
-        std::string Raw = ResolveOne(Key, CV.value("DEFAULT", std::string()));
-        VarSubst::StringVariableSubstitution(Raw, ContainerParams.GetVariablesMap());
-        ContainerParams.CustomVariables[Key] = VarSubst::TranslateCustomVarValue(Raw, VarType);
-        LogOut("ResolveCustomVariables", "  " + Key + " = " + ContainerParams.CustomVariables[Key]);
+        if (!Winning.count(Key)) KeyOrder.push_back(Key);
+        Winning[Key] = S;                                          // later declaration overwrites (hierarchy)
     };
-
-    //Walk the Recipe in order; for each component, resolve its CustomVar subcomponents. Later
-    //components win (they re-assign the same bare key).
-    LogOut("ResolveCustomVariables", "Resolving CustomVar subcomponents...");
     for (const std::string &CompID : ContainerParams.Recipe)
     {
         int Idx = FindComponentIndex(MANIFESTJSON, CompID);
         if (Idx == -1) continue;
         const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
-        if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : Comp["SUBCOMPONENTS"])
-            if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
-                ResolveCustomVar(S);
+        if (Comp.contains("SUBCOMPONENTS") && Comp["SUBCOMPONENTS"].is_array())
+            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
     }
-
-    //Also resolve the selected runner variant's CustomVars: its components mount separately (RunnerEndpoints
-    //is empty), so they're never in the game Recipe — but a runner exposes tweakable knobs (referenced as
-    //%KEY% in its ENV/ARGS) that a game seeds via FORCEVARS. This is how a game passes env/args to its runner,
-    //no bespoke fields. Scope to the variant's enabled components (RunnerRecipe) so a monolithic multi-version
-    //runner package doesn't let an inactive version's knob win.
+    //Runner knobs share the same global namespace (a runner exposes %KEY% in its ENV/ARGS; a game can seed them).
+    //Scope to the active runner variant (RunnerRecipe) so an inactive multi-version component's knob can't win.
     if (!ContainerParams.RunnerComponents.empty())
     {
         std::set<std::string> RunnerWant(ContainerParams.RunnerRecipe.begin(), ContainerParams.RunnerRecipe.end());
@@ -120,11 +97,51 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         {
             if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
             if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
-            for (const auto &S : Comp["SUBCOMPONENTS"])
-                if (S.is_object() && S.value("TYPE", std::string()) == "CustomVar")
-                    ResolveCustomVar(S);
+            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
         }
     }
+
+    //Each key's RAW source value: priority CLI > USERSETTINGS > winning DEFAULT; a secret+POOL var picks one pool
+    //entry ONCE per launch (CLI override still wins). Sources are unsubstituted; cross-references resolve in Phase 2.
+    std::map<std::string, std::string> Sources;
+    std::set<std::string> Secret;                                  // keys whose value must not be logged
+    for (const std::string &Key : KeyOrder)
+    {
+        const nlohmann::ordered_json &CV = Winning[Key];
+        const nlohmann::ordered_json UI = (CV.contains("UI") && CV["UI"].is_object()) ? CV["UI"] : nlohmann::ordered_json::object();
+        const bool Pooled = UI.value("CONTROL", std::string()) == "secret"
+                            && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty();
+        if (Pooled) Secret.insert(Key);
+        if (Pooled && !ContainerParams.VariableOverrides.count(Key))
+        {
+            const auto &Pool = UI["POOL"];
+            static std::mt19937 Rng(std::random_device{}());
+            std::uniform_int_distribution<size_t> Dist(0, Pool.size() - 1);
+            const size_t Pick = Dist(Rng);
+            Sources[Key] = Pool[Pick].is_string() ? Pool[Pick].get<std::string>() : std::string();
+        }
+        else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()));
+    }
+
+    //Phase 2 — fixpoint. Seed raw, then substitute every source against (built-ins + all vars) until a full pass
+    //changes nothing. A snapshot per pass (Jacobi iteration) makes resolution order-independent; the cap bounds
+    //reference cycles (which terminate with their %token% left literal).
+    for (const std::string &Key : KeyOrder) ContainerParams.CustomVariables[Key] = Sources[Key];
+    constexpr int MaxPasses = 16;
+    for (int Pass = 0; Pass < MaxPasses; ++Pass)
+    {
+        bool Changed = false;
+        const std::map<std::string, std::string> Map = ContainerParams.GetVariablesMap();
+        for (const std::string &Key : KeyOrder)
+        {
+            std::string Val = Sources[Key];
+            VarSubst::StringVariableSubstitution(Val, Map);
+            if (Val != ContainerParams.CustomVariables[Key]) { ContainerParams.CustomVariables[Key] = Val; Changed = true; }
+        }
+        if (!Changed) break;
+    }
+    for (const std::string &Key : KeyOrder)
+        LogOut("ResolveCustomVariables", "  " + Key + " = " + (Secret.count(Key) ? std::string("[secret] (set)") : ContainerParams.CustomVariables[Key]));
     LogSucc("ResolveCustomVariables", "Resolved " + std::to_string(ContainerParams.CustomVariables.size()) + " custom variable(s).");
     return true;
 }

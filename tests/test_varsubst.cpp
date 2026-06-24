@@ -5,7 +5,7 @@
 #include <string>
 
 using VarSubst::StringVariableSubstitution;
-using VarSubst::TranslateCustomVarValue;
+using VarSubst::RenderValue;
 
 static std::string Sub(std::string s, const std::map<std::string, std::string> &m)
 {
@@ -52,35 +52,55 @@ TEST(subst_empty_token_and_empty_value)
     CHECK_EQ(Sub("a%K%b", m), std::string("ab"));     // known key mapping to empty string
 }
 
-TEST(translate_dword)
+// ---- Use-site render formats: %KEY:format% ----
+
+TEST(render_dword)
 {
-    CHECK_EQ(TranslateCustomVarValue("0", "dword"),   std::string("dword:00000000"));
-    CHECK_EQ(TranslateCustomVarValue("1", "dword"),   std::string("dword:00000001"));
-    CHECK_EQ(TranslateCustomVarValue("255", "dword"), std::string("dword:000000ff"));
-    // Unparseable → left unchanged.
-    CHECK_EQ(TranslateCustomVarValue("notanum", "dword"), std::string("notanum"));
+    CHECK_EQ(RenderValue("0", "dword"),   std::string("dword:00000000"));
+    CHECK_EQ(RenderValue("1", "dword"),   std::string("dword:00000001"));
+    CHECK_EQ(RenderValue("255", "dword"), std::string("dword:000000ff"));
+    CHECK_EQ(RenderValue("notanum", "dword"), std::string("notanum"));   // unparseable → unchanged
 }
 
-TEST(translate_qword_is_little_endian)
+TEST(render_qword_is_little_endian)
 {
-    CHECK_EQ(TranslateCustomVarValue("0", "qword"), std::string("hex(b):00,00,00,00,00,00,00,00"));
-    CHECK_EQ(TranslateCustomVarValue("1", "qword"), std::string("hex(b):01,00,00,00,00,00,00,00"));
-    CHECK_EQ(TranslateCustomVarValue("256", "qword"), std::string("hex(b):00,01,00,00,00,00,00,00"));
+    CHECK_EQ(RenderValue("0", "qword"), std::string("hex(b):00,00,00,00,00,00,00,00"));
+    CHECK_EQ(RenderValue("1", "qword"), std::string("hex(b):01,00,00,00,00,00,00,00"));
+    CHECK_EQ(RenderValue("256", "qword"), std::string("hex(b):00,01,00,00,00,00,00,00"));
 }
 
-TEST(translate_bool)
+TEST(render_bool_is_text)
 {
-    CHECK_EQ(TranslateCustomVarValue("1", "bool"),     std::string("dword:00000001"));
-    CHECK_EQ(TranslateCustomVarValue("true", "bool"),  std::string("dword:00000001"));
-    CHECK_EQ(TranslateCustomVarValue("YES", "bool"),   std::string("dword:00000001"));
-    CHECK_EQ(TranslateCustomVarValue("0", "bool"),     std::string("dword:00000000"));
-    CHECK_EQ(TranslateCustomVarValue("anything", "bool"), std::string("dword:00000000"));
+    // bool now renders human text (true/false); use :dword for the Wine registry form.
+    CHECK_EQ(RenderValue("1", "bool"),     std::string("true"));
+    CHECK_EQ(RenderValue("true", "bool"),  std::string("true"));
+    CHECK_EQ(RenderValue("YES", "bool"),   std::string("true"));
+    CHECK_EQ(RenderValue("0", "bool"),     std::string("false"));
+    CHECK_EQ(RenderValue("anything", "bool"), std::string("false"));
+    CHECK_EQ(RenderValue("1", "dword"),    std::string("dword:00000001"));  // the registry form
 }
 
-TEST(translate_passthrough_types)
+TEST(render_case_and_winpath)
 {
-    CHECK_EQ(TranslateCustomVarValue("hello", "string"), std::string("hello"));
-    CHECK_EQ(TranslateCustomVarValue("42", "number"),    std::string("42"));
-    CHECK_EQ(TranslateCustomVarValue("opt", "options"),  std::string("opt"));
-    CHECK_EQ(TranslateCustomVarValue("x", "unknowntype"),std::string("x"));
+    CHECK_EQ(RenderValue("a/b/c.dll", "winpath"), std::string("a\\b\\c.dll"));
+    CHECK_EQ(RenderValue("MixedCase", "upper"),   std::string("MIXEDCASE"));
+    CHECK_EQ(RenderValue("MixedCase", "lower"),   std::string("mixedcase"));
+}
+
+TEST(render_empty_or_unknown_format_unchanged)
+{
+    CHECK_EQ(RenderValue("hello", ""),            std::string("hello"));
+    CHECK_EQ(RenderValue("x", "unknownformat"),   std::string("x"));
+}
+
+TEST(subst_applies_use_site_format)
+{
+    // The big win: one raw value, rendered differently per consumer via %KEY:format%.
+    std::map<std::string, std::string> m{{"FULLSCREEN", "1"}, {"DIR", "a/b"}};
+    CHECK_EQ(Sub("%FULLSCREEN%", m),       std::string("1"));                 // config: raw
+    CHECK_EQ(Sub("%FULLSCREEN:dword%", m), std::string("dword:00000001"));    // registry: dword
+    CHECK_EQ(Sub("%FULLSCREEN:bool%", m),  std::string("true"));             // text: true/false
+    CHECK_EQ(Sub("C:\\%DIR:winpath%", m),  std::string("C:\\a\\b"));         // guest path
+    // Unknown key keeps the whole token (incl. format) in place.
+    CHECK_EQ(Sub("%MISSING:dword%", m),    std::string("%MISSING:dword%"));
 }

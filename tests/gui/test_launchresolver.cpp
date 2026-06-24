@@ -289,6 +289,66 @@ private slots:
         QVERIFY(links.back().Passthrough());                   // empty EXECUTABLE → forwards the inner command
     }
 
+    // CustomVar new shape: values resolve RAW (no encoding — that's a use-site %KEY:format% concern); a secret+POOL
+    // picks from the pool each launch; a CLI override beats the pool; a no-UI var is a plain binding.
+    void resolve_custom_var_new_shape()
+    {
+        const json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE", "CustomVar"}, {"KEY", "OPT"},    {"DEFAULT", "7"}, {"UI", {{"CONTROL", "int"}}}},
+            json{{"TYPE", "CustomVar"}, {"KEY", "BIND"},   {"DEFAULT", "1"}},
+            json{{"TYPE", "CustomVar"}, {"KEY", "SECRET"}, {"UI", {{"CONTROL", "secret"}, {"POOL", json::array({"A","B","C"})}}}} })}} })}};
+
+        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["OPT"],  std::string("7"));   // RAW — NOT dword-encoded at resolution
+          QCOMPARE(cp.CustomVariables["BIND"], std::string("1"));   // a no-UI binding
+          const std::string s = cp.CustomVariables["SECRET"];
+          QVERIFY(s == "A" || s == "B" || s == "C"); }              // picked from the pool
+
+        { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          cp.VariableOverrides["SECRET"] = "X";                      // CLI/--var beats the pool
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["SECRET"], std::string("X")); }
+    }
+
+    // Absolute scope: a var's hierarchy-final value is visible to every reference, regardless of declaration order
+    // (forward references, chains, and post-override values all resolve). Reference cycles terminate safely.
+    void resolve_custom_var_absolute_scope()
+    {
+        auto cv = [](const std::string& k, const std::string& d){ return json{{"TYPE","CustomVar"},{"KEY",k},{"DEFAULT",d}}; };
+
+        // Forward reference: A (declared first) references B (declared later).
+        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+              cv("A","%B%"), cv("B","x") })}} })}};
+          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["A"], std::string("x")); }
+
+        // Chain A->B->C resolves fully.
+        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+              cv("A","%B%"), cv("B","%C%"), cv("C","z") })}} })}};
+          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["A"], std::string("z"));
+          QCOMPARE(cp.CustomVariables["B"], std::string("z")); }
+
+        // Hierarchy override is globally visible: a later component re-declares B; A sees the FINAL B.
+        { json pool = json{{"COMPONENTS", json::array({
+              json{{"COMPONENTID","parent"}, {"SUBCOMPONENTS", json::array({ cv("B","x"), cv("A","%B%") })}},
+              json{{"COMPONENTID","child"},  {"SUBCOMPONENTS", json::array({ cv("B","y") })}} })}};
+          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"parent","child"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QCOMPARE(cp.CustomVariables["B"], std::string("y"));     // child wins
+          QCOMPARE(cp.CustomVariables["A"], std::string("y")); }   // and A sees the final value, not "x"
+
+        // A reference cycle terminates (no hang); the residual token is left literal.
+        { json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID","c1"}, {"SUBCOMPONENTS", json::array({
+              cv("A","%B%"), cv("B","%A%") })}} })}};
+          ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
+          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          QVERIFY(cp.CustomVariables["A"].find('%') != std::string::npos); }  // unresolved, but resolution returned
+    }
+
     // ---- Cross-namespace nesting (ComposeGuestTarget / BoundaryLinkIndex / GuestPath) ----
 
     // A win32 emulator (snes9x) nested under proton: the boundary (proton) is redirected at snes9x's guest exe, and

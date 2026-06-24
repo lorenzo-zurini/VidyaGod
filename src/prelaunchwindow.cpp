@@ -17,6 +17,9 @@
 #include <QPixmap>
 #include <QFont>
 #include <QLineEdit>
+#include <QDoubleSpinBox>
+#include <QRegularExpression>
+#include <QRegularExpressionValidator>
 #include <QScrollArea>
 #include <QGuiApplication>
 #include <QApplication>
@@ -498,6 +501,56 @@ std::map<std::string, bool> PreLaunchWindow::CollectModuleStates() const
     return States;
 }
 
+// Reads the current value of every var control (tagged CVKey) under `Group`, by widget type. Shared by the WHEN
+// evaluator and the launch-time collector.
+static std::map<std::string, std::string> CollectVarValues(QObject* Group)
+{
+    std::map<std::string, std::string> M;
+    for (QWidget* W : Group->findChildren<QWidget*>())
+    {
+        const QString K = W->property("CVKey").toString();
+        if (K.isEmpty()) continue;
+        std::string V;
+        if (auto* C = qobject_cast<QComboBox*>(W))          V = C->currentData().toString().toStdString();
+        else if (auto* S = qobject_cast<QSpinBox*>(W))      V = std::to_string(S->value());
+        else if (auto* D = qobject_cast<QDoubleSpinBox*>(W))V = QString::number(D->value()).toStdString();
+        else if (auto* B = qobject_cast<QCheckBox*>(W))     V = B->isChecked() ? "1" : "0";
+        else if (auto* E = qobject_cast<QLineEdit*>(W))     V = E->text().toStdString();
+        else continue;
+        M[K.toStdString()] = V;
+    }
+    return M;
+}
+
+// Minimal UI.WHEN evaluator: "%KEY% == value" / "%KEY% != value" (RHS may be quoted). Empty/unparseable → visible.
+static bool EvalVarWhen(const std::string& When, const std::map<std::string, std::string>& Vals)
+{
+    if (When.empty()) return true;
+    std::string Op = "==";
+    size_t Pos = When.find("==");
+    if (Pos == std::string::npos) { Pos = When.find("!="); Op = "!="; }
+    if (Pos == std::string::npos) return true;
+    auto Trim = [](std::string S){ const auto a = S.find_first_not_of(" \t"); if (a == std::string::npos) return std::string();
+                                   const auto b = S.find_last_not_of(" \t"); return S.substr(a, b - a + 1); };
+    std::string Lhs = Trim(When.substr(0, Pos)), Rhs = Trim(When.substr(Pos + 2));
+    if (Lhs.size() >= 2 && Lhs.front() == '%' && Lhs.back() == '%') Lhs = Lhs.substr(1, Lhs.size() - 2);
+    if (Rhs.size() >= 2 && (Rhs.front() == '"' || Rhs.front() == '\'') && Rhs.back() == Rhs.front()) Rhs = Rhs.substr(1, Rhs.size() - 2);
+    const auto It = Vals.find(Lhs);
+    const std::string Cur = It != Vals.end() ? It->second : std::string();
+    return Op == "==" ? (Cur == Rhs) : (Cur != Rhs);
+}
+
+void PreLaunchWindow::EvaluateVarConditions()
+{
+    const auto Vals = CollectVarValues(CustomVarGroup);
+    for (QWidget* Row : CustomVarGroup->findChildren<QWidget*>())
+    {
+        const QVariant W = Row->property("CVWhen");
+        if (!W.isValid()) continue;                                             // only var-row wrappers carry CVWhen
+        Row->setVisible(EvalVarWhen(W.toString().toStdString(), Vals));
+    }
+}
+
 void PreLaunchWindow::RebuildCustomVarPickers()
 {
     while (CustomVarForm->rowCount() > 0) CustomVarForm->removeRow(0);
@@ -506,127 +559,137 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
     const std::map<std::string, bool> Toggles = CollectModuleStates();
 
-    // The enabled content-node closure (honouring the current module toggles).
-    const std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, Toggles);
-
-    // Every chain runner's content closure — their CustomVars are tweakable knobs the engine resolves too
-    // (ResolveCustomVariables, scoped to RunnerRecipe), so surface them here as if they were package vars. The whole
-    // daisy-chain contributes (each link can expose knobs); the synthesized native terminal has none.
-    std::vector<std::string> RunnerOrder;
+    // The enabled content-node closure (package), then every chain runner's content closure — both contribute knobs.
+    std::vector<std::pair<std::string, bool>> Nodes;   // (node id, isRunnerKnob)
+    for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, Toggles)) Nodes.push_back({Id, false});
     for (const std::string& Rid : CurrentChain)
     {
         if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;
-        for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, Rid, Toggles)) RunnerOrder.push_back(Id);
+        for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, Rid, Toggles))
+        { const Node* N = Index->Find(Id); if (N && !N->IsRunner()) Nodes.push_back({Id, true}); }
     }
-
-    // Build a scan string so we only surface CustomVars actually referenced by %KEY% somewhere in the closure /
-    // runner closures (their layers) or any chain runner's EXEC (ARGS/ENV — how a game seeds knobs to its runner).
-    std::string ScanStr;
-    for (const std::string& Id : Order)
-    {
-        const Node* N = Index->Find(Id);
-        if (N && N->Layers.is_array()) ScanStr += N->Layers.dump();
-    }
-    for (const std::string& Id : RunnerOrder)
-    {
-        const Node* N = Index->Find(Id);
-        if (N && N->Layers.is_array()) ScanStr += N->Layers.dump();
-    }
-    for (const std::string& Rid : CurrentChain)
-        if (Rid != LaunchResolver::kNativeTerminalId)
-            if (const Node* R = Index->Find(Rid))
-                if (R->Exec.is_object()) ScanStr += R->Exec.dump();
 
     auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
     const nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
                                               ? US["VARIABLES"] : nlohmann::ordered_json::object();
 
-    bool AnyVisible = false;
-    std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes are walked first so they win on collision
+    // Group boxes keyed by title (UI.GROUP, or "Options"; runner knobs get a "Runner · " prefix), in first-seen order.
+    std::vector<QGroupBox*> Boxes; std::map<std::string, QVBoxLayout*> ByTitle;
+    auto LayoutFor = [&](const std::string& Title) -> QVBoxLayout* {
+        auto It = ByTitle.find(Title);
+        if (It != ByTitle.end()) return It->second;
+        QGroupBox* Box = new QGroupBox(QString::fromStdString(Title), CustomVarGroup);
+        QVBoxLayout* V = new QVBoxLayout(Box); V->setContentsMargins(10, 8, 10, 8); V->setSpacing(6);
+        Boxes.push_back(Box); ByTitle[Title] = V; return V;
+    };
 
-    // Emit a group of CustomVar pickers for one node's LAYERS. GroupPrefix distinguishes runner-provided knobs.
-    auto EmitNodeVars = [&](const Node* N, const QString& GroupPrefix)
+    bool AnyVisible = false, AnyCond = false;
+    std::set<std::string> SeenKeys;   // a KEY surfaces once; package nodes walked first so they win on collision
+
+    for (const auto& [Id, IsRunner] : Nodes)
     {
-        if (!N || !N->Layers.is_array()) return;
-        QGroupBox*   Box  = nullptr;
-        QFormLayout* Form = nullptr;
-        auto EnsureBox = [&]() {
-            if (Box) return;
-            Box  = new QGroupBox(GroupPrefix + QString::fromStdString(N->Label.empty() ? N->NodeId : N->Label), CustomVarGroup);
-            Form = new QFormLayout(Box);
-            Form->setVerticalSpacing(8);
-            Form->setHorizontalSpacing(12);
-            Form->setContentsMargins(10, 8, 10, 8);
-        };
+        const Node* N = Index->Find(Id);
+        if (!N || !N->Layers.is_array()) continue;
         for (const auto& CV : N->Layers)
         {
             if (!CV.is_object() || CV.value("TYPE", std::string()) != "CustomVar") continue;
-            std::string Key = CV.value("KEY", std::string());
-            if (Key.empty() || !CV.value("DISPLAY", true)) continue;
-            if (SeenKeys.count(Key)) continue;                                  // already surfaced (package wins)
-            if (ScanStr.find("%" + Key + "%") == std::string::npos) continue;   // not referenced — skip
-            //"random" vars are auto-picked from OPTIONS by the engine at launch; never show an editable picker —
-            //collecting its value would pass a VariableOverride that the engine honours OVER the random pick
-            //(e.g. an empty field → empty Warcraft III CD key). Leave it to the engine.
-            if (CV.value("VARTYPE", std::string("string")) == "random") continue;
+            if (!CV.contains("UI") || !CV["UI"].is_object()) continue;          // only UI-facet vars are shown
+            const std::string Key = CV.value("KEY", std::string());
+            if (Key.empty() || SeenKeys.count(Key)) continue;
+            const nlohmann::ordered_json& UI = CV["UI"];
+            const std::string Control = UI.value("CONTROL", std::string("text"));
 
             std::string Initial = CV.value("DEFAULT", std::string());
             if (SavedVars.contains(Key) && SavedVars[Key].is_string()) Initial = std::string(SavedVars[Key]);
             { ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(Initial, TmpP.GetVariablesMap()); }
 
-            AnyVisible = true; SeenKeys.insert(Key); EnsureBox();
-            const std::string VarType = CV.value("VARTYPE", std::string("string"));
-            const QString Label = QString::fromStdString(CV.value("LABEL", Key));
+            const QString Label = QString::fromStdString(UI.value("LABEL", Key));
+            QWidget* Field = nullptr;       // the value control (carries CVKey); null for an uneditable secret pool
 
-            if (VarType == "options" && CV.contains("OPTIONS") && CV["OPTIONS"].is_array())
+            if (Control == "enum" && UI.contains("CHOICES") && UI["CHOICES"].is_array())
             {
                 QComboBox* Combo = new QComboBox(CustomVarGroup);
-                Combo->setProperty("CVKey", QString::fromStdString(Key));
-                for (const auto& Opt : CV["OPTIONS"])
-                {
-                    std::string OptVal = Opt.value("VALUE", std::string());
-                    ContainerParams TmpP("", "", ""); VarSubst::StringVariableSubstitution(OptVal, TmpP.GetVariablesMap());
-                    Combo->addItem(QString::fromStdString(Opt.value("LABEL", std::string())), QString::fromStdString(OptVal));
-                }
+                for (const auto& Opt : UI["CHOICES"])
+                    Combo->addItem(QString::fromStdString(Opt.value("LABEL", std::string())),
+                                   QString::fromStdString(Opt.value("VALUE", std::string())));
                 for (int k = 0; k < Combo->count(); k++)
                     if (Combo->itemData(k).toString().toStdString() == Initial) { Combo->setCurrentIndex(k); break; }
-                Form->addRow(Label + ":", Combo);
+                connect(Combo, &QComboBox::currentIndexChanged, this, [this](int){ EvaluateVarConditions(); });
+                Field = Combo;
             }
-            else if (VarType == "dword" || VarType == "qword" || VarType == "number")
-            {
-                QSpinBox* Spin = new QSpinBox(CustomVarGroup);
-                Spin->setProperty("CVKey", QString::fromStdString(Key));
-                Spin->setMaximum(2147483647);
-                try { Spin->setValue(std::stoi(Initial)); } catch (...) { Spin->setValue(0); }
-                Form->addRow(Label + ":", Spin);
-            }
-            else if (VarType == "bool")
+            else if (Control == "bool")
             {
                 QCheckBox* Check = new QCheckBox(CustomVarGroup);
-                Check->setProperty("CVKey", QString::fromStdString(Key));
                 std::string lo = Initial; std::transform(lo.begin(), lo.end(), lo.begin(), ::tolower);
                 Check->setChecked(lo == "1" || lo == "true" || lo == "yes");
-                Form->addRow(Label + ":", Check);
+                connect(Check, &QCheckBox::toggled, this, [this](bool){ EvaluateVarConditions(); });
+                Field = Check;
             }
-            else
+            else if (Control == "int")
             {
-                QLineEdit* Field = new QLineEdit(CustomVarGroup);
-                Field->setProperty("CVKey", QString::fromStdString(Key));
-                Field->setText(QString::fromStdString(Initial));
-                Form->addRow(Label + ":", Field);
+                QSpinBox* Spin = new QSpinBox(CustomVarGroup);
+                Spin->setRange(UI.value("MIN", -2147483647), UI.value("MAX", 2147483647));
+                int IV = 0; try { IV = std::stoi(Initial); } catch (...) { IV = Spin->minimum(); }
+                Spin->setValue(IV);
+                connect(Spin, &QSpinBox::valueChanged, this, [this](int){ EvaluateVarConditions(); });
+                Field = Spin;
             }
-        }
-        if (Box) CustomVarForm->addRow(Box);
-    };
+            else if (Control == "float")
+            {
+                QDoubleSpinBox* Spin = new QDoubleSpinBox(CustomVarGroup);
+                Spin->setRange(UI.value("MIN", -1e12), UI.value("MAX", 1e12));
+                double DV = 0.0; try { DV = std::stod(Initial); } catch (...) { DV = Spin->minimum(); }
+                Spin->setValue(DV);
+                Field = Spin;
+            }
+            else if (Control == "secret")
+            {
+                if (UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty())
+                {
+                    // engine rotates a value from the pool each launch — show an info row, collect nothing (no CVKey).
+                    QLabel* Info = new QLabel("(auto — set each launch)", CustomVarGroup);
+                    Info->setStyleSheet("color:#8f98a0;font-style:italic;");
+                    Field = Info;
+                }
+                else
+                {
+                    QLineEdit* Edit = new QLineEdit(CustomVarGroup);
+                    Edit->setEchoMode(QLineEdit::Password);
+                    Edit->setText(QString::fromStdString(Initial));
+                    Field = Edit;
+                }
+            }
+            else // text
+            {
+                QLineEdit* Edit = new QLineEdit(CustomVarGroup);
+                Edit->setText(QString::fromStdString(Initial));
+                if (UI.contains("PATTERN") && UI["PATTERN"].is_string())
+                    Edit->setValidator(new QRegularExpressionValidator(
+                        QRegularExpression(QString::fromStdString(std::string(UI["PATTERN"]))), Edit));
+                Field = Edit;
+            }
 
-    // Package closure first (so a KEY declared by both wins from the package), then the runner's own knobs.
-    for (const std::string& Id : Order) EmitNodeVars(Index->Find(Id), QString());
-    for (const std::string& Id : RunnerOrder)
-    {
-        const Node* N = Index->Find(Id);
-        if (N && !N->IsRunner()) EmitNodeVars(N, "Runner · ");   // skip runner nodes (match engine's RunnerComponents)
+            if (!Field) continue;
+            if (!qobject_cast<QLabel*>(Field))                                   // editable controls are collected
+                Field->setProperty("CVKey", QString::fromStdString(Key));
+            SeenKeys.insert(Key); AnyVisible = true;
+
+            // Row wrapper (label + control) so UI.WHEN can show/hide the whole row.
+            QWidget* Row = new QWidget(CustomVarGroup);
+            QHBoxLayout* RL = new QHBoxLayout(Row); RL->setContentsMargins(0, 0, 0, 0); RL->setSpacing(8);
+            QLabel* Lbl = new QLabel(Label + ":", Row); Lbl->setMinimumWidth(140);
+            RL->addWidget(Lbl); RL->addWidget(Field, 1);
+            const std::string When = UI.value("WHEN", std::string());
+            if (!When.empty()) { Row->setProperty("CVWhen", QString::fromStdString(When)); AnyCond = true; }
+
+            std::string Title = UI.value("GROUP", std::string("Options"));
+            if (IsRunner) Title = "Runner · " + Title;
+            LayoutFor(Title)->addWidget(Row);
+        }
     }
 
+    for (QGroupBox* Box : Boxes) CustomVarForm->addRow(Box);
+    if (AnyCond) EvaluateVarConditions();                                       // apply initial WHEN visibility
     CustomVarGroup->setVisible(AnyVisible);
 }
 
@@ -673,20 +736,9 @@ void PreLaunchWindow::onLaunchClicked()
     // The chosen runner daisy-chain (innermost→outermost). Persisted as RUNNER_CHAIN and passed to the worker.
     const std::vector<std::string>& SelectedChain = CurrentChain;
 
-    // Collect the visible CustomVar picker values (bare KEY -> value).
-    std::map<std::string, std::string> PickerVars;
-    for (QWidget* W : CustomVarGroup->findChildren<QWidget*>())
-    {
-        QString Key = W->property("CVKey").toString();
-        if (Key.isEmpty()) continue;
-        std::string Val;
-        if (auto* CB = qobject_cast<QComboBox*>(W))      Val = CB->currentData().toString().toStdString();
-        else if (auto* SP = qobject_cast<QSpinBox*>(W))  Val = std::to_string(SP->value());
-        else if (auto* CK = qobject_cast<QCheckBox*>(W)) Val = CK->isChecked() ? "1" : "0";
-        else if (auto* LE = qobject_cast<QLineEdit*>(W)) Val = LE->text().toStdString();
-        else continue;
-        PickerVars[Key.toStdString()] = Val;
-    }
+    // Collect the editable CustomVar control values (bare KEY -> value). Secret-pool vars carry no control, so the
+    // engine rotates them; hidden (WHEN=false) rows are still collected — harmless, they just aren't shown.
+    std::map<std::string, std::string> PickerVars = CollectVarValues(CustomVarGroup);
 
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).
     if (!PackageUID.empty())

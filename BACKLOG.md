@@ -19,6 +19,24 @@ AND the cross-network seeding question in one shot.
   150 MB/s bursts but periodic "waiting for peers" stalls (every ~3-4 s). Being benchmarked + optimized headlessly
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
 
+## CustomVar redesign — DONE (local `-Werror` + ctest + golden; remote build + GUI runtime UNVERIFIED)
+Made the variable system elegant: split the three concerns `VARTYPE` conflated (value domain / UI control / encoding).
+**Kept the name `CustomVar` + kept it in `LAYERS`** (so override flows through the dependency chain). Clean break.
+- **Use-site encoding `%KEY:format%`** — vars store RAW, consumers render: `%FULLSCREEN%`→"1",
+  `%FULLSCREEN:dword%`→"dword:00000001", `:bool`/`:winpath`/`:upper`/`:lower` (`varsubst` `RenderValue` + `:format` parse).
+- **One primitive, role from facets** — a `UI` block ⇒ user option (control/group/WHEN/constraints/secret-pool), no `UI`
+  ⇒ internal binding (replaces `DISPLAY:false`); `secret`+`POOL` replaces `random`.
+- **Override = the dependency chain** (later closure node re-declaring a KEY wins — the documented "FORCEVARS").
+- **Absolute scope** — `ResolveCustomVariables` is now two-phase (collect winning sources → fixpoint): one global
+  namespace where a var's hierarchy-final value is visible to every reference incl inside another var's DEFAULT,
+  order-independent (forward refs resolve); cycles terminate with a literal. Golden unchanged.
+- Resolver stores raw + secret-pool; prelaunch UI renders grouped/conditional/secret controls (`EvaluateVarConditions`);
+  editor reworked to the UI-facet form; validator lints undefined `%KEY%` (error) + orphan options (warning).
+- **Migrated** 8× WC3 + geproton_build + aoe2 (orphan FULLSCREEN deleted); `--resolve-only` golden byte-identical for
+  deterministic keys (WC3 registry still `dword:00000001`). Spec `docs/08-variables.md` rewritten (ch6/17/19 fixed).
+- UNVERIFIED: remote laptop `-Werror` build (offline); the new grouped/WHEN/secret prelaunch controls on real hardware.
+  Library package edits are local working-copy only (not pushed). No VidyaGod commit yet.
+
 ## Runner daisy-chaining — DONE (local `-Werror` + ctest; remote + cross-namespace runtime UNVERIFIED)
 Shortest-chain multi-platform launch: a runner is a directed edge GUEST→HOST; VidyaGod BFS-resolves the shortest
 chain from the content's platform to the machine, always terminated by an explicit native runner (the uniform wrap

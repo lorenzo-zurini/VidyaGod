@@ -87,8 +87,12 @@ private:
     std::string ChainStepInput(int Step) const;
     // True if a chosen runner id is a native terminal (HOST==GUEST==machine, or the synthesized passthrough sentinel).
     bool ChainIdIsTerminal(const std::string& Id) const;
-    // Rebuilds the CustomVar picker section from the current variant's enabled node closure.
+    // Rebuilds the CustomVar picker section from the current variant's enabled node closure (UI-facet vars only,
+    // grouped by UI.GROUP, with controls per UI.CONTROL and constraints).
     void RebuildCustomVarPickers();
+    // Re-evaluates every var row's UI.WHEN condition against the current control values and shows/hides the row.
+    // Wired to each control's change signal so dependent options appear/disappear live.
+    void EvaluateVarConditions();
     // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
     void RebuildModuleTree();
     void PropagateModuleItem(QTreeWidgetItem* Item);
