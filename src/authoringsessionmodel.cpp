@@ -5,6 +5,7 @@
 
 #include <QDir>
 
+#include <set>
 #include <utility>
 
 // ============================================================================ worker (off-thread)
@@ -73,19 +74,33 @@ void AuthoringWorker::runExe(QString exe)
 
 void AuthoringWorker::refreshDelta() { emitDeltaList(); }
 
-void AuthoringWorker::captureFiles(QStringList rels, QString strip, QString destDirAbs)
+void AuthoringWorker::captureFiles(QStringList roots, QString destDirAbs)
 {
     if (!Session) { emit filesCopied(0); return; }
-    std::vector<std::string> Rels;
-    for (const QString & R : rels) Rels.push_back(R.toStdString());
-    const int N = AuthoringSession::CopySelection(Session->WriteLayerPath(), Rels, destDirAbs.toStdString(), strip.toStdString());
-    emit filesCopied(N);
+    // Each checked root is captured "at its own level": strip its parent path, so a ticked folder lands as the top of
+    // the layer without its ancestor folders (the author re-homes it later via the layer TARGET if needed).
+    int Total = 0;
+    for (const QString & Root : roots)
+    {
+        const std::string R = Root.toStdString();
+        const auto Slash = R.find_last_of('/');
+        const std::string Strip = (Slash == std::string::npos) ? std::string() : R.substr(0, Slash);
+        Total += AuthoringSession::CopySelection(Session->WriteLayerPath(), { R }, destDirAbs.toStdString(), Strip);
+    }
+    emit filesCopied(Total);
 }
 
-void AuthoringWorker::captureRegistry()
+void AuthoringWorker::scanRegistry()
 {
     const nlohmann::ordered_json Delta = Session ? Session->CaptureRegistryDelta() : nlohmann::ordered_json::array();
-    emit registryDelta(QString::fromStdString(Delta.dump()));
+    QStringList Paths;
+    if (Delta.is_array())
+        for (const auto & E : Delta)
+        {
+            const std::string P = E.value("REGPATH", std::string());
+            if (!P.empty()) Paths << QString::fromStdString(P);
+        }
+    emit registryScan(QString::fromStdString(Delta.dump()), Paths);
 }
 
 void AuthoringWorker::end()
@@ -103,18 +118,18 @@ AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string
     Worker->moveToThread(&Thread);
     connect(&Thread, &QThread::finished, Worker, &QObject::deleteLater);
 
-    connect(this, &AuthoringSessionModel::requestStart,          Worker, &AuthoringWorker::start);
-    connect(this, &AuthoringSessionModel::requestRunExe,         Worker, &AuthoringWorker::runExe);
-    connect(this, &AuthoringSessionModel::requestRefresh,        Worker, &AuthoringWorker::refreshDelta);
-    connect(this, &AuthoringSessionModel::requestCaptureFiles,   Worker, &AuthoringWorker::captureFiles);
-    connect(this, &AuthoringSessionModel::requestCaptureRegistry,Worker, &AuthoringWorker::captureRegistry);
-    connect(this, &AuthoringSessionModel::requestEnd,            Worker, &AuthoringWorker::end);
+    connect(this, &AuthoringSessionModel::requestStart,        Worker, &AuthoringWorker::start);
+    connect(this, &AuthoringSessionModel::requestRunExe,       Worker, &AuthoringWorker::runExe);
+    connect(this, &AuthoringSessionModel::requestRefresh,      Worker, &AuthoringWorker::refreshDelta);
+    connect(this, &AuthoringSessionModel::requestCaptureFiles, Worker, &AuthoringWorker::captureFiles);
+    connect(this, &AuthoringSessionModel::requestScanRegistry, Worker, &AuthoringWorker::scanRegistry);
+    connect(this, &AuthoringSessionModel::requestEnd,          Worker, &AuthoringWorker::end);
 
-    connect(Worker, &AuthoringWorker::started,      this, &AuthoringSessionModel::onStarted);
-    connect(Worker, &AuthoringWorker::delta,        this, &AuthoringSessionModel::onDelta);
-    connect(Worker, &AuthoringWorker::runFinished,  this, &AuthoringSessionModel::onRunFinished);
-    connect(Worker, &AuthoringWorker::filesCopied,  this, &AuthoringSessionModel::onFilesCopied);
-    connect(Worker, &AuthoringWorker::registryDelta,this, &AuthoringSessionModel::onRegistryDelta);
+    connect(Worker, &AuthoringWorker::started,     this, &AuthoringSessionModel::onStarted);
+    connect(Worker, &AuthoringWorker::delta,       this, &AuthoringSessionModel::onDelta);
+    connect(Worker, &AuthoringWorker::runFinished, this, &AuthoringSessionModel::onRunFinished);
+    connect(Worker, &AuthoringWorker::filesCopied, this, &AuthoringSessionModel::onFilesCopied);
+    connect(Worker, &AuthoringWorker::registryScan,this, &AuthoringSessionModel::onRegistryScan);
 
     Thread.start();
 }
@@ -155,20 +170,33 @@ void AuthoringSessionModel::runExe(const QString & HostPath)  { emit busyChanged
 void AuthoringSessionModel::runGuest(const QString & GuestCmd){ emit busyChanged(true, "Running…");  emit requestRunExe(GuestCmd); }
 void AuthoringSessionModel::refreshDelta()                    { emit busyChanged(true, "Scanning…"); emit requestRefresh(); }
 
-void AuthoringSessionModel::captureFiles(const QStringList & Rels, const QString & TargetNode,
-                                         const QString & DestName, const QString & Strip, const QString & Target)
+void AuthoringSessionModel::captureFiles(const QStringList & Roots, const QString & TargetNode,
+                                         const QString & DestName, const QString & Target)
 {
     PendTargetNode = TargetNode; PendDestName = DestName; PendTarget = Target;
     const QString DestDirAbs = (Editor ? Editor->packagePath() : QString()) + "/" + DestName;
     emit busyChanged(true, "Capturing files…");
-    emit requestCaptureFiles(Rels, Strip, DestDirAbs);
+    emit requestCaptureFiles(Roots, DestDirAbs);
 }
 
-void AuthoringSessionModel::captureRegistry(const QString & TargetNode)
+void AuthoringSessionModel::scanRegistry()
 {
-    PendTargetNode = TargetNode;
     emit busyChanged(true, "Diffing registry…");
-    emit requestCaptureRegistry();
+    emit requestScanRegistry();
+}
+
+void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths, const QString & TargetNode)
+{
+    // Filter the last scanned delta to the picked keys (cheap JSON, GUI thread) and merge them into the node.
+    std::set<std::string> Want;
+    for (const QString & P : RegPaths) Want.insert(P.toStdString());
+    nlohmann::ordered_json Picked = nlohmann::ordered_json::array();
+    if (LastRegDelta.is_array())
+        for (const auto & E : LastRegDelta)
+            if (Want.count(E.value("REGPATH", std::string()))) Picked.push_back(E);
+    if (Picked.empty()) { emit captured("No registry keys checked."); return; }
+    if (Editor) Editor->mergeRegEditsIntoNode(TargetNode.toStdString(), Picked);
+    emit captured(QString("Captured %1 registry key(s) into '%2'.").arg((int)Picked.size()).arg(TargetNode));
 }
 
 void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine,
@@ -197,11 +225,11 @@ void AuthoringSessionModel::onFilesCopied(int count)
     emit captured(QString("Captured %1 file(s) into '%2' → VFSDirLayer on '%3'.").arg(count).arg(PendDestName).arg(PendTargetNode));
 }
 
-void AuthoringSessionModel::onRegistryDelta(QString deltaJsonDump)
+void AuthoringSessionModel::onRegistryScan(QString deltaJsonDump, QStringList regPaths)
 {
     emit busyChanged(false, QString());
-    nlohmann::ordered_json Delta = nlohmann::ordered_json::parse(deltaJsonDump.toStdString(), nullptr, false);
-    if (Delta.is_discarded() || !Delta.is_array() || Delta.empty()) { emit captured("No registry changes since the session started."); return; }
-    if (Editor) Editor->mergeRegEditsIntoNode(PendTargetNode.toStdString(), Delta);
-    emit captured(QString("Captured %1 RegEdit(s) into '%2'.").arg((int)Delta.size()).arg(PendTargetNode));
+    LastRegDelta = nlohmann::ordered_json::parse(deltaJsonDump.toStdString(), nullptr, false);
+    if (LastRegDelta.is_discarded() || !LastRegDelta.is_array()) LastRegDelta = nlohmann::ordered_json::array();
+    emit registryTreeChanged(regPaths);
+    if (regPaths.isEmpty()) emit captured("No registry changes since the session started.");
 }

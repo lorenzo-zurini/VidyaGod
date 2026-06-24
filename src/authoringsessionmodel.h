@@ -26,8 +26,8 @@ public slots:
     void start(QString configDump, QString bundlePath, QString nodeId, QStringList runnerChain);
     void runExe(QString exe);             // host path or guest command (regedit.exe / explorer.exe)
     void refreshDelta();
-    void captureFiles(QStringList rels, QString strip, QString destDirAbs);
-    void captureRegistry();
+    void captureFiles(QStringList roots, QString destDirAbs);   // each root captured at its own level (parent stripped)
+    void scanRegistry();                  // baseline-vs-now diff → the changed-key list + the full delta
     void end();
 
 signals:
@@ -35,7 +35,7 @@ signals:
     void delta(QStringList paths);
     void runFinished(bool ok);
     void filesCopied(int count);
-    void registryDelta(QString deltaJsonDump);
+    void registryScan(QString deltaJsonDump, QStringList regPaths);
     void ended();
 
 private:
@@ -66,23 +66,24 @@ public slots:
     void runExe(const QString & HostPath);
     void runGuest(const QString & GuestCmd);            // regedit.exe / explorer.exe
     void refreshDelta();
-    void captureFiles(const QStringList & Rels, const QString & TargetNode,
-                      const QString & DestName, const QString & Strip, const QString & Target);
-    void captureRegistry(const QString & TargetNode);
+    void captureFiles(const QStringList & Roots, const QString & TargetNode, const QString & DestName, const QString & Target);
+    void scanRegistry();                                                            // diff → populate the registry tree
+    void captureSelectedRegistry(const QStringList & RegPaths, const QString & TargetNode);  // merge the picked keys
 
 signals:
     // → worker (queued)
     void requestStart(QString configDump, QString bundlePath, QString nodeId, QStringList chain);
     void requestRunExe(QString exe);
     void requestRefresh();
-    void requestCaptureFiles(QStringList rels, QString strip, QString destDirAbs);
-    void requestCaptureRegistry();
+    void requestCaptureFiles(QStringList roots, QString destDirAbs);
+    void requestScanRegistry();
     void requestEnd();
     // → subwidgets
     void busyChanged(bool busy, QString what);
     void sessionReady(QString runtimePath, QString contentRoot, bool isWine);
     void runnersChanged(QStringList runners, QString current);
     void deltaChanged(QStringList paths);
+    void registryTreeChanged(QStringList regPaths);
     void captured(QString message);
     void failed(QString message);
 
@@ -91,14 +92,15 @@ private slots:
     void onDelta(QStringList paths);
     void onRunFinished(bool ok);
     void onFilesCopied(int count);
-    void onRegistryDelta(QString deltaJsonDump);
+    void onRegistryScan(QString deltaJsonDump, QStringList regPaths);
 
 private:
-    PackageEditorModel * Editor = nullptr;
-    std::string          TargetNodeId;
-    QThread              Thread;
-    AuthoringWorker *    Worker = nullptr;
-    QString              PendTargetNode, PendDestName, PendTarget;   // capture context awaiting the worker result
+    PackageEditorModel *   Editor = nullptr;
+    std::string            TargetNodeId;
+    QThread                Thread;
+    AuthoringWorker *      Worker = nullptr;
+    QString                PendTargetNode, PendDestName, PendTarget;  // file-capture context awaiting the worker result
+    nlohmann::ordered_json LastRegDelta = nlohmann::ordered_json::array();  // the scanned registry diff (filtered on capture)
 };
 
 #endif // AUTHORINGSESSIONMODEL_H

@@ -28,18 +28,19 @@ public:
 
 private:
     AuthoringSessionModel * Model = nullptr;
-    DeltaTree *  Tree         = nullptr;
+    DeltaTree *  Tree         = nullptr;   // changed files
+    DeltaTree *  RegTree      = nullptr;   // changed registry keys (mirror)
     QLabel *     StatusLabel  = nullptr;
     QLabel *     InfoLabel    = nullptr;
     QComboBox *  RunnerCombo  = nullptr;
     QComboBox *  TargetCombo  = nullptr;
-    QLineEdit *  StripEdit    = nullptr;
     QLineEdit *  TargetEdit   = nullptr;
     QLineEdit *  DestNameEdit = nullptr;
     QPushButton * RunExeBtn = nullptr;
     QPushButton * BrowseBtn = nullptr;
     QPushButton * RegBtn    = nullptr;
     QPushButton * RefreshBtn = nullptr;
+    QPushButton * ScanRegBtn = nullptr;
     QPushButton * CaptureFilesBtn = nullptr;
     QPushButton * CaptureRegBtn   = nullptr;
     QPushButton * EndBtn    = nullptr;

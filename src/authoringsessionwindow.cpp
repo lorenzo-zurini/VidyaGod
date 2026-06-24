@@ -11,14 +11,27 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QVBoxLayout>
+
+// A check-all / uncheck-all row under a DeltaTree.
+static QHBoxLayout * checkRow(DeltaTree * Tree, QWidget * parent)
+{
+    auto * Row = new QHBoxLayout();
+    auto * All  = new QPushButton("Check all", parent);
+    auto * None = new QPushButton("Uncheck all", parent);
+    Row->addWidget(All); Row->addWidget(None); Row->addStretch();
+    QObject::connect(All,  &QPushButton::clicked, Tree, [Tree]{ Tree->checkAll(true); });
+    QObject::connect(None, &QPushButton::clicked, Tree, [Tree]{ Tree->checkAll(false); });
+    return Row;
+}
 
 AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & TargetNodeId, QWidget * parent)
     : QWidget(parent, Qt::Window)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowTitle(QString::fromStdString("Authoring session — " + TargetNodeId));
-    resize(840, 660);
+    setWindowTitle(QString::fromStdString("Capture Setup — " + TargetNodeId));
+    resize(860, 700);
 
     Model = new AuthoringSessionModel(Editor, TargetNodeId, this);
 
@@ -47,42 +60,49 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     ToolRow->addWidget(RefreshBtn);
     Root->addLayout(ToolRow);
 
-    // ── The write-delta tree (every level checkable) ──
-    auto * DeltaBox = new QGroupBox("Changed files (the session's write-delta) — check what to capture", this);
-    auto * DeltaLay = new QVBoxLayout(DeltaBox);
-    Tree = new DeltaTree(DeltaBox);
-    DeltaLay->addWidget(Tree);
-    auto * SelRow = new QHBoxLayout();
-    auto * SelAll = new QPushButton("Check all", DeltaBox);
-    auto * SelNone= new QPushButton("Uncheck all", DeltaBox);
-    SelRow->addWidget(SelAll); SelRow->addWidget(SelNone); SelRow->addStretch();
-    DeltaLay->addLayout(SelRow);
-    Root->addWidget(DeltaBox, 1);
-    connect(SelAll,  &QPushButton::clicked, this, [this]{ Tree->checkAll(true); });
-    connect(SelNone, &QPushButton::clicked, this, [this]{ Tree->checkAll(false); });
-
-    // ── Capture into the package ──
-    auto * CapBox = new QGroupBox("Capture into the package", this);
-    auto * CapForm = new QFormLayout(CapBox);
-    TargetCombo = new QComboBox(CapBox);
+    // ── Shared: which node captures land on ──
+    auto * TargetRow = new QHBoxLayout();
+    TargetRow->addWidget(new QLabel("Capture into node:", this));
+    TargetCombo = new QComboBox(this);
     for (const QString & Id : Model->bundleNodeIds()) TargetCombo->addItem(Id);
     TargetCombo->setCurrentText(Model->targetNode());
-    CapForm->addRow("Target node", TargetCombo);
-    DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), CapBox);
-    CapForm->addRow("Captured dir (in bundle)", DestNameEdit);
-    StripEdit = new QLineEdit(CapBox);
-    StripEdit->setToolTip("Path prefix removed from each captured file (default: the content root, so a content-root "
-                          "install re-mounts exactly where it installed).");
-    CapForm->addRow("Strip prefix", StripEdit);
-    TargetEdit = new QLineEdit(CapBox);
+    TargetRow->addWidget(TargetCombo); TargetRow->addStretch();
+    Root->addLayout(TargetRow);
+
+    auto * Tabs = new QTabWidget(this);
+    Root->addWidget(Tabs, 1);
+
+    // ── Files tab ──
+    auto * FilesTab = new QWidget(Tabs);
+    auto * FLay = new QVBoxLayout(FilesTab);
+    FLay->addWidget(new QLabel("Changed files — check what to capture (a ticked folder is captured at its level, "
+                               "without its parent folders).", FilesTab));
+    Tree = new DeltaTree(FilesTab);
+    FLay->addWidget(Tree, 1);
+    FLay->addLayout(checkRow(Tree, FilesTab));
+    auto * FForm = new QFormLayout();
+    DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
+    FForm->addRow("Captured dir (in bundle)", DestNameEdit);
+    TargetEdit = new QLineEdit(FilesTab);
     TargetEdit->setToolTip("Where the captured layer mounts, relative to the content root ('' = at the content root).");
-    CapForm->addRow("Mount TARGET", TargetEdit);
-    auto * CapBtnRow = new QHBoxLayout();
-    CaptureFilesBtn = new QPushButton("Capture files →", CapBox);
-    CaptureRegBtn   = new QPushButton("Capture registry →", CapBox);
-    CapBtnRow->addWidget(CaptureFilesBtn); CapBtnRow->addWidget(CaptureRegBtn); CapBtnRow->addStretch();
-    CapForm->addRow(CapBtnRow);
-    Root->addWidget(CapBox);
+    FForm->addRow("Mount TARGET", TargetEdit);
+    FLay->addLayout(FForm);
+    CaptureFilesBtn = new QPushButton("Capture files →", FilesTab);
+    FLay->addWidget(CaptureFilesBtn);
+    Tabs->addTab(FilesTab, "Files");
+
+    // ── Registry tab (mirror) ──
+    auto * RegTab = new QWidget(Tabs);
+    auto * RLay = new QVBoxLayout(RegTab);
+    ScanRegBtn = new QPushButton("Scan registry changes", RegTab);
+    RLay->addWidget(ScanRegBtn);
+    RegTree = new DeltaTree(RegTab);
+    RegTree->setSeparator('\\');
+    RLay->addWidget(RegTree, 1);
+    RLay->addLayout(checkRow(RegTree, RegTab));
+    CaptureRegBtn = new QPushButton("Capture registry →", RegTab);
+    RLay->addWidget(CaptureRegBtn);
+    const int RegTabIdx = Tabs->addTab(RegTab, "Registry");
 
     auto * EndRow = new QHBoxLayout();
     EndRow->addStretch();
@@ -99,30 +119,35 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     connect(BrowseBtn, &QPushButton::clicked, this, [this]{ Model->runGuest("explorer.exe"); });
     connect(RegBtn,    &QPushButton::clicked, this, [this]{ Model->runGuest("regedit.exe"); });
     connect(RefreshBtn,&QPushButton::clicked, Model, &AuthoringSessionModel::refreshDelta);
+    connect(ScanRegBtn,&QPushButton::clicked, Model, &AuthoringSessionModel::scanRegistry);
     connect(CaptureFilesBtn, &QPushButton::clicked, this, [this]{
-        const QStringList Sel = Tree->checkedFiles();
-        if (Sel.isEmpty()) { QMessageBox::information(this, "Capture files", "Check at least one changed file to capture."); return; }
+        const QStringList Sel = Tree->checkedRoots();
+        if (Sel.isEmpty()) { QMessageBox::information(this, "Capture files", "Check at least one changed file/folder to capture."); return; }
         if (DestNameEdit->text().trimmed().isEmpty()) { QMessageBox::warning(this, "Capture files", "Give the captured directory a name."); return; }
-        Model->captureFiles(Sel, TargetCombo->currentText(), DestNameEdit->text().trimmed(), StripEdit->text(), TargetEdit->text().trimmed());
+        Model->captureFiles(Sel, TargetCombo->currentText(), DestNameEdit->text().trimmed(), TargetEdit->text().trimmed());
     });
-    connect(CaptureRegBtn, &QPushButton::clicked, this, [this]{ Model->captureRegistry(TargetCombo->currentText()); });
+    connect(CaptureRegBtn, &QPushButton::clicked, this, [this]{
+        const QStringList Sel = RegTree->checkedEntries();
+        if (Sel.isEmpty()) { QMessageBox::information(this, "Capture registry", "Check at least one changed key to capture."); return; }
+        Model->captureSelectedRegistry(Sel, TargetCombo->currentText());
+    });
     connect(EndBtn, &QPushButton::clicked, this, [this]{ close(); });
 
     // ── model → UI ──
     connect(Model, &AuthoringSessionModel::busyChanged, this, [this](bool Busy, const QString & What){
-        for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn, RefreshBtn, CaptureFilesBtn, CaptureRegBtn, EndBtn})
+        for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn, RefreshBtn, ScanRegBtn, CaptureFilesBtn, CaptureRegBtn, EndBtn})
             B->setEnabled(!Busy);
         RunnerCombo->setEnabled(!Busy);
         if (Busy && !What.isEmpty()) StatusLabel->setText(What);
         else if (!Busy)             StatusLabel->setText("Session live.");
     });
-    connect(Model, &AuthoringSessionModel::sessionReady, this, [this](const QString & Rt, const QString & Cr, bool Wine){
-        StripEdit->setText(Cr);
+    connect(Model, &AuthoringSessionModel::sessionReady, this, [this, Tabs, RegTabIdx](const QString & Rt, const QString & Cr, bool Wine){
         TargetEdit->setText("");
-        for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn, CaptureRegBtn}) B->setVisible(Wine);
+        for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn}) B->setVisible(Wine);
+        Tabs->setTabVisible(RegTabIdx, Wine);   // registry capture is wine-only
         InfoLabel->setText("Live runtime: " + Rt +
             (Wine ? "\nContent root: " + Cr + "  — install the game into this location (the wine C: drive) so the "
-                    "capture re-mounts exactly where it installed."
+                    "capture re-mounts where it installed (or re-home it later via the layer TARGET)."
                   : "\nContent root: " + Cr));
     });
     connect(Model, &AuthoringSessionModel::runnersChanged, this, [this](const QStringList & Runners, const QString & Current){
@@ -134,6 +159,9 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     connect(Model, &AuthoringSessionModel::deltaChanged, this, [this](const QStringList & Paths){
         Tree->setPaths(Paths);
         StatusLabel->setText(QString("Session live — %1 changed file(s).").arg(Paths.size()));
+    });
+    connect(Model, &AuthoringSessionModel::registryTreeChanged, this, [this](const QStringList & Paths){
+        RegTree->setPaths(Paths);
     });
     connect(Model, &AuthoringSessionModel::captured, this, [this](const QString & Msg){ StatusLabel->setText(Msg); });
     connect(Model, &AuthoringSessionModel::failed, this, [this](const QString & Msg){

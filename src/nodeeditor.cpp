@@ -46,7 +46,7 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         // Author in runtime: open a held-open AuthoringSession on this node's closure (run installers / regedit and
         // capture the write-delta + registry into the bundle). Replaces the old fire-and-forget Run EXE / Browse /
         // Edit Registry / Analyze (which the pristine PERSIST default broke — those wiped before capture).
-        QPushButton * AuthorBtn = new QPushButton("Author in runtime…", this);
+        QPushButton * AuthorBtn = new QPushButton("Capture Setup", this);
         QPushButton * ExecBtn   = new QPushButton("Test launch", this);
         Toolbar->addWidget(AuthorBtn); Toolbar->addWidget(ExecBtn);
         QObject::connect(AuthorBtn, &QPushButton::clicked, this, [this, NodeIdStr](){

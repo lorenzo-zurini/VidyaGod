@@ -5,10 +5,14 @@
 #include <QStringList>
 
 // ---------------------------------------------------------------------------
-// DeltaTree — a checkable file tree built from a flat list of '/'-separated relative paths (the authoring session's
-// write-delta, which can be huge). Every level is checkable: toggling a directory checks/unchecks its whole subtree;
-// a directory reflects its children as checked / unchecked / partial (Qt auto-tristate). checkedFiles() returns the
-// full paths of the checked LEAVES — the selection to capture.
+// DeltaTree — a checkable tree built from a flat list of separator-delimited paths (the authoring session's write-
+// delta of files, or its changed registry keys — which can be huge). Every level is checkable: toggling a node
+// checks/unchecks its whole subtree; a node reflects its children as checked / unchecked / partial (Qt auto-tristate).
+// Each input path's terminal node is an "entry" (a real file / registry key); intermediate path components are not.
+//   • checkedRoots()   — the MAXIMAL fully-checked nodes (capture a file selection "at that level": each root's
+//                        parent is stripped by the caller, so ticking a folder captures it without its ancestors).
+//   • checkedEntries() — every checked ENTRY node at any level (the registry case: absolute keys, no stripping).
+// The separator is '/' by default; set it to '\\' for registry key paths.
 // ---------------------------------------------------------------------------
 class DeltaTree : public QTreeWidget
 {
@@ -16,8 +20,10 @@ class DeltaTree : public QTreeWidget
 public:
     explicit DeltaTree(QWidget * parent = nullptr);
 
-    void        setPaths(const QStringList & RelPaths);   // rebuild the tree (collapsed) from the path list
-    QStringList checkedFiles() const;                     // full rel paths of checked leaf files
+    void        setSeparator(QChar Sep) { Separator = Sep; }
+    void        setPaths(const QStringList & Paths);      // rebuild the tree (collapsed) from the path list
+    QStringList checkedRoots() const;                     // maximal fully-checked nodes
+    QStringList checkedEntries() const;                   // all checked terminal (entry) nodes
 
 public slots:
     void checkAll(bool On);
@@ -26,9 +32,10 @@ private slots:
     void onItemChanged(QTreeWidgetItem * It, int Col);
 
 private:
-    static void    setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St);
-    static QString fullPath(const QTreeWidgetItem * It);
-    bool Updating = false;   // re-entrancy guard while propagating a parent's state to its children
+    static void setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St);
+    QString     fullPath(const QTreeWidgetItem * It) const;
+    QChar       Separator = '/';
+    bool        Updating  = false;   // re-entrancy guard while propagating a parent's state to its children
 };
 
 #endif // DELTATREE_H

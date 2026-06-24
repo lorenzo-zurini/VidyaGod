@@ -12,17 +12,17 @@ DeltaTree::DeltaTree(QWidget * parent) : QTreeWidget(parent)
     connect(this, &QTreeWidget::itemChanged, this, &DeltaTree::onItemChanged);
 }
 
-void DeltaTree::setPaths(const QStringList & RelPaths)
+void DeltaTree::setPaths(const QStringList & Paths)
 {
     Updating = true;                  // bulk build: don't run the propagation handler per inserted item
     clear();
 
     // parent item (nullptr = top level) → (segment text → child item), so building is O(total segments), not O(n²).
     QHash<QTreeWidgetItem *, QHash<QString, QTreeWidgetItem *>> Kids;
-    for (const QString & P : RelPaths)
+    for (const QString & P : Paths)
     {
         QTreeWidgetItem * Parent = nullptr;
-        const QStringList Segs = P.split('/', Qt::SkipEmptyParts);
+        const QStringList Segs = P.split(Separator, Qt::SkipEmptyParts);
         for (const QString & Seg : Segs)
         {
             QHash<QString, QTreeWidgetItem *> & Level = Kids[Parent];
@@ -37,6 +37,7 @@ void DeltaTree::setPaths(const QStringList & RelPaths)
             }
             Parent = Node;
         }
+        if (Parent) Parent->setData(0, Qt::UserRole, true);   // the path's terminal node is a real entry (file / key)
     }
     // Directories (items with children) reflect their subtree via auto-tristate.
     std::function<void(QTreeWidgetItem *)> Mark = [&](QTreeWidgetItem * It){
@@ -75,20 +76,35 @@ void DeltaTree::setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St)
     }
 }
 
-QStringList DeltaTree::checkedFiles() const
+QStringList DeltaTree::checkedRoots() const
 {
+    // Maximal fully-checked nodes: a Checked node short-circuits (its subtree is implied); recurse only into Partial.
     QStringList Out;
     std::function<void(QTreeWidgetItem *)> Walk = [&](QTreeWidgetItem * It){
-        if (It->childCount() == 0) { if (It->checkState(0) == Qt::Checked) Out << fullPath(It); }
-        else for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
+        const Qt::CheckState St = It->checkState(0);
+        if (St == Qt::Checked) { Out << fullPath(It); return; }
+        if (St == Qt::PartiallyChecked) for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
     };
     for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i));
     return Out;
 }
 
-QString DeltaTree::fullPath(const QTreeWidgetItem * It)
+QStringList DeltaTree::checkedEntries() const
+{
+    // Every checked ENTRY node at any level (a node that terminated an input path). Recurse through checked/partial.
+    QStringList Out;
+    std::function<void(QTreeWidgetItem *)> Walk = [&](QTreeWidgetItem * It){
+        if (It->checkState(0) == Qt::Unchecked) return;
+        if (It->checkState(0) == Qt::Checked && It->data(0, Qt::UserRole).toBool()) Out << fullPath(It);
+        for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
+    };
+    for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i));
+    return Out;
+}
+
+QString DeltaTree::fullPath(const QTreeWidgetItem * It) const
 {
     QStringList Segs;
     for (const QTreeWidgetItem * C = It; C; C = C->parent()) Segs.prepend(C->text(0));
-    return Segs.join('/');
+    return Segs.join(Separator);
 }
