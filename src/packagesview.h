@@ -23,7 +23,6 @@ public slots:
 
 private:
     void buildUi();
-    void addLocalPackages();   // scan a chosen dir for packages + add the new ones to the library
 
     AppModel &Model;
     QScrollArea *PackagesScrollArea = nullptr;

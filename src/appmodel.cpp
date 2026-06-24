@@ -4,18 +4,22 @@
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "jsonoperations.h"
+#include "filesystemoperations.h"   // FSOps::CheckPackageValid (local-package import)
 #include "commonutils.h"
 
 #include <QDir>
 #include <QFile>
+#include <QStringList>
 
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject * parent)
@@ -40,6 +44,44 @@ void AppModel::rebuildCatalog()
 {
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // re-scan the node graph from disk
     emit catalogChanged();
+}
+
+std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
+{
+    // Collect valid package bundles at/under Sel (a bundle short-circuits the recursion).
+    QStringList Paths;
+    std::function<void(const QString &)> Scan = [&](const QString & D) {
+        QDir Dir(D);
+        if (FSOps::CheckPackageValid(&Dir)) { Paths.append(D); return; }
+        for (const QString & S : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+            Scan(QDir::cleanPath(D + QDir::separator() + S));
+    };
+    Scan(Sel);
+
+    int Added = 0, Skipped = 0;
+    for (const QString & Path : Paths)
+    {
+        // Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
+        NodeIndex BIdx; ManifestModel::ScanBundleNodes(Path.toStdString(), BIdx);
+        const Node * Rep = nullptr;
+        for (const auto & [Id, N] : BIdx.Nodes)
+            if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
+        if (!Rep) { LogWarn("AppModel::importPackagesFromDir", "Skipping " + Path.toStdString() + ": no launchable node."); ++Skipped; continue; }
+
+        const std::string Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;
+        const std::string Name = Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId;
+        bool Dup = false;
+        for (auto & E : (*Config)["LIBRARY"])
+            if (E.value("PACKAGEUID", std::string()) == Uid) { Dup = true; ++Skipped; break; }
+        if (Dup) continue;
+
+        nlohmann::ordered_json Slim;
+        Slim["PACKAGEUID"] = Uid; Slim["PACKAGENAME"] = Name; Slim["PATH"] = Path.toStdString();
+        (*Config)["LIBRARY"].push_back(Slim);
+        ++Added;
+    }
+    if (Added > 0) { save(); rebuildCatalog(); }
+    return { Added, Skipped };
 }
 
 void AppModel::setCardPixelWidth(int w)

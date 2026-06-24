@@ -36,23 +36,8 @@ void PackagesView::buildUi()
 {
     QVBoxLayout * layout = new QVBoxLayout(this);
 
-    QGroupBox * ptb = new QGroupBox(this);
-    QHBoxLayout * ptbl = new QHBoxLayout(ptb); ptb->setLayout(ptbl);
-    layout->addWidget(ptb);
-
-    QPushButton * addBtn = new QPushButton("Add Local Package", ptb);
-    addBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    ptbl->addWidget(addBtn);
-    connect(addBtn, &QPushButton::clicked, this, &PackagesView::addLocalPackages);
-
-    QPushButton * edBtn = new QPushButton("Package Editor", ptb);
-    edBtn->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    ptbl->addWidget(edBtn);
-    connect(edBtn, &QPushButton::clicked, this, [this]{
-        auto * Ed = new PackageEditor(Model.config(), this);
-        connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
-        Ed->show();
-    });
+    // (The "Add Local Package" + "Package Editor" actions moved to the Library tab's toolbar — see LibraryTab — so the
+    // authoring entry points are discoverable on the main screen instead of buried in this settings subpage.)
 
     PackagesScrollArea = new QScrollArea(this);
     PackagesScrollArea->setWidgetResizable(true);
@@ -97,44 +82,4 @@ void PackagesView::rebuildList()
     g->setRowStretch(g->rowCount(), 1);
 }
 
-void PackagesView::addLocalPackages()
-{
-    QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory...");
-    if (sel.isEmpty()) return;
-    QStringList paths;
-    std::function<void(const QString &)> scan = [&](const QString & d) {
-        QDir dir(d);
-        if (FSOps::CheckPackageValid(&dir)) { paths.append(d); return; }
-        for (const QString & s : dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot))
-            scan(QDir::cleanPath(d + QDir::separator() + s));
-    };
-    scan(sel);
-    if (paths.isEmpty()) { QMessageBox::warning(this,"No packages found","No valid packages found."); return; }
-    int added=0, skipped=0;
-    for (const QString & path : paths) {
-        //Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
-        NodeIndex BIdx; ManifestModel::ScanBundleNodes(path.toStdString(), BIdx);
-        const Node * Rep = nullptr;
-        for (const auto & [id, N] : BIdx.Nodes)
-            if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
-        if (!Rep) {
-            LogWarn("PackagesView", "Skipping " + path.toStdString() + ": no launchable node (not a library bundle).");
-            skipped++; continue;
-        }
-        const std::string Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;
-        const std::string Name = Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId;
-        bool dup=false;
-        for (auto & e : (*Model.config())["LIBRARY"])
-            if (e.value("PACKAGEUID", std::string()) == Uid) { dup=true; skipped++; break; }
-        if (dup) continue;
-        nlohmann::ordered_json slim;
-        slim["PACKAGEUID"]=Uid;
-        slim["PACKAGENAME"]=Name;
-        slim["PATH"]=path.toStdString();
-        (*Model.config())["LIBRARY"].push_back(slim);
-        added++;
-    }
-    if (added>0) { Model.save(); Model.rebuildCatalog(); }
-    QMessageBox::information(this,"Done",
-        QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
-}
+// (addLocalPackages moved to AppModel::importPackagesFromDir, invoked from the Library tab's toolbar.)

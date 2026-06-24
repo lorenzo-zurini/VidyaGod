@@ -2,12 +2,17 @@
 #include "appmodel.h"          // AppModel — catalog/config + card size
 #include "packagecatalog.h"
 #include "manifestmodel.h"
+#include "packageeditor.h"     // the authoring entry points moved here from Settings
+#include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QButtonGroup>
+#include <QFrame>
+#include <QFileDialog>
+#include <QMessageBox>
 
 #include <nlohmann/json.hpp>
 
@@ -98,6 +103,26 @@ void LibraryTab::buildUi()
         tl->addWidget(b);
     };
     makeSizeBtn("Large",250); makeSizeBtn("Medium",185); makeSizeBtn("Small",120);
+
+    // Authoring entry points — moved here from Settings → Installed Packages so they're discoverable on the main screen.
+    auto * sep = new QFrame(toolbar); sep->setFrameShape(QFrame::VLine); sep->setStyleSheet("color:#3a4048;");
+    tl->addWidget(sep);
+    QPushButton * edBtn  = new QPushButton("Package Editor", toolbar);
+    QPushButton * addBtn = new QPushButton("Add Local Package", toolbar);
+    tl->addWidget(edBtn); tl->addWidget(addBtn);
+    connect(edBtn, &QPushButton::clicked, this, [this]{
+        auto * Ed = new PackageEditor(Model.config(), this);
+        connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
+        Ed->show();
+    });
+    connect(addBtn, &QPushButton::clicked, this, [this]{
+        const QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory…");
+        if (sel.isEmpty()) return;
+        const auto [added, skipped] = Model.importPackagesFromDir(sel);
+        if (added == 0 && skipped == 0) { QMessageBox::warning(this, "No packages found", "No valid packages found."); return; }
+        QMessageBox::information(this, "Done", QString("Added %1 package(s). %2 skipped.").arg(added).arg(skipped));
+    });
+
     layout->addWidget(toolbar);
 
     View = new LibraryView(this);

@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QString>
 
+#include <utility>
+
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex
 
@@ -33,6 +35,10 @@ public:
     // ── Mutators (perform the change, persist, then emit so every view reacts) ──
     bool save();                                       // write GlobalConfigJSON to disk
     void rebuildCatalog();                             // re-scan CatalogIndex from disk → emit catalogChanged()
+    // Import every valid package bundle found under Dir (recursively) into the LIBRARY (skipping duplicates / non-
+    // launchable bundles); saves + rebuilds when any were added. Returns {added, skipped}. GUI-free (the caller owns
+    // the file dialog + result message).
+    std::pair<int, int> importPackagesFromDir(const QString & Dir);
     void setCardPixelWidth(int w);                     // persist + emit cardSizeChanged(w) (no-op if unchanged)
 
     // ── Networking (IPFS) — OFF by default; all download/seed activity is opt-in (Settings.IPFS.Enabled) ──
