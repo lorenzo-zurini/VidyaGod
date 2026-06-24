@@ -65,6 +65,14 @@ public:
     void RunInNode(const std::string & NodeId, const std::string & Exe = "");
     void AnalyzeNodeRegistry(const std::string & NodeId);
 
+    // ── Authoring Session hooks (the held-open AuthoringSession window captures back into the document) ──
+    QString                  packagePath() const;                        // the edited bundle dir ("" if none open)
+    std::vector<std::string> bundleNodeIds() const;                      // NODE_IDs declared in THIS bundle (target picker)
+    // Append a captured layer (VFSDirLayer / …) to NodeId's LAYERS, persist + rebuild. No-op if the node is gone.
+    void appendLayerToNode(const std::string & NodeId, const nlohmann::ordered_json & Layer);
+    // Merge a captured RegEdit delta array into NodeId (reusing MergeRegistryDeltaInNode), persist + rebuild.
+    void mergeRegEditsIntoNode(const std::string & NodeId, nlohmann::ordered_json Delta);
+
 signals:
     void documentReloaded();                       // structural change — views rebuild
     void validationChanged();                      // ValErrors/ValWarnings updated

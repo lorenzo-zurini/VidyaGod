@@ -1,6 +1,7 @@
 #include "nodeeditor.h"
 #include "packageeditormodel.h"
 #include "nodesections.h"   // the per-node section widgets this composes
+#include "authoringsessionwindow.h"   // "Author in runtime…" → the held-open authoring session
 
 #include <QAbstractButton>
 #include <QDir>
@@ -42,21 +43,16 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         QHBoxLayout * Toolbar = new QHBoxLayout();
         NodeTabLayout->addLayout(Toolbar);
 
-        QPushButton * RunExeBtn = new QPushButton("Run EXE", this);
-        QPushButton * BrowseBtn = new QPushButton("Browse", this);
-        QPushButton * RegBtn    = new QPushButton("Edit Registry", this);
-        QPushButton * ExecBtn   = new QPushButton("Execute", this);
-        QPushButton * AnalyzeBtn= new QPushButton("Analyze Registry", this);
-        Toolbar->addWidget(RunExeBtn); Toolbar->addWidget(BrowseBtn);
-        Toolbar->addWidget(RegBtn); Toolbar->addWidget(ExecBtn); Toolbar->addWidget(AnalyzeBtn);
-        QObject::connect(RunExeBtn, &QPushButton::clicked, this, [this, NodeIdStr](){
-            QString Exe = QFileDialog::getOpenFileName(this, "Select executable");
-            if (!Exe.isEmpty()) Model->RunInNode(NodeIdStr, Exe.toStdString());
+        // Author in runtime: open a held-open AuthoringSession on this node's closure (run installers / regedit and
+        // capture the write-delta + registry into the bundle). Replaces the old fire-and-forget Run EXE / Browse /
+        // Edit Registry / Analyze (which the pristine PERSIST default broke — those wiped before capture).
+        QPushButton * AuthorBtn = new QPushButton("Author in runtime…", this);
+        QPushButton * ExecBtn   = new QPushButton("Test launch", this);
+        Toolbar->addWidget(AuthorBtn); Toolbar->addWidget(ExecBtn);
+        QObject::connect(AuthorBtn, &QPushButton::clicked, this, [this, NodeIdStr](){
+            (new AuthoringSessionWindow(Model, NodeIdStr, this))->show();
         });
-        QObject::connect(BrowseBtn, &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, "explorer.exe"); });
-        QObject::connect(RegBtn,    &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, "regedit.exe"); });
-        QObject::connect(ExecBtn,   &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, ""); });
-        QObject::connect(AnalyzeBtn,&QPushButton::clicked, this, [this, NodeIdStr](){ Model->AnalyzeNodeRegistry(NodeIdStr); });
+        QObject::connect(ExecBtn, &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, ""); });
 
         Toolbar->addStretch();
 

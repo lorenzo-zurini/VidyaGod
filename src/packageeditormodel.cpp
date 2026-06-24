@@ -287,6 +287,52 @@ void PackageEditorModel::AnalyzeNodeRegistry(const std::string & NodeId)
     emit documentReloaded();
 }
 
+QString PackageEditorModel::packagePath() const
+{
+    return PackageDir ? PackageDir->path() : QString();
+}
+
+std::vector<std::string> PackageEditorModel::bundleNodeIds() const
+{
+    std::vector<std::string> Out;
+    if (Doc.contains("NODES") && Doc["NODES"].is_array())
+        for (const auto & N : Doc["NODES"])
+        {
+            const std::string Id = N.value("NODE_ID", std::string());
+            if (!Id.empty()) Out.push_back(Id);
+        }
+    return Out;
+}
+
+void PackageEditorModel::appendLayerToNode(const std::string & NodeId, const nlohmann::ordered_json & Layer)
+{
+    if (!Doc.contains("NODES") || !Doc["NODES"].is_array()) return;
+    for (auto & N : Doc["NODES"])
+        if (N.value("NODE_ID", std::string()) == NodeId)
+        {
+            if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
+            N["LAYERS"].push_back(Layer);
+            SaveNodes();
+            emit documentReloaded();
+            return;
+        }
+    LogWarn("PackageEditorModel::appendLayerToNode", "Target node not found: " + NodeId);
+}
+
+void PackageEditorModel::mergeRegEditsIntoNode(const std::string & NodeId, nlohmann::ordered_json Delta)
+{
+    if (Delta.empty() || !Doc.contains("NODES") || !Doc["NODES"].is_array()) return;
+    for (int n = 0; n < (int)Doc["NODES"].size(); n++)
+        if (Doc["NODES"][n].value("NODE_ID", std::string()) == NodeId)
+        {
+            MergeRegistryDeltaInNode(&Delta, n);
+            SaveNodes();
+            emit documentReloaded();
+            return;
+        }
+    LogWarn("PackageEditorModel::mergeRegEditsIntoNode", "Target node not found: " + NodeId);
+}
+
 void PackageEditorModel::MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray)
 {
     if (NodeIndexInArray < 0 || NodeIndexInArray >= (int)Doc["NODES"].size()) return;

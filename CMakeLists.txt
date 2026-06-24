@@ -123,6 +123,9 @@ set(SHARED_SOURCES
     src/authoringsession.h
     src/authoringsession.cpp
 
+    src/authoringsessionwindow.h
+    src/authoringsessionwindow.cpp
+
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
