@@ -120,6 +120,9 @@ set(SHARED_SOURCES
     src/launchthread.h
     src/launchthread.cpp
 
+    src/authoringsession.h
+    src/authoringsession.cpp
+
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
@@ -260,6 +263,7 @@ add_gui_test(test_launchresolver)
 add_gui_test(test_packagecatalog)
 add_gui_test(test_appmodel)
 add_gui_test(test_tabs)
+add_gui_test(test_authoringsession)
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)
