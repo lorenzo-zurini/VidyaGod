@@ -123,6 +123,12 @@ set(SHARED_SOURCES
     src/authoringsession.h
     src/authoringsession.cpp
 
+    src/authoringsessionmodel.h
+    src/authoringsessionmodel.cpp
+
+    src/deltatree.h
+    src/deltatree.cpp
+
     src/authoringsessionwindow.h
     src/authoringsessionwindow.cpp
 

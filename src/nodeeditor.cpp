@@ -50,7 +50,9 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         QPushButton * ExecBtn   = new QPushButton("Test launch", this);
         Toolbar->addWidget(AuthorBtn); Toolbar->addWidget(ExecBtn);
         QObject::connect(AuthorBtn, &QPushButton::clicked, this, [this, NodeIdStr](){
-            (new AuthoringSessionWindow(Model, NodeIdStr, this))->show();
+            // Parent to the top-level editor (not this NodeEditor) — a capture's SaveNodes triggers a tab rebuild that
+            // would otherwise destroy the session window mid-session. The model owns the live runtime + worker thread.
+            (new AuthoringSessionWindow(Model, NodeIdStr, window()))->show();
         });
         QObject::connect(ExecBtn, &QPushButton::clicked, this, [this, NodeIdStr](){ Model->RunInNode(NodeIdStr, ""); });
 
