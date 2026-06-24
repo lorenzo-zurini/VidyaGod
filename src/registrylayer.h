@@ -12,23 +12,23 @@ namespace RegistryLayer
 bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
 
 //Builds the DEFAULTDATA layer (regenerated each launch): all package-encoded BASE (non-OVERRIDE) edits — FileEdits
-//as files, RegEdits as full hives copied-from-and-shadowing DEFPREFIX, plus merged persisted RegKeyPersist
-//subtrees. Mounts between the component layers and the WRITELAYER. DEFPREFIX is never mutated.
+//as files, RegEdits as full hives copied-from-and-shadowing DEFPREFIX, plus merged persisted KEEP registry-subtrees.
+//Mounts between the component layers and the WRITELAYER. DEFPREFIX is never mutated.
 bool BuildDefaultData(struct ContainerParams &ContainerParams);
 
 //Applies OVERRIDE:true RegEdit subcomponents to the mounted runtime hives via RegistryWrapper, post-MountVFS.
 bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
-//Seeds previously-persisted reg files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath before MountVFS so
-//they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
+//Seeds previously-persisted KEEP hive files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath before MountVFS so
+//they shadow DEFPREFIX. No-op under MODE:all or no persisted regs exist.
 bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
 
-//Copies RuntimePath/{system,user,userdef}.reg into UserDataPath/__REGISTRY__/ on Cleanup, capturing the session's
-//registry. Must run BEFORE the runtime is unmounted/wiped.
+//Copies each KEEP hive (RuntimePath/<prefixroot>/<hive>.reg) into UserDataPath/__REGISTRY__/ on Cleanup, capturing
+//the session's registry. Must run BEFORE the runtime is unmounted/wiped.
 bool CapturePersistRegistry(struct ContainerParams &ContainerParams);
 
-//Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the durable store
-//UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op under PersistAll.
+//Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the durable store
+//UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op under MODE:all.
 bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
 }
 

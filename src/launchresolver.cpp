@@ -146,74 +146,125 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     return true;
 }
 
-//Derives the persistence policy from the Recipe's PersistDir/PersistFile/RegPersist subcomponents.
-//Persistence is declared "at specific points" — a component that introduces a save folder, a config
-//file, or registry state also declares that it should survive a session by carrying the matching
-//Persist* subcomponent.
+//Derives the persistence policy from the unified Persist primitive — ONE LAYERS type with facets:
 //
-//  PersistDir    { "TYPE":"PersistDir",   "PATH":"<runtime-root-relative dir>"  } → bind-mounted live
-//  PersistFile   { "TYPE":"PersistFile",  "PATH":"<runtime-root-relative file>" } → seeded/captured by copy
-//  RegPersist    { "TYPE":"RegPersist" }                                         → whole user/system/userdef.reg
-//  RegKeyPersist { "TYPE":"RegKeyPersist","REGPATH":"HKCU\\Software\\..." }       → just that key's subtree
+//  { "TYPE":"Persist", "MODE":"all"|"none" }   base policy (default "none"); last-wins along the dependency chain
+//  { "TYPE":"Persist", "KEEP":"<target>"   }   persist this target (durable)
+//  { "TYPE":"Persist", "DROP":"<path>"     }   make this path ephemeral (writes discarded)
 //
-//DEFAULT (no Persist* subcomponent anywhere in the Recipe): PersistAll=true — the durable
-//UserDataPath becomes the union's RW branch and the entire overlay survives. Declaring ANY Persist*
-//subcomponent switches to selective persistence (ephemeral WRITELAYER + only the declared targets).
-//PATH strings are %VARIABLE%-substituted, so resolved CustomVars / system tokens are available.
+//A target is SELF-DESCRIBING (the dir/file/registry kind is derived, not a separate type):
+//  - "registry" (sentinel)          → all prefix hives (user/system/userdef.reg)
+//  - a registry root ("HKCU", ...)  → that whole hive (its .reg file)            [was RegPersist, scoped]
+//  - a deeper registry path         → that key's subtree only                   [was RegKeyPersist]
+//  - a runtime-root-relative path   → a directory (live RW passthrough) [was PersistDir] or a single file
+//                                     (copy seed/capture) [was PersistFile], by shape
+//
+//DEFAULT (no Persist anywhere): MODE:none — a PRISTINE runtime each launch; only KEEP targets persist. The active
+//runner contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard save/
+//config locations survive with no per-game work. The game's Persist layers are scanned LAST, so the game's MODE
+//overrides the runner's (KEEP/DROP are unioned). Targets are %VARIABLE%-substituted (CustomVars/system tokens).
 bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    ContainerParams.PersistDirs.clear();
-    ContainerParams.PersistFiles.clear();
-    ContainerParams.PersistRegKeys.clear();
-    ContainerParams.PersistRegistry = false;
-    bool AnyDeclared = false;
+    ContainerParams.PersistAll = false;        // default MODE:none (pristine)
+    ContainerParams.KeepDirs.clear();
+    ContainerParams.KeepFiles.clear();
+    ContainerParams.KeepRegKeys.clear();
+    ContainerParams.KeepRegHives.clear();
+    ContainerParams.DropPaths.clear();
 
-    LogOut("DerivePersistence", "Scanning Recipe for Persist* subcomponents...");
+    const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
+
+    auto ToUpper = [](std::string S){ for (char &C : S) C = (char)std::toupper((unsigned char)C); return S; };
+    auto ToLower = [](std::string S){ for (char &C : S) C = (char)std::tolower((unsigned char)C); return S; };
+    auto AddUnique = [](std::vector<std::string> &V, const std::string &S){ if (std::find(V.begin(), V.end(), S) == V.end()) V.push_back(S); };
+
+    //A registry hive root → its Wine .reg file (HKCU→user, HKLM/HKCR/HKCC→system, HKU→userdef). "" if not a root.
+    auto HiveRootFile = [&](const std::string &Root) -> std::string {
+        const std::string R = ToUpper(Root);
+        if (R == "HKCU" || R == "HKEY_CURRENT_USER")   return "user.reg";
+        if (R == "HKLM" || R == "HKEY_LOCAL_MACHINE")  return "system.reg";
+        if (R == "HKCR" || R == "HKEY_CLASSES_ROOT")   return "system.reg";
+        if (R == "HKCC" || R == "HKEY_CURRENT_CONFIG") return "system.reg";
+        if (R == "HKU"  || R == "HKEY_USERS")          return "userdef.reg";
+        return "";
+    };
+    //A runtime-root-relative path: directory (→ live RW passthrough) or single file (→ copy). Trailing slash or an
+    //existing dir ⇒ directory; an existing file ⇒ file; otherwise a dotted leaf (an extension) ⇒ file, else directory.
+    auto IsDirTarget = [&](const std::string &T) -> bool {
+        if (!T.empty() && (T.back() == '/' || T.back() == '\\')) return true;
+        std::error_code Ec;
+        const std::filesystem::path Abs = ContainerParams.UserDataPath / T;
+        if (std::filesystem::is_directory(Abs, Ec))    return true;
+        if (std::filesystem::is_regular_file(Abs, Ec)) return false;
+        const auto Slash = T.find_last_of("/\\");
+        const std::string Leaf = (Slash == std::string::npos) ? T : T.substr(Slash + 1);
+        return Leaf.find('.') == std::string::npos;   // no extension ⇒ directory
+    };
+    auto NormalizeRel = [](std::string T){
+        while (!T.empty() && (T.back() == '/' || T.back() == '\\')) T.pop_back();
+        while (!T.empty() && (T.front() == '/' || T.front() == '\\')) T.erase(T.begin());
+        return T;
+    };
+
+    auto ClassifyKeep = [&](std::string T){
+        VarSubst::StringVariableSubstitution(T, Vars);
+        if (T.empty()) { LogWarn("DerivePersistence", "  KEEP with empty target (skipped)."); return; }
+        if (T.rfind("host:", 0) == 0) { LogWarn("DerivePersistence", "  KEEP host: target not yet supported (reserved for native containment): " + T); return; }
+        if (ToLower(T) == "registry")
+        { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg"); LogOut("DerivePersistence", "  KEEP registry (all hives)"); return; }
+        const auto Sep = T.find_first_of("\\/");
+        const std::string Root = (Sep == std::string::npos) ? T : T.substr(0, Sep);
+        if (const std::string Hive = HiveRootFile(Root); !Hive.empty())
+        {
+            if (Sep == std::string::npos) { AddUnique(ContainerParams.KeepRegHives, Hive); LogOut("DerivePersistence", "  KEEP hive " + Root + " (" + Hive + ")"); }
+            else                          { AddUnique(ContainerParams.KeepRegKeys, T);     LogOut("DerivePersistence", "  KEEP regkey " + T); }
+            return;
+        }
+        if (IsDirTarget(T)) { AddUnique(ContainerParams.KeepDirs,  NormalizeRel(T)); LogOut("DerivePersistence", "  KEEP dir  " + NormalizeRel(T)); }
+        else                { AddUnique(ContainerParams.KeepFiles, NormalizeRel(T)); LogOut("DerivePersistence", "  KEEP file " + NormalizeRel(T)); }
+    };
+    auto ClassifyDrop = [&](std::string T){
+        VarSubst::StringVariableSubstitution(T, Vars);
+        if (T.empty()) { LogWarn("DerivePersistence", "  DROP with empty target (skipped)."); return; }
+        if (ToLower(T) == "registry" || !HiveRootFile((T.find_first_of("\\/") == std::string::npos) ? T : T.substr(0, T.find_first_of("\\/"))).empty())
+        { LogWarn("DerivePersistence", "  DROP of a registry target is not supported (paths only): " + T); return; }
+        AddUnique(ContainerParams.DropPaths, NormalizeRel(T)); LogOut("DerivePersistence", "  DROP path " + NormalizeRel(T));
+    };
+
+    auto Scan = [&](const nlohmann::ordered_json &S){
+        if (!S.is_object() || S.value("TYPE", std::string()) != "Persist") return;
+        if (S.contains("MODE") && S["MODE"].is_string())
+        {
+            const std::string M = ToLower(S.value("MODE", std::string()));
+            if      (M == "all")  ContainerParams.PersistAll = true;
+            else if (M == "none") ContainerParams.PersistAll = false;
+            else LogWarn("DerivePersistence", "  Persist MODE '" + M + "' unknown (expected all|none) — ignored.");
+        }
+        if (S.contains("KEEP") && S["KEEP"].is_string()) ClassifyKeep(S["KEEP"]);
+        if (S.contains("DROP") && S["DROP"].is_string()) ClassifyDrop(S["DROP"]);
+    };
+
+    LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set, then Recipe)...");
+    //Runner platform keep-set first (so the game's MODE wins last-wins; KEEP/DROP union regardless).
+    if (ContainerParams.RunnerPersistLayers.is_array())
+        for (const auto &S : ContainerParams.RunnerPersistLayers) Scan(S);
+    //Game Recipe (ancestor-first, launchable last → the most-specific node's MODE wins).
     for (const std::string &CompID : ContainerParams.Recipe)
     {
         int Idx = FindComponentIndex(MANIFESTJSON, CompID);
         if (Idx == -1) continue;
         const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
         if (!Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
-        for (const auto &S : Comp["SUBCOMPONENTS"])
-        {
-            if (!S.is_object()) continue;
-            std::string Type = S.value("TYPE", std::string());
-            if (Type == "PersistDir" || Type == "PersistFile")
-            {
-                std::string Path = S.value("PATH", std::string());
-                VarSubst::StringVariableSubstitution(Path, ContainerParams.GetVariablesMap());
-                if (Path.empty()) { LogWarn("DerivePersistence", "  " + Type + " with empty PATH (skipped)."); continue; }
-                AnyDeclared = true;
-                if (Type == "PersistDir") { ContainerParams.PersistDirs.push_back(Path);  LogOut("DerivePersistence", "  PersistDir  " + Path); }
-                else                      { ContainerParams.PersistFiles.push_back(Path); LogOut("DerivePersistence", "  PersistFile " + Path); }
-            }
-            else if (Type == "RegPersist")
-            {
-                AnyDeclared = true;
-                ContainerParams.PersistRegistry = true;
-                LogOut("DerivePersistence", "  RegPersist (whole-registry persist)");
-            }
-            else if (Type == "RegKeyPersist")
-            {
-                std::string RegPath = S.value("REGPATH", std::string());
-                VarSubst::StringVariableSubstitution(RegPath, ContainerParams.GetVariablesMap());
-                if (RegPath.empty()) { LogWarn("DerivePersistence", "  RegKeyPersist with empty REGPATH (skipped)."); continue; }
-                AnyDeclared = true;
-                ContainerParams.PersistRegKeys.push_back(RegPath);
-                LogOut("DerivePersistence", "  RegKeyPersist " + RegPath);
-            }
-        }
+        for (const auto &S : Comp["SUBCOMPONENTS"]) Scan(S);
     }
 
-    //No selective persist points declared → persist the whole runtime overlay (durable RW branch).
-    ContainerParams.PersistAll = !AnyDeclared;
     LogSucc("DerivePersistence",
-            "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
-            " REGISTRY=" + std::string(ContainerParams.PersistRegistry ? "true" : "false") +
-            " DIRS=" + std::to_string(ContainerParams.PersistDirs.size()) +
-            " FILES=" + std::to_string(ContainerParams.PersistFiles.size()) +
-            " REGKEYS=" + std::to_string(ContainerParams.PersistRegKeys.size()));
+            "PERSIST: MODE=" + std::string(ContainerParams.PersistAll ? "all" : "none") +
+            " KEEP[dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
+            " files=" + std::to_string(ContainerParams.KeepFiles.size()) +
+            " hives=" + std::to_string(ContainerParams.KeepRegHives.size()) +
+            " regkeys=" + std::to_string(ContainerParams.KeepRegKeys.size()) + "]" +
+            " DROP=" + std::to_string(ContainerParams.DropPaths.size()));
     return true;
 }
 
@@ -307,13 +358,13 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
         auto &Subs = MANIFESTJSON["COMPONENTS"][Idx]["SUBCOMPONENTS"];
         for (int j = 0; j < (int)Subs.size(); j++)
         {
-            //CustomVar and Persist* subcomponents are not VFS/registry ops applied here — CustomVar
-            //is resolved by ResolveCustomVariables; PersistDir/PersistFile/RegPersist are consumed by
-            //DerivePersistence and the seed/capture/bind steps. Skip them all.
+            //CustomVar and Persist subcomponents are not VFS/registry ops applied here — CustomVar is resolved by
+            //ResolveCustomVariables; the unified Persist layer is consumed by DerivePersistence and the seed/capture/
+            //passthrough steps. Skip them.
             if (Subs[j].is_object())
             {
                 std::string T = Subs[j].value("TYPE", std::string());
-                if (T == "CustomVar" || T == "PersistDir" || T == "PersistFile" || T == "RegPersist" || T == "RegKeyPersist") continue;
+                if (T == "CustomVar" || T == "Persist") continue;
             }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
@@ -827,6 +878,12 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.UnifiedRuntime    = Boundary.UnifiedRuntime;
     CP.RunnerLayers      = Boundary.Layers;
     CP.RunnerShipsBuild  = Boundary.ShipsBuild;
+
+    //The boundary runner's platform keep-set: its OWN LAYERS' Persist entries (where THIS runner's user-state lives,
+    //with prefix-correct paths — e.g. proton's "pfx/drive_c/users/steamuser" + "HKCU"). Folded into DerivePersistence
+    //before the game's, so every launch persists the standard save/config locations with no per-game work. Runner-node
+    //LAYERS are otherwise ignored (the build comes from PARENTS), but Persist is a policy declaration, not a VFS layer.
+    CP.RunnerPersistLayers = (RunnerNode && RunnerNode->Layers.is_array()) ? RunnerNode->Layers : nlohmann::ordered_json::array();
 
     if (RunnerNode)
     {

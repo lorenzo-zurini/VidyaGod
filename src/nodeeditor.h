@@ -31,10 +31,7 @@ private slots:
     void AddDllOverride();
     void AddFileEdit();
     void AddCustomVar();
-    void AddPersistDir();
-    void AddPersistFile();
-    void AddRegPersist();
-    void AddRegKeyPersist();
+    void AddPersist();
 
 private:
     void    appendLayer(const nlohmann::ordered_json & layer);                 // push onto this node's LAYERS + reload

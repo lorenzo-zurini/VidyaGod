@@ -72,10 +72,7 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         LayerMenu->addAction("DllOverride",   this, &NodeEditor::AddDllOverride);
         LayerMenu->addAction("FileEdit",      this, &NodeEditor::AddFileEdit);
         LayerMenu->addSeparator();
-        LayerMenu->addAction("PersistDir",    this, &NodeEditor::AddPersistDir);
-        LayerMenu->addAction("PersistFile",   this, &NodeEditor::AddPersistFile);
-        LayerMenu->addAction("RegPersist",    this, &NodeEditor::AddRegPersist);
-        LayerMenu->addAction("RegKeyPersist", this, &NodeEditor::AddRegKeyPersist);
+        LayerMenu->addAction("Persist",       this, &NodeEditor::AddPersist);
         LayerMenu->addSeparator();
         LayerMenu->addAction("CustomVar",     this, &NodeEditor::AddCustomVar);
         AddLayerBtn->setMenu(LayerMenu);
@@ -206,10 +203,7 @@ void NodeEditor::AddRegEdit()      { appendLayer(json::object({ {"TYPE", "RegEdi
 void NodeEditor::AddDllOverride()  { appendLayer(json::object({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", ""} })); }
 void NodeEditor::AddFileEdit()     { appendLayer(json::object({ {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""} })); }
 void NodeEditor::AddCustomVar()    { appendLayer(json::object({ {"TYPE", "CustomVar"}, {"KEY", ""}, {"DEFAULT", ""} })); }   // a binding by default; tick "User option" to add a UI facet
-void NodeEditor::AddPersistDir()   { appendLayer(json::object({ {"TYPE", "PersistDir"},  {"PATH", ""} })); }
-void NodeEditor::AddPersistFile()  { appendLayer(json::object({ {"TYPE", "PersistFile"}, {"PATH", ""} })); }
-void NodeEditor::AddRegPersist()   { appendLayer(json::object({ {"TYPE", "RegPersist"} })); }
-void NodeEditor::AddRegKeyPersist(){ appendLayer(json::object({ {"TYPE", "RegKeyPersist"}, {"REGPATH", ""} })); }
+void NodeEditor::AddPersist()      { appendLayer(json::object({ {"TYPE", "Persist"}, {"KEEP", ""} })); }
 
 // ============================================================================
 // META — cover drop

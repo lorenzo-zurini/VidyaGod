@@ -19,6 +19,32 @@ AND the cross-network seeding question in one shot.
   150 MB/s bursts but periodic "waiting for peers" stalls (every ~3-4 s). Being benchmarked + optimized headlessly
   on the laptop (`--import-package`). Goal: steady link-speed downloads.
 
+## PERSIST redesign — DONE (local `-Werror` + ctest + golden + validate; hardware runtime UNVERIFIED)
+Same arc as CustomVar: collapsed the four selective types (`PersistDir`/`PersistFile`/`RegPersist`/`RegKeyPersist`) +
+the inverted whole-prefix default into **one `Persist` LAYERS primitive** with facets `MODE`/`KEEP`/`DROP`.
+- **Pristine by default (`MODE:none`)** — clean break from the old "declare nothing ⇒ persist the entire 652 MB prefix".
+  Only `KEEP` targets persist; `MODE:all` restores whole-runtime durability. `MODE` resolves **last-wins** along the
+  dependency chain (game overrides runner); `KEEP`/`DROP` union.
+- **Self-describing `KEEP` targets** — kind is derived: `registry`→all hives, a hive root (`HKCU`)→that `.reg`, a deeper
+  `HKCU\…`→subtree, a path→dir (live RW passthrough) or single file (copy). New **`DROP`** = the missing exclude axis
+  (ephemeral RW shadow, writes discarded).
+- **Runner keep-sets** (the elegant unlock) — each runner ships its platform's keep-set folded into every launch
+  (proton `pfx/drive_c/users`+`HKCU`, wine/umu `drive_c/users`+`HKCU`), so standard saves/config/registry survive with
+  **zero per-game work**. Migration self-heals: the keep-set reads the user profile straight out of the existing
+  PersistAll `USERDATA`, so old saves survive; the rest regenerates pristine. `Persist` is the one layer read off a
+  runner *node* directly.
+- Mechanics reuse the overlay (no new fs): `BuildLayerSpec` branch-by-MODE + KEEP/DROP layers; `persistlayer`/
+  `registrylayer` seed/capture the copy-based KEEPs (registry now per-hive via `KeepRegHives`). **Save-safety teardown
+  unchanged.** Editor = one `Persist` layer (MODE/KEEP/DROP) replacing the four `AddPersist*`. Validator lints bad MODE
+  / no-op layer / registry-DROP / `host:`.
+- Golden `--resolve-only halo1_base_game` → `MODE=none`, KEEP `pfx/drive_c/users` + `HKCU`(user.reg) via ge-proton;
+  `--validate-nodes` clean (no new errors). Runner keep-sets committed to VidyaGodRunners. Spec `docs/07-persistence.md`
+  rewritten (+glossary/05/13 cross-refs). See [[project_persist_redesign]].
+- **Future:** native-Linux `$HOME` capture (the reserved `host:` target) needs a **bubblewrap** sandbox to contain the
+  native process's home into the overlay — deferred. Until then native apps persist to the real `$HOME`, uncontained.
+- UNVERIFIED: remote laptop `-Werror` build (catching up); real hardware launch (save + HKCU persist under `none` while
+  the prefix resets between runs; a `DROP` cache not accumulating).
+
 ## CustomVar redesign — DONE (local `-Werror` + ctest + golden; remote build + GUI runtime UNVERIFIED)
 Made the variable system elegant: split the three concerns `VARTYPE` conflated (value domain / UI control / encoding).
 **Kept the name `CustomVar` + kept it in `LAYERS`** (so override flows through the dependency chain). Clean break.

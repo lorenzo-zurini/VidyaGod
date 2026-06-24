@@ -98,7 +98,7 @@ bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, str
 //before BuildSubComponentsArray so custom %KEY% tokens are available for substitution.
 bool ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON);
 
-//Derives persistence (PersistAll vs declared PersistDir/PersistFile/RegPersist/RegKeyPersist) from the Recipe.
+//Derives persistence from the unified Persist primitive (MODE/KEEP/DROP) on the runner keep-set + the Recipe.
 bool DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
 
 //Collects all SUBCOMPONENTS from the Recipe's components into SubComponentsArray (with %VAR% substitution),

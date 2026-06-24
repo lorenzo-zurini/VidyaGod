@@ -108,12 +108,16 @@ public:
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
-    //Persistence (derived from PersistDir/PersistFile/RegPersist subcomponents — see DerivePersistence):
-    bool PersistAll = false;                                        //DEFAULT — no persist subcomponents declared: RW union branch IS the durable UserDataPath (whole-runtime persist)
-    bool PersistRegistry = false;                                   //a RegPersist subcomponent is present — persist user.reg/system.reg/userdef.reg
-    std::vector<std::string> PersistDirs;                           //PersistDir subcomponents — runtime-root-relative leaf dirs bind-mounted from UserDataPath
-    std::vector<std::string> PersistFiles;                          //PersistFile subcomponents — runtime-root-relative single files seeded/captured via UserDataPath
-    std::vector<std::string> PersistRegKeys;                        //RegKeyPersist subcomponents — registry key paths (HKLM\.., HKCU\..) whose subtree is seeded/captured
+    //Persistence (derived from the unified Persist primitive {MODE/KEEP/DROP} — see DerivePersistence). The four old
+    //types (PersistDir/PersistFile/RegPersist/RegKeyPersist) collapsed into one self-describing layer; KEEP targets are
+    //classified by shape into the buckets below. DEFAULT is now MODE:none (pristine) — runner keep-sets capture saves.
+    bool PersistAll = false;                                        //resolved MODE:all (last-wins along the dependency chain) — RW union branch IS the durable UserDataPath (whole-runtime persist). Default false (pristine).
+    std::vector<std::string> KeepDirs;                              //KEEP dir targets — runtime-root-relative dirs unioned as durable RW passthroughs from UserDataPath/<rel> (live)
+    std::vector<std::string> KeepFiles;                             //KEEP file targets — runtime-root-relative single files seeded/captured by copy via UserDataPath/<rel>
+    std::vector<std::string> KeepRegKeys;                           //KEEP registry-subtree targets (HKCU\Software\..) — partial-hive merge seed/capture (Wine-only)
+    std::vector<std::string> KeepRegHives;                          //KEEP registry-hive targets — whole .reg filenames to persist (user/system/userdef.reg), copied whole (Wine-only)
+    std::vector<std::string> DropPaths;                             //DROP path targets — runtime-root-relative paths shadowed by an ephemeral RW layer (writes discarded)
+    nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — the boundary runner node's own LAYERS (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's
 
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
@@ -168,7 +172,7 @@ public:
     //VFSWRAPPER CLASS — the runtime is one vidyagodfs FUSE mount at RuntimePath (see BuildLayerSpec/MountVFS).
     std::vector<std::filesystem::path> CleanupUnmountPaths; //Purely-ephemeral FUSE mount(s) — lazy-unmounted on Cleanup()
     //Durable-backed mount: the vidyagodfs RUNTIME mount whenever durable data is reachable through it
-    //(PersistAll writelayer or any RW passthrough persist dir). It exposes PackagePath/USERDATA, so it
+    //(MODE:all writelayer or any KEEP-dir RW passthrough). It exposes PackagePath/USERDATA, so it
     //MUST be non-lazily unmounted and verified before Cleanup() wipes TempPath — else remove_all could
     //recurse into real saves.
     std::vector<std::filesystem::path> CleanupPersistPaths;

@@ -559,31 +559,51 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                         LG->addWidget(FE, ferow, 1); ferow++;
                     }
                 }
-                else if (LayerType == "PersistDir" || LayerType == "PersistFile")
+                else if (LayerType == "Persist")
                 {
-                    LG->addWidget(new QLabel("PATH:"), 1, 0);
-                    QLineEdit * PathField = new QLineEdit(LBox);
-                    PathField->setPlaceholderText(LayerType == "PersistDir" ? "drive_c/users/steamuser/Saved Games/<game>" : "drive_c/users/steamuser/Documents/<game>/config.ini");
-                    PathField->setProperty("JSONPath", LPath + "/PATH");
-                    if (Layers[j].contains("PATH") && Layers[j]["PATH"].is_string()) PathField->setText(QString::fromStdString(std::string(Layers[j]["PATH"])));
-                    QObject::connect(PathField, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                    LG->addWidget(PathField, 1, 1, 1, 2);
-                }
-                else if (LayerType == "RegPersist")
-                {
-                    QLabel * Hint = new QLabel("Persists the whole prefix registry (user/system/userdef.reg). For a single key, use RegKeyPersist.", LBox);
+                    // One self-describing persistence primitive: MODE (base policy) + KEEP (persist a target) + DROP
+                    // (make a path ephemeral). The dir/file/registry kind of a KEEP target is derived, not picked.
+                    int prow = 1;
+
+                    // MODE — base policy, last-wins along the dependency chain. Unset ⇒ inherit (graph default is "none").
+                    LG->addWidget(new QLabel("MODE:"), prow, 0);
+                    QComboBox * ModeCombo = new QComboBox(LBox);
+                    ModeCombo->addItems({"(inherit)", "none", "all"});
+                    {
+                        const std::string M = Layers[j].value("MODE", std::string());
+                        ModeCombo->setCurrentText(M.empty() ? "(inherit)" : QString::fromStdString(M));
+                    }
+                    QObject::connect(ModeCombo, &QComboBox::currentTextChanged, this, [this, n, j](const QString &T){
+                        if (T == "(inherit)") Model->doc()["NODES"][n]["LAYERS"][j].erase("MODE");
+                        else                  Model->doc()["NODES"][n]["LAYERS"][j]["MODE"] = T.toStdString();
+                        Model->SaveNodes(); Model->requestReload();
+                    });
+                    LG->addWidget(ModeCombo, prow, 1, 1, 2); prow++;
+
+                    // KEEP — persist a target. Self-describing: a path → dir or single file; HKxx… → a registry hive or
+                    // subtree; "registry" → all hives.
+                    LG->addWidget(new QLabel("KEEP:"), prow, 0);
+                    QLineEdit * Keep = new QLineEdit(LBox);
+                    Keep->setPlaceholderText("drive_c/users/steamuser/Saves   ·   HKCU\\Software\\<vendor>\\<game>   ·   registry");
+                    Keep->setProperty("JSONPath", LPath + "/KEEP");
+                    if (Layers[j].contains("KEEP") && Layers[j]["KEEP"].is_string()) Keep->setText(QString::fromStdString(std::string(Layers[j]["KEEP"])));
+                    QObject::connect(Keep, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                    LG->addWidget(Keep, prow, 1, 1, 2); prow++;
+
+                    // DROP — make a runtime path ephemeral (writes discarded), e.g. a cache dir under MODE:all or inside
+                    // an enclosing KEEP. Paths only.
+                    LG->addWidget(new QLabel("DROP:"), prow, 0);
+                    QLineEdit * Drop = new QLineEdit(LBox);
+                    Drop->setPlaceholderText("drive_c/<game>/cache   (optional — paths only)");
+                    Drop->setProperty("JSONPath", LPath + "/DROP");
+                    if (Layers[j].contains("DROP") && Layers[j]["DROP"].is_string()) Drop->setText(QString::fromStdString(std::string(Layers[j]["DROP"])));
+                    QObject::connect(Drop, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+                    LG->addWidget(Drop, prow, 1, 1, 2); prow++;
+
+                    QLabel * Hint = new QLabel("MODE none = pristine runtime, only KEEPs persist; all = whole runtime durable. "
+                                               "A runner ships a keep-set for its platform's user-state, so most games need nothing here.", LBox);
                     Hint->setStyleSheet("color:#8f98a0;font-size:9pt;"); Hint->setWordWrap(true);
-                    LG->addWidget(Hint, 1, 1, 1, 2);
-                }
-                else if (LayerType == "RegKeyPersist")
-                {
-                    LG->addWidget(new QLabel("REGPATH:"), 1, 0);
-                    QLineEdit * RegPath = new QLineEdit(LBox);
-                    RegPath->setPlaceholderText("HKCU\\Software\\<vendor>\\<game>\\Saves");
-                    RegPath->setProperty("JSONPath", LPath + "/REGPATH");
-                    if (Layers[j].contains("REGPATH") && Layers[j]["REGPATH"].is_string()) RegPath->setText(QString::fromStdString(std::string(Layers[j]["REGPATH"])));
-                    QObject::connect(RegPath, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
-                    LG->addWidget(RegPath, 1, 1, 1, 2);
+                    LG->addWidget(Hint, prow, 1, 1, 2);
                 }
                 else if (LayerType == "CustomVar")
                 {

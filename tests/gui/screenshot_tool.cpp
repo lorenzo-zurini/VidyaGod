@@ -63,7 +63,7 @@ int main(int argc, char ** argv)
                  {"KEYVALUES", {{"Resolution", "1920x1080"}, {"Windowed", "0"}}}},
             json{{"TYPE", "CustomVar"}, {"KEY", "FPS_CAP"}, {"LABEL", "FPS cap"}, {"DEFAULT", "60"},
                  {"VARTYPE", "dword"}, {"DISPLAY", true}},
-            json{{"TYPE", "PersistDir"}, {"PATH", "drive_c/users/steamuser/Saved Games/aoe2"}}})}});
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users/steamuser/Saved Games/aoe2"}}})}});
 
     writeNode(bundle, "wine-ge", json{
         {"ROLE", "runner"},

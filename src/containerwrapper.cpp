@@ -107,14 +107,14 @@ bool ContainerWrapper::BuildContainerRuntime()
     //and the WRITELAYER). FileEdits apply to any runner; base RegEdits are Wine-only (handled inside).
     RegistryLayer::BuildDefaultData(this->ContainerParams);
 
-    //Seed any persisted registry into the ephemeral WRITELAYER so it shadows DEFPREFIX.
-    //No-op under PersistAll (durable RW branch already holds the reg files).
-    if (ContainerParams.PersistRegistry)
+    //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
+    //No-op under MODE:all (durable RW branch already holds the reg files).
+    if (!ContainerParams.KeepRegHives.empty())
         RegistryLayer::SeedPersistRegistry(this->ContainerParams);
 
-    //Seed any persisted PersistFiles into the WRITELAYER so they shadow their lower layers.
-    //No-op under PersistAll or when none are declared.
-    if (!ContainerParams.PersistFiles.empty())
+    //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
+    //No-op under MODE:all or when none are declared.
+    if (!ContainerParams.KeepFiles.empty())
         PersistLayer::SeedPersistFiles(this->ContainerParams);
 
     //Verify every layer's locator resolves before mounting — a missing source (e.g. a moved local file,
@@ -419,12 +419,12 @@ bool ContainerWrapper::Cleanup()
 {
     std::error_code ec;
 
-    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted.
-    if (ContainerParams.PersistRegistry && !ContainerParams.PersistAll)
+    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted. No-op under MODE:all.
+    if (!ContainerParams.KeepRegHives.empty() && !ContainerParams.PersistAll)
         RegistryLayer::CapturePersistRegistry(this->ContainerParams);
-    if (!ContainerParams.PersistFiles.empty() && !ContainerParams.PersistAll)
+    if (!ContainerParams.KeepFiles.empty() && !ContainerParams.PersistAll)
         PersistLayer::CapturePersistFiles(this->ContainerParams);
-    if (!ContainerParams.PersistRegKeys.empty() && !ContainerParams.PersistAll)
+    if (!ContainerParams.KeepRegKeys.empty() && !ContainerParams.PersistAll)
         RegistryLayer::CapturePersistRegKeys(this->ContainerParams);
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).

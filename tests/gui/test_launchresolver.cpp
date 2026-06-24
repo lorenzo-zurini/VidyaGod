@@ -153,25 +153,69 @@ private slots:
         QCOMPARE(def->NodeId, std::string("zzz_wine"));   // package-local beats alphabetical global
     }
 
-    // DerivePersistence: no Persist* subcomponents → whole-runtime persist (PersistAll). Declared → selective.
-    void derive_persistence_all_vs_declared()
+    // DerivePersistence (unified Persist primitive): default MODE:none (pristine), KEEP target classification by shape,
+    // MODE:all, and a DROP path.
+    void derive_persistence_unified_persist()
     {
-        ContainerParams cp("/tmp/vg_bundle");
-        cp.Recipe = {"c1"};
-
+        // No Persist anywhere → pristine (MODE:none), every keep-set empty.
+        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
         json poolNone = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array()}} })}};
         LaunchResolver::DerivePersistence(poolNone, cp);
-        QVERIFY(cp.PersistAll);
-        QVERIFY(cp.PersistDirs.empty());
+        QVERIFY(!cp.PersistAll);                       // default is none now (clean break from the old PersistAll default)
+        QVERIFY(cp.KeepDirs.empty() && cp.KeepFiles.empty() && cp.KeepRegHives.empty() && cp.KeepRegKeys.empty() && cp.DropPaths.empty());
 
+        // KEEP targets are self-describing: a path → dir (no extension) or file (extension); a hive root → its .reg
+        // file; a deeper registry path → a subtree; "registry" → all hives. Plus a DROP path.
         ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"c1"};
-        json poolDecl = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
-            json{{"TYPE", "PersistDir"}, {"PATH", "drive_c/saves"}},
-            json{{"TYPE", "RegPersist"}} })}} })}};
-        LaunchResolver::DerivePersistence(poolDecl, cp2);
+        json poolKeep = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/saves"}},                       // dir
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/Game/config.ini"}},             // file
+            json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}},                                // whole hive → user.reg
+            json{{"TYPE", "Persist"}, {"KEEP", "HKCU\\Software\\id Software\\Quake"}},   // subtree
+            json{{"TYPE", "Persist"}, {"DROP", "drive_c/Game/cache"}} })}} })}};
+        LaunchResolver::DerivePersistence(poolKeep, cp2);
         QVERIFY(!cp2.PersistAll);
-        QCOMPARE((int)cp2.PersistDirs.size(), 1);
-        QVERIFY(cp2.PersistRegistry);
+        QCOMPARE((int)cp2.KeepDirs.size(), 1);   QCOMPARE(cp2.KeepDirs[0], std::string("drive_c/saves"));
+        QCOMPARE((int)cp2.KeepFiles.size(), 1);  QCOMPARE(cp2.KeepFiles[0], std::string("drive_c/Game/config.ini"));
+        QCOMPARE((int)cp2.KeepRegHives.size(), 1); QCOMPARE(cp2.KeepRegHives[0], std::string("user.reg"));
+        QCOMPARE((int)cp2.KeepRegKeys.size(), 1);
+        QCOMPARE((int)cp2.DropPaths.size(), 1);  QCOMPARE(cp2.DropPaths[0], std::string("drive_c/Game/cache"));
+
+        // "registry" sentinel → all three hives.
+        ContainerParams cp3("/tmp/vg_bundle"); cp3.Recipe = {"c1"};
+        json poolAllReg = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "registry"}} })}} })}};
+        LaunchResolver::DerivePersistence(poolAllReg, cp3);
+        QCOMPARE((int)cp3.KeepRegHives.size(), 3);
+    }
+
+    // MODE resolves last-wins along the chain (the game overrides the runner keep-set); KEEP/DROP union regardless.
+    void derive_persistence_mode_last_wins_and_runner_keepset()
+    {
+        // The runner keep-set (RunnerPersistLayers) supplies a KEEP; the game declares MODE:all → whole-runtime persist,
+        // and the runner's KEEP still unions in.
+        ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"game"};
+        cp.RunnerPersistLayers = json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "pfx/drive_c/users/steamuser"}},
+            json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}} });
+        json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array({
+            json{{"TYPE", "Persist"}, {"MODE", "all"}} })}} })}};
+        LaunchResolver::DerivePersistence(pool, cp);
+        QVERIFY(cp.PersistAll);                                    // game's MODE:all wins
+        QCOMPARE((int)cp.KeepDirs.size(), 1);                      // runner's user-profile keep still recorded
+        QCOMPARE(cp.KeepDirs[0], std::string("pfx/drive_c/users/steamuser"));
+        QCOMPARE((int)cp.KeepRegHives.size(), 1);
+
+        // Runner keep-set alone (no game Persist) → pristine MODE:none with the runner's user-profile + HKCU kept.
+        ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"game"};
+        cp2.RunnerPersistLayers = json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users/steamuser"}},
+            json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}} });
+        json pool2 = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array()}} })}};
+        LaunchResolver::DerivePersistence(pool2, cp2);
+        QVERIFY(!cp2.PersistAll);                                  // pristine prefix each launch
+        QCOMPARE((int)cp2.KeepDirs.size(), 1);                     // …except the user profile
+        QCOMPARE((int)cp2.KeepRegHives.size(), 1);                 // …and HKCU
     }
 
     // ---- Runner daisy-chaining (PickRunnerChain / ResolveChainIds / ResolveRunnerChain) ----

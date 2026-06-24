@@ -105,8 +105,9 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (when the runner
 //generates a prefix), every VFS subcomponent rooted at CONTENT_ROOT + its TARGET (logically — no staging
-//dirs), the PERSIST dirs as RW passthrough layers, and the writable top branch. Array order is union
-//priority (lowest first).
+//dirs), the KEEP dirs as durable RW passthrough layers, the DROP paths as ephemeral RW shadows, and the
+//writable top branch (durable UserDataPath under MODE:all, else the ephemeral WRITELAYER). Array order is
+//union priority (lowest first).
 nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec;
@@ -183,15 +184,26 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         && std::filesystem::exists(ContainerParams.DefaultDataPath))
         Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefaultDataPath.string()}, {"target", ""}, {"rw", false}});
 
-    //PERSIST dirs → RW passthrough layers (highest priority, appended last). Root-relative target,
-    //matching the old MountPersistDirs bind of UserDataPath/<rel> onto RuntimePath/<rel>.
+    //KEEP dirs → durable RW passthrough layers (high priority, appended after content). The dir unions over the lower
+    //layers at its target (so a prefix skeleton stays visible) while writes land in UserDataPath/<rel> — live, durable.
+    //Skipped under MODE:all (the whole writable branch is already the durable UserDataPath).
     if (!ContainerParams.PersistAll)
-        for (const std::string &Rel : ContainerParams.PersistDirs)
+        for (const std::string &Rel : ContainerParams.KeepDirs)
         {
             std::filesystem::path Src = ContainerParams.UserDataPath / Rel;
             std::filesystem::create_directories(Src);
             Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
         }
+
+    //DROP paths → ephemeral RW shadow layers (highest priority, appended LAST so they win). The source is an empty
+    //per-launch dir under TempPath, so writes to <rel> go nowhere durable — carving an ephemeral hole in MODE:all, or
+    //in an enclosing KEEP dir under MODE:none. Always emitted (harmless when MODE:none has no enclosing KEEP).
+    for (const std::string &Rel : ContainerParams.DropPaths)
+    {
+        std::filesystem::path Src = ContainerParams.TempPath / "DROPS" / Rel;
+        std::filesystem::create_directories(Src);
+        Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
+    }
 
     Spec["layers"] = Layers;
     return Spec;
@@ -201,7 +213,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 //unionfs+fuse-zip+bindfs+staging pipeline with a single FUSE mount. The helper daemonizes once the
 //mount is live, so the spawn returns; we then poll mountinfo to confirm readiness before proceeding.
 //RuntimePath registers for the non-lazy save-safe unmount whenever durable data is reachable through
-//the mount (PersistAll writelayer or any RW passthrough persist dir), else the lazy path.
+//the mount (MODE:all writelayer or any KEEP-dir RW passthrough), else the lazy path.
 bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams);
@@ -237,7 +249,9 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
         return false;
     }
 
-    if (ContainerParams.PersistAll || !ContainerParams.PersistDirs.empty())
+    //Durable-backed when a live RW path reaches USERDATA through the mount: MODE:all (writelayer IS UserDataPath) or
+    //any KEEP-dir passthrough. KEEP files/registry are copy-captured before unmount, so they don't make it durable.
+    if (ContainerParams.PersistAll || !ContainerParams.KeepDirs.empty())
         ContainerParams.CleanupPersistPaths.push_back(ContainerParams.RuntimePath);
     else
         ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);

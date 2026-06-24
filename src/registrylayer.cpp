@@ -30,9 +30,6 @@ static bool HasRegEdits(const struct ContainerParams &ContainerParams, bool Want
     return false;
 }
 
-//The 3 Wine registry files that hold per-prefix state.
-static const char *const kRegFiles[] = { "system.reg", "user.reg", "userdef.reg" };
-
 //Builds the DEFAULTDATA layer: a dedicated, regenerated-each-launch read-only layer that holds every
 //package-encoded BASE (non-OVERRIDE) edit. It mounts between the component layers and the WRITELAYER
 //(see BuildLayerSpec), so its edits override the package's own content but the user's persisted writes
@@ -43,7 +40,7 @@ static const char *const kRegFiles[] = { "system.reg", "user.reg", "userdef.reg"
 //                      (Wine: drive_c/…; emulator/native: the runtime root).
 //  - Base RegEdits   → full user.reg/system.reg/userdef.reg = DEFPREFIX hives + edits (shadow DEFPREFIX's;
 //                      vidyagodfs COWs from this highest layer when Wine writes the registry). WINE-ONLY.
-//  - Persisted RegKeyPersist subtrees merged in AFTER base edits, so the user's saved key state wins. WINE-ONLY.
+//  - Persisted KEEP registry-subtrees merged in AFTER base edits, so the user's saved key state wins. WINE-ONLY.
 //
 //DEFPREFIX itself is NEVER mutated (read-only source for the hives) — pristine for both runner models.
 //OVERRIDE edits are NOT handled here; they go post-mount straight to the runtime (COW → WRITELAYER).
@@ -61,7 +58,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
     //Registry only exists when the runner generates a wine prefix; ROM/native runners have no hives.
     const bool HaveBaseReg = HavePrefix && HasRegEdits(ContainerParams, /*WantOverride=*/false);
     const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "__REGKEYS__";
-    const bool HavePersistKeys = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.PersistRegKeys.empty()
+    const bool HavePersistKeys = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.KeepRegKeys.empty()
                                  && std::filesystem::exists(RegKeyStore);
 
     if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys) return true; // nothing to materialise
@@ -86,7 +83,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         {
             RegistryWrapper Durable;
             Durable.LoadPrefix(RegKeyStore);
-            for (const std::string &RegPath : ContainerParams.PersistRegKeys)
+            for (const std::string &RegPath : ContainerParams.KeepRegKeys)
                 if (RW.MergeKeyFrom(Durable, RegPath))
                     LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
         }
@@ -196,9 +193,10 @@ bool RegistryLayer::InitializeDefPrefix(struct ContainerParams &ContainerParams)
     }
 }
 
-//Seeds previously-persisted reg files from UserDataPath/__REGISTRY__/ into the ephemeral
+//Seeds previously-persisted KEEP hive files from UserDataPath/__REGISTRY__/ into the ephemeral
 //WRITELAYER before the union mounts, so they shadow the DEFPREFIX base. Wine always writes the
-//complete file, so a whole persisted reg file is correct (no stripped-delta shadowing).
+//complete file, so a whole persisted reg file is correct (no stripped-delta shadowing). Only the
+//KEEP-declared hives (KeepRegHives — e.g. just user.reg for a "KEEP HKCU") are seeded.
 bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //durable RW branch already holds the reg files
@@ -207,19 +205,19 @@ bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
     const std::filesystem::path WriteHives = HiveDir(ContainerParams, ContainerParams.WriteLayerPath);
     std::error_code ec;
     std::filesystem::create_directories(WriteHives, ec);
-    for (const char *const Name : kRegFiles)
+    for (const std::string &Name : ContainerParams.KeepRegHives)
     {
         const std::filesystem::path SrcReg = RegStore / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
         const std::filesystem::path DstReg = WriteHives / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("RegistryLayer::SeedPersistRegistry", "Could not seed " + std::string(Name) + ": " + ec.message());
-        else    LogOut("RegistryLayer::SeedPersistRegistry", "Seeded persisted " + std::string(Name));
+        if (ec) LogWarn("RegistryLayer::SeedPersistRegistry", "Could not seed " + Name + ": " + ec.message());
+        else    LogOut("RegistryLayer::SeedPersistRegistry", "Seeded persisted " + Name);
     }
     return true;
 }
 
-//Captures the session's registry by copying RuntimePath/*.reg into UserDataPath/__REGISTRY__/.
+//Captures the session's KEEP hives by copying RuntimePath/<prefixroot>/<hive>.reg into UserDataPath/__REGISTRY__/.
 //Runs during Cleanup BEFORE the runtime is unmounted/wiped. Bounded copy of small metadata files.
 bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerParams)
 {
@@ -228,25 +226,25 @@ bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerPara
     std::error_code ec;
     std::filesystem::create_directories(RegStore, ec);
     const std::filesystem::path RunHives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
-    for (const char *const Name : kRegFiles)
+    for (const std::string &Name : ContainerParams.KeepRegHives)
     {
         const std::filesystem::path SrcReg = RunHives / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
         const std::filesystem::path DstReg = RegStore / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("RegistryLayer::CapturePersistRegistry", "Could not capture " + std::string(Name) + ": " + ec.message());
-        else    LogOut("RegistryLayer::CapturePersistRegistry", "Captured " + std::string(Name));
+        if (ec) LogWarn("RegistryLayer::CapturePersistRegistry", "Could not capture " + Name + ": " + ec.message());
+        else    LogOut("RegistryLayer::CapturePersistRegistry", "Captured " + Name);
     }
     return true;
 }
 
-//Extracts each RegKeyPersist subtree from the mounted RuntimePath hives and merges it into the
+//Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the
 //durable store UserDataPath/__REGKEYS__ (partial hive files holding only the persisted keys). Runs
 //during Cleanup BEFORE unmount. A key absent from the session (never created) is left as-is in the
-//store rather than dropped. No-op under PersistAll.
+//store rather than dropped. No-op under MODE:all.
 bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParams)
 {
-    if (ContainerParams.PersistAll || ContainerParams.PersistRegKeys.empty()) return true;
+    if (ContainerParams.PersistAll || ContainerParams.KeepRegKeys.empty()) return true;
     const std::filesystem::path Store = ContainerParams.UserDataPath / "__REGKEYS__";
 
     RegistryWrapper Session;
@@ -256,7 +254,7 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
     if (std::filesystem::exists(Store)) Durable.LoadPrefix(Store); // accumulate across sessions
 
     int Captured = 0;
-    for (const std::string &RegPath : ContainerParams.PersistRegKeys)
+    for (const std::string &RegPath : ContainerParams.KeepRegKeys)
         if (Durable.MergeKeyFrom(Session, RegPath)) { LogOut("RegistryLayer::CapturePersistRegKeys", "Captured " + RegPath); ++Captured; }
         else LogOut("RegistryLayer::CapturePersistRegKeys", "Key absent in session (kept prior): " + RegPath);
 
