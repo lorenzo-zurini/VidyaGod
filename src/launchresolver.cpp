@@ -286,8 +286,10 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     nlohmann::ordered_json Resolved = nlohmann::ordered_json::object();
     if (NodePath)
     {
-        const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id);
-        if (L && L->Exec.is_object()) Resolved = L->Exec;     // empty EXEC = self-contained launchable (e.g. gemrb) — OK
+        if (ContainerParams.ComposedExec.is_object() && !ContainerParams.ComposedExec.empty())
+            Resolved = ContainerParams.ComposedExec;          // the closure-composed DeclareExec (variant overrides base)
+        else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id); L && L->Exec.is_object())
+            Resolved = L->Exec;                               // empty EXEC = self-contained launchable (e.g. gemrb) — OK
     }
     else
     {
@@ -923,6 +925,18 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     for (const auto &M : Missing) LogWarn("InitializeFromNode", "Unresolved parent: " + M);
     if (Launch->Layers.is_array() && !Launch->Layers.empty())
     { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
+
+    //Compose the launch EXEC across the closure: every DeclareExec contributor merges field-by-field in closure order
+    //(parents first, the launchable last → highest priority), so a base supplies CONTENTPATH/WORKDIR and a variant/mod
+    //overrides EXEARGS, etc. Runners are excluded (their EXEC is the runner's own, resolved via the chain). Mirrors the
+    //CustomVar/Persist composition. Falls back to the launch node's own Exec when no DeclareExec contributors.
+    CP.ComposedExec = nlohmann::ordered_json::object();
+    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates))
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner() || !N->IsLaunchable() || !N->Exec.is_object()) continue;
+        for (auto &[K, V] : N->Exec.items()) CP.ComposedExec[K] = V;     // later (more-specific) node wins
+    }
 
     //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
     //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.

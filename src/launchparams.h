@@ -130,6 +130,11 @@ public:
     //Variant resolution:
     std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
+    //The launch EXEC composed across the launchable's closure (field-level last-wins, launch node highest-priority) —
+    //so a parent/base can supply CONTENTPATH/WORKDIR and the variant overrides EXEARGS, etc. Set by InitializeFromNode
+    //from the DeclareExec layers; consumed by ResolveExecutableDefinition. Empty ⇒ fall back to the launch node's Exec.
+    nlohmann::ordered_json ComposedExec;
+
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.
     const NodeIndex *NodeIdx = nullptr;                             //PASSED — the global cross-bundle node graph
