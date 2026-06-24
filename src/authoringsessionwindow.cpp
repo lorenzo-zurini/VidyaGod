@@ -80,6 +80,15 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     Tree = new DeltaTree(FilesTab);
     FLay->addWidget(Tree, 1);
     FLay->addLayout(checkRow(Tree, FilesTab));
+    auto * Preview = new QLabel(FilesTab);   // live "you picked this level" feedback
+    Preview->setWordWrap(true);
+    Preview->setStyleSheet("color:#7ec699;font-size:9pt;");
+    FLay->addWidget(Preview);
+    connect(Tree, &DeltaTree::checkedChanged, this, [this, Preview]{
+        const QStringList Roots = Tree->checkedRoots();
+        Preview->setText(Roots.isEmpty() ? "Nothing checked."
+                                         : "Will capture at this level → " + Roots.join("   ·   "));
+    });
     auto * FForm = new QFormLayout();
     DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
     FForm->addRow("Captured dir (in bundle)", DestNameEdit);
@@ -163,6 +172,8 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     connect(Model, &AuthoringSessionModel::registryTreeChanged, this, [this](const QStringList & Paths){
         RegTree->setPaths(Paths);
     });
+    connect(Model, &AuthoringSessionModel::filesCaptured,    this, [this](const QStringList & Roots){ Tree->markCaptured(Roots); });
+    connect(Model, &AuthoringSessionModel::registryCaptured, this, [this](const QStringList & Keys){ RegTree->markCaptured(Keys); });
     connect(Model, &AuthoringSessionModel::captured, this, [this](const QString & Msg){ StatusLabel->setText(Msg); });
     connect(Model, &AuthoringSessionModel::failed, this, [this](const QString & Msg){
         QMessageBox::critical(this, "Authoring session", Msg);

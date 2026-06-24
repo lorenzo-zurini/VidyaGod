@@ -22,20 +22,28 @@ public:
 
     void        setSeparator(QChar Sep) { Separator = Sep; }
     void        setPaths(const QStringList & Paths);      // rebuild the tree (collapsed) from the path list
-    QStringList checkedRoots() const;                     // maximal fully-checked nodes
+    QStringList checkedRoots() const;                     // maximal fully-checked nodes (the capture "levels")
     QStringList checkedEntries() const;                   // all checked terminal (entry) nodes
+    void        markCaptured(const QStringList & Paths);  // tint these paths (and their subtrees) green
 
 public slots:
     void checkAll(bool On);
+
+signals:
+    void checkedChanged();                                // the user changed the checked set (live preview hook)
 
 private slots:
     void onItemChanged(QTreeWidgetItem * It, int Col);
 
 private:
-    static void setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St);
-    QString     fullPath(const QTreeWidgetItem * It) const;
-    QChar       Separator = '/';
-    bool        Updating  = false;   // re-entrancy guard while propagating a parent's state to its children
+    static void                  setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St);
+    QString                      fullPath(const QTreeWidgetItem * It) const;
+    QList<QTreeWidgetItem *>     rootItems() const;       // maximal fully-checked items (the capture roots)
+    void                         highlightRoots();        // bold the current capture-root rows (untrack the old)
+
+    QChar                        Separator = '/';
+    bool                         Updating  = false;       // re-entrancy guard (check propagation + restyle)
+    QList<QTreeWidgetItem *>     BoldRoots;               // currently-bolded root rows (to un-bold on change)
 };
 
 #endif // DELTATREE_H

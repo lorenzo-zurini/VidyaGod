@@ -84,6 +84,8 @@ signals:
     void runnersChanged(QStringList runners, QString current);
     void deltaChanged(QStringList paths);
     void registryTreeChanged(QStringList regPaths);
+    void filesCaptured(QStringList roots);              // the file roots just captured (→ tint them green)
+    void registryCaptured(QStringList keys);            // the registry keys just captured (→ tint them green)
     void captured(QString message);
     void failed(QString message);
 
@@ -100,6 +102,7 @@ private:
     QThread                Thread;
     AuthoringWorker *      Worker = nullptr;
     QString                PendTargetNode, PendDestName, PendTarget;  // file-capture context awaiting the worker result
+    QStringList            PendRoots;                                  // the file roots being captured (echoed back on success)
     nlohmann::ordered_json LastRegDelta = nlohmann::ordered_json::array();  // the scanned registry diff (filtered on capture)
 };
 

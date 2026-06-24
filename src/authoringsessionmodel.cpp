@@ -173,7 +173,7 @@ void AuthoringSessionModel::refreshDelta()                    { emit busyChanged
 void AuthoringSessionModel::captureFiles(const QStringList & Roots, const QString & TargetNode,
                                          const QString & DestName, const QString & Target)
 {
-    PendTargetNode = TargetNode; PendDestName = DestName; PendTarget = Target;
+    PendTargetNode = TargetNode; PendDestName = DestName; PendTarget = Target; PendRoots = Roots;
     const QString DestDirAbs = (Editor ? Editor->packagePath() : QString()) + "/" + DestName;
     emit busyChanged(true, "Capturing files…");
     emit requestCaptureFiles(Roots, DestDirAbs);
@@ -196,6 +196,7 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
             if (Want.count(E.value("REGPATH", std::string()))) Picked.push_back(E);
     if (Picked.empty()) { emit captured("No registry keys checked."); return; }
     if (Editor) Editor->mergeRegEditsIntoNode(TargetNode.toStdString(), Picked);
+    emit registryCaptured(RegPaths);
     emit captured(QString("Captured %1 registry key(s) into '%2'.").arg((int)Picked.size()).arg(TargetNode));
 }
 
@@ -219,9 +220,10 @@ void AuthoringSessionModel::onRunFinished(bool ok)
 void AuthoringSessionModel::onFilesCopied(int count)
 {
     emit busyChanged(false, QString());
-    if (count <= 0) { emit captured("Nothing copied — check the strip prefix."); return; }
+    if (count <= 0) { emit captured("Nothing copied — check the selection."); return; }
     if (Editor) Editor->appendLayerToNode(PendTargetNode.toStdString(),
                                           AuthoringSession::MakeDirLayer(PendDestName.toStdString(), PendTarget.toStdString()));
+    emit filesCaptured(PendRoots);
     emit captured(QString("Captured %1 file(s) into '%2' → VFSDirLayer on '%3'.").arg(count).arg(PendDestName).arg(PendTargetNode));
 }
 

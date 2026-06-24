@@ -1,5 +1,8 @@
 #include "deltatree.h"
 
+#include <QBrush>
+#include <QColor>
+#include <QFont>
 #include <QHash>
 
 #include <functional>
@@ -15,6 +18,7 @@ DeltaTree::DeltaTree(QWidget * parent) : QTreeWidget(parent)
 void DeltaTree::setPaths(const QStringList & Paths)
 {
     Updating = true;                  // bulk build: don't run the propagation handler per inserted item
+    BoldRoots.clear();                // clear() below deletes the items these point at
     clear();
 
     // parent item (nullptr = top level) → (segment text → child item), so building is O(total segments), not O(n²).
@@ -54,15 +58,62 @@ void DeltaTree::checkAll(bool On)
     const Qt::CheckState St = On ? Qt::Checked : Qt::Unchecked;
     for (int i = 0; i < topLevelItemCount(); ++i) { topLevelItem(i)->setCheckState(0, St); setSubtreeChecked(topLevelItem(i), St); }
     Updating = false;
+    highlightRoots();
+    emit checkedChanged();
 }
 
 void DeltaTree::onItemChanged(QTreeWidgetItem * It, int /*Col*/)
 {
-    if (Updating || It->childCount() == 0) return;
-    const Qt::CheckState St = It->checkState(0);
-    if (St == Qt::PartiallyChecked) return;            // child-driven auto update — nothing to push down
-    Updating = true;
-    setSubtreeChecked(It, St);                         // a real toggle on a directory → set its whole subtree
+    if (Updating) return;                              // ignore our own propagation / restyle writes
+    if (It->childCount() > 0)
+    {
+        const Qt::CheckState St = It->checkState(0);
+        if (St != Qt::PartiallyChecked)                // a real toggle on a directory → set its whole subtree
+        {
+            Updating = true; setSubtreeChecked(It, St); Updating = false;
+        }
+    }
+    highlightRoots();                                  // re-bold the capture-root rows (the "levels")
+    emit checkedChanged();
+}
+
+QList<QTreeWidgetItem *> DeltaTree::rootItems() const
+{
+    QList<QTreeWidgetItem *> Out;
+    std::function<void(QTreeWidgetItem *)> Walk = [&](QTreeWidgetItem * It){
+        const Qt::CheckState St = It->checkState(0);
+        if (St == Qt::Checked) { Out << It; return; }                       // maximal — don't descend
+        if (St == Qt::PartiallyChecked) for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
+    };
+    for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i));
+    return Out;
+}
+
+void DeltaTree::highlightRoots()
+{
+    Updating = true;                                   // setFont fires itemChanged — suppress re-entry
+    for (QTreeWidgetItem * It : BoldRoots) { QFont F = It->font(0); F.setBold(false); It->setFont(0, F); }
+    BoldRoots = rootItems();
+    for (QTreeWidgetItem * It : BoldRoots) { QFont F = It->font(0); F.setBold(true); It->setFont(0, F); }
+    Updating = false;
+}
+
+void DeltaTree::markCaptured(const QStringList & Paths)
+{
+    if (Paths.isEmpty()) return;
+    const QBrush Green(QColor(120, 200, 120));
+    Updating = true;                                   // setForeground fires itemChanged — suppress re-entry
+    std::function<void(QTreeWidgetItem *, bool)> Walk = [&](QTreeWidgetItem * It, bool Under){
+        bool Captured = Under;
+        if (!Captured)
+        {
+            const QString FP = fullPath(It);
+            for (const QString & P : Paths) if (FP == P || FP.startsWith(P + Separator)) { Captured = true; break; }
+        }
+        if (Captured) It->setForeground(0, Green);
+        for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i), Captured);
+    };
+    for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i), false);
     Updating = false;
 }
 
@@ -78,14 +129,8 @@ void DeltaTree::setSubtreeChecked(QTreeWidgetItem * It, Qt::CheckState St)
 
 QStringList DeltaTree::checkedRoots() const
 {
-    // Maximal fully-checked nodes: a Checked node short-circuits (its subtree is implied); recurse only into Partial.
     QStringList Out;
-    std::function<void(QTreeWidgetItem *)> Walk = [&](QTreeWidgetItem * It){
-        const Qt::CheckState St = It->checkState(0);
-        if (St == Qt::Checked) { Out << fullPath(It); return; }
-        if (St == Qt::PartiallyChecked) for (int i = 0; i < It->childCount(); ++i) Walk(It->child(i));
-    };
-    for (int i = 0; i < topLevelItemCount(); ++i) Walk(topLevelItem(i));
+    for (QTreeWidgetItem * It : rootItems()) Out << fullPath(It);
     return Out;
 }
 
