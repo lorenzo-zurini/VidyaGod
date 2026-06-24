@@ -108,10 +108,11 @@ public:
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
 
-    //Persistence (derived from the unified Persist primitive {MODE/KEEP/DROP} — see DerivePersistence). The four old
-    //types (PersistDir/PersistFile/RegPersist/RegKeyPersist) collapsed into one self-describing layer; KEEP targets are
-    //classified by shape into the buckets below. DEFAULT is now MODE:none (pristine) — runner keep-sets capture saves.
-    bool PersistAll = false;                                        //resolved MODE:all (last-wins along the dependency chain) — RW union branch IS the durable UserDataPath (whole-runtime persist). Default false (pristine).
+    //Persistence (derived from the unified Persist primitive {KEEP/DROP} — see DerivePersistence). The four old types
+    //(PersistDir/PersistFile/RegPersist/RegKeyPersist) collapsed into one self-describing layer; KEEP targets are
+    //classified by shape into the buckets below. Purely additive (KEEP adds, DROP removes) — no mode; DEFAULT is
+    //pristine (only KEEPs persist), and runner keep-sets capture the standard saves.
+    bool PersistAll = false;                                        //a KEEP named the runtime root (`%RuntimePath%`) — RW union branch IS the durable UserDataPath (whole-runtime persist). Default false (pristine).
     std::vector<std::string> KeepDirs;                              //KEEP dir targets — runtime-root-relative dirs unioned as durable RW passthroughs from UserDataPath/<rel> (live)
     std::vector<std::string> KeepFiles;                             //KEEP file targets — runtime-root-relative single files seeded/captured by copy via UserDataPath/<rel>
     std::vector<std::string> KeepRegKeys;                           //KEEP registry-subtree targets (HKCU\Software\..) — partial-hive merge seed/capture (Wine-only)
@@ -172,7 +173,7 @@ public:
     //VFSWRAPPER CLASS — the runtime is one vidyagodfs FUSE mount at RuntimePath (see BuildLayerSpec/MountVFS).
     std::vector<std::filesystem::path> CleanupUnmountPaths; //Purely-ephemeral FUSE mount(s) — lazy-unmounted on Cleanup()
     //Durable-backed mount: the vidyagodfs RUNTIME mount whenever durable data is reachable through it
-    //(MODE:all writelayer or any KEEP-dir RW passthrough). It exposes PackagePath/USERDATA, so it
+    //(whole-runtime keep's writelayer or any KEEP-dir RW passthrough). It exposes PackagePath/USERDATA, so it
     //MUST be non-lazily unmounted and verified before Cleanup() wipes TempPath — else remove_all could
     //recurse into real saves.
     std::vector<std::filesystem::path> CleanupPersistPaths;

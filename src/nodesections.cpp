@@ -561,37 +561,21 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                 }
                 else if (LayerType == "Persist")
                 {
-                    // One self-describing persistence primitive: MODE (base policy) + KEEP (persist a target) + DROP
-                    // (make a path ephemeral). The dir/file/registry kind of a KEEP target is derived, not picked.
+                    // One self-describing, purely-additive persistence primitive: KEEP (persist a target) + DROP (make a
+                    // path ephemeral). No mode — the dir/file/registry kind of a KEEP target is derived, not picked.
                     int prow = 1;
 
-                    // MODE — base policy, last-wins along the dependency chain. Unset ⇒ inherit (graph default is "none").
-                    LG->addWidget(new QLabel("MODE:"), prow, 0);
-                    QComboBox * ModeCombo = new QComboBox(LBox);
-                    ModeCombo->addItems({"(inherit)", "none", "all"});
-                    {
-                        const std::string M = Layers[j].value("MODE", std::string());
-                        ModeCombo->setCurrentText(M.empty() ? "(inherit)" : QString::fromStdString(M));
-                    }
-                    QObject::connect(ModeCombo, &QComboBox::currentTextChanged, this, [this, n, j](const QString &T){
-                        if (T == "(inherit)") Model->doc()["NODES"][n]["LAYERS"][j].erase("MODE");
-                        else                  Model->doc()["NODES"][n]["LAYERS"][j]["MODE"] = T.toStdString();
-                        Model->SaveNodes(); Model->requestReload();
-                    });
-                    LG->addWidget(ModeCombo, prow, 1, 1, 2); prow++;
-
-                    // KEEP — persist a target. Self-describing: a path → dir or single file; HKxx… → a registry hive or
-                    // subtree; "registry" → all hives.
+                    // KEEP — persist a target. Self-describing: %RuntimePath% → the whole runtime; a path → dir or single
+                    // file; HKxx… → a registry hive or subtree; "registry" → all hives.
                     LG->addWidget(new QLabel("KEEP:"), prow, 0);
                     QLineEdit * Keep = new QLineEdit(LBox);
-                    Keep->setPlaceholderText("drive_c/users/steamuser/Saves   ·   HKCU\\Software\\<vendor>\\<game>   ·   registry");
+                    Keep->setPlaceholderText("drive_c/users/steamuser/Saves   ·   HKCU\\Software\\<vendor>\\<game>   ·   %RuntimePath%");
                     Keep->setProperty("JSONPath", LPath + "/KEEP");
                     if (Layers[j].contains("KEEP") && Layers[j]["KEEP"].is_string()) Keep->setText(QString::fromStdString(std::string(Layers[j]["KEEP"])));
                     QObject::connect(Keep, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
                     LG->addWidget(Keep, prow, 1, 1, 2); prow++;
 
-                    // DROP — make a runtime path ephemeral (writes discarded), e.g. a cache dir under MODE:all or inside
-                    // an enclosing KEEP. Paths only.
+                    // DROP — make a runtime path ephemeral (writes discarded), e.g. a cache dir inside a kept tree. Paths only.
                     LG->addWidget(new QLabel("DROP:"), prow, 0);
                     QLineEdit * Drop = new QLineEdit(LBox);
                     Drop->setPlaceholderText("drive_c/<game>/cache   (optional — paths only)");
@@ -600,8 +584,9 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                     QObject::connect(Drop, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
                     LG->addWidget(Drop, prow, 1, 1, 2); prow++;
 
-                    QLabel * Hint = new QLabel("MODE none = pristine runtime, only KEEPs persist; all = whole runtime durable. "
-                                               "A runner ships a keep-set for its platform's user-state, so most games need nothing here.", LBox);
+                    QLabel * Hint = new QLabel("The runtime is pristine by default — only KEEPs persist (and a runner ships a "
+                                               "keep-set for its platform's user-state, so most games need nothing here). "
+                                               "KEEP %RuntimePath% to persist everything; DROP carves an ephemeral hole.", LBox);
                     Hint->setStyleSheet("color:#8f98a0;font-size:9pt;"); Hint->setWordWrap(true);
                     LG->addWidget(Hint, prow, 1, 1, 2);
                 }

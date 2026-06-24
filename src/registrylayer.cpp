@@ -241,7 +241,7 @@ bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerPara
 //Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the
 //durable store UserDataPath/__REGKEYS__ (partial hive files holding only the persisted keys). Runs
 //during Cleanup BEFORE unmount. A key absent from the session (never created) is left as-is in the
-//store rather than dropped. No-op under MODE:all.
+//store rather than dropped. No-op when PersistAll.
 bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll || ContainerParams.KeepRegKeys.empty()) return true;

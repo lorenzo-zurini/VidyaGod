@@ -153,11 +153,11 @@ private slots:
         QCOMPARE(def->NodeId, std::string("zzz_wine"));   // package-local beats alphabetical global
     }
 
-    // DerivePersistence (unified Persist primitive): default MODE:none (pristine), KEEP target classification by shape,
-    // MODE:all, and a DROP path.
+    // DerivePersistence (unified Persist primitive): pristine by default, KEEP target classification by shape, and a
+    // DROP path.
     void derive_persistence_unified_persist()
     {
-        // No Persist anywhere → pristine (MODE:none), every keep-set empty.
+        // No Persist anywhere → pristine, every keep-set empty.
         ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"};
         json poolNone = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array()}} })}};
         LaunchResolver::DerivePersistence(poolNone, cp);
@@ -189,27 +189,29 @@ private slots:
         QCOMPARE((int)cp3.KeepRegHives.size(), 3);
     }
 
-    // MODE resolves last-wins along the chain (the game overrides the runner keep-set); KEEP/DROP union regardless.
-    void derive_persistence_mode_last_wins_and_runner_keepset()
+    // "Keep everything" is just a KEEP of the runtime root (%RuntimePath%) — no mode flag. The runner keep-set unions
+    // in regardless (additive); a bare runner keep-set leaves the runtime pristine apart from the user profile + HKCU.
+    void derive_persistence_keep_root_and_runner_keepset()
     {
-        // The runner keep-set (RunnerPersistLayers) supplies a KEEP; the game declares MODE:all → whole-runtime persist,
-        // and the runner's KEEP still unions in.
+        // The runner keep-set (RunnerPersistLayers) supplies KEEPs; the game KEEPs the runtime root → whole-runtime
+        // persist (PersistAll). RuntimePath must be set for the root match.
         ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"game"};
+        cp.RuntimePath = "/tmp/rt";
         cp.RunnerPersistLayers = json::array({
-            json{{"TYPE", "Persist"}, {"KEEP", "pfx/drive_c/users/steamuser"}},
+            json{{"TYPE", "Persist"}, {"KEEP", "pfx/drive_c/users"}},
             json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}} });
         json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array({
-            json{{"TYPE", "Persist"}, {"MODE", "all"}} })}} })}};
+            json{{"TYPE", "Persist"}, {"KEEP", "%RuntimePath%"}} })}} })}};
         LaunchResolver::DerivePersistence(pool, cp);
-        QVERIFY(cp.PersistAll);                                    // game's MODE:all wins
+        QVERIFY(cp.PersistAll);                                    // KEEP %RuntimePath% ⇒ whole runtime durable
         QCOMPARE((int)cp.KeepDirs.size(), 1);                      // runner's user-profile keep still recorded
-        QCOMPARE(cp.KeepDirs[0], std::string("pfx/drive_c/users/steamuser"));
+        QCOMPARE(cp.KeepDirs[0], std::string("pfx/drive_c/users"));
         QCOMPARE((int)cp.KeepRegHives.size(), 1);
 
-        // Runner keep-set alone (no game Persist) → pristine MODE:none with the runner's user-profile + HKCU kept.
+        // Runner keep-set alone (no game Persist) → pristine runtime with the runner's user-profile + HKCU kept.
         ContainerParams cp2("/tmp/vg_bundle"); cp2.Recipe = {"game"};
         cp2.RunnerPersistLayers = json::array({
-            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users/steamuser"}},
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users"}},
             json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}} });
         json pool2 = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "game"}, {"SUBCOMPONENTS", json::array()}} })}};
         LaunchResolver::DerivePersistence(pool2, cp2);

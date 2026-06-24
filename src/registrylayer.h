@@ -20,7 +20,7 @@ bool BuildDefaultData(struct ContainerParams &ContainerParams);
 bool ApplyOverrideRegEdits(struct ContainerParams &ContainerParams);
 
 //Seeds previously-persisted KEEP hive files (UserDataPath/__REGISTRY__/*.reg) into WriteLayerPath before MountVFS so
-//they shadow DEFPREFIX. No-op under MODE:all or no persisted regs exist.
+//they shadow DEFPREFIX. No-op when PersistAll or no persisted regs exist.
 bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
 
 //Copies each KEEP hive (RuntimePath/<prefixroot>/<hive>.reg) into UserDataPath/__REGISTRY__/ on Cleanup, capturing
@@ -28,7 +28,7 @@ bool SeedPersistRegistry(struct ContainerParams &ContainerParams);
 bool CapturePersistRegistry(struct ContainerParams &ContainerParams);
 
 //Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the durable store
-//UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op under MODE:all.
+//UserDataPath/__REGKEYS__/*.reg on Cleanup. Must run BEFORE unmount. No-op when PersistAll.
 bool CapturePersistRegKeys(struct ContainerParams &ContainerParams);
 }
 

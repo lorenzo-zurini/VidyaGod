@@ -525,9 +525,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 Warnings.push_back("node '" + Owner + "': option %" + K
                                    + "% has a UI but is referenced nowhere (dead knob)");
 
-    //----- Persist lint: the unified persistence primitive (MODE/KEEP/DROP). A target is self-describing, so the
-    //only structural mistakes are a bad MODE value, an empty/no-op layer, a DROP aimed at the registry (paths only),
-    //and a host: target (reserved for the future bubblewrap native-containment, not implemented yet). -----
+    //----- Persist lint: the unified persistence primitive (KEEP/DROP, purely additive). A target is self-describing,
+    //so the only structural mistakes are an empty/no-op layer, a DROP aimed at the registry (paths only), and a host:
+    //target (reserved for the future bubblewrap native-containment, not implemented yet). -----
     auto LooksRegistryTarget = [](const std::string &T) -> bool {
         if (T.empty()) return false;
         std::string Root = T.substr(0, T.find_first_of("\\/"));
@@ -542,17 +542,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         for (const auto &L : N.Layers)
         {
             if (!L.is_object() || L.value("TYPE", std::string()) != "Persist") continue;
-            const bool HasMode = L.contains("MODE") && L["MODE"].is_string() && !std::string(L["MODE"]).empty();
             const std::string Keep = (L.contains("KEEP") && L["KEEP"].is_string()) ? std::string(L["KEEP"]) : std::string();
             const std::string Drop = (L.contains("DROP") && L["DROP"].is_string()) ? std::string(L["DROP"]) : std::string();
-            if (HasMode)
-            {
-                const std::string M = ToLowerAscii(std::string(L["MODE"]));
-                if (M != "all" && M != "none")
-                    Errors.push_back(Tag + ": Persist MODE '" + std::string(L["MODE"]) + "' is not 'all' or 'none'");
-            }
-            if (!HasMode && Keep.empty() && Drop.empty())
-                Warnings.push_back(Tag + ": a Persist layer declares no MODE/KEEP/DROP — it does nothing");
+            if (Keep.empty() && Drop.empty())
+                Warnings.push_back(Tag + ": a Persist layer declares no KEEP/DROP — it does nothing");
             if (Keep.rfind("host:", 0) == 0 || Drop.rfind("host:", 0) == 0)
                 Warnings.push_back(Tag + ": Persist host: target is reserved but not implemented (native containment is a future bubblewrap feature) — ignored");
             if (!Drop.empty() && LooksRegistryTarget(Drop))

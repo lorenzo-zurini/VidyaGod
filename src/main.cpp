@@ -99,7 +99,7 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
     J["Content"]           = CP.ExePathComplete.string();
     J["ExeArgs"]           = CP.ExeArgs;
     J["DLLOverrides"]      = CP.DLLOverrides;
-    J["PersistMode"]       = CP.PersistAll ? "all" : "none";
+    J["PersistAll"]        = CP.PersistAll;
     J["KeepDirs"]          = CP.KeepDirs;
     J["KeepFiles"]         = CP.KeepFiles;
     J["KeepRegHives"]      = CP.KeepRegHives;

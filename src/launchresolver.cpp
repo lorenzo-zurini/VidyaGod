@@ -146,26 +146,27 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     return true;
 }
 
-//Derives the persistence policy from the unified Persist primitive — ONE LAYERS type with facets:
+//Derives the persistence policy from the unified Persist primitive — ONE LAYERS type, purely ADDITIVE (no mode flag):
 //
-//  { "TYPE":"Persist", "MODE":"all"|"none" }   base policy (default "none"); last-wins along the dependency chain
-//  { "TYPE":"Persist", "KEEP":"<target>"   }   persist this target (durable)
-//  { "TYPE":"Persist", "DROP":"<path>"     }   make this path ephemeral (writes discarded)
+//  { "TYPE":"Persist", "KEEP":"<target>" }   persist this target (durable)
+//  { "TYPE":"Persist", "DROP":"<path>"   }   make this path ephemeral (writes discarded)
 //
-//A target is SELF-DESCRIBING (the dir/file/registry kind is derived, not a separate type):
+//A KEEP target is SELF-DESCRIBING (the dir/file/registry kind is derived, not a separate type):
+//  - "%RuntimePath%" (the mount root)→ persist the WHOLE runtime (the durable UserDataPath becomes the writable
+//                                     branch) — the elegant replacement for the old MODE:all
 //  - "registry" (sentinel)          → all prefix hives (user/system/userdef.reg)
 //  - a registry root ("HKCU", ...)  → that whole hive (its .reg file)            [was RegPersist, scoped]
 //  - a deeper registry path         → that key's subtree only                   [was RegKeyPersist]
 //  - a runtime-root-relative path   → a directory (live RW passthrough) [was PersistDir] or a single file
 //                                     (copy seed/capture) [was PersistFile], by shape
 //
-//DEFAULT (no Persist anywhere): MODE:none — a PRISTINE runtime each launch; only KEEP targets persist. The active
-//runner contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard save/
-//config locations survive with no per-game work. The game's Persist layers are scanned LAST, so the game's MODE
-//overrides the runner's (KEEP/DROP are unioned). Targets are %VARIABLE%-substituted (CustomVars/system tokens).
+//DEFAULT (no Persist anywhere): a PRISTINE runtime each launch; only KEEP targets persist. The active runner
+//contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard save/config
+//locations survive with no per-game work. Persistence is purely additive: KEEP adds, DROP removes — there is no
+//mode to override, and "keep everything" is just `KEEP %RuntimePath%`. Targets are %VARIABLE%-substituted.
 bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    ContainerParams.PersistAll = false;        // default MODE:none (pristine)
+    ContainerParams.PersistAll = false;        // set true only by a KEEP of the runtime root (whole-runtime persist)
     ContainerParams.KeepDirs.clear();
     ContainerParams.KeepFiles.clear();
     ContainerParams.KeepRegKeys.clear();
@@ -205,11 +206,20 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         while (!T.empty() && (T.front() == '/' || T.front() == '\\')) T.erase(T.begin());
         return T;
     };
+    auto StripTrail = [](std::string S){ while (S.size() > 1 && (S.back() == '/' || S.back() == '\\')) S.pop_back(); return S; };
+    //A KEEP target that names the runtime mount root itself (`%RuntimePath%`, or the bare root "."/"/") ⇒ persist the
+    //WHOLE runtime: the durable UserDataPath becomes the writable branch. The elegant replacement for the old MODE:all.
+    auto IsRuntimeRoot = [&](const std::string &T) -> bool {
+        if (T == "." || T == "/" || T == "./") return true;
+        if (ContainerParams.RuntimePath.empty()) return false;
+        return StripTrail(T) == StripTrail(ContainerParams.RuntimePath.string());
+    };
 
     auto ClassifyKeep = [&](std::string T){
         VarSubst::StringVariableSubstitution(T, Vars);
         if (T.empty()) { LogWarn("DerivePersistence", "  KEEP with empty target (skipped)."); return; }
         if (T.rfind("host:", 0) == 0) { LogWarn("DerivePersistence", "  KEEP host: target not yet supported (reserved for native containment): " + T); return; }
+        if (IsRuntimeRoot(T)) { ContainerParams.PersistAll = true; LogOut("DerivePersistence", "  KEEP %RuntimePath% (whole runtime durable)"); return; }
         if (ToLower(T) == "registry")
         { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg"); LogOut("DerivePersistence", "  KEEP registry (all hives)"); return; }
         const auto Sep = T.find_first_of("\\/");
@@ -233,22 +243,15 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
 
     auto Scan = [&](const nlohmann::ordered_json &S){
         if (!S.is_object() || S.value("TYPE", std::string()) != "Persist") return;
-        if (S.contains("MODE") && S["MODE"].is_string())
-        {
-            const std::string M = ToLower(S.value("MODE", std::string()));
-            if      (M == "all")  ContainerParams.PersistAll = true;
-            else if (M == "none") ContainerParams.PersistAll = false;
-            else LogWarn("DerivePersistence", "  Persist MODE '" + M + "' unknown (expected all|none) — ignored.");
-        }
         if (S.contains("KEEP") && S["KEEP"].is_string()) ClassifyKeep(S["KEEP"]);
         if (S.contains("DROP") && S["DROP"].is_string()) ClassifyDrop(S["DROP"]);
     };
 
-    LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set, then Recipe)...");
-    //Runner platform keep-set first (so the game's MODE wins last-wins; KEEP/DROP union regardless).
+    LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set + Recipe)...");
+    //Persistence is purely additive (KEEP adds, DROP removes), so scan order is immaterial — the runner's platform
+    //keep-set and the game's Persist layers simply union.
     if (ContainerParams.RunnerPersistLayers.is_array())
         for (const auto &S : ContainerParams.RunnerPersistLayers) Scan(S);
-    //Game Recipe (ancestor-first, launchable last → the most-specific node's MODE wins).
     for (const std::string &CompID : ContainerParams.Recipe)
     {
         int Idx = FindComponentIndex(MANIFESTJSON, CompID);
@@ -259,7 +262,7 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     }
 
     LogSucc("DerivePersistence",
-            "PERSIST: MODE=" + std::string(ContainerParams.PersistAll ? "all" : "none") +
+            "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
             " KEEP[dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
             " files=" + std::to_string(ContainerParams.KeepFiles.size()) +
             " hives=" + std::to_string(ContainerParams.KeepRegHives.size()) +

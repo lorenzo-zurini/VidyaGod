@@ -7,7 +7,7 @@
 //Seeds each KEEP file from its durable home (UserDataPath/<rel>) into WriteLayerPath/<rel> before
 //the union mounts, so the persisted file shadows the lower read-only layers. Single files are
 //copied (not unioned live): a file layer can't merge, and copy mirrors the registry model.
-//No-op under MODE:all (the durable RW branch already holds everything) or when nothing is stored yet.
+//No-op when PersistAll (the durable RW branch already holds everything) or when nothing is stored yet.
 bool PersistLayer::SeedPersistFiles(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //durable RW branch already holds the files
@@ -27,7 +27,7 @@ bool PersistLayer::SeedPersistFiles(struct ContainerParams &ContainerParams)
 
 //Captures each KEEP file by copying RuntimePath/<rel> into its durable home UserDataPath/<rel>.
 //Runs during Cleanup BEFORE the runtime is unmounted/wiped, mirroring CapturePersistRegistry.
-//No-op under MODE:all.
+//No-op when PersistAll.
 bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //already durable

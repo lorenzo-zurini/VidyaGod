@@ -108,12 +108,12 @@ bool ContainerWrapper::BuildContainerRuntime()
     RegistryLayer::BuildDefaultData(this->ContainerParams);
 
     //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
-    //No-op under MODE:all (durable RW branch already holds the reg files).
+    //No-op when PersistAll (durable RW branch already holds the reg files).
     if (!ContainerParams.KeepRegHives.empty())
         RegistryLayer::SeedPersistRegistry(this->ContainerParams);
 
     //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
-    //No-op under MODE:all or when none are declared.
+    //No-op when PersistAll or when none are declared.
     if (!ContainerParams.KeepFiles.empty())
         PersistLayer::SeedPersistFiles(this->ContainerParams);
 
@@ -419,7 +419,7 @@ bool ContainerWrapper::Cleanup()
 {
     std::error_code ec;
 
-    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted. No-op under MODE:all.
+    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted. No-op when PersistAll.
     if (!ContainerParams.KeepRegHives.empty() && !ContainerParams.PersistAll)
         RegistryLayer::CapturePersistRegistry(this->ContainerParams);
     if (!ContainerParams.KeepFiles.empty() && !ContainerParams.PersistAll)
