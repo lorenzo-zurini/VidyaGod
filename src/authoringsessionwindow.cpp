@@ -45,15 +45,16 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     Root->addWidget(StatusLabel);
     Root->addWidget(InfoLabel);
 
-    // ── Run tools + runner picker ──
+    // ── Tools (each carries its own environment) + the wine-tool's runner picker ──
     auto * ToolRow = new QHBoxLayout();
-    RunExeBtn = new QPushButton("Run EXE…", this);
+    RunExeBtn = new QPushButton("Run Windows program…", this);
     BrowseBtn = new QPushButton("Open Explorer", this);
     RegBtn    = new QPushButton("Edit Registry", this);
     ToolRow->addWidget(RunExeBtn); ToolRow->addWidget(BrowseBtn); ToolRow->addWidget(RegBtn);
-    ToolRow->addWidget(new QLabel("Runner:", this));
+    ToolRow->addWidget(new QLabel("Wine runner:", this));
     RunnerCombo = new QComboBox(this);
-    RunnerCombo->setToolTip("The runner this session runs under. Switching rebuilds the runtime (discards uncaptured changes).");
+    RunnerCombo->setToolTip("The wine/proton runner the 'Run Windows program' tool uses. Independent of the package's "
+                            "platform — the first Windows run builds the prefix around the current runtime.");
     ToolRow->addWidget(RunnerCombo);
     ToolRow->addStretch();
     RefreshBtn = new QPushButton("Refresh changes", this);
@@ -117,10 +118,11 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     Root->addLayout(EndRow);
 
     // ── UI → model ──
-    connect(RunnerCombo, &QComboBox::textActivated, Model, &AuthoringSessionModel::switchRunner);
     connect(RunExeBtn, &QPushButton::clicked, this, [this]{
-        const QString Exe = QFileDialog::getOpenFileName(this, "Select an executable to run in the prefix (installer, …)");
-        if (!Exe.isEmpty()) Model->runExe(Exe);
+        if (RunnerCombo->currentText().isEmpty())
+        { QMessageBox::information(this, "Run Windows program", "No wine/proton runner is installed to run a Windows program."); return; }
+        const QString Exe = QFileDialog::getOpenFileName(this, "Select a Windows program to run in the prefix (installer, editor, …)");
+        if (!Exe.isEmpty()) Model->runWindows(Exe, RunnerCombo->currentText());
     });
     connect(BrowseBtn, &QPushButton::clicked, this, [this]{ Model->runGuest("explorer.exe"); });
     connect(RegBtn,    &QPushButton::clicked, this, [this]{ Model->runGuest("regedit.exe"); });
@@ -151,12 +153,15 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         ContentRootStr = Cr;
         TargetEdit->setText("");
         updateCapturePreview();
-        for (QPushButton * B : {RunExeBtn, BrowseBtn, RegBtn}) B->setVisible(Wine);
+        // The "Run Windows program" tool is always available (it establishes the prefix on first use); Explorer/regedit
+        // + registry capture only make sense once a wine prefix exists.
+        for (QPushButton * B : {BrowseBtn, RegBtn}) B->setVisible(Wine);
         Tabs->setTabVisible(RegTabIdx, Wine);   // registry capture is wine-only
         InfoLabel->setText("Live runtime: " + Rt +
-            (Wine ? "\nContent root: " + Cr + "  — install the game into this location (the wine C: drive) so the "
-                    "capture re-mounts where it installed (or re-home it later via the layer TARGET)."
-                  : "\nContent root: " + Cr));
+            (Wine ? "\nContent root: " + Cr + "  — the Windows program installs into this location (the wine C: drive); "
+                    "the capture re-mounts where it installed (or re-home it later via the layer TARGET)."
+                  : "\nA bare, platform-agnostic runtime (no prefix). Run a Windows program to author under wine/proton, "
+                    "or capture files dropped in directly."));
     });
     connect(Model, &AuthoringSessionModel::runnersChanged, this, [this](const QStringList & Runners, const QString & Current){
         const QSignalBlocker B(RunnerCombo);

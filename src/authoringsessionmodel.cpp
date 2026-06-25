@@ -19,7 +19,15 @@ void AuthoringWorker::emitDeltaList()
     emit delta(D);
 }
 
-void AuthoringWorker::start(QString configDump, QString bundlePath, QString nodeId, QStringList runnerChain)
+void AuthoringWorker::emitSessionInfo()
+{
+    if (!Session) { emit started(false, QString(), QString(), false, QString(), WineRunners); return; }
+    emit started(true, QString::fromStdString(Session->RuntimePath().string()),
+                 QString::fromStdString(Session->ContentRoot()), Session->PrefixGenerate(),
+                 QString::fromStdString(Session->RunnerId()), WineRunners);
+}
+
+void AuthoringWorker::start(QString configDump, QString bundlePath, QString nodeId)
 {
     if (Session) { Session->End(); Session.reset(); }
     TargetNodeId = nodeId.toStdString();
@@ -40,29 +48,31 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     }
     ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
 
-    // Candidate runners: those serving the target node's platform on this machine.
-    QStringList Runners;
-    const Node * N = Idx.Find(TargetNodeId);
-    const std::string Plat = N ? N->HostPlatform : std::string();
+    // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers
+    // win32/win64). Independent of the package's platform — you might run a Windows editor on a Linux game's runtime.
+    WineRunners.clear();
     const std::string Machine = ManifestModel::MachinePlatform();
     for (const auto & [Id, R] : Idx.Nodes)
         if (R.IsRunner() && R.HostPlatform == Machine)
             for (const std::string & G : R.GuestPlatform)
-                if (G == Plat) { Runners << QString::fromStdString(Id); break; }
+                if (G == "win32" || G == "win64") { WineRunners << QString::fromStdString(Id); break; }
 
     Session = std::make_unique<AuthoringSession>(Config, QDir(bundlePath));
-    std::vector<std::string> ChainVec;
-    for (const QString & C : runnerChain) ChainVec.push_back(C.toStdString());
-
-    if (!Session->Begin(Idx, TargetNodeId, {}, ChainVec))
+    if (!Session->Begin(Idx, TargetNodeId, {}))   // BARE: no runner, no platform — just the content overlay
     {
         Session.reset();
-        emit started(false, QString(), QString(), false, QString(), Runners);
+        emit started(false, QString(), QString(), false, QString(), WineRunners);
         return;
     }
-    emit started(true, QString::fromStdString(Session->RuntimePath().string()),
-                 QString::fromStdString(Session->ContentRoot()), Session->PrefixGenerate(),
-                 QString::fromStdString(Session->RunnerId()), Runners);
+    emitSessionInfo();
+    emitDeltaList();
+}
+
+void AuthoringWorker::runWindows(QString exe, QString runnerId)
+{
+    const bool Ok = Session && Session->RunWindows(exe.toStdString(), runnerId.toStdString());
+    emitSessionInfo();   // the runtime may have just become a wine prefix → refresh content-root / wine flag / runner
+    emit runFinished(Ok);
     emitDeltaList();
 }
 
@@ -120,6 +130,7 @@ AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string
     connect(&Thread, &QThread::finished, Worker, &QObject::deleteLater);
 
     connect(this, &AuthoringSessionModel::requestStart,        Worker, &AuthoringWorker::start);
+    connect(this, &AuthoringSessionModel::requestRunWindows,   Worker, &AuthoringWorker::runWindows);
     connect(this, &AuthoringSessionModel::requestRunExe,       Worker, &AuthoringWorker::runExe);
     connect(this, &AuthoringSessionModel::requestRefresh,      Worker, &AuthoringWorker::refreshDelta);
     connect(this, &AuthoringSessionModel::requestCaptureFiles, Worker, &AuthoringWorker::captureFiles);
@@ -155,19 +166,17 @@ QStringList AuthoringSessionModel::bundleNodeIds() const
 
 void AuthoringSessionModel::start()
 {
-    emit busyChanged(true, "Building runtime…");
+    emit busyChanged(true, "Mounting runtime…");
     const QString Cfg = (Editor && Editor->globalConfig()) ? QString::fromStdString(Editor->globalConfig()->dump()) : "{}";
-    emit requestStart(Cfg, Editor ? Editor->packagePath() : QString(), QString::fromStdString(TargetNodeId), {});
+    emit requestStart(Cfg, Editor ? Editor->packagePath() : QString(), QString::fromStdString(TargetNodeId));
 }
 
-void AuthoringSessionModel::switchRunner(const QString & RunnerId)
+void AuthoringSessionModel::runWindows(const QString & Exe, const QString & RunnerId)
 {
-    emit busyChanged(true, "Switching runner…");
-    const QString Cfg = (Editor && Editor->globalConfig()) ? QString::fromStdString(Editor->globalConfig()->dump()) : "{}";
-    emit requestStart(Cfg, Editor ? Editor->packagePath() : QString(), QString::fromStdString(TargetNodeId), { RunnerId });
+    emit busyChanged(true, "Running in a wine prefix…");
+    emit requestRunWindows(Exe, RunnerId);
 }
 
-void AuthoringSessionModel::runExe(const QString & HostPath)  { emit busyChanged(true, "Running…");  emit requestRunExe(HostPath); }
 void AuthoringSessionModel::runGuest(const QString & GuestCmd){ emit busyChanged(true, "Running…");  emit requestRunExe(GuestCmd); }
 void AuthoringSessionModel::refreshDelta()                    { emit busyChanged(true, "Scanning…"); emit requestRefresh(); }
 
@@ -205,7 +214,7 @@ void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString cont
                                       QString runnerId, QStringList runners)
 {
     emit busyChanged(false, QString());
-    if (!ok) { emit failed("Couldn't build the runtime. The node needs a PLATFORM.HOST a runner serves (or pick a runner). Check the log."); return; }
+    if (!ok) { emit failed("Couldn't mount the authoring runtime — check the log."); return; }
     emit runnersChanged(runners, runnerId);
     emit sessionReady(runtimePath, contentRoot, isWine);
 }

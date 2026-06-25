@@ -101,6 +101,40 @@ private slots:
         QVERIFY(cp.RunnerID.empty());
     }
 
+    // AuthoringBare: a platformless, content-less node resolves with NO runner and CONTENT_ROOT="" (the authoring
+    // workbench). Resolution must succeed where a normal launch would fail (no platform → no chain).
+    void initialize_from_node_authoring_bare()
+    {
+        NodeIndex idx;
+        Node n; n.NodeId = "fresh"; n.BundleDir = "/tmp/vg_bundle";   // no Declare* layers → content, no platform
+        idx.Nodes["fresh"] = n;
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "fresh";
+        cp.AuthoringBare = true;
+        json pool = json::object();
+
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(cp.RunnerChain.empty());                      // no runner resolved
+        QVERIFY(cp.RunnerID.empty());
+        QVERIFY(cp.ContentRoot.empty());                      // content at the runtime root
+        QVERIFY(!cp.PrefixGenerate);                          // no wine prefix
+        QVERIFY(pool.contains("COMPONENTS"));                 // a valid (empty) component pool
+    }
+
+    // A node WITH content but no platform still resolves bare (content overlay, no runner).
+    void initialize_from_node_authoring_bare_with_content()
+    {
+        NodeIndex idx;
+        idx.Nodes["c"] = contentNode("c", json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "files"}} }));
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "c"; cp.AuthoringBare = true;
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QVERIFY(cp.RunnerChain.empty());
+        QVERIFY(recipeHas(cp.Recipe, "c"));                   // the node's own content layer is in the recipe
+    }
+
     // PickRunnerNode honours an explicit RunnerID pin over the first-qualifying default.
     void pick_runner_honours_pin()
     {

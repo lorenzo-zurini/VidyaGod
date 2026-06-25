@@ -107,6 +107,7 @@ public:
     std::vector<std::string> Endpoints;                             //RESOLVED — terminal component ids (the selected variant's ENDPOINTS, load order)
     bool ReadOnlyVFS = false;                                       //SET — if true, no writable top layer (spec readonly=true); whole runtime is read-only
     bool UsesVFS = false;                                           //AUTO-DETECTED from SubComponentsArray
+    bool AuthoringBare = false;                                     //AUTHORING — mount the node's content overlay + writable upper with NO runner/prefix and CONTENT_ROOT="" (a platform-agnostic capture workbench); an empty runtime is valid. InitializeFromNode skips runner resolution; BuildContainerRuntime skips the no-content guard.
 
     //Persistence (derived from the unified Persist primitive {KEEP/DROP} — see DerivePersistence). The four old types
     //(PersistDir/PersistFile/RegPersist/RegKeyPersist) collapsed into one self-describing layer; KEEP targets are

@@ -820,7 +820,8 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const std::string LaunchId = CP.LaunchNodeId;
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
-    if (!Launch->IsLaunchable()) LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no DeclareExec (not launchable).");
+    if (!CP.AuthoringBare && !Launch->IsLaunchable())
+        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no DeclareExec (not launchable).");
 
     CP.subgame_id = LaunchId;  CP.VariantID = "default";
     CP.PackageUID = Launch->Uid.empty() ? LaunchId : Launch->Uid;
@@ -851,6 +852,16 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     auto AddComponent = [&](const Node *N)
     { Components.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}}); CP.Recipe.push_back(N->NodeId); };
 
+    //AUTHORING BARE MODE: no runner, no prefix, content at the root. The session just wants the node's content overlay
+    //mounted with a writable upper as a capture workbench (a fresh node has no content at all — that's fine). Runner-
+    //driven tools (e.g. "run a Windows exe in a wine prefix") rebuild via the normal path below with a pinned runner.
+    if (CP.AuthoringBare)
+    {
+      CP.ContentRoot.clear();
+      CP.RunnerPersistLayers = nlohmann::ordered_json::array();   // no runner → no runner keep-set
+    }
+    else
+    {
     //Resolve the runner CHAIN (daisy-chaining): innermost→outermost runner links from the content platform to the
     //machine, always terminated by a native runner. A length-1 bridge ([proton, native]) is the classic case.
     CP.RunnerChain = ResolveRunnerChain(Idx, *Launch, CP, GlobalConfigJSON);
@@ -912,6 +923,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         if (CP.UnifiedRuntime)
             for (const std::string &Id : RunnerBuildIds) { const Node *N = Idx.Find(Id); if (N) AddComponent(N); }
     }
+    }   // end !AuthoringBare
 
     //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.
     std::vector<std::string> Missing;

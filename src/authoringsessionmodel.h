@@ -23,14 +23,16 @@ class AuthoringWorker : public QObject
 {
     Q_OBJECT
 public slots:
-    void start(QString configDump, QString bundlePath, QString nodeId, QStringList runnerChain);
-    void runExe(QString exe);             // host path or guest command (regedit.exe / explorer.exe)
+    void start(QString configDump, QString bundlePath, QString nodeId);   // open a BARE runner-less runtime
+    void runWindows(QString exe, QString runnerId);   // wine tool: (re)build under runnerId, then run exe
+    void runExe(QString exe);             // guest command on the live (wine) runtime — regedit.exe / explorer.exe
     void refreshDelta();
     void captureFiles(QStringList roots, QString destDirAbs);   // each root captured at its own level (parent stripped)
     void scanRegistry();                  // baseline-vs-now diff → the changed-key list + the full delta
     void end();
 
 signals:
+    // `runners` carries the wine-family runners offered by the "Run Windows program" tool (NOT a session-level runner).
     void started(bool ok, QString runtimePath, QString contentRoot, bool isWine, QString runnerId, QStringList runners);
     void delta(QStringList paths);
     void runFinished(bool ok);
@@ -40,8 +42,10 @@ signals:
 
 private:
     void emitDeltaList();
+    void emitSessionInfo();               // (re)broadcast the current runtime's path/content-root/wine-flag + wine runners
     std::unique_ptr<AuthoringSession> Session;
     std::string TargetNodeId;
+    QStringList WineRunners;               // wine-family runners usable on this machine (the Run-Windows tool's choices)
 };
 
 // ---------------------------------------------------------------------------
@@ -61,10 +65,9 @@ public:
     QStringList bundleNodeIds() const;
 
 public slots:
-    void start();                                       // first build (auto-resolve the runner)
-    void switchRunner(const QString & RunnerId);        // rebuild under a chosen runner
-    void runExe(const QString & HostPath);
-    void runGuest(const QString & GuestCmd);            // regedit.exe / explorer.exe
+    void start();                                       // open the bare runner-less runtime
+    void runWindows(const QString & Exe, const QString & RunnerId);   // the "Run Windows program" tool
+    void runGuest(const QString & GuestCmd);            // regedit.exe / explorer.exe (post-wine)
     void refreshDelta();
     void captureFiles(const QStringList & Roots, const QString & TargetNode, const QString & DestName, const QString & Target);
     void scanRegistry();                                                            // diff → populate the registry tree
@@ -72,7 +75,8 @@ public slots:
 
 signals:
     // → worker (queued)
-    void requestStart(QString configDump, QString bundlePath, QString nodeId, QStringList chain);
+    void requestStart(QString configDump, QString bundlePath, QString nodeId);
+    void requestRunWindows(QString exe, QString runnerId);
     void requestRunExe(QString exe);
     void requestRefresh();
     void requestCaptureFiles(QStringList roots, QString destDirAbs);

@@ -43,15 +43,20 @@ public:
     AuthoringSession(const AuthoringSession &) = delete;
     AuthoringSession &operator=(const AuthoringSession &) = delete;
 
-    // Builds + mounts the runtime for TargetNodeId's closure and snapshots the registry baseline. RunnerChainIds
-    // pins an explicit runner chain (else auto-resolved from the node's platform). Returns false on build failure.
+    // Opens a BARE, platform-agnostic runtime for TargetNodeId's closure: the node's content overlay + a writable
+    // upper, NO runner and NO prefix (an empty runtime is valid — a fresh node has no content). This is a capture
+    // workbench; tools (RunWindows / native runs / file drops) act on it. Returns false on mount failure.
     bool Begin(const NodeIndex &Idx, const std::string &TargetNodeId,
-               const std::map<std::string, std::string> &VariableOverrides = {},
-               const std::vector<std::string> &RunnerChainIds = {});
+               const std::map<std::string, std::string> &VariableOverrides = {});
+
+    // Tool: run a Windows program (installer, editor, …) in a wine/proton prefix. (Re)builds the runtime under the
+    // CHOSEN runner if needed — its DEFPREFIX + CONTENT_ROOT define the env, the platform is seeded from the runner's
+    // guest, independent of the package — then runs Exe. Unlocks registry capture (PrefixGenerate() becomes true).
+    bool RunWindows(const std::string &Exe, const std::string &RunnerId);
 
     bool Live() const { return Wrapper != nullptr; }
-    bool PrefixGenerate() const;                       // wine prefix session → gates the wine-only tools
-    std::string RunnerId() const;                      // the boundary runner actually resolved for this session
+    bool PrefixGenerate() const;                       // a wine-prefix runtime is live → gates the wine-only tools
+    std::string RunnerId() const;                      // the boundary runner of the current runtime (empty when bare)
     std::filesystem::path RuntimePath() const;         // the live mount root
     std::filesystem::path WriteLayerPath() const;      // the COW delta (capture source)
     std::string ContentRoot() const;                   // where the runner roots game content (for TARGET derivation)
@@ -84,10 +89,17 @@ public:
     static nlohmann::ordered_json MakeDirLayer(const std::string &DirNameRelToBundle, const std::string &Target);
 
 private:
+    // (Re)builds + mounts the runtime: bare (no runner) when Chain is empty, else under the pinned runner (its
+    // prefix/content-root + the platform seeded from its guest). Snapshots the registry baseline for wine runtimes.
+    bool BuildRuntime(const std::vector<std::string> &Chain);
+
     nlohmann::ordered_json                ConfigCopy;
     nlohmann::ordered_json                DummyManifest = nlohmann::ordered_json::object();
     NodeIndex                             Idx;             // owned copy (Params->NodeIdx points into this)
     QDir                                  BundleDir;
+    std::string                           TargetId;        // the node the session is built around / captures into
+    std::map<std::string, std::string>    VarOverrides;    // variable overrides for the build
+    std::string                           CurrentRunnerId; // the runner the current runtime is built under ("" = bare)
     std::unique_ptr<ContainerParams>      Params;
     std::unique_ptr<ContainerWrapper>     Wrapper;
     RegistryWrapper                       Baseline;

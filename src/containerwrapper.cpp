@@ -84,8 +84,9 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     const bool PrefixGen = ContainerParams.PrefixGenerate;
 
-    //A runner that neither generates a prefix nor mounts VFS layers has no content to run — malformed.
-    if (!PrefixGen && !ContainerParams.UsesVFS)
+    //A runner that neither generates a prefix nor mounts VFS layers has no content to run — malformed. EXCEPT in the
+    //authoring bare runtime, where an empty writable overlay (no content yet) is exactly the point: a capture workbench.
+    if (!PrefixGen && !ContainerParams.UsesVFS && !ContainerParams.AuthoringBare)
     {
         LogWarn("ContainerWrapper::BuildContainerRuntime", "No VFS layers found. Package may be malformed.");
         return false;

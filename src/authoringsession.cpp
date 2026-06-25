@@ -14,33 +14,70 @@ AuthoringSession::AuthoringSession(const nlohmann::ordered_json &GlobalConfigJSO
 AuthoringSession::~AuthoringSession() { End(); }
 
 bool AuthoringSession::Begin(const NodeIndex &SrcIdx, const std::string &TargetNodeId,
-                             const std::map<std::string, std::string> &Vars,
-                             const std::vector<std::string> &Chain)
+                             const std::map<std::string, std::string> &Vars)
+{
+    Idx = SrcIdx;                                   // own a copy; Params->NodeIdx points into THIS
+    TargetId = TargetNodeId;
+    VarOverrides = Vars;
+    // Open a BARE, platform-agnostic runtime: the node's content overlay + a writable upper, no runner, no prefix
+    // (an empty runtime is fine — a fresh node has no content). Runner-driven tools (RunWindows) rebuild on demand.
+    return BuildRuntime({});
+}
+
+bool AuthoringSession::RunWindows(const std::string &Exe, const std::string &RunnerId)
+{
+    // "Run a Windows program in a wine/proton prefix" — a per-invocation tool. (Re)build the runtime under the CHOSEN
+    // runner if we're not already there (its DEFPREFIX + CONTENT_ROOT come from the runner; platform is seeded from the
+    // runner's guest, independent of the package), then run the exe against the live mount.
+    if (RunnerId.empty()) { LogErr("AuthoringSession::RunWindows", "No runner chosen."); return false; }
+    if (!Wrapper || CurrentRunnerId != RunnerId)
+        if (!BuildRuntime({ RunnerId })) return false;
+    return RunExe(Exe);
+}
+
+bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
 {
     if (Wrapper) End();
-    Idx = SrcIdx;                                   // own a copy; Params->NodeIdx points into THIS
     Params = std::make_unique<ContainerParams>(BundleDir.path().toStdString());
     Params->NodeIdx        = &Idx;
-    Params->LaunchNodeId   = TargetNodeId;
-    Params->VariableOverrides = Vars;
-    if (!Chain.empty()) Params->RunnerChainIds = Chain;
+    Params->LaunchNodeId   = TargetId;
+    Params->VariableOverrides = VarOverrides;
+
+    if (Chain.empty())
+    {
+        Params->AuthoringBare = true;               // runner-less content overlay + writable upper
+        CurrentRunnerId.clear();
+    }
+    else
+    {
+        Params->RunnerChainIds = Chain;             // pin the chosen runner (its prefix/content-root define the env)
+        // The picked runner defines the platform we're authoring under: seed it onto OUR index copy so the chain
+        // resolves. The user's on-disk node stays platformless (capture is content; identity is authored separately).
+        auto It = Idx.Nodes.find(TargetId);
+        if (It != Idx.Nodes.end() && It->second.HostPlatform.empty())
+        {
+            const Node *R = Idx.Find(Chain.front());
+            if (R && !R->GuestPlatform.empty()) It->second.HostPlatform = R->GuestPlatform.front();
+        }
+        CurrentRunnerId = Chain.front();
+    }
 
     Wrapper = std::make_unique<ContainerWrapper>(ConfigCopy, DummyManifest, *Params);   // ctor runs InitializeContainer
-    if (Wrapper->ContainerParams.RunnerChain.empty())
+    if (!Params->AuthoringBare && Wrapper->ContainerParams.RunnerChain.empty())
     {
-        LogErr("AuthoringSession::Begin", "No runner resolved for node '" + TargetNodeId
-               + "' — give it a PLATFORM.HOST or pin a runner.");
+        LogErr("AuthoringSession::BuildRuntime", "No runner resolved for node '" + TargetId
+               + "' under '" + (Chain.empty() ? std::string() : Chain.front()) + "'.");
         Wrapper.reset(); Params.reset();
         return false;
     }
     if (!Wrapper->BuildContainerRuntime())
     {
-        LogErr("AuthoringSession::Begin", "Failed to build authoring runtime for '" + TargetNodeId + "'.");
+        LogErr("AuthoringSession::BuildRuntime", "Failed to build authoring runtime for '" + TargetId + "'.");
         Wrapper->Cleanup(); Wrapper.reset(); Params.reset();
         return false;
     }
 
-    // Snapshot the prefix registry baseline (wine sessions only) so CaptureRegistryDelta can diff against it.
+    // Snapshot the prefix registry baseline (wine runtimes only) so CaptureRegistryDelta can diff against it.
     HasBaseline = false;
     if (Wrapper->ContainerParams.PrefixGenerate)
     {
@@ -51,8 +88,8 @@ bool AuthoringSession::Begin(const NodeIndex &SrcIdx, const std::string &TargetN
         Baseline.LoadPrefix(Hives);
         HasBaseline = true;
     }
-    LogSucc("AuthoringSession::Begin", "Authoring runtime live for '" + TargetNodeId + "' at "
-            + Wrapper->ContainerParams.RuntimePath.string());
+    LogSucc("AuthoringSession::BuildRuntime", "Authoring runtime live for '" + TargetId + "' at "
+            + Wrapper->ContainerParams.RuntimePath.string() + (Params->AuthoringBare ? " (bare)" : ""));
     return true;
 }
 
