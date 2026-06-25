@@ -96,7 +96,7 @@ TEST(reg_diff_empty_default_is_key_only)
         else if (P.find("Software\\Bethesda") != std::string::npos)
         {
             SawKeyOnly = true;
-            CHECK(KV.empty());                        // key-only — NOT {"":""}
+            CHECK(!L.contains("KEYVALUES"));          // key-only — KEYVALUES omitted entirely, not {} or {"":""}
         }
     }
     CHECK(SawKeyOnly);

@@ -733,7 +733,9 @@ ordered_json RegistryWrapper::DiffToRegEdits(const RegistryWrapper &Baseline) co
         Sub["TYPE"] = "RegEdit";
         Sub["REGPATH"] = RegPath;
         Sub["ARCHITECTURE"] = Groups[RegPath]["ARCHITECTURE"];
-        Sub["KEYVALUES"] = Groups[RegPath]["KEYVALUES"];
+        // Omit KEYVALUES entirely for a key-only edit (no values) — cleaner than an empty {} and exactly the spec's
+        // "a RegEdit with no KEYVALUES creates the key itself".
+        if (!Groups[RegPath]["KEYVALUES"].empty()) Sub["KEYVALUES"] = Groups[RegPath]["KEYVALUES"];
         Out.push_back(Sub);
     }
     return Out;
