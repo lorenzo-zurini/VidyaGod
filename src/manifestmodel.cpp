@@ -29,28 +29,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     if (J.contains("LAYERS")  && J["LAYERS"].is_array()) Out.Layers = J["LAYERS"];
     else                                                  Out.Layers = nlohmann::ordered_json::array();
 
-    //--- LEGACY top-level fields (transitional — read until packages are migrated to Declare* layers; the Declare*
-    //--- layers below override them). Drop this block once the library is fully migrated. ---
-    {
-        const std::string Role = J.value("ROLE", std::string("content"));
-        Out.HasExec   = (Role == "launchable");
-        Out.HasRunner = (Role == "runner");
-        Out.Uid       = J.value("UID", std::string());
-        Out.Game      = J.value("GAME", std::string());
-        Out.Label     = J.value("LABEL", std::string());
-        Out.Recommended = J.value("RECOMMENDED", false);
-        if (J.contains("META") && J["META"].is_object()) Out.Meta = J["META"];
-        if (J.contains("EXEC") && J["EXEC"].is_object()) Out.Exec = J["EXEC"];
-        if (J.contains("PLATFORM") && J["PLATFORM"].is_object())
-        {
-            const auto &P = J["PLATFORM"];
-            Out.HostPlatform = P.value("HOST", std::string());
-            if (P.contains("GUEST") && P["GUEST"].is_array())
-                for (const auto &G : P["GUEST"]) if (G.is_string()) Out.GuestPlatform.push_back(G.get<std::string>());
-        }
-    }
-
-    //--- Identity DERIVED from Declare* layers (the node-native form). A layer overrides any legacy field above. ---
+    //--- Identity is DERIVED entirely from the Declare* layers. A node with none is plain content. ---
     for (const auto &L : Out.Layers)
     {
         if (!L.is_object()) continue;
@@ -126,32 +105,57 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots)
     return Idx;
 }
 
+nlohmann::ordered_json ComposeAcrossClosure(
+    const NodeIndex &Idx, const std::string &NodeId, const std::map<std::string, bool> &Toggles,
+    const std::function<const nlohmann::ordered_json *(const Node &)> &Pick)
+{
+    nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+    for (const std::string &Id : ResolveNodeOrder(Idx, NodeId, Toggles))     // parents first, NodeId last = highest priority
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N) continue;
+        const nlohmann::ordered_json *Obj = Pick(*N);
+        if (!Obj || !Obj->is_object()) continue;
+        for (const auto &[K, V] : Obj->items()) Out[K] = V;                  // later (more-specific) node wins, field-by-field
+    }
+    return Out;
+}
+
 void LinkGames(NodeIndex &Idx)
 {
     // A "game node" is a node with its own library metadata (Presentable). A launchable VARIANT that lacks its own
     // metadata belongs to the game node nearest in its PARENTS closure: it inherits that tile's Meta/UID and records it
     // as its Game key — so the library groups variants under one tile via the graph edge (no GAME string). A launchable
-    // that IS already presentable (or carries a legacy GAME) is a self-contained single-variant tile; left as-is.
-    struct Link { std::string Game; nlohmann::ordered_json Meta; std::string Uid; };
+    // that IS already presentable is a self-contained single-variant tile; left as-is.
+    //
+    // Meta inheritance is FIELD-LEVEL last-wins across the closure (ComposeAcrossClosure over every presentable node) —
+    // the same merge as the launch-time DeclareExec composition — so a variant can override an individual tile field and
+    // still inherit the rest. The Game KEY itself is the nearest presentable ancestor (grouping is a single edge).
+    struct Link { std::string Game; nlohmann::ordered_json Meta; };
     std::map<std::string, Link> Links;
     for (const auto &[Id, N] : Idx.Nodes)
     {
-        if (!N.IsLaunchable() || N.Presentable() || !N.Game.empty()) continue;   // not a variant needing a game link
+        if (!N.IsLaunchable() || N.Presentable()) continue;                  // not a variant needing a game link
+        nlohmann::ordered_json Meta = ComposeAcrossClosure(Idx, Id, {},
+            [](const Node &A) -> const nlohmann::ordered_json * { return A.Presentable() ? &A.Meta : nullptr; });
+        if (Meta.empty()) continue;                                          // no presentable ancestor → not a variant
         // Nearest presentable ancestor (closure is parents-before-children, this node last → scan back from the end).
+        std::string Game;
         const std::vector<std::string> Order = ResolveNodeOrder(Idx, Id, {});
-        for (auto It = Order.rbegin(); It != Order.rend(); ++It)
+        for (auto It = Order.rbegin(); It != Order.rend() && Game.empty(); ++It)
         {
             if (*It == Id) continue;
             const Node *A = Idx.Find(*It);
-            if (A && A->Presentable()) { Links[Id] = { A->NodeId, A->Meta, A->Uid }; break; }
+            if (A && A->Presentable()) Game = A->NodeId;
         }
+        Links[Id] = { Game, std::move(Meta) };
     }
     for (auto &[Id, L] : Links)
     {
         Node &N = Idx.Nodes[Id];
         N.Game = L.Game;
-        if (!N.Presentable()) N.Meta = L.Meta;   // inherit the tile metadata so the variant is presentable + grouped
-        if (N.Uid.empty())    N.Uid  = L.Uid;
+        N.Meta = L.Meta;                                                     // the closure-composed tile metadata
+        if (N.Uid.empty()) N.Uid = L.Meta.value("UID", std::string());
     }
 }
 

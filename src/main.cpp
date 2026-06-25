@@ -205,8 +205,16 @@ int main(int argc, char *argv[])
     //prevents two instances from fighting over the same runtime/TEMP and makes the stale-mount sweep
     //below safe — since we hold the lock, any leftover mounts must be from a crashed run, never a live
     //sibling. The fd is held for the whole process lifetime (released by the kernel on exit/crash).
+    //--bypass-single-instance-lock: proceed even if the lock is held (e.g. a headless --resolve-only/--validate-nodes
+    //check while the GUI is open). Skips the guard — so the stale-mount sweep below can no longer assume a leftover
+    //mount is from a crashed run, not a live sibling; use it only for read-only/CLI runs you know are safe.
+    bool BypassInstanceLock = false;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bypass-single-instance-lock") BypassInstanceLock = true;
+
     int InstanceLockFd = AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
-    if (InstanceLockFd < 0)
+    if (InstanceLockFd < 0 && BypassInstanceLock)
+        LogWarn("main.cpp", "Single-instance lock held, but --bypass-single-instance-lock given — proceeding without the lock.");
+    else if (InstanceLockFd < 0)
     {
         LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting.");
         if (!LaunchParameters.RunningHeadless)

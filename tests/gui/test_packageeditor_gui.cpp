@@ -27,7 +27,7 @@ json MinimalConfig()
 // Write a node fragment <id>.json into dir.
 void WriteNode(const QString & dir, const QString & id, const json & extra = json::object())
 {
-    json node = json{{"NODE_ID", id.toStdString()}, {"ROLE", "content"}, {"LAYERS", json::array()}};
+    json node = json{{"NODE_ID", id.toStdString()}, {"LAYERS", json::array()}};
     for (auto & [k, v] : extra.items()) node[k] = v;
     QFile f(dir + "/" + id + ".json");
     JSONOps::SaveJSON(&node, &f);
@@ -84,9 +84,10 @@ private slots:
         model.initPackage(dir.path(), nullptr);
 
         QSignalSpy reloadSpy(&model, &PackageEditorModel::documentReloaded);
-        model.replaceNodeJson(0, json{{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"LAYERS", json::array()}});
+        model.replaceNodeJson(0, json{{"NODE_ID", "game"}, {"LAYERS", json::array({
+            json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "game.exe"}} })}});
         QCOMPARE(reloadSpy.count(), 1);
-        QCOMPARE(model.doc()["NODES"][0].value("ROLE", std::string()), std::string("launchable"));
+        QCOMPARE(model.doc()["NODES"][0]["LAYERS"][0].value("TYPE", std::string()), std::string("DeclareExec"));
     }
 
     // SaveNodes re-runs validation and notifies the panel.

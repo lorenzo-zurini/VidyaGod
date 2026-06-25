@@ -820,7 +820,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const std::string LaunchId = CP.LaunchNodeId;
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
-    if (!Launch->IsLaunchable()) LogWarn("InitializeFromNode", "Node '" + LaunchId + "' is not ROLE:launchable.");
+    if (!Launch->IsLaunchable()) LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no DeclareExec (not launchable).");
 
     CP.subgame_id = LaunchId;  CP.VariantID = "default";
     CP.PackageUID = Launch->Uid.empty() ? LaunchId : Launch->Uid;
@@ -928,15 +928,12 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
 
     //Compose the launch EXEC across the closure: every DeclareExec contributor merges field-by-field in closure order
     //(parents first, the launchable last → highest priority), so a base supplies CONTENTPATH/WORKDIR and a variant/mod
-    //overrides EXEARGS, etc. Runners are excluded (their EXEC is the runner's own, resolved via the chain). Mirrors the
-    //CustomVar/Persist composition. Falls back to the launch node's own Exec when no DeclareExec contributors.
-    CP.ComposedExec = nlohmann::ordered_json::object();
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates))
-    {
-        const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->IsLaunchable() || !N->Exec.is_object()) continue;
-        for (auto &[K, V] : N->Exec.items()) CP.ComposedExec[K] = V;     // later (more-specific) node wins
-    }
+    //overrides EXEARGS, etc. Runners are excluded (their EXEC is the runner's own, resolved via the chain). Uses the same
+    //ComposeAcrossClosure merge as the index-time DeclareLibraryItem/Meta inheritance and the CustomVar/Persist passes.
+    CP.ComposedExec = ManifestModel::ComposeAcrossClosure(Idx, LaunchId, CP.ModuleStates,
+        [](const Node &N) -> const nlohmann::ordered_json * {
+            return (!N.IsRunner() && N.IsLaunchable() && N.Exec.is_object()) ? &N.Exec : nullptr;
+        });
 
     //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
     //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.

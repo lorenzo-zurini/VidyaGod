@@ -103,6 +103,16 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots)
 // by BuildNodeIndex and must be re-run by any caller that assembles an index manually (ScanBundleNodes).
 void LinkGames(NodeIndex &Idx);
 
+// Field-level last-wins composition of an object-shaped identity layer across a node's resolved closure. Walks
+// ResolveNodeOrder (parents first, the node itself last = highest priority) and merges, key-by-key, the object
+// returned by Pick() for every node it accepts (Pick returns nullptr to skip a node). The one merge mechanism
+// behind both the launch-time DeclareExec composition (a base supplies CONTENTPATH, a variant overrides EXEARGS)
+// and the index-time DeclareLibraryItem/Meta inheritance (a variant inherits its tile's TITLE/COVER) — the two
+// object-shaped Declare* layers. Mirrors how CustomVar/Persist aggregate across the same closure.
+nlohmann::ordered_json ComposeAcrossClosure(
+    const NodeIndex &Idx, const std::string &NodeId, const std::map<std::string, bool> &Toggles,
+    const std::function<const nlohmann::ordered_json *(const Node &)> &Pick);
+
 // Resolve the load-ordered node closure for launching LaunchNodeId: walk PARENTS across the global graph,
 // keeping required parents always and optional ones per Toggles (else DEFAULT), applying EXCLUDE (symmetric,
 // first-kept wins) and the hierarchy gate (a node only enters if a kept child pulls it). Output is topo-ordered

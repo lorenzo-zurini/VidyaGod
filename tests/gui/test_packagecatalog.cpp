@@ -38,9 +38,11 @@ private slots:
     void node_has_content_vs_contentless()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"},
-            {"LAYERS", json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "data"}} })}});
-        writeJson(dir.path() + "/empty.json", json{{"NODE_ID", "empty"}, {"ROLE", "launchable"}, {"LAYERS", json::array()}});
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
+                                     json{{"TYPE", "VFSDirLayer"}, {"PATH", "data"}} })}});
+        writeJson(dir.path() + "/empty.json", json{{"NODE_ID", "empty"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
         QDir(dir.path() + "/data").mkpath(".");                 // make 'game' hydrated
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
@@ -53,8 +55,9 @@ private slots:
     void node_hydrated_tracks_content_presence()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"},
-            {"LAYERS", json::array({ json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
+                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
 
         NodeIndex idx0; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx0);
         QVERIFY(!PackageCatalog::NodeHydrated(idx0, "game"));    // blob.bin missing
@@ -68,8 +71,9 @@ private slots:
     void dehydrate_node_removes_content_keeps_manifest()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"},
-            {"LAYERS", json::array({ json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
+                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
         writeFile(dir.path() + "/blob.bin");
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
@@ -118,15 +122,18 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         // Dehydrated game: content zip has an IPFS CID but the file is absent → a fetch target.
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"UID", "g"},
-            {"PLATFORM", {{"HOST", "win32"}}}, {"EXEC", {{"CONTENTPATH", "g.exe"}}}, {"PARENTS", json::array({"content"})}});
-        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"ROLE", "content"}, {"LAYERS", json::array({
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "g"}},
+                                     json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })},
+            {"PARENTS", json::array({"content"})}});
+        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"LAYERS", json::array({
             json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_GAME"}}}} })}});
         // Runner with a dehydrated build (its build is a PARENT content node, per the runner closure).
-        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"}, {"ROLE", "runner"},
-            {"PLATFORM", {{"HOST", ManifestModel::MachinePlatform()}, {"GUEST", json::array({"win32"})}}},
-            {"EXEC", {{"EXECUTABLE", "x"}}}, {"PARENTS", json::array({"winebuild"})}});
-        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"ROLE", "content"}, {"LAYERS", json::array({
+        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareRunner"}, {"HOST", ManifestModel::MachinePlatform()},
+                                          {"GUEST", json::array({"win32"})}, {"EXECUTABLE", "x"}} })},
+            {"PARENTS", json::array({"winebuild"})}});
+        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"LAYERS", json::array({
             json{{"TYPE", "VFSZipLayer"}, {"PATH", "wine.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_WINE"}}}} })}});
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);

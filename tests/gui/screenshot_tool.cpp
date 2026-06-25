@@ -51,13 +51,13 @@ int main(int argc, char ** argv)
     QDir(bundle).removeRecursively(); QDir().mkpath(bundle);
 
     writeNode(bundle, "aoe2", json{
-        {"ROLE", "launchable"}, {"GROUP", "aoe2"}, {"LABEL", "HD Edition"}, {"RECOMMENDED", true},
-        {"UID", "aoe2-hd"},
         {"PARENTS", json::array({"wine-ge", "aoe2-base"})},
-        {"META", {{"TITLE", "Age of Empires II"}, {"DEVELOPER", "Ensemble Studios"},
-                  {"PUBLISHER", "Microsoft"}, {"RELEASEDATE", "1999"}, {"SERIES", "Age of Empires"}}},
-        {"EXEC", {{"CONTENTPATH", "AoK HD.exe"}, {"EXEARGS", ""}, {"WORKDIR", ""}}},
         {"LAYERS", json::array({
+            json{{"TYPE", "DeclareLibraryItem"}, {"UID", "aoe2-hd"}, {"TITLE", "Age of Empires II"},
+                 {"DEVELOPER", "Ensemble Studios"}, {"PUBLISHER", "Microsoft"}, {"RELEASEDATE", "1999"},
+                 {"SERIES", "Age of Empires"}},
+            json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "AoK HD.exe"},
+                 {"EXEARGS", ""}, {"WORKDIR", ""}, {"LABEL", "HD Edition"}, {"RECOMMENDED", true}},
             json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"TARGET", "drive_c/aoe2"}},
             json{{"TYPE", "RegEdit"}, {"REGPATH", "HKCU\\Software\\Microsoft\\AoE2"}, {"ARCHITECTURE", "32"},
                  {"KEYVALUES", {{"Resolution", "1920x1080"}, {"Windowed", "0"}}}},
@@ -66,12 +66,12 @@ int main(int argc, char ** argv)
             json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users/steamuser/Saved Games/aoe2"}}})}});
 
     writeNode(bundle, "wine-ge", json{
-        {"ROLE", "runner"},
-        {"PLATFORM", {{"HOST", "linux64"}, {"GUEST", json::array({"win32", "win64"})}}},
-        {"EXEC", {{"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
-                  {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})},
-                  {"ENV", {{"PROTON_LOG", "%PROTON_LOG%"}}}}},
-        {"LAYERS", json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}} })}});
+        {"LAYERS", json::array({
+            json{{"TYPE", "DeclareRunner"}, {"HOST", "linux64"}, {"GUEST", json::array({"win32", "win64"})},
+                 {"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
+                 {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})},
+                 {"ENV", {{"PROTON_LOG", "%PROTON_LOG%"}}}},
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}} })}});
 
     const json cfg = json{{"Settings", {{"Repositories", json::array()}}}};
 

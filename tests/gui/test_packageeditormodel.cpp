@@ -34,8 +34,8 @@ private slots:
     void load_nodes_reads_bundle_and_tags_files()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"ROLE", "content"}, {"LAYERS", json::array()}});
-        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", json::array({"base"})},
+        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"PARENTS", json::array({"base"})},
             {"LAYERS", json::array()}});
         writeNode(dir.path(), "MANIFEST.json", json{{"LEGACY", true}});   // no NODE_ID → ignored
 
@@ -54,7 +54,7 @@ private slots:
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
         QCOMPARE((int)m.doc()["NODES"].size(), 1);
-        QCOMPARE(m.doc()["NODES"][0].value("ROLE", std::string()), std::string("content"));
+        QVERIFY(m.doc()["NODES"][0]["LAYERS"].empty());   // a bare content node — no Declare* identity
     }
 
     // FileForNode prefers <NODE_ID>.json (so a rename re-files), falling back to __FILE__ then untitled.
@@ -70,7 +70,7 @@ private slots:
     void save_nodes_renames_refiles_and_cleans_orphan()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "old.json", json{{"NODE_ID", "old"}, {"ROLE", "content"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "old.json", json{{"NODE_ID", "old"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -89,15 +89,16 @@ private slots:
     void replace_node_json_preserves_tag_and_reloads()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "n.json", json{{"NODE_ID", "n"}, {"ROLE", "content"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "n.json", json{{"NODE_ID", "n"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
 
         QSignalSpy reloaded(&m, &PackageEditorModel::documentReloaded);
-        m.replaceNodeJson(0, json{{"NODE_ID", "n"}, {"ROLE", "launchable"}, {"LAYERS", json::array()}});
+        m.replaceNodeJson(0, json{{"NODE_ID", "n"}, {"LAYERS", json::array({
+            json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "n.exe"}} })}});
 
-        QCOMPARE(m.doc()["NODES"][0].value("ROLE", std::string()), std::string("launchable"));
+        QCOMPARE(m.doc()["NODES"][0]["LAYERS"][0].value("TYPE", std::string()), std::string("DeclareExec"));
         QVERIFY(m.doc()["NODES"][0].contains("__FILE__"));   // provenance tag survived the swap
         QVERIFY(reloaded.count() >= 1);
     }
@@ -106,7 +107,7 @@ private slots:
     void revalidate_flags_bad_graph_and_signals()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"},
+        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"},
             {"LAYERS", json::array({ json{{"TYPE", "VFSDirLayer"}} })}});   // VFS layer with no PATH → error
 
         PackageEditorModel m(&Cfg, nullptr);
@@ -122,8 +123,8 @@ private slots:
     void revalidate_clean_graph_has_no_errors()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"ROLE", "content"}, {"LAYERS", json::array()}});
-        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"ROLE", "launchable"},
+        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"},
             {"PARENTS", json::array({"base"})}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
@@ -135,7 +136,7 @@ private slots:
     void known_node_ids_and_platforms()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"ROLE", "content"}, {"LAYERS", json::array()}});
+        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"LAYERS", json::array()}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);

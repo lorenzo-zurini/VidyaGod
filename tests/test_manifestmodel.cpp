@@ -37,7 +37,7 @@ static bool AnyContains(const std::vector<std::string> &V, const std::string &Ne
 TEST(parse_rejects_missing_node_id)
 {
     Node N;
-    CHECK(!ManifestModel::ParseNode(ordered_json{{"ROLE", "content"}}, "f.json", "/b", N));      // no NODE_ID
+    CHECK(!ManifestModel::ParseNode(ordered_json{{"FOO", "bar"}}, "f.json", "/b", N));      // no NODE_ID
     CHECK(!ManifestModel::ParseNode(ordered_json{{"NODE_ID", ""}}, "f.json", "/b", N));           // empty NODE_ID
     CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID", "ok"}}, "f.json", "/b", N));
     CHECK(!N.IsLaunchable() && !N.IsRunner());   // a bare node is content (no Declare* identity)
@@ -46,8 +46,8 @@ TEST(parse_rejects_missing_node_id)
 TEST(resolve_order_parents_before_launchable)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "base"}, {"ROLE", "content"}});
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"base"}}});
+    Add(Idx, {{"NODE_ID", "base"}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"base"}}});
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "game", {});
     CHECK(Contains(Order, "base"));
     CHECK(Contains(Order, "game"));
@@ -58,9 +58,9 @@ TEST(resolve_order_parents_before_launchable)
 TEST(resolve_order_optional_gated_by_toggle)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "base"}, {"ROLE", "content"}});
-    Add(Idx, {{"NODE_ID", "opt"},  {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", false}});
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"base", "opt"}}});
+    Add(Idx, {{"NODE_ID", "base"}});
+    Add(Idx, {{"NODE_ID", "opt"},  {"OPTIONAL", true}, {"DEFAULT", false}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"base", "opt"}}});
 
     CHECK(!Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {}), "opt"));                 // default off
     CHECK(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"opt", true}}), "opt"));     // toggled on
@@ -70,9 +70,9 @@ TEST(resolve_order_optional_gated_by_toggle)
 TEST(resolve_order_exclude_is_mutually_exclusive)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "a"},    {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", true}, {"EXCLUDE", {"b"}}});
-    Add(Idx, {{"NODE_ID", "b"},    {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", true}, {"EXCLUDE", {"a"}}});
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"a", "b"}}});
+    Add(Idx, {{"NODE_ID", "a"},    {"OPTIONAL", true}, {"DEFAULT", true}, {"EXCLUDE", {"b"}}});
+    Add(Idx, {{"NODE_ID", "b"},    {"OPTIONAL", true}, {"DEFAULT", true}, {"EXCLUDE", {"a"}}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"a", "b"}}});
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "game", {});
     CHECK(Contains(Order, "a") != Contains(Order, "b"));   // exactly one of the mutually-exclusive pair
 }
@@ -82,9 +82,9 @@ TEST(resolve_order_exclude_is_mutually_exclusive)
 TEST(resolve_order_explicit_toggle_beats_conflicting_default)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "hd"},   {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", true},  {"EXCLUDE", {"lo"}}});
-    Add(Idx, {{"NODE_ID", "lo"},   {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", false}, {"EXCLUDE", {"hd"}}});
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"hd", "lo"}}});
+    Add(Idx, {{"NODE_ID", "hd"},   {"OPTIONAL", true}, {"DEFAULT", true},  {"EXCLUDE", {"lo"}}});
+    Add(Idx, {{"NODE_ID", "lo"},   {"OPTIONAL", true}, {"DEFAULT", false}, {"EXCLUDE", {"hd"}}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"hd", "lo"}}});
 
     // Default: hd (default-on) kept, lo dropped.
     const auto Def = ManifestModel::ResolveNodeOrder(Idx, "game", {});
@@ -98,7 +98,7 @@ TEST(resolve_order_explicit_toggle_beats_conflicting_default)
 TEST(resolve_order_missing_parent_reported)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"ghost"}}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"ghost"}}});
     std::vector<std::string> Missing;
     ManifestModel::ResolveNodeOrder(Idx, "game", {}, &Missing);
     CHECK(Contains(Missing, "ghost"));
@@ -107,9 +107,9 @@ TEST(resolve_order_missing_parent_reported)
 TEST(optional_nodes_lists_toggleable_ancestors)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "base"}, {"ROLE", "content"}});
-    Add(Idx, {{"NODE_ID", "opt"},  {"ROLE", "content"}, {"OPTIONAL", true}, {"DEFAULT", true}});
-    Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PARENTS", {"base", "opt"}}});
+    Add(Idx, {{"NODE_ID", "base"}});
+    Add(Idx, {{"NODE_ID", "opt"},  {"OPTIONAL", true}, {"DEFAULT", true}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"base", "opt"}}});
     bool SawOpt = false, SawBase = false;
     for (const Node *N : ManifestModel::OptionalNodes(Idx, "game"))
     {
@@ -124,15 +124,15 @@ TEST(validate_flags_missing_parent_and_cycle)
 {
     {   // missing parent → error
         NodeIndex Idx;
-        Add(Idx, {{"NODE_ID", "game"}, {"ROLE", "launchable"}, {"PLATFORM", {{"HOST", "win32"}}}, {"PARENTS", {"ghost"}}});
+        Add(Idx, {{"NODE_ID", "game"}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}}}}, {"PARENTS", {"ghost"}}});
         std::vector<std::string> Errors, Warnings;
         ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
         CHECK(AnyContains(Errors, "ghost"));
     }
     {   // PARENTS cycle → error (and must not hang)
         NodeIndex Idx;
-        Add(Idx, {{"NODE_ID", "a"}, {"ROLE", "content"}, {"PARENTS", {"b"}}});
-        Add(Idx, {{"NODE_ID", "b"}, {"ROLE", "content"}, {"PARENTS", {"a"}}});
+        Add(Idx, {{"NODE_ID", "a"}, {"PARENTS", {"b"}}});
+        Add(Idx, {{"NODE_ID", "b"}, {"PARENTS", {"a"}}});
         std::vector<std::string> Errors, Warnings;
         ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
         CHECK(AnyContains(Errors, "cycle"));
@@ -142,7 +142,7 @@ TEST(validate_flags_missing_parent_and_cycle)
 TEST(validate_flags_vfs_layer_without_path)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "c"}, {"ROLE", "content"}, {"LAYERS", {{{"TYPE", "VFSZipLayer"}}}}});   // no PATH/SOURCE
+    Add(Idx, {{"NODE_ID", "c"}, {"LAYERS", {{{"TYPE", "VFSZipLayer"}}}}});   // no PATH/SOURCE
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "PATH"));
@@ -173,7 +173,7 @@ TEST(validate_flags_compressed_zip_layer)
     // Compressed → flagged.
     MakeZip((Dir / "c.zip").string(), /*Stored=*/false);
     {
-        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"}, {"ROLE", "content"},
+        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"},
             {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "c.zip"}}}}}, "f.json", Dir.string(), N);
         NodeIndex Idx; Idx.Nodes["z"] = N;
         std::vector<std::string> Errors, Warnings;
@@ -184,7 +184,7 @@ TEST(validate_flags_compressed_zip_layer)
     // Stored → clean.
     MakeZip((Dir / "s.zip").string(), /*Stored=*/true);
     {
-        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"}, {"ROLE", "content"},
+        Node N; ManifestModel::ParseNode({{"NODE_ID", "z"},
             {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "s.zip"}}}}}, "f.json", Dir.string(), N);
         NodeIndex Idx; Idx.Nodes["z"] = N;
         std::vector<std::string> Errors, Warnings;
@@ -200,7 +200,7 @@ TEST(validate_flags_compressed_zip_layer)
 TEST(validate_warns_unzipped_dir_layer)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "d"}, {"ROLE", "content"}, {"LAYERS", {{{"TYPE", "VFSDirLayer"}, {"PATH", "payload"}}}}});
+    Add(Idx, {{"NODE_ID", "d"}, {"LAYERS", {{{"TYPE", "VFSDirLayer"}, {"PATH", "payload"}}}}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Warnings, "unzipped authoring layer"));
@@ -212,10 +212,9 @@ TEST(validate_warns_unzipped_dir_layer)
 TEST(validate_warns_runner_self_layers)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "r"}, {"ROLE", "runner"},
-              {"PLATFORM", {{"HOST", "linux64"}, {"GUEST", {"win64"}}}},
-              {"EXEC", {{"EXECUTABLE", "x"}}},
-              {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "rt.zip"}}}}});
+    Add(Idx, {{"NODE_ID", "r"},
+              {"LAYERS", {{{"TYPE", "DeclareRunner"}, {"HOST", "linux64"}, {"GUEST", {"win64"}}, {"EXECUTABLE", "x"}},
+                          {{"TYPE", "VFSZipLayer"}, {"PATH", "rt.zip"}}}}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Warnings, "runner layers are IGNORED"));
@@ -224,8 +223,8 @@ TEST(validate_warns_runner_self_layers)
 TEST(validate_flags_asymmetric_exclude)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "a"}, {"ROLE", "content"}, {"EXCLUDE", {"b"}}});   // a excludes b, but b does not exclude a
-    Add(Idx, {{"NODE_ID", "b"}, {"ROLE", "content"}});
+    Add(Idx, {{"NODE_ID", "a"}, {"EXCLUDE", {"b"}}});   // a excludes b, but b does not exclude a
+    Add(Idx, {{"NODE_ID", "b"}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Warnings, "symmetric"));
@@ -280,4 +279,24 @@ TEST(link_games_groups_variants_under_tile)
     CHECK_EQ(v1->Uid, std::string("7"));
     CHECK(Idx.Find("mygame")->Presentable());            // the tile is presentable
     CHECK(!Idx.Find("mygame")->IsLaunchable());          // but not launchable itself
+}
+
+// Identity-layer composition is FIELD-LEVEL last-wins along the closure (ComposeAcrossClosure): a variant that carries
+// its OWN partial DeclareLibraryItem overrides just that field of its tile and inherits the rest. Same merge as the
+// launch-time DeclareExec composition.
+TEST(declare_library_item_composes_field_level)
+{
+    NodeIndex Idx;
+    { ordered_json g; g["NODE_ID"]="game"; g["LAYERS"]=ordered_json::array({
+        ordered_json{{"TYPE","DeclareLibraryItem"},{"UID","7"},{"TITLE","Base Title"},{"DEVELOPER","Acme"}} }); Add(Idx, g); }
+    // The variant declares a DeclareExec AND a partial DeclareLibraryItem (overrides TITLE only).
+    { ordered_json v; v["NODE_ID"]="variant"; v["PARENTS"]=ordered_json::array({"game"}); v["LAYERS"]=ordered_json::array({
+        ordered_json{{"TYPE","DeclareLibraryItem"},{"TITLE","Override Title"}},
+        ordered_json{{"TYPE","DeclareExec"},{"PLATFORM","win32"},{"CONTENTPATH","g.exe"}} }); Add(Idx, v); }
+
+    const nlohmann::ordered_json Meta = ManifestModel::ComposeAcrossClosure(Idx, "variant", {},
+        [](const Node &N) -> const nlohmann::ordered_json * { return N.Presentable() ? &N.Meta : nullptr; });
+    CHECK_EQ(Meta.value("TITLE", std::string()), std::string("Override Title"));   // variant wins on its field
+    CHECK_EQ(Meta.value("DEVELOPER", std::string()), std::string("Acme"));         // inherited from the tile
+    CHECK_EQ(Meta.value("UID", std::string()), std::string("7"));                  // inherited from the tile
 }

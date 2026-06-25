@@ -83,7 +83,7 @@ void PackageEditorModel::LoadNodes()
     }
 
     if (Doc["NODES"].empty())
-        Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"ROLE", "content"}, {"LAYERS", json::array()} }));
+        Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"LAYERS", json::array()} }));   // a bare content node
 
     Revalidate();
     LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc["NODES"].size()) + " node(s).");
