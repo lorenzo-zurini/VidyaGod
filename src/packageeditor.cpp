@@ -58,7 +58,7 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
     MainLayout->addLayout(Toolbar);
 
     connect(AddNodeBtn, &QPushButton::clicked, this, [this](){
-        json NewNode = json::object({ {"NODE_ID", "new_node"}, {"ROLE", "content"}, {"LAYERS", json::array()} });
+        json NewNode = json::object({ {"NODE_ID", "new_node"}, {"LAYERS", json::array()} });   // a bare content node; add Declare* layers to give it identity
         (*MANIFESTJSON)["NODES"].push_back(NewNode);
         Model->SaveNodes(); BuildUI();
     });

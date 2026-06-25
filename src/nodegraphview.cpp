@@ -37,8 +37,8 @@ void NodeGraphView::SetGraph(const nlohmann::ordered_json & NodesArray)
             if (!N.is_object()) continue;
             GNode G;
             G.Id    = N.value("NODE_ID", std::string());
-            // Identity (for the node colour) is derived from the Declare* layers; legacy ROLE is the transitional fallback.
-            G.Role  = N.value("ROLE", std::string("content"));
+            // Identity (for the node colour) is derived from the Declare* layers; a node with none is content.
+            G.Role  = "content";
             if (N.contains("LAYERS") && N["LAYERS"].is_array())
                 for (const auto &L : N["LAYERS"])
                 {
