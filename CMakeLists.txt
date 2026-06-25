@@ -273,6 +273,7 @@ add_gui_test(test_packagecatalog)
 add_gui_test(test_appmodel)
 add_gui_test(test_tabs)
 add_gui_test(test_authoringsession)
+add_gui_test(test_deltatree)
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)

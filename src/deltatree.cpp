@@ -43,12 +43,10 @@ void DeltaTree::setPaths(const QStringList & Paths)
         }
         if (Parent) Parent->setData(0, Qt::UserRole, true);   // the path's terminal node is a real entry (file / key)
     }
-    // Directories (items with children) reflect their subtree via auto-tristate.
-    std::function<void(QTreeWidgetItem *)> Mark = [&](QTreeWidgetItem * It){
-        if (It->childCount() > 0) It->setFlags(It->flags() | Qt::ItemIsAutoTristate);
-        for (int i = 0; i < It->childCount(); ++i) Mark(It->child(i));
-    };
-    for (int i = 0; i < topLevelItemCount(); ++i) Mark(topLevelItem(i));
+    // NB: directories are NOT given Qt::ItemIsAutoTristate. Auto-tristate would promote a parent to fully-checked
+    // whenever all its children are checked — so ticking a lone deep dir (the common pfx/drive_c/<game> single-child
+    // chain) would climb the capture root up to the empty parent. Parent state is managed manually in onItemChanged:
+    // upward propagation only ever yields PartiallyChecked; a directory is fully Checked only when ticked directly.
     Updating = false;
 }
 
@@ -65,14 +63,23 @@ void DeltaTree::checkAll(bool On)
 void DeltaTree::onItemChanged(QTreeWidgetItem * It, int /*Col*/)
 {
     if (Updating) return;                              // ignore our own propagation / restyle writes
-    if (It->childCount() > 0)
+    Updating = true;
+    const Qt::CheckState St = It->checkState(0);
+    if (It->childCount() > 0 && St != Qt::PartiallyChecked)
+        setSubtreeChecked(It, St);                     // a real toggle on a directory → set its whole subtree
+
+    // Propagate UPWARD as PartiallyChecked only: a parent reflects "something inside me is selected" but is NEVER
+    // auto-promoted to fully Checked just because all its children are. So ticking a directory captures THAT directory
+    // (and greens only it), never its parent chain — even when the parent has no other children. The user makes a
+    // parent a capture root by ticking the parent itself. Bottom-up: each ancestor reads its just-updated children.
+    for (QTreeWidgetItem * A = It->parent(); A; A = A->parent())
     {
-        const Qt::CheckState St = It->checkState(0);
-        if (St != Qt::PartiallyChecked)                // a real toggle on a directory → set its whole subtree
-        {
-            Updating = true; setSubtreeChecked(It, St); Updating = false;
-        }
+        bool AnyOn = false;
+        for (int i = 0; i < A->childCount(); ++i)
+            if (A->child(i)->checkState(0) != Qt::Unchecked) { AnyOn = true; break; }
+        A->setCheckState(0, AnyOn ? Qt::PartiallyChecked : Qt::Unchecked);
     }
+    Updating = false;
     restyleSelection();                                  // re-bold the capture-root rows (the "levels")
     emit checkedChanged();
 }
