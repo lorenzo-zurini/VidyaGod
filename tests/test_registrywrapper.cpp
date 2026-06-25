@@ -68,6 +68,41 @@ TEST(reg_apply_regedits_then_diff_roundtrips)
     CHECK(Found);
 }
 
+TEST(reg_diff_empty_default_is_key_only)
+{
+    // A key whose only content is an empty (Default) value is the "this key exists" case (wine/installer). The diff
+    // must emit it KEY-ONLY (empty KEYVALUES), not as {"":""} noise; real named values + non-empty defaults survive.
+    RegistryWrapper Baseline;   // empty
+    RegistryWrapper RW;
+    ordered_json Subs = ordered_json::array({
+        ordered_json{{"TYPE","RegEdit"},{"OVERRIDE",false},{"REGPATH","Software\\Bethesda"},{"KEYVALUES",{{"",""}}}},
+        ordered_json{{"TYPE","RegEdit"},{"OVERRIDE",false},{"REGPATH","Software\\Bethesda\\App"},
+                     {"KEYVALUES",{{"",""},{"Installed Path","C:\\x"}}}}
+    });
+    CHECK(RW.ApplyRegEdits(Subs, /*WantOverride=*/false));
+
+    ordered_json Delta = RW.DiffToRegEdits(Baseline);
+    bool SawKeyOnly = false, SawApp = false;
+    for (const auto & L : Delta)
+    {
+        const std::string P = L.value("REGPATH", std::string());
+        const ordered_json KV = L.value("KEYVALUES", ordered_json::object());
+        if (P.find("Software\\Bethesda\\App") != std::string::npos)
+        {
+            SawApp = true;
+            CHECK(!KV.contains(""));                  // empty default stripped
+            CHECK(KV.contains("Installed Path"));     // real named value kept
+        }
+        else if (P.find("Software\\Bethesda") != std::string::npos)
+        {
+            SawKeyOnly = true;
+            CHECK(KV.empty());                        // key-only — NOT {"":""}
+        }
+    }
+    CHECK(SawKeyOnly);
+    CHECK(SawApp);
+}
+
 TEST(reg_override_pass_isolation)
 {
     // ApplyRegEdits(WantOverride=true) must ignore non-override RegEdits and vice versa.

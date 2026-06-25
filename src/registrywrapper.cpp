@@ -698,6 +698,10 @@ void WalkDiff(const RegistryKey *Node, const std::string &RootLabel, const std::
                     Groups[regPath]["KEYVALUES"] = ordered_json::object();
                     Order.push_back(regPath);
                 }
+                // An empty (Default) value (Name "" → "") carries no information beyond "this key exists". Capture the
+                // key (key-only — EnsureKey creates it) but omit the {"":""} noise. Named values and non-empty defaults
+                // are kept. The group was already created above, so the key still gets emitted.
+                if (Name.empty() && Val.Type == RegType::Sz && Val.Str.empty()) continue;
                 Groups[regPath]["KEYVALUES"][Name] = RegistryWrapper::ValueToManifestString(Val);
             }
         }
