@@ -81,14 +81,17 @@ int main(int argc, char ** argv)
         shot(&editor, 1500, 950, out + "/01_packageeditor_full.png");
     }
 
-    // ---- individual sections (model bound to node 0 = the launchable) ----
+    // ---- individual sections (node 0 = the launchable/tile, node 1 = the runner) ----
+    // Identity is now a derived badge; all the Declare*/content/edit editors live in the LAYERS section.
     PackageEditorModel model(&cfg, nullptr);
     model.initPackage(bundle, nullptr);
-    { NodeIdentitySection s(&model, 0); shot(&s, 560, 280, out + "/02_section_identity.png"); }
-    { NodePlatformSection s(&model, 1); shot(&s, 560, 320, out + "/03_section_platform_runner.png"); }
-    { NodeExecSection     s(&model, 0); shot(&s, 620, 480, out + "/04_section_exec.png"); }
-    { NodeMetaSection     s(&model, 0); shot(&s, 620, 560, out + "/05_section_meta.png"); }
-    { NodeLayersSection   s(&model, 0); shot(&s, 680, 760, out + "/06_section_layers.png"); }
+    { NodeIdentitySection  s(&model, 0); shot(&s, 560, 280, out + "/02_section_identity.png"); }
+    { NodeParentsSection   s(&model, 0); shot(&s, 560, 320, out + "/03_section_parents.png"); }
+    { NodeSelectionSection s(&model, 0); shot(&s, 560, 320, out + "/04_section_selection.png"); }
+    // node 0's LAYERS: DeclareLibraryItem (cover drop) + DeclareExec + VFS/RegEdit/CustomVar/Persist
+    { NodeLayersSection    s(&model, 0); shot(&s, 700, 900, out + "/05_section_layers_game.png"); }
+    // node 1's LAYERS: DeclareRunner + the runner's VFS build layer
+    { NodeLayersSection    s(&model, 1); shot(&s, 700, 520, out + "/06_section_layers_runner.png"); }
 
     // ---- the real MainWindow against the live ~/.VidyaGod (read-only render; IPFS node is NOT started, so the
     // IPFS tab shows "unavailable" — everything else renders with the real library/catalog/settings) ----
