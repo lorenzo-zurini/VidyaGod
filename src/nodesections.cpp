@@ -446,8 +446,28 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                     {
                         AddText(r++, "TITLE", "the game's display title (the library tile)");
                         AddText(r++, "UID", "numeric package id");
+
+                        // Cover drop-target: drag an image / local file / URL onto it → COVER inside THIS layer.
+                        LG->addWidget(new QLabel("COVER:"), r, 0);
+                        QLabel * Cover = new QLabel(LBox);
+                        Cover->setFixedSize(150, 225);
+                        Cover->setAlignment(Qt::AlignCenter);
+                        Cover->setWordWrap(true);
+                        Cover->setStyleSheet("QLabel { background-color:#1e1e1e; border:2px dashed #555; color:#777; border-radius:4px; font-size:11px; }");
+                        Cover->setText("Drop cover art\nhere\n\n2 : 3");
+                        Cover->setAcceptDrops(true);
+                        Cover->setProperty("NodeArrayIndex", n);
+                        Cover->setProperty("LayerArrayIndex", j);
+                        if (Layers[j].contains("COVER"))
+                        {
+                            const QString P = CoverCache::instance()->resolve(Layers[j]["COVER"], Model->packageDir()->path());
+                            if (!P.isEmpty()) { QPixmap Pix(P); if (!Pix.isNull()) Cover->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation)); }
+                        }
+                        Cover->installEventFilter(this);
+                        LG->addWidget(Cover, r++, 1, 1, 2);
+
                         QLabel * H = new QLabel("Variants of one game are nodes with a DeclareExec that PARENT this tile node. "
-                                                "COVER + extra metadata (DEVELOPER, SERIES, …) are editable in the raw JSON tab.", LBox);
+                                                "Extra metadata (DEVELOPER, SERIES, …) is editable in the raw JSON tab.", LBox);
                         H->setStyleSheet("color:#8f98a0;font-size:9pt;"); H->setWordWrap(true);
                         LG->addWidget(H, r, 0, 1, 3);
                     }
@@ -602,4 +622,112 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                 }
                 Form->addRow(LBox);
             }}
+
+// Write a dropped cover image to the bundle and point the DeclareLibraryItem layer's COVER at it (bare filename =
+// authoring form; publishing later wraps it with a SOURCE/CID, exactly like a content layer — see CoverCache).
+void NodeLayersSection::ApplyCoverImage(QLabel * CoverLabel, const QByteArray & Data, const QString & Extension, int NodeIdx, int LayerIdx)
+{
+    if (Data.isEmpty() || NodeIdx < 0 || NodeIdx >= (int)Model->doc()["NODES"].size()) return;
+
+    const std::string NodeId = Model->doc()["NODES"][NodeIdx].value("NODE_ID", std::string());
+    QString FileName = (NodeId.empty() ? QString("node%1").arg(NodeIdx) : QString::fromStdString(NodeId)) + "_cover." + Extension.toLower();
+    QString DestPath = QDir::cleanPath(Model->packageDir()->path() + "/" + FileName);
+
+    QFile OutFile(DestPath);
+    if (!OutFile.open(QIODevice::WriteOnly)) { LogErr("NodeEditor", "Could not write cover: " + DestPath.toStdString()); return; }
+    OutFile.write(Data); OutFile.close();
+
+    Model->doc()[json::json_pointer(QString("/NODES/%1/LAYERS/%2/COVER").arg(NodeIdx).arg(LayerIdx).toStdString())] = FileName.toStdString();
+    Model->SaveNodes();
+
+    QPixmap Pix; Pix.loadFromData(Data);
+    if (!Pix.isNull()) CoverLabel->setPixmap(Pix.scaled(150, 225, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    LogSucc("NodeEditor", "Cover set: " + FileName.toStdString());
+}
+
+bool NodeLayersSection::eventFilter(QObject * obj, QEvent * event)
+{
+    QLabel * CoverLabel = qobject_cast<QLabel*>(obj);
+    if (!CoverLabel || !CoverLabel->property("NodeArrayIndex").isValid() || !CoverLabel->property("LayerArrayIndex").isValid())
+        return QWidget::eventFilter(obj, event);
+
+    if (event->type() == QEvent::DragEnter)
+    {
+        QDragEnterEvent * ev = static_cast<QDragEnterEvent*>(event);
+        if (ev->mimeData()->hasImage() || ev->mimeData()->hasUrls() || ev->mimeData()->hasText()) ev->acceptProposedAction();
+        return true;
+    }
+    if (event->type() == QEvent::DragMove) { static_cast<QDragMoveEvent*>(event)->acceptProposedAction(); return true; }
+
+    if (event->type() == QEvent::Drop)
+    {
+        QDropEvent * ev = static_cast<QDropEvent*>(event);
+        int NodeIdx  = CoverLabel->property("NodeArrayIndex").toInt();
+        int LayerIdx = CoverLabel->property("LayerArrayIndex").toInt();
+        const QMimeData * Mime = ev->mimeData();
+
+        if (Mime->hasImage())
+        {
+            QImage Img = qvariant_cast<QImage>(Mime->imageData());
+            QByteArray Data; QBuffer Buf(&Data); Buf.open(QIODevice::WriteOnly); Img.save(&Buf, "PNG");
+            ApplyCoverImage(CoverLabel, Data, "png", NodeIdx, LayerIdx);
+            return true;
+        }
+        if (Mime->hasUrls())
+        {
+            QUrl Url = Mime->urls().first();
+            if (Url.isLocalFile())
+            {
+                QFile F(Url.toLocalFile());
+                if (F.open(QIODevice::ReadOnly))
+                {
+                    QByteArray Data = F.readAll();
+                    QString Ext = QFileInfo(Url.toLocalFile()).suffix(); if (Ext.isEmpty()) Ext = "png";
+                    ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
+                }
+            }
+            else
+            {
+                if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
+                QNetworkReply * Reply = NetMgr->get(QNetworkRequest(Url));
+                QEventLoop Loop; QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit); Loop.exec();
+                if (Reply->error() == QNetworkReply::NoError)
+                {
+                    QByteArray Data = Reply->readAll();
+                    QString Ext = QFileInfo(Url.path()).suffix();
+                    if (Ext.isEmpty())
+                    {
+                        QString CT = Reply->header(QNetworkRequest::ContentTypeHeader).toString();
+                        if (CT.contains("jpeg") || CT.contains("jpg")) Ext = "jpg";
+                        else if (CT.contains("webp")) Ext = "webp"; else Ext = "png";
+                    }
+                    ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
+                }
+                else LogErr("NodeEditor", "Failed to download cover: " + Reply->errorString().toStdString());
+                Reply->deleteLater();
+            }
+            return true;
+        }
+        if (Mime->hasText())
+        {
+            QUrl Url(Mime->text().trimmed());
+            if (Url.isValid() && (Url.scheme() == "http" || Url.scheme() == "https"))
+            {
+                if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
+                QNetworkReply * Reply = NetMgr->get(QNetworkRequest(Url));
+                QEventLoop Loop; QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit); Loop.exec();
+                if (Reply->error() == QNetworkReply::NoError)
+                {
+                    QByteArray Data = Reply->readAll();
+                    QString Ext = QFileInfo(Url.path()).suffix(); if (Ext.isEmpty()) Ext = "png";
+                    ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
+                }
+                Reply->deleteLater();
+            }
+            return true;
+        }
+        return true;
+    }
+    return QWidget::eventFilter(obj, event);
+}
 
