@@ -213,6 +213,11 @@ std::vector<std::string> PackageEditorModel::KnownPlatforms()
 // Authoring execute (native node engine)
 // ============================================================================
 
+bool PackageEditorModel::NodeTestable(const std::string & NodeId) const
+{
+    return !LaunchableForNode(ExecIndex(), NodeId).empty();
+}
+
 void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string & Exe)
 {
     SaveNodes();

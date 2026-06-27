@@ -64,6 +64,9 @@ public:
     // ── Authoring (native node engine): build NodeId's container and run / analyze it ──
     void RunInNode(const std::string & NodeId, const std::string & Exe = "");
     void AnalyzeNodeRegistry(const std::string & NodeId);
+    // True if "Test launch" can do something for this node: it's launchable (has a DeclareExec) OR a launchable in the
+    // bundle includes it (so the node can be tested in the context of the game that pulls it in). Uses the cached index.
+    bool NodeTestable(const std::string & NodeId) const;
 
     // ── Authoring Session hooks (the held-open AuthoringSession window captures back into the document) ──
     QString                  packagePath() const;                        // the edited bundle dir ("" if none open)

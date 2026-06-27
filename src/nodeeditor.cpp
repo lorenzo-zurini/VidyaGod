@@ -48,6 +48,11 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         // Edit Registry / Analyze (which the pristine PERSIST default broke — those wiped before capture).
         QPushButton * AuthorBtn = new QPushButton("Capture Setup", this);
         QPushButton * ExecBtn   = new QPushButton("Test launch", this);
+        // Only enabled when the node is testable: it has a DeclareExec, or a launchable in the bundle includes it.
+        const bool Testable = Model->NodeTestable(NodeIdStr);
+        ExecBtn->setEnabled(Testable);
+        ExecBtn->setToolTip(Testable ? "Build this node's container and run its exec."
+                                     : "Add a DeclareExec layer (or a launchable node that includes this one) to test-launch.");
         Toolbar->addWidget(AuthorBtn); Toolbar->addWidget(ExecBtn);
         QObject::connect(AuthorBtn, &QPushButton::clicked, this, [this, NodeIdStr](){
             // Parent to the top-level editor (not this NodeEditor) — a capture's SaveNodes triggers a tab rebuild that
