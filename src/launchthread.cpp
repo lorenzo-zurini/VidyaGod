@@ -115,10 +115,9 @@ void LaunchThread::run()
     Params.ScreenHeight = this->ScreenHeight;
 
     //Build the global node index here (worker thread) and point the engine at the launch node. Index is a local
-    //that outlives LocalWrapper (which holds ContainerParams by reference).
-    std::vector<std::filesystem::path> Roots;
-    for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-    NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+    //that outlives LocalWrapper (which holds ContainerParams by reference). BuildCatalogIndex = repos + locally-added
+    //packages, so a launch of an externally-added bundle resolves (same source the library lists from).
+    NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
     Params.NodeIdx      = &Index;
     Params.LaunchNodeId = this->LaunchNodeId;
 

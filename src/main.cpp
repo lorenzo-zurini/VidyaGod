@@ -315,9 +315,7 @@ int main(int argc, char *argv[])
         std::string Id = LaunchParameters.ImportRunnerId;
         if (auto Colon = Id.find(':'); Colon != std::string::npos) Id = Id.substr(0, Colon);
         LogOut("main.cpp", "Importing runner node: " + Id);
-        std::vector<std::filesystem::path> Roots;
-        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::string Err;
         const bool Ok = RunnerInstall::ImportRunnerNode(GlobalConfigJSON, Index, Id, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
@@ -330,9 +328,7 @@ int main(int argc, char *argv[])
     {
         const std::string Uid = LaunchParameters.ImportPackageUid;
         LogOut("main.cpp", "Importing package (node closure) for: " + Uid);
-        std::vector<std::filesystem::path> Roots;
-        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::string LaunchId;
         for (const auto &[NId, N] : Index.Nodes)
             if (N.IsLaunchable() && (N.Uid == Uid || N.NodeId == Uid)) { LaunchId = NId; break; }
@@ -359,9 +355,7 @@ int main(int argc, char *argv[])
     //HEADLESS: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...).
     if (LaunchParameters.ValidateNodes)
     {
-        std::vector<std::filesystem::path> Roots;
-        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::vector<std::string> Errors, Warnings;
         ManifestModel::ValidateNodeGraph(Index, Errors, Warnings);
         for (const auto &W : Warnings) LogWarn("validate-nodes", W);
@@ -394,9 +388,7 @@ int main(int argc, char *argv[])
     if (!LaunchParameters.LaunchNodeId.empty())
     {
         LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
-        std::vector<std::filesystem::path> Roots;
-        for (const auto &D : PackageCatalog::RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-        NodeIndex Index = ManifestModel::BuildNodeIndex(Roots);
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         if (!Index.Find(LaunchParameters.LaunchNodeId))
         { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog, aborting."); return 1; }
 
