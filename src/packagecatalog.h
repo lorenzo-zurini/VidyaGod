@@ -7,6 +7,7 @@
 #include <map>
 #include <utility>
 #include <functional>
+#include <filesystem>
 
 #include "manifestmodel.h"   // Node / NodeIndex (node-graph catalog)
 #include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
@@ -30,6 +31,15 @@ void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
 // The clone directories of every configured Settings.Repositories[] git repo (indexed in order).
 std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON);
+
+// ----- locally-added (external) packages -----
+// A LIBRARY entry is a "local package" when its PATH is a bundle dir OUTSIDE every repository dir (added via the
+// Library's "Add Local Package", not cloned from a repo). The bundle dirs of every such entry whose PATH still exists
+// — fed to BuildNodeIndex's ExtraBundleDirs so they're indexed alongside repo packages.
+std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON);
+// Drop LIBRARY entries for local packages whose bundle dir no longer exists (the user moved/deleted it). Repo-rooted
+// entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
+int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 
 // ----- sync / publish -----
 // Git clone/pull each repo into LIBRARY/<repo> and upsert one LIBRARY index entry per bundle (identity derived

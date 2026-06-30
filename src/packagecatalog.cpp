@@ -107,6 +107,57 @@ std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConf
     return Dirs;
 }
 
+// True if Path lies within one of the configured repository dirs (a repo package, scanned via its repo root) rather
+// than being a standalone locally-added bundle. Pure path-prefix test — independent of whether the repo is cloned yet.
+static bool PathUnderRepository(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
+{
+    std::error_code Ec;
+    const std::filesystem::path P = std::filesystem::weakly_canonical(Path, Ec);
+    for (const std::string &D : RepositoryDirs(GlobalConfigJSON))
+    {
+        const std::filesystem::path R = std::filesystem::weakly_canonical(std::filesystem::path(D), Ec);
+        auto It = std::mismatch(R.begin(), R.end(), P.begin(), P.end());
+        if (It.first == R.end()) return true;                       // R is a prefix of P
+    }
+    return false;
+}
+
+std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::filesystem::path> Out;
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array()) return Out;
+    std::error_code Ec;
+    for (const auto &E : GlobalConfigJSON["LIBRARY"])
+    {
+        const std::string Path = E.is_object() ? E.value("PATH", std::string()) : std::string();
+        if (Path.empty()) continue;
+        if (PathUnderRepository(GlobalConfigJSON, Path)) continue;   // repo package — already indexed via its root
+        if (std::filesystem::is_directory(Path, Ec)) Out.emplace_back(Path);
+    }
+    return Out;
+}
+
+int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON)
+{
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array()) return 0;
+    auto &Lib = GlobalConfigJSON["LIBRARY"];
+    std::error_code Ec;
+    int Removed = 0;
+    for (auto It = Lib.begin(); It != Lib.end(); )
+    {
+        const std::string Path = It->is_object() ? It->value("PATH", std::string()) : std::string();
+        const bool Local = !Path.empty() && !PathUnderRepository(GlobalConfigJSON, Path);
+        if (Local && !std::filesystem::is_directory(Path, Ec))
+        {
+            LogWarn("PackageCatalog::PruneMovedLocalPackages",
+                    "Dropping moved/deleted local package '" + It->value("PACKAGENAME", Path) + "' (" + Path + ").");
+            It = Lib.erase(It); ++Removed;
+        }
+        else ++It;
+    }
+    return Removed;
+}
+
 // ----- git plumbing -----
 
 //Runs git with the given arguments, blocking up to a couple of minutes. Returns true on a clean exit.
@@ -505,7 +556,7 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Roots;
     for (const auto &D : RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
-    return ManifestModel::BuildNodeIndex(Roots);
+    return ManifestModel::BuildNodeIndex(Roots, LocalPackageDirs(GlobalConfigJSON));   // + externally-added bundles
 }
 
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)

@@ -89,7 +89,8 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
     }
 }
 
-NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots)
+NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
+                         const std::vector<std::filesystem::path> &ExtraBundleDirs)
 {
     NodeIndex Idx;
     std::error_code Ec;
@@ -99,6 +100,8 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots)
         for (const auto &Bundle : std::filesystem::directory_iterator(Root, Ec))
             if (Bundle.is_directory(Ec)) ScanBundleNodes(Bundle.path(), Idx);
     }
+    for (const auto &Bundle : ExtraBundleDirs)               // locally-added packages: each dir IS a bundle
+        if (std::filesystem::is_directory(Bundle, Ec)) ScanBundleNodes(Bundle, Idx);
     LinkGames(Idx);
     LogOut("ManifestModel::BuildNodeIndex", "Indexed " + std::to_string(Idx.Nodes.size()) + " node(s) across "
            + std::to_string(LibraryRoots.size()) + " root(s).");

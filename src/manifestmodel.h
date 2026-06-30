@@ -95,7 +95,11 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
 // Duplicate NODE_IDs are reported and the first-seen wins.
 void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
 // Build the global index from library roots; each root holds bundle dirs (one level down). Runs LinkGames.
-NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots);
+// Scans each LibraryRoot's immediate subdirectories as bundles, plus any ExtraBundleDirs as bundles DIRECTLY (a
+// locally-added package's own dir, not a root of bundles), then links games. ExtraBundleDirs lets externally-added
+// local packages (their PATH is the bundle itself) be indexed alongside the repo-rooted ones.
+NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
+                         const std::vector<std::filesystem::path> &ExtraBundleDirs = {});
 
 // Post-parse pass over a fully-assembled index: link each launchable variant that lacks its own library metadata to
 // its game node (the nearest DeclareLibraryItem ancestor via PARENTS) — setting its Game key and inheriting the tile's

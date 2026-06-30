@@ -32,6 +32,10 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     if (S.contains("MaxConcurrentDownloads") && S["MaxConcurrentDownloads"].is_number_integer())
         IpfsWrapper::SetMaxConcurrentDownloads(int(S["MaxConcurrentDownloads"]));
 
+    // Drop LIBRARY records for locally-added bundles the user has since moved/deleted (their PATH is gone), so the
+    // library doesn't list dead tiles. Repo packages are untouched (their content may just be un-hydrated).
+    if (PackageCatalog::PruneMovedLocalPackages(*Config) > 0) save();
+
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // node-native catalog source
 }
 
@@ -63,6 +67,7 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
     {
         // Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
         NodeIndex BIdx; ManifestModel::ScanBundleNodes(Path.toStdString(), BIdx);
+        ManifestModel::LinkGames(BIdx);   // link variants to their tile so the representative inherits UID/TITLE
         const Node * Rep = nullptr;
         for (const auto & [Id, N] : BIdx.Nodes)
             if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;

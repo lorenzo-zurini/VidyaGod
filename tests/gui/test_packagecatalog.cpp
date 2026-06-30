@@ -148,6 +148,44 @@ private slots:
         QVERIFY(hasWine);                       // runner build target — in the SAME batch
         QVERIFY(targets.size() >= 2);
     }
+
+    // A locally-added bundle (a LIBRARY entry whose PATH is OUTSIDE any repo dir) must be indexed by the catalog —
+    // BuildCatalogIndex scans LocalPackageDirs alongside the repo roots. Regression: external bundles silently never
+    // showed because only repo dirs were scanned.
+    void local_package_is_indexed()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());                 // an external bundle, not under any repo
+        writeJson(dir.path() + "/tile.json", json{{"NODE_ID", "tile"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "777"}, {"TITLE", "My Local Game"}} })}});
+        writeJson(dir.path() + "/variant.json", json{{"NODE_ID", "variant"}, {"PARENTS", json::array({"tile"})},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+
+        json cfg = json{{"Settings", {{"Repositories", json::array()}}},
+                        {"LIBRARY", json::array({ json{{"PACKAGEUID", "777"}, {"PATH", dir.path().toStdString()}} })}};
+
+        QVERIFY(!PackageCatalog::LocalPackageDirs(cfg).empty());   // the external bundle dir is collected
+        NodeIndex idx = PackageCatalog::BuildCatalogIndex(cfg);
+        const Node * v = idx.Find("variant");
+        QVERIFY(v != nullptr);                                     // indexed despite living outside any repo
+        QVERIFY(v->Presentable());                                 // linked to its tile → shows in the library
+        QCOMPARE(v->GameKey(), std::string("tile"));
+    }
+
+    // Startup prune drops a LIBRARY entry for a local bundle whose PATH no longer exists (moved/deleted), keeps the
+    // present one.
+    void prune_moved_local_package()
+    {
+        QTemporaryDir present; QVERIFY(present.isValid());
+        json cfg = json{{"Settings", {{"Repositories", json::array()}}},
+                        {"LIBRARY", json::array({
+                            json{{"PACKAGEUID", "a"}, {"PATH", present.path().toStdString()}},
+                            json{{"PACKAGEUID", "b"}, {"PATH", "/no/such/bundle/dir/xyz"}} })}};
+
+        const int removed = PackageCatalog::PruneMovedLocalPackages(cfg);
+        QCOMPARE(removed, 1);
+        QCOMPARE((int)cfg["LIBRARY"].size(), 1);
+        QCOMPARE(cfg["LIBRARY"][0].value("PACKAGEUID", std::string()), std::string("a"));   // present one kept
+    }
 };
 
 QTEST_MAIN(PackageCatalogTest)
