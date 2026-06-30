@@ -53,6 +53,7 @@ void LibraryGameCard::InitializeClassVariables()
     if (!Rep) return;
 
     PackagePath = Rep->BundleDir;
+    Local       = GlobalConfigJSON && PackageCatalog::IsLocalPackagePath(*GlobalConfigJSON, PackagePath);
     GameKey    = QString::fromStdString(Rep->GameKey());
     RepUid      = Rep->Uid;
 
@@ -467,6 +468,19 @@ void LibraryView::onPaint(QPaintEvent * e)
                 p.drawText(last, Qt::AlignCenter, QString("+%1").arg(extra));
                 p.setFont(TitleFont);
             }
+        }
+
+        // "LOCAL" badge — a locally-added package (bundle outside any repo), top-left of the cover, small red text.
+        if (card->Local) {
+            QFont lf = TitleFont; lf.setBold(true);
+            lf.setPointSizeF(qMax(7.0, TitleFont.pointSizeF() - 1.0));
+            p.setFont(lf);
+            const QFontMetrics lfm(lf);
+            const QString lt = QStringLiteral("LOCAL");
+            const QRect lr(r.left() + 6, r.top() + 6, lfm.horizontalAdvance(lt) + 10, lfm.height() + 4);
+            p.setPen(Qt::NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(lr, 3, 3);
+            p.setPen(QColor(0xff, 0x55, 0x55)); p.drawText(lr, Qt::AlignCenter, lt);
+            p.setFont(TitleFont);
         }
 
         // In-flight import (Available): darken + a centered "Downloading…" label and a progress bar; no hover.

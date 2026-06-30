@@ -41,6 +41,10 @@ std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json
 // entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
 int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 
+// True if BundleDir is a locally-added package — its path is OUTSIDE every configured repository dir (used to badge
+// such tiles in the library).
+bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
+
 // ----- sync / publish -----
 // Git clone/pull each repo into LIBRARY/<repo> and upsert one LIBRARY index entry per bundle (identity derived
 // from its node files), reconciling away vanished repo entries. Mutates GlobalConfigJSON; caller persists it.

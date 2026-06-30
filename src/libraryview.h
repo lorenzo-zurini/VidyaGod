@@ -52,6 +52,7 @@ public:
     std::string              RepUid;                   // representative node UID (USERSETTINGS key)
     QString                  GameTitle;
     std::filesystem::path    PackagePath;              // representative node's bundle dir
+    bool                   Local = false;         // a locally-added package (bundle outside any repo) — paints a "LOCAL" badge
     bool                   Downloading = false;   // Available tab: an import is in flight (paints a "Downloading…" overlay)
     double                 DownloadPercent = -1.0; // 0..100 aggregate IPFS progress while Downloading; -1 = unknown
     QPixmap                CoverOriginal;

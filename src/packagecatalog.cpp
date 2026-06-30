@@ -122,6 +122,11 @@ static bool PathUnderRepository(const nlohmann::ordered_json &GlobalConfigJSON, 
     return false;
 }
 
+bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
+{
+    return !BundleDir.empty() && !PathUnderRepository(GlobalConfigJSON, BundleDir);
+}
+
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Out;
