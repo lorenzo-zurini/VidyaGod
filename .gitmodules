@@ -4,3 +4,6 @@
 [submodule "external/VidyaGodIPFS"]
 	path = external/VidyaGodIPFS
 	url = https://github.com/lorenzo-zurini/VidyaGodIPFS.git
+[submodule "external/MetaPackageFormat"]
+	path = external/MetaPackageFormat
+	url = https://github.com/lorenzo-zurini/MetaPackageFormat.git
