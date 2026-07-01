@@ -1,7 +1,7 @@
 # VidyaGod
 
 **VidyaGod is a peer-to-peer game-preservation launcher, and the reference implementation of the
-[MetaPackageFormat](external/MetaPackageFormat).**
+[MetaPackageFormat](MetaPackageFormat).**
 
 A package is not an installer and there is no setup step. A package is a **graph of nodes** — small JSON files, each
 declaring typed *layers* (content, edits, persistence, variables, identity). To run a game, VidyaGod resolves a node's
@@ -11,7 +11,7 @@ content on demand over an **embedded IPFS node**. So **download = installed**: n
 multi-gigabyte game "installs" by mounting one zip.
 
 > **The format is specified separately.** The node-graph package format is defined, implementation-agnostically, in the
-> **[MetaPackageFormat](external/MetaPackageFormat)** spec — a submodule of this repo (`external/MetaPackageFormat/docs/00`–`19`).
+> **[MetaPackageFormat](MetaPackageFormat)** spec — a submodule of this repo (`MetaPackageFormat/docs/00`–`19`).
 > This README documents the *implementation*. **When the code and the spec disagree, the spec is the source of truth.**
 
 ---
@@ -30,7 +30,7 @@ multi-gigabyte game "installs" by mounting one zip.
   the runtime mounts it by offset, zero-copy. Fetching the CID *is* the install.
 
 For the full, normative model — layers, resolution, runner chaining, persistence, variables, content-addressing,
-validation, conformance — read the spec in `external/MetaPackageFormat/docs/`.
+validation, conformance — read the spec in `MetaPackageFormat/docs/`.
 
 ---
 
@@ -44,7 +44,7 @@ index keyed by `NODE_ID`; `LinkGames` groups launchable *variants* under their `
 `DeclareExec`/metadata field-by-field along the chain, and populates a `ContainerParams`.
 
 ### vidyagodfs — the runtime filesystem
-The whole runtime is assembled as **one FUSE mount** by the custom [`vidyagodfs`](external/VidyaGodFS) helper (built
+The whole runtime is assembled as **one FUSE mount** by the custom [`vidyagodfs`](VidyaGodFS) helper (built
 alongside the app): a writable copy-on-write top layer over read-only `zip`/`dir`/`file` under-layers rooted at their
 `TARGET`, plus RW passthroughs for persisted state. STORE zip entries are served zero-copy by `pread` at their offset —
 no decompression, no scratch copy, any size. It replaces the old unionfs-fuse + fuse-zip + bindfs stack; `--watch-pid`
@@ -62,7 +62,7 @@ what's named, and runner keep-sets fold in the standard save/config locations (P
 survive with zero per-game work. `KEEP %RuntimePath%` persists the whole runtime.
 
 ### Embedded IPFS
-Content distribution runs in-process via **[libvgipfs](external/VidyaGodIPFS)** — a Boxo (Go) node built into the app
+Content distribution runs in-process via **[libvgipfs](VidyaGodIPFS)** — a Boxo (Go) node built into the app
 (no external Kubo). It fetches content-addressed layers write-through (download = installed), seeds/reprovides what you
 hold to the DHT, and drives the GUI's IPFS tab. Networking is opt-in (off by default; enable in Settings → IPFS).
 
@@ -96,7 +96,7 @@ cmake --build build -j$(nproc)
 
 CMake options: `-DVIDYAGOD_WERROR=ON` (CI: warnings-as-errors + clang-tidy), `-DVIDYAGOD_SANITIZE=ON` (ASan/UBSan).
 Tests: `ctest --test-dir build` (headless Qt Test suite, offscreen QPA — one executable per subsystem plus a Qt-free
-engine suite). The `external/MetaPackageFormat` submodule is docs-only and is **not** built.
+engine suite). The `MetaPackageFormat` submodule is docs-only and is **not** built.
 
 ---
 
@@ -134,13 +134,12 @@ published into a repo.
 ## Repository layout
 
 ```
-src/            The application (C++/Qt6). Engine split across launchresolver / vfsmount / registrylayer /
-                persistlayer / fileedits / launchsources / runnerinstall; GUI around AppModel + per-tab widgets.
-tests/          Qt-free engine tests (vg_tests) + headless Qt Test suites (one per GUI subsystem).
-external/
-  VidyaGodFS/          submodule — the vidyagodfs FUSE filesystem (zip/dir/file overlay + COW).
-  VidyaGodIPFS/        submodule — libvgipfs, the embedded Boxo IPFS node.
-  MetaPackageFormat/   submodule — the package-format specification (docs only; the source of truth for the format).
+src/                 The application (C++/Qt6). Engine split across launchresolver / vfsmount / registrylayer /
+                     persistlayer / fileedits / launchsources / runnerinstall; GUI around AppModel + per-tab widgets.
+tests/               Qt-free engine tests (vg_tests) + headless Qt Test suites (one per GUI subsystem).
+VidyaGodFS/          submodule — the vidyagodfs FUSE filesystem (zip/dir/file overlay + COW).
+VidyaGodIPFS/        submodule — libvgipfs, the embedded Boxo IPFS node.
+MetaPackageFormat/   submodule — the package-format specification (docs only; the source of truth for the format).
 ```
 
 Content lives in separate repositories the app clones into `~/.VidyaGod/LIBRARY/` (e.g. `VidyaGodPackages`,
@@ -152,5 +151,5 @@ Content lives in separate repositories the app clones into `~/.VidyaGod/LIBRARY/
 
 - **Every build runs on two machines** (a local box + a remote Arch box) with `-Werror` + `ctest` before a change is
   considered done.
-- Commit straight to `main`. Keep the [MetaPackageFormat](external/MetaPackageFormat) spec in sync whenever the format
+- Commit straight to `main`. Keep the [MetaPackageFormat](MetaPackageFormat) spec in sync whenever the format
   changes — the spec is normative, this implementation follows it.

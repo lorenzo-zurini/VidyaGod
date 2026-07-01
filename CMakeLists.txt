@@ -216,14 +216,14 @@ endif()
 # ---- vidyagodfs: the custom FUSE filesystem, built from its own repo (git submodule) ----
 # It defines the `vidyagodfs` target (links libfuse3 + libzip). Place its binary next to VidyaGod in
 # the build root so the app finds it via /proc/self/exe and the AppImage step can bundle it.
-add_subdirectory(external/VidyaGodFS)
+add_subdirectory(VidyaGodFS)
 set_target_properties(vidyagodfs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # ---- libvgipfs: the embedded Boxo IPFS node, built from its own repo (git submodule) ----
 # Builds libvgipfs.so (cgo c-shared, needs the Go toolchain) into the build root next to VidyaGod, replacing the
 # external Kubo `ipfs` CLI. It is LINKED + called from src/ipfswrapper.cpp in a later milestone; for now this just
 # ensures the node compiles as part of the project. Defines the imported `vgipfs` target.
-add_subdirectory(external/VidyaGodIPFS)
+add_subdirectory(VidyaGodIPFS)
 
 # Link the embedded node in-process. $ORIGIN rpath so the running VidyaGod resolves libvgipfs.so beside itself
 # (build root, and AppDir/usr/bin after bundling). Started in main.cpp; the IPFS call sites swap over in M4.

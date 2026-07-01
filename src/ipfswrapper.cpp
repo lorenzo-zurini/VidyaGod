@@ -21,7 +21,7 @@
 #include <cstdlib>
 #include <unordered_map>
 
-// IpfsWrapper now drives the embedded in-process IPFS node (external/VidyaGodIPFS → libvgipfs.so) via its C ABI
+// IpfsWrapper now drives the embedded in-process IPFS node (VidyaGodIPFS → libvgipfs.so) via its C ABI
 // (vgipfsapi.h) instead of shelling out to the external Kubo `ipfs` CLI. The public API and the IpfsManager signal
 // hub are unchanged, so every call site (hydration, launch-time layer fetch, cover cache, publish, the IPFS tab)
 // is untouched. The node is started once at process startup in main.cpp (VgStart) and torn down at exit.

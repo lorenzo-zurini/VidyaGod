@@ -10,7 +10,7 @@
 
 // ---------------------------------------------------------------------------
 // IpfsWrapper — a thin wrapper around the embedded in-process IPFS node
-// (external/VidyaGodIPFS → libvgipfs.so), called via its C ABI (vgipfsapi.h).
+// (VidyaGodIPFS → libvgipfs.so), called via its C ABI (vgipfsapi.h).
 //
 // There is NO external Kubo dependency any more: VidyaGod runs its own Boxo-based
 // node against a private repo, started once at process startup (VgStart in main).

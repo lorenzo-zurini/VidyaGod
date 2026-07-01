@@ -1,8 +1,8 @@
 #ifndef VGIPFSAPI_H
 #define VGIPFSAPI_H
 
-// C ABI for the embedded Boxo IPFS node (external/VidyaGodIPFS → libvgipfs.so), linked in-process and called via
-// this hand-mirrored declaration of its cgo //export surface (see external/VidyaGodIPFS/api.go). It replaces the
+// C ABI for the embedded Boxo IPFS node (VidyaGodIPFS → libvgipfs.so), linked in-process and called via
+// this hand-mirrored declaration of its cgo //export surface (see VidyaGodIPFS/api.go). It replaces the
 // external Kubo `ipfs` CLI. Convention: fallible calls return 0 on success / -1 on failure; results and error
 // reasons come back through char** out-params allocated by the library and freed with VgFree.
 
