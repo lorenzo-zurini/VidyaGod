@@ -19,6 +19,7 @@ int  VgOnline(void);    // 1 if the node's network stack is up (joined the swarm
 
 int  VgAddNoCopy(const char *path, char **outCid, char **errOut);   // seed a file by reference (filestore --nocopy)
 int  VgFetchToPath(const char *cid, const char *dest, char **errOut); // materialize + seed in place (no duplication)
+int  VgFetchDirToPath(const char *cid, const char *dest, char **errOut); // recursively materialize a UnixFS DIRECTORY CID (online)
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
 int  VgPinRm(const char *cid, char **errOut);

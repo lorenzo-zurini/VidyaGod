@@ -107,24 +107,79 @@ std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConf
     return Dirs;
 }
 
-// True if Path lies within one of the configured repository dirs (a repo package, scanned via its repo root) rather
-// than being a standalone locally-added bundle. Pure path-prefix test — independent of whether the repo is cloned yet.
-static bool PathUnderRepository(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
+// Pure path-prefix test: is Path inside Base? (weakly-canonical so it works whether or not either exists yet.)
+static bool PathUnder(const std::filesystem::path &Base, const std::filesystem::path &Path)
 {
     std::error_code Ec;
+    const std::filesystem::path B = std::filesystem::weakly_canonical(Base, Ec);
     const std::filesystem::path P = std::filesystem::weakly_canonical(Path, Ec);
+    auto It = std::mismatch(B.begin(), B.end(), P.begin(), P.end());
+    return It.first == B.end();                                     // B is a prefix of P
+}
+
+// True if Path lies within one of the configured repository dirs (a repo package, scanned via its repo root).
+static bool PathUnderRepository(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
+{
     for (const std::string &D : RepositoryDirs(GlobalConfigJSON))
-    {
-        const std::filesystem::path R = std::filesystem::weakly_canonical(std::filesystem::path(D), Ec);
-        auto It = std::mismatch(R.begin(), R.end(), P.begin(), P.end());
-        if (It.first == R.end()) return true;                       // R is a prefix of P
-    }
+        if (PathUnder(D, Path)) return true;
     return false;
+}
+
+// ----- package sources (IPFS folder CIDs) -----
+//A source's CID (object {CID,NAME} or a bare CID string) and its on-disk name (NAME, else a filesystem-safe CID prefix).
+static std::string PackageSourceCID(const nlohmann::ordered_json &S)
+{
+    if (S.is_object() && S.contains("CID") && S["CID"].is_string()) return std::string(S["CID"]);
+    if (S.is_string()) return std::string(S);
+    return std::string();
+}
+static std::string PackageSourceName(const nlohmann::ordered_json &S)
+{
+    std::string N = S.is_object() ? S.value("NAME", std::string()) : std::string();
+    if (N.empty()) { const std::string C = PackageSourceCID(S); N = C.size() > 12 ? C.substr(0, 12) : C; }
+    for (char &c : N) if (c == '/' || c == '\\' || c == ':') c = '_';
+    return N.empty() ? std::string("cidsource") : N;
+}
+//All CID package sources live under one root, a sibling of LIBRARY — so "under a package source" is "under this root".
+static std::string PackageSourcesRoot(const nlohmann::ordered_json & /*GlobalConfigJSON*/)
+{
+    return QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "CIDPACKAGES").string())).toStdString();
+}
+static std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &S)
+{
+    return QDir::cleanPath(QString::fromStdString(PackageSourcesRoot(GlobalConfigJSON) + "/" + PackageSourceName(S))).toStdString();
+}
+
+bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
+{
+    return !BundleDir.empty() && PathUnder(PackageSourcesRoot(GlobalConfigJSON), BundleDir);
+}
+
+//A managed package: sourced from a repo clone OR a CID package source (i.e. NOT a standalone locally-added bundle).
+static bool PathUnderManagedSource(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
+{
+    return PathUnderRepository(GlobalConfigJSON, Path) || IsPackageSourcePath(GlobalConfigJSON, Path);
+}
+
+std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::vector<std::string> Dirs;
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return Dirs;
+    const auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return Dirs;
+    std::error_code Ec;
+    for (const auto &Src : S["PackageSources"])
+    {
+        if (PackageSourceCID(Src).empty()) continue;
+        const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
+        if (std::filesystem::is_directory(Dir, Ec)) Dirs.push_back(Dir);   // existing = a scan root
+    }
+    return Dirs;
 }
 
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
 {
-    return !BundleDir.empty() && !PathUnderRepository(GlobalConfigJSON, BundleDir);
+    return !BundleDir.empty() && !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
 }
 
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON)
@@ -136,7 +191,7 @@ std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json
     {
         const std::string Path = E.is_object() ? E.value("PATH", std::string()) : std::string();
         if (Path.empty()) continue;
-        if (PathUnderRepository(GlobalConfigJSON, Path)) continue;   // repo package — already indexed via its root
+        if (PathUnderManagedSource(GlobalConfigJSON, Path)) continue;   // repo / CID-source package — indexed via its root
         if (std::filesystem::is_directory(Path, Ec)) Out.emplace_back(Path);
     }
     return Out;
@@ -151,7 +206,7 @@ int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON)
     for (auto It = Lib.begin(); It != Lib.end(); )
     {
         const std::string Path = It->is_object() ? It->value("PATH", std::string()) : std::string();
-        const bool Local = !Path.empty() && !PathUnderRepository(GlobalConfigJSON, Path);
+        const bool Local = !Path.empty() && !PathUnderManagedSource(GlobalConfigJSON, Path);
         if (Local && !std::filesystem::is_directory(Path, Ec))
         {
             LogWarn("PackageCatalog::PruneMovedLocalPackages",
@@ -333,6 +388,111 @@ void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
     }
 
     ReconcileIndex(GlobalConfigJSON["LIBRARY"], SeenUid, LibRoot);
+}
+
+//Upsert a LIBRARY entry for a CID-source package: PATH + name + CIDSOURCE (its source's CID), and NO "REPO" — so the
+//repo reconcile (which only touches REPO entries) never prunes it; removal is explicit via RemovePackageSource.
+static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &SourceCid,
+                           const std::string &Dir, const std::string &Name)
+{
+    for (auto &E : Arr)
+    {
+        if (E.value("PACKAGEUID", std::string()) != Uid) continue;
+        E["PACKAGENAME"] = Name; E["PATH"] = Dir; E["CIDSOURCE"] = SourceCid;
+        E.erase("PACKAGEVERSION");
+        return;
+    }
+    nlohmann::ordered_json Slim;
+    Slim["PACKAGEUID"]  = Uid;
+    Slim["PACKAGENAME"] = Name;
+    Slim["PATH"]        = Dir;
+    Slim["CIDSOURCE"]   = SourceCid;
+    Arr.push_back(std::move(Slim));
+}
+
+int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
+{
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;
+    auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return 0;
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
+        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
+
+    int Indexed = 0;
+    std::error_code Ec;
+    for (auto &Src : S["PackageSources"])
+    {
+        const std::string Cid = PackageSourceCID(Src);
+        if (Cid.empty()) continue;
+        const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
+
+        //A CID is immutable → fetch the dehydrated folder once (dehydrated only; content hydrates later per-layer).
+        const bool Have = std::filesystem::is_directory(Dir, Ec) && !std::filesystem::is_empty(Dir, Ec);
+        if (!Have)
+        {
+            LogOut("PackageCatalog::SyncPackageSources", "Fetching CID package source " + Cid + " -> " + Dir);
+            std::string FErr;
+            if (IpfsWrapper::FetchDirToPath(Cid, Dir, &FErr).empty())
+            {
+                LogErr("PackageCatalog::SyncPackageSources", "Fetch failed for CID " + Cid + ": " + FErr);
+                if (Error && Error->empty()) *Error = FErr;
+                continue;
+            }
+        }
+
+        QDir D(QString::fromStdString(Dir));
+        int Games = 0;
+        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        {
+            const QString PkgDir = D.filePath(Sub);
+            const BundleIdentity Id = ScanBundleIdentity(PkgDir.toStdString());
+            if (!Id.Valid) continue;
+            UpsertCidEntry(GlobalConfigJSON["LIBRARY"], Id.Uid, Cid, PkgDir.toStdString(), Id.Name);
+            if (Id.HasLaunchable) { ++Games; ++Indexed; }
+        }
+        LogOut("PackageCatalog::SyncPackageSources", "Indexed CID source '" + PackageSourceName(Src) + "' ("
+               + std::to_string(Games) + " game(s)).");
+    }
+    return Indexed;
+}
+
+bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name)
+{
+    if (Cid.empty()) return false;
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object())
+        GlobalConfigJSON["Settings"] = nlohmann::ordered_json::object();
+    auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array())
+        S["PackageSources"] = nlohmann::ordered_json::array();
+    for (const auto &E : S["PackageSources"]) if (PackageSourceCID(E) == Cid) return false;   // already added
+    nlohmann::ordered_json Src;
+    Src["CID"] = Cid;
+    if (!Name.empty()) Src["NAME"] = Name;
+    S["PackageSources"].push_back(std::move(Src));
+    return true;
+}
+
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
+{
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
+    auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return;
+    auto &Arr = S["PackageSources"];
+    if (Index < 0 || Index >= (int)Arr.size()) return;
+
+    const std::string Dir = PackageSourceDir(GlobalConfigJSON, Arr[Index]);
+    //Drop LIBRARY entries under this source's dir, then delete the fetched dir.
+    if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+    {
+        auto &Lib = GlobalConfigJSON["LIBRARY"];
+        for (auto It = Lib.begin(); It != Lib.end(); )
+        {
+            const std::string P = It->is_object() ? It->value("PATH", std::string()) : std::string();
+            if (!P.empty() && PathUnder(Dir, P)) It = Lib.erase(It); else ++It;
+        }
+    }
+    std::error_code Ec; std::filesystem::remove_all(Dir, Ec);
+    Arr.erase(Arr.begin() + Index);
 }
 
 // ----- import / publish -----
@@ -560,7 +720,8 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Roots;
-    for (const auto &D : RepositoryDirs(GlobalConfigJSON)) Roots.emplace_back(D);
+    for (const auto &D : RepositoryDirs(GlobalConfigJSON))  Roots.emplace_back(D);
+    for (const auto &D : PackageSourceDirs(GlobalConfigJSON)) Roots.emplace_back(D);   // + CID package sources
     return ManifestModel::BuildNodeIndex(Roots, LocalPackageDirs(GlobalConfigJSON));   // + externally-added bundles
 }
 

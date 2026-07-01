@@ -180,6 +180,28 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     return DestPathStr;
 }
 
+std::string FetchDirToPath(const std::string &Cid, const std::string &DestDirStr, std::string *Error)
+{
+    if (Cid.empty())        { if (Error) *Error = "empty CID";            return std::string(); }
+    if (DestDirStr.empty()) { if (Error) *Error = "empty destination dir"; return std::string(); }
+
+    // Recursively materialize a folder CID (the dehydrated package set) — the node fetches the whole small tree
+    // (manifests + covers) over bitswap and writes it to DestDir. Requires networking to be up (checked node-side).
+    LogOut("IpfsWrapper::FetchDirToPath", "Fetching folder CID " + Cid + " -> " + DestDirStr);
+    char *Err = nullptr;
+    const int Rc = VgFetchDirToPath(Cid.c_str(), DestDirStr.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0)
+    {
+        const std::string Msg = ErrS.empty() ? ("folder fetch failed for CID " + Cid) : ErrS;
+        LogErr("IpfsWrapper::FetchDirToPath", Msg);
+        if (Error) *Error = Msg;
+        return std::string();
+    }
+    LogSucc("IpfsWrapper::FetchDirToPath", "Materialized folder CID " + Cid + " at " + DestDirStr);
+    return DestDirStr;
+}
+
 bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string *Error)
 {
     std::atomic<bool> Failed{false};

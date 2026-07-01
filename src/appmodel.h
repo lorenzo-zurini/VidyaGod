@@ -52,12 +52,17 @@ public:
     bool addRepository(const QString & name, const QString & url);   // append + clone/pull + reindex; false if empty/duplicate
     void removeRepository(int index);                  // drop the reference (disposable clone left on disk)
     void importRunner(const QString & runnerNodeId);   // fetch a runner's build + generate its DEFPREFIX
+    // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand like repo packages).
+    bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
+    void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
 
 signals:
     void catalogChanged();          // CatalogIndex rebuilt — Library/Catalog/Packages/IPFS refresh
     void cardSizeChanged(int w);    // card pixel width changed — Library/Catalog relayout
     void coversReady();             // lazy cover load(s) landed — repaint visible cards
     void repositoriesChanged();     // the repo list was edited — the Repositories page rebuilds
+    void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the sources dialog + catalog
+    void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
 
 private:

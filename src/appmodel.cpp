@@ -179,12 +179,14 @@ void AppModel::syncRepositories()
 {
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     std::thread([this, Cfg]{
-        PackageCatalog::SyncRepositories(*Cfg);   // git pull each repo + reindex LIBRARY (into the copy)
+        PackageCatalog::SyncRepositories(*Cfg);     // git pull each repo + reindex LIBRARY (into the copy)
+        PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
         QMetaObject::invokeMethod(this, [this, Cfg]{
-            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];   // SyncRepositories only writes LIBRARY
+            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];   // both only write LIBRARY
             save();
             rebuildCatalog();              // emits catalogChanged
             emit repositoriesChanged();
+            emit packageSourcesChanged();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -227,6 +229,37 @@ void AppModel::removeRepository(int index)
     save();
     rebuildCatalog();
     emit repositoriesChanged();
+}
+
+// ── Package sources (IPFS folder CIDs): add fetches the dehydrated tree off-thread (requires the node online — a fetch
+//    failure is surfaced via packageSourceFailed, the source stays configured so a later sync picks it up); remove is
+//    cheap (drop config entry + fetched dir + LIBRARY entries). ──
+bool AppModel::addPackageSource(const QString & cid, const QString & name)
+{
+    if (!PackageCatalog::AddPackageSource(*Config, cid.trimmed().toStdString(), name.trimmed().toStdString()))
+        return false;   // empty or duplicate CID — caller warns
+    save();
+    auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
+    std::thread([this, Cfg]{
+        std::string Err;
+        PackageCatalog::SyncPackageSources(*Cfg, &Err);
+        QMetaObject::invokeMethod(this, [this, Cfg, Err]{
+            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+            save();
+            rebuildCatalog();
+            emit packageSourcesChanged();
+            if (!Err.empty()) emit packageSourceFailed(QString::fromStdString(Err));
+        }, Qt::QueuedConnection);
+    }).detach();
+    return true;
+}
+
+void AppModel::removePackageSource(int index)
+{
+    PackageCatalog::RemovePackageSource(*Config, index);
+    save();
+    rebuildCatalog();
+    emit packageSourcesChanged();
 }
 
 void AppModel::importRunner(const QString & runnerNodeId)

@@ -10,6 +10,7 @@
 #include "manifestmodel.h"
 #include "runnerinstall.h"
 #include "ipfswrapper.h"
+#include "apppaths.h"
 
 #include <fstream>
 #include <string>
@@ -185,6 +186,60 @@ private slots:
         QCOMPARE(removed, 1);
         QCOMPARE((int)cfg["LIBRARY"].size(), 1);
         QCOMPARE(cfg["LIBRARY"][0].value("PACKAGEUID", std::string()), std::string("a"));   // present one kept
+    }
+
+    // A CID package source (its already-fetched dir under <DataRoot>/CIDPACKAGES/) is indexed by BuildCatalogIndex as a
+    // root, and its packages are treated as MANAGED — not badged/pruned as "local". (Simulates a fetched source; the
+    // network fetch itself is covered by the Go node's TestFetchDirToPath.)
+    void cid_package_source_is_managed_and_indexed()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        AppPaths::SetDataRoot(data.path().toStdString());
+
+        const QString bundle = data.path() + "/CIDPACKAGES/mysource/game";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/tile.json", json{{"NODE_ID", "cidtile"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "9090"}, {"TITLE", "CID Game"}} })}});
+        writeJson(bundle + "/variant.json", json{{"NODE_ID", "cidvariant"}, {"PARENTS", json::array({"cidtile"})},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+
+        json cfg = json{{"Settings", {{"Repositories", json::array()},
+                                      {"PackageSources", json::array({ json{{"CID", "QmSourceFolderCID"}, {"NAME", "mysource"}} })}}}};
+
+        const auto srcDirs = PackageCatalog::PackageSourceDirs(cfg);
+        QCOMPARE((int)srcDirs.size(), 1);                                   // the existing source dir is a scan root
+        QVERIFY(PackageCatalog::IsPackageSourcePath(cfg, bundle.toStdString()));
+        QVERIFY(!PackageCatalog::IsLocalPackagePath(cfg, bundle.toStdString()));   // managed, NOT local (no LOCAL badge)
+
+        NodeIndex idx = PackageCatalog::BuildCatalogIndex(cfg);
+        const Node * v = idx.Find("cidvariant");
+        QVERIFY(v != nullptr);                                             // indexed via the CID-source root
+        QVERIFY(v->Presentable());                                         // grouped under its tile
+        QCOMPARE(v->GameKey(), std::string("cidtile"));
+    }
+
+    // Add/remove a package source: add dedups on CID; remove drops the config entry, deletes the dir, and drops LIBRARY
+    // entries under it.
+    void add_remove_package_source()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        AppPaths::SetDataRoot(data.path().toStdString());
+        json cfg = json{{"Settings", json::object()}};
+
+        QVERIFY(PackageCatalog::AddPackageSource(cfg, "QmABC", "src1"));
+        QVERIFY(!PackageCatalog::AddPackageSource(cfg, "QmABC", "again"));   // dedup on CID
+        QVERIFY(!PackageCatalog::AddPackageSource(cfg, "", "empty"));        // empty CID rejected
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 1);
+
+        // Simulate a fetched dir + a LIBRARY entry under it, then remove.
+        const QString dir = data.path() + "/CIDPACKAGES/src1";
+        QDir().mkpath(dir);
+        cfg["LIBRARY"] = json::array({ json{{"PACKAGEUID", "z"}, {"PATH", (dir + "/pkg").toStdString()}, {"CIDSOURCE", "QmABC"}} });
+
+        PackageCatalog::RemovePackageSource(cfg, 0);
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 0);         // source gone
+        QVERIFY(cfg["LIBRARY"].empty());                                    // its LIBRARY entry gone
+        QVERIFY(!QDir(dir).exists());                                       // its dir deleted
     }
 };
 

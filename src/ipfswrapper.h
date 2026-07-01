@@ -45,6 +45,12 @@ bool DaemonRunning();
 // (with *Error set when provided). Reports lifecycle/progress through the TransferCallback.
 std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
 
+// Recursively materializes a UnixFS DIRECTORY CID (a folder of dehydrated packages) into DestDir — fetches the whole
+// small manifest tree (node JSON + covers, no content bytes) over the network and writes it to disk. Requires the IPFS
+// node's networking to be up. Returns DestDir on success, "" on failure (with *Error set). Used to add a package set by
+// CID; each package's content hydrates later, on demand, via FetchToPath.
+std::string FetchDirToPath(const std::string &Cid, const std::string &DestDir, std::string *Error = nullptr);
+
 // Seeds a local file by adding it to the node's filestore by reference (blocks REFERENCE the file in place — no
 // second copy) and returns its content-addressed CID, "" on failure (with *Error set when provided). This is how
 // publishing dehydrates a package: each layer's local content is added → its CID is recorded in the manifest.

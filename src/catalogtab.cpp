@@ -282,5 +282,7 @@ QString CatalogTab::repoNameForBundle(const std::filesystem::path & BundleDir) c
         if (!R.empty() && (B == R || B.rfind(R + "/", 0) == 0))
             return QString::fromStdString(std::filesystem::path(RepoDir).filename().string());
     }
+    if (PackageCatalog::IsPackageSourcePath(*Model.config(), BundleDir))
+        return QStringLiteral("CID Packages");                    // an IPFS folder-CID package source
     return QStringLiteral("Local");
 }

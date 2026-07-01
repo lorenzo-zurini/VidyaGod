@@ -41,8 +41,25 @@ std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json
 // entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
 int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 
-// True if BundleDir is a locally-added package — its path is OUTSIDE every configured repository dir (used to badge
-// such tiles in the library).
+// ----- package sources by IPFS CID -----
+// A package source is a `Settings.PackageSources[]` entry `{ "CID": "…", "NAME": "optional" }` — an IPFS folder CID of
+// DEHYDRATED packages (manifests + covers, no content). Fetched into `<DataRoot>/CIDPACKAGES/<name>` (a sibling of
+// LIBRARY), scanned as catalog roots, and hydrated on demand exactly like repo packages.
+std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON);   // existing source dirs
+// True if BundleDir lives under a package-source dir (used to group them as "CID Packages" in the catalog).
+bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
+// For each configured source: if its dir is empty/missing, recursively fetch the folder CID (dehydrated only — no
+// content hydration; requires the IPFS node online), then upsert its bundles into LIBRARY. Mutates config; returns the
+// number of packages indexed. On a fetch failure, sets *Error (if given) and leaves that source's dir untouched.
+int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);
+// Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
+// or already present.
+bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
+// Remove source [index]: drop its config entry, delete its CIDPACKAGES dir, and drop LIBRARY entries under it.
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
+
+// True if BundleDir is a locally-added package — its path is OUTSIDE every configured repository AND package-source dir
+// (used to badge such tiles in the library).
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
 
 // ----- sync / publish -----
