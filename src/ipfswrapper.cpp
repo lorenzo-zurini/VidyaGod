@@ -236,6 +236,13 @@ int PeerCount()
     return VgPeerCount();
 }
 
+BandwidthRates Bandwidth()
+{
+    BandwidthRates R;
+    VgBandwidthRates(&R.DownBps, &R.UpBps);
+    return R;
+}
+
 std::string RepoSizeHuman()
 {
     char *J = nullptr, *Err = nullptr;

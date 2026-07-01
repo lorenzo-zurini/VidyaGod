@@ -43,14 +43,15 @@ public:
 
 private:
     void buildUi();
-    void applySnapshot(bool Daemon, int Peers, const QString &Repo,
+    void applySnapshot(bool Daemon, int Peers, const QString &Repo, double DownBps, double UpBps,
                        const std::vector<IpfsWrapper::PinEntry> &Pins,
                        const QHash<QString, long long> &Sizes);
     void gatherHealth();
 
     AppModel &Model;
 
-    QLabel       *IpfsStatusLabel = nullptr;
+    QTableWidget *IpfsStatusTable = nullptr;   // one-row status strip: Network|Peers|Seeded|↓|↑|Repo|Disk
+    QLabel       *IpfsHintLabel    = nullptr;   // shown only when the node is off ("enable networking…")
     QTableWidget *IpfsTransfers   = nullptr;   // Name|Size|Progress|Speed|Status|CID — live + queued fetches (sortable)
     QTreeWidget  *IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (Name|Size|Health|CID)
     QTimer       *IpfsRefreshTimer = nullptr;

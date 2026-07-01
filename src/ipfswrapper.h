@@ -99,6 +99,11 @@ void ClearCancel(const std::string &Cid);
 // Number of connected swarm peers, 0 if offline.
 int PeerCount();
 
+// Global node throughput in bytes/sec (down = received, up = sent); {0,0} when offline. Rolling rate from the
+// libp2p bandwidth counter — the aggregate across all peers/streams (downloads + seeding).
+struct BandwidthRates { double DownBps = 0.0; double UpBps = 0.0; };
+BandwidthRates Bandwidth();
+
 // Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
 // unknown.
 std::string RepoSizeHuman();

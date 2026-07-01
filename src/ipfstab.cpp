@@ -237,9 +237,36 @@ void IpfsTab::buildUi()
     // MainWindow::onNodeReady() / the periodic tick populate the live status + tables. (Previously this built a
     // permanent "unavailable" stub when the node wasn't running at construction, leaving the tab dead after enabling.)
 
-    // Status row.
+    // Status strip: a single-row table (Network | Peers | Seeded | ↓ Down | ↑ Up | Repo | Disk free), plus a hint
+    // label shown only when the node is off.
+    IpfsStatusTable = new QTableWidget(1, 7, this);
+    IpfsStatusTable->setHorizontalHeaderLabels({"Network", "Peers", "Seeded", "↓ Down", "↑ Up", "Repo", "Disk free"});
+    IpfsStatusTable->verticalHeader()->setVisible(false);
+    IpfsStatusTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    IpfsStatusTable->horizontalHeader()->setHighlightSections(false);
+    IpfsStatusTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    IpfsStatusTable->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsStatusTable->setFocusPolicy(Qt::NoFocus);
+    IpfsStatusTable->setShowGrid(false);
+    IpfsStatusTable->setStyleSheet("QTableWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;}"
+                                   "QHeaderView::section{background:transparent;color:#8f98a0;border:none;"
+                                   "padding:3px 4px;font-size:8pt;}");
+    for (int c = 0; c < 7; ++c) {
+        QTableWidgetItem * it = new QTableWidgetItem(QStringLiteral("—"));
+        it->setTextAlignment(Qt::AlignCenter);
+        IpfsStatusTable->setItem(0, c, it);
+    }
+    IpfsStatusTable->setFixedHeight(IpfsStatusTable->horizontalHeader()->sizeHint().height()
+                                    + IpfsStatusTable->verticalHeader()->defaultSectionSize() + 4);
+    v->addWidget(IpfsStatusTable);
+
+    IpfsHintLabel = new QLabel("IPFS node is off — enable networking in Settings → IPFS to download and seed.", this);
+    IpfsHintLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    IpfsHintLabel->hide();
+    v->addWidget(IpfsHintLabel);
+
+    // Button row (seed + refresh).
     QHBoxLayout * statusRow = new QHBoxLayout();
-    IpfsStatusLabel = new QLabel(QStringLiteral("…"), this);
     QPushButton * refreshBtn = new QPushButton("Refresh", this);
     connect(refreshBtn, &QPushButton::clicked, this, [this]{ IpfsCidStat.clear(); refresh(); });  // force re-stat (fresh size/health)
 
@@ -269,7 +296,7 @@ void IpfsTab::buildUi()
         }).detach();
     });
 
-    statusRow->addWidget(IpfsStatusLabel, 1);
+    statusRow->addStretch(1);
     statusRow->addWidget(seedBtn);
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
@@ -431,13 +458,17 @@ void IpfsTab::buildUi()
 
 void IpfsTab::refresh()
 {
-    if (!IpfsStatusLabel) return;
+    if (!IpfsStatusTable) return;
     if (!IpfsWrapper::Available())
     {
-        // Node not running (networking off, or not started yet). Show why instead of leaving the tab blank.
-        IpfsStatusLabel->setText("<b>IPFS node is off.</b>  Enable networking in Settings → IPFS to download and seed.");
+        // Node not running (networking off, or not started yet). Grey the strip + show the hint.
+        IpfsHintLabel->show();
+        IpfsStatusTable->item(0, 0)->setText(QStringLiteral("off"));
+        IpfsStatusTable->item(0, 0)->setForeground(QColor("#c0726a"));
+        for (int c = 1; c < IpfsStatusTable->columnCount(); ++c) IpfsStatusTable->item(0, c)->setText(QStringLiteral("—"));
         return;
     }
+    IpfsHintLabel->hide();
     if (IpfsRefreshInFlight) return;                                       // a gather is already running
     IpfsRefreshInFlight = true;
 
@@ -448,6 +479,7 @@ void IpfsTab::refresh()
         const bool   Daemon = IpfsWrapper::DaemonRunning();
         const int    Peers  = Daemon ? IpfsWrapper::PeerCount() : 0;
         const QString Repo  = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
+        const IpfsWrapper::BandwidthRates Bw = IpfsWrapper::Bandwidth();
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
         QHash<QString, long long> Sizes;
         for (const auto & P : Pins)
@@ -455,35 +487,41 @@ void IpfsTab::refresh()
             const QString C = QString::fromStdString(P.Cid);
             if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSize(P.Cid); if (S >= 0) Sizes[C] = S; }
         }
-        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Pins, Sizes]{
+        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Bw, Pins, Sizes]{
             IpfsRefreshInFlight = false;
-            applySnapshot(Daemon, Peers, Repo, Pins, Sizes);
+            applySnapshot(Daemon, Peers, Repo, Bw.DownBps, Bw.UpBps, Pins, Sizes);
         }, Qt::QueuedConnection);
     }).detach();
 }
 
-void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo,
+void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double DownBps, double UpBps,
                             const std::vector<IpfsWrapper::PinEntry> & Pins,
                             const QHash<QString, long long> & Sizes)
 {
-    if (!IpfsStatusLabel) return;
+    if (!IpfsStatusTable) return;
     for (auto it = Sizes.constBegin(); it != Sizes.constEnd(); ++it) IpfsCidStat[it.key()].SizeBytes = it.value();  // merge sizes
 
     long long Total = 0;
     for (const auto & P : Pins) { const long long s = IpfsCidStat.value(QString::fromStdString(P.Cid)).SizeBytes; if (s >= 0) Total += s; }
 
-    QString S = QString("Network: %1").arg(Daemon
-        ? "<span style='color:#5fb55f;'>connected</span>"
-        : "<span style='color:#c0726a;'>connecting…</span>");
-    if (Daemon) S += QString("   •   Peers: %1").arg(Peers);
-    if (!Repo.isEmpty()) S += QString("   •   Repo: %1").arg(Repo);
-    S += QString("   •   Seeded: %1 item%2 · %3").arg(Pins.size()).arg(Pins.size() == 1 ? "" : "s").arg(HumanBytes(Total));
+    auto Rate = [](double Bps){ return Bps >= 1.0 ? (HumanBytes((long long)Bps) + "/s") : QStringLiteral("—"); };
+    auto Set = [this](int col, const QString & text, const QColor & fg = QColor()){
+        QTableWidgetItem * it = IpfsStatusTable->item(0, col);
+        it->setText(text);
+        it->setForeground(fg.isValid() ? fg : QColor("#c6d4df"));
+    };
+    Set(0, Daemon ? QStringLiteral("● connected") : QStringLiteral("● connecting…"),
+           Daemon ? QColor("#5fb55f") : QColor("#d6a23e"));
+    Set(1, Daemon ? QString::number(Peers) : QStringLiteral("—"));
+    Set(2, QString("%1 · %2").arg(Pins.size()).arg(HumanBytes(Total)));
+    Set(3, Rate(DownBps), DownBps >= 1.0 ? QColor("#5fb55f") : QColor("#8f98a0"));
+    Set(4, Rate(UpBps),   UpBps   >= 1.0 ? QColor("#4a90d9") : QColor("#8f98a0"));
+    Set(5, Repo.isEmpty() ? QStringLiteral("—") : Repo);
     {
         std::error_code Ec;
         const auto Sp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), Ec);
-        if (!Ec) S += QString("   •   Disk: %1 free of %2").arg(HumanBytes((long long)Sp.available)).arg(HumanBytes((long long)Sp.capacity));
+        Set(6, Ec ? QStringLiteral("—") : QString("%1 free").arg(HumanBytes((long long)Sp.available)));
     }
-    IpfsStatusLabel->setText(S);
 
     if (!IpfsPins) return;
     IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);   // keep names current with the catalog

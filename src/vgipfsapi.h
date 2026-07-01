@@ -35,6 +35,7 @@ int  VgDropCached(const char *cid, char **errOut);// purge a CID's locally-CACHE
 int  VgPeerCount(void);                         // M3
 int  VgRepoStat(char **outJson, char **errOut); // M3 — {"RepoSize":n,"StorageMax":n}
 int  VgProviderCount(const char *cid, int timeoutMs); // M3
+void VgBandwidthRates(double *inBps, double *outBps); // global down/up throughput (bytes/sec); 0 when offline
 
 void VgRequestCancel(const char *cid);
 void VgClearCancel(const char *cid);
