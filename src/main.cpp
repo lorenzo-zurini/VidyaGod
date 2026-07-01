@@ -251,7 +251,8 @@ int main(int argc, char *argv[])
     const bool HeadlessNeedsNode =
         LaunchParameters.PrintPeerId || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
-        || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.LaunchNodeId.empty();
+        || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
+        || !LaunchParameters.LaunchNodeId.empty();
     if (HeadlessNeedsNode)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
 
@@ -350,6 +351,19 @@ int main(int argc, char *argv[])
         const bool Ok = PackageCatalog::PublishPackage(Dir, Dest, &Err);
         LogOut("main.cpp", Ok ? "Package published." : ("Package publish failed: " + Err));
         return Ok ? 0 : 1;
+    }
+
+    //HEADLESS: recursively add a folder (of dehydrated packages) to IPFS BY REFERENCE and print its folder CID — the
+    //value to hand out for the Library's "Add by CID". The folder's files are referenced in place, so keep the folder
+    //on disk and run VidyaGod online to seed it. Content still seeds per-layer from wherever it lives.
+    if (!LaunchParameters.PublishCidDir.empty())
+    {
+        std::string Err;
+        const std::string Cid = IpfsWrapper::AddNoCopy(LaunchParameters.PublishCidDir, &Err);
+        if (Cid.empty()) { LogErr("main.cpp", "publish-cid failed: " + Err); return 1; }
+        LogSucc("main.cpp", "Folder CID: " + Cid);
+        std::cout << Cid << "\n";   // machine-readable on stdout
+        return 0;
     }
 
     //HEADLESS: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...).
@@ -761,6 +775,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--publish-to" && i + 1 < argc)
         {
             RuntimeParameters.PublishToDir = argv[++i];
+        }
+        else if (arg == "--publish-cid" && i + 1 < argc)
+        {
+            RuntimeParameters.PublishCidDir  = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--runner" && i + 1 < argc)
         {

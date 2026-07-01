@@ -60,6 +60,7 @@ struct LaunchParameters
     std::string ImportPackageUid;                                        //--import-package: install this catalog game (fetch IPFS content + add to LIBRARY) then exit
     std::string PublishPackageDir;                                       //--publish <pkgdir>: dehydrate this local package (seed content -> CIDs into the manifest) then exit
     std::string PublishToDir;                                            //--publish-to <dir>: also export a manifest-only dehydrated copy there
+    std::string PublishCidDir;                                           //--publish-cid <dir>: recursively add a folder to IPFS, print its folder CID (for add-by-CID), then exit
 };
 
 int main(int argc, char *argv[]);
