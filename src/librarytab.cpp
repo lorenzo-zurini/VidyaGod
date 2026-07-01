@@ -131,7 +131,7 @@ void LibraryTab::buildUi()
     layout->addWidget(toolbar);
 
     View = new LibraryView(this);
-    View->setEmptyMessage("No games yet.\n\nAdd a repository in Settings → Repositories, then download games from the Available tab.");
+    View->setEmptyMessage("No games yet.\n\nAdd a source in Settings → Sources, then download games from the Available tab.");
     layout->addWidget(View);
 
     // Persisted collapse state for the Series-view sections.

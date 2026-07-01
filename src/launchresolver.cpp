@@ -387,9 +387,9 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
 //The platform the HOST runs as. Phase-1 stub — only Linux is supported, so this is constant.
 //TO BE REPLACED by real OS/arch detection when VidyaGod runs on other hosts (e.g. Windows).
 
-//(Library/repo path helpers + the catalog/sync/import/publish service moved to PackageCatalog — see
-//packagecatalog.h. The launch-engine code below calls PackageCatalog::RepositoryDirs / GetPackageUserSettings
-//unqualified via the using-directive above.)
+//(Library path helpers + the catalog/sync/import/publish service moved to PackageCatalog — see packagecatalog.h.
+//The launch-engine code below calls PackageCatalog::BuildCatalogIndex / GetPackageUserSettings unqualified via the
+//using-directive above.)
 
 //(Catalog/RegistryRunners + git plumbing + Sync/Upsert/Reconcile moved to PackageCatalog — see packagecatalog.h.)
 

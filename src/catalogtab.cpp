@@ -118,7 +118,7 @@ void CatalogTab::buildUi()
 
     AvailableView = new LibraryView(this);
     AvailableView->setHoverAction("⬇  Download", true);
-    AvailableView->setEmptyMessage("Nothing to download.\n\nAdd a repository in Settings → Repositories (or hit “Sync now”) to see shared games here.");
+    AvailableView->setEmptyMessage("Nothing to download.\n\nAdd a source in Settings → Sources (or hit “Sync now”) to see shared games here.");
     v->addWidget(AvailableView);
 
     // Card clicks are re-emitted as requests; MainWindow wires them to the DownloadManager (no direct coupling).
@@ -274,15 +274,7 @@ void CatalogTab::applyFilter()
 
 QString CatalogTab::repoNameForBundle(const std::filesystem::path & BundleDir) const
 {
-    std::error_code Ec;
-    const std::string B = std::filesystem::weakly_canonical(BundleDir, Ec).string();
-    for (const std::string & RepoDir : PackageCatalog::RepositoryDirs(*Model.config()))
-    {
-        const std::string R = std::filesystem::weakly_canonical(std::filesystem::path(RepoDir), Ec).string();
-        if (!R.empty() && (B == R || B.rfind(R + "/", 0) == 0))
-            return QString::fromStdString(std::filesystem::path(RepoDir).filename().string());
-    }
-    if (PackageCatalog::IsPackageSourcePath(*Model.config(), BundleDir))
-        return QStringLiteral("CID Packages");                    // an IPFS folder-CID package source
-    return QStringLiteral("Local");
+    // Each CID package source is its own named catalog section; un-sourced bundles group under "Local".
+    const std::string Name = PackageCatalog::PackageSourceNameForPath(*Model.config(), BundleDir);
+    return Name.empty() ? QStringLiteral("Local") : QString::fromStdString(Name);
 }

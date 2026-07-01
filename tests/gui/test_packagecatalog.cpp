@@ -271,6 +271,25 @@ private slots:
         QVERIFY(cfg["LIBRARY"].empty());                                    // its LIBRARY entry gone
         QVERIFY(!QDir(dir).exists());                                       // its dir deleted
     }
+
+    // Catalog sectioning: PackageSourceNameForPath returns the owning source's NAME for a bundle under it, or "" for a
+    // path outside every source (which the catalog groups under "Local"). Each source is thus its own named section.
+    void package_source_name_for_path_sections_by_source()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        AppPaths::SetDataRoot(data.path().toStdString());
+
+        const QString aBundle = data.path() + "/CIDPACKAGES/Alpha/game";
+        const QString bBundle = data.path() + "/CIDPACKAGES/Beta/game";
+        QDir().mkpath(aBundle); QDir().mkpath(bBundle);
+
+        json cfg = json{{"Settings", {{"PackageSources", json::array({
+                            json{{"CID", "QmA"}, {"NAME", "Alpha"}}, json{{"CID", "QmB"}, {"NAME", "Beta"}} })}}}};
+
+        QCOMPARE(PackageCatalog::PackageSourceNameForPath(cfg, aBundle.toStdString()), std::string("Alpha"));
+        QCOMPARE(PackageCatalog::PackageSourceNameForPath(cfg, bBundle.toStdString()), std::string("Beta"));
+        QCOMPARE(PackageCatalog::PackageSourceNameForPath(cfg, (data.path() + "/Elsewhere/pkg").toStdString()), std::string());
+    }
 };
 
 QTEST_MAIN(PackageCatalogTest)

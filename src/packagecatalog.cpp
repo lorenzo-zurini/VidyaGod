@@ -3,16 +3,13 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
-#include "processenv.h"
 #include "ipfswrapper.h"
 #include "runnerwrapper.h"
 #include "containerwrapper.h"   // RunnerNodeImported (runner install state) — .cpp-only include avoids a header cycle
 
 #include <QDir>
 #include <QFile>
-#include <QProcess>
 #include <QStringList>
-#include <set>
 #include <map>
 #include <fstream>
 #include <filesystem>
@@ -65,48 +62,6 @@ static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
 
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON) { return LibraryDir(GlobalConfigJSON); }
 
-//A repository's clone URL. Each Settings.Repositories[] entry is an object with a "PATH" (the URL), or a bare URL.
-static std::string RepositoryURL(const nlohmann::ordered_json &R)
-{
-    if (R.is_object() && R.contains("PATH") && R["PATH"].is_string()) return std::string(R["PATH"]);
-    if (R.is_string()) return std::string(R);
-    return std::string();
-}
-
-//The clone directory name for a git repository: its NAME, else the URL basename minus a ".git" suffix.
-static std::string GitRepoName(const nlohmann::ordered_json &R)
-{
-    std::string Name = R.is_object() ? R.value("NAME", std::string()) : std::string();
-    if (Name.empty())
-    {
-        std::string U = RepositoryURL(R);
-        while (!U.empty() && U.back() == '/') U.pop_back();
-        const auto Slash = U.find_last_of('/');
-        Name = (Slash == std::string::npos) ? U : U.substr(Slash + 1);
-        const std::string Suffix = ".git";
-        if (Name.size() > Suffix.size() && Name.compare(Name.size() - Suffix.size(), Suffix.size(), Suffix) == 0)
-            Name = Name.substr(0, Name.size() - Suffix.size());
-    }
-    return Name.empty() ? std::string("repo") : Name;
-}
-
-//A repository's git working tree: LIBRARY/<name>. The clone IS the library — its dehydrated package dirs hydrate in place.
-static std::string RepositoryLocalDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &R)
-{
-    return QDir::cleanPath(QString::fromStdString(LibraryDir(GlobalConfigJSON) + "/" + GitRepoName(R))).toStdString();
-}
-
-std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON)
-{
-    std::vector<std::string> Dirs;
-    const nlohmann::ordered_json *Settings = (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
-                                             ? &GlobalConfigJSON["Settings"] : nullptr;
-    if (Settings && Settings->contains("Repositories") && (*Settings)["Repositories"].is_array())
-        for (const auto &R : (*Settings)["Repositories"])
-            if (!RepositoryURL(R).empty()) Dirs.push_back(RepositoryLocalDir(GlobalConfigJSON, R));
-    return Dirs;
-}
-
 // Pure path-prefix test: is Path inside Base? (weakly-canonical so it works whether or not either exists yet.)
 static bool PathUnder(const std::filesystem::path &Base, const std::filesystem::path &Path)
 {
@@ -115,14 +70,6 @@ static bool PathUnder(const std::filesystem::path &Base, const std::filesystem::
     const std::filesystem::path P = std::filesystem::weakly_canonical(Path, Ec);
     auto It = std::mismatch(B.begin(), B.end(), P.begin(), P.end());
     return It.first == B.end();                                     // B is a prefix of P
-}
-
-// True if Path lies within one of the configured repository dirs (a repo package, scanned via its repo root).
-static bool PathUnderRepository(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
-{
-    for (const std::string &D : RepositoryDirs(GlobalConfigJSON))
-        if (PathUnder(D, Path)) return true;
-    return false;
 }
 
 // ----- package sources (IPFS folder CIDs) -----
@@ -155,10 +102,11 @@ bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const s
     return !BundleDir.empty() && PathUnder(PackageSourcesRoot(GlobalConfigJSON), BundleDir);
 }
 
-//A managed package: sourced from a repo clone OR a CID package source (i.e. NOT a standalone locally-added bundle).
+//A managed package: sourced from a CID package source (i.e. NOT a standalone locally-added bundle). (Git repos were
+//removed — every shared package now comes from a Settings.PackageSources[] CID, so "managed" == "under a source dir".)
 static bool PathUnderManagedSource(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &Path)
 {
-    return PathUnderRepository(GlobalConfigJSON, Path) || IsPackageSourcePath(GlobalConfigJSON, Path);
+    return IsPackageSourcePath(GlobalConfigJSON, Path);
 }
 
 std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON)
@@ -175,6 +123,19 @@ std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalC
         if (std::filesystem::is_directory(Dir, Ec)) Dirs.push_back(Dir);   // existing = a scan root
     }
     return Dirs;
+}
+
+std::string PackageSourceNameForPath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
+{
+    if (BundleDir.empty() || !GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return {};
+    const auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return {};
+    for (const auto &Src : S["PackageSources"])
+    {
+        if (PackageSourceCID(Src).empty()) continue;
+        if (PathUnder(PackageSourceDir(GlobalConfigJSON, Src), BundleDir)) return PackageSourceName(Src);
+    }
+    return {};
 }
 
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
@@ -218,105 +179,6 @@ int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON)
     return Removed;
 }
 
-// ----- git plumbing -----
-
-//Runs git with the given arguments, blocking up to a couple of minutes. Returns true on a clean exit.
-static bool RunGit(const QStringList &Args, const QString &WorkDir = QString())
-{
-    QProcess P;
-    P.setProcessEnvironment(SystemToolEnv());                                   // system git must not inherit the AppImage LD_LIBRARY_PATH
-    if (!WorkDir.isEmpty()) P.setWorkingDirectory(WorkDir);
-    P.start("git", Args);
-    if (!P.waitForStarted(10000)) return false;
-    if (!P.waitForFinished(120000)) { P.kill(); P.waitForFinished(2000); return false; }
-    return P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0;
-}
-
-//Clones (first run) or updates a git repository into CloneDir, syncing ONLY the tracked files (the node JSONs).
-//CONTENT-SAFE: it NEVER deletes the clone dir, because hydrated game/runner content (build zips, generated
-//DEFPREFIX, fetched layers) lives here gitignored — a sync hiccup must never wipe it. `git reset --hard` realigns
-//tracked files to upstream and leaves untracked content untouched; if even that fails we keep the last-synced
-//clone rather than nuking it. An existing non-git dir with files is adopted in place (init+fetch+force-checkout).
-static bool SyncGitRepository(const std::string &Url, const std::string &CloneDir)
-{
-    if (Url.empty()) return false;
-    const QString Dir = QString::fromStdString(CloneDir);
-
-    // An existing clone: update tracked files only.
-    if (QDir(Dir + "/.git").exists())
-    {
-        if (RunGit({"pull", "--ff-only"}, Dir)) return true;                      // normal fast-forward
-        if (RunGit({"fetch", "origin"}, Dir) && RunGit({"reset", "--hard", "@{u}"}, Dir))
-            return true;                                                          // diverged/rewritten history → realign tracked files
-        LogWarn("PackageCatalog::SyncGitRepository",
-                "could not sync " + CloneDir + " — keeping the last-synced clone (hydrated content preserved).");
-        return false;                                                            // NEVER delete the clone
-    }
-
-    // A non-git dir that already holds files (an old copied mirror, or content placed before any clone): adopt it
-    // in place so untracked content survives — init + fetch + force-checkout the tracked JSONs from origin.
-    if (QDir(Dir).exists() && !QDir(Dir).isEmpty())
-    {
-        if (RunGit({"init"}, Dir)
-            && RunGit({"remote", "add", "origin", QString::fromStdString(Url)}, Dir)
-            && RunGit({"fetch", "--depth", "1", "origin"}, Dir)
-            && RunGit({"checkout", "-f", "-B", "main", "origin/main"}, Dir))
-            return true;
-        LogWarn("PackageCatalog::SyncGitRepository",
-                "could not adopt existing dir " + CloneDir + " as a git clone — left untouched (content preserved).");
-        return false;
-    }
-
-    // Pristine first clone.
-    QDir().mkpath(QString::fromStdString(std::filesystem::path(CloneDir).parent_path().string())); // LIBRARY root must exist
-    return RunGit({"clone", "--depth", "1", QString::fromStdString(Url), Dir});
-}
-
-//Upserts a slim index entry {PACKAGEUID,PACKAGENAME,PATH,REPO} into Arr keyed by PACKAGEUID. A local (no-REPO)
-//entry with the same UID wins and is left untouched (the user's own package shadows a repo copy).
-static void UpsertIndexEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &Repo,
-                             const std::string &MirrorDir, const std::string &Name)
-{
-    for (auto &E : Arr)
-    {
-        if (E.value("PACKAGEUID", std::string()) != Uid) continue;
-        if (!E.contains("REPO")) return;                                          // local entry owns this UID
-        E["PACKAGENAME"] = Name;
-        E["PATH"]        = MirrorDir;
-        E["REPO"]        = Repo;
-        E.erase("PACKAGEVERSION");                                                // drop the legacy field if present
-        return;
-    }
-    nlohmann::ordered_json Slim;
-    Slim["PACKAGEUID"]  = Uid;
-    Slim["PACKAGENAME"] = Name;
-    Slim["PATH"]        = MirrorDir;
-    Slim["REPO"]        = Repo;
-    Arr.push_back(std::move(Slim));
-}
-
-
-//Drops REPO-sourced entries whose PACKAGEUID no longer comes from any synced repo AND that hold nothing the user
-//downloaded, deleting their dir (only under LibRoot). Local (no-REPO) entries and downloaded orphans are kept.
-static void ReconcileIndex(nlohmann::ordered_json &Arr, const std::set<std::string> &SeenUids, const std::string &LibRoot)
-{
-    for (int i = (int)Arr.size() - 1; i >= 0; --i)
-    {
-        nlohmann::ordered_json &E = Arr[i];
-        if (!E.contains("REPO")) continue;                                        // local — keep
-        if (SeenUids.count(E.value("PACKAGEUID", std::string()))) continue;       // still in a repo — keep
-        const std::string Path = E.value("PATH", std::string());
-        //A downloaded orphan (kept): any launchable node in the bundle is hydrated locally.
-        bool Downloaded = false;
-        NodeIndex Idx; ManifestModel::ScanBundleNodes(Path, Idx);
-        for (const auto &[NodeId, N] : Idx.Nodes)
-            if (N.IsLaunchable() && NodeHydrated(Idx, NodeId)) { Downloaded = true; break; }
-        if (Downloaded) continue;                                                 // downloaded orphan — keep
-        if (!Path.empty() && Path.rfind(LibRoot, 0) == 0) { std::error_code Ec; std::filesystem::remove_all(Path, Ec); }
-        Arr.erase(Arr.begin() + i);
-    }
-}
-
 //A bundle's index identity, derived from its node files (everything-is-a-node): the representative launchable
 //node's UID + title, and whether the bundle defines any launchable / runner node. Replaces the AssembleManifest
 //PACKAGEUID/PACKAGENAME/HasGames/HasRunners reads.
@@ -344,54 +206,8 @@ static BundleIdentity ScanBundleIdentity(const std::string &BundleDir)
     return Id;
 }
 
-void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON)
-{
-    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
-    if (!GlobalConfigJSON["Settings"].contains("Repositories") || !GlobalConfigJSON["Settings"]["Repositories"].is_array()) return;
-
-    //Ensure LIBRARY exists BEFORE iterating — adding a top-level key reallocates the object's storage, so creating
-    //it later would dangle a cached reference into the Repositories array.
-    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
-        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
-
-    const std::string LibRoot = LibraryDir(GlobalConfigJSON);
-    std::set<std::string> SeenUid;
-
-    for (auto &R : GlobalConfigJSON["Settings"]["Repositories"])
-    {
-        const std::string Url = RepositoryURL(R);
-        if (Url.empty()) continue;
-        const std::string RepoName = GitRepoName(R);
-        const std::string Local = RepositoryLocalDir(GlobalConfigJSON, R);
-        LogOut("PackageCatalog::SyncRepositories", "Syncing git repository " + Url + " -> " + Local);
-        if (!SyncGitRepository(Url, Local))
-            LogWarn("PackageCatalog::SyncRepositories", "git clone/pull failed for " + Url + " (using last-synced clone, if any).");
-
-        QDir D(QString::fromStdString(Local));
-        if (!D.exists()) { LogWarn("PackageCatalog::SyncRepositories", "Repository missing (skipped): " + Local); continue; }
-
-        int Games = 0, Runners = 0;
-        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
-        {
-            const QString ClonePkgDir = D.filePath(Sub);
-            const BundleIdentity Id = ScanBundleIdentity(ClonePkgDir.toStdString());
-            if (!Id.Valid) continue;
-
-            //The cloned bundle dir IS the library package — content hydrates here in place. Index it directly.
-            SeenUid.insert(Id.Uid);
-            UpsertIndexEntry(GlobalConfigJSON["LIBRARY"], Id.Uid, RepoName, ClonePkgDir.toStdString(), Id.Name);
-            if (Id.HasLaunchable) ++Games;
-            if (Id.HasRunner)     ++Runners;
-        }
-        LogOut("PackageCatalog::SyncRepositories", "Indexed " + Local + " ("
-               + std::to_string(Games) + " game(s), " + std::to_string(Runners) + " runner(s)).");
-    }
-
-    ReconcileIndex(GlobalConfigJSON["LIBRARY"], SeenUid, LibRoot);
-}
-
-//Upsert a LIBRARY entry for a CID-source package: PATH + name + CIDSOURCE (its source's CID), and NO "REPO" — so the
-//repo reconcile (which only touches REPO entries) never prunes it; removal is explicit via RemovePackageSource.
+//Upsert a LIBRARY entry for a CID-source package: PATH + name + CIDSOURCE (its source's CID). Removal is explicit via
+//RemovePackageSource (an immutable source's contents never change, so there is no reconcile/auto-prune).
 static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &SourceCid,
                            const std::string &Dir, const std::string &Name)
 {
@@ -414,7 +230,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;
     //Create LIBRARY BEFORE caching a reference into Settings — adding a top-level key reallocates the object's storage,
-    //which would dangle the cached &S (same hazard SyncRepositories guards against).
+    //which would dangle the cached &S.
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
     auto &S = GlobalConfigJSON["Settings"];
@@ -737,9 +553,8 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Roots;
     std::vector<std::filesystem::path> Extra = LocalPackageDirs(GlobalConfigJSON);     // externally-added bundles (dir IS a bundle)
-    for (const auto &D : RepositoryDirs(GlobalConfigJSON))  Roots.emplace_back(D);
-    //A CID package source is EITHER a collection (scan its subdirs, like a repo) OR a single per-package bundle (the dir
-    //IS the bundle — a per-package CID). Route each accordingly so per-package CIDs index identically to repo packages.
+    //A CID package source is EITHER a collection (scan its subdirs) OR a single per-package bundle (the dir IS the
+    //bundle — a per-package CID). Route each accordingly. (Git repos were removed — CID sources are the only channel.)
     for (const auto &D : PackageSourceDirs(GlobalConfigJSON))
     {
         if (ScanBundleIdentity(D).Valid) Extra.emplace_back(D);   // per-package CID → the dir itself is one bundle

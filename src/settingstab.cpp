@@ -3,7 +3,7 @@
 #include "generalpage.h"
 #include "packagesview.h"
 #include "runnerspage.h"
-#include "repositoriespage.h"
+#include "sourcespage.h"
 #include "ipfssettingspage.h"
 #include "pathspage.h"
 
@@ -25,7 +25,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     CategoryList->addItem("General");
     CategoryList->addItem("Installed Packages");
     CategoryList->addItem("Runners");
-    CategoryList->addItem("Repositories");
+    CategoryList->addItem("Sources");
     CategoryList->addItem("IPFS");
     CategoryList->addItem("Storage & Paths");
     outer->addWidget(CategoryList);
@@ -36,7 +36,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     Stack->addWidget(new GeneralPage(Model, Stack));
     Stack->addWidget(new PackagesView(Model, Stack));
     Stack->addWidget(new RunnersPage(Model, Stack));
-    Stack->addWidget(new RepositoriesPage(Model, Stack));
+    Stack->addWidget(new SourcesPage(Model, Stack));
     Stack->addWidget(new IpfsSettingsPage(Model, Stack));
     Stack->addWidget(new PathsPage(Model, Stack));
 

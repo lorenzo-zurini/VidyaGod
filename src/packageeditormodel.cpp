@@ -4,7 +4,7 @@
 #include "jsonoperations.h"
 #include "registrywrapper.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (authoring run) — pulls LaunchResolver etc.
-#include "packagecatalog.h"     // RepositoryDirs / PublishPackage
+#include "packagecatalog.h"     // BuildCatalogIndex / PublishPackage
 
 #include <QFile>
 #include <QFileDialog>
@@ -173,13 +173,9 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
     NodeIndex Idx;
     if (PackageDir)
         ManifestModel::ScanBundleNodes(PackageDir->path().toStdString(), Idx);   // this bundle wins (first-seen)
-    for (const std::string &RepoDir : PackageCatalog::RepositoryDirs(*GlobalConfigJSON))
-    {
-        QDir D(QString::fromStdString(RepoDir));
-        if (!D.exists()) continue;
-        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            ManifestModel::ScanBundleNodes(D.filePath(Sub).toStdString(), Idx);
-    }
+    // Merge in the rest of the catalog (CID package sources + local bundles); std::map::emplace keeps this bundle's nodes.
+    NodeIndex Cat = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);
+    for (auto &[Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
     ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
     return Idx;
 }

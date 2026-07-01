@@ -170,8 +170,8 @@ set(SHARED_SOURCES
     src/runnerspage.h
     src/runnerspage.cpp
 
-    src/repositoriespage.h
-    src/repositoriespage.cpp
+    src/sourcespage.h
+    src/sourcespage.cpp
 
     src/ipfssettingspage.h
     src/ipfssettingspage.cpp

@@ -565,29 +565,31 @@ static QString DependencyImportHint(const std::string &Dep)
     return QString::fromStdString(Dep);
 }
 
-// The hosted repository of built-in runner packages (and other shared packages). Cloned into
-// ~/.VidyaGod/LIBRARY/<repo> by PackageCatalog::SyncRepositories and indexed like any other repository.
-static std::string DefaultRunnerRepoURL() { return "https://github.com/lorenzo-zurini/VidyaGodRunners.git"; }
+// The default package source: an IPFS folder CID of the dehydrated built-in runner packages (ge-proton / wine /
+// umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
+// fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
+// package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
+static std::string DefaultRunnerSourceCID() { return "QmdMCw8q4g2AUcZ6h68GUb2UYXqT8PSi3CPpg6VzxTpvGH"; }
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
-//  LIBRARY (array of packages), Settings (object), Settings.Repositories (the package catalog sources).
-//Runners (and every other shared package) live as packages in the configured Repositories.
+//  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
+//Runners (and every other shared package) come from the configured PackageSources.
 //Returns true if it added anything, so the caller can persist a freshly-seeded config.
-//TODO(sharing): the LIBRARY is just the games-view of the catalog; the catalog itself is the union of
-//every package across all Repositories (+ locally-added entries), globally cross-referenceable.
 static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
 {
     bool Changed = false;
     if (!gc.is_object())                                        { gc = nlohmann::ordered_json::object();             Changed = true; }
     if (!gc.contains("LIBRARY")  || !gc["LIBRARY"].is_array())  { gc["LIBRARY"]  = nlohmann::ordered_json::array();  Changed = true; }
     if (!gc.contains("Settings") || !gc["Settings"].is_object()){ gc["Settings"] = nlohmann::ordered_json::object(); Changed = true; }
-    //Repositories: ordered list of git repos. Each: { NAME, PATH } where PATH is a clone URL, cloned
-    //into ~/.VidyaGod/LIBRARY/<repo> and indexed. The sole default is the hosted VidyaGodRunners repository
-    //(built-in runners + shared packages).
-    if (!gc["Settings"].contains("Repositories") || !gc["Settings"]["Repositories"].is_array())
+    //Migration: git repositories were removed — drop any legacy Settings.Repositories (its LIBRARY/<repo> clones, if
+    //any, become inert local dirs). Sharing is now solely via CID package sources.
+    if (gc["Settings"].contains("Repositories")) { gc["Settings"].erase("Repositories"); Changed = true; }
+    //PackageSources: ordered list of IPFS folder CIDs of dehydrated packages, fetched into <DataRoot>/CIDPACKAGES/<name>
+    //and indexed. The sole default is the built-in runners source.
+    if (!gc["Settings"].contains("PackageSources") || !gc["Settings"]["PackageSources"].is_array())
     {
-        gc["Settings"]["Repositories"] = nlohmann::ordered_json::array({
-            nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"PATH", DefaultRunnerRepoURL()} } });
+        gc["Settings"]["PackageSources"] = nlohmann::ordered_json::array({
+            nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"CID", DefaultRunnerSourceCID()} } });
         Changed = true;
     }
     return Changed;
@@ -613,10 +615,11 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
 
     EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
-    //Sync the configured Repositories: clone/pull each into ~/.VidyaGod/LIBRARY/<repo> (the clone IS the library)
-    //and upsert the un-hydrated LIBRARY index. This mutates the config (so always persist afterwards), building a
-    //full un-hydrated library of manifests that imports later hydrate in place beside each manifest.
-    PackageCatalog::SyncRepositories(*GlobalConfigJSON);
+    //Index the configured CID package sources: any already-fetched source dir (under CIDPACKAGES) is scanned into the
+    //un-hydrated LIBRARY index here. The FETCH of a not-yet-present source (e.g. the default runners on a first run)
+    //needs the IPFS node online, so it happens later once networking is up (MainWindow::onNodeReady → syncSources, or
+    //a headless mode that started the node). Mutates the config → always persist afterwards.
+    PackageCatalog::SyncPackageSources(*GlobalConfigJSON);
 
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {

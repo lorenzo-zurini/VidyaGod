@@ -13,8 +13,8 @@
 #include "ipfswrapper.h"     // IpfsWrapper::FetchTarget (download collection)
 
 // ---------------------------------------------------------------------------
-// PackageCatalog — the sharing service: where packages live on disk (the LIBRARY + git repos), the catalog of
-// everything known, per-package user settings, and the import/publish/sync operations. All stateless statics
+// PackageCatalog — the sharing service: where packages live on disk (the LIBRARY + CID package sources), the catalog
+// of everything known, per-package user settings, and the import/publish/sync operations. All stateless statics
 // over JSON (no launch session). Built on ManifestModel; uses IpfsWrapper for content transfer.
 //
 // (Runner install — ImportRunner — stays in ContainerWrapper: it needs the launch engine's mount + wineboot
@@ -27,17 +27,15 @@ nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &Glob
 void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value);
 
 // ----- on-disk locations -----
-// The managed library root (repos clone here, one subfolder per repo): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
+// The managed library root (hydrated content + disk-space checks): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
-// The clone directories of every configured Settings.Repositories[] git repo (indexed in order).
-std::vector<std::string> RepositoryDirs(const nlohmann::ordered_json &GlobalConfigJSON);
 
 // ----- locally-added (external) packages -----
-// A LIBRARY entry is a "local package" when its PATH is a bundle dir OUTSIDE every repository dir (added via the
-// Library's "Add Local Package", not cloned from a repo). The bundle dirs of every such entry whose PATH still exists
-// — fed to BuildNodeIndex's ExtraBundleDirs so they're indexed alongside repo packages.
+// A LIBRARY entry is a "local package" when its PATH is a bundle dir OUTSIDE every package-source dir (added via the
+// Library's "Add Local Package", not fetched from a CID source). The bundle dirs of every such entry whose PATH still
+// exists — fed to BuildNodeIndex's ExtraBundleDirs so they're indexed alongside CID-source packages.
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON);
-// Drop LIBRARY entries for local packages whose bundle dir no longer exists (the user moved/deleted it). Repo-rooted
+// Drop LIBRARY entries for local packages whose bundle dir no longer exists (the user moved/deleted it). CID-source
 // entries are never touched (their content may just be un-hydrated). Mutates GlobalConfigJSON; returns count removed.
 int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 
@@ -46,8 +44,11 @@ int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 // DEHYDRATED packages (manifests + covers, no content). Fetched into `<DataRoot>/CIDPACKAGES/<name>` (a sibling of
 // LIBRARY), scanned as catalog roots, and hydrated on demand exactly like repo packages.
 std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON);   // existing source dirs
-// True if BundleDir lives under a package-source dir (used to group them as "CID Packages" in the catalog).
+// True if BundleDir lives under a package-source dir (a CID-source package, vs a locally-added one).
 bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
+// The NAME of the package source whose dir contains BundleDir, or "" if none — used to group catalog tiles into one
+// named section per source (the catalog's grouping key).
+std::string PackageSourceNameForPath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
 // For each configured source: if its dir is empty/missing, recursively fetch the folder CID (dehydrated only — no
 // content hydration; requires the IPFS node online), then upsert its bundles into LIBRARY. Mutates config; returns the
 // number of packages indexed. On a fetch failure, sets *Error (if given) and leaves that source's dir untouched.
@@ -58,14 +59,11 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
 // Remove source [index]: drop its config entry, delete its CIDPACKAGES dir, and drop LIBRARY entries under it.
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
 
-// True if BundleDir is a locally-added package — its path is OUTSIDE every configured repository AND package-source dir
-// (used to badge such tiles in the library).
+// True if BundleDir is a locally-added package — its path is OUTSIDE every configured package-source dir (used to badge
+// such tiles in the library).
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
 
-// ----- sync / publish -----
-// Git clone/pull each repo into LIBRARY/<repo> and upsert one LIBRARY index entry per bundle (identity derived
-// from its node files), reconciling away vanished repo entries. Mutates GlobalConfigJSON; caller persists it.
-void SyncRepositories(nlohmann::ordered_json &GlobalConfigJSON);
+// ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
@@ -87,7 +85,8 @@ int SeedDirectory(const std::string &Dir,
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 
 // ----- node-graph catalog (everything-is-a-node) -----
-// Build the global cross-bundle node graph from the configured repos — the node-native catalog source.
+// Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
+// node-native catalog source.
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
 // Presentable launchable nodes (ROLE:"launchable" + META) grouped by GROUP for library tiles: one inner vector per
 // tile (the group's editions, RECOMMENDED first then by id). Groups are ordered by the recommended edition's title.

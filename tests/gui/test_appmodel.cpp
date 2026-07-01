@@ -8,6 +8,7 @@
 #include <QFile>
 
 #include "appmodel.h"
+#include "apppaths.h"
 
 #include <fstream>
 
@@ -31,20 +32,6 @@ private slots:
 
         m.setCardPixelWidth(250);          // unchanged → no signal
         QCOMPARE(spy.count(), 1);
-    }
-
-    void add_repository_rejects_empty_and_duplicate()
-    {
-        QTemporaryDir d; QVERIFY(d.isValid());
-        QDir appDir(d.path());
-        json cfg = json{{"Settings", {{"Repositories", json::array({ json{{"PATH", "https://h/Repo"}} })}}}};
-        AppModel m(&cfg, &appDir);
-
-        QVERIFY(!m.addRepository("", ""));                          // empty URL
-        QVERIFY(!m.addRepository("dup",  "https://h/Repo"));        // exact duplicate
-        QVERIFY(!m.addRepository("dup2", "https://h/Repo.git"));    // duplicate after .git normalization
-        QVERIFY(!m.addRepository("dup3", "https://h/Repo/"));       // duplicate after trailing-slash normalization
-        QCOMPARE((int)cfg["Settings"]["Repositories"].size(), 1);   // none added
     }
 
     void remove_local_package_drops_reference_keeps_user_files()
@@ -108,27 +95,28 @@ private slots:
         QCOMPARE(onDisk["Settings"].value("CardPixelWidth", 0), 199);
     }
 
-    // removeRepository drops the indexed entry, persists, rebuilds the catalog, and signals both changes.
-    void remove_repository_drops_entry_and_signals()
+    // removePackageSource drops the source entry, persists, rebuilds the catalog, and signals the change.
+    void remove_package_source_drops_entry_and_signals()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
+        AppPaths::SetDataRoot(d.path().toStdString());   // keep CIDPACKAGES deletion inside the temp dir
         QDir appDir(d.path());
-        json cfg = json{{"Settings", {{"Repositories", json::array({
-                            json{{"PATH", "https://h/A"}}, json{{"PATH", "https://h/B"}} })}}},
+        json cfg = json{{"Settings", {{"PackageSources", json::array({
+                            json{{"CID", "QmA"}, {"NAME", "a"}}, json{{"CID", "QmB"}, {"NAME", "b"}} })}}},
                         {"LIBRARY", json::array()}};
         AppModel m(&cfg, &appDir);
 
-        QSignalSpy repos(&m, &AppModel::repositoriesChanged);
+        QSignalSpy srcs(&m, &AppModel::packageSourcesChanged);
         QSignalSpy cat(&m, &AppModel::catalogChanged);
-        m.removeRepository(0);
+        m.removePackageSource(0);
 
-        QCOMPARE((int)cfg["Settings"]["Repositories"].size(), 1);
-        QCOMPARE(cfg["Settings"]["Repositories"][0].value("PATH", std::string()), std::string("https://h/B"));
-        QVERIFY(repos.count() >= 1);
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 1);
+        QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmB"));
+        QVERIFY(srcs.count() >= 1);
         QVERIFY(cat.count() >= 1);
 
-        m.removeRepository(99);   // out-of-range → no erase, no crash
-        QCOMPARE((int)cfg["Settings"]["Repositories"].size(), 1);
+        m.removePackageSource(99);   // out-of-range → no erase, no crash
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 1);
     }
 
     // Networking is OFF by default and toggles persist Settings.IPFS.Enabled + emit networkingChanged once.

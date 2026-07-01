@@ -263,6 +263,10 @@ void MainWindow::onNodeReady()
     // ResumeTimer polls for that, then resumes any interrupted downloads.
     if (IpfsTabPtr) IpfsTabPtr->refresh();
     if (ResumeTimer && !ResumeTimer->isActive()) ResumeTimer->start();
+
+    // Fetch/index any not-yet-present CID package sources now the node is up — this is what bootstraps the default
+    // runners source on a first run (git repos, which needed no node, previously did this at config-init time).
+    if (Model) Model->syncSources();
 }
 
 void MainWindow::restoreFromTray()

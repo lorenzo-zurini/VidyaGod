@@ -1,7 +1,7 @@
 #include "authoringsessionmodel.h"
 #include "packageeditormodel.h"
 #include "manifestmodel.h"     // NodeIndex / Node / ScanBundleNodes / MachinePlatform
-#include "packagecatalog.h"    // RepositoryDirs
+#include "packagecatalog.h"    // BuildCatalogIndex
 
 #include <QDir>
 
@@ -35,17 +35,12 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     nlohmann::ordered_json Config = nlohmann::ordered_json::parse(configDump.toStdString(), nullptr, /*allow_exceptions=*/false);
     if (Config.is_discarded()) Config = nlohmann::ordered_json::object();
 
-    // Rebuild the catalog index (this bundle + every repo) here, off the GUI thread — mirrors PackageEditorModel::
+    // Rebuild the catalog index (this bundle + the whole catalog) here, off the GUI thread — mirrors PackageEditorModel::
     // BuildExecIndex, so nothing but Qt value types crosses the thread boundary.
     NodeIndex Idx;
-    ManifestModel::ScanBundleNodes(bundlePath.toStdString(), Idx);
-    for (const std::string & Repo : PackageCatalog::RepositoryDirs(Config))
-    {
-        QDir Dir(QString::fromStdString(Repo));
-        if (!Dir.exists()) continue;
-        for (const QString & Sub : Dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            ManifestModel::ScanBundleNodes(Dir.filePath(Sub).toStdString(), Idx);
-    }
+    ManifestModel::ScanBundleNodes(bundlePath.toStdString(), Idx);              // this bundle wins (first-seen)
+    NodeIndex Cat = PackageCatalog::BuildCatalogIndex(Config);                  // CID package sources + local bundles
+    for (auto & [Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
     ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
 
     // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers

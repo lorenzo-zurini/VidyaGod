@@ -9,7 +9,7 @@ class QStackedWidget;
 
 // ---------------------------------------------------------------------------
 // SettingsTab — the "Settings" tab: a category sidebar + a stack of self-contained page widgets (GeneralPage,
-// PackagesView, RunnersPage, RepositoriesPage, IpfsSettingsPage, PathsPage). It is a thin container — no settings
+// PackagesView, RunnersPage, SourcesPage, IpfsSettingsPage, PathsPage). It is a thin container — no settings
 // logic of its own; each
 // page reads/writes through the AppModel and subscribes to the model's signals on its own.
 // ---------------------------------------------------------------------------
