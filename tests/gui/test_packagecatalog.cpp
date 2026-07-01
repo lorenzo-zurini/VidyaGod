@@ -218,6 +218,36 @@ private slots:
         QCOMPARE(v->GameKey(), std::string("cidtile"));
     }
 
+    // A PER-PACKAGE CID: the fetched source dir is ITSELF a bundle (node JSON at its top level, no package subdirs).
+    // SyncPackageSources must index it as one package whose PATH is the source dir itself (not a subdir) — this is what
+    // makes each package individually addable by its own folder CID.
+    void single_package_cid_source_indexed_as_one_package()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        AppPaths::SetDataRoot(data.path().toStdString());
+
+        // The already-fetched source dir holds the bundle files directly (no wrapping subdir).
+        const QString dir = data.path() + "/CIDPACKAGES/solopkg";
+        QDir().mkpath(dir);
+        writeJson(dir + "/tile.json", json{{"NODE_ID", "solotile"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "7777"}, {"TITLE", "Solo Game"}} })}});
+        writeJson(dir + "/variant.json", json{{"NODE_ID", "solovariant"}, {"PARENTS", json::array({"solotile"})},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+
+        json cfg = json{{"Settings", {{"Repositories", json::array()},
+                                      {"PackageSources", json::array({ json{{"CID", "QmSoloPackageCID"}, {"NAME", "solopkg"}} })}}}};
+
+        const int indexed = PackageCatalog::SyncPackageSources(cfg);
+        QCOMPARE(indexed, 1);                                              // one launchable package
+        QCOMPARE((int)cfg["LIBRARY"].size(), 1);
+        QVERIFY(!cfg["LIBRARY"][0].value("PACKAGEUID", std::string()).empty());
+        QCOMPARE(cfg["LIBRARY"][0].value("PATH", std::string()), dir.toStdString());   // PATH is the source dir itself
+        QCOMPARE(cfg["LIBRARY"][0].value("CIDSOURCE", std::string()), std::string("QmSoloPackageCID"));
+
+        NodeIndex idx = PackageCatalog::BuildCatalogIndex(cfg);
+        QVERIFY(idx.Find("solovariant") != nullptr);                       // launchable via the per-package CID root
+    }
+
     // Add/remove a package source: add dedups on CID; remove drops the config entry, deletes the dir, and drops LIBRARY
     // entries under it.
     void add_remove_package_source()

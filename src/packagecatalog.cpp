@@ -413,10 +413,12 @@ static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, 
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;
-    auto &S = GlobalConfigJSON["Settings"];
-    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return 0;
+    //Create LIBRARY BEFORE caching a reference into Settings — adding a top-level key reallocates the object's storage,
+    //which would dangle the cached &S (same hazard SyncRepositories guards against).
     if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
         GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
+    auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return 0;
 
     int Indexed = 0;
     std::error_code Ec;
@@ -440,18 +442,32 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
             }
         }
 
-        QDir D(QString::fromStdString(Dir));
-        int Games = 0;
-        for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
-        {
-            const QString PkgDir = D.filePath(Sub);
-            const BundleIdentity Id = ScanBundleIdentity(PkgDir.toStdString());
-            if (!Id.Valid) continue;
-            UpsertCidEntry(GlobalConfigJSON["LIBRARY"], Id.Uid, Cid, PkgDir.toStdString(), Id.Name);
+        //A CID source is EITHER a single package (the fetched dir is itself a bundle — per-package CID) OR a collection
+        //(the fetched dir holds package subdirs). Try the dir-as-bundle case first so per-package CIDs are first-class;
+        //fall back to scanning subdirs for a whole-library folder CID.
+        int Games = 0, Packages = 0;
+        auto Upsert = [&](const std::string &PkgDir, const BundleIdentity &Id) {
+            UpsertCidEntry(GlobalConfigJSON["LIBRARY"], Id.Uid, Cid, PkgDir, Id.Name);
+            ++Packages;
             if (Id.HasLaunchable) { ++Games; ++Indexed; }
+        };
+
+        const BundleIdentity Self = ScanBundleIdentity(Dir);
+        if (Self.Valid)
+            Upsert(Dir, Self);                                                        // single-package CID
+        else
+        {
+            QDir D(QString::fromStdString(Dir));                                      // collection CID → scan subdirs
+            for (const QString &Sub : D.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+            {
+                const QString PkgDir = D.filePath(Sub);
+                const BundleIdentity Id = ScanBundleIdentity(PkgDir.toStdString());
+                if (!Id.Valid) continue;
+                Upsert(PkgDir.toStdString(), Id);
+            }
         }
         LogOut("PackageCatalog::SyncPackageSources", "Indexed CID source '" + PackageSourceName(Src) + "' ("
-               + std::to_string(Games) + " game(s)).");
+               + std::to_string(Packages) + " package(s), " + std::to_string(Games) + " launchable).");
     }
     return Indexed;
 }
@@ -720,9 +736,16 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::vector<std::filesystem::path> Roots;
+    std::vector<std::filesystem::path> Extra = LocalPackageDirs(GlobalConfigJSON);     // externally-added bundles (dir IS a bundle)
     for (const auto &D : RepositoryDirs(GlobalConfigJSON))  Roots.emplace_back(D);
-    for (const auto &D : PackageSourceDirs(GlobalConfigJSON)) Roots.emplace_back(D);   // + CID package sources
-    return ManifestModel::BuildNodeIndex(Roots, LocalPackageDirs(GlobalConfigJSON));   // + externally-added bundles
+    //A CID package source is EITHER a collection (scan its subdirs, like a repo) OR a single per-package bundle (the dir
+    //IS the bundle — a per-package CID). Route each accordingly so per-package CIDs index identically to repo packages.
+    for (const auto &D : PackageSourceDirs(GlobalConfigJSON))
+    {
+        if (ScanBundleIdentity(D).Valid) Extra.emplace_back(D);   // per-package CID → the dir itself is one bundle
+        else                             Roots.emplace_back(D);   // collection CID → scan its package subdirs
+    }
+    return ManifestModel::BuildNodeIndex(Roots, Extra);
 }
 
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
