@@ -1,9 +1,9 @@
-[submodule "external/VidyaGodFS"]
+[submodule "VidyaGodFS"]
 	path = VidyaGodFS
 	url = https://github.com/lorenzo-zurini/VidyaGodFS.git
-[submodule "external/VidyaGodIPFS"]
+[submodule "VidyaGodIPFS"]
 	path = VidyaGodIPFS
 	url = https://github.com/lorenzo-zurini/VidyaGodIPFS.git
-[submodule "external/MetaPackageFormat"]
+[submodule "MetaPackageFormat"]
 	path = MetaPackageFormat
 	url = https://github.com/lorenzo-zurini/MetaPackageFormat.git
