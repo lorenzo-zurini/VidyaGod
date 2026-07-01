@@ -243,6 +243,19 @@ BandwidthRates Bandwidth()
     return R;
 }
 
+std::vector<std::string> ActiveUploads(int WindowMs)
+{
+    std::vector<std::string> Result;
+    char *J = nullptr;
+    const int Rc = VgActiveUploads(WindowMs, &J);
+    const std::string Js = TakeStr(J);
+    if (Rc != 0) return Result;
+    try {
+        for (const auto &C : nlohmann::json::parse(Js)) Result.push_back(C.get<std::string>());
+    } catch (...) {}
+    return Result;
+}
+
 std::string RepoSizeHuman()
 {
     char *J = nullptr, *Err = nullptr;

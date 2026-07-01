@@ -39,25 +39,26 @@ public slots:
     void clearQueuedTransfer(const QString &cid);                    // drop a still-queued row (download finished/cancelled)
 
 public:
-    QTableWidgetItem *ensureTransferRow(const QString &cid, const QString &status);
+    QTreeWidgetItem *ensureLeaf(const QString &cid);   // find/create a CID's leaf in the unified tree (its package group)
 
 private:
     void buildUi();
     void applySnapshot(bool Daemon, int Peers, const QString &Repo, double DownBps, double UpBps,
                        const std::vector<IpfsWrapper::PinEntry> &Pins,
-                       const QHash<QString, long long> &Sizes);
+                       const QHash<QString, long long> &Sizes,
+                       const QSet<QString> &Uploading);
     void gatherHealth();
 
     AppModel &Model;
 
     QTableWidget *IpfsStatusTable = nullptr;   // one-row status strip: Network|Peers|Seeded|↓|↑|Repo|Disk
     QLabel       *IpfsHintLabel    = nullptr;   // shown only when the node is off ("enable networking…")
-    QTableWidget *IpfsTransfers   = nullptr;   // Name|Size|Progress|Speed|Status|CID — live + queued fetches (sortable)
-    QTreeWidget  *IpfsPins        = nullptr;   // pinned (seeded) CIDs, grouped by package (Name|Size|Health|CID)
+    QTreeWidget  *IpfsPins        = nullptr;   // UNIFIED per-package tree: Name|Size|Progress|Speed|Status|CID|actions —
+                                               // live transfers AND seeded content in one view (was two widgets)
     QTimer       *IpfsRefreshTimer = nullptr;
     bool          IpfsRefreshInFlight = false; // a worker is already gathering ipfs status — skip re-entrancy
 
-    QHash<QString, QTableWidgetItem*>          IpfsTransferProgress;  // CID → progress cell item (survives re-sorting)
+    QHash<QString, QTreeWidgetItem*>           IpfsTransferProgress;  // CID → its leaf while a transfer is active/failed
     QSet<QString>                              IpfsTransferQueued;    // CIDs shown as "Queued" (in a download but not yet started)
     QHash<QString, QPair<qlonglong,qlonglong>> IpfsTransferSpeed;    // CID → {sampleBytes, sampleMs} for the rate calc
     QHash<QString, qlonglong>                  IpfsTransferLastProgress; // CID → ms of last forward progress (stall detection)

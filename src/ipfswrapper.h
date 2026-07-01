@@ -104,6 +104,9 @@ int PeerCount();
 struct BandwidthRates { double DownBps = 0.0; double UpBps = 0.0; };
 BandwidthRates Bandwidth();
 
+// Pinned CIDs served to a peer within the last WindowMs — the seeded items being uploaded right now. Empty when offline.
+std::vector<std::string> ActiveUploads(int WindowMs);
+
 // Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
 // unknown.
 std::string RepoSizeHuman();

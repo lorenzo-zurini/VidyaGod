@@ -36,6 +36,7 @@ int  VgPeerCount(void);                         // M3
 int  VgRepoStat(char **outJson, char **errOut); // M3 — {"RepoSize":n,"StorageMax":n}
 int  VgProviderCount(const char *cid, int timeoutMs); // M3
 void VgBandwidthRates(double *inBps, double *outBps); // global down/up throughput (bytes/sec); 0 when offline
+int  VgActiveUploads(int windowMs, char **outJson);   // JSON array of pinned CIDs served to a peer within windowMs
 
 void VgRequestCancel(const char *cid);
 void VgClearCancel(const char *cid);
