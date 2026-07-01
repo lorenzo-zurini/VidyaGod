@@ -16,11 +16,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Go (for the embedded IPFS node, external/VidyaGodIPFS → libvgipfs.so)
+      - name: Install Go (for the embedded IPFS node, VidyaGodIPFS → libvgipfs.so)
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
-          cache-dependency-path: external/VidyaGodIPFS/go.sum
+          cache-dependency-path: VidyaGodIPFS/go.sum
 
       - name: Install dependencies
         run: |
@@ -36,7 +36,7 @@ jobs:
       - name: Test embedded IPFS node (offline)
         run: |
           # Storage + fetch mechanics + CID parity, no network (the tests force VIDYAGOD_IPFS_OFFLINE).
-          cd external/VidyaGodIPFS
+          cd VidyaGodIPFS
           go test ./...
 
       - name: Build VidyaGod
