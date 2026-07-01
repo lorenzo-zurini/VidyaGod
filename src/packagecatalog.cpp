@@ -418,7 +418,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             SeedCover(G);                                                         // legacy game-level COVER
         }
 
-        //Node files (everything-is-a-node): seed VFS layers in LAYERS + the cover in META.COVER, same as above.
+        //Node files (everything-is-a-node): seed VFS layers in LAYERS + the cover on the DeclareLibraryItem layer.
         if (Frag.contains("NODE_ID") && Frag["NODE_ID"].is_string())
         {
             if (Frag.contains("LAYERS") && Frag["LAYERS"].is_array())
@@ -438,6 +438,10 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; S["SOURCE"] = std::move(Src);
                 Mutated = true; ++Seeded;
             }
+            //Cover art: node-native covers live on a Declare* layer's COVER field (DeclareLibraryItem), not a top-level
+            //META.COVER (that was the pre-Declare* shape). Seed whichever is present.
+            if (Frag.contains("LAYERS") && Frag["LAYERS"].is_array())
+                for (auto &L : Frag["LAYERS"]) if (L.is_object() && L.contains("COVER")) SeedCover(L);
             if (Frag.contains("META") && Frag["META"].is_object()) SeedCover(Frag["META"]);
         }
 
@@ -458,16 +462,12 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     return true;
 }
 
-int SeedDirectory(const std::string &Dir,
-                  const std::function<void(int, int, const std::string &)> &Progress,
-                  int *Mismatched, bool CoversOnly, bool Overwrite)
+std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly)
 {
     namespace fs = std::filesystem;
-    if (Mismatched) *Mismatched = 0;
-
-    // 1) Collect every CID-referenced content file (path → recorded SOURCE CID) from the bundles' node JSONs.
-    //    De-duped by path so a file referenced by several nodes is seeded once.
-    std::map<std::string, std::string> ToSeed;   // local file path → recorded CID
+    // Every CID-referenced local file (path → recorded SOURCE CID) across a folder's node JSONs, de-duped by path so a
+    // file referenced by several nodes is seeded once. Pure (no IPFS) — the reference source of what SeedDirectory adds.
+    std::map<std::string, std::string> ToSeed;
     std::error_code Ec;
     for (fs::recursive_directory_iterator It(Dir, fs::directory_options::skip_permission_denied, Ec), End;
          It != End; It.increment(Ec))
@@ -493,10 +493,27 @@ int SeedDirectory(const std::string &Dir,
         };
 
         if (!CoversOnly && J.contains("LAYERS") && J["LAYERS"].is_array())
-            for (const auto &L : J["LAYERS"]) Consider(L);
+            for (const auto &L : J["LAYERS"]) Consider(L);                        // content layers (skipped in covers-only)
+        // Cover art (ALWAYS seeded): node-native covers live on a Declare* layer's COVER field (DeclareLibraryItem);
+        // legacy manifests put it at top-level META.COVER. Both are {PATH, SOURCE:{ipfs,CID}} like a layer.
+        if (J.contains("LAYERS") && J["LAYERS"].is_array())
+            for (const auto &L : J["LAYERS"])
+                if (L.is_object() && L.contains("COVER") && L["COVER"].is_object()) Consider(L["COVER"]);
         if (J.contains("META") && J["META"].is_object() && J["META"]["COVER"].is_object())
-            Consider(J["META"]["COVER"]);
+            Consider(J["META"]["COVER"]);                                        // legacy pre-Declare* format
     }
+    return ToSeed;
+}
+
+int SeedDirectory(const std::string &Dir,
+                  const std::function<void(int, int, const std::string &)> &Progress,
+                  int *Mismatched, bool CoversOnly, bool Overwrite)
+{
+    namespace fs = std::filesystem;
+    if (Mismatched) *Mismatched = 0;
+
+    // 1) Collect every CID-referenced content file (path → recorded SOURCE CID) from the bundles' node JSONs.
+    const std::map<std::string, std::string> ToSeed = SeedTargets(Dir, CoversOnly);
 
     // 2) Add each by reference (re-hash → filestore ref + pin + reprovide). Count parity matches vs changed files.
     //    Modes: ADDITIVE (default) skips a CID the node already holds with an intact backing file (no re-hash); it

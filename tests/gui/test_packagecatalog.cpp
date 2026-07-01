@@ -290,6 +290,35 @@ private slots:
         QCOMPARE(PackageCatalog::PackageSourceNameForPath(cfg, bBundle.toStdString()), std::string("Beta"));
         QCOMPARE(PackageCatalog::PackageSourceNameForPath(cfg, (data.path() + "/Elsewhere/pkg").toStdString()), std::string());
     }
+
+    // Regression: a node-native cover lives on the DeclareLibraryItem LAYER's COVER field (post-Declare* refactor), NOT
+    // a top-level META.COVER. SeedTargets must collect it (else covers were silently skipped by --seed/re-publish).
+    void seed_targets_finds_declarelibraryitem_cover_and_layers()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/game";
+        QDir().mkpath(bundle);
+        // The content file + cover file must exist on disk (SeedTargets only returns present files).
+        { std::ofstream f((bundle + "/game.zip").toStdString()); f << "content"; }
+        { std::ofstream f((bundle + "/cover.png").toStdString()); f << "img"; }
+
+        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
+            {"LAYERS", json::array({
+                json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"},
+                     {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmLayerCID"}}}},
+                json{{"TYPE", "DeclareLibraryItem"}, {"UID", "1"}, {"TITLE", "G"},
+                     {"COVER", {{"PATH", "cover.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmCoverCID"}}}}}},
+            })}});
+
+        const auto all = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/false);
+        QCOMPARE(all.at((bundle + "/game.zip").toStdString()), std::string("QmLayerCID"));
+        QCOMPARE(all.at((bundle + "/cover.png").toStdString()), std::string("QmCoverCID"));   // the bug: cover was missed
+        QCOMPARE((int)all.size(), 2);
+
+        const auto covers = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/true);
+        QCOMPARE((int)covers.size(), 1);                                                       // covers-only skips layers
+        QCOMPARE(covers.at((bundle + "/cover.png").toStdString()), std::string("QmCoverCID"));
+    }
 };
 
 QTEST_MAIN(PackageCatalogTest)

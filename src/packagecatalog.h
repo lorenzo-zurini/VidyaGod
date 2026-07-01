@@ -81,6 +81,10 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
                   int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false);
+// The local files SeedDirectory would seed: {local path → recorded SOURCE CID} across a folder's node JSONs — VFS
+// content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
+// Pure (no IPFS node). Only includes files that exist on disk. Exposed for reuse + testing the cover-location handling.
+std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly = false);
 // Copy a package's dehydrated manifest (top-level *.json only, no content/images) into DestDir. Returns count copied.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 
