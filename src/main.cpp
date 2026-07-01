@@ -285,6 +285,20 @@ int main(int argc, char *argv[])
                + " peers=" + std::to_string(IpfsWrapper::PeerCount()));
         const auto T0 = std::chrono::steady_clock::now();
         std::string Err;
+        if (LaunchParameters.FetchDirMode)
+        {
+            // Recursively materialize a FOLDER CID (the add-by-CID path) — verifies the node-file blocks are served.
+            const std::string Got = IpfsWrapper::FetchDirToPath(LaunchParameters.FetchCid, LaunchParameters.FetchDest, &Err);
+            const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
+            if (Got.empty()) { LogErr("main.cpp", "Fetch (dir) failed: " + Err); return 1; }
+            std::error_code Ec; std::uintmax_t Bytes = 0; int Files = 0;
+            if (std::filesystem::is_directory(LaunchParameters.FetchDest, Ec))
+                for (const auto &E : std::filesystem::recursive_directory_iterator(LaunchParameters.FetchDest, Ec))
+                    if (E.is_regular_file(Ec)) { ++Files; Bytes += E.file_size(Ec); }
+            LogSucc("main.cpp", "Fetched folder: " + std::to_string(Files) + " file(s), " + std::to_string(Bytes)
+                    + " bytes in " + std::to_string(Secs) + "s");
+            return 0;
+        }
         const std::string Got = IpfsWrapper::FetchToPath(LaunchParameters.FetchCid, LaunchParameters.FetchDest, &Err);
         const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
         if (Got.empty()) { LogErr("main.cpp", "Fetch failed: " + Err); return 1; }
@@ -698,6 +712,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             //Download-throughput probe: fetch a CID to a destination path then exit.
             RuntimeParameters.FetchCid         = argv[++i];
             RuntimeParameters.FetchDest        = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--fetch-dir" && i + 2 < argc)
+        {
+            //Recursively materialize a FOLDER CID to a destination dir then exit (verifies add-by-CID node files).
+            RuntimeParameters.FetchCid         = argv[++i];
+            RuntimeParameters.FetchDest        = argv[++i];
+            RuntimeParameters.FetchDirMode     = true;
             RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--peer-id")

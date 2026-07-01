@@ -45,6 +45,7 @@ struct LaunchParameters
     bool SeedOverwrite = false;                                           //--overwrite: seed in OVERWRITE mode (re-reference every file; default is additive — only new/orphaned)
     std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
     std::string FetchDest;
+    bool FetchDirMode = false;                                            //--fetch-dir <CID> <DEST>: recursively materialize a FOLDER CID to DEST (add-by-CID verify)
     bool PrintPeerId = false;                                             //--peer-id: print this node's peer ID + dialable addrs, then exit
     std::string ConnectAddr;                                              //--connect <MULTIADDR>: dial this peer before fetching (direct peering / controlled benchmark)
     std::string DataDir;                                                  //--data-dir <PATH>: override the app data dir (testing: second instance with its own repo + lock)
