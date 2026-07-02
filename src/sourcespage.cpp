@@ -54,17 +54,8 @@ void SourcesPage::rebuild()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    // ── Sync now ── re-index sources, fetching any not-yet-present one (e.g. the default runners on a first run).
-    {
-        QHBoxLayout * syncRow = new QHBoxLayout();
-        QPushButton * syncBtn = new QPushButton("Sync now", contents);
-        syncRow->addWidget(syncBtn); syncRow->addStretch(1);
-        v->addLayout(syncRow);
-        connect(syncBtn, &QPushButton::clicked, this, [this, syncBtn]{
-            syncBtn->setEnabled(false); syncBtn->setText("Syncing…");
-            Model.syncSources();   // off-thread; packageSourcesChanged rebuilds this page (re-enabling the button) when done
-        });
-    }
+    // No manual "Sync now" — adding a source already fetches it, and the node re-syncs on startup
+    // (onNodeReady → syncSources), which also retries any source that couldn't be fetched while networking was off.
 
     auto & S = (*Model.config())["Settings"];
     if (!S.contains("PackageSources") || !S["PackageSources"].is_array())

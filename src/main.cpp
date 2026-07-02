@@ -249,7 +249,8 @@ int main(int argc, char *argv[])
     //(validate/list/resolve) and in-package launch never touch it.
     const std::string IpfsRepo = (AppDataDir.absolutePath() + "/IPFS").toStdString();
     const bool HeadlessNeedsNode =
-        LaunchParameters.PrintPeerId || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
+        LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs
+        || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.LaunchNodeId.empty();
@@ -263,6 +264,17 @@ int main(int argc, char *argv[])
             std::this_thread::sleep_for(std::chrono::seconds(1));
         LogOut("main.cpp", "PeerID: " + IpfsWrapper::PeerID());
         for (const std::string &A : IpfsWrapper::ListenAddrs()) LogOut("main.cpp", "addr: " + A);
+        return 0;
+    }
+
+    //HEADLESS: list the recursively-pinned (seeded) CIDs in this repo, then exit (debug: what the IPFS tab would show).
+    if (LaunchParameters.PrintPinLs)
+    {
+        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
+        LogOut("main.cpp", "Pins: " + std::to_string(Pins.size()));
+        for (const auto &P : Pins) LogOut("main.cpp", "pin: " + P.Cid);
         return 0;
     }
 
@@ -728,6 +740,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--peer-id")
         {
             RuntimeParameters.PrintPeerId      = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--pin-ls")
+        {
+            RuntimeParameters.PrintPinLs       = true;
             RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
