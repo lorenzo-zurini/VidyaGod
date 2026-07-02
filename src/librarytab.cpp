@@ -112,9 +112,7 @@ void LibraryTab::buildUi()
     tl->addWidget(sep);
     QPushButton * edBtn  = new QPushButton("Package Editor", toolbar);
     QPushButton * addBtn = new QPushButton("Add Local Package", toolbar);
-    QPushButton * cidBtn = new QPushButton("Add by CID…", toolbar);
-    tl->addWidget(edBtn); tl->addWidget(addBtn); tl->addWidget(cidBtn);
-    connect(cidBtn, &QPushButton::clicked, this, [this]{ openPackageSourcesDialog(); });
+    tl->addWidget(edBtn); tl->addWidget(addBtn);   // "Add CID" now lives on the Catalog tab
     connect(edBtn, &QPushButton::clicked, this, [this]{
         auto * Ed = new PackageEditor(Model.config(), this);
         connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
@@ -145,71 +143,6 @@ void LibraryTab::buildUi()
         for (const QString & N : LibraryCollapsedSeries) arr.push_back(N.toStdString());
         Model.save();
     });
-}
-
-void LibraryTab::openPackageSourcesDialog()
-{
-    auto * dlg = new QDialog(this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowTitle("Package sources (IPFS CID)");
-    dlg->resize(560, 420);
-    auto * root = new QVBoxLayout(dlg);
-
-    auto * info = new QLabel(QStringLiteral(
-        "A package source is an IPFS folder CID of dehydrated packages (manifests + covers, no content). Adding one "
-        "fetches the manifests only and lists its games in the catalog under “CID Packages”, downloadable on "
-        "demand. Requires IPFS networking to be on."), dlg);
-    info->setWordWrap(true); info->setStyleSheet("color:#8f98a0;font-size:9pt;");
-    root->addWidget(info);
-
-    auto * listHost = new QWidget(dlg);
-    auto * listLay  = new QVBoxLayout(listHost); listLay->setContentsMargins(0, 0, 0, 0);
-    auto * scroll   = new QScrollArea(dlg); scroll->setWidgetResizable(true); scroll->setWidget(listHost);
-    root->addWidget(scroll, 1);
-
-    auto * addRow  = new QHBoxLayout();
-    auto * cidEdit = new QLineEdit(dlg); cidEdit->setPlaceholderText("Folder CID (Qm… / bafy…)");
-    auto * nameEdit= new QLineEdit(dlg); nameEdit->setPlaceholderText("Name (optional)"); nameEdit->setMaximumWidth(160);
-    auto * add2    = new QPushButton("Add", dlg);
-    addRow->addWidget(cidEdit, 1); addRow->addWidget(nameEdit); addRow->addWidget(add2);
-    root->addLayout(addRow);
-
-    auto rebuild = [this, listHost, listLay]() {
-        QLayoutItem * it;
-        while ((it = listLay->takeAt(0)) != nullptr) { if (it->widget()) it->widget()->deleteLater(); delete it; }
-        const auto * cfg = Model.config();
-        const bool has = cfg->contains("Settings") && (*cfg)["Settings"].is_object()
-                         && (*cfg)["Settings"].contains("PackageSources") && (*cfg)["Settings"]["PackageSources"].is_array()
-                         && !(*cfg)["Settings"]["PackageSources"].empty();
-        if (!has) { listLay->addWidget(new QLabel("No package sources.", listHost)); listLay->addStretch(); return; }
-        int i = 0;
-        for (const auto & Src : (*cfg)["Settings"]["PackageSources"])
-        {
-            const QString cid  = QString::fromStdString(Src.is_object() ? Src.value("CID", std::string())
-                                                        : (Src.is_string() ? std::string(Src) : std::string()));
-            const QString name = QString::fromStdString(Src.is_object() ? Src.value("NAME", std::string()) : std::string());
-            auto * card = new QFrame(listHost); card->setFrameShape(QFrame::StyledPanel);
-            auto * cl   = new QHBoxLayout(card);
-            cl->addWidget(new QLabel(name.isEmpty() ? cid : (name + "  —  " + cid), card), 1);
-            auto * rm = new QPushButton("Remove", card);
-            connect(rm, &QPushButton::clicked, this, [this, i]{ Model.removePackageSource(i); });
-            cl->addWidget(rm);
-            listLay->addWidget(card);
-            ++i;
-        }
-        listLay->addStretch();
-    };
-    rebuild();
-
-    connect(add2, &QPushButton::clicked, dlg, [this, dlg, cidEdit, nameEdit]{
-        if (!Model.addPackageSource(cidEdit->text(), nameEdit->text()))
-        { QMessageBox::warning(dlg, "Add by CID", "Enter a folder CID that isn't already added."); return; }
-        cidEdit->clear(); nameEdit->clear();   // the fetch runs off-thread; the list refreshes on packageSourcesChanged
-    });
-    connect(&Model, &AppModel::packageSourcesChanged, dlg, [rebuild]{ rebuild(); });
-    connect(&Model, &AppModel::packageSourceFailed, dlg, [dlg](const QString & m){ QMessageBox::warning(dlg, "Package source", m); });
-
-    dlg->show();
 }
 
 void LibraryTab::buildCards()

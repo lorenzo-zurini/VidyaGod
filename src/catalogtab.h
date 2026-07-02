@@ -40,6 +40,7 @@ signals:
 private:
     void buildUi();
     void applyFilter();                                     // sort/search/group, no restat
+    void openPackageSourcesDialog();                        // "Add CID" — manage IPFS folder-CID package sources
     QString repoNameForBundle(const std::filesystem::path &BundleDir) const;
 
     AppModel &Model;

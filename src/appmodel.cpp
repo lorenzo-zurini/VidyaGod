@@ -197,6 +197,8 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
     if (!PackageCatalog::AddPackageSource(*Config, cid.trimmed().toStdString(), name.trimmed().toStdString()))
         return false;   // empty or duplicate CID — caller warns
     save();
+    emit packageSourcesChanged();   // INSTANT feedback: the source appears in the list/IPFS tab now (as pending); the
+                                    // off-thread fetch below re-emits when its manifests + catalog have landed.
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     std::thread([this, Cfg]{
         std::string Err;

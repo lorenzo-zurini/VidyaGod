@@ -30,7 +30,6 @@ public slots:
 
 private:
     void buildUi();
-    void openPackageSourcesDialog();   // "Add by CID…" — manage IPFS folder-CID package sources (add/remove)
     void buildCards();                 // (re)create the card pool from the catalog (hydrated groups only)
     void sortAndFilter();              // sort the pool + apply the search → LibraryVisible + series groups
     void relayout();                   // prescale covers + layout at the current card width
