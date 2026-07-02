@@ -63,6 +63,7 @@ private:
     QHash<QString, QPair<qlonglong,qlonglong>> IpfsTransferSpeed;    // CID → {sampleBytes, sampleMs} for the rate calc
     QHash<QString, qlonglong>                  IpfsTransferLastProgress; // CID → ms of last forward progress (stall detection)
     QSet<QString>                              IpfsTransferStalled;   // CIDs currently shown as stalled
+    QSet<QString>                              IpfsPendingSources;    // configured source CIDs not yet fetched (shown as "Not fetched")
     QTimer       *IpfsStallTimer = nullptr;    // ages out phantom speed + flags transfers with no recent progress
 
     QHash<QString, QString> IpfsCidLabels;     // CID → human label ("<package> — <component>")

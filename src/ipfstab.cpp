@@ -554,6 +554,28 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
     }
     for (const QString & Cid : IpfsTransferProgress.keys()) DesiredCids.insert(Cid);   // protect in-flight/failed leaves
 
+    // Surface configured sources that aren't seeded (no pin) and aren't mid-fetch, so a not-yet-fetched or unreachable
+    // source shows a "Not fetched" row instead of being silently absent (a fetch in progress is handled by the transfer
+    // signals; a completed fetch becomes a pin above).
+    IpfsPendingSources.clear();
+    {
+        QSet<QString> Pinned;
+        for (const auto & P : Pins) Pinned.insert(QString::fromStdString(P.Cid));
+        const auto & Cfg = *Model.config();
+        if (Cfg.contains("Settings") && Cfg["Settings"].contains("PackageSources") && Cfg["Settings"]["PackageSources"].is_array())
+            for (const auto & Src : Cfg["Settings"]["PackageSources"])
+            {
+                const std::string C = Src.is_object() ? Src.value("CID", std::string())
+                                    : Src.is_string() ? Src.get<std::string>() : std::string();
+                if (C.empty()) continue;
+                const QString Cid = QString::fromStdString(C);
+                if (Pinned.contains(Cid) || IpfsTransferProgress.contains(Cid)) continue;   // already seeded or fetching
+                ByPackage[IpfsCidPackages.value(Cid, Unknown)].append(Cid);
+                DesiredCids.insert(Cid);
+                IpfsPendingSources.insert(Cid);
+            }
+    }
+
     QScrollBar * VBar = IpfsPins->verticalScrollBar();
     const int Scroll = VBar ? VBar->value() : 0;
     IpfsPins->setSortingEnabled(false);
@@ -568,6 +590,17 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
         {
             QTreeWidgetItem * child = ensureLeaf(Cid);
             if (!child) continue;
+            if (IpfsPendingSources.contains(Cid))                // configured but not fetched yet — pending row
+            {
+                child->setText(1, QString());
+                child->setData(1, Qt::UserRole, (qlonglong)0);
+                child->setData(2, Qt::DisplayRole, QVariant());  // no progress bar
+                child->setData(2, StatusRole, QVariant());
+                child->setText(3, QString());
+                child->setText(4, QStringLiteral("Not fetched — will sync when online"));
+                child->setForeground(4, QColor("#8f98a0"));
+                continue;
+            }
             const IpfsWrapper::StatInfo St = IpfsCidStat.value(Cid);
             child->setText(1, HumanBytes(St.SizeBytes));
             child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);
@@ -613,7 +646,7 @@ void IpfsTab::gatherHealth()
     if (IpfsHealthInFlight) return;
     auto Todo = std::make_shared<QStringList>();
     for (const QString & Cid : IpfsPinChildren.keys())
-        if (IpfsCidStat.value(Cid).Providers == -2) *Todo << Cid;
+        if (IpfsCidStat.value(Cid).Providers == -2 && !IpfsPendingSources.contains(Cid)) *Todo << Cid;
     if (Todo->isEmpty()) return;
     IpfsHealthInFlight = true;
 
