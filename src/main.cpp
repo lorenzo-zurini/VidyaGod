@@ -253,6 +253,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
+        || !LaunchParameters.PublishMetaSrc.empty()
         || !LaunchParameters.LaunchNodeId.empty();
     if (HeadlessNeedsNode)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
@@ -388,6 +389,20 @@ int main(int argc, char *argv[])
         const std::string Cid = IpfsWrapper::AddNoCopy(LaunchParameters.PublishCidDir, &Err);
         if (Cid.empty()) { LogErr("main.cpp", "publish-cid failed: " + Err); return 1; }
         LogSucc("main.cpp", "Folder CID: " + Cid);
+        std::cout << Cid << "\n";   // machine-readable on stdout
+        return 0;
+    }
+
+    //HEADLESS: mint a JSON-only Meta-CID for a bundle or a collection of bundles — content-address content+covers,
+    //mirror the JSON-only tree into a persistent staging dir (it seeds from there by reference), add it, print the CID.
+    if (!LaunchParameters.PublishMetaSrc.empty())
+    {
+        const std::string Staging = LaunchParameters.PublishMetaStaging.empty()
+            ? (LaunchParameters.PublishMetaSrc + ".meta") : LaunchParameters.PublishMetaStaging;
+        std::string Err;
+        const std::string Cid = PackageCatalog::PublishMetaCid(LaunchParameters.PublishMetaSrc, Staging, &Err);
+        if (Cid.empty()) { LogErr("main.cpp", "publish-meta failed: " + Err); return 1; }
+        LogSucc("main.cpp", "Meta-CID: " + Cid + "  (staging: " + Staging + ")");
         std::cout << Cid << "\n";   // machine-readable on stdout
         return 0;
     }
@@ -821,6 +836,12 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--publish-cid" && i + 1 < argc)
         {
             RuntimeParameters.PublishCidDir  = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--publish-meta" && i + 1 < argc)
+        {
+            RuntimeParameters.PublishMetaSrc = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') RuntimeParameters.PublishMetaStaging = argv[++i];
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--runner" && i + 1 < argc)

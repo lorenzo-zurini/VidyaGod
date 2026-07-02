@@ -108,7 +108,8 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 // from disk (BuildCatalogIndex): this runs on the GUI thread (ensureTransferRow + applySnapshot, the latter on every
 // refresh), so a disk rescan here froze the UI for many seconds during downloads.
 static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
-                                              QHash<QString, QString> * OutPackages = nullptr)
+                                              QHash<QString, QString> * OutPackages = nullptr,
+                                              QHash<QString, bool> * OutIsMeta = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
@@ -133,6 +134,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 Labels.insert(QString::fromStdString(Cid), QString::fromStdString(NodeId));
                 if (OutPackages)
                     OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
+                if (OutIsMeta) OutIsMeta->insert(QString::fromStdString(Cid), false);   // a VFS layer = Content (a file)
             }
 
         if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
@@ -145,6 +147,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 {
                     Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
                     if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
+                    if (OutIsMeta) OutIsMeta->insert(QString::fromStdString(Cid), false);   // a cover image = Content (a file)
                 }
             }
         }
@@ -164,6 +167,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             const QString QCid = QString::fromStdString(Cid);
             Labels.insert(QCid, QString::fromStdString(Name + " (source)"));
             if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
+            if (OutIsMeta) OutIsMeta->insert(QCid, true);   // a package source/collection = Meta (JSON-only node tree)
         }
     return Labels;
 }
@@ -215,17 +219,31 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     if (!IpfsPins) return nullptr;
     if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;   // already have a row
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);
     const QString PkgName = IpfsCidPackages.value(cid, QStringLiteral("Unknown / not in your library"));
-    QTreeWidgetItem * grp = IpfsPinGroups.value(PkgName, nullptr);
+    // Two-level tree: category (Meta collections vs Content files) → package group → CID leaf.
+    const QString CatName = IpfsCidIsMeta.value(cid, false) ? QStringLiteral("Meta — node collections")
+                                                            : QStringLiteral("Content — files");
+    QTreeWidgetItem * cat = IpfsPinCategories.value(CatName, nullptr);
+    if (!cat)
+    {
+        cat = new QTreeWidgetItem(IpfsPins);
+        cat->setText(0, CatName);
+        QFont cf = cat->font(0); cf.setBold(true); cf.setPointSizeF(cf.pointSizeF() + 0.5); cat->setFont(0, cf);
+        cat->setFlags(cat->flags() & ~Qt::ItemIsSelectable);
+        cat->setExpanded(true);
+        IpfsPinCategories.insert(CatName, cat);
+    }
+    const QString GroupKey = CatName + QChar(0x1f) + PkgName;
+    QTreeWidgetItem * grp = IpfsPinGroups.value(GroupKey, nullptr);
     if (!grp)
     {
-        grp = new QTreeWidgetItem(IpfsPins);
+        grp = new QTreeWidgetItem(cat);
         grp->setText(0, PkgName);
         QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
         grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
         grp->setExpanded(false);
-        IpfsPinGroups.insert(PkgName, grp);
+        IpfsPinGroups.insert(GroupKey, grp);
     }
 
     IpfsPins->setSortingEnabled(false);
@@ -337,7 +355,7 @@ void IpfsTab::buildUi()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);
 
     // Unified content view (transfers + seeded, grouped by package). A CID being downloaded and the same CID once
     // seeded are the SAME row — Progress+Speed while fetching, then Status shows seeded health / uploading.
@@ -541,7 +559,7 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
     }
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);   // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);   // keep names current with the catalog
 
     QMap<QString, QStringList> ByPackage;
     QSet<QString> DesiredCids;
@@ -620,15 +638,30 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
         }
 
     // Group totals + prune empty groups (a cancelled download can leave a childless group behind).
-    for (const QString & Pkg : IpfsPinGroups.keys())
+    for (const QString & Key : IpfsPinGroups.keys())
     {
-        QTreeWidgetItem * g = IpfsPinGroups.value(Pkg, nullptr);
+        QTreeWidgetItem * g = IpfsPinGroups.value(Key, nullptr);
         if (!g) continue;
         const int n = g->childCount();
-        if (n == 0) { IpfsPinGroups.remove(Pkg); delete g; continue; }
+        if (n == 0) { IpfsPinGroups.remove(Key); delete g; continue; }
         long long GrpTotal = 0;
         for (int i = 0; i < n; ++i) GrpTotal += g->child(i)->data(1, Qt::UserRole).toLongLong();
         g->setText(1, QString("%1 item%2 · %3").arg(n).arg(n == 1 ? "" : "s").arg(HumanBytes(GrpTotal)));
+    }
+    // Prune empty category parents + show a per-category item/byte total.
+    for (const QString & Cat : IpfsPinCategories.keys())
+    {
+        QTreeWidgetItem * c = IpfsPinCategories.value(Cat, nullptr);
+        if (!c) continue;
+        if (c->childCount() == 0) { IpfsPinCategories.remove(Cat); delete c; continue; }
+        long long CatTotal = 0; int CatItems = 0;
+        for (int i = 0; i < c->childCount(); ++i)
+        {
+            QTreeWidgetItem * g = c->child(i);
+            CatItems += g->childCount();
+            for (int j = 0; j < g->childCount(); ++j) CatTotal += g->child(j)->data(1, Qt::UserRole).toLongLong();
+        }
+        c->setText(1, QString("%1 item%2 · %3").arg(CatItems).arg(CatItems == 1 ? "" : "s").arg(HumanBytes(CatTotal)));
     }
 
     IpfsPins->setSortingEnabled(true);

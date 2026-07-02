@@ -63,6 +63,8 @@ struct LaunchParameters
     std::string PublishPackageDir;                                       //--publish <pkgdir>: dehydrate this local package (seed content -> CIDs into the manifest) then exit
     std::string PublishToDir;                                            //--publish-to <dir>: also export a manifest-only dehydrated copy there
     std::string PublishCidDir;                                           //--publish-cid <dir>: recursively add a folder to IPFS, print its folder CID (for add-by-CID), then exit
+    std::string PublishMetaSrc;                                          //--publish-meta <dir> [<staging>]: mint a JSON-only Meta-CID (bundle or collection), print it, then exit
+    std::string PublishMetaStaging;                                      //optional staging dir for --publish-meta (persistent — the Meta-CID seeds from there); default <src>.meta
 };
 
 int main(int argc, char *argv[]);

@@ -552,17 +552,60 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 {
     std::error_code Ec;
     std::filesystem::create_directories(DestDir, Ec);
+    const std::filesystem::path Src(SrcDir), Dest(DestDir);
     int Copied = 0;
-    for (const auto &Entry : std::filesystem::directory_iterator(SrcDir, Ec))
+    // Recursively copy ONLY *.json, preserving the relative tree — this is what makes a Meta-CID text-only: cover PNGs,
+    // content zips and runtime dirs (e.g. __DEFPREFIX__/) are left behind; covers travel as content CIDs in the JSON.
+    for (const auto &Entry : std::filesystem::recursive_directory_iterator(Src, Ec))
     {
         if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;   // manifests only
         std::error_code Ce;
-        std::filesystem::copy_file(Entry.path(), std::filesystem::path(DestDir) / Entry.path().filename(),
-                                   std::filesystem::copy_options::overwrite_existing, Ce);
+        const std::filesystem::path Rel = std::filesystem::relative(Entry.path(), Src, Ce);
+        if (Ce || Rel.empty()) continue;
+        const std::filesystem::path Out = Dest / Rel;
+        std::filesystem::create_directories(Out.parent_path(), Ce);
+        std::filesystem::copy_file(Entry.path(), Out, std::filesystem::copy_options::overwrite_existing, Ce);
         if (Ce) LogWarn("PackageCatalog::MirrorDehydrated", "skip " + Entry.path().string() + " (" + Ce.message() + ")");
         else ++Copied;
     }
     return Copied;
+}
+
+// Mint a JSON-only Meta-CID for SrcDir (a single bundle OR a collection of bundle subdirs): (1) ensure every package's
+// VFS content + covers are content-addressed (idempotent PublishPackage — writes SOURCE.CID into the node JSON);
+// (2) mirror the JSON-only tree into StagingDir (which MUST persist — the CID seeds from there by reference);
+// (3) AddNoCopy(StagingDir) → the folder CID. Returns "" on failure.
+std::string PublishMetaCid(const std::string &SrcDir, const std::string &StagingDir, std::string *Error)
+{
+    auto Fail = [&](const std::string &M) -> std::string { if (Error) *Error = M; LogErr("PackageCatalog::PublishMetaCid", M); return {}; };
+    std::error_code Ec;
+    if (!std::filesystem::is_directory(SrcDir, Ec)) return Fail("not a directory: " + SrcDir);
+
+    // 1. Content-address content + covers (idempotent: already-CID'd layers are skipped).
+    auto EnsureSeeded = [&](const std::string &PkgDir) -> bool {
+        std::string E;
+        if (!PublishPackage(PkgDir, "", &E)) { Fail("seed " + PkgDir + ": " + E); return false; }
+        return true;
+    };
+    if (ScanBundleIdentity(SrcDir).Valid) { if (!EnsureSeeded(SrcDir)) return {}; }               // single package
+    else                                                                                          // collection of packages
+        for (const auto &Sub : std::filesystem::directory_iterator(SrcDir, Ec))
+        {
+            if (!Sub.is_directory() || !ScanBundleIdentity(Sub.path().string()).Valid) continue;
+            if (!EnsureSeeded(Sub.path().string())) return {};
+        }
+
+    // 2. Build the persistent JSON-only tree.
+    std::filesystem::remove_all(StagingDir, Ec);
+    const int Copied = MirrorDehydrated(SrcDir, StagingDir);
+    if (Copied == 0) return Fail("no JSON fragments under " + SrcDir);
+
+    // 3. Add-by-reference → the Meta folder CID (seeds from StagingDir).
+    std::string E;
+    const std::string Cid = IpfsWrapper::AddNoCopy(StagingDir, &E);
+    if (Cid.empty()) return Fail("AddNoCopy(" + StagingDir + "): " + E);
+    LogSucc("PackageCatalog::PublishMetaCid", "Meta-CID " + Cid + " (" + std::to_string(Copied) + " JSON fragment(s), text-only) <- " + SrcDir);
+    return Cid;
 }
 
 // ----- node-graph catalog (everything-is-a-node) -----

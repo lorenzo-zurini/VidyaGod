@@ -85,8 +85,14 @@ int SeedDirectory(const std::string &Dir,
 // content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
 // Pure (no IPFS node). Only includes files that exist on disk. Exposed for reuse + testing the cover-location handling.
 std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly = false);
-// Copy a package's dehydrated manifest (top-level *.json only, no content/images) into DestDir. Returns count copied.
+// Recursively copy a bundle/collection's node JSON (*.json only — no content zips, cover images, or runtime dirs) into
+// DestDir, preserving the relative tree. Returns count copied. This is what makes a published Meta-CID text-only.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
+
+// Mint a JSON-only Meta-CID for SrcDir (single bundle OR a dir of bundle subdirs): idempotently content-address content
+// + covers (PublishPackage), mirror the JSON-only tree into StagingDir (must persist — the CID seeds from there by
+// reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
+std::string PublishMetaCid(const std::string &SrcDir, const std::string &StagingDir, std::string *Error = nullptr);
 
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
