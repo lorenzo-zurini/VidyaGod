@@ -249,7 +249,7 @@ int main(int argc, char *argv[])
     //(validate/list/resolve) and in-package launch never touch it.
     const std::string IpfsRepo = (AppDataDir.absolutePath() + "/IPFS").toStdString();
     const bool HeadlessNeedsNode =
-        LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs
+        LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs || !LaunchParameters.UnpinCid.empty()
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
@@ -277,6 +277,16 @@ int main(int argc, char *argv[])
         LogOut("main.cpp", "Pins: " + std::to_string(Pins.size()));
         for (const auto &P : Pins) LogOut("main.cpp", "pin: " + P.Cid);
         return 0;
+    }
+
+    //HEADLESS: drop a recursive pin (stop seeding + surfacing a superseded CID), then exit.
+    if (!LaunchParameters.UnpinCid.empty())
+    {
+        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        const bool Ok = IpfsWrapper::Unpin(LaunchParameters.UnpinCid);
+        LogOut("main.cpp", (Ok ? "Unpinned " : "Unpin failed / not pinned: ") + LaunchParameters.UnpinCid);
+        return Ok ? 0 : 1;
     }
 
     //HEADLESS: fetch a single CID to a destination path then exit — a download throughput probe (any public/private
@@ -596,7 +606,7 @@ static QString DependencyImportHint(const std::string &Dep)
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
 // fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
 // package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "QmdMCw8q4g2AUcZ6h68GUb2UYXqT8PSi3CPpg6VzxTpvGH"; }
+static std::string DefaultRunnerSourceCID() { return "QmSsmQnX4UXcybZ9MCVni4DAxdRzGW22P8G1TxVy8ZJUN1"; }   // JSON-only runners Meta-CID
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
@@ -760,6 +770,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--pin-ls")
         {
             RuntimeParameters.PrintPinLs       = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--unpin" && i + 1 < argc)
+        {
+            RuntimeParameters.UnpinCid         = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
