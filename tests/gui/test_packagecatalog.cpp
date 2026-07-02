@@ -188,7 +188,7 @@ private slots:
         QCOMPARE(cfg["LIBRARY"][0].value("PACKAGEUID", std::string()), std::string("a"));   // present one kept
     }
 
-    // A CID package source (its already-fetched dir under <DataRoot>/CIDPACKAGES/) is indexed by BuildCatalogIndex as a
+    // A CID package source (its already-fetched dir under <DataRoot>/LIBRARY/) is indexed by BuildCatalogIndex as a
     // root, and its packages are treated as MANAGED — not badged/pruned as "local". (Simulates a fetched source; the
     // network fetch itself is covered by the Go node's TestFetchDirToPath.)
     void cid_package_source_is_managed_and_indexed()
@@ -196,7 +196,7 @@ private slots:
         QTemporaryDir data; QVERIFY(data.isValid());
         AppPaths::SetDataRoot(data.path().toStdString());
 
-        const QString bundle = data.path() + "/CIDPACKAGES/mysource/game";
+        const QString bundle = data.path() + "/LIBRARY/mysource/game";
         QDir().mkpath(bundle);
         writeJson(bundle + "/tile.json", json{{"NODE_ID", "cidtile"},
             {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "9090"}, {"TITLE", "CID Game"}} })}});
@@ -227,7 +227,7 @@ private slots:
         AppPaths::SetDataRoot(data.path().toStdString());
 
         // The already-fetched source dir holds the bundle files directly (no wrapping subdir).
-        const QString dir = data.path() + "/CIDPACKAGES/solopkg";
+        const QString dir = data.path() + "/LIBRARY/solopkg";
         QDir().mkpath(dir);
         writeJson(dir + "/tile.json", json{{"NODE_ID", "solotile"},
             {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "7777"}, {"TITLE", "Solo Game"}} })}});
@@ -262,7 +262,7 @@ private slots:
         QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 1);
 
         // Simulate a fetched dir + a LIBRARY entry under it, then remove.
-        const QString dir = data.path() + "/CIDPACKAGES/src1";
+        const QString dir = data.path() + "/LIBRARY/src1";
         QDir().mkpath(dir);
         cfg["LIBRARY"] = json::array({ json{{"PACKAGEUID", "z"}, {"PATH", (dir + "/pkg").toStdString()}, {"CIDSOURCE", "QmABC"}} });
 
@@ -279,8 +279,8 @@ private slots:
         QTemporaryDir data; QVERIFY(data.isValid());
         AppPaths::SetDataRoot(data.path().toStdString());
 
-        const QString aBundle = data.path() + "/CIDPACKAGES/Alpha/game";
-        const QString bBundle = data.path() + "/CIDPACKAGES/Beta/game";
+        const QString aBundle = data.path() + "/LIBRARY/Alpha/game";
+        const QString bBundle = data.path() + "/LIBRARY/Beta/game";
         QDir().mkpath(aBundle); QDir().mkpath(bBundle);
 
         json cfg = json{{"Settings", {{"PackageSources", json::array({

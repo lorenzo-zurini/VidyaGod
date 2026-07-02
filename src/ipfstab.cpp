@@ -107,7 +107,8 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 // Build the CID → label/package maps from the ALREADY-BUILT in-memory catalog index. Must NOT re-scan the catalog
 // from disk (BuildCatalogIndex): this runs on the GUI thread (ensureTransferRow + applySnapshot, the latter on every
 // refresh), so a disk rescan here froze the UI for many seconds during downloads.
-static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, QHash<QString, QString> * OutPackages = nullptr)
+static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
+                                              QHash<QString, QString> * OutPackages = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
@@ -148,6 +149,22 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, QHash<QStri
             }
         }
     }
+
+    // A fetched CID SOURCE's folder root is now seeded (pinned by fetchDirToPath), so it appears in the pin list. Label
+    // it by its source name — otherwise it'd render under "Unknown / not in your library".
+    if (Config.contains("Settings") && Config["Settings"].is_object()
+        && Config["Settings"].contains("PackageSources") && Config["Settings"]["PackageSources"].is_array())
+        for (const auto & S : Config["Settings"]["PackageSources"])
+        {
+            const std::string Cid = S.is_object() ? S.value("CID", std::string())
+                                  : (S.is_string() ? std::string(S) : std::string());
+            if (Cid.empty()) continue;
+            std::string Name = S.is_object() ? S.value("NAME", std::string()) : std::string();
+            if (Name.empty()) Name = Cid.size() > 12 ? Cid.substr(0, 12) : Cid;
+            const QString QCid = QString::fromStdString(Cid);
+            Labels.insert(QCid, QString::fromStdString(Name + " (source)"));
+            if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
+        }
     return Labels;
 }
 
@@ -198,7 +215,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     if (!IpfsPins) return nullptr;
     if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;   // already have a row
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);
     const QString PkgName = IpfsCidPackages.value(cid, QStringLiteral("Unknown / not in your library"));
     QTreeWidgetItem * grp = IpfsPinGroups.value(PkgName, nullptr);
     if (!grp)
@@ -320,7 +337,7 @@ void IpfsTab::buildUi()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);
 
     // Unified content view (transfers + seeded, grouped by package). A CID being downloaded and the same CID once
     // seeded are the SAME row — Progress+Speed while fetching, then Status shows seeded health / uploading.
@@ -524,7 +541,7 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
     }
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), &IpfsCidPackages);   // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages);   // keep names current with the catalog
 
     QMap<QString, QStringList> ByPackage;
     QSet<QString> DesiredCids;

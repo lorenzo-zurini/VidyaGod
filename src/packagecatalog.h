@@ -41,8 +41,8 @@ int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 
 // ----- package sources by IPFS CID -----
 // A package source is a `Settings.PackageSources[]` entry `{ "CID": "…", "NAME": "optional" }` — an IPFS folder CID of
-// DEHYDRATED packages (manifests + covers, no content). Fetched into `<DataRoot>/CIDPACKAGES/<name>` (a sibling of
-// LIBRARY), scanned as catalog roots, and hydrated on demand exactly like repo packages.
+// DEHYDRATED packages (manifests + covers, no content). Fetched into `<DataRoot>/LIBRARY/<name>` (LIBRARY IS the
+// CID-source root now that git is gone), scanned as catalog roots, and hydrated on demand.
 std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON);   // existing source dirs
 // True if BundleDir lives under a package-source dir (a CID-source package, vs a locally-added one).
 bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
@@ -56,7 +56,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
 bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
-// Remove source [index]: drop its config entry, delete its CIDPACKAGES dir, and drop LIBRARY entries under it.
+// Remove source [index]: drop its config entry, delete its LIBRARY/<name> dir, and drop LIBRARY entries under it.
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
 
 // True if BundleDir is a locally-added package — its path is OUTSIDE every configured package-source dir (used to badge

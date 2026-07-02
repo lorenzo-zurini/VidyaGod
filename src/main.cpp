@@ -247,7 +247,7 @@ int main(int argc, char *argv[])
     //startup) — MainWindow brings it up when the user enables networking. Headless CLI modes that actually need the
     //node (fetch/seed/import/publish/peer-id/--node launch) start it up front here; the path-only modes
     //(validate/list/resolve) and in-package launch never touch it.
-    const std::string IpfsRepo = (AppDataDir.absolutePath() + "/ipfs").toStdString();
+    const std::string IpfsRepo = (AppDataDir.absolutePath() + "/IPFS").toStdString();
     const bool HeadlessNeedsNode =
         LaunchParameters.PrintPeerId || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
@@ -584,7 +584,7 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     //Migration: git repositories were removed — drop any legacy Settings.Repositories (its LIBRARY/<repo> clones, if
     //any, become inert local dirs). Sharing is now solely via CID package sources.
     if (gc["Settings"].contains("Repositories")) { gc["Settings"].erase("Repositories"); Changed = true; }
-    //PackageSources: ordered list of IPFS folder CIDs of dehydrated packages, fetched into <DataRoot>/CIDPACKAGES/<name>
+    //PackageSources: ordered list of IPFS folder CIDs of dehydrated packages, fetched into <DataRoot>/LIBRARY/<name>
     //and indexed. The sole default is the built-in runners source.
     if (!gc["Settings"].contains("PackageSources") || !gc["Settings"]["PackageSources"].is_array())
     {
@@ -615,7 +615,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
 
     EnsureGlobalConfigDefaults(*GlobalConfigJSON);
 
-    //Index the configured CID package sources: any already-fetched source dir (under CIDPACKAGES) is scanned into the
+    //Index the configured CID package sources: any already-fetched source dir (under LIBRARY) is scanned into the
     //un-hydrated LIBRARY index here. The FETCH of a not-yet-present source (e.g. the default runners on a first run)
     //needs the IPFS node online, so it happens later once networking is up (MainWindow::onNodeReady → syncSources, or
     //a headless mode that started the node). Mutates the config → always persist afterwards.

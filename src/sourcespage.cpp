@@ -34,7 +34,7 @@ SourcesPage::SourcesPage(AppModel &model, QWidget *parent)
     rebuild();
 }
 
-// Each Settings.PackageSources[] entry is {NAME, CID:<ipfs folder CID>}, fetched to ~/.VidyaGod/CIDPACKAGES/<name> and
+// Each Settings.PackageSources[] entry is {NAME, CID:<ipfs folder CID>}, fetched to ~/.VidyaGod/LIBRARY/<name> and
 // indexed. Adding fetches the dehydrated tree (off-thread, via the model, needs the IPFS node online); removing drops
 // the source, its fetched dir, and its LIBRARY entries.
 void SourcesPage::rebuild()

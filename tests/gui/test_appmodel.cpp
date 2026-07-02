@@ -99,7 +99,7 @@ private slots:
     void remove_package_source_drops_entry_and_signals()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
-        AppPaths::SetDataRoot(d.path().toStdString());   // keep CIDPACKAGES deletion inside the temp dir
+        AppPaths::SetDataRoot(d.path().toStdString());   // keep LIBRARY deletion inside the temp dir
         QDir appDir(d.path());
         json cfg = json{{"Settings", {{"PackageSources", json::array({
                             json{{"CID", "QmA"}, {"NAME", "a"}}, json{{"CID", "QmB"}, {"NAME", "b"}} })}}},

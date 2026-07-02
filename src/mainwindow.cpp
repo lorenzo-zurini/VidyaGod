@@ -248,7 +248,7 @@ void MainWindow::applyNetworkingState(bool enabled)
 void MainWindow::startNodeAsync()
 {
     if (IpfsWrapper::Available()) { onNodeReady(); return; }   // already running (e.g. re-enabled)
-    const std::string Repo = (AppPaths::DataRoot() / "ipfs").string();
+    const std::string Repo = (AppPaths::DataRoot() / "IPFS").string();
     std::thread([this, Repo]{
         std::string Err;
         const bool Ok = IpfsWrapper::StartNode(Repo, &Err);   // off-thread: repo open + swarm join can take a moment

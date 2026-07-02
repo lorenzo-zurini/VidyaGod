@@ -87,10 +87,11 @@ static std::string PackageSourceName(const nlohmann::ordered_json &S)
     for (char &c : N) if (c == '/' || c == '\\' || c == ':') c = '_';
     return N.empty() ? std::string("cidsource") : N;
 }
-//All CID package sources live under one root, a sibling of LIBRARY — so "under a package source" is "under this root".
-static std::string PackageSourcesRoot(const nlohmann::ordered_json & /*GlobalConfigJSON*/)
+//CID package sources ARE the library now (git is gone): each fetches into LIBRARY/<name>. "Under a package source" =
+//"under the LIBRARY root". Local (externally-added) packages live OUTSIDE LIBRARY, so they stay distinguishable.
+static std::string PackageSourcesRoot(const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    return QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "CIDPACKAGES").string())).toStdString();
+    return LibraryDir(GlobalConfigJSON);
 }
 static std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &S)
 {
