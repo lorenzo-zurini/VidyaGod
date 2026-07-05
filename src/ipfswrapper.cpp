@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <utility>
 #include <algorithm>
@@ -27,6 +28,20 @@
 // is untouched. The node is started once at process startup in main.cpp (VgStart) and torn down at exit.
 
 namespace IpfsWrapper {
+
+// VG_FETCH_DEBUG: mirror the node's [fetchdbg] tracing on the C++ side (transfer events + FetchToPath entry/exit) so
+// the GUI-facing phases interleave with the Go phases in one stderr stream. Zero-cost when the env var is unset.
+static const bool g_FetchDbg = std::getenv("VG_FETCH_DEBUG") != nullptr;
+static void FetchDbg(const std::string &Msg)
+{
+    if (!g_FetchDbg) return;
+    const auto Now = std::chrono::system_clock::now();
+    const auto T   = std::chrono::system_clock::to_time_t(Now);
+    const auto Ms  = std::chrono::duration_cast<std::chrono::milliseconds>(Now.time_since_epoch()).count() % 1000;
+    char Ts[16]; std::strftime(Ts, sizeof Ts, "%H:%M:%S", std::localtime(&T));
+    std::fprintf(stderr, "[cppdbg %s.%03lld] %s\n", Ts, static_cast<long long>(Ms), Msg.c_str());
+    std::fflush(stderr);
+}
 
 //Optional sink for transfer lifecycle events (installed by IpfsManager). Invoked on whatever thread the node's
 //fetch runs on — the installed callback is responsible for marshalling to the GUI thread.
@@ -48,6 +63,16 @@ extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, in
     E.Percent = percent;
     E.Ok      = ok != 0;
     E.Error   = err ? err : "";
+    if (g_FetchDbg) {
+        const char *K = E.Kind == TransferEvent::Started    ? "Started"
+                      : E.Kind == TransferEvent::Progress    ? "Progress"
+                      : E.Kind == TransferEvent::Finalizing  ? "Finalizing"
+                                                             : "Finished";
+        char Buf[256];
+        std::snprintf(Buf, sizeof Buf, "TransferEvent %s cid=%s pct=%.1f ok=%d err=%s",
+                      K, E.Cid.c_str(), E.Percent, E.Ok ? 1 : 0, E.Error.c_str());
+        FetchDbg(Buf);
+    }
     Emit(E);
 }
 
@@ -166,9 +191,11 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
     // The node fetches write-through to DestPath (no blockstore duplication), seeds it from there, and reports
     // Started/Progress/Finished through the transfer callback installed below.
     LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
+    FetchDbg("FetchToPath ENTER (blocking VgFetchToPath call) cid=" + Cid + " dest=" + DestPathStr);
     char *Err = nullptr;
     const int Rc = VgFetchToPath(Cid.c_str(), DestPathStr.c_str(), &Err);
     const std::string ErrS = TakeStr(Err);
+    FetchDbg("FetchToPath RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
     if (Rc != 0)
     {
         const std::string Msg = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
