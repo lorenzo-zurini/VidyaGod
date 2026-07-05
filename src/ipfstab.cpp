@@ -44,19 +44,20 @@
 
 // Item role carrying a transfer's lifecycle status, so the delegate colour-codes the progress bar.
 static constexpr int StatusRole = Qt::UserRole + 1;
-enum TransferStatus { StDownloading = 0, StQueued = 1, StPinning = 2, StStalled = 3, StErrored = 4 };
+enum TransferStatus { StDownloading = 0, StQueued = 1, StPinning = 2, StStalled = 3, StErrored = 4, StSeeded = 5 };
 
 // Paints a column's integer value (0..100) as a progress bar (value lives in the item, so the table stays sortable).
-// A negative value renders an indeterminate "busy" bar. The bar is colour-coded by StatusRole:
-// queued = purple, downloading = default (blue), pinning = dark green, stalled = amber, errored = red.
+// A negative value renders an indeterminate "busy" bar. Every leaf carries a bar. Colour-coded by StatusRole:
+// queued/pending = indigo, downloading = default (blue), seeded = full blue (100%), pinning = dark green,
+// stalled = amber, errored = red.
 class ProgressBarDelegate : public QStyledItemDelegate
 {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
-        // Only cells that carry an explicit progress value render a bar — package-group rows and idle seeded leaves
-        // (no value in the Progress column) fall through to the default painter (blank), so no bogus 0% bars.
+        // Every LEAF carries a bar; only package-group / category rows have no Progress value and fall through to the
+        // default painter (blank), so those headers don't get a bogus bar.
         const QVariant dv = idx.data(Qt::DisplayRole);
         if (!dv.isValid()) { QStyledItemDelegate::paint(p, opt, idx); return; }
         const int v = dv.toInt();
@@ -71,10 +72,11 @@ public:
         QColor c;
         switch (idx.data(StatusRole).toInt())
         {
-        case StQueued:  c = QColor(0x7E, 0x57, 0xC2); break;   // purple
+        case StQueued:  c = QColor(0x3F, 0x51, 0xB5); break;   // indigo (queued / pending "not fetched")
         case StPinning: c = QColor(0x1B, 0x5E, 0x20); break;   // dark green
         case StStalled: c = QColor(0xF9, 0xA8, 0x25); break;   // amber
         case StErrored: c = QColor(0xC0, 0x39, 0x2B); break;   // red
+        case StSeeded:  break;                                 // seeded → default blue, full (100%)
         default: break;                                        // downloading → default highlight (blue)
         }
         if (c.isValid()) bar.palette.setColor(QPalette::Highlight, c);
@@ -437,9 +439,9 @@ void IpfsTab::buildUi()
         if (QTreeWidgetItem * leaf = IpfsTransferProgress.value(cid, nullptr)) {
             leaf->setText(3, QString());   // clear Speed
             if (ok) {
-                // Done → the SAME row becomes a seeded leaf: drop the progress bar, let refresh() render seeded/health.
-                leaf->setData(2, Qt::DisplayRole, QVariant());
-                leaf->setData(2, StatusRole, QVariant());
+                // Done → the SAME row becomes a seeded leaf: full blue completed bar (refresh() then renders health).
+                leaf->setData(2, Qt::DisplayRole, 100);
+                leaf->setData(2, StatusRole, StSeeded);
                 leaf->setText(4, QStringLiteral("Done"));
                 IpfsTransferProgress.remove(cid);
             } else {
@@ -612,8 +614,8 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
             {
                 child->setText(1, QString());
                 child->setData(1, Qt::UserRole, (qlonglong)0);
-                child->setData(2, Qt::DisplayRole, QVariant());  // no progress bar
-                child->setData(2, StatusRole, QVariant());
+                child->setData(2, Qt::DisplayRole, -1);          // indeterminate indigo bar (waiting to sync)
+                child->setData(2, StatusRole, StQueued);
                 child->setText(3, QString());
                 child->setText(4, QStringLiteral("Not fetched — will sync when online"));
                 child->setForeground(4, QColor("#8f98a0"));
@@ -623,8 +625,8 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
             child->setText(1, HumanBytes(St.SizeBytes));
             child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);
             if (IpfsTransferProgress.contains(Cid)) continue;    // mid-transfer/failed → leave its Progress + Status alone
-            child->setData(2, Qt::DisplayRole, QVariant());      // idle seeded → no progress bar
-            child->setData(2, StatusRole, QVariant());
+            child->setData(2, Qt::DisplayRole, 100);             // seeded → full blue completed bar
+            child->setData(2, StatusRole, StSeeded);
             child->setText(3, QString());                        // no speed
             if (Uploading.contains(Cid))
             {
