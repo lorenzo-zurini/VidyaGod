@@ -152,6 +152,9 @@ set(SHARED_SOURCES
     src/downloadmanager.h
     src/downloadmanager.cpp
 
+    src/ipfsmodel.h
+    src/ipfsmodel.cpp
+
     src/ipfstab.h
     src/ipfstab.cpp
 

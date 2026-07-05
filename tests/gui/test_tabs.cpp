@@ -12,6 +12,7 @@
 #include "packagesview.h"
 #include "settingstab.h"
 #include "ipfstab.h"
+#include "ipfsmodel.h"
 #include "gamepicker.h"
 #include "ipfssettingspage.h"
 
@@ -47,7 +48,7 @@ private slots:
     void catalog_tab_constructs()   { AppModel m(&Cfg, &AppDir); CatalogTab  t(m); QVERIFY(renders(&t)); }
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
-    void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsTab     t(m); QVERIFY(renders(&t)); }
+    void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsModel im(m); IpfsTab t(im); QVERIFY(renders(&t)); }
 
     // The Settings → IPFS "Enable networking" checkbox drives the model (which starts the node + un-greys tabs).
     void ipfs_page_networking_toggle_drives_model()

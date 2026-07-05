@@ -6,6 +6,7 @@
 #include "catalogtab.h"
 #include "settingstab.h"
 #include "ipfstab.h"
+#include "ipfsmodel.h"
 #include "covercache.h"
 #include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
 #include "apppaths.h"            // AppPaths::DataRoot (the IPFS repo lives at <DataRoot>/ipfs)
@@ -60,7 +61,8 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     cw->setLayout(cl);
     setCentralWidget(cw);
 
-    DownloadMgr = new DownloadManager(*Model, this, this);   // dialog parent = this; lifetime = this
+    IpfsModelPtr = new IpfsModel(*Model, this);              // owns transfer state; single IpfsManager consumer
+    DownloadMgr  = new DownloadManager(*Model, this, this);   // dialog parent = this; lifetime = this
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
     // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.
@@ -89,7 +91,7 @@ void MainWindow::BuildStaticUI()
     LibraryTabPtr  = new LibraryTab(*Model, MainWindowTabWidget);
     CatalogTabPtr  = new CatalogTab(*Model, MainWindowTabWidget);
     SettingsTabPtr = new SettingsTab(*Model, MainWindowTabWidget);
-    IpfsTabPtr     = new IpfsTab(*Model, MainWindowTabWidget);
+    IpfsTabPtr     = new IpfsTab(*IpfsModelPtr, MainWindowTabWidget);
 
     MainWindowTabWidget->addTab(LibraryTabPtr,  "Library");
     MainWindowTabWidget->addTab(CatalogTabPtr,  "Catalog");
@@ -112,10 +114,10 @@ void MainWindow::BuildStaticUI()
     connect(DownloadMgr, &DownloadManager::downloadProgress, CatalogTabPtr, &CatalogTab::setDownloadProgress);
     connect(DownloadMgr, &DownloadManager::downloadFinished, CatalogTabPtr, &CatalogTab::clearDownloading);
 
-    // Download controller → IPFS tab transfer rows.
-    connect(DownloadMgr, &DownloadManager::transferQueued,   IpfsTabPtr, &IpfsTab::queueTransfer);
-    connect(DownloadMgr, &DownloadManager::transferUnqueued, IpfsTabPtr, &IpfsTab::clearQueuedTransfer);
-    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsTabPtr, &IpfsTab::refresh);
+    // Download controller → IPFS model (queued-row state; the model drives the tab).
+    connect(DownloadMgr, &DownloadManager::transferQueued,   IpfsModelPtr, &IpfsModel::markQueued);
+    connect(DownloadMgr, &DownloadManager::transferUnqueued, IpfsModelPtr, &IpfsModel::clearQueued);
+    connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshNow);
 
     // IPFS transfer progress → the download controller (which averages it onto the Catalog card).
     connect(IpfsManager::instance(), &IpfsManager::transferProgress, DownloadMgr,
@@ -241,7 +243,7 @@ void MainWindow::applyNetworkingState(bool enabled)
     {
         if (ResumeTimer) ResumeTimer->stop();
         IpfsWrapper::StopNode();   // bring the node fully down — no network activity until re-enabled
-        if (IpfsTabPtr) IpfsTabPtr->refresh();   // reflect the "node off" state
+        if (IpfsModelPtr) IpfsModelPtr->refreshNow();   // reflect the "node off" state
     }
 }
 
@@ -261,7 +263,7 @@ void MainWindow::onNodeReady()
     // The node's repo is open now (Available()==true); refresh the IPFS tab immediately so it's functional the moment
     // networking is enabled, instead of waiting for its periodic tick. Its network stack comes up shortly after — the
     // ResumeTimer polls for that, then resumes any interrupted downloads.
-    if (IpfsTabPtr) IpfsTabPtr->refresh();
+    if (IpfsModelPtr) IpfsModelPtr->refreshNow();
     if (ResumeTimer && !ResumeTimer->isActive()) ResumeTimer->start();
 
     // Fetch/index any not-yet-present CID package sources now the node is up — this is what bootstraps the default

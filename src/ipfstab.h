@@ -3,82 +3,53 @@
 
 #include <QWidget>
 #include <QHash>
-#include <QSet>
 #include <QString>
-#include <QPair>
 
-#include <vector>
-
-#include "ipfswrapper.h"   // IpfsWrapper::StatInfo / PinEntry
-
-class AppModel;
+class IpfsModel;
 class QLabel;
 class QTableWidget;
 class QTreeWidget;
-class QTimer;
-class QTableWidgetItem;
 class QTreeWidgetItem;
 class QPushButton;
 
 // ---------------------------------------------------------------------------
-// IpfsTab — the "IPFS" tab: live transfers table, seeded (pinned) content tree, node status, the IpfsManager signal
-// handling, the stall watchdog, and the periodic refresh. It reads the catalog/config through the AppModel and
-// exposes a small slot API the download flow (DownloadManager) drives by signal to seed/clear transfer rows.
+// IpfsTab — the "IPFS" tab, now a PURE VIEW over IpfsModel. It renders the node status strip and the unified
+// category → package → CID tree (live transfers AND seeded content), and wires the per-row Cancel/Prioritize/Copy/
+// Unpin buttons to the model. All transfer state, polling, health gathering and label building live in IpfsModel;
+// this class only paints its signals (cidChanged / cidRemoved / modelReset / nodeStatusChanged) and forwards user
+// actions back to it.
 // ---------------------------------------------------------------------------
 class IpfsTab : public QWidget
 {
     Q_OBJECT
 public:
-    IpfsTab(AppModel &model, QWidget *parent = nullptr);
+    explicit IpfsTab(IpfsModel & model, QWidget * parent = nullptr);
 
 public slots:
-    void refresh();                                                  // off-thread status + pin gather (no-op if ipfs absent)
-    void setActive(bool On);                                         // start/stop the periodic refresh when the tab is shown
-
-    // Driven by the Catalog download flow (DownloadManager signals):
-    void queueTransfer(const QString &cid);                          // pre-show a download CID as "Queued"
-    void clearQueuedTransfer(const QString &cid);                    // drop a still-queued row (download finished/cancelled)
-
-public:
-    QTreeWidgetItem *ensureLeaf(const QString &cid);   // find/create a CID's leaf in the unified tree (its package group)
+    void setActive(bool on);   // tab shown/hidden → start/stop the model's periodic refresh
 
 private:
     void buildUi();
-    void applySnapshot(bool Daemon, int Peers, const QString &Repo, double DownBps, double UpBps,
-                       const std::vector<IpfsWrapper::PinEntry> &Pins,
-                       const QHash<QString, long long> &Sizes,
-                       const QSet<QString> &Uploading);
-    void gatherHealth();
-    void updateLeafActions(const QString &cid);   // show/hide a leaf's Cancel/Prioritize per its transfer state
+    QTreeWidgetItem * ensureLeaf(const QString & cid);   // find/create a CID's leaf under its category→package group
+    void renderLeaf(const QString & cid);                // paint one CID's columns from the model's CidState
+    void removeLeaf(const QString & cid);                // drop a CID's leaf (+ its buttons)
+    void reconcile();                                    // full rebuild from the model's CID set (on modelReset)
+    void paintStatus();                                  // paint the status strip from the model's NodeStatus
+    void updateGroupTotals();                            // per-group / per-category item + byte totals; prune empties
 
-    AppModel &Model;
+    IpfsModel & Model;
 
-    QTableWidget *IpfsStatusTable = nullptr;   // one-row status strip: Network|Peers|Seeded|↓|↑|Repo|Disk
-    QLabel       *IpfsHintLabel    = nullptr;   // shown only when the node is off ("enable networking…")
-    QTreeWidget  *IpfsPins        = nullptr;   // UNIFIED per-package tree: Name|Size|Progress|Speed|Status|CID|actions —
-                                               // live transfers AND seeded content in one view (was two widgets)
-    QTimer       *IpfsRefreshTimer = nullptr;
-    bool          IpfsRefreshInFlight = false; // a worker is already gathering ipfs status — skip re-entrancy
+    QTableWidget * IpfsStatusTable = nullptr;   // one-row status strip: Network|Peers|Seeded|↓|↑|Repo|Disk
+    QLabel       * IpfsHintLabel   = nullptr;   // shown only when the node is off
+    QTreeWidget  * IpfsPins        = nullptr;   // unified tree: Name|Size|Progress|Speed|Status|Health|CID|actions
+    QPushButton  * SeedBtn         = nullptr;   // held so seed-progress can update its label
+    bool           IpfsFitColumnsOnShow = true; // fit every column to content on first render / whenever shown
 
-    QHash<QString, QTreeWidgetItem*>           IpfsTransferProgress;  // CID → its leaf while a transfer is active/failed
-    QSet<QString>                              IpfsTransferQueued;    // CIDs shown as "Queued" (in a download but not yet started)
-    QHash<QString, QPair<qlonglong,qlonglong>> IpfsTransferSpeed;    // CID → {sampleBytes, sampleMs} for the rate calc
-    QHash<QString, qlonglong>                  IpfsTransferLastProgress; // CID → ms of last forward progress (stall detection)
-    QSet<QString>                              IpfsTransferStalled;   // CIDs currently shown as stalled
-    QSet<QString>                              IpfsPendingSources;    // configured source CIDs not yet fetched (shown as "Not fetched")
-    QTimer       *IpfsStallTimer = nullptr;    // ages out phantom speed + flags transfers with no recent progress
-
-    QHash<QString, QString> IpfsCidLabels;     // CID → human label ("<package> — <component>")
-    QHash<QString, QString> IpfsCidPackages;   // CID → owning package name (for grouping)
-    QHash<QString, QString> IpfsCidCategory;   // CID → top-level tree category label (Content / Assets / Meta)
-    QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + provider count (cached; Refresh clears it)
-    QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // "Meta"/"Content" → top-level category row
-    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row (incremental tree)
+    QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // category label → top-level row
+    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row
     QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row
-    QHash<QString, QPushButton*>     IpfsCancelBtns;    // CID → its leaf's "Cancel" button (shown while queued/active)
-    QHash<QString, QPushButton*>     IpfsPrioBtns;      // CID → its leaf's "Prioritize" button (shown while queued)
-    bool          IpfsFitColumnsOnShow = true;          // fit every column to content on first render + whenever shown
-    bool          IpfsHealthInFlight = false;  // a background provider-count pass is running
+    QHash<QString, QPushButton*>     IpfsCancelBtns;    // CID → its leaf's "Cancel" button
+    QHash<QString, QPushButton*>     IpfsPrioBtns;      // CID → its leaf's "Prioritize" button
 };
 
 #endif // IPFSTAB_H

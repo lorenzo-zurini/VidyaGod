@@ -1,9 +1,5 @@
 #include "ipfstab.h"
-#include "appmodel.h"           // AppModel — Mw.GlobalConfigJSON → Model.config()
-#include "packagecatalog.h"
-#include "manifestmodel.h"
-#include "downloadqueue.h"      // IpfsWrapper::CancelDownload / PrioritizeDownload (per-row queue controls)
-#include "commonutils.h"
+#include "ipfsmodel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -11,9 +7,10 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QHeaderView>
-#include <QTimer>
 #include <QFileDialog>
 #include <QMessageBox>
 #include <QApplication>
@@ -23,44 +20,29 @@
 #include <QStyleOptionProgressBar>
 #include <QPainter>
 #include <QStyle>
-#include <QDateTime>
 #include <QColor>
 #include <QFont>
 #include <QDir>
-#include <QMap>
-#include <QTableWidgetItem>
-#include <QTreeWidgetItem>
 
-#include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <atomic>
-#include <filesystem>
-#include <memory>
-#include <thread>
+#include <cmath>
 #include <utility>
-#include <vector>
 
-// ===== IPFS-tab-local helpers (all formerly file-statics in mainwindow.cpp) =====
+// ===== IPFS-tab-local rendering helpers =====
 
 // Item role carrying a transfer's lifecycle status, so the delegate colour-codes the progress bar.
 static constexpr int StatusRole = Qt::UserRole + 1;
-enum TransferStatus { StDownloading = 0, StQueued = 1, StPinning = 2, StStalled = 3, StErrored = 4, StSeeded = 5 };
+enum TransferStatus : int { StDownloading = 0, StQueued = 1, StPinning = 2, StStalled = 3, StErrored = 4, StSeeded = 5 };
 
 // Paints a column's integer value (0..100) as a progress bar (value lives in the item, so the table stays sortable).
-// A negative value renders an indeterminate "busy" bar. Every leaf carries a bar. Colour-coded by StatusRole:
-// queued/pending = indigo, downloading = default (blue), seeded = full blue (100%), pinning = dark green,
-// stalled = amber, errored = red.
+// A negative value renders an indeterminate "busy" bar. Every leaf carries a bar, colour-coded by StatusRole.
 class ProgressBarDelegate : public QStyledItemDelegate
 {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
-        // Every LEAF carries a bar; only package-group / category rows have no Progress value and fall through to the
-        // default painter (blank), so those headers don't get a bogus bar.
         const QVariant dv = idx.data(Qt::DisplayRole);
-        if (!dv.isValid()) { QStyledItemDelegate::paint(p, opt, idx); return; }
+        if (!dv.isValid()) { QStyledItemDelegate::paint(p, opt, idx); return; }   // group/category rows: no bar
         const int v = dv.toInt();
         QStyleOptionProgressBar bar;
         bar.rect = opt.rect.adjusted(2, 3, -2, -3);
@@ -105,140 +87,119 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
     return { QString("● %1").arg(Providers),                         QColor("#5fb55f") };
 }
 
-// Maps every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>") and (optionally) its owning
-// package name, so the IPFS tab can show what each CID is and group the seeded list by package.
-// Build the CID → label/package maps from the ALREADY-BUILT in-memory catalog index. Must NOT re-scan the catalog
-// from disk (BuildCatalogIndex): this runs on the GUI thread (ensureTransferRow + applySnapshot, the latter on every
-// refresh), so a disk rescan here froze the UI for many seconds during downloads.
-// Top-level tree category labels (three siblings): game content files, cover/asset images, and JSON-only node
-// collections. A CID's category drives which top-level row it lands under in the IPFS tab.
-static const QString CatContent = QStringLiteral("Content");
-static const QString CatAssets  = QStringLiteral("Assets");
-static const QString CatMeta    = QStringLiteral("Meta");
-
-static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
-                                              QHash<QString, QString> * OutPackages = nullptr,
-                                              QHash<QString, QString> * OutCategory = nullptr)
-{
-    QHash<QString, QString> Labels;
-    for (const auto & [NodeId, N] : Idx.Nodes)
-    {
-        std::string PkgName;
-        {
-            std::string F = N.BundleDir.filename().string();
-            size_t i = 0;
-            while (i < F.size()) { if (F[i] == '[') { size_t c = F.find(']', i); if (c == std::string::npos) break; i = c + 1; }
-                                   else if (F[i] == ' ') ++i; else break; }
-            PkgName = (i < F.size()) ? F.substr(i) : F;
-        }
-        if (PkgName.empty()) PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", N.GameKey()) : N.GameKey();
-
-        if (N.Layers.is_array())
-            for (const auto & L : N.Layers)
-            {
-                if (!ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))) continue;
-                if (!L.contains("SOURCE") || !L["SOURCE"].is_object() || L["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
-                const std::string Cid = L["SOURCE"].value("CID", std::string());
-                if (Cid.empty()) continue;
-                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(NodeId));
-                if (OutPackages)
-                    OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
-                if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatContent);   // a VFS layer = game content file
-            }
-
-        if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
-        {
-            const auto & Cv = N.Meta["COVER"];
-            if (Cv.contains("SOURCE") && Cv["SOURCE"].is_object() && Cv["SOURCE"].value("TYPE", std::string()) == "ipfs")
-            {
-                const std::string Cid = Cv["SOURCE"].value("CID", std::string());
-                if (!Cid.empty())
-                {
-                    Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
-                    // A cover image = an Asset: its OWN top-level category, grouped by game (like Content), NOT nested
-                    // under Content in a lone "Assets" group.
-                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
-                    if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatAssets);
-                }
-            }
-        }
-    }
-
-    // A fetched CID SOURCE's folder root is now seeded (pinned by fetchDirToPath), so it appears in the pin list. Label
-    // it by its source name — otherwise it'd render under "Unknown / not in your library".
-    if (Config.contains("Settings") && Config["Settings"].is_object()
-        && Config["Settings"].contains("PackageSources") && Config["Settings"]["PackageSources"].is_array())
-        for (const auto & S : Config["Settings"]["PackageSources"])
-        {
-            const std::string Cid = S.is_object() ? S.value("CID", std::string())
-                                  : (S.is_string() ? std::string(S) : std::string());
-            if (Cid.empty()) continue;
-            std::string Name = S.is_object() ? S.value("NAME", std::string()) : std::string();
-            if (Name.empty()) Name = Cid.size() > 12 ? Cid.substr(0, 12) : Cid;
-            const QString QCid = QString::fromStdString(Cid);
-            Labels.insert(QCid, QString::fromStdString(Name + " (source)"));
-            if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
-            if (OutCategory) OutCategory->insert(QCid, CatMeta);   // a package source/collection = JSON-only node tree
-        }
-    return Labels;
-}
-
 // ===== IpfsTab =====
 
-IpfsTab::IpfsTab(AppModel &model, QWidget *parent)
+IpfsTab::IpfsTab(IpfsModel & model, QWidget * parent)
     : QWidget(parent), Model(model)
 {
     buildUi();
-    connect(&Model, &AppModel::catalogChanged, this, &IpfsTab::refresh);   // pins change on import/sync/download
+
+    connect(&Model, &IpfsModel::cidChanged,       this, [this](const QString & cid){ renderLeaf(cid); });
+    connect(&Model, &IpfsModel::cidRemoved,       this, [this](const QString & cid){ removeLeaf(cid); });
+    connect(&Model, &IpfsModel::modelReset,       this, [this]{ reconcile(); });
+    connect(&Model, &IpfsModel::nodeStatusChanged, this, [this]{ paintStatus(); });
+
+    paintStatus();
+    reconcile();
 }
 
-void IpfsTab::setActive(bool On)
+void IpfsTab::setActive(bool on)
 {
-    if (!IpfsRefreshTimer) return;   // ipfs unavailable → no timer
-    if (On) { IpfsFitColumnsOnShow = true; if (!IpfsRefreshTimer->isActive()) IpfsRefreshTimer->start(5000); refresh(); }
-    else    IpfsRefreshTimer->stop();
+    if (on) IpfsFitColumnsOnShow = true;
+    Model.setActive(on);
 }
 
-void IpfsTab::queueTransfer(const QString &cid)
+void IpfsTab::buildUi()
 {
-    if (QTreeWidgetItem * leaf = ensureLeaf(cid))
-    {
-        leaf->setData(2, Qt::DisplayRole, -1);         // indeterminate bar until first %
-        leaf->setData(2, StatusRole, StQueued);        // → delegate paints the bar purple
-        leaf->setText(4, QStringLiteral("Queued"));
-        if (leaf->parent()) leaf->parent()->setExpanded(true);
+    QVBoxLayout * v = new QVBoxLayout(this);
+    v->setContentsMargins(12,12,12,12);
+
+    // Status strip: Network | Peers | Seeded | ↓ | ↑ | Repo | Disk free.
+    IpfsStatusTable = new QTableWidget(1, 7, this);
+    IpfsStatusTable->setHorizontalHeaderLabels({"Network", "Peers", "Seeded", "↓ Down", "↑ Up", "Repo", "Disk free"});
+    IpfsStatusTable->verticalHeader()->setVisible(false);
+    IpfsStatusTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    IpfsStatusTable->horizontalHeader()->setHighlightSections(false);
+    IpfsStatusTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    IpfsStatusTable->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsStatusTable->setFocusPolicy(Qt::NoFocus);
+    IpfsStatusTable->setShowGrid(false);
+    IpfsStatusTable->setStyleSheet("QTableWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;}"
+                                   "QHeaderView::section{background:transparent;color:#8f98a0;border:none;"
+                                   "padding:3px 4px;font-size:8pt;}");
+    for (int c = 0; c < 7; ++c) {
+        QTableWidgetItem * it = new QTableWidgetItem(QStringLiteral("—"));
+        it->setTextAlignment(Qt::AlignCenter);
+        IpfsStatusTable->setItem(0, c, it);
     }
-    IpfsTransferQueued.insert(cid);
-    updateLeafActions(cid);
+    IpfsStatusTable->setFixedHeight(IpfsStatusTable->horizontalHeader()->sizeHint().height()
+                                    + IpfsStatusTable->verticalHeader()->defaultSectionSize() + 4);
+
+    IpfsHintLabel = new QLabel("IPFS node is off — enable networking in Settings → IPFS to download and seed.", this);
+    IpfsHintLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
+    IpfsHintLabel->hide();
+
+    // Button row (seed + refresh).
+    QHBoxLayout * statusRow = new QHBoxLayout();
+    QPushButton * refreshBtn = new QPushButton("Refresh", this);
+    connect(refreshBtn, &QPushButton::clicked, &Model, &IpfsModel::refreshNow);   // force a fresh size/health re-stat
+
+    SeedBtn = new QPushButton("Seed folder…", this);
+    SeedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
+    connect(SeedBtn, &QPushButton::clicked, this, [this]{
+        const QString TheVidya = QDir::homePath() + "/The Vidya";
+        const QString Def = QDir(TheVidya).exists() ? TheVidya : QDir::homePath();
+        const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", Def);
+        if (Dir.isEmpty()) return;
+        SeedBtn->setEnabled(false); SeedBtn->setText("Seeding…");
+        Model.seedFolder(Dir);
+    });
+    connect(&Model, &IpfsModel::seedProgress, this, [this](int done, int total){
+        SeedBtn->setText(QString("Seeding %1/%2…").arg(done).arg(total));
+    });
+    connect(&Model, &IpfsModel::seedFinished, this, [this](int seeded, int mismatched){
+        SeedBtn->setText("Seed folder…"); SeedBtn->setEnabled(true);
+        QString Msg = QString("Seeded %1 referenced file%2.").arg(seeded).arg(seeded == 1 ? "" : "s");
+        if (mismatched > 0) Msg += QString("\n\n%1 file%2 changed since publish (or couldn't be added), so the "
+                                           "recorded CID couldn't be re-seeded.").arg(mismatched).arg(mismatched == 1 ? "" : "s");
+        QMessageBox::information(this, "Seed folder", Msg);
+    });
+    statusRow->addStretch(1);
+    statusRow->addWidget(SeedBtn);
+    statusRow->addWidget(refreshBtn);
+    v->addLayout(statusRow);
+
+    // Unified content view (transfers + seeded), grouped category → package → CID.
+    QGroupBox * pinBox = new QGroupBox("Content", this);
+    QVBoxLayout * pl = new QVBoxLayout(pinBox);
+    IpfsPins = new QTreeWidget(pinBox);
+    IpfsPins->setColumnCount(8);
+    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", ""});
+    IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);
+    IpfsPins->header()->setStretchLastSection(false);
+    IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
+    IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsPins->setSortingEnabled(true);
+    IpfsPins->sortByColumn(0, Qt::AscendingOrder);
+    pl->addWidget(IpfsPins);
+    v->addWidget(pinBox, 1);
+
+    v->addWidget(IpfsStatusTable);
+    v->addWidget(IpfsHintLabel);
 }
 
-void IpfsTab::clearQueuedTransfer(const QString &cid)
-{
-    if (!IpfsTransferQueued.remove(cid)) return;
-    IpfsTransferProgress.remove(cid);
-    IpfsTransferSpeed.remove(cid);
-    // Drop the leaf only if it isn't seeded (a still-queued row that never started + isn't pinned is just noise).
-    if (IpfsPinChildren.contains(cid) && !IpfsWrapper::HasLocal(cid.toStdString()))
-    {
-        IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);   // buttons die with the item widget
-        delete IpfsPinChildren.take(cid);
-    }
-    else updateLeafActions(cid);
-    refresh();
-}
-
-// Find or create a CID's leaf in the unified tree, under its package group (creating the group if needed). Shared by
-// the transfer signal handlers and the seeded-pin render in applySnapshot, so a downloading CID and the same CID once
-// seeded are the SAME row. Idle leaves carry no Progress value (blank bar); the caller sets transfer/seeded state.
+// Find or create a CID's leaf under its category (Content/Assets/Meta) → package group, using the model's label/
+// package/category for this CID.
 QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
 {
     if (!IpfsPins) return nullptr;
-    if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;   // already have a row
+    if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);
-    const QString PkgName = IpfsCidPackages.value(cid, QStringLiteral("Unknown / not in your library"));
-    // Two-level tree: top-level category (Content files / Assets covers / Meta collections) → package group → CID leaf.
-    const QString CatName = IpfsCidCategory.value(cid, CatContent);
+    const IpfsModel::CidState st = Model.state(cid);
+    const QString PkgName = st.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : st.package;
+    const QString CatName = st.category.isEmpty() ? QStringLiteral("Content") : st.category;
+
     QTreeWidgetItem * cat = IpfsPinCategories.value(CatName, nullptr);
     if (!cat)
     {
@@ -262,439 +223,127 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     }
 
     IpfsPins->setSortingEnabled(false);
-    const QString Label = IpfsCidLabels.value(cid, QStringLiteral("(unknown)"));
-    QString LeafName = Label;
-    if (Label.startsWith(PkgName + " — ")) LeafName = Label.mid(PkgName.size() + 3);
-    else if (Label == PkgName)             LeafName = QStringLiteral("content");
+    QString LeafName = st.label.isEmpty() ? QStringLiteral("(unknown)") : st.label;
+    if (LeafName.startsWith(PkgName + " — ")) LeafName = LeafName.mid(PkgName.size() + 3);
+    else if (LeafName == PkgName)             LeafName = QStringLiteral("content");
     QTreeWidgetItem * child = new QTreeWidgetItem(grp);
     child->setText(0, LeafName);
     child->setText(6, cid);
-    const long long Sz = IpfsCidStat.value(cid).SizeBytes;
-    child->setText(1, HumanBytes(Sz));
-    child->setData(1, Qt::UserRole, (qlonglong)Sz);
 
     QWidget * cell = new QWidget();
     QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
-    // Queue controls — visible only while this CID is queued/active (updateLeafActions toggles them): Prioritize jumps
-    // a still-queued CID ahead of the others; Cancel drops a queued row or aborts an active fetch.
     QPushButton * prioBtn   = new QPushButton("Prioritize", cell);
     QPushButton * cancelBtn = new QPushButton("Cancel", cell);
     prioBtn->setVisible(false); cancelBtn->setVisible(false);
-    connect(prioBtn,   &QPushButton::clicked, this, [cid]{ IpfsWrapper::PrioritizeDownload(cid.toStdString()); });
-    connect(cancelBtn, &QPushButton::clicked, this, [this, cid]{
-        IpfsWrapper::CancelDownload(cid.toStdString());
-        if (IpfsTransferQueued.contains(cid)) clearQueuedTransfer(cid);   // queued: no fetch event will come — drop now
-    });
+    connect(prioBtn,   &QPushButton::clicked, this, [this, cid]{ Model.prioritize(cid); });
+    connect(cancelBtn, &QPushButton::clicked, this, [this, cid]{ Model.cancel(cid); });
     QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
     QPushButton * unpinBtn = new QPushButton("Unpin", cell);
     connect(copyBtn,  &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
-    connect(unpinBtn, &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); refresh(); });
+    connect(unpinBtn, &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); Model.refreshNow(); });
     cl->addWidget(prioBtn); cl->addWidget(cancelBtn); cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
     IpfsPins->setItemWidget(child, 7, cell);
     IpfsPinChildren.insert(cid, child);
     IpfsCancelBtns.insert(cid, cancelBtn);
     IpfsPrioBtns.insert(cid, prioBtn);
     IpfsPins->setSortingEnabled(true);
-    updateLeafActions(cid);
-
-    // Async-fill the total size if we don't have it cached (one cheap stat, off the GUI thread).
-    if (Sz < 0)
-        std::thread([this, cid]{
-            const long long S = IpfsWrapper::CidSize(cid.toStdString());
-            QMetaObject::invokeMethod(this, [this, cid, S]{
-                if (S >= 0) IpfsCidStat[cid].SizeBytes = S;
-                if (QTreeWidgetItem * l = IpfsPinChildren.value(cid, nullptr))
-                { l->setText(1, HumanBytes(S)); l->setData(1, Qt::UserRole, (qlonglong)S); }
-            }, Qt::QueuedConnection);
-        }).detach();
     return child;
 }
 
-// Show/hide a leaf's queue controls for its current state: Cancel while queued OR actively transferring; Prioritize
-// only while still queued (a running fetch can't jump the line). Called whenever a CID's transfer state changes.
-void IpfsTab::updateLeafActions(const QString &cid)
+// Paint one CID's columns from the model's CidState (creating its leaf if needed).
+void IpfsTab::renderLeaf(const QString & cid)
 {
-    QPushButton * cancel = IpfsCancelBtns.value(cid, nullptr);
-    QPushButton * prio   = IpfsPrioBtns.value(cid, nullptr);
-    if (!cancel && !prio) return;
-    const bool Queued = IpfsTransferQueued.contains(cid);
-    const bool Active = IpfsTransferProgress.contains(cid);
-    if (cancel) cancel->setVisible(Queued || Active);
-    if (prio)   prio->setVisible(Queued);
-}
+    if (!Model.has(cid)) { removeLeaf(cid); return; }
+    QTreeWidgetItem * leaf = ensureLeaf(cid);
+    if (!leaf) return;
+    const IpfsModel::CidState st = Model.state(cid);
+    using P = IpfsModel::CidState;
 
-void IpfsTab::buildUi()
-{
-    QVBoxLayout * v = new QVBoxLayout(this);
-    v->setContentsMargins(12,12,12,12);
+    // Size.
+    leaf->setText(1, st.phase == P::Pending ? QString() : HumanBytes(st.size));
+    leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
 
-    // The full UI is ALWAYS built (networking is off by default, so the node may not be running yet — it starts when
-    // the user enables networking). When the node isn't up, refresh() shows an "off" status; once it comes up,
-    // MainWindow::onNodeReady() / the periodic tick populate the live status + tables. (Previously this built a
-    // permanent "unavailable" stub when the node wasn't running at construction, leaving the tab dead after enabling.)
-
-    // Status strip: a single-row table (Network | Peers | Seeded | ↓ Down | ↑ Up | Repo | Disk free), plus a hint
-    // label shown only when the node is off.
-    IpfsStatusTable = new QTableWidget(1, 7, this);
-    IpfsStatusTable->setHorizontalHeaderLabels({"Network", "Peers", "Seeded", "↓ Down", "↑ Up", "Repo", "Disk free"});
-    IpfsStatusTable->verticalHeader()->setVisible(false);
-    IpfsStatusTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    IpfsStatusTable->horizontalHeader()->setHighlightSections(false);
-    IpfsStatusTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    IpfsStatusTable->setSelectionMode(QAbstractItemView::NoSelection);
-    IpfsStatusTable->setFocusPolicy(Qt::NoFocus);
-    IpfsStatusTable->setShowGrid(false);
-    IpfsStatusTable->setStyleSheet("QTableWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;}"
-                                   "QHeaderView::section{background:transparent;color:#8f98a0;border:none;"
-                                   "padding:3px 4px;font-size:8pt;}");
-    for (int c = 0; c < 7; ++c) {
-        QTableWidgetItem * it = new QTableWidgetItem(QStringLiteral("—"));
-        it->setTextAlignment(Qt::AlignCenter);
-        IpfsStatusTable->setItem(0, c, it);
-    }
-    IpfsStatusTable->setFixedHeight(IpfsStatusTable->horizontalHeader()->sizeHint().height()
-                                    + IpfsStatusTable->verticalHeader()->defaultSectionSize() + 4);
-    // (added to the layout at the BOTTOM of buildUi, beneath the transfers + seeded tables)
-
-    IpfsHintLabel = new QLabel("IPFS node is off — enable networking in Settings → IPFS to download and seed.", this);
-    IpfsHintLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
-    IpfsHintLabel->hide();
-
-    // Button row (seed + refresh).
-    QHBoxLayout * statusRow = new QHBoxLayout();
-    QPushButton * refreshBtn = new QPushButton("Refresh", this);
-    connect(refreshBtn, &QPushButton::clicked, this, [this]{ IpfsCidStat.clear(); refresh(); });  // force re-stat (fresh size/health)
-
-    QPushButton * seedBtn = new QPushButton("Seed folder…", this);
-    seedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
-    connect(seedBtn, &QPushButton::clicked, this, [this, seedBtn]{
-        const QString TheVidya = QDir::homePath() + "/The Vidya";
-        const QString Def = QDir(TheVidya).exists() ? TheVidya : QDir::homePath();
-        const QString Dir = QFileDialog::getExistingDirectory(this, "Seed folder — pick the folder containing your packages", Def);
-        if (Dir.isEmpty()) return;
-        seedBtn->setEnabled(false); seedBtn->setText("Seeding…");
-        std::thread([this, seedBtn, Dir]{
-            int Mismatched = 0;
-            const int Seeded = PackageCatalog::SeedDirectory(Dir.toStdString(),
-                [seedBtn](int done, int total, const std::string &){
-                    QMetaObject::invokeMethod(seedBtn, [seedBtn, done, total]{
-                        seedBtn->setText(QString("Seeding %1/%2…").arg(done).arg(total)); }, Qt::QueuedConnection);
-                }, &Mismatched);
-            QMetaObject::invokeMethod(this, [this, seedBtn, Seeded, Mismatched]{
-                seedBtn->setText("Seed folder…"); seedBtn->setEnabled(true);
-                refresh();
-                QString Msg = QString("Seeded %1 referenced file%2.").arg(Seeded).arg(Seeded == 1 ? "" : "s");
-                if (Mismatched > 0) Msg += QString("\n\n%1 file%2 changed since publish (or couldn't be added), so the "
-                                                   "recorded CID couldn't be re-seeded.").arg(Mismatched).arg(Mismatched == 1 ? "" : "s");
-                QMessageBox::information(this, "Seed folder", Msg);
-            }, Qt::QueuedConnection);
-        }).detach();
-    });
-
-    statusRow->addStretch(1);
-    statusRow->addWidget(seedBtn);
-    statusRow->addWidget(refreshBtn);
-    v->addLayout(statusRow);
-
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);
-
-    // Unified content view (transfers + seeded, grouped by package). A CID being downloaded and the same CID once
-    // seeded are the SAME row — Progress+Speed while fetching, then Status shows seeded health / uploading.
-    QGroupBox * pinBox = new QGroupBox("Content", this);
-    QVBoxLayout * pl = new QVBoxLayout(pinBox);
-    IpfsPins = new QTreeWidget(pinBox);
-    IpfsPins->setColumnCount(8);
-    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", ""});
-    IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);  // every column user-resizable (incl. Name/tree)
-    IpfsPins->header()->setStretchLastSection(false);                    // content-sized, no forced stretch → no truncation
-    IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
-    IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
-    IpfsPins->setSortingEnabled(true);
-    IpfsPins->sortByColumn(0, Qt::AscendingOrder);
-    pl->addWidget(IpfsPins);
-    v->addWidget(pinBox, 1);
-
-    // Status strip at the BOTTOM, beneath the transfers + seeded tables.
-    v->addWidget(IpfsStatusTable);
-    v->addWidget(IpfsHintLabel);
-
-    // Live transfer notifications (marshalled onto the GUI thread by IpfsManager).
-    IpfsManager * mgr = IpfsManager::instance();
-    connect(mgr, &IpfsManager::transferStarted, this, [this](const QString &cid) {
-        QTreeWidgetItem * leaf = ensureLeaf(cid);
-        if (!leaf) return;
-        IpfsTransferProgress.insert(cid, leaf);
-        leaf->setData(2, Qt::DisplayRole, -1);          // indeterminate bar until first %
-        leaf->setData(2, StatusRole, StDownloading);    // fresh download → default (blue) bar
-        leaf->setText(3, QString());                    // clear any stale speed
-        leaf->setText(4, QStringLiteral("Fetching…")); leaf->setForeground(4, QColor("#c6d4df"));
-        if (leaf->parent()) leaf->parent()->setExpanded(true);
-        IpfsTransferQueued.remove(cid);
-        const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
-        IpfsTransferSpeed.insert(cid, qMakePair((qlonglong)0, Now));  // start the rate clock
-        IpfsTransferLastProgress.insert(cid, Now);                    // start the stall clock
-        IpfsTransferStalled.remove(cid);
-        updateLeafActions(cid);   // now active → Cancel only (Prioritize hidden)
-    });
-    connect(mgr, &IpfsManager::transferProgress, this, [this](const QString &cid, double pct) {
-        QTreeWidgetItem * leaf = IpfsTransferProgress.value(cid, nullptr);
-        if (!leaf) return;
-        leaf->setData(2, Qt::DisplayRole, int(pct + 0.5));
-
-        const qlonglong NowMs = QDateTime::currentMSecsSinceEpoch();
-        IpfsTransferLastProgress.insert(cid, NowMs);   // bytes are flowing → reset the stall clock
-        if (IpfsTransferStalled.remove(cid)) {         // was flagged stalled — peer(s) came back, flip status active
-            leaf->setData(2, StatusRole, StDownloading);
-            leaf->setText(4, QStringLiteral("Fetching…"));
-        }
-
-        const long long Size = IpfsCidStat.value(cid).SizeBytes;
-        if (Size < 0) return;
-        const qlonglong Bytes = (qlonglong)(pct / 100.0 * double(Size));
-        const qlonglong Now   = QDateTime::currentMSecsSinceEpoch();
-        const QPair<qlonglong,qlonglong> Sample = IpfsTransferSpeed.value(cid, qMakePair((qlonglong)0, Now));
-        const qlonglong Dt = Now - Sample.second;
-        if (Dt >= 500) {
-            const qlonglong Rate = Dt > 0 ? (Bytes - Sample.first) * 1000 / Dt : 0;
-            leaf->setText(3, Rate > 0 ? (HumanBytes(Rate) + "/s") : QString());
-            IpfsTransferSpeed.insert(cid, qMakePair(Bytes, Now));
-        }
-    });
-    connect(mgr, &IpfsManager::transferFinalizing, this, [this](const QString &cid, double percent) {
-        IpfsTransferSpeed.remove(cid);
-        IpfsTransferLastProgress.remove(cid);   // finalizing isn't a stall — stop watching it
-        IpfsTransferStalled.remove(cid);
-        if (QTreeWidgetItem * leaf = IpfsTransferProgress.value(cid, nullptr)) {
-            leaf->setData(2, StatusRole, StPinning);                                   // dark-green bar
-            leaf->setData(2, Qt::DisplayRole, percent >= 0 ? int(percent + 0.5) : -1); // -1 = indeterminate "busy"
-            leaf->setText(3, QString());                                               // clear Speed
-            leaf->setText(4, QStringLiteral("Pinning…"));
-        }
-    });
-    connect(mgr, &IpfsManager::transferFinished, this, [this](const QString &cid, bool ok, const QString &error) {
-        IpfsTransferQueued.remove(cid);
-        IpfsTransferSpeed.remove(cid);
-        IpfsTransferLastProgress.remove(cid);
-        IpfsTransferStalled.remove(cid);
-        if (QTreeWidgetItem * leaf = IpfsTransferProgress.value(cid, nullptr)) {
-            leaf->setText(3, QString());   // clear Speed
-            if (ok) {
-                // Done → the SAME row becomes a seeded leaf: full blue completed bar (refresh() then renders health).
-                leaf->setData(2, Qt::DisplayRole, 100);
-                leaf->setData(2, StatusRole, StSeeded);
-                leaf->setText(4, QStringLiteral("Done"));
-                IpfsTransferProgress.remove(cid);
-                updateLeafActions(cid);   // terminal → hide both queue controls
-            } else {
-                const QString Tail = error.section('\n', -1).trimmed();
-                if (Tail == "cancelled") {                          // user cancelled → drop the leaf if not seeded
-                    IpfsTransferProgress.remove(cid);
-                    if (!IpfsWrapper::HasLocal(cid.toStdString()))
-                    {
-                        IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);
-                        delete IpfsPinChildren.take(cid);
-                    }
-                    else updateLeafActions(cid);
-                } else {
-                    leaf->setData(2, StatusRole, StErrored);   // red bar; keep the leaf so the error stays visible
-                    const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
-                                         : error.isEmpty()           ? QStringLiteral("Failed")
-                                                                     : ("Failed: " + Tail);
-                    leaf->setText(4, Reason);
-                    leaf->setToolTip(4, error.isEmpty() ? QStringLiteral("Download failed") : error);
-                    leaf->setForeground(4, QColor("#c0726a"));
-                }
-            }
-        }
-        refresh();                                    // a finished fetch likely added a pin
-    });
-
-    // Periodic status/pin refresh — started/stopped by setActive() when the tab is shown.
-    IpfsRefreshTimer = new QTimer(this);
-    connect(IpfsRefreshTimer, &QTimer::timeout, this, [this]{ refresh(); });
-
-    // Stall watchdog (the "still 2 MB/s" fix): no forward progress for a while → clear phantom speed + flag stalled.
-    IpfsStallTimer = new QTimer(this);
-    IpfsStallTimer->setInterval(2000);
-    connect(IpfsStallTimer, &QTimer::timeout, this, [this]{
-        if (IpfsTransferLastProgress.isEmpty()) return;
-        const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
-        constexpr qlonglong StallMs = 6000;
-        for (auto it = IpfsTransferLastProgress.constBegin(); it != IpfsTransferLastProgress.constEnd(); ++it) {
-            const QString & Cid = it.key();
-            if (Now - it.value() < StallMs || IpfsTransferStalled.contains(Cid)) continue;
-            QTreeWidgetItem * leaf = IpfsTransferProgress.value(Cid, nullptr);
-            if (!leaf) continue;
-            IpfsTransferStalled.insert(Cid);
-            leaf->setData(2, StatusRole, StStalled);   // → delegate paints the bar amber
-            leaf->setText(3, QString());
-            leaf->setText(4, QStringLiteral("Stalled — waiting for peers…"));
-        }
-    });
-    IpfsStallTimer->start();
-
-    refresh();   // set the initial status (the "node off" message, or live data if it's already up)
-}
-
-void IpfsTab::refresh()
-{
-    if (!IpfsStatusTable) return;
-    if (!IpfsWrapper::Available())
+    // Progress bar value + colour code.
+    const int Bar = (st.phase == P::Seeded) ? 100 : (st.pct >= 0 ? (int)std::lround(st.pct) : -1);
+    int Role = StSeeded; QString Status; QColor Fg("#c6d4df");
+    switch (st.phase)
     {
-        // Node not running (networking off, or not started yet). Grey the strip + show the hint.
-        IpfsHintLabel->show();
-        IpfsStatusTable->item(0, 0)->setText(QStringLiteral("off"));
-        IpfsStatusTable->item(0, 0)->setForeground(QColor("#c0726a"));
-        for (int c = 1; c < IpfsStatusTable->columnCount(); ++c) IpfsStatusTable->item(0, c)->setText(QStringLiteral("—"));
-        return;
+    case P::Pending:     Role = StQueued;      Status = QStringLiteral("Not fetched — will sync when online"); Fg = QColor("#8f98a0"); break;
+    case P::Queued:      Role = StQueued;      Status = QStringLiteral("Queued"); break;
+    case P::Downloading: Role = StDownloading; Status = QStringLiteral("Fetching…"); break;
+    case P::Pinning:     Role = StPinning;     Status = QStringLiteral("Pinning…"); break;
+    case P::Stalled:     Role = StStalled;     Status = QStringLiteral("Stalled — waiting for peers…"); break;
+    case P::Errored: {
+        Role = StErrored; Fg = QColor("#c0726a");
+        const QString Tail = st.error.section('\n', -1).trimmed();
+        Status = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
+               : st.error.isEmpty()        ? QStringLiteral("Failed")
+                                           : ("Failed: " + Tail);
+        leaf->setToolTip(4, st.error.isEmpty() ? QStringLiteral("Download failed") : st.error);
+        break; }
+    case P::Seeded:
+        Role = StSeeded;
+        Status = st.uploading ? QStringLiteral("⬆ Uploading") : QStringLiteral("Seeding");
+        Fg = st.uploading ? QColor("#4a90d9") : QColor("#5fb55f");
+        break;
     }
-    IpfsHintLabel->hide();
-    if (IpfsRefreshInFlight) return;                                       // a gather is already running
-    IpfsRefreshInFlight = true;
+    leaf->setData(2, Qt::DisplayRole, Bar);
+    leaf->setData(2, StatusRole, Role);
+    leaf->setText(3, st.speedBps > 0 ? (HumanBytes((long long)st.speedBps) + "/s") : QString());
+    leaf->setText(4, Status);
+    leaf->setForeground(4, Fg);
 
-    QSet<QString> HaveSize;
-    for (auto it = IpfsCidStat.constBegin(); it != IpfsCidStat.constEnd(); ++it)
-        if (it.value().SizeBytes >= 0) HaveSize.insert(it.key());
-    std::thread([this, HaveSize]{
-        const bool   Daemon = IpfsWrapper::DaemonRunning();
-        const int    Peers  = Daemon ? IpfsWrapper::PeerCount() : 0;
-        const QString Repo  = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
-        const IpfsWrapper::BandwidthRates Bw = IpfsWrapper::Bandwidth();
-        const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
-        QSet<QString> Uploading;                                             // seeded items a peer is pulling right now
-        for (const auto & C : IpfsWrapper::ActiveUploads(90000)) Uploading.insert(QString::fromStdString(C));
-        QHash<QString, long long> Sizes;
-        for (const auto & P : Pins)
-        {
-            const QString C = QString::fromStdString(P.Cid);
-            if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSize(P.Cid); if (S >= 0) Sizes[C] = S; }
-        }
-        QMetaObject::invokeMethod(this, [this, Daemon, Peers, Repo, Bw, Pins, Sizes, Uploading]{
-            IpfsRefreshInFlight = false;
-            applySnapshot(Daemon, Peers, Repo, Bw.DownBps, Bw.UpBps, Pins, Sizes, Uploading);
-        }, Qt::QueuedConnection);
-    }).detach();
+    // Health (blank for a not-yet-fetched source).
+    if (st.phase == P::Pending) leaf->setText(5, QString());
+    else { const auto [Txt, Col] = IpfsHealthText(st.providers, st.missing); leaf->setText(5, Txt); leaf->setForeground(5, Col); }
+
+    // Queue controls: Cancel while queued/active; Prioritize only while still queued.
+    const bool Fetching = (st.phase == P::Downloading || st.phase == P::Pinning || st.phase == P::Stalled);
+    if (QPushButton * b = IpfsCancelBtns.value(cid, nullptr)) b->setVisible(st.phase == P::Queued || Fetching);
+    if (QPushButton * b = IpfsPrioBtns.value(cid, nullptr))   b->setVisible(st.phase == P::Queued);
+
+    if (leaf->parent()) leaf->parent()->setExpanded(true);
 }
 
-void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double DownBps, double UpBps,
-                            const std::vector<IpfsWrapper::PinEntry> & Pins,
-                            const QHash<QString, long long> & Sizes,
-                            const QSet<QString> & Uploading)
+void IpfsTab::removeLeaf(const QString & cid)
 {
-    if (!IpfsStatusTable) return;
-    for (auto it = Sizes.constBegin(); it != Sizes.constEnd(); ++it) IpfsCidStat[it.key()].SizeBytes = it.value();  // merge sizes
+    IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);   // buttons die with the item widget
+    if (QTreeWidgetItem * leaf = IpfsPinChildren.take(cid)) delete leaf;
+}
 
-    long long Total = 0;
-    for (const auto & P : Pins) { const long long s = IpfsCidStat.value(QString::fromStdString(P.Cid)).SizeBytes; if (s >= 0) Total += s; }
-
-    auto Rate = [](double Bps){ return Bps >= 1.0 ? (HumanBytes((long long)Bps) + "/s") : QStringLiteral("—"); };
-    auto Set = [this](int col, const QString & text, const QColor & fg = QColor()){
-        QTableWidgetItem * it = IpfsStatusTable->item(0, col);
-        it->setText(text);
-        it->setForeground(fg.isValid() ? fg : QColor("#c6d4df"));
-    };
-    Set(0, Daemon ? QStringLiteral("● connected") : QStringLiteral("● connecting…"),
-           Daemon ? QColor("#5fb55f") : QColor("#d6a23e"));
-    Set(1, Daemon ? QString::number(Peers) : QStringLiteral("—"));
-    Set(2, QString("%1 · %2").arg(Pins.size()).arg(HumanBytes(Total)));
-    Set(3, Rate(DownBps), DownBps >= 1.0 ? QColor("#5fb55f") : QColor("#8f98a0"));
-    Set(4, Rate(UpBps),   UpBps   >= 1.0 ? QColor("#4a90d9") : QColor("#8f98a0"));
-    Set(5, Repo.isEmpty() ? QStringLiteral("—") : Repo);
-    {
-        std::error_code Ec;
-        const auto Sp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), Ec);
-        Set(6, Ec ? QStringLiteral("—") : QString("%1 free").arg(HumanBytes((long long)Sp.available)));
-    }
-
+// Full rebuild from the model's CID set: upsert every known CID, drop leaves no longer in the model, refresh totals.
+void IpfsTab::reconcile()
+{
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);   // keep names current with the catalog
-
-    QMap<QString, QStringList> ByPackage;
-    QSet<QString> DesiredCids;
-    const QString Unknown = QStringLiteral("Unknown / not in your library");
-    for (const auto & P : Pins)
-    {
-        const QString Cid = QString::fromStdString(P.Cid);
-        ByPackage[IpfsCidPackages.value(Cid, Unknown)].append(Cid);
-        DesiredCids.insert(Cid);
-    }
-    for (const QString & Cid : IpfsTransferProgress.keys()) DesiredCids.insert(Cid);   // protect in-flight/failed leaves
-    for (const QString & Cid : IpfsTransferQueued)          DesiredCids.insert(Cid);   // protect QUEUED-not-yet-started rows
-                                                                                       // (so a package's whole file list shows at once, not one-by-one)
-
-    // Surface configured sources that aren't seeded (no pin) and aren't mid-fetch, so a not-yet-fetched or unreachable
-    // source shows a "Not fetched" row instead of being silently absent (a fetch in progress is handled by the transfer
-    // signals; a completed fetch becomes a pin above).
-    IpfsPendingSources.clear();
-    {
-        QSet<QString> Pinned;
-        for (const auto & P : Pins) Pinned.insert(QString::fromStdString(P.Cid));
-        const auto & Cfg = *Model.config();
-        if (Cfg.contains("Settings") && Cfg["Settings"].contains("PackageSources") && Cfg["Settings"]["PackageSources"].is_array())
-            for (const auto & Src : Cfg["Settings"]["PackageSources"])
-            {
-                const std::string C = Src.is_object() ? Src.value("CID", std::string())
-                                    : Src.is_string() ? Src.get<std::string>() : std::string();
-                if (C.empty()) continue;
-                const QString Cid = QString::fromStdString(C);
-                if (Pinned.contains(Cid) || IpfsTransferProgress.contains(Cid)) continue;   // already seeded or fetching
-                ByPackage[IpfsCidPackages.value(Cid, Unknown)].append(Cid);
-                DesiredCids.insert(Cid);
-                IpfsPendingSources.insert(Cid);
-            }
-    }
-
     QScrollBar * VBar = IpfsPins->verticalScrollBar();
     const int Scroll = VBar ? VBar->value() : 0;
     IpfsPins->setSortingEnabled(false);
 
-    // Drop leaves that are neither pinned nor mid-transfer.
-    for (const QString & Cid : IpfsPinChildren.keys())
-        if (!DesiredCids.contains(Cid))
-        {
-            IpfsCancelBtns.remove(Cid); IpfsPrioBtns.remove(Cid);   // buttons die with the deleted item widget
-            delete IpfsPinChildren.take(Cid);
-        }
+    const QHash<QString, IpfsModel::CidState> & Cids = Model.cids();
+    for (const QString & cid : IpfsPinChildren.keys())
+        if (!Cids.contains(cid)) removeLeaf(cid);
+    for (auto it = Cids.constBegin(); it != Cids.constEnd(); ++it) renderLeaf(it.key());
 
-    // Render each pinned CID's leaf (created via ensureLeaf, so a downloading CID and the seeded CID are the SAME row).
-    for (auto it = ByPackage.constBegin(); it != ByPackage.constEnd(); ++it)
-        for (const QString & Cid : it.value())
-        {
-            QTreeWidgetItem * child = ensureLeaf(Cid);
-            if (!child) continue;
-            if (IpfsPendingSources.contains(Cid))                // configured but not fetched yet — pending row
-            {
-                child->setText(1, QString());
-                child->setData(1, Qt::UserRole, (qlonglong)0);
-                child->setData(2, Qt::DisplayRole, -1);          // indeterminate indigo bar (waiting to sync)
-                child->setData(2, StatusRole, StQueued);
-                child->setText(3, QString());
-                child->setText(4, QStringLiteral("Not fetched — will sync when online"));
-                child->setForeground(4, QColor("#8f98a0"));
-                continue;
-            }
-            const IpfsWrapper::StatInfo St = IpfsCidStat.value(Cid);
-            child->setText(1, HumanBytes(St.SizeBytes));
-            child->setData(1, Qt::UserRole, (qlonglong)St.SizeBytes);
-            if (IpfsTransferProgress.contains(Cid)) continue;    // mid-transfer/failed → leave its Progress + Status alone
-            child->setData(2, Qt::DisplayRole, 100);             // seeded → full blue completed bar
-            child->setData(2, StatusRole, StSeeded);
-            child->setText(3, QString());                        // no speed
-            // Status = what it's doing; Health (separate column) = the provider count.
-            if (Uploading.contains(Cid))
-            {
-                child->setText(4, QStringLiteral("⬆ Uploading")); child->setForeground(4, QColor("#4a90d9"));
-            }
-            else
-            {
-                child->setText(4, QStringLiteral("Seeding")); child->setForeground(4, QColor("#5fb55f"));
-            }
-            const auto [Txt, Col] = IpfsHealthText(St.Providers, St.Missing);   // ● N providers
-            child->setText(5, Txt); child->setForeground(5, Col);
-        }
+    updateGroupTotals();
 
-    // Group totals + prune empty groups (a cancelled download can leave a childless group behind).
+    IpfsPins->setSortingEnabled(true);
+    if (VBar) VBar->setValue(Scroll);
+    if (IpfsFitColumnsOnShow)
+    {
+        for (int c = 0; c < IpfsPins->columnCount(); ++c) IpfsPins->resizeColumnToContents(c);
+        IpfsFitColumnsOnShow = false;
+    }
+    else
+    {
+        IpfsPins->resizeColumnToContents(3);   // Speed
+        IpfsPins->resizeColumnToContents(4);   // Status
+        IpfsPins->resizeColumnToContents(5);   // Health
+    }
+    if (qEnvironmentVariableIsSet("VIDYAGOD_IPFS_EXPAND")) IpfsPins->expandAll();
+}
+
+void IpfsTab::updateGroupTotals()
+{
     for (const QString & Key : IpfsPinGroups.keys())
     {
         QTreeWidgetItem * g = IpfsPinGroups.value(Key, nullptr);
@@ -705,7 +354,6 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
         for (int i = 0; i < n; ++i) GrpTotal += g->child(i)->data(1, Qt::UserRole).toLongLong();
         g->setText(1, QString("%1 item%2 · %3").arg(n).arg(n == 1 ? "" : "s").arg(HumanBytes(GrpTotal)));
     }
-    // Prune empty category parents + show a per-category item/byte total.
     for (const QString & Cat : IpfsPinCategories.keys())
     {
         QTreeWidgetItem * c = IpfsPinCategories.value(Cat, nullptr);
@@ -720,55 +368,33 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
         }
         c->setText(1, QString("%1 item%2 · %3").arg(CatItems).arg(CatItems == 1 ? "" : "s").arg(HumanBytes(CatTotal)));
     }
-
-    IpfsPins->setSortingEnabled(true);
-    if (VBar) VBar->setValue(Scroll);
-    if (IpfsFitColumnsOnShow)   // on first render / whenever the tab is shown: fit EVERY column so nothing is truncated
-    {
-        for (int c = 0; c < IpfsPins->columnCount(); ++c) IpfsPins->resizeColumnToContents(c);
-        IpfsFitColumnsOnShow = false;
-    }
-    else                        // per-refresh: keep only the volatile columns fit (Name/Size stay at the user's width)
-    {
-        IpfsPins->resizeColumnToContents(3);   // Speed
-        IpfsPins->resizeColumnToContents(4);   // Status
-        IpfsPins->resizeColumnToContents(5);   // Health
-    }
-    if (qEnvironmentVariableIsSet("VIDYAGOD_IPFS_EXPAND")) IpfsPins->expandAll();
-
-    gatherHealth();
 }
 
-void IpfsTab::gatherHealth()
+void IpfsTab::paintStatus()
 {
-    if (IpfsHealthInFlight) return;
-    auto Todo = std::make_shared<QStringList>();
-    for (const QString & Cid : IpfsPinChildren.keys())
-        if (IpfsCidStat.value(Cid).Providers == -2 && !IpfsPendingSources.contains(Cid)) *Todo << Cid;
-    if (Todo->isEmpty()) return;
-    IpfsHealthInFlight = true;
-
-    const int Workers = std::min<int>(5, Todo->size());
-    auto Next      = std::make_shared<std::atomic<int>>(0);
-    auto Remaining = std::make_shared<std::atomic<int>>(Workers);
-    for (int w = 0; w < Workers; ++w)
-        std::thread([this, Todo, Next, Remaining]{
-            for (;;)
-            {
-                const int i = Next->fetch_add(1);
-                if (i >= Todo->size()) break;
-                const QString Cid = Todo->at(i);
-                const std::string C = Cid.toStdString();
-                const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
-                const int N = (M == 1) ? -1 : IpfsWrapper::ProviderCount(C);
-                QMetaObject::invokeMethod(this, [this, Cid, N, M]{
-                    IpfsCidStat[Cid].Providers = N;
-                    IpfsCidStat[Cid].Missing   = M;
-                    if (QTreeWidgetItem * child = IpfsPinChildren.value(Cid, nullptr))
-                    { const auto [Txt, Col] = IpfsHealthText(N, M); child->setText(5, Txt); child->setForeground(5, Col); }
-                }, Qt::QueuedConnection);
-            }
-            if (Remaining->fetch_sub(1) == 1)
-                QMetaObject::invokeMethod(this, [this]{ IpfsHealthInFlight = false; }, Qt::QueuedConnection);
-        }).detach();
+    if (!IpfsStatusTable) return;
+    const IpfsModel::NodeStatus & S = Model.nodeStatus();
+    if (!S.available)
+    {
+        IpfsHintLabel->show();
+        IpfsStatusTable->item(0, 0)->setText(QStringLiteral("off"));
+        IpfsStatusTable->item(0, 0)->setForeground(QColor("#c0726a"));
+        for (int c = 1; c < IpfsStatusTable->columnCount(); ++c) IpfsStatusTable->item(0, c)->setText(QStringLiteral("—"));
+        return;
+    }
+    IpfsHintLabel->hide();
+    auto Rate = [](double Bps){ return Bps >= 1.0 ? (HumanBytes((long long)Bps) + "/s") : QStringLiteral("—"); };
+    auto Set = [this](int col, const QString & text, const QColor & fg = QColor()){
+        QTableWidgetItem * it = IpfsStatusTable->item(0, col);
+        it->setText(text);
+        it->setForeground(fg.isValid() ? fg : QColor("#c6d4df"));
+    };
+    Set(0, S.daemon ? QStringLiteral("● connected") : QStringLiteral("● connecting…"),
+           S.daemon ? QColor("#5fb55f") : QColor("#d6a23e"));
+    Set(1, S.daemon ? QString::number(S.peers) : QStringLiteral("—"));
+    Set(2, QString("%1 · %2").arg(S.pinCount).arg(HumanBytes(S.totalSize)));
+    Set(3, Rate(S.downBps), S.downBps >= 1.0 ? QColor("#5fb55f") : QColor("#8f98a0"));
+    Set(4, Rate(S.upBps),   S.upBps   >= 1.0 ? QColor("#4a90d9") : QColor("#8f98a0"));
+    Set(5, S.repo.isEmpty() ? QStringLiteral("—") : S.repo);
+    Set(6, S.diskFree < 0 ? QStringLiteral("—") : QString("%1 free").arg(HumanBytes(S.diskFree)));
 }

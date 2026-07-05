@@ -10,6 +10,7 @@ class QTabWidget;
 class QTimer;
 class AppModel;
 class DownloadManager;
+class IpfsModel;
 class TrayController;
 class LibraryTab;
 class CatalogTab;
@@ -51,6 +52,7 @@ private:
     void onNodeReady();                            // node repo opened → start resuming interrupted downloads
 
     AppModel        * Model       = nullptr;   // owns config + catalog + persisted UI state; the signal hub
+    IpfsModel       * IpfsModelPtr = nullptr;   // download/IPFS runtime state (single transfer-event consumer)
     DownloadManager * DownloadMgr = nullptr;   // owns the Catalog download lifecycle
     TrayController  * Tray        = nullptr;    // tray icon + close/minimize/start-in-tray behavior
     bool              ReallyQuitting = false;   // set by the tray "Quit" path so closeEvent quits instead of hiding
