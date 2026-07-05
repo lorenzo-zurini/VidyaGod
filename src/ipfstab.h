@@ -73,6 +73,7 @@ private:
     QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // "Meta"/"Content" → top-level category row
     QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row (incremental tree)
     QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row
+    bool          IpfsFitColumnsOnShow = true;          // fit every column to content on first render + whenever shown
     bool          IpfsHealthInFlight = false;  // a background provider-count pass is running
 };
 

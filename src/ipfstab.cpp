@@ -186,7 +186,7 @@ IpfsTab::IpfsTab(AppModel &model, QWidget *parent)
 void IpfsTab::setActive(bool On)
 {
     if (!IpfsRefreshTimer) return;   // ipfs unavailable → no timer
-    if (On) { if (!IpfsRefreshTimer->isActive()) IpfsRefreshTimer->start(5000); refresh(); }
+    if (On) { IpfsFitColumnsOnShow = true; if (!IpfsRefreshTimer->isActive()) IpfsRefreshTimer->start(5000); refresh(); }
     else    IpfsRefreshTimer->stop();
 }
 
@@ -255,7 +255,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     else if (Label == PkgName)             LeafName = QStringLiteral("content");
     QTreeWidgetItem * child = new QTreeWidgetItem(grp);
     child->setText(0, LeafName);
-    child->setText(5, cid);
+    child->setText(6, cid);
     const long long Sz = IpfsCidStat.value(cid).SizeBytes;
     child->setText(1, HumanBytes(Sz));
     child->setData(1, Qt::UserRole, (qlonglong)Sz);
@@ -267,7 +267,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     connect(copyBtn,  &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
     connect(unpinBtn, &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); refresh(); });
     cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
-    IpfsPins->setItemWidget(child, 6, cell);
+    IpfsPins->setItemWidget(child, 7, cell);
     IpfsPinChildren.insert(cid, child);
     IpfsPins->setSortingEnabled(true);
 
@@ -364,9 +364,10 @@ void IpfsTab::buildUi()
     QGroupBox * pinBox = new QGroupBox("Content", this);
     QVBoxLayout * pl = new QVBoxLayout(pinBox);
     IpfsPins = new QTreeWidget(pinBox);
-    IpfsPins->setColumnCount(7);
-    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "CID", ""});
-    IpfsPins->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    IpfsPins->setColumnCount(8);
+    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", ""});
+    IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);  // every column user-resizable (incl. Name/tree)
+    IpfsPins->header()->setStretchLastSection(false);                    // content-sized, no forced stretch → no truncation
     IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
@@ -628,15 +629,17 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
             child->setData(2, Qt::DisplayRole, 100);             // seeded → full blue completed bar
             child->setData(2, StatusRole, StSeeded);
             child->setText(3, QString());                        // no speed
+            // Status = what it's doing; Health (separate column) = the provider count.
             if (Uploading.contains(Cid))
             {
-                child->setText(4, QStringLiteral("⬆ uploading")); child->setForeground(4, QColor("#4a90d9"));
+                child->setText(4, QStringLiteral("⬆ Uploading")); child->setForeground(4, QColor("#4a90d9"));
             }
             else
             {
-                const auto [Txt, Col] = IpfsHealthText(St.Providers, St.Missing);   // ● N providers seeding it
-                child->setText(4, Txt); child->setForeground(4, Col);
+                child->setText(4, QStringLiteral("Seeding")); child->setForeground(4, QColor("#5fb55f"));
             }
+            const auto [Txt, Col] = IpfsHealthText(St.Providers, St.Missing);   // ● N providers
+            child->setText(5, Txt); child->setForeground(5, Col);
         }
 
     // Group totals + prune empty groups (a cancelled download can leave a childless group behind).
@@ -668,9 +671,17 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
 
     IpfsPins->setSortingEnabled(true);
     if (VBar) VBar->setValue(Scroll);
-    IpfsPins->resizeColumnToContents(3);
-    IpfsPins->resizeColumnToContents(4);
-    IpfsPins->resizeColumnToContents(5);
+    if (IpfsFitColumnsOnShow)   // on first render / whenever the tab is shown: fit EVERY column so nothing is truncated
+    {
+        for (int c = 0; c < IpfsPins->columnCount(); ++c) IpfsPins->resizeColumnToContents(c);
+        IpfsFitColumnsOnShow = false;
+    }
+    else                        // per-refresh: keep only the volatile columns fit (Name/Size stay at the user's width)
+    {
+        IpfsPins->resizeColumnToContents(3);   // Speed
+        IpfsPins->resizeColumnToContents(4);   // Status
+        IpfsPins->resizeColumnToContents(5);   // Health
+    }
     if (qEnvironmentVariableIsSet("VIDYAGOD_IPFS_EXPAND")) IpfsPins->expandAll();
 
     gatherHealth();
@@ -702,7 +713,7 @@ void IpfsTab::gatherHealth()
                     IpfsCidStat[Cid].Providers = N;
                     IpfsCidStat[Cid].Missing   = M;
                     if (QTreeWidgetItem * child = IpfsPinChildren.value(Cid, nullptr))
-                    { const auto [Txt, Col] = IpfsHealthText(N, M); child->setText(2, Txt); child->setForeground(2, Col); }
+                    { const auto [Txt, Col] = IpfsHealthText(N, M); child->setText(5, Txt); child->setForeground(5, Col); }
                 }, Qt::QueuedConnection);
             }
             if (Remaining->fetch_sub(1) == 1)
