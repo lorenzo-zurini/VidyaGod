@@ -421,7 +421,13 @@ int main(int argc, char *argv[])
         std::string Err;
         const std::string Cid = IpfsWrapper::AddNoCopy(LaunchParameters.PublishCidDir, &Err);
         if (Cid.empty()) { LogErr("main.cpp", "publish-cid failed: " + Err); return 1; }
-        LogSucc("main.cpp", "Folder CID: " + Cid);
+        // AddNoCopy eagerly announces the CID to the DHT (async), but this is a short-lived process — wait until the
+        // provider record is actually out there (poll findprovs) so the CID is discoverable after we exit, instead of
+        // killing the provide goroutine mid-flight. The long-running seeder (same peerID) then serves it.
+        LogOut("main.cpp", "announcing " + Cid + " to the DHT…");
+        for (int i = 0; i < 40 && IpfsWrapper::ProviderCount(Cid) < 1; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogSucc("main.cpp", "CID: " + Cid + " (providers: " + std::to_string(IpfsWrapper::ProviderCount(Cid)) + ")");
         std::cout << Cid << "\n";   // machine-readable on stdout
         return 0;
     }
