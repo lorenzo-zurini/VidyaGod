@@ -238,6 +238,7 @@ void IpfsModel::tick()
 void IpfsModel::ensureSize(const QString & cid)
 {
     if (Cids.value(cid).size >= 0) return;
+    if (!IpfsWrapper::Available()) return;   // no node → the size stat can't run (and would outlive a short-lived model)
     std::thread([this, cid]{
         const long long S = IpfsWrapper::CidSize(cid.toStdString());
         QMetaObject::invokeMethod(this, [this, cid, S]{
