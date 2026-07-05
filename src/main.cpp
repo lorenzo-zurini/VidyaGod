@@ -345,6 +345,29 @@ int main(int argc, char *argv[])
                     + " bytes in " + std::to_string(Secs) + "s");
             return 0;
         }
+        // CONCURRENT-FETCH probe (VG_FETCH_MULTI="cid2,cid3,…"): fetch FetchCid + the listed CIDs together through the
+        // real DownloadQueue (FetchTargetsConcurrent), to reproduce/diagnose concurrent downloads stalling. With
+        // VG_FETCH_DEBUG the per-file bitswap sessions + stalls are visible.
+        if (const char *ML = std::getenv("VG_FETCH_MULTI"))
+        {
+            std::vector<IpfsWrapper::FetchTarget> Targets{ { LaunchParameters.FetchCid, LaunchParameters.FetchDest + ".0", false } };
+            std::string List = ML;
+            int i = 1;
+            while (!List.empty())
+            {
+                const size_t c = List.find(',');
+                const std::string Cid = List.substr(0, c);
+                if (!Cid.empty())
+                    Targets.push_back({ Cid, LaunchParameters.FetchDest + "." + std::to_string(i++), false });
+                if (c == std::string::npos) break;
+                List = List.substr(c + 1);
+            }
+            LogOut("main.cpp", "concurrent probe: fetching " + std::to_string(Targets.size()) + " CIDs together");
+            const bool Ok = IpfsWrapper::FetchTargetsConcurrent(Targets, &Err);
+            const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
+            LogOut("main.cpp", std::string("concurrent probe ") + (Ok ? "OK" : ("FAILED: " + Err)) + " in " + std::to_string(Secs) + "s");
+            return Ok ? 0 : 1;
+        }
         const std::string Got = IpfsWrapper::FetchToPath(LaunchParameters.FetchCid, LaunchParameters.FetchDest, &Err);
         const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
         if (Got.empty()) { LogErr("main.cpp", "Fetch failed: " + Err); return 1; }
