@@ -236,12 +236,23 @@ bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string
     std::vector<std::thread> Workers;
     Workers.reserve(Targets.size());
 
+    // De-duplicate by destination path: the same layer CID can be referenced from more than one node, so a target
+    // list can carry the same {Cid,LocalPath} twice. Two workers fetching the SAME dest would race on its tmp/dest
+    // files (rename/pin → "no such file" → spurious missing-files). Skip repeats here; the node's own singleflight
+    // (keyed by dest) is the backstop across separate hydrate calls.
+    std::unordered_map<std::string, bool> SeenDest;
+
     // Acquire a global download slot BEFORE spawning each worker, so live workers (and concurrent FetchToPath
     // calls) never exceed MaxConcurrentDownloads — when one finishes and releases its slot, the loop unblocks and
     // starts the next. A required fetch failing flips Failed, which stops dispatching further work.
     for (const FetchTarget &T : Targets)
     {
         if (Failed.load()) break;
+        if (!SeenDest.emplace(T.LocalPath, true).second)
+        {
+            LogWarn("IpfsWrapper::FetchTargetsConcurrent", "skipping duplicate fetch target " + T.LocalPath);
+            continue;
+        }
         DownloadSlot Slot;                     // blocks here until a concurrency slot frees
         if (Failed.load()) break;              // a worker may have failed while we waited for the slot
         Workers.emplace_back([&, T, Slot = std::move(Slot)]() mutable {
