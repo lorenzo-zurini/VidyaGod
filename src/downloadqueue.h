@@ -1,6 +1,7 @@
 #ifndef DOWNLOADQUEUE_H
 #define DOWNLOADQUEUE_H
 
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,6 +39,12 @@ void CancelDownload(const std::string &Cid);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);
+
+// Queued-state sink for the UI (installed by IpfsManager): fired with queued=true when a NEW job enters the queue,
+// queued=false when a still-queued job is dropped (cancelled). Active/progress/done flow through the transfer
+// callback instead. Fired off the enqueue/cancel thread — the installer marshals to the GUI thread.
+using QueueStateCallback = std::function<void(const std::string & Cid, bool Queued)>;
+void SetQueueCallback(QueueStateCallback Cb);
 
 } // namespace IpfsWrapper
 

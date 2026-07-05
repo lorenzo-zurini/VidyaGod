@@ -1,5 +1,6 @@
 #include "downloadmanager.h"
 #include "appmodel.h"          // AppModel — catalog/config + rebuildCatalog()
+#include "ipfsmodel.h"         // IpfsModel — per-CID transfer progress + size (single source of truth)
 #include "libraryview.h"       // LibraryGameCard + IpfsFetchReady()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
@@ -39,8 +40,12 @@ static QString HumanBytes(long long N)
     return QString::number(B, 'f', I == 0 ? 0 : 1) + " " + U[I];
 }
 
-DownloadManager::DownloadManager(AppModel &model, QWidget *dialogParent, QObject *parent)
-    : QObject(parent), Model(model), DialogParent(dialogParent) {}
+DownloadManager::DownloadManager(AppModel &model, IpfsModel &ipfs, QWidget *dialogParent, QObject *parent)
+    : QObject(parent), Model(model), Ipfs(ipfs), DialogParent(dialogParent)
+{
+    // Per-CID progress lives in IpfsModel now; recompute a package's averaged bar whenever one of its CIDs changes.
+    connect(&Ipfs, &IpfsModel::cidChanged, this, [this](const QString &cid){ recomputeProgress(cid); });
+}
 
 void DownloadManager::requestCancel(LibraryGameCard *card)
 {
@@ -53,27 +58,26 @@ void DownloadManager::requestCancel(LibraryGameCard *card)
     for (const QString & c : DownloadUidCids.value(Key)) IpfsWrapper::RequestCancel(c.toStdString());
 }
 
-void DownloadManager::applyProgress(const QString &cid, double pct)
+void DownloadManager::recomputeProgress(const QString &cid)
 {
     auto it = DownloadCidToUid.constFind(cid);
     if (it == DownloadCidToUid.constEnd()) return;
     const QString Key = it.value();
-    if (pct >= 0) DownloadCidPct[cid] = pct;
     const QStringList & Cids = DownloadUidCids[Key];
     if (Cids.isEmpty()) { emit downloadProgress(Key, -1.0); return; }
-    // SIZE-WEIGHTED average: a package's bar should reflect bytes downloaded, not files completed — otherwise a tiny
-    // file finishing jerks the bar disproportionately (the "staggered" bug). Falls back to an equal-weight average
-    // until the per-CID sizes have been gathered (off-thread in beginDownload).
-    double WeightedBytes = 0, TotalBytes = 0;
-    bool HaveSizes = false;
+    // SIZE-WEIGHTED average from IpfsModel (per-CID pct/size): a package's bar reflects bytes downloaded, not files
+    // completed — otherwise a tiny file finishing jerks the bar (the "staggered" bug). Falls back to an equal-weight
+    // average until the per-CID sizes are known. A CID with pct==-1 (queued/indeterminate) counts as 0%.
+    auto Pct = [this](const QString & c){ const double p = Ipfs.pct(c); return p >= 0 ? p : 0.0; };
+    double WeightedBytes = 0, TotalBytes = 0; bool HaveSizes = false;
     for (const QString & c : Cids)
     {
-        const qlonglong Sz = DownloadCidSize.value(c, -1);
-        if (Sz > 0) { WeightedBytes += DownloadCidPct.value(c, 0.0) / 100.0 * double(Sz); TotalBytes += double(Sz); HaveSizes = true; }
+        const qlonglong Sz = Ipfs.size(c);
+        if (Sz > 0) { WeightedBytes += Pct(c) / 100.0 * double(Sz); TotalBytes += double(Sz); HaveSizes = true; }
     }
     double Avg;
     if (HaveSizes && TotalBytes > 0) Avg = WeightedBytes / TotalBytes * 100.0;
-    else { double Sum = 0; for (const QString & c : Cids) Sum += DownloadCidPct.value(c, 0.0); Avg = Sum / Cids.size(); }
+    else { double Sum = 0; for (const QString & c : Cids) Sum += Pct(c); Avg = Sum / Cids.size(); }
     emit downloadProgress(Key, Avg);   // the Catalog card(s) connect to this
 }
 
@@ -279,26 +283,15 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         {
             const QString Qc = QString::fromStdString(C);
             if (DownloadCidToUid.contains(Qc)) continue;
-            Cids << Qc; DownloadCidToUid[Qc] = Key; DownloadCidPct[Qc] = 0.0;
+            Cids << Qc; DownloadCidToUid[Qc] = Key;
         }
     };
     for (const std::string & Lid : LaunchIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, Toggles));
     for (const std::string & Rid : RunnerIds) AddCids(PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid));  // runner build CIDs
     DownloadUidCids[Key] = Cids;
 
-    // Gather each CID's byte size off-thread so applyProgress can SIZE-WEIGHT the package's progress bar (until these
-    // land it falls back to an equal-weight average). Marshalled back to the GUI thread (DownloadCidSize is GUI-only).
-    std::thread([this, Cids]{
-        QHash<QString, qlonglong> Sizes;
-        for (const QString & c : Cids) { const long long S = IpfsWrapper::CidSize(c.toStdString()); if (S > 0) Sizes[c] = S; }
-        QMetaObject::invokeMethod(this, [this, Sizes]{
-            for (auto It = Sizes.constBegin(); It != Sizes.constEnd(); ++It) DownloadCidSize[It.key()] = It.value();
-        }, Qt::QueuedConnection);
-    }).detach();
-
-    // Pre-show every CID as a "Queued" transfer; the worker fetches them, and transferStarted flips each to
-    // "Fetching…" as it begins. Leftover queued rows are cleared when the worker finishes (below).
-    for (const QString & c : Cids) emit transferQueued(c);
+    // Queued rows + per-CID progress/sizes are owned by IpfsModel now (fed by the download queue's callback + the
+    // node's transfer events). This just needs the cid→package map above so recomputeProgress can average the card.
 
     // Mark this tile's card(s) "Downloading…" in place (cheap — no pool rebuild / no filesystem restat).
     emit downloadStarted(Key);
@@ -333,8 +326,9 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             const QStringList DoneCids = DownloadUidCids.value(Key);
             for (const QString & c : DoneCids)
             {
-                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c); DownloadCidPct.remove(c); DownloadCidSize.remove(c);
-                emit transferUnqueued(c);   // drop a row still "Queued" (never started)
+                IpfsWrapper::ClearCancel(c.toStdString()); DownloadCidToUid.remove(c);
+                // IpfsModel owns the transfer rows now; a still-queued CID clears itself via the queue's callback and
+                // the post-completion refresh() (transfersChanged → IpfsModel::refreshNow).
             }
             DownloadUidCids.remove(Key);
             unpersistActive(Key);           // it ended normally (success/cancel/fail) → don't resume it next launch

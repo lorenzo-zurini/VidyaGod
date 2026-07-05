@@ -62,7 +62,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     setCentralWidget(cw);
 
     IpfsModelPtr = new IpfsModel(*Model, this);              // owns transfer state; single IpfsManager consumer
-    DownloadMgr  = new DownloadManager(*Model, this, this);   // dialog parent = this; lifetime = this
+    DownloadMgr  = new DownloadManager(*Model, *IpfsModelPtr, this, this);   // dialog parent = this; lifetime = this
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —
     // closing/minimizing hide to the tray (keeping the node seeding); the tray "Quit" is the real exit path.
@@ -114,16 +114,10 @@ void MainWindow::BuildStaticUI()
     connect(DownloadMgr, &DownloadManager::downloadProgress, CatalogTabPtr, &CatalogTab::setDownloadProgress);
     connect(DownloadMgr, &DownloadManager::downloadFinished, CatalogTabPtr, &CatalogTab::clearDownloading);
 
-    // Download controller → IPFS model (queued-row state; the model drives the tab).
-    connect(DownloadMgr, &DownloadManager::transferQueued,   IpfsModelPtr, &IpfsModel::markQueued);
-    connect(DownloadMgr, &DownloadManager::transferUnqueued, IpfsModelPtr, &IpfsModel::clearQueued);
+    // A completed/changed download → refresh the IPFS model (pick up the new pin). Queued-row state + per-CID progress
+    // flow directly into IpfsModel (from the download queue's callback + the node's transfer events, both via
+    // IpfsManager); DownloadManager reads that progress back to paint the Catalog card (wired in its ctor).
     connect(DownloadMgr, &DownloadManager::transfersChanged, IpfsModelPtr, &IpfsModel::refreshNow);
-
-    // IPFS transfer progress → the download controller (which averages it onto the Catalog card).
-    connect(IpfsManager::instance(), &IpfsManager::transferProgress, DownloadMgr,
-            [this](QString cid, double pct){ DownloadMgr->applyProgress(cid, pct); });
-    connect(IpfsManager::instance(), &IpfsManager::transferFinished, DownloadMgr,
-            [this](QString cid, bool, QString){ DownloadMgr->applyProgress(cid, 100.0); });
 
     // Lazy cover loading: coalesce a burst of cover-ready arrivals into one model notification; the Library/Catalog
     // tabs repaint their visible cards on coversReady.

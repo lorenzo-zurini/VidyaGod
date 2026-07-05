@@ -46,6 +46,15 @@ QState &Q()
     return S;
 }
 
+QueueStateCallback g_QueueCb;   // UI sink (queued=true on new job, false on cancel-of-queued); set once by IpfsManager
+
+// Fire the queue-state callback for a list of CIDs OUTSIDE the queue lock (the callback marshals to the GUI thread).
+void notifyQueued(const std::vector<std::string> & Cids, bool Queued)
+{
+    if (!g_QueueCb) return;
+    for (const std::string & C : Cids) g_QueueCb(C, Queued);
+}
+
 bool PathExists(const std::string &P)
 {
     std::error_code Ec;
@@ -159,6 +168,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
 {
     BatchHandle Handle;
     bool Woke = false;
+    std::vector<std::string> NewlyQueued;
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
         for (const FetchTarget &T : Targets) {
@@ -176,11 +186,11 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                         if (PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
                         if (!Src.empty()) { Materialize(Src, T.LocalPath); AddDest(J, T.LocalPath); }
-                        else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; }
+                        else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); }
                         break;
                     }
                     case Job::Failed:                      // retry a previously-failed CID
-                        J.State = Job::Queued; J.Error.clear(); J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true;
+                        J.State = Job::Queued; J.Error.clear(); J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
                         break;
                 }
                 continue;
@@ -191,12 +201,13 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Dests = { T.LocalPath };
             NewJob.Optional = T.Optional;
             if (PathExists(T.LocalPath)) { NewJob.State = Job::Done; }
-            else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; }
+            else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));
         }
         EnsureDispatcher();
     }
     if (Woke) Q().Cv.notify_all();
+    notifyQueued(NewlyQueued, true);   // outside the lock: surface the new queued rows in the UI
     return Handle;
 }
 
@@ -222,17 +233,22 @@ bool WaitBatch(const BatchHandle &Handle, std::string *Error)
 
 void CancelDownload(const std::string &Cid)
 {
+    bool WasQueued = false;
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
         auto It = Q().Jobs.find(Cid);
         if (It != Q().Jobs.end() && It->second.State == Job::Queued) {
             It->second.State = Job::Failed;              // queued-but-not-started → drop it (waiters see a failure)
             It->second.Error = "cancelled";
+            WasQueued = true;
         }
     }
     RequestCancel(Cid);       // active fetch → abort at its next checkpoint (harmless if already gone)
     Q().Cv.notify_all();
+    if (WasQueued) notifyQueued({ Cid }, false);   // it never started → drop its queued row in the UI
 }
+
+void SetQueueCallback(QueueStateCallback Cb) { g_QueueCb = std::move(Cb); }
 
 void PrioritizeDownload(const std::string &Cid)
 {

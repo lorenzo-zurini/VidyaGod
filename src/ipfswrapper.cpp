@@ -1,4 +1,5 @@
 #include "ipfswrapper.h"
+#include "downloadqueue.h"   // SetQueueCallback (queue → IpfsManager signal relay)
 #include "commonutils.h"
 #include "vgipfsapi.h"
 
@@ -413,6 +414,14 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
 
     //Route the embedded node's fetch lifecycle into the callback just installed (→ these signals).
     VgSetTransferCb(&IpfsWrapper::IpfsNodeTransferCb);
+
+    //Relay the download QUEUE's queued/removed events (fire on the enqueue/cancel thread) as Qt signals too.
+    IpfsWrapper::SetQueueCallback([this](const std::string & cid, bool queued) {
+        const QString Cid = QString::fromStdString(cid);
+        QMetaObject::invokeMethod(this, [this, Cid, queued]{
+            if (queued) emit queueEnqueued(Cid); else emit queueRemoved(Cid);
+        }, Qt::QueuedConnection);
+    });
 }
 
 IpfsManager * IpfsManager::instance()

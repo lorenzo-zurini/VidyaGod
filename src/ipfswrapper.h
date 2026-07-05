@@ -190,6 +190,8 @@ signals:
     void transferProgress(QString cid, double percent);
     void transferFinalizing(QString cid, double percent);         // all bytes down; "pinning" (re-reference) step; percent 0..100, -1 if indeterminate
     void transferFinished(QString cid, bool ok, QString error);   // error is the reason when !ok (else empty)
+    void queueEnqueued(QString cid);                              // the download queue queued a CID (pre-show it)
+    void queueRemoved(QString cid);                              // a still-queued CID was cancelled before starting
 
 private:
     explicit IpfsManager(QObject * parent = nullptr);

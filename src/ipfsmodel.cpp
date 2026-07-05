@@ -102,8 +102,12 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
         Speed.insert(cid, qMakePair((qlonglong)0, Now));
         LastProgress.insert(cid, Now);
+        ensureSize(cid);   // so speed + package-progress weighting have the byte size
         emit cidChanged(cid);
     });
+    // Queued state flows from the download QUEUE (relayed by IpfsManager) — single source of truth.
+    connect(mgr, &IpfsManager::queueEnqueued, this, &IpfsModel::markQueued);
+    connect(mgr, &IpfsManager::queueRemoved,  this, &IpfsModel::clearQueued);
     connect(mgr, &IpfsManager::transferProgress,   this, [this](const QString & cid, double pct){
         if (!Cids.contains(cid)) return;
         CidState & s = Cids[cid];
@@ -203,6 +207,7 @@ void IpfsModel::markQueued(const QString & cid)
     ensureLabels(cid);
     CidState & s = Cids[cid];
     s.phase = CidState::Queued; s.pct = -1.0;
+    ensureSize(cid);   // fetch the byte size early (for package-progress weighting)
     emit cidChanged(cid);
 }
 
