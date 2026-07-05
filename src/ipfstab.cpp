@@ -110,9 +110,15 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 // Build the CID → label/package maps from the ALREADY-BUILT in-memory catalog index. Must NOT re-scan the catalog
 // from disk (BuildCatalogIndex): this runs on the GUI thread (ensureTransferRow + applySnapshot, the latter on every
 // refresh), so a disk rescan here froze the UI for many seconds during downloads.
+// Top-level tree category labels (three siblings): game content files, cover/asset images, and JSON-only node
+// collections. A CID's category drives which top-level row it lands under in the IPFS tab.
+static const QString CatContent = QStringLiteral("Content — files");
+static const QString CatAssets  = QStringLiteral("Assets — covers");
+static const QString CatMeta    = QStringLiteral("Meta — node collections");
+
 static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
                                               QHash<QString, QString> * OutPackages = nullptr,
-                                              QHash<QString, bool> * OutIsMeta = nullptr)
+                                              QHash<QString, QString> * OutCategory = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
@@ -137,7 +143,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 Labels.insert(QString::fromStdString(Cid), QString::fromStdString(NodeId));
                 if (OutPackages)
                     OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
-                if (OutIsMeta) OutIsMeta->insert(QString::fromStdString(Cid), false);   // a VFS layer = Content (a file)
+                if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatContent);   // a VFS layer = game content file
             }
 
         if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
@@ -149,8 +155,10 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 if (!Cid.empty())
                 {
                     Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
-                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QStringLiteral("Assets"));
-                    if (OutIsMeta) OutIsMeta->insert(QString::fromStdString(Cid), false);   // a cover image = Content (a file)
+                    // A cover image = an Asset: its OWN top-level category, grouped by game (like Content), NOT nested
+                    // under Content in a lone "Assets" group.
+                    if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
+                    if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatAssets);
                 }
             }
         }
@@ -170,7 +178,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             const QString QCid = QString::fromStdString(Cid);
             Labels.insert(QCid, QString::fromStdString(Name + " (source)"));
             if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
-            if (OutIsMeta) OutIsMeta->insert(QCid, true);   // a package source/collection = Meta (JSON-only node tree)
+            if (OutCategory) OutCategory->insert(QCid, CatMeta);   // a package source/collection = JSON-only node tree
         }
     return Labels;
 }
@@ -227,11 +235,10 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     if (!IpfsPins) return nullptr;
     if (QTreeWidgetItem * leaf = IpfsPinChildren.value(cid, nullptr)) return leaf;   // already have a row
 
-    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);
+    if (!IpfsCidLabels.contains(cid)) IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);
     const QString PkgName = IpfsCidPackages.value(cid, QStringLiteral("Unknown / not in your library"));
-    // Two-level tree: category (Meta collections vs Content files) → package group → CID leaf.
-    const QString CatName = IpfsCidIsMeta.value(cid, false) ? QStringLiteral("Meta — node collections")
-                                                            : QStringLiteral("Content — files");
+    // Two-level tree: top-level category (Content files / Assets covers / Meta collections) → package group → CID leaf.
+    const QString CatName = IpfsCidCategory.value(cid, CatContent);
     QTreeWidgetItem * cat = IpfsPinCategories.value(CatName, nullptr);
     if (!cat)
     {
@@ -389,7 +396,7 @@ void IpfsTab::buildUi()
     statusRow->addWidget(refreshBtn);
     v->addLayout(statusRow);
 
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);
 
     // Unified content view (transfers + seeded, grouped by package). A CID being downloaded and the same CID once
     // seeded are the SAME row — Progress+Speed while fetching, then Status shows seeded health / uploading.
@@ -601,7 +608,7 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
     }
 
     if (!IpfsPins) return;
-    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidIsMeta);   // keep names current with the catalog
+    IpfsCidLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &IpfsCidPackages, &IpfsCidCategory);   // keep names current with the catalog
 
     QMap<QString, QStringList> ByPackage;
     QSet<QString> DesiredCids;

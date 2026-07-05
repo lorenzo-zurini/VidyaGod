@@ -70,7 +70,7 @@ private:
 
     QHash<QString, QString> IpfsCidLabels;     // CID → human label ("<package> — <component>")
     QHash<QString, QString> IpfsCidPackages;   // CID → owning package name (for grouping)
-    QHash<QString, bool>    IpfsCidIsMeta;     // CID → true if a Meta-CID (source/collection, JSON-only) vs Content (file)
+    QHash<QString, QString> IpfsCidCategory;   // CID → top-level tree category label (Content / Assets / Meta)
     QHash<QString, IpfsWrapper::StatInfo> IpfsCidStat;  // CID → size + provider count (cached; Refresh clears it)
     QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // "Meta"/"Content" → top-level category row
     QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row (incremental tree)
