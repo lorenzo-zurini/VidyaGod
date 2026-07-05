@@ -173,8 +173,8 @@ void IpfsTab::buildUi()
     QGroupBox * pinBox = new QGroupBox("Content", this);
     QVBoxLayout * pl = new QVBoxLayout(pinBox);
     IpfsPins = new QTreeWidget(pinBox);
-    IpfsPins->setColumnCount(8);
-    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", ""});
+    IpfsPins->setColumnCount(11);   // …CID, then one column PER action button so they line up across rows
+    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", "", "", "", ""});
     IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);
     IpfsPins->header()->setStretchLastSection(false);
     IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
@@ -230,19 +230,23 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     child->setText(0, LeafName);
     child->setText(6, cid);
 
-    QWidget * cell = new QWidget();
-    QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
-    QPushButton * prioBtn   = new QPushButton("Prioritize", cell);
-    QPushButton * cancelBtn = new QPushButton("Cancel", cell);
+    // Each action button gets its OWN column (7..10) so they align across rows. Wrap each in a thin cell for padding.
+    auto placeBtn = [this, child](int col, QPushButton * b){
+        QWidget * w = new QWidget();
+        QHBoxLayout * l = new QHBoxLayout(w); l->setContentsMargins(2,1,2,1); l->setSpacing(0);
+        l->addWidget(b);
+        IpfsPins->setItemWidget(child, col, w);
+    };
+    QPushButton * prioBtn   = new QPushButton("Prioritize");
+    QPushButton * cancelBtn = new QPushButton("Cancel");
+    QPushButton * copyBtn   = new QPushButton("Copy CID");
+    QPushButton * unpinBtn  = new QPushButton("Unpin");
     prioBtn->setVisible(false); cancelBtn->setVisible(false);
     connect(prioBtn,   &QPushButton::clicked, this, [this, cid]{ Model.prioritize(cid); });
     connect(cancelBtn, &QPushButton::clicked, this, [this, cid]{ Model.cancel(cid); });
-    QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
-    QPushButton * unpinBtn = new QPushButton("Unpin", cell);
-    connect(copyBtn,  &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
-    connect(unpinBtn, &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); Model.refreshNow(); });
-    cl->addWidget(prioBtn); cl->addWidget(cancelBtn); cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
-    IpfsPins->setItemWidget(child, 7, cell);
+    connect(copyBtn,   &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
+    connect(unpinBtn,  &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); Model.refreshNow(); });
+    placeBtn(7, prioBtn); placeBtn(8, cancelBtn); placeBtn(9, copyBtn); placeBtn(10, unpinBtn);
     IpfsPinChildren.insert(cid, child);
     IpfsCancelBtns.insert(cid, cancelBtn);
     IpfsPrioBtns.insert(cid, prioBtn);
