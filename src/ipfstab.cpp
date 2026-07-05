@@ -574,6 +574,8 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
         DesiredCids.insert(Cid);
     }
     for (const QString & Cid : IpfsTransferProgress.keys()) DesiredCids.insert(Cid);   // protect in-flight/failed leaves
+    for (const QString & Cid : IpfsTransferQueued)          DesiredCids.insert(Cid);   // protect QUEUED-not-yet-started rows
+                                                                                       // (so a package's whole file list shows at once, not one-by-one)
 
     // Surface configured sources that aren't seeded (no pin) and aren't mid-fetch, so a not-yet-fetched or unreachable
     // source shows a "Not fetched" row instead of being silently absent (a fetch in progress is handled by the transfer
