@@ -112,9 +112,9 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
 // refresh), so a disk rescan here froze the UI for many seconds during downloads.
 // Top-level tree category labels (three siblings): game content files, cover/asset images, and JSON-only node
 // collections. A CID's category drives which top-level row it lands under in the IPFS tab.
-static const QString CatContent = QStringLiteral("Content — files");
-static const QString CatAssets  = QStringLiteral("Assets — covers");
-static const QString CatMeta    = QStringLiteral("Meta — node collections");
+static const QString CatContent = QStringLiteral("Content");
+static const QString CatAssets  = QStringLiteral("Assets");
+static const QString CatMeta    = QStringLiteral("Meta");
 
 static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
                                               QHash<QString, QString> * OutPackages = nullptr,
