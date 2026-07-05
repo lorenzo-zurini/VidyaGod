@@ -135,6 +135,9 @@ set(SHARED_SOURCES
     src/ipfswrapper.h
     src/ipfswrapper.cpp
 
+    src/downloadqueue.h
+    src/downloadqueue.cpp
+
     src/vgipfsapi.h
 
     src/runnerwrapper.h

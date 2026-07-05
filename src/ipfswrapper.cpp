@@ -16,8 +16,6 @@
 #include <condition_variable>
 #include <mutex>
 #include <chrono>
-#include <atomic>
-#include <thread>
 #include <vector>
 #include <cstdlib>
 #include <unordered_map>
@@ -229,45 +227,8 @@ std::string FetchDirToPath(const std::string &Cid, const std::string &DestDirStr
     return DestDirStr;
 }
 
-bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string *Error)
-{
-    std::atomic<bool> Failed{false};
-    std::mutex ErrMu; std::string Err;
-    std::vector<std::thread> Workers;
-    Workers.reserve(Targets.size());
-
-    // De-duplicate by destination path: the same layer CID can be referenced from more than one node, so a target
-    // list can carry the same {Cid,LocalPath} twice. Two workers fetching the SAME dest would race on its tmp/dest
-    // files (rename/pin → "no such file" → spurious missing-files). Skip repeats here; the node's own singleflight
-    // (keyed by dest) is the backstop across separate hydrate calls.
-    std::unordered_map<std::string, bool> SeenDest;
-
-    // Acquire a global download slot BEFORE spawning each worker, so live workers (and concurrent FetchToPath
-    // calls) never exceed MaxConcurrentDownloads — when one finishes and releases its slot, the loop unblocks and
-    // starts the next. A required fetch failing flips Failed, which stops dispatching further work.
-    for (const FetchTarget &T : Targets)
-    {
-        if (Failed.load()) break;
-        if (!SeenDest.emplace(T.LocalPath, true).second)
-        {
-            LogWarn("IpfsWrapper::FetchTargetsConcurrent", "skipping duplicate fetch target " + T.LocalPath);
-            continue;
-        }
-        DownloadSlot Slot;                     // blocks here until a concurrency slot frees
-        if (Failed.load()) break;              // a worker may have failed while we waited for the slot
-        Workers.emplace_back([&, T, Slot = std::move(Slot)]() mutable {
-            std::string E;
-            if (!FetchToPath(T.Cid, T.LocalPath, &E).empty()) return;
-            if (T.Optional) { LogWarn("IpfsWrapper::FetchTargetsConcurrent", "optional fetch failed for CID " + T.Cid + " (" + E + ")"); return; }
-            { std::lock_guard<std::mutex> Lk(ErrMu); if (Err.empty()) Err = "could not fetch CID " + T.Cid + " (" + E + ")"; }
-            Failed.store(true);
-        });
-    }
-    for (std::thread &W : Workers) W.join();
-
-    if (Failed.load()) { if (Error) *Error = Err; return false; }
-    return true;
-}
+// FetchTargetsConcurrent now lives in downloadqueue.cpp — it enqueues the batch into the shared CID-addressed
+// DownloadQueue (dedup by CID + already-seeded, cross-dest single-fetch, priority dispatch) and waits for it.
 
 int PeerCount()
 {

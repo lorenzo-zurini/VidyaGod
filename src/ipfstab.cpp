@@ -2,6 +2,7 @@
 #include "appmodel.h"           // AppModel — Mw.GlobalConfigJSON → Model.config()
 #include "packagecatalog.h"
 #include "manifestmodel.h"
+#include "downloadqueue.h"      // IpfsWrapper::CancelDownload / PrioritizeDownload (per-row queue controls)
 #include "commonutils.h"
 
 #include <QVBoxLayout>
@@ -200,6 +201,7 @@ void IpfsTab::queueTransfer(const QString &cid)
         if (leaf->parent()) leaf->parent()->setExpanded(true);
     }
     IpfsTransferQueued.insert(cid);
+    updateLeafActions(cid);
 }
 
 void IpfsTab::clearQueuedTransfer(const QString &cid)
@@ -209,7 +211,11 @@ void IpfsTab::clearQueuedTransfer(const QString &cid)
     IpfsTransferSpeed.remove(cid);
     // Drop the leaf only if it isn't seeded (a still-queued row that never started + isn't pinned is just noise).
     if (IpfsPinChildren.contains(cid) && !IpfsWrapper::HasLocal(cid.toStdString()))
+    {
+        IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);   // buttons die with the item widget
         delete IpfsPinChildren.take(cid);
+    }
+    else updateLeafActions(cid);
     refresh();
 }
 
@@ -262,14 +268,27 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
 
     QWidget * cell = new QWidget();
     QHBoxLayout * cl = new QHBoxLayout(cell); cl->setContentsMargins(2,1,2,1); cl->setSpacing(4);
+    // Queue controls — visible only while this CID is queued/active (updateLeafActions toggles them): Prioritize jumps
+    // a still-queued CID ahead of the others; Cancel drops a queued row or aborts an active fetch.
+    QPushButton * prioBtn   = new QPushButton("Prioritize", cell);
+    QPushButton * cancelBtn = new QPushButton("Cancel", cell);
+    prioBtn->setVisible(false); cancelBtn->setVisible(false);
+    connect(prioBtn,   &QPushButton::clicked, this, [cid]{ IpfsWrapper::PrioritizeDownload(cid.toStdString()); });
+    connect(cancelBtn, &QPushButton::clicked, this, [this, cid]{
+        IpfsWrapper::CancelDownload(cid.toStdString());
+        if (IpfsTransferQueued.contains(cid)) clearQueuedTransfer(cid);   // queued: no fetch event will come — drop now
+    });
     QPushButton * copyBtn  = new QPushButton("Copy CID", cell);
     QPushButton * unpinBtn = new QPushButton("Unpin", cell);
     connect(copyBtn,  &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
     connect(unpinBtn, &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); refresh(); });
-    cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
+    cl->addWidget(prioBtn); cl->addWidget(cancelBtn); cl->addWidget(copyBtn); cl->addWidget(unpinBtn); cl->addStretch();
     IpfsPins->setItemWidget(child, 7, cell);
     IpfsPinChildren.insert(cid, child);
+    IpfsCancelBtns.insert(cid, cancelBtn);
+    IpfsPrioBtns.insert(cid, prioBtn);
     IpfsPins->setSortingEnabled(true);
+    updateLeafActions(cid);
 
     // Async-fill the total size if we don't have it cached (one cheap stat, off the GUI thread).
     if (Sz < 0)
@@ -282,6 +301,19 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
             }, Qt::QueuedConnection);
         }).detach();
     return child;
+}
+
+// Show/hide a leaf's queue controls for its current state: Cancel while queued OR actively transferring; Prioritize
+// only while still queued (a running fetch can't jump the line). Called whenever a CID's transfer state changes.
+void IpfsTab::updateLeafActions(const QString &cid)
+{
+    QPushButton * cancel = IpfsCancelBtns.value(cid, nullptr);
+    QPushButton * prio   = IpfsPrioBtns.value(cid, nullptr);
+    if (!cancel && !prio) return;
+    const bool Queued = IpfsTransferQueued.contains(cid);
+    const bool Active = IpfsTransferProgress.contains(cid);
+    if (cancel) cancel->setVisible(Queued || Active);
+    if (prio)   prio->setVisible(Queued);
 }
 
 void IpfsTab::buildUi()
@@ -396,6 +428,7 @@ void IpfsTab::buildUi()
         IpfsTransferSpeed.insert(cid, qMakePair((qlonglong)0, Now));  // start the rate clock
         IpfsTransferLastProgress.insert(cid, Now);                    // start the stall clock
         IpfsTransferStalled.remove(cid);
+        updateLeafActions(cid);   // now active → Cancel only (Prioritize hidden)
     });
     connect(mgr, &IpfsManager::transferProgress, this, [this](const QString &cid, double pct) {
         QTreeWidgetItem * leaf = IpfsTransferProgress.value(cid, nullptr);
@@ -445,11 +478,17 @@ void IpfsTab::buildUi()
                 leaf->setData(2, StatusRole, StSeeded);
                 leaf->setText(4, QStringLiteral("Done"));
                 IpfsTransferProgress.remove(cid);
+                updateLeafActions(cid);   // terminal → hide both queue controls
             } else {
                 const QString Tail = error.section('\n', -1).trimmed();
                 if (Tail == "cancelled") {                          // user cancelled → drop the leaf if not seeded
                     IpfsTransferProgress.remove(cid);
-                    if (!IpfsWrapper::HasLocal(cid.toStdString())) delete IpfsPinChildren.take(cid);
+                    if (!IpfsWrapper::HasLocal(cid.toStdString()))
+                    {
+                        IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);
+                        delete IpfsPinChildren.take(cid);
+                    }
+                    else updateLeafActions(cid);
                 } else {
                     leaf->setData(2, StatusRole, StErrored);   // red bar; keep the leaf so the error stays visible
                     const QString Reason = (Tail == "missing files") ? QStringLiteral("Errored: missing files")
@@ -605,7 +644,11 @@ void IpfsTab::applySnapshot(bool Daemon, int Peers, const QString & Repo, double
 
     // Drop leaves that are neither pinned nor mid-transfer.
     for (const QString & Cid : IpfsPinChildren.keys())
-        if (!DesiredCids.contains(Cid)) delete IpfsPinChildren.take(Cid);
+        if (!DesiredCids.contains(Cid))
+        {
+            IpfsCancelBtns.remove(Cid); IpfsPrioBtns.remove(Cid);   // buttons die with the deleted item widget
+            delete IpfsPinChildren.take(Cid);
+        }
 
     // Render each pinned CID's leaf (created via ensureLeaf, so a downloading CID and the seeded CID are the SAME row).
     for (auto it = ByPackage.constBegin(); it != ByPackage.constEnd(); ++it)

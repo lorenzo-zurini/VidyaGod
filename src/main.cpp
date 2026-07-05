@@ -308,6 +308,29 @@ int main(int argc, char *argv[])
                + " peers=" + std::to_string(IpfsWrapper::PeerCount()));
         const auto T0 = std::chrono::steady_clock::now();
         std::string Err;
+        // QUEUE TEST (VG_QUEUE_TEST=1): enqueue the SAME CID at TWO dests through the CID-addressed DownloadQueue and
+        // assert it fetched ONCE (dedup) and cross-dest materialized (dest2 hard-linked to dest — same inode). With
+        // VG_FETCH_DEBUG=1 the log shows a single "fetchToPath ENTER" for the CID. Exercises the whole queue headlessly.
+        if (std::getenv("VG_QUEUE_TEST"))
+        {
+            const std::string Dest2 = LaunchParameters.FetchDest + ".2";
+            std::error_code Rc; std::filesystem::remove(Dest2, Rc);
+            const bool Ok = IpfsWrapper::FetchTargetsConcurrent(
+                { { LaunchParameters.FetchCid, LaunchParameters.FetchDest, false },
+                  { LaunchParameters.FetchCid, Dest2,                      false } }, &Err);
+            if (!Ok) { LogErr("main.cpp", "Queue test fetch failed: " + Err); return 1; }
+            std::error_code E1, E2, E3;
+            const bool Both  = std::filesystem::exists(LaunchParameters.FetchDest, E1) && std::filesystem::exists(Dest2, E2);
+            const bool Same  = Both && std::filesystem::equivalent(LaunchParameters.FetchDest, Dest2, E3);
+            const auto Sz1 = std::filesystem::file_size(LaunchParameters.FetchDest, E1);
+            const auto Sz2 = std::filesystem::file_size(Dest2, E2);
+            if (Both && Same && !E1 && !E2 && Sz1 == Sz2)
+                LogSucc("main.cpp", "Queue test PASS: single fetch, cross-dest hard-link (" + std::to_string(Sz1) + " bytes, same inode)");
+            else
+            { LogErr("main.cpp", "Queue test FAIL: both=" + std::to_string(Both) + " same-inode=" + std::to_string(Same)
+                     + " sz1=" + std::to_string(E1?0:Sz1) + " sz2=" + std::to_string(E2?0:Sz2)); return 1; }
+            return 0;
+        }
         if (LaunchParameters.FetchDirMode)
         {
             // Recursively materialize a FOLDER CID (the add-by-CID path) — verifies the node-file blocks are served.

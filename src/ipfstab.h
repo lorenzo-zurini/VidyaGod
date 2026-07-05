@@ -18,6 +18,7 @@ class QTreeWidget;
 class QTimer;
 class QTableWidgetItem;
 class QTreeWidgetItem;
+class QPushButton;
 
 // ---------------------------------------------------------------------------
 // IpfsTab — the "IPFS" tab: live transfers table, seeded (pinned) content tree, node status, the IpfsManager signal
@@ -48,6 +49,7 @@ private:
                        const QHash<QString, long long> &Sizes,
                        const QSet<QString> &Uploading);
     void gatherHealth();
+    void updateLeafActions(const QString &cid);   // show/hide a leaf's Cancel/Prioritize per its transfer state
 
     AppModel &Model;
 
@@ -73,6 +75,8 @@ private:
     QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // "Meta"/"Content" → top-level category row
     QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row (incremental tree)
     QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row
+    QHash<QString, QPushButton*>     IpfsCancelBtns;    // CID → its leaf's "Cancel" button (shown while queued/active)
+    QHash<QString, QPushButton*>     IpfsPrioBtns;      // CID → its leaf's "Prioritize" button (shown while queued)
     bool          IpfsFitColumnsOnShow = true;          // fit every column to content on first render + whenever shown
     bool          IpfsHealthInFlight = false;  // a background provider-count pass is running
 };
