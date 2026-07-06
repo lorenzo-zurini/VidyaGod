@@ -2,6 +2,7 @@
 #include "processenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
+#include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)
 
 #include <QApplication>
 #include <QMessageBox>
@@ -135,6 +136,22 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //the game under Wine's C:; "pfx/drive_c/<UID>" places it inside Proton's pfx. Same game, different runner.
     const std::string &ContentRoot = ContainerParams.ContentRoot;
 
+    // A layer's TARGET is %variable%-substituted (like runner ARGS/ENV) so a REUSABLE content node can place files
+    // relative to the resolved launch — e.g. a generic DirectPlay package uses TARGET "%ContentDir%" to drop its DLLs
+    // next to whatever game's exe. Substitution happens here (not in the JSON) because the exe location is only known
+    // after resolution. Backward-compatible: a literal TARGET with no % tokens is unchanged.
+    const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
+    auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) -> std::string {
+        if (!Sub.contains("TARGET") || !Sub["TARGET"].is_string()) return Base;
+        std::string T = Sub["TARGET"];
+        VarSubst::StringVariableSubstitution(T, Vars);
+        for (char &c : T) if (c == '\\') c = '/';                          // normalize win-style separators
+        while (!T.empty() && T.front() == '/') T.erase(T.begin());          // no leading slash → clean join
+        while (!T.empty() && T.back()  == '/') T.pop_back();
+        if (T.empty()) return Base;                                        // e.g. %ContentDir% for a root-level exe
+        return Base.empty() ? T : (Base + "/" + T);
+    };
+
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         std::string Type = Sub.value("TYPE", std::string());
@@ -145,12 +162,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         else continue;
 
         std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
-        std::string Target = ContentRoot;
-        if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
-        {
-            std::string T = Sub["TARGET"];
-            Target = Target.empty() ? T : (Target + "/" + T);
-        }
+        std::string Target = ResolveTarget(ContentRoot, Sub);
         Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
                           {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }
@@ -169,9 +181,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                 const std::string Type = Sub.value("TYPE", std::string());
                 const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
                 if (LType.empty()) continue;
-                std::string Target = Base;
-                if (Sub.contains("TARGET") && Sub["TARGET"].is_string() && !std::string(Sub["TARGET"]).empty())
-                    Target = Base + "/" + std::string(Sub["TARGET"]);
+                std::string Target = ResolveTarget(Base, Sub);
                 Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},
                                   {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
             }

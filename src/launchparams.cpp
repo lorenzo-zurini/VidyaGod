@@ -34,6 +34,15 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //Authors compose guest paths from these, e.g. ARGS: "C:\\%PackageUID%\\%ContentPath%".
     VariablesMap["ContentPath"] = this->ExePathRelative;
     VariablesMap["Content"] = this->ExePathComplete;
+    //%ContentDir% — the exe's directory RELATIVE to the content root ("" when the exe is at the root). Lets a reusable
+    //content node (e.g. a generic DirectPlay package) drop its files next to whatever game's exe via a layer TARGET of
+    //"%ContentDir%". Robust to '/'- or '\\'-style CONTENTPATHs.
+    {
+        std::string Cp = this->ExePathRelative.generic_string();
+        for (char & c : Cp) if (c == '\\') c = '/';
+        const auto S = Cp.find_last_of('/');
+        VariablesMap["ContentDir"] = (S == std::string::npos) ? std::string() : Cp.substr(0, S);
+    }
     VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
     VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
     //Custom variables are appended last; they can shadow built-in names if needed.
