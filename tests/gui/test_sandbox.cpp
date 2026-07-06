@@ -22,13 +22,17 @@ class SandboxTest : public QObject
     }
 
 private slots:
-    void off_by_default()
+    void on_by_default_with_overrides()
     {
-        QVERIFY(!SandboxLayer::Requested(params({})));
+        // Default ON: an unremarkable launch is sandboxed.
+        QVERIFY(SandboxLayer::Requested(params({})));
+        // The global default can be turned off (Settings.SandboxByDefault=false).
+        QVERIFY(!SandboxLayer::Requested(params({}), /*DefaultOn=*/false));
+        // An explicit per-launch/package/session VIDYAGOD_SANDBOX override always wins over the default.
         QVERIFY(!SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "off"}})));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "on"}})));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "true"}})));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "1"}})));
+        QVERIFY(!SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "false"}})));
+        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "on"}}), /*DefaultOn=*/false));
+        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "1"}}), /*DefaultOn=*/false));
     }
 
     void net_mode_from_var()

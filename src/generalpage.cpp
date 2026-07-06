@@ -94,5 +94,32 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
     loginLbl->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
     pl->addWidget(loginLbl);
 
+    // ── Sandboxing (Settings.SandboxByDefault, ON by default) ──
+    QLabel * sbHeading = new QLabel("Sandboxing", this);
+    sbHeading->setStyleSheet("font-weight:bold;margin-top:10px;");
+    pl->addWidget(sbHeading);
+
+    QCheckBox * sandboxCb = new QCheckBox("Run games in a sandbox", this);
+    {
+        auto & S = (*Model.config())["Settings"];
+        // Default ON: only unchecked if the key is explicitly false.
+        const bool val = !(S.contains("SandboxByDefault") && S["SandboxByDefault"].is_boolean()) || bool(S["SandboxByDefault"]);
+        sandboxCb->setChecked(val);
+    }
+    connect(sandboxCb, &QCheckBox::toggled, this, [this](bool on){
+        (*Model.config())["Settings"]["SandboxByDefault"] = on;
+        Model.save();
+    });
+    pl->addWidget(sandboxCb);
+
+    QLabel * sbHint = new QLabel(
+        "Launch each game inside a bubblewrap namespace: the system is mounted read-only (a game can't modify your OS) "
+        "and its runtime filesystem is composed privately for it. Required for the private virtual-LAN multiplayer. "
+        "Systems that can't sandbox (no bubblewrap / user namespaces disabled) fall back to a normal launch "
+        "automatically; you can also override per-game with the VIDYAGOD_SANDBOX variable.", this);
+    sbHint->setWordWrap(true);
+    sbHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+    pl->addWidget(sbHint);
+
     pl->addStretch(1);
 }

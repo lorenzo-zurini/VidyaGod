@@ -50,9 +50,11 @@ bool MountOne(const std::string &helper, const std::string &spec, const std::str
     std::error_code Ec;
     std::filesystem::create_directories(mnt, Ec);
 
-    struct stat pst{};
-    const std::string parent = std::filesystem::path(mnt).parent_path().string();
-    if (stat(parent.c_str(), &pst) != 0) { Warn("cannot stat mountpoint parent"); return false; }
+    // Record the mountpoint's device BEFORE mounting. It may already be a mount (the host runtime bound in via
+    // --ro-bind / /), so we can't compare against the parent — we mount vidyagodfs OVER it and wait for st_dev to
+    // CHANGE (each FUSE mount gets a unique anonymous device), which signals our fresh mount is on top.
+    struct stat before{};
+    const bool haveBefore = stat(mnt.c_str(), &before) == 0;
 
     pid_t pid = fork();
     if (pid < 0) { Warn("fork failed"); return false; }
@@ -67,7 +69,7 @@ bool MountOne(const std::string &helper, const std::string &spec, const std::str
     for (int i = 0; i < 100; ++i)   // up to ~10 s
     {
         struct stat mst{};
-        if (stat(mnt.c_str(), &mst) == 0 && mst.st_dev != pst.st_dev) return true;
+        if (stat(mnt.c_str(), &mst) == 0 && (!haveBefore || mst.st_dev != before.st_dev)) return true;
         int status = 0;
         if (waitpid(pid, &status, WNOHANG) == pid) { Warn("vidyagodfs exited before the mount appeared"); return false; }
         usleep(100000);

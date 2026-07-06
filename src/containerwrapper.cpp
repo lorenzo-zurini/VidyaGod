@@ -8,6 +8,16 @@
 #include <algorithm>         // std::min (session-id truncation for the TUN name)
 #include <cstdlib>           // ::getenv (HOME for the writable bind)
 
+// The launcher-wide "sandbox on by default" setting (Settings.SandboxByDefault, default ON). An explicit
+// VIDYAGOD_SANDBOX custom variable on a launch overrides it; an un-sandboxable machine (SandboxLayer::Available()
+// probe) falls back to a normal unsandboxed launch regardless.
+static bool SandboxDefaultOn(const nlohmann::ordered_json &GC)
+{
+    if (GC.contains("Settings") && GC["Settings"].is_object())
+        return GC["Settings"].value("SandboxByDefault", true);
+    return true;
+}
+
 #include <QThread>
 #include <QMetaObject>
 
@@ -144,22 +154,20 @@ bool ContainerWrapper::BuildContainerRuntime()
         RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams);
     }
 
-    //----- SANDBOX prep: the OVERRIDE edits above were applied through the host mount → the writelayer now holds them.
-    //Hand the spec(s) to the sandbox to RE-mount inside its own namespace, and unmount them here so the host no longer
-    //carries the mount (bwrap's --ro-bind / / would otherwise recursively inherit it, and the game must see only the
-    //in-sandbox mount). The writelayer + spec files persist on disk, so the sandbox re-mount is identical. -----
-    if (SandboxLayer::Requested(ContainerParams))
+    //----- SANDBOX prep: record the mounted spec(s) so the sandbox can RE-mount them inside its own namespace, ON TOP
+    //of the host mount (which stays put — the game sees the stacked in-namespace mount; the host mount serves any
+    //unsandboxed path and cleanup). The OVERRIDE edits above already landed in the writelayer, which both mounts
+    //share, so the in-sandbox mount is identical. Gated on the real probe so we only prepare this when the machine can
+    //actually sandbox; tooling/authoring/override runs (which never sandbox) simply use the host mount as today. -----
+    if (SandboxLayer::Requested(ContainerParams, SandboxDefaultOn(GlobalConfigJSON)) && SandboxLayer::Available())
     {
-        auto Defer = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){
-            if (!std::filesystem::exists(SpecPath)) return;
-            ContainerParams.SandboxMounts.emplace_back(SpecPath.string(), Mnt.string());
-            RunCommand("fusermount3", {"-uz", Mnt.string()});   // lazy-detach; the writelayer host dir stays intact
+        auto Record = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){
+            if (std::filesystem::exists(SpecPath))
+                ContainerParams.SandboxMounts.emplace_back(SpecPath.string(), Mnt.string());
         };
-        Defer(ContainerParams.TempPath / "vidyagodfs.spec.json", ContainerParams.RuntimePath);
+        Record(ContainerParams.TempPath / "vidyagodfs.spec.json", ContainerParams.RuntimePath);
         if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime && !ContainerParams.RunnerLayers.empty())
-            Defer(ContainerParams.TempPath / "vidyagodfs.runner.spec.json", ContainerParams.RunnerMountPath);
-        LogOut("ContainerWrapper::BuildContainerRuntime",
-               "Sandbox: deferred " + std::to_string(ContainerParams.SandboxMounts.size()) + " mount(s) to the namespace.");
+            Record(ContainerParams.TempPath / "vidyagodfs.runner.spec.json", ContainerParams.RunnerMountPath);
     }
 
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
@@ -368,11 +376,11 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     bool OverlayServing = false;
     if (!Override)
     {
-        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams, SandboxDefaultOn(GlobalConfigJSON));
         if (SbOpts.Enabled && !SandboxLayer::Available())
-            LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but bubblewrap (bwrap) is not installed — running unsandboxed.");
+            LogOut("ContainerWrapper::Execute", "Sandbox unavailable on this machine (no bwrap / unprivileged user namespaces disabled) — launching normally.");
         else if (SbOpts.Enabled && ContainerParams.SandboxMounts.empty())
-            LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but no runtime mount was prepared — running unsandboxed.");
+            LogWarn("ContainerWrapper::Execute", "Sandbox requested but no runtime mount was prepared — launching normally.");
         else if (SbOpts.Enabled)
         {
             for (const auto &[Spec, Mnt] : ContainerParams.SandboxMounts)

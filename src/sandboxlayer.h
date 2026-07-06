@@ -37,14 +37,19 @@ struct Options {
     std::string              TunName, TunCidr, TunSock;   // overlay TUN (Isolated + a session); empty = none
 };
 
-// True if this launch requested the sandbox (VIDYAGOD_SANDBOX custom variable is truthy: on/true/1/yes).
-bool Requested(const ContainerParams &CP);
+// Whether this launch should be sandboxed. An explicit VIDYAGOD_SANDBOX custom variable (on/off/true/1/…) always wins;
+// otherwise the launcher default DefaultOn applies (Settings.SandboxByDefault, on by default). So sandboxing is on for
+// every launch unless the machine can't run it (see Available) or the user turns it off globally / per-package.
+bool Requested(const ContainerParams &CP, bool DefaultOn = true);
 
 // Build the base sandbox Options (Enabled + Net) from the launch params; ContainerWrapper fills Mounts/WritableBinds/
-// WorkDir/Tun before calling Wrap.
-Options FromParams(const ContainerParams &CP);
+// WorkDir/Tun before calling Wrap. DefaultOn is the launcher-wide default when no explicit override is present.
+Options FromParams(const ContainerParams &CP, bool DefaultOn = true);
 
-// True if the bwrap tool is available on the system (checked once).
+// True if the sandbox can ACTUALLY run on this machine — a real one-shot probe (spawn a trivial bwrap with the same
+// namespace/cap flags we use), cached. Catches a missing bwrap AND the cases where bwrap exists but the sandbox can't
+// be created (unprivileged user namespaces disabled, AppArmor restriction, no setuid). Gating "on by default" on this
+// makes an un-sandboxable machine degrade to a normal unsandboxed launch instead of failing.
 bool Available();
 
 // Prepend a bwrap invocation to (Program, Arguments): on return Program == "bwrap" and Arguments is the full bwrap

@@ -36,22 +36,33 @@ static std::string Var(const ContainerParams &CP, const std::string &Key)
     return It == CP.CustomVariables.end() ? std::string() : It->second;
 }
 
-bool Requested(const ContainerParams &CP)
+bool Requested(const ContainerParams &CP, bool DefaultOn)
 {
-    return Truthy(Var(CP, "VIDYAGOD_SANDBOX"));
+    const std::string V = Var(CP, "VIDYAGOD_SANDBOX");
+    if (!V.empty())   // explicit per-launch / per-package / session override wins over the launcher default
+        return Truthy(V);
+    return DefaultOn;
 }
 
-Options FromParams(const ContainerParams &CP)
+Options FromParams(const ContainerParams &CP, bool DefaultOn)
 {
     Options O;
-    O.Enabled = Requested(CP);
+    O.Enabled = Requested(CP, DefaultOn);
     O.Net = (Var(CP, "VIDYAGOD_SANDBOX_NET") == "isolated") ? NetMode::Isolated : NetMode::Host;
     return O;
 }
 
 bool Available()
 {
-    static const bool Ok = std::system("which bwrap > /dev/null 2>&1") == 0;
+    // Functional probe (not just `which bwrap`): actually create a throwaway sandbox with the SAME namespace + cap
+    // flags the real launch uses, running `true`. Exit 0 ⇒ this machine can sandbox. Runs once; the result is cached
+    // for the process. Silenced — a failure here is expected on un-sandboxable machines and simply disables the
+    // (default-on) sandbox for a normal launch.
+    // `env -u LD_LIBRARY_PATH` mirrors SystemToolEnv (the real launch strips the AppImage's bundled lib path so the
+    // system bwrap loads host libs); without it the probe could spuriously fail under an AppImage.
+    static const bool Ok = std::system(
+        "env -u LD_LIBRARY_PATH bwrap --unshare-user --unshare-pid --cap-add CAP_SYS_ADMIN "
+        "--ro-bind / / --dev-bind /dev /dev --proc /proc -- /bin/true > /dev/null 2>&1") == 0;
     return Ok;
 }
 
