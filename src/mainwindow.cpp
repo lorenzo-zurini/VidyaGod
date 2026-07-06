@@ -20,6 +20,7 @@
 #include <QScreen>
 #include <QTabWidget>
 #include <QTimer>
+#include <QPointer>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QCloseEvent>
@@ -152,17 +153,30 @@ void MainWindow::RefreshPackage(const QString & PackagePath)
 {
     const QString Want = QDir::cleanPath(PackagePath);
 
-    // Locate the live MainWindow (the editor that emitted may have been opened from anywhere) and rebuild the
-    // catalog through its model — every tab refreshes via catalogChanged. The CatalogIndex address is stable (a
-    // model member), so open prelaunch dialogs that borrow it stay valid.
+    // Capture the affected windows in ONE clean pass over topLevelWidgets(), as QPointers, BEFORE touching anything.
+    // Then defer the mutating work (catalog rebuild + dialog reloads) to the next event-loop turn. This is called
+    // synchronously from the editor's save signal (appendLayer → SaveNodes → savedToDisk → packageSaved), and both
+    // rebuildCatalog() and ReloadAndRebuild() can delete top-level widgets — doing that while iterating a snapshot of
+    // topLevelWidgets() left a freed widget in the snapshot, which the next qobject_cast dereferenced (SIGSEGV). It
+    // could also delete the very editor whose signal we're unwinding. Snapshotting as QPointers + deferring fixes both:
+    // the casts happen once on a stable set, and anything deleted meanwhile null-checks out.
+    QPointer<MainWindow> Mw;
+    QList<QPointer<PreLaunchWindow>> Dialogs;
     for (QWidget * W : QApplication::topLevelWidgets())
-        if (auto * MW = qobject_cast<MainWindow *>(W)) { if (MW->Model) MW->Model->rebuildCatalog(); break; }
+    {
+        if (auto * MW = qobject_cast<MainWindow *>(W)) { if (!Mw) Mw = MW; }
+        else if (auto * PL = qobject_cast<PreLaunchWindow *>(W))
+            if (QDir::cleanPath(QString::fromStdString(PL->packagePath())) == Want) Dialogs.append(PL);
+    }
 
-    // Reload any open prelaunch dialog(s) whose current edition lives in this bundle.
-    for (QWidget * W : QApplication::topLevelWidgets())
-        if (auto * PL = qobject_cast<PreLaunchWindow *>(W))
-            if (QDir::cleanPath(QString::fromStdString(PL->packagePath())) == Want)
-                PL->ReloadAndRebuild();
+    QTimer::singleShot(0, [Mw, Dialogs]() {
+        // Rebuild the catalog through the live MainWindow's model (every tab refreshes via catalogChanged; the
+        // CatalogIndex address is stable, so dialogs borrowing it stay valid).
+        if (Mw && Mw->Model) Mw->Model->rebuildCatalog();
+        // Reload any still-open prelaunch dialog(s) for this bundle.
+        for (const QPointer<PreLaunchWindow> & PL : Dialogs)
+            if (PL) PL->ReloadAndRebuild();
+    });
 }
 
 void MainWindow::closeEvent(QCloseEvent * e)
