@@ -582,6 +582,22 @@ Session SessionRoster(const std::string &Sid)
     return S;
 }
 
+// ----- overlay tunnel -----
+
+std::string OverlayStart(const std::string &Sid, std::string *Error)
+{
+    char *Name = nullptr, *Err = nullptr;
+    const int Rc = VgOverlayStart(Sid.c_str(), &Name, &Err);
+    const std::string N = TakeStr(Name);
+    const std::string E = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = E.empty() ? "overlay start failed" : E; return std::string(); }
+    LogSucc("IpfsWrapper::OverlayStart", "overlay up on " + N + " for session " + Sid);
+    return N;
+}
+
+void OverlayStop() { VgOverlayStop(); }
+bool OverlayActive() { return VgOverlayActive() != 0; }
+
 } // namespace IpfsWrapper
 
 // ---------------------------------------------------------------------------

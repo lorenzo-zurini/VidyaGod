@@ -74,6 +74,13 @@ int  VgSessionList(char **outJson);                    // JSON array of all sess
 int  VgSessionRoster(const char *sid, char **outJson); // JSON of one session; -1 if unknown
 void VgSetSessionCb(VgSessionCb cb);
 
+// ---- overlay tunnel (see VidyaGodIPFS/overlay.go) ----
+// Bring up a TUN configured from a session's roster and forward IP packets between members over libp2p; returns the
+// interface name through outName. Needs CAP_NET_ADMIN in the current netns (holds inside a bubblewrap userns netns).
+int  VgOverlayStart(const char *sid, char **outName, char **errOut);
+void VgOverlayStop(void);
+int  VgOverlayActive(void);   // 1 if forwarding on an attached TUN, else 0
+
 void VgFree(char *p);   // free a char* returned through an out-param
 
 } // extern "C"

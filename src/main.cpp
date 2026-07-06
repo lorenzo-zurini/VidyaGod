@@ -405,6 +405,7 @@ int main(int argc, char *argv[])
         }
 
         std::string LastRoster;   // print only when the roster changes
+        bool OverlayTried = false, OverlayUp = false;
         for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
         {
             const IpfsWrapper::Session R = IpfsWrapper::SessionRoster(Sid);
@@ -416,8 +417,24 @@ int main(int argc, char *argv[])
                 LogOut("main.cpp", "roster: " + Now);
                 LastRoster = Now;
             }
+            //Once the roster has us + at least one peer, bring up the overlay TUN (needs CAP_NET_ADMIN) so the members
+            //can ping each other's vIPs — the real end-to-end tunnel test. Attempt once; log the outcome.
+            if (LaunchParameters.OverlayUp && !OverlayTried && R.Members.size() >= 2)
+            {
+                OverlayTried = true;
+                std::string Err;
+                const std::string Iface = IpfsWrapper::OverlayStart(Sid, &Err);
+                if (Iface.empty())
+                    LogErr("main.cpp", "overlay start failed (need CAP_NET_ADMIN? run with sudo/setcap): " + Err);
+                else
+                {
+                    OverlayUp = true;
+                    LogSucc("main.cpp", "overlay TUN up on " + Iface + " — try pinging a peer's vIP from the roster above");
+                }
+            }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
+        if (OverlayUp) IpfsWrapper::OverlayStop();
         const IpfsWrapper::Session Final = IpfsWrapper::SessionRoster(Sid);
         LogSucc("main.cpp", "session handler done — " + std::to_string(Final.Members.size()) + " member(s) in " + Sid);
         return 0;
@@ -1001,6 +1018,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.SessionJoinSid   = argv[++i];
             RuntimeParameters.SessionJoinHost  = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--overlay")
+        {
+            RuntimeParameters.OverlayUp        = true;
         }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
         {

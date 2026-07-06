@@ -271,6 +271,15 @@ struct SessionEvent {
 using SessionCallback = std::function<void(const SessionEvent &)>;
 void SetSessionCallback(SessionCallback Callback);
 
+// ----- overlay tunnel (VidyaGodIPFS/overlay.go) -----
+// Bring up the private virtual-LAN for a session: creates a TUN configured from the roster's vIPs and forwards IP
+// packets between members over libp2p, so the game (and its LAN emulator) see each other as if on one LAN. Returns
+// the TUN interface name, "" on failure (with *Error). Needs CAP_NET_ADMIN — in production it runs inside the game's
+// bubblewrap netns. OverlayStop tears it down; OverlayActive reports whether it is forwarding.
+std::string OverlayStart(const std::string &Sid, std::string *Error = nullptr);
+void OverlayStop();
+bool OverlayActive();
+
 } // namespace IpfsWrapper
 
 // ---------------------------------------------------------------------------

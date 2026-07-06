@@ -76,6 +76,7 @@ struct LaunchParameters
     std::string SessionHostGame;                                       //--session-host <GAMECID>: create+host a session for this game, print its id, observe the roster, then exit
     std::string SessionJoinSid;                                        //--session-join <SID> <HOSTCODE>: join a hosted session (needs the host peer id), observe the roster, then exit
     std::string SessionJoinHost;                                       //host peer id for --session-join (the 2nd arg)
+    bool OverlayUp = false;                                             //--overlay: with --session-host/-join, bring up the TUN overlay (needs CAP_NET_ADMIN) so members can ping each other's vIP
 };
 
 int main(int argc, char *argv[]);
