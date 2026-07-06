@@ -255,7 +255,8 @@ add_executable(vg_tests
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp
-    src/commonutils.cpp)
+    src/commonutils.cpp
+    src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)

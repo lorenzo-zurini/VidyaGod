@@ -1,5 +1,6 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
+#include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
 
 #include <set>
 #include <map>
@@ -583,12 +584,17 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     }
 
     //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
-    //The built-in tokens always available at substitution time (mirrors ContainerParams::GetVariablesMap). A %KEY%
+    //The built-in tokens always available at substitution time. Derived from ContainerParams::GetVariablesMap() (the
+    //single source of truth — a default instance yields every built-in KEY) so the lint stays in sync automatically as
+    //runtime vars are added (e.g. %ContentDir%) instead of drifting from a hand-maintained list. Plus per-context
+    //tokens that live outside the global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY%
     //that is neither a built-in nor declared by some CustomVar is almost always a typo and would survive as a literal.
-    static const std::set<std::string> Builtins = {
-        "PackagePath","PackageName","PackageUID","GameName","UMUID","ScreenWidth","ScreenHeight","RuntimePath",
-        "RunnerRuntimePath","RunnerMount","WriteLayerPath","UserDataPath","TempPath","ProgramPath","DefPrefixPath",
-        "DefaultData","ContentPath","Content","WorkDirPathRelative","WorkDirPathComplete","REL" };
+    static const std::set<std::string> Builtins = []{
+        std::set<std::string> B = { "REL" };
+        for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
+            B.insert(K);
+        return B;
+    }();
 
     std::set<std::string> Declared;                       // every CustomVar KEY in the graph
     std::map<std::string, std::string> UiDeclared;        // UI-facet option KEY -> its declaring node id
