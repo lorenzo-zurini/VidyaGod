@@ -430,6 +430,9 @@ int main(int argc, char *argv[])
                 {
                     OverlayUp = true;
                     LogSucc("main.cpp", "overlay TUN up on " + Iface + " — try pinging a peer's vIP from the roster above");
+                    //Show the CustomVars a game launch would inject to join this session (Goldberg reads these).
+                    for (const auto &[K, V] : IpfsWrapper::SessionLaunchVars(Sid))
+                        LogOut("main.cpp", "  launch var  " + K + "=" + V);
                 }
             }
             std::this_thread::sleep_for(std::chrono::seconds(1));

@@ -6,6 +6,7 @@
 #include "catalogtab.h"
 #include "settingstab.h"
 #include "ipfstab.h"
+#include "friendstab.h"
 #include "ipfsmodel.h"
 #include "covercache.h"
 #include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
@@ -92,17 +93,20 @@ void MainWindow::BuildStaticUI()
     CatalogTabPtr  = new CatalogTab(*Model, MainWindowTabWidget);
     SettingsTabPtr = new SettingsTab(*Model, MainWindowTabWidget);
     IpfsTabPtr     = new IpfsTab(*IpfsModelPtr, MainWindowTabWidget);
+    FriendsTabPtr  = new FriendsTab(*Model, MainWindowTabWidget);
 
     MainWindowTabWidget->addTab(LibraryTabPtr,  "Library");
     MainWindowTabWidget->addTab(CatalogTabPtr,  "Catalog");
     MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
     MainWindowTabWidget->addTab(IpfsTabPtr,     "IPFS");
+    MainWindowTabWidget->addTab(FriendsTabPtr,  "Friends");
 
     // ── Cross-controller wiring (the only place a signal crosses between two components) ──
 
     // Only poll IPFS (off-thread gathers) while its tab is the visible one.
     connect(MainWindowTabWidget, &QTabWidget::currentChanged, this, [this](int){
         IpfsTabPtr->setActive(MainWindowTabWidget->currentWidget() == IpfsTabPtr);
+        FriendsTabPtr->setActive(MainWindowTabWidget->currentWidget() == FriendsTabPtr);
     });
 
     // Catalog card clicks → the download controller.

@@ -10,8 +10,14 @@
 #include <QTemporaryDir>
 #include <QSignalSpy>
 #include <QCoreApplication>
+#include <QTableWidget>
+#include <QDir>
+
+#include <fstream>
 
 #include "ipfswrapper.h"
+#include "appmodel.h"
+#include "friendstab.h"
 
 // The node→C++ event bridges (extern "C" in ipfswrapper.cpp). Calling them directly exercises the real kind-mapping +
 // JSON parsing + queued signal emission that FriendsManager / SessionManager install.
@@ -116,6 +122,36 @@ private slots:
         IpfsNodeSessionCb(2, R"({"id":"sid1"})");                                                // evSessionEnded
         QVERIFY(Ended.wait(1000));
         QCOMPARE(Ended.first().at(0).toString(), QStringLiteral("sid1"));
+    }
+
+    void friendstab_renders_saved_contacts()
+    {
+        // Seed a social.json with one accepted contact, start the (offline) node so it loads, and confirm the
+        // FriendsTab renders that contact — the read/render path from the address book to the table.
+        QTemporaryDir Dir;
+        const QString Repo = Dir.path() + "/ipfs";
+        QDir().mkpath(Repo);
+        {
+            std::ofstream OF((Repo + "/social.json").toStdString());
+            OF << R"({"profile":{"nick":"me"},"contacts":[{"peer":"12D3KooWSavedFriend","nick":"savedpal","state":"accepted","added":1}]})";
+        }
+        std::string Err;
+        QVERIFY2(IpfsWrapper::StartNode(Repo.toStdString(), &Err), Err.c_str());
+
+        nlohmann::ordered_json Cfg = nlohmann::ordered_json{{"Settings", nlohmann::ordered_json::object()},
+                                                            {"LIBRARY", nlohmann::ordered_json::array()}};
+        QDir AppDir(Dir.path());
+        AppModel M(&Cfg, &AppDir);
+        FriendsTab Tab(M);
+        Tab.setActive(true);
+
+        auto * Table = Tab.findChild<QTableWidget *>();
+        QVERIFY(Table);
+        QCOMPARE(Table->rowCount(), 1);
+        QCOMPARE(Table->item(0, 0)->text(), QStringLiteral("savedpal"));
+        QCOMPARE(Table->item(0, 2)->text(), QStringLiteral("accepted"));
+
+        IpfsWrapper::StopNode();
     }
 };
 

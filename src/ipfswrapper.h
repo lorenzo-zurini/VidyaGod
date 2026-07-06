@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <functional>
 
 #include <QObject>
@@ -258,6 +259,10 @@ bool SessionReady(const std::string &Sid, bool Ready, std::string *Error = nullp
 std::vector<Session> SessionList();
 // One session's current roster (Id empty if unknown).
 Session SessionRoster(const std::string &Sid);
+// The custom variables to launch a game into this session (VIDYAGOD_SANDBOX + overlay vIPs), which a Goldberg-style
+// LAN-emulator content node writes into its config so the players find each other over the overlay. Empty if the
+// session / our vIP isn't known yet.
+std::map<std::string, std::string> SessionLaunchVars(const std::string &Sid);
 
 // Inbound session event (mirrors session.go evSession*). Delivered on a node thread; SessionManager marshals it to
 // the GUI thread as Qt signals.

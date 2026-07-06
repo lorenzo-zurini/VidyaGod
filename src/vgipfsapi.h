@@ -72,6 +72,7 @@ int  VgSessionLeave(const char *sid, char **errOut);
 int  VgSessionReady(const char *sid, int ready, char **errOut);
 int  VgSessionList(char **outJson);                    // JSON array of all sessions
 int  VgSessionRoster(const char *sid, char **outJson); // JSON of one session; -1 if unknown
+int  VgSessionLaunchVars(const char *sid, char **outJson); // {VIDYAGOD_SANDBOX,SELF_VIP,PEER_VIPS,...} for a session launch
 void VgSetSessionCb(VgSessionCb cb);
 
 // ---- overlay tunnel (see VidyaGodIPFS/overlay.go) ----

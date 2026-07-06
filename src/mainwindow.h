@@ -16,6 +16,7 @@ class LibraryTab;
 class CatalogTab;
 class SettingsTab;
 class IpfsTab;
+class FriendsTab;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MainWindow — the composition root: it creates the AppModel (the single state/signal hub), the DownloadManager,
@@ -62,6 +63,7 @@ private:
     CatalogTab  * CatalogTabPtr   = nullptr;
     SettingsTab * SettingsTabPtr  = nullptr;
     IpfsTab     * IpfsTabPtr       = nullptr;
+    FriendsTab  * FriendsTabPtr    = nullptr;
     QTimer      * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one model notification
     QTimer      * ResumeTimer       = nullptr;  // polls for the node's network coming up, then resumes downloads once
 };

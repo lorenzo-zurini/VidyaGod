@@ -582,6 +582,16 @@ Session SessionRoster(const std::string &Sid)
     return S;
 }
 
+std::map<std::string, std::string> SessionLaunchVars(const std::string &Sid)
+{
+    std::map<std::string, std::string> Out;
+    char *J = nullptr;
+    if (VgSessionLaunchVars(Sid.c_str(), &J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try { for (const auto &[K, V] : nlohmann::json::parse(Js).items()) Out[K] = V.get<std::string>(); } catch (...) {}
+    return Out;
+}
+
 // ----- overlay tunnel -----
 
 std::string OverlayStart(const std::string &Sid, std::string *Error)

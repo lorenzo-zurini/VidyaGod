@@ -81,6 +81,9 @@ set(SHARED_SOURCES
     src/sandboxlayer.h
     src/sandboxlayer.cpp
 
+    src/friendstab.h
+    src/friendstab.cpp
+
     src/fileedits.h
     src/fileedits.cpp
 
