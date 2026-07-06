@@ -172,6 +172,54 @@ struct TransferEvent {
 using TransferCallback = std::function<void(const TransferEvent &)>;
 void SetTransferCallback(TransferCallback Callback);
 
+// ---------------------------------------------------------------------------
+// Friends / multiplayer social layer (VidyaGodIPFS/social.go + friend.go).
+// A friend is found by their peer ID (for the node's Ed25519 key the peer ID embeds the public key, so it IS the
+// shareable "friend code" and libp2p authenticates the friend for free). Contacts persist in the node's repo
+// (<repo>/social.json) independently of the network; the live protocol needs networking to be up.
+// ---------------------------------------------------------------------------
+
+// One address-book entry. State is the friendship lifecycle: pending (we asked) / incoming (they asked) /
+// accepted (mutual) / blocked. Online + LastSeen come from presence pings.
+struct Contact {
+    std::string PeerID;
+    std::string Nick;
+    std::string PicCID;
+    std::string State;          // "pending" | "incoming" | "accepted" | "blocked"
+    bool        Online   = false;
+    long long   LastSeen = 0;   // unix-ms, 0 = never
+};
+struct Profile { std::string Nick; std::string PicCID; };
+
+// This node's shareable friend code (its libp2p peer ID), "" if offline.
+std::string FriendCode();
+// This node's own profile (nickname + profile-picture content CID).
+Profile GetProfile();
+bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string *Error = nullptr);
+// Every contact (any state), unordered.
+std::vector<Contact> FriendList();
+// Send a friend request to a peer ID (records it as pending + notifies them with our profile).
+bool FriendAdd(const std::string &PeerID, const std::string &Note = std::string(), std::string *Error = nullptr);
+// Accept an incoming request (marks accepted + notifies the peer with our profile).
+bool FriendAccept(const std::string &PeerID, std::string *Error = nullptr);
+// Decline/unfriend (removes locally + best-effort notifies the peer).
+bool FriendDecline(const std::string &PeerID, std::string *Error = nullptr);
+// Block a peer (drops all their traffic; no notification).
+bool FriendBlock(const std::string &PeerID, std::string *Error = nullptr);
+// Remove a contact entirely (local only).
+bool FriendRemove(const std::string &PeerID);
+// Actively probe reachability now: 1 online, 0 offline, -1 n/a (offline node).
+int FriendPing(const std::string &PeerID);
+
+// Inbound friend event (mirrors friend.go evFriend*). Delivered on a node thread; the FriendsManager marshals it
+// to the GUI thread as Qt signals.
+struct FriendEvent {
+    enum Kind { Request, Accept, Decline, Presence, Profile, Removed } Kind;
+    Contact C;   // the affected contact; for Removed only PeerID is populated
+};
+using FriendCallback = std::function<void(const FriendEvent &)>;
+void SetFriendCallback(FriendCallback Callback);
+
 } // namespace IpfsWrapper
 
 // ---------------------------------------------------------------------------
@@ -195,6 +243,29 @@ signals:
 
 private:
     explicit IpfsManager(QObject * parent = nullptr);
+};
+
+// ---------------------------------------------------------------------------
+// FriendsManager — a GUI-thread QObject that relays IpfsWrapper friend events (which fire on a node thread) as Qt
+// signals. A single shared instance (instance()) installs the friend callback once; the Friends UI + session layer
+// connect to these signals. Mutations go through IpfsWrapper's free functions.
+// ---------------------------------------------------------------------------
+class FriendsManager : public QObject
+{
+    Q_OBJECT
+public:
+    static FriendsManager * instance();
+
+signals:
+    void friendRequest(QString peer, QString nick, QString pic);   // someone wants to be our friend
+    void friendAccepted(QString peer, QString nick, QString pic);  // a request we sent was accepted (or crossed)
+    void friendDeclined(QString peer);                             // declined / unfriended by the peer
+    void friendPresence(QString peer, bool online);                // a friend's reachability changed
+    void friendProfile(QString peer, QString nick, QString pic);   // a friend updated their nickname/picture
+    void friendRemoved(QString peer);                              // local removal (echoed for UI symmetry)
+
+private:
+    explicit FriendsManager(QObject * parent = nullptr);
 };
 
 #endif // IPFSWRAPPER_H

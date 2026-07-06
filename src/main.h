@@ -66,6 +66,13 @@ struct LaunchParameters
     std::string PublishCidDir;                                           //--publish-cid <dir>: recursively add a folder to IPFS, print its folder CID (for add-by-CID), then exit
     std::string PublishMetaSrc;                                          //--publish-meta <dir> [<staging>]: mint a JSON-only Meta-CID (bundle or collection), print it, then exit
     std::string PublishMetaStaging;                                      //optional staging dir for --publish-meta (persistent — the Meta-CID seeds from there); default <src>.meta
+    // ---- friends / multiplayer social layer (headless test harness) ----
+    bool PrintFriendCode = false;                                        //--friend-code: print this node's shareable friend code (peer ID), then exit
+    bool FriendListOnly = false;                                         //--friend-ls: print the address book (contacts + state), then exit
+    std::string FriendAddCode;                                          //--friend-add <CODE>: send a friend request to this peer ID, observe, then exit
+    bool FriendServe = false;                                           //--friend-serve: stay online, auto-accept incoming requests, observe events, then exit
+    std::string FriendNick;                                            //--friend-nick <NICK>: set this node's profile nickname before add/serve
+    int FriendSecs = 30;                                               //--friend-secs <N>: how long the add/serve handlers stay online observing (default 30)
 };
 
 int main(int argc, char *argv[]);

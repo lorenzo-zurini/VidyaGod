@@ -42,6 +42,24 @@ void VgRequestCancel(const char *cid);
 void VgClearCancel(const char *cid);
 void VgSetTransferCb(VgTransferCb cb);
 
+// ---- friends / multiplayer social layer (see VidyaGodIPFS/social.go + friend.go) ----
+// Inbound friend event: kind mirrors friend.go's evFriend* (0=request 1=accept 2=decline 3=presence 4=profile
+// 5=removed); json is the affected contact ({peer,nick,pic,state,online,seen}). Invoked on a node goroutine — the
+// C++ side marshals to the GUI thread.
+typedef void (*VgFriendCb)(int kind, const char *json);
+
+int  VgFriendCode(char **outId);                       // this node's shareable friend code (= its peer ID)
+int  VgSetProfile(const char *nick, const char *picCid, char **errOut);
+int  VgGetProfile(char **outJson);                     // {"nick":..,"pic":..}
+int  VgFriendList(char **outJson);                     // JSON array of contacts
+int  VgFriendAdd(const char *peerID, const char *note, char **errOut);   // send a friend request
+int  VgFriendAccept(const char *peerID, char **errOut);
+int  VgFriendDecline(const char *peerID, char **errOut);
+int  VgFriendBlock(const char *peerID, char **errOut);
+int  VgFriendRemove(const char *peerID);
+int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
+void VgSetFriendCb(VgFriendCb cb);
+
 void VgFree(char *p);   // free a char* returned through an out-param
 
 } // extern "C"

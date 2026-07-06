@@ -254,6 +254,8 @@ int main(int argc, char *argv[])
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty()
+        || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
+        || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || !LaunchParameters.LaunchNodeId.empty();
     if (HeadlessNeedsNode)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
@@ -287,6 +289,82 @@ int main(int argc, char *argv[])
         const bool Ok = IpfsWrapper::Unpin(LaunchParameters.UnpinCid);
         LogOut("main.cpp", (Ok ? "Unpinned " : "Unpin failed / not pinned: ") + LaunchParameters.UnpinCid);
         return Ok ? 0 : 1;
+    }
+
+    //HEADLESS: print this node's shareable friend code (its peer ID), then exit.
+    if (LaunchParameters.PrintFriendCode)
+    {
+        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogOut("main.cpp", "FriendCode: " + IpfsWrapper::FriendCode());
+        std::cout << IpfsWrapper::FriendCode() << "\n";   // machine-readable on stdout
+        return 0;
+    }
+
+    //HEADLESS: print the address book (contacts + friendship state), then exit.
+    if (LaunchParameters.FriendListOnly)
+    {
+        const std::vector<IpfsWrapper::Contact> Cs = IpfsWrapper::FriendList();
+        LogOut("main.cpp", "Contacts: " + std::to_string(Cs.size()));
+        for (const auto &C : Cs)
+            LogOut("main.cpp", "  " + C.State + "  " + C.PeerID + "  nick='" + C.Nick + "'"
+                   + (C.Online ? "  [online]" : ""));
+        return 0;
+    }
+
+    //HEADLESS friends test harness: --friend-serve (stay online, auto-accept incoming) and --friend-add <CODE> (send a
+    //request). Both warm the node online, optionally --connect a known peer for a deterministic direct link (no DHT
+    //discovery needed over e.g. WireGuard), set our --friend-nick, then poll the address book for --friend-secs
+    //seconds — auto-accepting any incoming request and logging state changes — before printing the final book. This
+    //lets two machines complete a real mutual-consent handshake headlessly (see [[reference_headless_e2e_testing]]).
+    if (LaunchParameters.FriendServe || !LaunchParameters.FriendAddCode.empty())
+    {
+        for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 1; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!LaunchParameters.ConnectAddr.empty())
+        {
+            const bool Ok = IpfsWrapper::Connect(LaunchParameters.ConnectAddr);
+            LogOut("main.cpp", std::string("direct connect to ") + LaunchParameters.ConnectAddr + (Ok ? " : ok" : " : FAILED"));
+        }
+        if (!LaunchParameters.FriendNick.empty())
+            IpfsWrapper::SetProfile(LaunchParameters.FriendNick, std::string());
+        LogOut("main.cpp", std::string("friends: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::FriendCode());
+        if (!LaunchParameters.FriendAddCode.empty())
+        {
+            std::string Err;
+            const bool Ok = IpfsWrapper::FriendAdd(LaunchParameters.FriendAddCode, "hello from vidyagod", &Err);
+            LogOut("main.cpp", Ok ? ("friend request sent to " + LaunchParameters.FriendAddCode)
+                                  : ("friend request FAILED: " + Err));
+        }
+        std::map<std::string, std::string> LastState;   // peer → last-seen state, to log transitions
+        for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
+        {
+            for (const auto &C : IpfsWrapper::FriendList())
+            {
+                if (C.State == "incoming")   // auto-accept any inbound request
+                {
+                    std::string Err;
+                    if (IpfsWrapper::FriendAccept(C.PeerID, &Err))
+                        LogOut("main.cpp", "auto-accepted incoming request from " + C.PeerID + " ('" + C.Nick + "')");
+                }
+                if (LastState[C.PeerID] != C.State)
+                {
+                    LogOut("main.cpp", "contact " + C.PeerID + " -> " + C.State + " ('" + C.Nick + "')");
+                    LastState[C.PeerID] = C.State;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        LogOut("main.cpp", "final address book:");
+        int Accepted = 0;
+        for (const auto &C : IpfsWrapper::FriendList())
+        {
+            if (C.State == "accepted") ++Accepted;
+            LogOut("main.cpp", "  " + C.State + "  " + C.PeerID + "  nick='" + C.Nick + "'");
+        }
+        LogSucc("main.cpp", "friends handler done — " + std::to_string(Accepted) + " accepted friend(s)");
+        return 0;
     }
 
     //HEADLESS: fetch a single CID to a destination path then exit — a download throughput probe (any public/private
@@ -828,6 +906,34 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.UnpinCid         = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--friend-code")
+        {
+            RuntimeParameters.PrintFriendCode  = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--friend-ls")
+        {
+            RuntimeParameters.FriendListOnly   = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--friend-add" && i + 1 < argc)
+        {
+            RuntimeParameters.FriendAddCode    = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--friend-serve")
+        {
+            RuntimeParameters.FriendServe      = true;
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--friend-nick" && i + 1 < argc)
+        {
+            RuntimeParameters.FriendNick       = argv[++i];
+        }
+        else if (arg == "--friend-secs" && i + 1 < argc)
+        {
+            RuntimeParameters.FriendSecs       = std::max(1, std::atoi(argv[++i]));
         }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
         {

@@ -281,6 +281,10 @@ add_gui_test(test_ipfsmodel)
 add_gui_test(test_tabs)
 add_gui_test(test_authoringsession)
 add_gui_test(test_deltatree)
+add_gui_test(test_friends)
+# The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
+# switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
+set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1")
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
 add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)
