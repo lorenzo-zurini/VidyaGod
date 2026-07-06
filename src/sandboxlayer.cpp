@@ -87,7 +87,9 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     // also unshares the net ns and keeps CAP_NET_ADMIN so the init can bring up the overlay TUN there.
     A << "--die-with-parent" << "--unshare-user" << "--unshare-pid" << "--unshare-ipc"
       << "--cap-add" << "CAP_SYS_ADMIN";
-    if (Isolated) A << "--unshare-net" << "--cap-add" << "CAP_NET_ADMIN";
+    // Isolated net: keep CAP_NET_ADMIN (bring up the overlay TUN) + CAP_NET_RAW (the game's own sockets, incl. ICMP for
+    // ping) — both are namespaced to the sandbox's netns, powerless outside it.
+    if (Isolated) A << "--unshare-net" << "--cap-add" << "CAP_NET_ADMIN" << "--cap-add" << "CAP_NET_RAW";
     A << "--ro-bind" << "/" << "/"            // whole host READ-ONLY (native apps can't write the system)
       << "--dev-bind" << "/dev" << "/dev"     // GPU (/dev/dri) + /dev/fuse + /dev/net/tun
       << "--proc" << "/proc";

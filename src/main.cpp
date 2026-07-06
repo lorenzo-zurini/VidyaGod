@@ -18,6 +18,7 @@
 #include <thread>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 //Single-instance guard. Opens (creating if needed) a lock file under ~/.VidyaGod and takes an
@@ -111,6 +112,58 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
     J["UnifiedRuntime"]    = CP.UnifiedRuntime;
     J["SubComponentsArray"]= CP.SubComponentsArray;
     return J;
+}
+
+//Headless "play together" capstone: bring the overlay up inside a NESTED sandbox (the real launch path, not the
+//root-requiring host TUN) and ping the peer's vIP THROUGH the tunnel. Spawns bwrap running the sandbox-init, which
+//creates + addresses the TUN inside the sandbox netns and hands its fd to our libp2p forwarder; the sandboxed shell
+//then pings the peer. Returns the ping's exit code (0 = replies received = packets crossed the tunnel). This is what
+//a real session game launch does, with `ping` standing in for the game. Rootless (CAP_NET_ADMIN via the userns).
+static int RunOverlaySandboxPing(const std::string &Sid)
+{
+    const IpfsWrapper::Session R = IpfsWrapper::SessionRoster(Sid);
+    const std::string Me = IpfsWrapper::FriendCode();
+    std::string MyVip, PeerVip;
+    for (const auto &M : R.Members) { if (M.PeerID == Me) MyVip = M.VIP; else if (PeerVip.empty()) PeerVip = M.VIP; }
+    if (MyVip.empty() || PeerVip.empty()) { LogErr("main.cpp", "overlay: missing self/peer vIP in the roster"); return -1; }
+    if (!SandboxLayer::Available()) { LogErr("main.cpp", "overlay: sandbox unavailable (no bwrap / userns disabled)"); return -1; }
+
+    std::string Mask = "24";
+    if (auto s = R.Subnet.rfind('/'); s != std::string::npos) Mask = R.Subnet.substr(s + 1);
+    const std::string Sock = "/tmp/vgov-" + Sid + ".sock";
+
+    std::string Err;
+    if (!IpfsWrapper::OverlayServe(Sid, Sock, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
+
+    SandboxLayer::Options O;
+    O.Enabled = true;
+    O.Net     = SandboxLayer::NetMode::Isolated;
+    O.TunName = "vg-" + Sid.substr(0, std::min<std::size_t>(Sid.size(), 6));
+    O.TunCidr = MyVip + "/" + Mask;
+    O.TunSock = Sock;
+    std::string Program = "/bin/sh";
+    QStringList Args{ "-c",
+        QString::fromStdString("ip -o addr show 2>/dev/null | sed 's/^/[sandbox] /'; "
+                               "echo '[sandbox] pinging peer " + PeerVip + " over the overlay…'; "
+                               "sleep 5; ping -c 10 -W 3 " + PeerVip) };
+    SandboxLayer::Wrap(O, Program, Args);   // → Program="bwrap", Args=full bwrap argv ending in `-- /bin/sh -c …`
+
+    std::vector<std::string> Argv{ Program };
+    for (const QString &A : Args) Argv.push_back(A.toStdString());
+    std::vector<char *> C;
+    for (auto &s : Argv) C.push_back(const_cast<char *>(s.c_str()));
+    C.push_back(nullptr);
+
+    LogOut("main.cpp", "overlay sandbox up (tun " + O.TunCidr + ") — pinging peer " + PeerVip + " through the tunnel…");
+    int status = 0;
+    pid_t pid = fork();
+    if (pid == 0) { execvp(C[0], C.data()); _exit(127); }
+    if (pid > 0) waitpid(pid, &status, 0);
+    IpfsWrapper::OverlayStop();
+    const int rc = (pid > 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    if (rc == 0) LogSucc("main.cpp", "OVERLAY PING SUCCEEDED — packets crossed the tunnel to " + PeerVip);
+    else         LogErr ("main.cpp", "overlay ping did not get replies (rc=" + std::to_string(rc) + ")");
+    return rc;
 }
 
 int main(int argc, char *argv[])
@@ -430,17 +483,18 @@ int main(int argc, char *argv[])
             if (LaunchParameters.OverlayUp && !OverlayTried && R.Members.size() >= 2)
             {
                 OverlayTried = true;
-                std::string Err;
-                const std::string Iface = IpfsWrapper::OverlayStart(Sid, &Err);
-                if (Iface.empty())
-                    LogErr("main.cpp", "overlay start failed (need CAP_NET_ADMIN? run with sudo/setcap): " + Err);
+                //Preferred: the NESTED-sandbox path (what a real session game launch does) — brings the TUN up inside a
+                //rootless bwrap netns and pings the peer through the tunnel. Falls back to the host TUN (needs root) if
+                //bwrap can't sandbox here.
+                if (SandboxLayer::Available())
+                    RunOverlaySandboxPing(Sid);
                 else
                 {
-                    OverlayUp = true;
-                    LogSucc("main.cpp", "overlay TUN up on " + Iface + " — try pinging a peer's vIP from the roster above");
-                    //Show the CustomVars a game launch would inject to join this session (Goldberg reads these).
-                    for (const auto &[K, V] : IpfsWrapper::SessionLaunchVars(Sid))
-                        LogOut("main.cpp", "  launch var  " + K + "=" + V);
+                    std::string Err;
+                    const std::string Iface = IpfsWrapper::OverlayStart(Sid, &Err);
+                    if (Iface.empty())
+                        LogErr("main.cpp", "overlay start failed (no bwrap; host TUN needs CAP_NET_ADMIN/sudo): " + Err);
+                    else { OverlayUp = true; LogSucc("main.cpp", "host overlay TUN up on " + Iface + " — ping a peer's vIP"); }
                 }
             }
             std::this_thread::sleep_for(std::chrono::seconds(1));
