@@ -73,6 +73,9 @@ struct LaunchParameters
     bool FriendServe = false;                                           //--friend-serve: stay online, auto-accept incoming requests, observe events, then exit
     std::string FriendNick;                                            //--friend-nick <NICK>: set this node's profile nickname before add/serve
     int FriendSecs = 30;                                               //--friend-secs <N>: how long the add/serve handlers stay online observing (default 30)
+    std::string SessionHostGame;                                       //--session-host <GAMECID>: create+host a session for this game, print its id, observe the roster, then exit
+    std::string SessionJoinSid;                                        //--session-join <SID> <HOSTCODE>: join a hosted session (needs the host peer id), observe the roster, then exit
+    std::string SessionJoinHost;                                       //host peer id for --session-join (the 2nd arg)
 };
 
 int main(int argc, char *argv[]);

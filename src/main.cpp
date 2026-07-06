@@ -256,6 +256,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.PublishMetaSrc.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
+        || !LaunchParameters.SessionHostGame.empty() || !LaunchParameters.SessionJoinSid.empty()
         || !LaunchParameters.LaunchNodeId.empty();
     if (HeadlessNeedsNode)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
@@ -364,6 +365,61 @@ int main(int argc, char *argv[])
             LogOut("main.cpp", "  " + C.State + "  " + C.PeerID + "  nick='" + C.Nick + "'");
         }
         LogSucc("main.cpp", "friends handler done — " + std::to_string(Accepted) + " accepted friend(s)");
+        return 0;
+    }
+
+    //HEADLESS multiplayer session harness: --session-host <GAMECID> creates+hosts a session; --session-join <SID>
+    //<HOSTCODE> joins one. Both warm online, optionally --connect a known peer (deterministic link over WireGuard),
+    //then poll the roster for --friend-secs seconds, printing each member's assigned overlay vIP + ready state. Lets
+    //two machines form a real session mesh headlessly before the packet tunnel exists.
+    if (!LaunchParameters.SessionHostGame.empty() || !LaunchParameters.SessionJoinSid.empty())
+    {
+        for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 1; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!LaunchParameters.ConnectAddr.empty())
+        {
+            const bool Ok = IpfsWrapper::Connect(LaunchParameters.ConnectAddr);
+            LogOut("main.cpp", std::string("direct connect to ") + LaunchParameters.ConnectAddr + (Ok ? " : ok" : " : FAILED"));
+        }
+        if (!LaunchParameters.FriendNick.empty())
+            IpfsWrapper::SetProfile(LaunchParameters.FriendNick, std::string());
+        LogOut("main.cpp", std::string("session: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::FriendCode());
+
+        std::string Sid;
+        if (!LaunchParameters.SessionHostGame.empty())
+        {
+            std::string Err;
+            const IpfsWrapper::Session S = IpfsWrapper::SessionCreate(LaunchParameters.SessionHostGame, &Err);
+            if (S.Id.empty()) { LogErr("main.cpp", "session create failed: " + Err); return 1; }
+            Sid = S.Id;
+            LogSucc("main.cpp", "hosting session " + S.Id + " (subnet " + S.Subnet + ") for game " + S.Game);
+            LogOut("main.cpp", "  join with:  --session-join " + S.Id + " " + IpfsWrapper::FriendCode());
+        }
+        else
+        {
+            Sid = LaunchParameters.SessionJoinSid;
+            std::string Err;
+            const bool Ok = IpfsWrapper::SessionJoin(Sid, LaunchParameters.SessionJoinHost, &Err);
+            LogOut("main.cpp", Ok ? ("join request sent for session " + Sid) : ("join FAILED: " + Err));
+        }
+
+        std::string LastRoster;   // print only when the roster changes
+        for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
+        {
+            const IpfsWrapper::Session R = IpfsWrapper::SessionRoster(Sid);
+            std::string Now = R.Subnet + " |";
+            for (const auto &M : R.Members)
+                Now += " " + (M.Nick.empty() ? M.PeerID.substr(0, 8) : M.Nick) + "@" + M.VIP + (M.Ready ? "(ready)" : "");
+            if (Now != LastRoster)
+            {
+                LogOut("main.cpp", "roster: " + Now);
+                LastRoster = Now;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        const IpfsWrapper::Session Final = IpfsWrapper::SessionRoster(Sid);
+        LogSucc("main.cpp", "session handler done — " + std::to_string(Final.Members.size()) + " member(s) in " + Sid);
         return 0;
     }
 
@@ -934,6 +990,17 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--friend-secs" && i + 1 < argc)
         {
             RuntimeParameters.FriendSecs       = std::max(1, std::atoi(argv[++i]));
+        }
+        else if (arg == "--session-host" && i + 1 < argc)
+        {
+            RuntimeParameters.SessionHostGame  = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--session-join" && i + 2 < argc)
+        {
+            RuntimeParameters.SessionJoinSid   = argv[++i];
+            RuntimeParameters.SessionJoinHost  = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
         {

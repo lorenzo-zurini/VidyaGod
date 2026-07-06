@@ -13,9 +13,10 @@
 
 #include "ipfswrapper.h"
 
-// The node→C++ friend-event bridge (extern "C" in ipfswrapper.cpp). Calling it directly exercises the real
-// kind-mapping + JSON parsing + queued signal emission that FriendsManager installs.
+// The node→C++ event bridges (extern "C" in ipfswrapper.cpp). Calling them directly exercises the real kind-mapping +
+// JSON parsing + queued signal emission that FriendsManager / SessionManager install.
 extern "C" void IpfsNodeFriendCb(int kind, const char *json);
+extern "C" void IpfsNodeSessionCb(int kind, const char *json);
 
 class FriendsTest : public QObject
 {
@@ -81,6 +82,40 @@ private slots:
         IpfsNodeFriendCb(5, R"({"peer":"12D3KooWPal"})");                 // evFriendRemoved
         QVERIFY(Removed.wait(1000));
         QCOMPARE(Removed.first().at(0).toString(), QStringLiteral("12D3KooWPal"));
+    }
+
+    void session_offline_safety()
+    {
+        // Offline node (VIDYAGOD_IPFS_OFFLINE): no session service, so create fails gracefully and the list is empty.
+        QTemporaryDir Dir;
+        std::string Err;
+        QVERIFY(IpfsWrapper::StartNode((Dir.path() + "/ipfs").toStdString(), &Err));
+        QVERIFY(IpfsWrapper::SessionCreate("QmGame", &Err).Id.empty());   // offline → empty id
+        QVERIFY(IpfsWrapper::SessionList().empty());
+        IpfsWrapper::StopNode();
+    }
+
+    void sessionmanager_marshals_roster_and_ended()
+    {
+        SessionManager *SM = SessionManager::instance();
+        QVERIFY(SM);
+        QSignalSpy Roster(SM, &SessionManager::sessionRoster);
+        QSignalSpy Invite(SM, &SessionManager::sessionInvite);
+        QSignalSpy Ended(SM, &SessionManager::sessionEnded);
+
+        IpfsNodeSessionCb(0, R"({"id":"sid1","game":"QmG","host":"12D3KooWHost"})");            // evSessionInvite
+        QVERIFY(Invite.wait(1000));
+        QCOMPARE(Invite.first().at(0).toString(), QStringLiteral("sid1"));
+        QCOMPARE(Invite.first().at(2).toString(), QStringLiteral("12D3KooWHost"));
+
+        IpfsNodeSessionCb(1, R"({"id":"sid1","host":"12D3KooWHost","subnet":"10.66.7.0/24",
+                                 "members":[{"peer":"12D3KooWHost","vip":"10.66.7.1","ready":true}]})"); // evSessionRoster
+        QVERIFY(Roster.wait(1000));
+        QCOMPARE(Roster.first().at(0).toString(), QStringLiteral("sid1"));
+
+        IpfsNodeSessionCb(2, R"({"id":"sid1"})");                                                // evSessionEnded
+        QVERIFY(Ended.wait(1000));
+        QCOMPARE(Ended.first().at(0).toString(), QStringLiteral("sid1"));
     }
 };
 

@@ -60,6 +60,20 @@ int  VgFriendRemove(const char *peerID);
 int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
 void VgSetFriendCb(VgFriendCb cb);
 
+// ---- multiplayer session / lobby layer (see VidyaGodIPFS/session.go) ----
+// Inbound session event: kind mirrors session.go's evSession* (0=invite 1=roster 2=ended); json is the payload
+// (invite {id,game,host}; roster {id,host,game,subnet,members:[{peer,nick,vip,ready}]}; ended {id}).
+typedef void (*VgSessionCb)(int kind, const char *json);
+
+int  VgSessionCreate(const char *gameCid, char **outJson, char **errOut);  // host a session; returns its JSON
+int  VgSessionInvite(const char *sid, const char *peerID, char **errOut);  // invite a friend
+int  VgSessionJoin(const char *sid, const char *hostPeer, char **errOut);  // join a hosted session
+int  VgSessionLeave(const char *sid, char **errOut);
+int  VgSessionReady(const char *sid, int ready, char **errOut);
+int  VgSessionList(char **outJson);                    // JSON array of all sessions
+int  VgSessionRoster(const char *sid, char **outJson); // JSON of one session; -1 if unknown
+void VgSetSessionCb(VgSessionCb cb);
+
 void VgFree(char *p);   // free a char* returned through an out-param
 
 } // extern "C"

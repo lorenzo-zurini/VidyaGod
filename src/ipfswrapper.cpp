@@ -482,6 +482,106 @@ int FriendPing(const std::string &PeerID)
     return VgFriendPing(PeerID.c_str());
 }
 
+// ----- multiplayer session / lobby layer -----
+
+static Member MemberFromJson(const nlohmann::json &J)
+{
+    Member M;
+    M.PeerID = J.value("peer", std::string());
+    M.Nick   = J.value("nick", std::string());
+    M.VIP    = J.value("vip",  std::string());
+    M.Ready  = J.value("ready", false);
+    return M;
+}
+
+static Session SessionFromJson(const nlohmann::json &J)
+{
+    Session S;
+    S.Id     = J.value("id",     std::string());
+    S.Host   = J.value("host",   std::string());
+    S.Game   = J.value("game",   std::string());
+    S.Subnet = J.value("subnet", std::string());
+    S.AmHost = J.value("amHost", false);
+    if (J.contains("members") && J["members"].is_array())
+        for (const auto &M : J["members"]) S.Members.push_back(MemberFromJson(M));
+    return S;
+}
+
+// Sink for inbound session events (installed by SessionManager). Invoked on a node thread.
+static SessionCallback g_SessionCb;
+void SetSessionCallback(SessionCallback Callback) { g_SessionCb = std::move(Callback); }
+
+extern "C" void IpfsNodeSessionCb(int kind, const char *json)
+{
+    if (!g_SessionCb) return;
+    SessionEvent E;
+    E.Kind = kind == 0 ? SessionEvent::Invite : kind == 1 ? SessionEvent::Roster : SessionEvent::Ended;
+    try {
+        const auto D = nlohmann::json::parse(json ? json : "{}");
+        E.Id   = D.value("id",   std::string());
+        E.Game = D.value("game", std::string());
+        E.Host = D.value("host", std::string());
+        if (E.Kind == SessionEvent::Roster) E.Snapshot = SessionFromJson(D);
+    } catch (...) {}
+    g_SessionCb(E);
+}
+
+Session SessionCreate(const std::string &GameCID, std::string *Error)
+{
+    Session S;
+    char *J = nullptr, *Err = nullptr;
+    const int Rc = VgSessionCreate(GameCID.c_str(), &J, &Err);
+    const std::string Js = TakeStr(J);
+    const std::string E  = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = E.empty() ? "session create failed" : E; return S; }
+    try { S = SessionFromJson(nlohmann::json::parse(Js)); } catch (...) {}
+    return S;
+}
+
+bool SessionInvite(const std::string &Sid, const std::string &PeerID, std::string *Error)
+{
+    char *Err = nullptr;
+    return FriendCall(VgSessionInvite(Sid.c_str(), PeerID.c_str(), &Err), Err, Error, "invite failed");
+}
+
+bool SessionJoin(const std::string &Sid, const std::string &HostPeer, std::string *Error)
+{
+    char *Err = nullptr;
+    return FriendCall(VgSessionJoin(Sid.c_str(), HostPeer.c_str(), &Err), Err, Error, "join failed");
+}
+
+bool SessionLeave(const std::string &Sid, std::string *Error)
+{
+    char *Err = nullptr;
+    return FriendCall(VgSessionLeave(Sid.c_str(), &Err), Err, Error, "leave failed");
+}
+
+bool SessionReady(const std::string &Sid, bool Ready, std::string *Error)
+{
+    char *Err = nullptr;
+    return FriendCall(VgSessionReady(Sid.c_str(), Ready ? 1 : 0, &Err), Err, Error, "ready failed");
+}
+
+std::vector<Session> SessionList()
+{
+    std::vector<Session> Out;
+    char *J = nullptr;
+    if (VgSessionList(&J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try { for (const auto &S : nlohmann::json::parse(Js)) Out.push_back(SessionFromJson(S)); } catch (...) {}
+    return Out;
+}
+
+Session SessionRoster(const std::string &Sid)
+{
+    Session S;
+    char *J = nullptr;
+    if (VgSessionRoster(Sid.c_str(), &J) != 0) { TakeStr(J); return S; }
+    const std::string Js = TakeStr(J);
+    try { S = SessionFromJson(nlohmann::json::parse(Js)); } catch (...) {}
+    return S;
+}
+
 } // namespace IpfsWrapper
 
 // ---------------------------------------------------------------------------
@@ -588,5 +688,36 @@ FriendsManager::FriendsManager(QObject * parent) : QObject(parent)
 FriendsManager * FriendsManager::instance()
 {
     static FriendsManager * Inst = new FriendsManager(qApp);
+    return Inst;
+}
+
+// ---------------------------------------------------------------------------
+// SessionManager
+// ---------------------------------------------------------------------------
+SessionManager::SessionManager(QObject * parent) : QObject(parent)
+{
+    IpfsWrapper::SetSessionCallback([this](const IpfsWrapper::SessionEvent &E) {
+        const QString Id   = QString::fromStdString(E.Id);
+        const QString Game = QString::fromStdString(E.Game);
+        const QString Host = QString::fromStdString(E.Host);
+        switch (E.Kind)
+        {
+        case IpfsWrapper::SessionEvent::Invite:
+            QMetaObject::invokeMethod(this, [this, Id, Game, Host]{ emit sessionInvite(Id, Game, Host); }, Qt::QueuedConnection);
+            break;
+        case IpfsWrapper::SessionEvent::Roster:
+            QMetaObject::invokeMethod(this, [this, Id]{ emit sessionRoster(Id); }, Qt::QueuedConnection);
+            break;
+        case IpfsWrapper::SessionEvent::Ended:
+            QMetaObject::invokeMethod(this, [this, Id]{ emit sessionEnded(Id); }, Qt::QueuedConnection);
+            break;
+        }
+    });
+    VgSetSessionCb(&IpfsWrapper::IpfsNodeSessionCb);
+}
+
+SessionManager * SessionManager::instance()
+{
+    static SessionManager * Inst = new SessionManager(qApp);
     return Inst;
 }
