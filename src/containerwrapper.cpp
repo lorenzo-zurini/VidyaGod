@@ -1,6 +1,7 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
 #include "processenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
+#include "sandboxlayer.h"    // optional bubblewrap wrap of the launched game (opt-in via VIDYAGOD_SANDBOX)
 
 #include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
 
@@ -336,6 +337,26 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     {
         FinalWorkDir = ContainerParams.UsesVFS ? ContainerParams.RuntimePath : ContainerParams.PackagePath;
         LogOut("ContainerWrapper::Execute", "WorkDirPath does not exist, falling back to " + FinalWorkDir.string());
+    }
+
+    //----- SANDBOX: optionally wrap the whole command in bubblewrap (opt-in via the VIDYAGOD_SANDBOX custom variable;
+    //the multiplayer "play together" flow sets it). Read-only host root + writable runtime/home + passthrough for
+    //GPU/display/audio, and (Isolated mode) an unshared net namespace for the overlay TUN. Not applied under an
+    //OverrideExe (install/tooling runs unsandboxed). Default OFF → every normal launch is byte-identical. -----
+    if (!Override)
+    {
+        const SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+        if (SbOpts.Enabled)
+        {
+            if (SandboxLayer::Available())
+            {
+                SandboxLayer::Wrap(SbOpts, Program, Arguments);
+                LogOut("ContainerWrapper::Execute", std::string("Sandbox: bubblewrap (net ")
+                       + (SbOpts.Net == SandboxLayer::NetMode::Isolated ? "isolated" : "host") + ") — " + Program);
+            }
+            else
+                LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but bubblewrap (bwrap) is not installed — running unsandboxed.");
+        }
     }
 
     QProcess RunProcess;
