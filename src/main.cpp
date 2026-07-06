@@ -7,6 +7,7 @@
 #include "gamepicker.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
+#include "sandboxlayer.h"
 #include "vgipfsapi.h"
 
 #include <QComboBox>
@@ -114,6 +115,13 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
 
 int main(int argc, char *argv[])
 {
+    //IN-SANDBOX INIT: when invoked as `VidyaGod --sandbox-init …` (bwrap's payload inside a nested sandbox), do the
+    //low-level setup (mount vidyagodfs, bring up the overlay TUN + hand its fd to the parent) and execvp the game.
+    //Must be the FIRST thing in main() — before the single-instance lock, config init, or any Qt — because this is
+    //PID ~1 of a throwaway namespace, not a normal VidyaGod run.
+    if (SandboxLayer::IsSandboxInit(argc, argv))
+        return SandboxLayer::RunSandboxInit(argc, argv);
+
     //Parse command line arguments and initialize RuntimeParameters struct.
     //Must happen before QApplication so headless runs never touch the display.
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);

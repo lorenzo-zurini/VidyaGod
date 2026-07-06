@@ -184,6 +184,12 @@ public:
     //recurse into real saves.
     std::vector<std::filesystem::path> CleanupPersistPaths;
 
+    //SANDBOX (opt-in bubblewrap): the vidyagodfs (spec, mountpoint) pairs to RE-mount inside the sandbox namespace.
+    //When sandboxed, BuildContainerRuntime still mounts on the host (to apply OVERRIDE edits into the writelayer),
+    //then unmounts and records the specs here; Execute's bwrap runs `--sandbox-init` which mounts them inside the
+    //game's own mount namespace (so the composed FS is scoped to the game, invisible to the host, self-cleaning).
+    std::vector<std::pair<std::string, std::string>> SandboxMounts;
+
     //Returns a map of all ContainerParams fields keyed by their %VARIABLE% token names.
     //Used by StringVariableSubstitution to expand tokens in runner ENV, args, and subcomponent paths.
     std::map<std::string, std::string> GetVariablesMap();

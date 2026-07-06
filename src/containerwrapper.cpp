@@ -2,8 +2,11 @@
 #include "commonutils.h"
 #include "processenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
 #include "sandboxlayer.h"    // optional bubblewrap wrap of the launched game (opt-in via VIDYAGOD_SANDBOX)
+#include "ipfswrapper.h"     // IpfsWrapper::OverlayServe/OverlayStop (nested-sandbox overlay TUN handoff)
 
 #include <numeric>           // std::accumulate (WINEDLLOVERRIDES join)
+#include <algorithm>         // std::min (session-id truncation for the TUN name)
+#include <cstdlib>           // ::getenv (HOME for the writable bind)
 
 #include <QThread>
 #include <QMetaObject>
@@ -139,6 +142,24 @@ bool ContainerWrapper::BuildContainerRuntime()
     {
         FileEdits::ProcessDLLOverrides(this->ContainerParams);
         RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams);
+    }
+
+    //----- SANDBOX prep: the OVERRIDE edits above were applied through the host mount → the writelayer now holds them.
+    //Hand the spec(s) to the sandbox to RE-mount inside its own namespace, and unmount them here so the host no longer
+    //carries the mount (bwrap's --ro-bind / / would otherwise recursively inherit it, and the game must see only the
+    //in-sandbox mount). The writelayer + spec files persist on disk, so the sandbox re-mount is identical. -----
+    if (SandboxLayer::Requested(ContainerParams))
+    {
+        auto Defer = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){
+            if (!std::filesystem::exists(SpecPath)) return;
+            ContainerParams.SandboxMounts.emplace_back(SpecPath.string(), Mnt.string());
+            RunCommand("fusermount3", {"-uz", Mnt.string()});   // lazy-detach; the writelayer host dir stays intact
+        };
+        Defer(ContainerParams.TempPath / "vidyagodfs.spec.json", ContainerParams.RuntimePath);
+        if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime && !ContainerParams.RunnerLayers.empty())
+            Defer(ContainerParams.TempPath / "vidyagodfs.runner.spec.json", ContainerParams.RunnerMountPath);
+        LogOut("ContainerWrapper::BuildContainerRuntime",
+               "Sandbox: deferred " + std::to_string(ContainerParams.SandboxMounts.size()) + " mount(s) to the namespace.");
     }
 
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
@@ -339,23 +360,53 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         LogOut("ContainerWrapper::Execute", "WorkDirPath does not exist, falling back to " + FinalWorkDir.string());
     }
 
-    //----- SANDBOX: optionally wrap the whole command in bubblewrap (opt-in via the VIDYAGOD_SANDBOX custom variable;
-    //the multiplayer "play together" flow sets it). Read-only host root + writable runtime/home + passthrough for
-    //GPU/display/audio, and (Isolated mode) an unshared net namespace for the overlay TUN. Not applied under an
-    //OverrideExe (install/tooling runs unsandboxed). Default OFF → every normal launch is byte-identical. -----
+    //----- SANDBOX (opt-in VIDYAGOD_SANDBOX): re-invoke ourselves as the nested `--sandbox-init` inside one hermetic
+    //bwrap namespace, which re-mounts the vidyagodfs spec(s) (deferred + host-unmounted in BuildContainerRuntime),
+    //optionally brings up the overlay TUN, then execs the game. RO host root + writable runtime/home; the composed FS
+    //and the virtual LAN live entirely inside the sandbox. Not applied under an OverrideExe. Default OFF → byte-
+    //identical launch. -----
+    bool OverlayServing = false;
     if (!Override)
     {
-        const SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
-        if (SbOpts.Enabled)
+        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams);
+        if (SbOpts.Enabled && !SandboxLayer::Available())
+            LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but bubblewrap (bwrap) is not installed — running unsandboxed.");
+        else if (SbOpts.Enabled && ContainerParams.SandboxMounts.empty())
+            LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but no runtime mount was prepared — running unsandboxed.");
+        else if (SbOpts.Enabled)
         {
-            if (SandboxLayer::Available())
+            for (const auto &[Spec, Mnt] : ContainerParams.SandboxMounts)
+                SbOpts.Mounts.push_back({Spec, Mnt});
+            SbOpts.WritableBinds = { ContainerParams.TempPath.string(), ContainerParams.UserDataPath.string() };
+            if (const char *H = ::getenv("HOME")) SbOpts.WritableBinds.emplace_back(H);
+            SbOpts.WorkDir = ContainerParams.WorkDirPathComplete.string();
+
+            //Isolated + a session → bring up the overlay TUN inside the sandbox netns. Listen on a bound unix socket
+            //for the TUN fd the sandbox-init will hand back; pass the vIP + socket to the init.
+            auto Var = [&](const char *K){ auto It = ContainerParams.CustomVariables.find(K);
+                                           return It == ContainerParams.CustomVariables.end() ? std::string() : It->second; };
+            const std::string Sid = Var("VIDYAGOD_SESSION_ID"), SelfVip = Var("VIDYAGOD_SELF_VIP"), Subnet = Var("VIDYAGOD_SUBNET");
+            if (SbOpts.Net == SandboxLayer::NetMode::Isolated && !Sid.empty() && !SelfVip.empty())
             {
-                SandboxLayer::Wrap(SbOpts, Program, Arguments);
-                LogOut("ContainerWrapper::Execute", std::string("Sandbox: bubblewrap (net ")
-                       + (SbOpts.Net == SandboxLayer::NetMode::Isolated ? "isolated" : "host") + ") — " + Program);
+                const std::string Sock = (ContainerParams.TempPath / "overlay.sock").string();
+                std::string OErr;
+                if (IpfsWrapper::OverlayServe(Sid, Sock, &OErr))
+                {
+                    std::string Mask = "24";
+                    if (auto S = Subnet.rfind('/'); S != std::string::npos) Mask = Subnet.substr(S + 1);
+                    SbOpts.TunName = "vg-" + Sid.substr(0, std::min<std::size_t>(Sid.size(), 6));
+                    SbOpts.TunCidr = SelfVip + "/" + Mask;
+                    SbOpts.TunSock = Sock;
+                    OverlayServing = true;
+                }
+                else
+                    LogWarn("ContainerWrapper::Execute", "overlay serve failed (launching without the virtual LAN): " + OErr);
             }
-            else
-                LogWarn("ContainerWrapper::Execute", "VIDYAGOD_SANDBOX set but bubblewrap (bwrap) is not installed — running unsandboxed.");
+
+            SandboxLayer::Wrap(SbOpts, Program, Arguments);
+            LogOut("ContainerWrapper::Execute", std::string("Sandbox: nested bubblewrap (net ")
+                   + (SbOpts.Net == SandboxLayer::NetMode::Isolated ? "isolated" : "host") + ", "
+                   + std::to_string(SbOpts.Mounts.size()) + " mount(s)" + (OverlayServing ? ", overlay" : "") + ")");
         }
     }
 
@@ -383,6 +434,9 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
         QMutexLocker Locker(&ActiveRunMutex);
         ActiveRunProcess = nullptr;
     }
+
+    //Tear the overlay forwarder + its handoff socket down now the sandboxed game (and its in-sandbox TUN) are gone.
+    if (OverlayServing) IpfsWrapper::OverlayStop();
 
     //(Runner output was forwarded live to our stdout/stderr above — nothing buffered to print here.)
 

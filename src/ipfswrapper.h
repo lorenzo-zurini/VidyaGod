@@ -282,6 +282,9 @@ void SetSessionCallback(SessionCallback Callback);
 // the TUN interface name, "" on failure (with *Error). Needs CAP_NET_ADMIN — in production it runs inside the game's
 // bubblewrap netns. OverlayStop tears it down; OverlayActive reports whether it is forwarding.
 std::string OverlayStart(const std::string &Sid, std::string *Error = nullptr);
+// Nested-sandbox variant: configure the session's routes and listen on SockPath for the TUN fd that the in-sandbox
+// sandbox-init will hand back (it creates the TUN inside the game's own netns). Non-blocking. True on listen success.
+bool OverlayServe(const std::string &Sid, const std::string &SockPath, std::string *Error = nullptr);
 void OverlayStop();
 bool OverlayActive();
 

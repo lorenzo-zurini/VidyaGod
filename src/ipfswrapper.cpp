@@ -605,6 +605,15 @@ std::string OverlayStart(const std::string &Sid, std::string *Error)
     return N;
 }
 
+bool OverlayServe(const std::string &Sid, const std::string &SockPath, std::string *Error)
+{
+    char *Err = nullptr;
+    const int Rc = VgOverlayServe(Sid.c_str(), SockPath.c_str(), &Err);
+    const std::string E = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = E.empty() ? "overlay serve failed" : E; return false; }
+    return true;
+}
+
 void OverlayStop() { VgOverlayStop(); }
 bool OverlayActive() { return VgOverlayActive() != 0; }
 

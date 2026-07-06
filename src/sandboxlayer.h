@@ -2,6 +2,7 @@
 #define SANDBOXLAYER_H
 
 #include <string>
+#include <vector>
 #include <QStringList>
 
 struct ContainerParams;
@@ -24,17 +25,23 @@ namespace SandboxLayer {
 //              (fully scoped to the game — the end goal — but needs the TUN-in-netns step; see the .cpp note).
 enum class NetMode { Host, Isolated };
 
+// A vidyagodfs layer-spec the sandbox-init mounts INSIDE the namespace (spec written on the host in phase B).
+struct Mount { std::string SpecPath; std::string Mountpoint; };
+
 struct Options {
-    bool        Enabled = false;
-    NetMode     Net = NetMode::Host;
-    std::string RuntimeRoot;   // the mounted game runtime (vidyagodfs root) or package dir — kept writable
-    std::string HomeDir;       // the user's home / save dir — kept writable
+    bool                     Enabled = false;
+    NetMode                  Net = NetMode::Host;
+    std::vector<std::string> WritableBinds;   // host paths bound read-WRITE (TempPath, UserData, home) over the RO root
+    std::vector<Mount>       Mounts;          // vidyagodfs specs re-mounted inside the sandbox (game never sees the host mount)
+    std::string              WorkDir;         // the game's CWD (under a mountpoint) — init chdir's here after mounting
+    std::string              TunName, TunCidr, TunSock;   // overlay TUN (Isolated + a session); empty = none
 };
 
 // True if this launch requested the sandbox (VIDYAGOD_SANDBOX custom variable is truthy: on/true/1/yes).
 bool Requested(const ContainerParams &CP);
 
-// Build the sandbox Options from the resolved launch params (runtime root, home, network mode from VIDYAGOD_SANDBOX_NET).
+// Build the base sandbox Options (Enabled + Net) from the launch params; ContainerWrapper fills Mounts/WritableBinds/
+// WorkDir/Tun before calling Wrap.
 Options FromParams(const ContainerParams &CP);
 
 // True if the bwrap tool is available on the system (checked once).
@@ -44,6 +51,14 @@ bool Available();
 // argv ending in `-- <origProgram> <origArgs...>`. Pure string construction (no side effects) so it is unit-testable
 // without bwrap installed. The caller gates this on Available().
 void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments);
+
+// ---- the in-sandbox runtime (VidyaGod --sandbox-init …), implemented in sandboxinit.cpp ----
+// True if this process was invoked as the sandbox init (bwrap's payload).
+bool IsSandboxInit(int argc, char **argv);
+// Run the sandbox init: mount vidyagodfs layer-specs, bring up the overlay TUN + hand its fd to the parent, then
+// execvp the game. Never returns on success (becomes the game); returns an exit code on failure. Call FIRST in main(),
+// before any Qt.
+int RunSandboxInit(int argc, char **argv);
 
 } // namespace SandboxLayer
 

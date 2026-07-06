@@ -46,9 +46,6 @@ Options FromParams(const ContainerParams &CP)
     Options O;
     O.Enabled = Requested(CP);
     O.Net = (Var(CP, "VIDYAGOD_SANDBOX_NET") == "isolated") ? NetMode::Isolated : NetMode::Host;
-    // Keep the mounted runtime writable (the game reads/writes its VFS runtime); fall back to the package dir.
-    O.RuntimeRoot = (CP.UsesVFS && !CP.RuntimePath.empty()) ? CP.RuntimePath.string() : CP.PackagePath.string();
-    if (const char *H = ::getenv("HOME")) O.HomeDir = H;
     return O;
 }
 
@@ -58,48 +55,49 @@ bool Available()
     return Ok;
 }
 
+// Resolve this executable's path so the sandbox can re-invoke it as `--sandbox-init` (it's already visible via
+// --ro-bind / /).
+static std::string SelfExe()
+{
+    std::error_code Ec;
+    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", Ec);
+    return Ec ? std::string("VidyaGod") : Self.string();
+}
+
 void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
 {
     const QString OrigProgram = QString::fromStdString(Program);
     const QStringList OrigArgs = Arguments;
+    const bool Isolated = (Opts.Net == NetMode::Isolated);
 
     QStringList A;
-    auto Add = [&](std::initializer_list<const char *> Parts){ for (const char *P : Parts) A.append(QString::fromUtf8(P)); };
+    // One hermetic namespace bundle. --unshare-user gives us CAP_SYS_ADMIN in it (retained via --cap-add) so the
+    // sandbox-init can mount vidyagodfs; uid stays the real uid (wine/proton refuse to run as root). Isolated mode
+    // also unshares the net ns and keeps CAP_NET_ADMIN so the init can bring up the overlay TUN there.
+    A << "--die-with-parent" << "--unshare-user" << "--unshare-pid" << "--unshare-ipc"
+      << "--cap-add" << "CAP_SYS_ADMIN";
+    if (Isolated) A << "--unshare-net" << "--cap-add" << "CAP_NET_ADMIN";
+    A << "--ro-bind" << "/" << "/"            // whole host READ-ONLY (native apps can't write the system)
+      << "--dev-bind" << "/dev" << "/dev"     // GPU (/dev/dri) + /dev/fuse + /dev/net/tun
+      << "--proc" << "/proc";
 
-    Add({"--die-with-parent"});          // the sandbox dies if VidyaGod does
-    Add({"--ro-bind", "/", "/"});         // whole host, READ-ONLY (native apps can't write the system)
-    Add({"--dev-bind", "/dev", "/dev"});  // GPU (/dev/dri), input devices
-    Add({"--proc", "/proc"});
+    // Writable surfaces over the RO root (the vidyagodfs mount lives under TempPath; saves under UserData/home).
+    auto bindRW = [&](const std::string &P){
+        if (!P.empty() && std::filesystem::exists(P)) { A << "--bind" << QString::fromStdString(P) << QString::fromStdString(P); }
+    };
+    for (const std::string &P : Opts.WritableBinds) bindRW(P);
+    bindRW("/tmp");                                                        // X11 socket + scratch
+    bindRW("/run/user/" + std::to_string(static_cast<unsigned>(::getuid()))); // Wayland / PipeWire / Pulse
 
-    // Re-bind the writable surfaces on top of the read-only root (later binds win).
-    if (!Opts.RuntimeRoot.empty() && std::filesystem::exists(Opts.RuntimeRoot))
-    {
-        A.append("--bind");
-        A.append(QString::fromStdString(Opts.RuntimeRoot));
-        A.append(QString::fromStdString(Opts.RuntimeRoot));
-    }
-    if (!Opts.HomeDir.empty() && std::filesystem::exists(Opts.HomeDir))
-    {
-        A.append("--bind");
-        A.append(QString::fromStdString(Opts.HomeDir));
-        A.append(QString::fromStdString(Opts.HomeDir));
-    }
-    // Display / audio / IPC sockets so the game still renders + plays sound.
-    A.append("--bind"); A.append("/tmp"); A.append("/tmp");   // X11 (/tmp/.X11-unix) + general scratch
-    const std::string RunUser = "/run/user/" + std::to_string(static_cast<unsigned>(::getuid()));
-    if (std::filesystem::exists(RunUser))
-    {
-        A.append("--bind");
-        A.append(QString::fromStdString(RunUser));   // Wayland / PipeWire / PulseAudio sockets
-        A.append(QString::fromStdString(RunUser));
-    }
-
-    if (Opts.Net == NetMode::Isolated)
-        A.append("--unshare-net");   // the game gets its own empty netns (overlay TUN injected separately)
-
-    A.append("--");
-    A.append(OrigProgram);
-    A.append(OrigArgs);
+    // The payload: re-invoke ourselves as the in-sandbox init, which mounts the specs (+ TUN) then execs the game.
+    A << "--" << QString::fromStdString(SelfExe()) << "--sandbox-init";
+    for (const Mount &M : Opts.Mounts)
+        A << "--mount" << QString::fromStdString(M.SpecPath) << QString::fromStdString(M.Mountpoint);
+    if (!Opts.TunName.empty() && !Opts.TunSock.empty())
+        A << "--tun" << QString::fromStdString(Opts.TunName) << QString::fromStdString(Opts.TunCidr) << QString::fromStdString(Opts.TunSock);
+    if (!Opts.WorkDir.empty())
+        A << "--chdir" << QString::fromStdString(Opts.WorkDir);
+    A << "--" << OrigProgram << OrigArgs;
 
     Program   = "bwrap";
     Arguments = A;

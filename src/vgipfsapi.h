@@ -79,6 +79,7 @@ void VgSetSessionCb(VgSessionCb cb);
 // Bring up a TUN configured from a session's roster and forward IP packets between members over libp2p; returns the
 // interface name through outName. Needs CAP_NET_ADMIN in the current netns (holds inside a bubblewrap userns netns).
 int  VgOverlayStart(const char *sid, char **outName, char **errOut);
+int  VgOverlayServe(const char *sid, const char *sockPath, char **errOut); // nested: listen for the sandbox's TUN fd
 void VgOverlayStop(void);
 int  VgOverlayActive(void);   // 1 if forwarding on an attached TUN, else 0
 
