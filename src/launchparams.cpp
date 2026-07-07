@@ -36,7 +36,11 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     VariablesMap["Content"] = this->ExePathComplete;
     //%ContentDir% — the exe's directory RELATIVE to the content root ("" when the exe is at the root). Lets a reusable
     //content node (e.g. a generic DirectPlay package) drop its files next to whatever game's exe via a layer TARGET of
-    //"%ContentDir%". Robust to '/'- or '\\'-style CONTENTPATHs.
+    //"%ContentDir%". Emitted ONLY once the exe is resolved (ExePathRelative set): while it's still unresolved (e.g.
+    //during BuildSubComponentsArray, which substitutes layer TARGETs BEFORE the exe is picked) the token is left in the
+    //map's absence, so varsubst leaves "%ContentDir%" untouched and it survives to mount-time substitution
+    //(BuildLayerSpec) where the exe IS known — otherwise it would bake to "" too early. Robust to '/'- or '\\'-CONTENTPATHs.
+    if (!this->ExePathRelative.empty())
     {
         std::string Cp = this->ExePathRelative.generic_string();
         for (char & c : Cp) if (c == '\\') c = '/';

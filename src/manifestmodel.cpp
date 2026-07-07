@@ -590,7 +590,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //tokens that live outside the global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY%
     //that is neither a built-in nor declared by some CustomVar is almost always a typo and would survive as a literal.
     static const std::set<std::string> Builtins = []{
-        std::set<std::string> B = { "REL" };
+        // Context/late tokens that are valid built-ins but NOT in a default GetVariablesMap: %REL% is injected by the
+        // guest-path templater; %ContentDir% is emitted only once the exe is resolved (so it survives resolve-time
+        // TARGET substitution) — both are always legitimate references, so name them here.
+        std::set<std::string> B = { "REL", "ContentDir" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
         return B;
