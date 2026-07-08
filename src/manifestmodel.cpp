@@ -586,14 +586,13 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
     //The built-in tokens always available at substitution time. Derived from ContainerParams::GetVariablesMap() (the
     //single source of truth — a default instance yields every built-in KEY) so the lint stays in sync automatically as
-    //runtime vars are added (e.g. %ContentDir%) instead of drifting from a hand-maintained list. Plus per-context
-    //tokens that live outside the global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY%
-    //that is neither a built-in nor declared by some CustomVar is almost always a typo and would survive as a literal.
+    //runtime vars change instead of drifting from a hand-maintained list. Plus per-context tokens that live outside the
+    //global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY% that is neither a built-in nor
+    //declared by some CustomVar is almost always a typo and would survive as a literal.
     static const std::set<std::string> Builtins = []{
-        // Context/late tokens that are valid built-ins but NOT in a default GetVariablesMap: %REL% is injected by the
-        // guest-path templater; %ContentDir% is emitted only once the exe is resolved (so it survives resolve-time
-        // TARGET substitution) — both are always legitimate references, so name them here.
-        std::set<std::string> B = { "REL", "ContentDir" };
+        // Context token that is a valid built-in but NOT in a default GetVariablesMap: %REL% is injected by the
+        // guest-path templater (LaunchResolver), so it is always a legitimate reference — name it here.
+        std::set<std::string> B = { "REL" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
         return B;

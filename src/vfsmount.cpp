@@ -136,10 +136,12 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //the game under Wine's C:; "pfx/drive_c/<UID>" places it inside Proton's pfx. Same game, different runner.
     const std::string &ContentRoot = ContainerParams.ContentRoot;
 
-    // A layer's TARGET is %variable%-substituted (like runner ARGS/ENV) so a REUSABLE content node can place files
-    // relative to the resolved launch — e.g. a generic DirectPlay package uses TARGET "%ContentDir%" to drop its DLLs
-    // next to whatever game's exe. Substitution happens here (not in the JSON) because the exe location is only known
-    // after resolution. Backward-compatible: a literal TARGET with no % tokens is unchanged.
+    // A layer's TARGET is %variable%-substituted (like runner ARGS/ENV) then placed RELATIVE TO THE VFS ROOT — there is
+    // no implicit CONTENT_ROOT prefixing. The author states the anchor explicitly with variables: content root is
+    // "%PrefixRoot%/drive_c/%PackageUID%", the wine system dir is "%PrefixRoot%/drive_c/windows/syswow64", etc. This is
+    // what lets a node place files ANYWHERE in the runtime tree (prefix, system dir, userdata) instead of being trapped
+    // under drive_c/<UID>. An absent TARGET means the VFS root ("" — the author composes from there). Content layers
+    // pass an empty Base below; the inner-runner nesting passes its own mount base (engine-internal, not author TARGET).
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
     auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) -> std::string {
         if (!Sub.contains("TARGET") || !Sub["TARGET"].is_string()) return Base;
@@ -148,7 +150,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         for (char &c : T) if (c == '\\') c = '/';                          // normalize win-style separators
         while (!T.empty() && T.front() == '/') T.erase(T.begin());          // no leading slash → clean join
         while (!T.empty() && T.back()  == '/') T.pop_back();
-        if (T.empty()) return Base;                                        // e.g. %ContentDir% for a root-level exe
+        if (T.empty()) return Base;
         return Base.empty() ? T : (Base + "/" + T);
     };
 
@@ -162,7 +164,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         else continue;
 
         std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
-        std::string Target = ResolveTarget(ContentRoot, Sub);
+        std::string Target = ResolveTarget(std::string(), Sub);   // VFS-root-relative — no implicit CONTENT_ROOT prefix
         Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
                           {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
     }

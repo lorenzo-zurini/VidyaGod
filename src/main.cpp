@@ -874,7 +874,7 @@ static QString DependencyImportHint(const std::string &Dep)
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
 // fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
 // package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "QmSsmQnX4UXcybZ9MCVni4DAxdRzGW22P8G1TxVy8ZJUN1"; }   // JSON-only runners Meta-CID
+static std::string DefaultRunnerSourceCID() { return "QmdMCw8q4g2AUcZ6h68GUb2UYXqT8PSi3CPpg6VzxTpvGH"; }   // JSON-only runners Meta-CID
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).

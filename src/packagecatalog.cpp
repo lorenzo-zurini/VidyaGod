@@ -562,6 +562,17 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
         std::error_code Ce;
         const std::filesystem::path Rel = std::filesystem::relative(Entry.path(), Src, Ce);
         if (Ce || Rel.empty()) continue;
+        // Skip runtime/artifact subtrees. Only TOP-LEVEL package node fragments are manifests; the "__…__" dirs
+        // (__DEFPREFIX__ wine prefix, __REGISTRY__ hives) and USERDATA hold per-machine build/runtime state — some of
+        // which happens to be .json (e.g. a generated prefix's winevulkan.json) and would otherwise bloat the Meta-CID
+        // and make it non-reproducible across machines. This is what the "runtime dirs are left behind" intent requires.
+        bool Runtime = false;
+        for (const auto &Part : Rel.parent_path())
+        {
+            const std::string P = Part.string();
+            if (P == "USERDATA" || P.rfind("__", 0) == 0) { Runtime = true; break; }
+        }
+        if (Runtime) continue;
         const std::filesystem::path Out = Dest / Rel;
         std::filesystem::create_directories(Out.parent_path(), Ce);
         std::filesystem::copy_file(Entry.path(), Out, std::filesystem::copy_options::overwrite_existing, Ce);

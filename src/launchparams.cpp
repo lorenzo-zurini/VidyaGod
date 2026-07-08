@@ -11,45 +11,38 @@ ContainerParams::ContainerParams(std::filesystem::path Passed_PackagePath, std::
 
 std::map<std::string, std::string> ContainerParams::GetVariablesMap()
 {
+    //MINIMAL variable set (deliberate — see the format spec's variables chapter). Author-facing tokens are ONLY the
+    //ones NOT composable from other tokens. Every path INSIDE the runtime/prefix is composed explicitly by the author
+    //from the structural anchor %PrefixRoot% ("" wine-at-root / "pfx" proton) + %PackageUID% + the known guest layout,
+    //e.g. content root = "%PrefixRoot%/drive_c/%PackageUID%", system dir = "%PrefixRoot%/drive_c/windows/syswow64".
+    //So the old DERIVED path tokens (ProgramPath / ContentDir / WorkDir* / UserDataPath / WriteLayerPath / DefPrefixPath
+    /// DefaultData / PackagePath / RunnerRuntimePath) were redundant and were dropped. What remains:
+    //  · non-path scalars                       — identity/metadata, not composable
+    //  · %PrefixRoot%                           — the one mount-relative placement anchor
+    //  · host-absolute ROOTS                    — RuntimePath/RunnerMount/TempPath: real host paths a runner's ENV /
+    //                                             EXECUTABLE need; can't be composed from mount-relative primitives
+    //  · exe locator (ContentPath/Content)      — the resolved per-variant CONTENTPATH; feeds the runner (guest-path
+    //                                             templating via %REL%, and direct exec by native runners)
+    //%REL% is injected by the guest-path templater (LaunchResolver), not here. CustomVariables are appended last and
+    //may shadow a built-in.
     std::map<std::string, std::string> VariablesMap;
-    VariablesMap["PackagePath"] = this->PackagePath;
-    VariablesMap["PackageName"] = this->PackageName;
-    VariablesMap["PackageUID"] = this->PackageUID;
-    VariablesMap["GameName"] = this->GameName;
-    VariablesMap["UMUID"] = this->UMUID;
-    VariablesMap["ScreenWidth"] = this->ScreenWidth;
+    //Non-path scalars
+    VariablesMap["PackageUID"]   = this->PackageUID;
+    VariablesMap["PackageName"]  = this->PackageName;
+    VariablesMap["GameName"]     = this->GameName;
+    VariablesMap["UMUID"]        = this->UMUID;
+    VariablesMap["ScreenWidth"]  = this->ScreenWidth;
     VariablesMap["ScreenHeight"] = this->ScreenHeight;
-    //The single mount root — where the VFS mounts; STEAM_COMPAT_DATA_PATH / WINEPREFIX point here.
-    VariablesMap["RuntimePath"] = this->RuntimePath;
-    VariablesMap["RunnerRuntimePath"] = this->RunnerRuntimePath;
-    //The runner build's mount (installed-runner model); unified runners run from inside the game RUNTIME.
-    VariablesMap["RunnerMount"] = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
-    VariablesMap["WriteLayerPath"] = this->WriteLayerPath;
-    VariablesMap["UserDataPath"] = this->UserDataPath;
-    VariablesMap["TempPath"] = this->TempPath;
-    VariablesMap["ProgramPath"] = this->ProgramPath;
-    VariablesMap["DefPrefixPath"] = this->DefPrefixPath;
-    VariablesMap["DefaultData"] = this->DefaultDataPath;
-    //Content primitives: %ContentPath% (relative to the program mount) and %Content% (absolute host path).
-    //Authors compose guest paths from these, e.g. ARGS: "C:\\%PackageUID%\\%ContentPath%".
-    VariablesMap["ContentPath"] = this->ExePathRelative;
-    VariablesMap["Content"] = this->ExePathComplete;
-    //%ContentDir% — the exe's directory RELATIVE to the content root ("" when the exe is at the root). Lets a reusable
-    //content node (e.g. a generic DirectPlay package) drop its files next to whatever game's exe via a layer TARGET of
-    //"%ContentDir%". Emitted ONLY once the exe is resolved (ExePathRelative set): while it's still unresolved (e.g.
-    //during BuildSubComponentsArray, which substitutes layer TARGETs BEFORE the exe is picked) the token is left in the
-    //map's absence, so varsubst leaves "%ContentDir%" untouched and it survives to mount-time substitution
-    //(BuildLayerSpec) where the exe IS known — otherwise it would bake to "" too early. Robust to '/'- or '\\'-CONTENTPATHs.
-    if (!this->ExePathRelative.empty())
-    {
-        std::string Cp = this->ExePathRelative.generic_string();
-        for (char & c : Cp) if (c == '\\') c = '/';
-        const auto S = Cp.find_last_of('/');
-        VariablesMap["ContentDir"] = (S == std::string::npos) ? std::string() : Cp.substr(0, S);
-    }
-    VariablesMap["WorkDirPathRelative"] = this->WorkDirPathRelative;
-    VariablesMap["WorkDirPathComplete"] = this->WorkDirPathComplete;
-    //Custom variables are appended last; they can shadow built-in names if needed.
+    //Structural placement anchor — the prefix dir relative to the VFS root. All inside-prefix placement composes off it.
+    VariablesMap["PrefixRoot"]   = this->PrefixRoot;
+    //Host-absolute roots (not composable from mount-relative tokens) — consumed by runner ENV/EXECUTABLE.
+    VariablesMap["RuntimePath"]  = this->RuntimePath;   // the VFS mount root as a host path (WINEPREFIX / STEAM_COMPAT_DATA_PATH)
+    VariablesMap["RunnerMount"]  = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
+    VariablesMap["TempPath"]     = this->TempPath;
+    //Exe locator — the resolved per-variant CONTENTPATH (guest-relative + absolute host path).
+    VariablesMap["ContentPath"]  = this->ExePathRelative;
+    VariablesMap["Content"]      = this->ExePathComplete;
+    //Custom variables last (may shadow a built-in).
     for (auto &[Key, Value] : this->CustomVariables)
         VariablesMap[Key] = Value;
     return VariablesMap;
