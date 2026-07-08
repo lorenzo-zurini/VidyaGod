@@ -14,6 +14,7 @@
 #include <QAbstractScrollArea>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <fcntl.h>
@@ -890,12 +891,31 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     //any, become inert local dirs). Sharing is now solely via CID package sources.
     if (gc["Settings"].contains("Repositories")) { gc["Settings"].erase("Repositories"); Changed = true; }
     //PackageSources: ordered list of IPFS folder CIDs of dehydrated packages, fetched into <DataRoot>/LIBRARY/<name>
-    //and indexed. The sole default is the built-in runners source.
+    //and indexed.
     if (!gc["Settings"].contains("PackageSources") || !gc["Settings"]["PackageSources"].is_array())
     {
-        gc["Settings"]["PackageSources"] = nlohmann::ordered_json::array({
-            nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"CID", DefaultRunnerSourceCID()} } });
+        gc["Settings"]["PackageSources"] = nlohmann::ordered_json::array();
         Changed = true;
+    }
+    //ALWAYS guarantee the built-in runners source is present and points at the CURRENT hardcoded CID. Keyed by its
+    //reserved NAME "VidyaGodRunners" (not the CID), so: a fresh config gets it, a user who never had it (or removed it)
+    //gets it back, and a release that bumps DefaultRunnerSourceCID() re-points the existing entry — otherwise the
+    //runners default only ever seeded on a config with NO PackageSources at all (e.g. one carrying only a library
+    //source would silently lack the runners source, and its CID would never surface in Sources / the IPFS tab).
+    {
+        auto & Sources = gc["Settings"]["PackageSources"];
+        auto It = std::find_if(Sources.begin(), Sources.end(), [](const nlohmann::ordered_json & S) {
+            return S.is_object() && S.value("NAME", std::string()) == "VidyaGodRunners"; });
+        if (It == Sources.end())
+        {
+            Sources.push_back(nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"CID", DefaultRunnerSourceCID()} });
+            Changed = true;
+        }
+        else if ((*It).value("CID", std::string()) != DefaultRunnerSourceCID())
+        {
+            (*It)["CID"] = DefaultRunnerSourceCID();
+            Changed = true;
+        }
     }
     return Changed;
 }
