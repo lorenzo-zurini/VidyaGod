@@ -5,11 +5,15 @@
 #include <QString>
 
 #include <utility>
+#include <atomic>
+#include <set>
+#include <string>
 
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex
 
 class QDir;
+class QTimer;
 
 // ---------------------------------------------------------------------------
 // AppModel — the single source of truth for the GUI: it OWNS the live GlobalConfigJSON pointer, the cross-bundle
@@ -49,6 +53,12 @@ public:
 
     // ── Async source / runner ops (do the IPFS work off-thread, then rebuild + emit on the GUI thread) ──
     void syncSources();                                // re-index CID package sources, fetching any not-yet-present one
+    // On-demand serve-reliability heal: if the node holds any ORPHANED no-copy reference (backing file moved/re-created,
+    // so it reads locally but fails when a PEER requests it), re-point it to the content's current on-disk location.
+    // Cheap-first (a filestore path scan; skips the heavy re-seed entirely when nothing is orphaned), off-thread,
+    // single-flight, and remembers genuinely-gone content so it never loops. Driven by a background timer + the IPFS
+    // tab's health check, so orphans are repaired the moment they're noticed rather than only on next launch.
+    void healOrphansIfAny();
     void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
     void generateRunnerDefPrefix(const QString & runnerNodeId, bool force);   // (re)build only the DEFPREFIX off-thread (no download)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
@@ -63,12 +73,16 @@ signals:
     void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
+    void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health
 
 private:
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
     NodeIndex                CatalogIndex;
     int                      CardPixelWidth = 185;
+    QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
+    std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
+    std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
 };
 
 #endif // APPMODEL_H

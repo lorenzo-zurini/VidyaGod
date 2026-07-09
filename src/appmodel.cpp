@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QFile>
 #include <QStringList>
+#include <QTimer>
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +38,14 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     if (PackageCatalog::PruneMovedLocalPackages(*Config) > 0) save();
 
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // node-native catalog source
+
+    // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
+    // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
+    // Cheap when nothing is wrong (a filestore path scan, no re-seed); no-op while the node is offline.
+    OrphanHealTimer = new QTimer(this);
+    OrphanHealTimer->setInterval(90'000);
+    connect(OrphanHealTimer, &QTimer::timeout, this, [this]{ healOrphansIfAny(); });
+    OrphanHealTimer->start();
 }
 
 bool AppModel::save()
@@ -180,13 +189,43 @@ void AppModel::syncSources()
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     std::thread([this, Cfg]{
         PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
-        PackageCatalog::HealSourceContent(*Cfg);    // re-point any orphaned no-copy refs so the node can actually SERVE its content
         QMetaObject::invokeMethod(this, [this, Cfg]{
             (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
             save();
             rebuildCatalog();              // emits catalogChanged
             emit packageSourcesChanged();
+            healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
         }, Qt::QueuedConnection);
+    }).detach();
+}
+
+void AppModel::healOrphansIfAny()
+{
+    bool Expected = false;
+    if (!HealInFlight.compare_exchange_strong(Expected, true)) return;   // single-flight: a heal is already running
+    auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
+    std::thread([this, Cfg]{
+        const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
+        // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the rest as
+        // "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
+        std::set<std::string> OrphanSet(Orphans.begin(), Orphans.end());
+        for (auto It = KnownUnhealable.begin(); It != KnownUnhealable.end(); )
+            It = OrphanSet.count(*It) ? std::next(It) : KnownUnhealable.erase(It);
+        std::vector<std::string> Fresh;
+        for (const std::string & P : Orphans) if (!KnownUnhealable.count(P)) Fresh.push_back(P);
+
+        if (!Fresh.empty())
+        {
+            LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
+            PackageCatalog::HealSourceContent(*Cfg);
+            // Whatever is STILL orphaned after the heal is content truly gone (no on-disk copy to re-point to): remember
+            // it so subsequent sweeps skip the heavy re-seed until something changes.
+            KnownUnhealable.clear();
+            for (const std::string & P : IpfsWrapper::OrphanedRefPaths()) KnownUnhealable.insert(P);
+        }
+        HealInFlight.store(false);
+        if (!Fresh.empty())
+            QMetaObject::invokeMethod(this, [this]{ emit ipfsHealthChanged(); }, Qt::QueuedConnection);
     }).detach();
 }
 

@@ -64,6 +64,7 @@ MainWindow::MainWindow(nlohmann::ordered_json * gc, QDir * appData, QWidget * pa
     setCentralWidget(cw);
 
     IpfsModelPtr = new IpfsModel(*Model, this);              // owns transfer state; single IpfsManager consumer
+    connect(Model, &AppModel::ipfsHealthChanged, IpfsModelPtr, &IpfsModel::refreshNow);   // orphan heal ran → re-poll health/red→green
     DownloadMgr  = new DownloadManager(*Model, *IpfsModelPtr, this, this);   // dialog parent = this; lifetime = this
 
     // Daemon/foreground-hybrid tray. When a tray is available the app no longer quits on the last window closing —

@@ -108,6 +108,10 @@ BandwidthRates Bandwidth();
 // Pinned CIDs served to a peer within the last WindowMs — the seeded items being uploaded right now. Empty when offline.
 std::vector<std::string> ActiveUploads(int WindowMs);
 
+// Distinct filestore backing paths whose file is gone — orphaned no-copy references the node can't serve. Empty = none.
+// Cheap probe (one filestore scan) the app polls to trigger the on-demand orphan heal. Empty when offline.
+std::vector<std::string> OrphanedRefPaths();
+
 // Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
 // unknown.
 std::string RepoSizeHuman();

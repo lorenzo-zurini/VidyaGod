@@ -383,6 +383,7 @@ void IpfsModel::gatherHealth()
                 const std::string C = cid.toStdString();
                 const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
                 const int N = (M == 1) ? -1 : IpfsWrapper::ProviderCount(C);
+                if (M == 1) Model.healOrphansIfAny();   // noticed a broken ref → repair now (single-flight; no-op if content truly gone)
                 QMetaObject::invokeMethod(this, [this, cid, N, M]{
                     if (Cids.contains(cid)) { Cids[cid].providers = N; Cids[cid].missing = M; emit cidChanged(cid); }
                 }, Qt::QueuedConnection);
