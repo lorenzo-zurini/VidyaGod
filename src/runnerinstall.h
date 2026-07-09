@@ -16,21 +16,27 @@
 // rather than living in RunnerWrapper (path/predicate helpers).
 namespace RunnerInstall
 {
-//Install a runner NODE: hydrate its build layers IN PLACE into the runner's LIBRARY bundle dir, and (PREFIX_GENERATE)
-//generate the one-time DEFPREFIX at <bundle>/__DEFPREFIX__/default. Idempotent. The runner-install entry point for
-//the node world (Settings page / play-gate / the download flow). GlobalConfigJSON is currently unused.
-bool ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
-                      const std::string &RunnerNodeId, std::string *Error = nullptr);
+//Generate a PREFIX_GENERATE runner's one-time DEFPREFIX by mounting its (ALREADY-LOCAL) build and running `wineboot`
+//once, at <bundle>/__DEFPREFIX__/default. This is the DEFPREFIX step ONLY — it does NOT fetch; the build must already
+//be hydrated (the single download pump DownloadManager::beginDownload, or --import-runner, does that). A completion
+//sentinel (<...>/default.ok, a sibling of the artifact so it is never mounted) marks a FULLY-built prefix; Force=true
+//wipes any existing/partial artifact and rebuilds (a deliberate re-do). A non-PREFIX_GENERATE runner is a no-op
+//success. On failure the fetched build is KEPT (only the partial prefix is dropped) so a retry is prefix-only, and the
+//wineboot stderr tail is folded into *Error so the failure is diagnosable.
+bool GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::string &RunnerNodeId, bool Force, std::string *Error = nullptr);
 
-//Gather (without fetching) a runner node's missing build-layer download targets, appending to Out — so a download
-//can pool a game's content with its runners' builds into ONE concurrent batch. After that batch fetches them,
-//ImportRunnerNode just generates the DEFPREFIX (its own fetch loop sees the layers already present). Returns false
-//(with *Error) only on a malformed runner node; "nothing to fetch" is success with Out unchanged.
+//Gather (without fetching) a runner node's missing build-layer download targets, appending to Out — so the single
+//download batch (beginDownload) pools a game's content with its runners' builds. Returns false (with *Error) only on a
+//malformed runner node; "nothing to fetch" is success with Out unchanged.
 bool CollectRunnerNodeTargets(const NodeIndex &Idx, const std::string &RunnerNodeId,
                               std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 
-//True when a runner node is installed: every build VFS layer hydrated locally AND (PREFIX_GENERATE) its DEFPREFIX
-//artifact exists. A runner that ships no build is always "installed".
+//True when every build VFS layer of a runner node is hydrated locally (regardless of DEFPREFIX state). A runner that
+//ships no build is always "present".
+bool RunnerBuildPresent(const NodeIndex &Idx, const std::string &RunnerNodeId);
+
+//True when a runner node is FULLY installed: build present AND (PREFIX_GENERATE) its DEFPREFIX completion sentinel
+//exists. A runner that ships no build / generates no prefix is always "installed".
 bool RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId);
 }
 

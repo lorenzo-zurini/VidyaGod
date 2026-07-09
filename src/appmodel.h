@@ -49,7 +49,8 @@ public:
 
     // ── Async source / runner ops (do the IPFS work off-thread, then rebuild + emit on the GUI thread) ──
     void syncSources();                                // re-index CID package sources, fetching any not-yet-present one
-    void importRunner(const QString & runnerNodeId);   // fetch a runner's build + generate its DEFPREFIX
+    void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
+    void generateRunnerDefPrefix(const QString & runnerNodeId, bool force);   // (re)build only the DEFPREFIX off-thread (no download)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
     void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
@@ -61,6 +62,7 @@ signals:
     void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the Sources page + catalog
     void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
+    void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
 
 private:
     nlohmann::ordered_json * Config;

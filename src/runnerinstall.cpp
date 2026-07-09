@@ -11,6 +11,7 @@
 #include <QStringList>
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <string>
@@ -34,6 +35,14 @@ std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::stri
     }
     return Out;
 }
+
+//The DEFPREFIX completion sentinel: a sibling of the artifact dir (…/__DEFPREFIX__/default.ok) so it is NEVER part of
+//the prefix that gets mounted at launch. Its presence == a wineboot that ran to completion; absence (even with a
+//non-empty artifact dir) == not built / partial.
+std::filesystem::path DefPrefixSentinel(const Node &R)
+{
+    return std::filesystem::path(RunnerWrapper::DefPrefixDir(R.BundleDir.string()) + ".ok");
+}
 } // namespace
 
 bool RunnerInstall::CollectRunnerNodeTargets(const NodeIndex &Idx, const std::string &RunnerNodeId,
@@ -54,13 +63,12 @@ bool RunnerInstall::CollectRunnerNodeTargets(const NodeIndex &Idx, const std::st
     return true;
 }
 
-//Installs a runner NODE: fetches its build closure's VFS layers (IPFS), and for a PREFIX_GENERATE runner generates
-//the one-time read-only DEFPREFIX by mounting the build and running `wineboot` once. Idempotent.
-bool RunnerInstall::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, const NodeIndex &Idx,
-                                     const std::string &RunnerNodeId, std::string *Error)
+//Generate a PREFIX_GENERATE runner's one-time read-only DEFPREFIX by mounting its (ALREADY-LOCAL) build and running
+//`wineboot` once. NO fetching — the build must already be hydrated by the download pump / --import-runner. Completion
+//is marked by a sibling sentinel (…/default.ok); Force wipes any existing/partial artifact and rebuilds.
+bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::string &RunnerNodeId, bool Force, std::string *Error)
 {
-    (void)GlobalConfigJSON;
-    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("RunnerInstall::ImportRunnerNode", M); return false; };
+    auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("RunnerInstall::GenerateRunnerDefPrefix", M); return false; };
 
     const Node *R = Idx.Find(RunnerNodeId);
     if (!R || !R->IsRunner()) return Fail("not a runner node: " + RunnerNodeId);
@@ -68,27 +76,32 @@ bool RunnerInstall::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, c
     const std::filesystem::path Bundle(R->BundleDir);
     std::error_code Ec;
 
-    //1. Hydrate the build closure's VFS layers concurrently (bounded by the global download throttle).
-    std::vector<IpfsWrapper::FetchTarget> Targets;
-    if (!CollectRunnerNodeTargets(Idx, RunnerNodeId, Targets, Error)) return false;
-    { std::string Er; if (!IpfsWrapper::FetchTargetsConcurrent(Targets, &Er)) return Fail("could not fetch runner build (" + Er + ")"); }
-    LogSucc("RunnerInstall::ImportRunnerNode", "Hydrated runner build for " + RunnerNodeId + " (" + std::to_string(Targets.size()) + " layer(s))");
-
-    //2. PREFIX_GENERATE → build the one-time read-only DEFPREFIX (idempotent). The whole artifact is mounted at the
-    //runtime root at launch, so the prefix hives live at <artifact>/<PrefixRoot>, PrefixRoot = CONTENT_ROOT up to
-    /// drive_c ("" for wine, "pfx" for proton) — derived, no PREFIX_SUBPATH.
+    //Non-PREFIX_GENERATE runners have no prefix to build — nothing to do.
     if (!E.value("PREFIX_GENERATE", false)) return true;
+
     const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixDir(R->BundleDir.string());
+    const std::filesystem::path Sentinel    = DefPrefixSentinel(*R);
+
+    //Already fully built (sentinel present) and not forcing → done. A non-empty artifact WITHOUT the sentinel is a
+    //partial/interrupted prefix: fall through and rebuild it (this is the crux of the "partial looks complete" bug).
+    if (!Force && std::filesystem::exists(Sentinel, Ec))
+    { LogOut("RunnerInstall::GenerateRunnerDefPrefix", "DEFPREFIX already present for " + RunnerNodeId); return true; }
+
+    //Rebuild from a clean slate: drop any existing (partial or forced) artifact + its stale sentinel, and force-unmount
+    //+ remove a `.buildmount` a killed prior run may have left wedged (the "delete leftover files to stop the crash").
+    std::filesystem::remove_all(DefArtifact, Ec);
+    std::filesystem::remove(Sentinel, Ec);
+    const std::filesystem::path MountDir = Bundle / "__DEFPREFIX__" / ".buildmount";
+    RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
+    std::filesystem::remove_all(MountDir, Ec);
+
     const std::string ContentRoot = E.value("CONTENT_ROOT", std::string());
     std::string PrefixRoot;
     { const auto Pos = ContentRoot.find("drive_c");
       if (Pos != std::string::npos && Pos != 0) PrefixRoot = ContentRoot.substr(0, Pos - 1); }
     const std::filesystem::path PrefixDir = PrefixRoot.empty() ? DefArtifact : (DefArtifact / PrefixRoot);
-    if (std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec))
-    { LogOut("RunnerInstall::ImportRunnerNode", "DEFPREFIX already present for " + RunnerNodeId); return true; }
 
     //Mount the (now-local) build read-only at a temp mount under __DEFPREFIX__ so `wineboot` can run from it.
-    const std::filesystem::path MountDir = Bundle / "__DEFPREFIX__" / ".buildmount";
     std::filesystem::create_directories(MountDir.parent_path(), Ec);
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = MountDir.string(); Spec["uid"] = 1000; Spec["gid"] = 1000;
@@ -106,7 +119,7 @@ bool RunnerInstall::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, c
         }
     Spec["layers"] = Layers;
     if (!VfsMount::SpawnVidyagodfs(Spec, MountDir, Bundle / "__DEFPREFIX__" / ".buildmount.spec.json"))
-        return Fail("could not mount runner build for install");
+        return Fail("could not mount runner build for prefix generation");
 
     //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings. The runner ENV points its prefix
     //var (WINEPREFIX / STEAM_COMPAT_DATA_PATH) at %RuntimePath%; bind it to the artifact root we're building, so
@@ -131,26 +144,36 @@ bool RunnerInstall::ImportRunnerNode(nlohmann::ordered_json &GlobalConfigJSON, c
     { std::string v = V.get<std::string>(); VarSubst::StringVariableSubstitution(v, Vars); ProcEnv.insert(QString::fromStdString(K), QString::fromStdString(v)); }
 
     std::filesystem::create_directories(DefArtifact, Ec);
-    LogOut("RunnerInstall::ImportRunnerNode", "Generating DEFPREFIX: " + Program + " " + Args.join(' ').toStdString());
+    LogOut("RunnerInstall::GenerateRunnerDefPrefix", "Generating DEFPREFIX: " + Program + " " + Args.join(' ').toStdString());
     QProcess P; P.setProgram(QString::fromStdString(Program)); P.setArguments(Args); P.setProcessEnvironment(ProcEnv);
     P.start(); P.waitForFinished(-1);
-    std::cout << P.readAllStandardError().toStdString() << std::endl << P.readAllStandardOutput().toStdString() << std::endl;
+    const std::string Serr = P.readAllStandardError().toStdString();
+    const std::string Sout = P.readAllStandardOutput().toStdString();
+    std::cout << Serr << '\n' << Sout << '\n';
     const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
 
     RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
     std::filesystem::remove_all(MountDir, Ec);                                   // drop the transient build mountpoint
-    if (!BootOk) { std::filesystem::remove_all(DefArtifact, Ec); return Fail("wineboot failed to build DEFPREFIX for " + RunnerNodeId); }
-    LogSucc("RunnerInstall::ImportRunnerNode", "Installed runner " + RunnerNodeId + " (DEFPREFIX at " + DefArtifact.string() + ")");
+    if (!BootOk)
+    {
+        //Drop the PARTIAL prefix but KEEP the fetched build (so a retry is prefix-only, no re-download). Fold the
+        //wineboot output tail into the error so the GUI/log shows WHY it failed (env/wow64/…), not just "failed".
+        std::filesystem::remove_all(DefArtifact, Ec);
+        std::string Tail = Serr.empty() ? Sout : Serr;
+        if (Tail.size() > 600) Tail = "…" + Tail.substr(Tail.size() - 600);
+        return Fail("wineboot failed to build DEFPREFIX for " + RunnerNodeId + (Tail.empty() ? "" : (" — " + Tail)));
+    }
+    { std::ofstream Ok(Sentinel); Ok << "ok\n"; }                                // completion marker (sibling of the artifact)
+    LogSucc("RunnerInstall::GenerateRunnerDefPrefix", "Generated DEFPREFIX for " + RunnerNodeId + " (" + DefArtifact.string() + ")");
     return true;
 }
 
-bool RunnerInstall::RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId)
+bool RunnerInstall::RunnerBuildPresent(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     const Node *R = Idx.Find(RunnerNodeId);
     if (!R || !R->IsRunner()) return false;
 
-    //Every build VFS layer hydrated locally (the runner's content closure).
-    bool AnyBuild = false;
+    //Every build VFS layer hydrated locally (the runner's content closure). A runner that ships no build is "present".
     std::error_code Ec;
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
         for (const auto &L : C->Layers)
@@ -159,18 +182,31 @@ bool RunnerInstall::RunnerNodeImported(const NodeIndex &Idx, const std::string &
             std::filesystem::path Local; std::string Cid;
             LayerLocator(L, C->BundleDir, Local, Cid);
             if (Local == C->BundleDir) continue;                                  // no PATH
-            AnyBuild = true;
-            if (!std::filesystem::exists(Local, Ec)) return false;                // a build layer missing → not imported
+            if (!std::filesystem::exists(Local, Ec)) return false;                // a build layer missing → not present
         }
-    if (!AnyBuild) return true;                                                   // ships no build → always installed
+    return true;
+}
 
-    //PREFIX_GENERATE runners also need their DEFPREFIX artifact present (<bundle>/__DEFPREFIX__/default/<prefixRoot>).
+bool RunnerInstall::RunnerNodeImported(const NodeIndex &Idx, const std::string &RunnerNodeId)
+{
+    const Node *R = Idx.Find(RunnerNodeId);
+    if (!R || !R->IsRunner()) return false;
+    if (!RunnerBuildPresent(Idx, RunnerNodeId)) return false;                     // build not hydrated → not imported
+
+    //PREFIX_GENERATE runners are only "imported" once their DEFPREFIX is FULLY built — marked by the completion
+    //sentinel (a partial/interrupted prefix leaves the artifact dir non-empty but the sentinel absent).
     const bool PrefixGen = R->Exec.is_object() && R->Exec.value("PREFIX_GENERATE", false);
     if (!PrefixGen) return true;
-    const std::string CR = R->Exec.is_object() ? R->Exec.value("CONTENT_ROOT", std::string()) : std::string();
-    std::string PrefixRoot;
-    { const auto Pos = CR.find("drive_c"); if (Pos != std::string::npos && Pos != 0) PrefixRoot = CR.substr(0, Pos - 1); }
+    std::error_code Ec;
+    const std::filesystem::path Sentinel = DefPrefixSentinel(*R);
+    if (std::filesystem::exists(Sentinel, Ec)) return true;
+
+    //Migration: a prefix built BEFORE the sentinel existed is complete but unmarked. Since a failed generation now
+    //wipes its own artifact, a present+non-empty-but-unmarked artifact is a pre-sentinel build (not a fresh partial) —
+    //adopt it by writing the sentinel so it isn't needlessly flagged for regeneration. (A hard-kill mid-wineboot is the
+    //only exception; recoverable via "Rebuild prefix".)
     const std::filesystem::path Artifact = RunnerWrapper::DefPrefixDir(R->BundleDir.string());
-    const std::filesystem::path PrefixDir = PrefixRoot.empty() ? Artifact : (Artifact / PrefixRoot);
-    return std::filesystem::exists(PrefixDir, Ec) && !std::filesystem::is_empty(PrefixDir, Ec);
+    if (std::filesystem::exists(Artifact, Ec) && !std::filesystem::is_empty(Artifact, Ec))
+    { std::ofstream Ok(Sentinel); Ok << "ok\n"; return true; }
+    return false;
 }

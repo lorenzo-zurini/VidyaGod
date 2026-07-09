@@ -297,12 +297,10 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     emit downloadStarted(Key);
     emit transfersChanged();
 
-    // Snapshot the node index + config for THIS worker: concurrent downloads must not read the shared
-    // CatalogIndex while a completing download reassigns it (rebuildCatalog), and the worker must never touch the
-    // GUI-owned live GlobalConfigJSON.
+    // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while a
+    // completing download reassigns it (rebuildCatalog). (DEFPREFIX generation reads only the index, not the config.)
     NodeIndex Snapshot = Model.catalogIndex();
-    auto CfgSnap = std::make_shared<nlohmann::ordered_json>(*Model.config());
-    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), CfgSnap]{
+    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
         std::string Err; bool Ok = true;
         // Pool EVERY fetch — all selected launchables' content layers + all selected runners' build layers — into
         // ONE concurrent batch, so the game and its runner(s) download TOGETHER (bounded by MaxConcurrentDownloads)
@@ -314,12 +312,12 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             for (const std::string & Rid : RunnerIds)
                 if (!RunnerInstall::CollectRunnerNodeTargets(Snapshot, Rid, Targets, &Err)) { Ok = false; break; }
         if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
-        // Builds are now present locally → generate each runner's DEFPREFIX (proton/wine wineboot — the post-fetch
-        // step; ImportRunnerNode's own fetch loop sees the layers already there and skips straight to the prefix).
-        // Same call the Settings "Import" button uses; reads the config snapshot, never the live GlobalConfigJSON.
+        // Builds are now present locally → generate each runner's DEFPREFIX (proton/wine wineboot). This is the ONE
+        // download pump's post-fetch step; a runner install is just this batch with runner-build targets. Idempotent
+        // (skips a runner whose completion sentinel already exists — force-rebuild is a separate deliberate action).
         if (Ok)
             for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::ImportRunnerNode(*CfgSnap, Snapshot, Rid, &Err)) { Ok = false; break; }
+                if (!RunnerInstall::GenerateRunnerDefPrefix(Snapshot, Rid, /*force*/false, &Err)) { Ok = false; break; }
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

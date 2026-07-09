@@ -36,6 +36,13 @@ public slots:
     // Re-launch any downloads that a previous run left interrupted (crash/close) — call once at startup when online.
     void resumeAll();
 
+public:
+    // The ONE non-interactive download core (shared by the dialog path, resumeAll, and the runner Import button which
+    // feeds it a runner-only group: launchIds empty, runnerIds = {rid}). Persists the selection for crash-resume. A
+    // runner install is not special — it is just this pump with runner-build targets in the batch.
+    void beginDownload(const QString & key, const std::vector<std::string> & launchIds,
+                       const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
+
 signals:
     void transfersChanged();                       // the transfer set changed — refresh the IPFS tab
     void downloadStarted(const QString & groupKey);            // mark a package's Catalog card(s) downloading
@@ -43,9 +50,6 @@ signals:
     void downloadFinished(const QString & groupKey);           // clear the package's downloading state
 
 private:
-    // Non-interactive download core (shared by the dialog path + resumeAll); persists the selection for crash-resume.
-    void beginDownload(const QString & key, const std::vector<std::string> & launchIds,
-                       const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
     void persistActive(const QString & key, const std::vector<std::string> & launchIds,
                        const std::vector<std::string> & runnerIds, const std::map<std::string, bool> & toggles);
     void unpersistActive(const QString & key);

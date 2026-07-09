@@ -609,7 +609,8 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit.
+    //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit. Composed from
+    //the SAME primitives the GUI download pump uses — collect targets → fetch → generate DEFPREFIX — no bespoke path.
     if (!LaunchParameters.ImportRunnerId.empty())
     {
         //--import-runner <RUNNER_NODE_ID> (node runners have no variants — a stray ":suffix" is ignored).
@@ -618,8 +619,25 @@ int main(int argc, char *argv[])
         LogOut("main.cpp", "Importing runner node: " + Id);
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::string Err;
-        const bool Ok = RunnerInstall::ImportRunnerNode(GlobalConfigJSON, Index, Id, &Err);
+        std::vector<IpfsWrapper::FetchTarget> Targets;
+        bool Ok = RunnerInstall::CollectRunnerNodeTargets(Index, Id, Targets, &Err)
+               && IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)
+               && RunnerInstall::GenerateRunnerDefPrefix(Index, Id, /*force*/false, &Err);
         LogOut("main.cpp", Ok ? "Runner imported." : ("Runner import failed: " + Err));
+        return Ok ? 0 : 1;
+    }
+
+    //HEADLESS: (re)generate ONLY a runner's DEFPREFIX (force rebuild) — the deliberate prefix step, no download. The
+    //build must already be hydrated (--import-runner or the GUI pump).
+    if (!LaunchParameters.GenerateDefPrefixId.empty())
+    {
+        std::string Id = LaunchParameters.GenerateDefPrefixId;
+        if (auto Colon = Id.find(':'); Colon != std::string::npos) Id = Id.substr(0, Colon);
+        LogOut("main.cpp", "Generating DEFPREFIX for runner node: " + Id);
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+        std::string Err;
+        const bool Ok = RunnerInstall::GenerateRunnerDefPrefix(Index, Id, /*force*/true, &Err);
+        LogOut("main.cpp", Ok ? "DEFPREFIX generated." : ("DEFPREFIX generation failed: " + Err));
         return Ok ? 0 : 1;
     }
 
@@ -1166,6 +1184,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--import-runner" && i + 1 < argc)
         {
             RuntimeParameters.ImportRunnerId = argv[++i];
+        }
+        else if (arg == "--generate-defprefix" && i + 1 < argc)
+        {
+            RuntimeParameters.GenerateDefPrefixId = argv[++i];
         }
         else if (arg == "--import-package" && i + 1 < argc)
         {

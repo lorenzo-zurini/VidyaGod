@@ -114,6 +114,13 @@ void MainWindow::BuildStaticUI()
     connect(CatalogTabPtr, &CatalogTab::downloadRequested, DownloadMgr, &DownloadManager::startDownload);
     connect(CatalogTabPtr, &CatalogTab::cancelRequested,   DownloadMgr, &DownloadManager::requestCancel);
 
+    // Settings → Runners "Import" → the SAME download pump, fed a runner-only group (no launchables, one runner build).
+    // A runner install is not a special flow — just this batch with runner-build targets, so it inherits persistence/
+    // resume, IPFS-tab rows and cancel identically to a game download.
+    connect(Model, &AppModel::runnerImportRequested, DownloadMgr, [this](const QString & Rid){
+        DownloadMgr->beginDownload("runner:" + Rid, {}, { Rid.toStdString() }, {});
+    });
+
     // Download controller → Catalog cards (downloading overlay + progress).
     connect(DownloadMgr, &DownloadManager::downloadStarted,  CatalogTabPtr, &CatalogTab::markDownloading);
     connect(DownloadMgr, &DownloadManager::downloadProgress, CatalogTabPtr, &CatalogTab::setDownloadProgress);

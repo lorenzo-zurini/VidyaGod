@@ -224,17 +224,25 @@ void AppModel::removePackageSource(int index)
 
 void AppModel::importRunner(const QString & runnerNodeId)
 {
+    // A runner install is NOT special — it is a download whose targets are the runner's build layers. Hand it to the
+    // ONE download pump (DownloadManager::beginDownload, wired by MainWindow) so it gets persistence/resume, IPFS-tab
+    // rows, cancel and the atomic-resumable fetch identically to a game download. The DEFPREFIX is that download's
+    // post-fetch step.
+    emit runnerImportRequested(runnerNodeId);
+}
+
+void AppModel::generateRunnerDefPrefix(const QString & runnerNodeId, bool force)
+{
+    // Rebuild ONLY the DEFPREFIX (no download — the build is already local). Off-thread; reads a private index copy so
+    // it never races the GUI thread. This is the deliberate, re-runnable prefix step (Settings → Runners button / CLI).
     const std::string Rid = runnerNodeId.toStdString();
-    // The worker reads config + index; hand it private copies so it never races the GUI thread (which owns the live
-    // GlobalConfigJSON / CatalogIndex and may mutate them concurrently).
-    auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     NodeIndex Idx = CatalogIndex;
-    std::thread([this, Rid, Cfg, Idx = std::move(Idx)]{
+    std::thread([this, Rid, force, Idx = std::move(Idx)]{
         std::string Err;
-        bool Ok = RunnerInstall::ImportRunnerNode(*Cfg, Idx, Rid, &Err);
+        const bool Ok = RunnerInstall::GenerateRunnerDefPrefix(Idx, Rid, force, &Err);
         QMetaObject::invokeMethod(this, [this, Ok, Err]{
-            if (!Ok) LogErr("AppModel::importRunner", "Runner import failed: " + Err);   // no dialog — see the IPFS tab
-            rebuildCatalog();   // emits catalogChanged (Runners page + IPFS tab refresh)
+            if (!Ok) LogErr("AppModel::generateRunnerDefPrefix", "DEFPREFIX generation failed: " + Err);
+            rebuildCatalog();   // emits catalogChanged (Runners page refresh)
         }, Qt::QueuedConnection);
     }).detach();
 }
