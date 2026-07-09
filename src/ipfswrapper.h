@@ -222,69 +222,26 @@ using FriendCallback = std::function<void(const FriendEvent &)>;
 void SetFriendCallback(FriendCallback Callback);
 
 // ---------------------------------------------------------------------------
-// Multiplayer session / lobby layer (VidyaGodIPFS/session.go).
-// A Session is a group of friends who agree to play one game together over a private overlay network. The host is
-// authoritative: it assigns each member an overlay virtual IP (vIP) and broadcasts the roster. This is the SIGNALLING
-// only — the roster + vIP map is what the packet tunnel + LAN emulator (Goldberg et al.) are later configured from.
+// Virtual LAN of friends (VidyaGodIPFS/friendlan.go).
+// There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
+// of its peer ID, so membership + routing come from the accepted-friends set with zero coordination, and the LAN lives
+// ONLY inside a game's sandbox netns (the host stack is never touched).
 // ---------------------------------------------------------------------------
 
-// One participant: peer ID, nickname, assigned overlay vIP (e.g. 10.66.42.2), and ready state.
-struct Member {
-    std::string PeerID;
-    std::string Nick;
-    std::string VIP;
-    bool        Ready = false;
-};
-// A session/lobby snapshot.
-struct Session {
-    std::string         Id;
-    std::string         Host;     // host peer ID
-    std::string         Game;     // game package CID both members must hold
-    std::string         Subnet;   // overlay /24, e.g. "10.66.42.0/24"
-    bool                AmHost = false;
-    std::vector<Member> Members;
-};
-
-// Host a new session for a game CID; returns the created session (Id populated), or a session with empty Id on error.
-Session SessionCreate(const std::string &GameCID, std::string *Error = nullptr);
-// Invite a friend (peer ID) to a session we host.
-bool SessionInvite(const std::string &Sid, const std::string &PeerID, std::string *Error = nullptr);
-// Join a hosted session by its id + the host's peer ID.
-bool SessionJoin(const std::string &Sid, const std::string &HostPeer, std::string *Error = nullptr);
-// Leave a session (host: ends it for everyone).
-bool SessionLeave(const std::string &Sid, std::string *Error = nullptr);
-// Set our ready state in a session.
-bool SessionReady(const std::string &Sid, bool Ready, std::string *Error = nullptr);
-// All sessions we're currently in.
-std::vector<Session> SessionList();
-// One session's current roster (Id empty if unknown).
-Session SessionRoster(const std::string &Sid);
-// The custom variables to launch a game into this session (VIDYAGOD_SANDBOX + overlay vIPs), which a Goldberg-style
-// LAN-emulator content node writes into its config so the players find each other over the overlay. Empty if the
-// session / our vIP isn't known yet.
-std::map<std::string, std::string> SessionLaunchVars(const std::string &Sid);
-
-// Inbound session event (mirrors session.go evSession*). Delivered on a node thread; SessionManager marshals it to
-// the GUI thread as Qt signals.
-struct SessionEvent {
-    enum Kind { Invite, Roster, Ended } Kind;
-    std::string Id;         // session id (all kinds)
-    std::string Game;       // Invite/Roster
-    std::string Host;       // Invite (inviter) / Roster (host)
-    Session     Snapshot;   // Roster: the full session; else only Id/Game/Host populated
-};
-using SessionCallback = std::function<void(const SessionEvent &)>;
-void SetSessionCallback(SessionCallback Callback);
+// The custom variables to launch a game onto the friend LAN (VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP,
+// SUBNET, PEER_VIPS, PEER_NAMES), which a Goldberg-style LAN-emulator content node writes into its config so the
+// players find each other over the overlay. Empty if the LAN is unavailable.
+std::map<std::string, std::string> LanLaunchVars();
 
 // ----- overlay tunnel (VidyaGodIPFS/overlay.go) -----
-// Bring up the private virtual-LAN for a session: creates a TUN configured from the roster's vIPs and forwards IP
-// packets between members over libp2p, so the game (and its LAN emulator) see each other as if on one LAN. Returns
-// the TUN interface name, "" on failure (with *Error). Needs CAP_NET_ADMIN — in production it runs inside the game's
-// bubblewrap netns. OverlayStop tears it down; OverlayActive reports whether it is forwarding.
-std::string OverlayStart(const std::string &Sid, std::string *Error = nullptr);
-// Nested-sandbox variant: configure the session's routes and listen on SockPath for the TUN fd that the in-sandbox
-// sandbox-init will hand back (it creates the TUN inside the game's own netns). Non-blocking. True on listen success.
-bool OverlayServe(const std::string &Sid, const std::string &SockPath, std::string *Error = nullptr);
+// Bring up the friend-LAN: a TUN configured from lanConfig() (each friend's vIP = f(peerID)) forwarding IP packets
+// between friends over libp2p, broadcast/multicast fanned out so LAN games discover each other. Returns the TUN name,
+// "" on failure. Needs CAP_NET_ADMIN. OverlayStart is a host-netns debug/CLI path; the production launch uses
+// OverlayServe. OverlayStop tears it down; OverlayActive reports whether it is forwarding.
+std::string OverlayStart(std::string *Error = nullptr);
+// Nested-sandbox variant (production): configure the friend-LAN routes and listen on SockPath for the TUN fd that the
+// in-sandbox sandbox-init hands back (it creates the TUN inside the game's OWN netns). Non-blocking. True on listen ok.
+bool OverlayServe(const std::string &SockPath, std::string *Error = nullptr);
 void OverlayStop();
 bool OverlayActive();
 
@@ -334,26 +291,6 @@ signals:
 
 private:
     explicit FriendsManager(QObject * parent = nullptr);
-};
-
-// ---------------------------------------------------------------------------
-// SessionManager — GUI-thread QObject relaying IpfsWrapper session events (which fire on a node thread) as Qt
-// signals. A single shared instance installs the session callback once; the play-together UI + the (future) tunnel
-// layer connect to these signals.
-// ---------------------------------------------------------------------------
-class SessionManager : public QObject
-{
-    Q_OBJECT
-public:
-    static SessionManager * instance();
-
-signals:
-    void sessionInvite(QString id, QString game, QString host);   // a friend invited us
-    void sessionRoster(QString id);                               // the roster/vIPs/ready changed (query SessionRoster)
-    void sessionEnded(QString id);                                // the session ended / we left
-
-private:
-    explicit SessionManager(QObject * parent = nullptr);
 };
 
 #endif // IPFSWRAPPER_H

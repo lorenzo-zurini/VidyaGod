@@ -18,6 +18,16 @@ static bool SandboxDefaultOn(const nlohmann::ordered_json &GC)
     return true;
 }
 
+// The friend-LAN opt-in (Settings.LanEnabled, default OFF). When on, a launch joins the virtual LAN of friends: the
+// game runs in an ISOLATED netns (no host network) with a TUN carrying only the overlay. Off by default because
+// isolated networking cuts the game off from the internet — you turn it on to play LAN together.
+static bool LanEnabled(const nlohmann::ordered_json &GC)
+{
+    if (GC.contains("Settings") && GC["Settings"].is_object())
+        return GC["Settings"].value("LanEnabled", false);
+    return false;
+}
+
 #include <QThread>
 #include <QMetaObject>
 
@@ -66,6 +76,13 @@ bool ContainerWrapper::InitializeContainer()
 //Must be called after InitializeContainer() (done in constructor).
 bool ContainerWrapper::BuildContainerRuntime()
 {
+    //Friend LAN (opt-in, Settings.LanEnabled): merge the LAN launch vars into CustomVariables up front so the sandbox
+    //evaluation below sees SANDBOX=on + SANDBOX_NET=isolated (records the mounts, forces the isolated netns) and Execute
+    //picks up SELF_VIP/SUBNET/PEER_* to bring the overlay TUN up inside the game's own netns. The LAN is sandbox-only.
+    if (LanEnabled(GlobalConfigJSON))
+        for (const auto &[K, V] : IpfsWrapper::LanLaunchVars())
+            ContainerParams.CustomVariables[K] = V;
+
     //Clear any runtime left under TempPath by a previously crashed/incomplete run BEFORE mounting.
     //Stale union/zip/bind mounts and leftover RUNTIME/DEFPREFIX/staging dirs would otherwise corrupt
     //this build (or cause spurious "already mounted"/EEXIST failures).
@@ -389,20 +406,22 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
             if (const char *H = ::getenv("HOME")) SbOpts.WritableBinds.emplace_back(H);
             SbOpts.WorkDir = ContainerParams.WorkDirPathComplete.string();
 
-            //Isolated + a session → bring up the overlay TUN inside the sandbox netns. Listen on a bound unix socket
-            //for the TUN fd the sandbox-init will hand back; pass the vIP + socket to the init.
+            //Friend LAN: the LAN vars (SELF_VIP/SUBNET/PEER_*/SANDBOX_NET=isolated) were merged into CustomVariables in
+            //BuildContainerRuntime when Settings.LanEnabled. Bring up the overlay TUN INSIDE the sandbox's own netns
+            //(the host stack is never touched): listen on a bound unix socket for the TUN fd the sandbox-init hands
+            //back, and pass the vIP + socket to the init.
             auto Var = [&](const char *K){ auto It = ContainerParams.CustomVariables.find(K);
                                            return It == ContainerParams.CustomVariables.end() ? std::string() : It->second; };
-            const std::string Sid = Var("VIDYAGOD_SESSION_ID"), SelfVip = Var("VIDYAGOD_SELF_VIP"), Subnet = Var("VIDYAGOD_SUBNET");
-            if (SbOpts.Net == SandboxLayer::NetMode::Isolated && !Sid.empty() && !SelfVip.empty())
+            const std::string SelfVip = Var("VIDYAGOD_SELF_VIP"), Subnet = Var("VIDYAGOD_SUBNET");
+            if (SbOpts.Net == SandboxLayer::NetMode::Isolated && !SelfVip.empty())
             {
                 const std::string Sock = (ContainerParams.TempPath / "overlay.sock").string();
                 std::string OErr;
-                if (IpfsWrapper::OverlayServe(Sid, Sock, &OErr))
+                if (IpfsWrapper::OverlayServe(Sock, &OErr))
                 {
-                    std::string Mask = "24";
+                    std::string Mask = "16";
                     if (auto S = Subnet.rfind('/'); S != std::string::npos) Mask = Subnet.substr(S + 1);
-                    SbOpts.TunName = "vg-" + Sid.substr(0, std::min<std::size_t>(Sid.size(), 6));
+                    SbOpts.TunName = "vg-lan";
                     SbOpts.TunCidr = SelfVip + "/" + Mask;
                     SbOpts.TunSock = Sock;
                     OverlayServing = true;

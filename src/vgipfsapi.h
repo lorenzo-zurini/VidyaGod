@@ -60,26 +60,20 @@ int  VgFriendRemove(const char *peerID);
 int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
 void VgSetFriendCb(VgFriendCb cb);
 
-// ---- multiplayer session / lobby layer (see VidyaGodIPFS/session.go) ----
-// Inbound session event: kind mirrors session.go's evSession* (0=invite 1=roster 2=ended); json is the payload
-// (invite {id,game,host}; roster {id,host,game,subnet,members:[{peer,nick,vip,ready}]}; ended {id}).
-typedef void (*VgSessionCb)(int kind, const char *json);
-
-int  VgSessionCreate(const char *gameCid, char **outJson, char **errOut);  // host a session; returns its JSON
-int  VgSessionInvite(const char *sid, const char *peerID, char **errOut);  // invite a friend
-int  VgSessionJoin(const char *sid, const char *hostPeer, char **errOut);  // join a hosted session
-int  VgSessionLeave(const char *sid, char **errOut);
-int  VgSessionReady(const char *sid, int ready, char **errOut);
-int  VgSessionList(char **outJson);                    // JSON array of all sessions
-int  VgSessionRoster(const char *sid, char **outJson); // JSON of one session; -1 if unknown
-int  VgSessionLaunchVars(const char *sid, char **outJson); // {VIDYAGOD_SANDBOX,SELF_VIP,PEER_VIPS,...} for a session launch
-void VgSetSessionCb(VgSessionCb cb);
+// ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----
+// There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
+// of its peer ID, so membership + routing come from the accepted-friends set with zero coordination.
+// The launch vars {VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SUBNET, PEER_VIPS, PEER_NAMES} for a
+// sandboxed game launch that joins the LAN. -1 if the LAN is unavailable.
+int  VgLanLaunchVars(char **outJson);
 
 // ---- overlay tunnel (see VidyaGodIPFS/overlay.go) ----
-// Bring up a TUN configured from a session's roster and forward IP packets between members over libp2p; returns the
-// interface name through outName. Needs CAP_NET_ADMIN in the current netns (holds inside a bubblewrap userns netns).
-int  VgOverlayStart(const char *sid, char **outName, char **errOut);
-int  VgOverlayServe(const char *sid, const char *sockPath, char **errOut); // nested: listen for the sandbox's TUN fd
+// Bring up a TUN configured from the friend LAN (lanConfig) and forward IP packets between friends over libp2p —
+// broadcast/multicast fanned out so LAN games discover each other. Needs CAP_NET_ADMIN in the current netns (holds
+// inside a bubblewrap userns netns). The production path is VgOverlayServe: the TUN lives in the game's OWN sandbox
+// netns (the host stack is never touched); VgOverlayStart is a host-netns debug/CLI path.
+int  VgOverlayStart(char **outName, char **errOut);
+int  VgOverlayServe(const char *sockPath, char **errOut); // nested: listen for the sandbox's TUN fd
 void VgOverlayStop(void);
 int  VgOverlayActive(void);   // 1 if forwarding on an attached TUN, else 0
 

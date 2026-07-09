@@ -120,26 +120,28 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
 //creates + addresses the TUN inside the sandbox netns and hands its fd to our libp2p forwarder; the sandboxed shell
 //then pings the peer. Returns the ping's exit code (0 = replies received = packets crossed the tunnel). This is what
 //a real session game launch does, with `ping` standing in for the game. Rootless (CAP_NET_ADMIN via the userns).
-static int RunOverlaySandboxPing(const std::string &Sid)
+static int RunOverlaySandboxPing()
 {
-    const IpfsWrapper::Session R = IpfsWrapper::SessionRoster(Sid);
-    const std::string Me = IpfsWrapper::FriendCode();
-    std::string MyVip, PeerVip;
-    for (const auto &M : R.Members) { if (M.PeerID == Me) MyVip = M.VIP; else if (PeerVip.empty()) PeerVip = M.VIP; }
-    if (MyVip.empty() || PeerVip.empty()) { LogErr("main.cpp", "overlay: missing self/peer vIP in the roster"); return -1; }
+    // Pull our vIP + the online friends' vIPs from the friend LAN (host-less; each vIP = f(peerID)); ping the first.
+    const auto V = IpfsWrapper::LanLaunchVars();
+    auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
+    const std::string MyVip = Get("VIDYAGOD_SELF_VIP"), Subnet = Get("VIDYAGOD_SUBNET");
+    const std::string PeerVips = Get("VIDYAGOD_PEER_VIPS");
+    const std::string PeerVip = PeerVips.substr(0, PeerVips.find(','));   // first online friend
+    if (MyVip.empty() || PeerVip.empty()) { LogErr("main.cpp", "overlay: no self/peer vIP (need an online friend)"); return -1; }
     if (!SandboxLayer::Available()) { LogErr("main.cpp", "overlay: sandbox unavailable (no bwrap / userns disabled)"); return -1; }
 
-    std::string Mask = "24";
-    if (auto s = R.Subnet.rfind('/'); s != std::string::npos) Mask = R.Subnet.substr(s + 1);
-    const std::string Sock = "/tmp/vgov-" + Sid + ".sock";
+    std::string Mask = "16";
+    if (auto s = Subnet.rfind('/'); s != std::string::npos) Mask = Subnet.substr(s + 1);
+    const std::string Sock = "/tmp/vgov-lan.sock";
 
     std::string Err;
-    if (!IpfsWrapper::OverlayServe(Sid, Sock, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
+    if (!IpfsWrapper::OverlayServe(Sock, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
 
     SandboxLayer::Options O;
     O.Enabled = true;
     O.Net     = SandboxLayer::NetMode::Isolated;
-    O.TunName = "vg-" + Sid.substr(0, std::min<std::size_t>(Sid.size(), 6));
+    O.TunName = "vg-lan";
     O.TunCidr = MyVip + "/" + Mask;
     O.TunSock = Sock;
     std::string Program = "/bin/sh";
@@ -318,7 +320,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.PublishMetaSrc.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
-        || !LaunchParameters.SessionHostGame.empty() || !LaunchParameters.SessionJoinSid.empty()
+        || LaunchParameters.LanHarness
         || !LaunchParameters.LaunchNodeId.empty();
     if (HeadlessNeedsNode)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
@@ -430,11 +432,11 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    //HEADLESS multiplayer session harness: --session-host <GAMECID> creates+hosts a session; --session-join <SID>
-    //<HOSTCODE> joins one. Both warm online, optionally --connect a known peer (deterministic link over WireGuard),
-    //then poll the roster for --friend-secs seconds, printing each member's assigned overlay vIP + ready state. Lets
-    //two machines form a real session mesh headlessly before the packet tunnel exists.
-    if (!LaunchParameters.SessionHostGame.empty() || !LaunchParameters.SessionJoinSid.empty())
+    //HEADLESS friend-LAN harness: --lan warms online, optionally --connect a known peer (deterministic link over
+    //WireGuard) + sets --friend-nick, then prints the virtual-LAN roster (our vIP + each online friend's vIP, all
+    //host-less: vIP = f(peerID)) for --friend-secs seconds. With --overlay it brings the sandboxed overlay TUN up
+    //inside a rootless bwrap netns and pings the first online friend through the tunnel — the end-to-end LAN test.
+    if (LaunchParameters.LanHarness)
     {
         for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 1; ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -445,64 +447,28 @@ int main(int argc, char *argv[])
         }
         if (!LaunchParameters.FriendNick.empty())
             IpfsWrapper::SetProfile(LaunchParameters.FriendNick, std::string());
-        LogOut("main.cpp", std::string("session: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+        LogOut("main.cpp", std::string("lan: online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
                + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " code=" + IpfsWrapper::FriendCode());
 
-        std::string Sid;
-        if (!LaunchParameters.SessionHostGame.empty())
-        {
-            std::string Err;
-            const IpfsWrapper::Session S = IpfsWrapper::SessionCreate(LaunchParameters.SessionHostGame, &Err);
-            if (S.Id.empty()) { LogErr("main.cpp", "session create failed: " + Err); return 1; }
-            Sid = S.Id;
-            LogSucc("main.cpp", "hosting session " + S.Id + " (subnet " + S.Subnet + ") for game " + S.Game);
-            LogOut("main.cpp", "  join with:  --session-join " + S.Id + " " + IpfsWrapper::FriendCode());
-        }
-        else
-        {
-            Sid = LaunchParameters.SessionJoinSid;
-            std::string Err;
-            const bool Ok = IpfsWrapper::SessionJoin(Sid, LaunchParameters.SessionJoinHost, &Err);
-            LogOut("main.cpp", Ok ? ("join request sent for session " + Sid) : ("join FAILED: " + Err));
-        }
-
-        std::string LastRoster;   // print only when the roster changes
-        bool OverlayTried = false, OverlayUp = false;
+        std::string LastRoster;   // print only when the LAN roster changes
+        bool OverlayTried = false;
         for (int s = 0; s < LaunchParameters.FriendSecs; ++s)
         {
-            const IpfsWrapper::Session R = IpfsWrapper::SessionRoster(Sid);
-            std::string Now = R.Subnet + " |";
-            for (const auto &M : R.Members)
-                Now += " " + (M.Nick.empty() ? M.PeerID.substr(0, 8) : M.Nick) + "@" + M.VIP + (M.Ready ? "(ready)" : "");
-            if (Now != LastRoster)
-            {
-                LogOut("main.cpp", "roster: " + Now);
-                LastRoster = Now;
-            }
-            //Once the roster has us + at least one peer, bring up the overlay TUN (needs CAP_NET_ADMIN) so the members
-            //can ping each other's vIPs — the real end-to-end tunnel test. Attempt once; log the outcome.
-            if (LaunchParameters.OverlayUp && !OverlayTried && R.Members.size() >= 2)
+            const auto V = IpfsWrapper::LanLaunchVars();
+            auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
+            const std::string Peers = Get("VIDYAGOD_PEER_VIPS");
+            const std::string Now = "self " + Get("VIDYAGOD_SELF_VIP") + " | friends: " + (Peers.empty() ? "(none online)" : Peers);
+            if (Now != LastRoster) { LogOut("main.cpp", "lan roster: " + Now); LastRoster = Now; }
+            //Once at least one friend is online, bring the overlay up (nested sandbox — what a real game launch does)
+            //and ping the friend through the tunnel. Attempt once; log the outcome.
+            if (LaunchParameters.OverlayUp && !OverlayTried && !Peers.empty())
             {
                 OverlayTried = true;
-                //Preferred: the NESTED-sandbox path (what a real session game launch does) — brings the TUN up inside a
-                //rootless bwrap netns and pings the peer through the tunnel. Falls back to the host TUN (needs root) if
-                //bwrap can't sandbox here.
-                if (SandboxLayer::Available())
-                    RunOverlaySandboxPing(Sid);
-                else
-                {
-                    std::string Err;
-                    const std::string Iface = IpfsWrapper::OverlayStart(Sid, &Err);
-                    if (Iface.empty())
-                        LogErr("main.cpp", "overlay start failed (no bwrap; host TUN needs CAP_NET_ADMIN/sudo): " + Err);
-                    else { OverlayUp = true; LogSucc("main.cpp", "host overlay TUN up on " + Iface + " — ping a peer's vIP"); }
-                }
+                RunOverlaySandboxPing();
             }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        if (OverlayUp) IpfsWrapper::OverlayStop();
-        const IpfsWrapper::Session Final = IpfsWrapper::SessionRoster(Sid);
-        LogSucc("main.cpp", "session handler done — " + std::to_string(Final.Members.size()) + " member(s) in " + Sid);
+        LogSucc("main.cpp", "friend-LAN handler done");
         return 0;
     }
 
@@ -1111,15 +1077,9 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.FriendSecs       = std::max(1, std::atoi(argv[++i]));
         }
-        else if (arg == "--session-host" && i + 1 < argc)
+        else if (arg == "--lan")
         {
-            RuntimeParameters.SessionHostGame  = argv[++i];
-            RuntimeParameters.RunningHeadless  = true;
-        }
-        else if (arg == "--session-join" && i + 2 < argc)
-        {
-            RuntimeParameters.SessionJoinSid   = argv[++i];
-            RuntimeParameters.SessionJoinHost  = argv[++i];
+            RuntimeParameters.LanHarness       = true;
             RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--overlay")

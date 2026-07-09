@@ -90,38 +90,17 @@ private slots:
         QCOMPARE(Removed.first().at(0).toString(), QStringLiteral("12D3KooWPal"));
     }
 
-    void session_offline_safety()
+    void lan_launchvars_offline_safety()
     {
-        // Offline node (VIDYAGOD_IPFS_OFFLINE): no session service, so create fails gracefully and the list is empty.
+        // Offline node (no friends / no social routing): the host-less friend LAN yields no launch vars — the launch
+        // path must degrade gracefully (empty map), not crash. The vIP/config logic itself is covered in Go
+        // (friendlan_test.go); here we only assert the C ABI boundary is safe when there's nothing to join.
         QTemporaryDir Dir;
         std::string Err;
         QVERIFY(IpfsWrapper::StartNode((Dir.path() + "/ipfs").toStdString(), &Err));
-        QVERIFY(IpfsWrapper::SessionCreate("QmGame", &Err).Id.empty());   // offline → empty id
-        QVERIFY(IpfsWrapper::SessionList().empty());
+        const auto Vars = IpfsWrapper::LanLaunchVars();
+        QVERIFY(Vars.find("VIDYAGOD_PEER_VIPS") == Vars.end() || Vars.at("VIDYAGOD_PEER_VIPS").empty());
         IpfsWrapper::StopNode();
-    }
-
-    void sessionmanager_marshals_roster_and_ended()
-    {
-        SessionManager *SM = SessionManager::instance();
-        QVERIFY(SM);
-        QSignalSpy Roster(SM, &SessionManager::sessionRoster);
-        QSignalSpy Invite(SM, &SessionManager::sessionInvite);
-        QSignalSpy Ended(SM, &SessionManager::sessionEnded);
-
-        IpfsNodeSessionCb(0, R"({"id":"sid1","game":"QmG","host":"12D3KooWHost"})");            // evSessionInvite
-        QVERIFY(Invite.wait(1000));
-        QCOMPARE(Invite.first().at(0).toString(), QStringLiteral("sid1"));
-        QCOMPARE(Invite.first().at(2).toString(), QStringLiteral("12D3KooWHost"));
-
-        IpfsNodeSessionCb(1, R"({"id":"sid1","host":"12D3KooWHost","subnet":"10.66.7.0/24",
-                                 "members":[{"peer":"12D3KooWHost","vip":"10.66.7.1","ready":true}]})"); // evSessionRoster
-        QVERIFY(Roster.wait(1000));
-        QCOMPARE(Roster.first().at(0).toString(), QStringLiteral("sid1"));
-
-        IpfsNodeSessionCb(2, R"({"id":"sid1"})");                                                // evSessionEnded
-        QVERIFY(Ended.wait(1000));
-        QCOMPARE(Ended.first().at(0).toString(), QStringLiteral("sid1"));
     }
 
     void friendstab_renders_saved_contacts()
