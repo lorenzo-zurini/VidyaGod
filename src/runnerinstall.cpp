@@ -198,15 +198,5 @@ bool RunnerInstall::RunnerNodeImported(const NodeIndex &Idx, const std::string &
     const bool PrefixGen = R->Exec.is_object() && R->Exec.value("PREFIX_GENERATE", false);
     if (!PrefixGen) return true;
     std::error_code Ec;
-    const std::filesystem::path Sentinel = DefPrefixSentinel(*R);
-    if (std::filesystem::exists(Sentinel, Ec)) return true;
-
-    //Migration: a prefix built BEFORE the sentinel existed is complete but unmarked. Since a failed generation now
-    //wipes its own artifact, a present+non-empty-but-unmarked artifact is a pre-sentinel build (not a fresh partial) —
-    //adopt it by writing the sentinel so it isn't needlessly flagged for regeneration. (A hard-kill mid-wineboot is the
-    //only exception; recoverable via "Rebuild prefix".)
-    const std::filesystem::path Artifact = RunnerWrapper::DefPrefixDir(R->BundleDir.string());
-    if (std::filesystem::exists(Artifact, Ec) && !std::filesystem::is_empty(Artifact, Ec))
-    { std::ofstream Ok(Sentinel); Ok << "ok\n"; return true; }
-    return false;
+    return std::filesystem::exists(DefPrefixSentinel(*R), Ec);
 }

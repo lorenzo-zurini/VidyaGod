@@ -57,7 +57,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
 
     //Registry only exists when the runner generates a wine prefix; ROM/native runners have no hives.
     const bool HaveBaseReg = HavePrefix && HasRegEdits(ContainerParams, /*WantOverride=*/false);
-    const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "__REGKEYS__";
+    const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "REGKEYS";
     const bool HavePersistKeys = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.KeepRegKeys.empty()
                                  && std::filesystem::exists(RegKeyStore);
 
@@ -193,14 +193,14 @@ bool RegistryLayer::InitializeDefPrefix(struct ContainerParams &ContainerParams)
     }
 }
 
-//Seeds previously-persisted KEEP hive files from UserDataPath/__REGISTRY__/ into the ephemeral
+//Seeds previously-persisted KEEP hive files from UserDataPath/REGISTRY/ into the ephemeral
 //WRITELAYER before the union mounts, so they shadow the DEFPREFIX base. Wine always writes the
 //complete file, so a whole persisted reg file is correct (no stripped-delta shadowing). Only the
 //KEEP-declared hives (KeepRegHives — e.g. just user.reg for a "KEEP HKCU") are seeded.
 bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //durable RW branch already holds the reg files
-    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
+    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "REGISTRY";
     //Shadow at the prefix root in the union (/<PrefixRoot>/*.reg) — "" for wine, "pfx" for proton.
     const std::filesystem::path WriteHives = HiveDir(ContainerParams, ContainerParams.WriteLayerPath);
     std::error_code ec;
@@ -217,12 +217,12 @@ bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
     return true;
 }
 
-//Captures the session's KEEP hives by copying RuntimePath/<prefixroot>/<hive>.reg into UserDataPath/__REGISTRY__/.
+//Captures the session's KEEP hives by copying RuntimePath/<prefixroot>/<hive>.reg into UserDataPath/REGISTRY/.
 //Runs during Cleanup BEFORE the runtime is unmounted/wiped. Bounded copy of small metadata files.
 bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //already durable
-    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "__REGISTRY__";
+    const std::filesystem::path RegStore = ContainerParams.UserDataPath / "REGISTRY";
     std::error_code ec;
     std::filesystem::create_directories(RegStore, ec);
     const std::filesystem::path RunHives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
@@ -239,13 +239,13 @@ bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerPara
 }
 
 //Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the
-//durable store UserDataPath/__REGKEYS__ (partial hive files holding only the persisted keys). Runs
+//durable store UserDataPath/REGKEYS (partial hive files holding only the persisted keys). Runs
 //during Cleanup BEFORE unmount. A key absent from the session (never created) is left as-is in the
 //store rather than dropped. No-op when PersistAll.
 bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll || ContainerParams.KeepRegKeys.empty()) return true;
-    const std::filesystem::path Store = ContainerParams.UserDataPath / "__REGKEYS__";
+    const std::filesystem::path Store = ContainerParams.UserDataPath / "REGKEYS";
 
     RegistryWrapper Session;
     Session.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath));
@@ -263,7 +263,7 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
         std::error_code ec;
         std::filesystem::create_directories(Store, ec);
         if (!Durable.SavePrefix(Store))
-            LogWarn("RegistryLayer::CapturePersistRegKeys", "Failed to write durable __REGKEYS__ store.");
+            LogWarn("RegistryLayer::CapturePersistRegKeys", "Failed to write durable REGKEYS store.");
     }
     return true;
 }
