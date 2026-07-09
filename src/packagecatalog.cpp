@@ -530,6 +530,8 @@ int SeedDirectory(const std::string &Dir,
         if (Has && !Orphan && !Overwrite) { ++Skipped; ++Seeded; }   // already seeded + intact → leave it (counts as seeded)
         else
         {
+            if (Orphan)                                              // observability: the self-heal case (backing moved/re-created)
+                LogOut("PackageCatalog::SeedDirectory", "re-pointing orphaned reference " + Cid + " -> " + Path);
             if (Has) IpfsWrapper::DropRef(Cid);                       // clear the stale/old reference so the re-add isn't deduped
             std::string Err;
             const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
@@ -546,6 +548,14 @@ int SeedDirectory(const std::string &Dir,
             "Seeded " + std::to_string(Seeded) + "/" + std::to_string(Total) + " referenced file(s) from " + Dir
             + " (" + std::to_string(Skipped) + " already-seeded skipped, mode=" + (Overwrite ? "overwrite" : "additive") + ")");
     return Seeded;
+}
+
+int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    const std::vector<std::string> Dirs = PackageSourceDirs(GlobalConfigJSON);
+    for (const std::string &Dir : Dirs)
+        SeedDirectory(Dir);   // additive: re-points orphaned refs to their present path, skips intact CIDs (no re-hash)
+    return static_cast<int>(Dirs.size());
 }
 
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)

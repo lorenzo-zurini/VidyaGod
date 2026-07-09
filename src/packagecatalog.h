@@ -81,6 +81,13 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
                   int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false);
+// Self-heal every registered package source: additively re-seed each source dir so any ORPHANED no-copy reference
+// (backing file moved/re-created since it was seeded) is re-pointed at its current on-disk content. This is what keeps
+// the node able to SERVE its content — an orphaned reference otherwise reads fine locally but fails the moment a peer
+// requests those blocks (surfacing as "missing files"). Additive + cheap: intact CIDs are only cidMissing-checked (no
+// re-hash); only genuine orphans are dropped + re-added. Node must be online-or-local. Call OFF the GUI thread.
+// Returns the number of source dirs processed.
+int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON);
 // The local files SeedDirectory would seed: {local path → recorded SOURCE CID} across a folder's node JSONs — VFS
 // content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
 // Pure (no IPFS node). Only includes files that exist on disk. Exposed for reuse + testing the cover-location handling.

@@ -180,6 +180,7 @@ void AppModel::syncSources()
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     std::thread([this, Cfg]{
         PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
+        PackageCatalog::HealSourceContent(*Cfg);    // re-point any orphaned no-copy refs so the node can actually SERVE its content
         QMetaObject::invokeMethod(this, [this, Cfg]{
             (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
             save();
