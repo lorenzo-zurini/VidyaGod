@@ -4,12 +4,23 @@
 #include <QStandardPaths>
 #include <QString>
 
+#include <filesystem>
+#include <system_error>
+
 namespace RunnerWrapper {
 
 std::string DefPrefixDir(const std::string &BundleDir)
 {
     if (BundleDir.empty()) return std::string();
-    return QDir::cleanPath(QString::fromStdString(BundleDir + "/__DEFPREFIX__/default")).toStdString();
+    const std::filesystem::path Dir = std::filesystem::path(BundleDir) / "DEFPREFIX";
+    // One-time migration from the legacy "__DEFPREFIX__" name: rename the whole artifact dir in place (its `default`
+    // subtree + completion sentinel move with it) so an existing install is adopted without a costly wineboot rebuild.
+    // Cheap (a stat in the common case where DEFPREFIX already exists); idempotent + race-safe (a lost rename no-ops).
+    std::error_code Ec;
+    const std::filesystem::path Legacy = std::filesystem::path(BundleDir) / "__DEFPREFIX__";
+    if (!std::filesystem::exists(Dir, Ec) && std::filesystem::exists(Legacy, Ec))
+        std::filesystem::rename(Legacy, Dir, Ec);
+    return QDir::cleanPath(QString::fromStdString((Dir / "default").string())).toStdString();
 }
 
 bool ExecutableAvailable(const nlohmann::ordered_json &Exec)

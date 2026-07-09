@@ -36,7 +36,7 @@ std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::stri
     return Out;
 }
 
-//The DEFPREFIX completion sentinel: a sibling of the artifact dir (…/__DEFPREFIX__/default.ok) so it is NEVER part of
+//The DEFPREFIX completion sentinel: a sibling of the artifact dir (…/DEFPREFIX/default.ok) so it is NEVER part of
 //the prefix that gets mounted at launch. Its presence == a wineboot that ran to completion; absence (even with a
 //non-empty artifact dir) == not built / partial.
 std::filesystem::path DefPrefixSentinel(const Node &R)
@@ -91,7 +91,7 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
     //+ remove a `.buildmount` a killed prior run may have left wedged (the "delete leftover files to stop the crash").
     std::filesystem::remove_all(DefArtifact, Ec);
     std::filesystem::remove(Sentinel, Ec);
-    const std::filesystem::path MountDir = Bundle / "__DEFPREFIX__" / ".buildmount";
+    const std::filesystem::path MountDir = Bundle / "DEFPREFIX" / ".buildmount";
     RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
     std::filesystem::remove_all(MountDir, Ec);
 
@@ -101,7 +101,7 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
       if (Pos != std::string::npos && Pos != 0) PrefixRoot = ContentRoot.substr(0, Pos - 1); }
     const std::filesystem::path PrefixDir = PrefixRoot.empty() ? DefArtifact : (DefArtifact / PrefixRoot);
 
-    //Mount the (now-local) build read-only at a temp mount under __DEFPREFIX__ so `wineboot` can run from it.
+    //Mount the (now-local) build read-only at a temp mount under DEFPREFIX so `wineboot` can run from it.
     std::filesystem::create_directories(MountDir.parent_path(), Ec);
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = MountDir.string(); Spec["uid"] = 1000; Spec["gid"] = 1000;
@@ -118,7 +118,7 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
                               {"submounts", S.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
         }
     Spec["layers"] = Layers;
-    if (!VfsMount::SpawnVidyagodfs(Spec, MountDir, Bundle / "__DEFPREFIX__" / ".buildmount.spec.json"))
+    if (!VfsMount::SpawnVidyagodfs(Spec, MountDir, Bundle / "DEFPREFIX" / ".buildmount.spec.json"))
         return Fail("could not mount runner build for prefix generation");
 
     //Build the runner ENV/ARGS/EXECUTABLE with the install-time variable bindings. The runner ENV points its prefix

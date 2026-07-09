@@ -156,7 +156,7 @@ public:
     std::filesystem::path TempPath;          //~/.VidyaGod/TEMP/PackageUID — prefix, per-layer pre-mount dirs, reg patches
     std::filesystem::path UserDataPath;      //PackagePath/USERDATA — durable persist store (PERSIST.ALL / DIRS / REGISTRY)
     std::filesystem::path ProgramPath;       //RuntimePath / ContentRoot — where the game content sits (WORKDIR default)
-    std::filesystem::path DefPrefixPath;     //the wine-prefix artifact dir (TempPath/DEFPREFIX per-launch, or the installed __DEFPREFIX__/<variant>); mounted whole as the base layer when PrefixGenerate
+    std::filesystem::path DefPrefixPath;     //the wine-prefix artifact dir (TempPath/DEFPREFIX per-launch, or the installed DEFPREFIX/<variant>); mounted whole as the base layer when PrefixGenerate
     std::filesystem::path DefaultDataPath;   //TempPath/DEFAULTDATA — RO layer holding all package-encoded base edits (Reg/File), between the component layers and the WRITELAYER; regenerated each launch
     std::filesystem::path RunnerRuntimePath; //Resolved runner SOURCE locator (e.g. the Proton build dir) — exposed as %RunnerRuntimePath%
     nlohmann::ordered_json RunnerSource;     //The selected runner's SOURCE block (if any) — fetched by EnsureSources before launch

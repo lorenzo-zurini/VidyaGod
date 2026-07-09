@@ -17,7 +17,7 @@
 namespace RunnerInstall
 {
 //Generate a PREFIX_GENERATE runner's one-time DEFPREFIX by mounting its (ALREADY-LOCAL) build and running `wineboot`
-//once, at <bundle>/__DEFPREFIX__/default. This is the DEFPREFIX step ONLY — it does NOT fetch; the build must already
+//once, at <bundle>/DEFPREFIX/default. This is the DEFPREFIX step ONLY — it does NOT fetch; the build must already
 //be hydrated (the single download pump DownloadManager::beginDownload, or --import-runner, does that). A completion
 //sentinel (<...>/default.ok, a sibling of the artifact so it is never mounted) marks a FULLY-built prefix; Force=true
 //wipes any existing/partial artifact and rebuilds (a deliberate re-do). A non-PREFIX_GENERATE runner is a no-op

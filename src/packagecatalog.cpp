@@ -555,22 +555,22 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
     const std::filesystem::path Src(SrcDir), Dest(DestDir);
     int Copied = 0;
     // Recursively copy ONLY *.json, preserving the relative tree — this is what makes a Meta-CID text-only: cover PNGs,
-    // content zips and runtime dirs (e.g. __DEFPREFIX__/) are left behind; covers travel as content CIDs in the JSON.
+    // content zips and runtime dirs (e.g. DEFPREFIX/) are left behind; covers travel as content CIDs in the JSON.
     for (const auto &Entry : std::filesystem::recursive_directory_iterator(Src, Ec))
     {
         if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;   // manifests only
         std::error_code Ce;
         const std::filesystem::path Rel = std::filesystem::relative(Entry.path(), Src, Ce);
         if (Ce || Rel.empty()) continue;
-        // Skip runtime/artifact subtrees. Only TOP-LEVEL package node fragments are manifests; the "__…__" dirs
-        // (__DEFPREFIX__ wine prefix, __REGISTRY__ hives) and USERDATA hold per-machine build/runtime state — some of
+        // Skip runtime/artifact subtrees. Only TOP-LEVEL package node fragments are manifests; DEFPREFIX (wine prefix),
+        // USERDATA and the "__…__" dirs (__REGISTRY__ hives, __REGKEYS__) hold per-machine build/runtime state — some of
         // which happens to be .json (e.g. a generated prefix's winevulkan.json) and would otherwise bloat the Meta-CID
         // and make it non-reproducible across machines. This is what the "runtime dirs are left behind" intent requires.
         bool Runtime = false;
         for (const auto &Part : Rel.parent_path())
         {
             const std::string P = Part.string();
-            if (P == "USERDATA" || P.rfind("__", 0) == 0) { Runtime = true; break; }
+            if (P == "DEFPREFIX" || P == "USERDATA" || P.rfind("__", 0) == 0) { Runtime = true; break; }
         }
         if (Runtime) continue;
         const std::filesystem::path Out = Dest / Rel;
