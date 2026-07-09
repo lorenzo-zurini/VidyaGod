@@ -13,6 +13,8 @@
 #include "nodesections.h"
 #include "jsonoperations.h"
 #include "mainwindow.h"
+#include "appmodel.h"
+#include "dependenciespage.h"
 
 #include <QTabWidget>
 #include <QRegularExpression>
@@ -102,6 +104,18 @@ int main(int argc, char ** argv)
         QFile cf(dataDir + "/GlobalConfig.JSON");
         JSONOps::LoadJSON(&cf, &gcfg);   // true == failure; gcfg stays {} then, still fine to render
         static QDir appDir(dataDir);
+
+        // The Settings → Dependencies page (real host probe).
+        {
+            AppModel * dm = new AppModel(&gcfg, &appDir);
+            DependenciesPage * dp = new DependenciesPage(*dm);
+            dp->resize(760, 900);
+            dp->show();
+            QApplication::processEvents(); QApplication::processEvents();
+            dp->grab().save(out + "/20_dependencies.png");
+            qInfo("saved dependencies page");
+        }
+
         MainWindow * mw = new MainWindow(&gcfg, &appDir);
         mw->resize(1500, 950);
         mw->show();

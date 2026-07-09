@@ -1,6 +1,7 @@
 #include "settingstab.h"
 #include "appmodel.h"
 #include "generalpage.h"
+#include "dependenciespage.h"
 #include "packagesview.h"
 #include "runnerspage.h"
 #include "sourcespage.h"
@@ -23,6 +24,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     CategoryList->setFixedWidth(170);
     CategoryList->setFrameShape(QFrame::NoFrame);
     CategoryList->addItem("General");
+    CategoryList->addItem("Dependencies");
     CategoryList->addItem("Installed Packages");
     CategoryList->addItem("Runners");
     CategoryList->addItem("Sources");
@@ -34,6 +36,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     Stack = new QStackedWidget(this);
     outer->addWidget(Stack, 1);
     Stack->addWidget(new GeneralPage(Model, Stack));
+    Stack->addWidget(new DependenciesPage(Model, Stack));
     Stack->addWidget(new PackagesView(Model, Stack));
     Stack->addWidget(new RunnersPage(Model, Stack));
     Stack->addWidget(new SourcesPage(Model, Stack));

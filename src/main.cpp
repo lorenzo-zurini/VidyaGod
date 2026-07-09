@@ -8,6 +8,7 @@
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "sandboxlayer.h"
+#include "depcheck.h"
 #include "vgipfsapi.h"
 
 #include <QComboBox>
@@ -38,7 +39,6 @@ static int AcquireSingleInstanceLock(const std::string &LockPath)
     return Fd;
 }
 
-static QString DependencyImportHint(const std::string &Dep); // defined after main()
 
 //Application-wide event filter that stops a QComboBox from changing its value when the mouse
 //wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
@@ -189,7 +189,7 @@ int main(int argc, char *argv[])
     //Check if dependencies exist in the system.
     //Non-fatal: warns but continues so the GUI still opens when VFS is not needed. In GUI mode a dialog
     //(below, once QApplication exists) lists anything missing with install instructions.
-    std::list<std::string> MissingDeps = CheckExecutableDependencies();
+    const std::vector<std::string> MissingDeps = DepCheck::MissingCritical();
 
     //Auto-detect package-directory mode: if no --package flag was passed, check whether
     //the current working directory itself is a package. This lets users simply cd into a
@@ -767,8 +767,9 @@ int main(int argc, char *argv[])
     if (!MissingDeps.empty())
     {
         QString Msg = "VidyaGod needs the following to launch games, but couldn't find them:\n\n";
-        for (const std::string &Dep : MissingDeps) Msg += "•  " + DependencyImportHint(Dep) + "\n\n";
-        Msg += "You can still browse and manage your library; launching a game will fail until these are installed.";
+        for (const std::string &Dep : MissingDeps) Msg += "•  " + QString::fromStdString(Dep) + "\n";
+        Msg += "\nOpen Settings → Dependencies for the full system check (Vulkan, 32-bit libraries, audio, …) and the "
+               "exact package to install for each. You can still browse your library meanwhile.";
         QMessageBox::warning(nullptr, "Missing dependencies", Msg);
     }
 
@@ -810,50 +811,6 @@ int main(int argc, char *argv[])
     return Application.exec();
 }
 
-//Checks for all external binaries that the VFS and runner subsystems depend on.
-//Uses `which` via std::system() rather than QProcess to keep this path dependency-free.
-//Returns true if any binary is missing, false if everything is present.
-std::list<std::string> CheckExecutableDependencies()
-{
-    //The custom vidyagodfs FUSE filesystem replaces unionfs/fuse-zip/bindfs. fusermount(3) (part of
-    //libfuse) still tears mounts down; umu-run is the default Wine runner.
-    std::list<std::string> ExecutableDependencies = {"fusermount3", "umu-run"};
-    std::list<std::string> Missing;
-    for (const std::string& Binary : ExecutableDependencies) {
-        std::string Command = "which " + Binary + " > /dev/null 2>&1";
-        if (std::system(Command.c_str()) == 0)
-            LogOut("main.cpp", Binary + " found on the system.");
-        else
-        {
-            LogErr("main.cpp", Binary + " NOT FOUND ON THE SYSTEM, VFS WILL NOT WORK.");
-            Missing.push_back(Binary);
-        }
-    }
-
-    //vidyagodfs ships beside the binary (not on PATH); resolve via /proc/self/exe (no QApplication needed).
-    std::error_code SelfEc;
-    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", SelfEc);
-    std::filesystem::path Helper = SelfEc ? std::filesystem::path() : (Self.parent_path() / "vidyagodfs");
-    if (!Helper.empty() && std::filesystem::exists(Helper)) LogOut("main.cpp", "vidyagodfs found at " + Helper.string());
-    else { LogErr("main.cpp", "vidyagodfs NOT FOUND beside the binary, VFS WILL NOT WORK."); Missing.push_back("vidyagodfs"); }
-
-    return Missing;
-}
-
-//Human-friendly install guidance for a missing dependency, shown in the GUI startup dialog.
-static QString DependencyImportHint(const std::string &Dep)
-{
-    if (Dep == "fusermount3")
-        return "fusermount3 — part of FUSE 3 (needed to mount game runtimes).\n"
-               "    Arch: sudo pacman -S fuse3   •   Debian/Ubuntu: sudo apt install fuse3   •   Fedora: sudo dnf install fuse3";
-    if (Dep == "umu-run")
-        return "umu-run — the Wine/Proton game runner (umu-launcher).\n"
-               "    Arch (AUR): umu-launcher   •   others: https://github.com/Open-Wine-Components/umu-launcher";
-    if (Dep == "vidyagodfs")
-        return "vidyagodfs — ships with VidyaGod, so your install looks incomplete.\n"
-               "    Reinstall the AppImage (or rebuild — it must sit next to the VidyaGod binary).";
-    return QString::fromStdString(Dep);
-}
 
 // The default package source: an IPFS folder CID of the dehydrated built-in runner packages (ge-proton / wine /
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;

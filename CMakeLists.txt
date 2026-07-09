@@ -192,6 +192,12 @@ set(SHARED_SOURCES
     src/generalpage.h
     src/generalpage.cpp
 
+    src/depcheck.h
+    src/depcheck.cpp
+
+    src/dependenciespage.h
+    src/dependenciespage.cpp
+
     src/traycontroller.h
     src/traycontroller.cpp
 
@@ -251,11 +257,13 @@ add_executable(vg_tests
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
     tests/test_fileedits.cpp
+    tests/test_depcheck.cpp
     src/manifestmodel.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp
     src/commonutils.cpp
+    src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
