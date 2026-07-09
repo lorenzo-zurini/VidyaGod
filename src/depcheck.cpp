@@ -228,6 +228,15 @@ const std::vector<DepItem> &AllDeps()
                      {{D::Arch,"vulkan-radeon / vulkan-intel / nvidia-utils (+ the lib32- variant)"},
                       {D::Debian,"mesa-vulkan-drivers (+ :i386) or the NVIDIA driver"},
                       {D::Fedora,"mesa-vulkan-drivers (+ .i686) or the NVIDIA driver"}}, {}, false});
+        Lib("opengl","OpenGL loader (libGL)", Category::Graphics, {"libGL.so.1"},
+            "The OpenGL loader — many older/non-Vulkan games need it. Missing 32-bit crashes 32-bit OpenGL games.",
+            {{D::Arch,"libglvnd"},{D::Debian,"libgl1"},{D::Fedora,"libglvnd-glx"}},
+            {{D::Arch,"lib32-libglvnd"},{D::Debian,"libgl1:i386"},{D::Fedora,"libglvnd-glx.i686"}});
+        Lib("gl-driver","OpenGL GPU driver", Category::Graphics, {"libGLX_mesa.so.0","libGLX_nvidia.so.0"},
+            "The actual OpenGL renderer (Mesa or NVIDIA) — without it OpenGL games have no driver and crash on launch.",
+            {{D::Arch,"mesa (vulkan-radeon/intel) or nvidia-utils"},{D::Debian,"libglx-mesa0 or the NVIDIA driver"},
+             {D::Fedora,"mesa-libGL or the NVIDIA driver"}},
+            {{D::Arch,"lib32-mesa or lib32-nvidia-utils"},{D::Debian,"libglx-mesa0:i386"},{D::Fedora,"mesa-libGL.i686"}});
 
         // ---- Wine / Proton core libraries (64 + 32) ----
         Lib("gnutls","GnuTLS", Category::WineLibs, {"libgnutls.so.30"},
@@ -278,6 +287,18 @@ const std::vector<DepItem> &AllDeps()
             "IPC bus used by Wine and many games/launchers.",
             {{D::Arch,"dbus"},{D::Debian,"libdbus-1-3"},{D::Fedora,"dbus-libs"}},
             {{D::Arch,"lib32-dbus"},{D::Debian,"libdbus-1-3:i386"},{D::Fedora,"dbus-libs.i686"}});
+        Lib("fontconfig","Fontconfig", Category::WineLibs, {"libfontconfig.so.1"},
+            "Font discovery/config — garbled/missing text or crashes when a game enumerates fonts.",
+            {{D::Arch,"fontconfig"},{D::Debian,"libfontconfig1"},{D::Fedora,"fontconfig"}},
+            {{D::Arch,"lib32-fontconfig"},{D::Debian,"libfontconfig1:i386"},{D::Fedora,"fontconfig.i686"}});
+        Lib("xinerama","libXinerama", Category::WineLibs, {"libXinerama.so.1"},
+            "Multi-monitor geometry — some games crash going fullscreen without it.",
+            {{D::Arch,"libxinerama"},{D::Debian,"libxinerama1"},{D::Fedora,"libXinerama"}},
+            {{D::Arch,"lib32-libxinerama"},{D::Debian,"libxinerama1:i386"},{D::Fedora,"libXinerama.i686"}});
+        Lib("pcsclite","PC/SC (libpcsclite)", Category::WineLibs, {"libpcsclite.so.1"},
+            "Smart-card layer that some DRM / anti-cheat / online games probe on startup.",
+            {{D::Arch,"pcsclite"},{D::Debian,"libpcsclite1"},{D::Fedora,"pcsc-lite-libs"}},
+            {{D::Arch,"lib32-pcsclite"},{D::Debian,"libpcsclite1:i386"},{D::Fedora,"pcsc-lite-libs.i686"}});
 
         // ---- Audio ----
         Lib("alsa","ALSA (libasound)", Category::Audio, {"libasound.so.2"},
@@ -288,6 +309,10 @@ const std::vector<DepItem> &AllDeps()
             "PulseAudio/PipeWire client audio — the common sound path for games.",
             {{D::Arch,"libpulse"},{D::Debian,"libpulse0"},{D::Fedora,"pulseaudio-libs"}},
             {{D::Arch,"lib32-libpulse"},{D::Debian,"libpulse0:i386"},{D::Fedora,"pulseaudio-libs.i686"}});
+        Lib("openal","OpenAL (libopenal)", Category::Audio, {"libopenal.so.1"},
+            "OpenAL 3D audio — a very common game audio API; without it many games fail to init sound or crash.",
+            {{D::Arch,"openal"},{D::Debian,"libopenal1"},{D::Fedora,"openal-soft"}},
+            {{D::Arch,"lib32-openal"},{D::Debian,"libopenal1:i386"},{D::Fedora,"openal-soft.i686"}});
 
         return V;
     }();
