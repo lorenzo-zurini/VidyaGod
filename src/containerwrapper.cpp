@@ -373,7 +373,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix.
     if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
     {
-        RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](auto a, auto b){ return a+b;})));
+        RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; })));
     }
 
     //If the configured working directory doesn't exist in the mounted runtime, fall back
