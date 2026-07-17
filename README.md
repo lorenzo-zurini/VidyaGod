@@ -94,6 +94,17 @@ cmake --build build -j$(nproc)
 ./build/VidyaGod
 ```
 
+### One-shot update-and-build
+
+Idempotent command to set up a fresh machine **and** to keep it current — clones on first run, pulls on every run,
+re-syncs submodules, and rebuilds only what changed. Paste it any time (e.g. on a friend's PC) to get the latest build:
+
+```bash
+mkdir -p ~/Code && cd ~/Code && { [ -d VidyaGod/.git ] && (cd VidyaGod && git pull) || git clone https://github.com/lorenzo-zurini/VidyaGod.git; } && cd ~/Code/VidyaGod && git submodule update --init --recursive && cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
+```
+
+Then run `~/Code/VidyaGod/build/VidyaGod`. (Arch prerequisites: `sudo pacman -S --needed base-devel git cmake ninja go qt6-base qt6-svg libzip nlohmann-json fuse3`.)
+
 CMake options: `-DVIDYAGOD_WERROR=ON` (CI: warnings-as-errors + clang-tidy), `-DVIDYAGOD_SANITIZE=ON` (ASan/UBSan).
 Tests: `ctest --test-dir build` (headless Qt Test suite, offscreen QPA — one executable per subsystem plus a Qt-free
 engine suite). The `MetaPackageFormat` submodule is docs-only and is **not** built.
