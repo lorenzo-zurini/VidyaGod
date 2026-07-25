@@ -788,7 +788,11 @@ int main(int argc, char *argv[])
             bool have = false; for (auto &p : parents) if (p == vs[i - 1].node->NodeId) have = true;
             if (!have) parents.push_back(vs[i - 1].node->NodeId);
             J["PARENTS"] = parents;
-            J["LAYERS"][vs[i].layerIdx] = nlohmann::ordered_json{ {"TYPE", "VFSDeltaLayer"}, {"PATH", blob}, {"TARGET", vs[i].target} };
+            nlohmann::ordered_json deltaLayer{ {"TYPE", "VFSDeltaLayer"}, {"PATH", blob}, {"TARGET", vs[i].target} };
+            // Cross-target: when the byte-base zip mounts at a DIFFERENT target than this node (e.g. a complete
+            // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair them.
+            if (vs[i - 1].target != vs[i].target) deltaLayer["BASE_TARGET"] = vs[i - 1].target;
+            J["LAYERS"][vs[i].layerIdx] = deltaLayer;
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);

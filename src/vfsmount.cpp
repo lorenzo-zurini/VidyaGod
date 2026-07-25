@@ -143,9 +143,9 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     // under drive_c/<UID>. An absent TARGET means the VFS root ("" — the author composes from there). Content layers
     // pass an empty Base below; the inner-runner nesting passes its own mount base (engine-internal, not author TARGET).
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
-    auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) -> std::string {
-        if (!Sub.contains("TARGET") || !Sub["TARGET"].is_string()) return Base;
-        std::string T = Sub["TARGET"];
+    auto ResolveTargetKey = [&](const std::string &Base, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
+        if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
+        std::string T = Sub[Key];
         VarSubst::StringVariableSubstitution(T, Vars);
         for (char &c : T) if (c == '\\') c = '/';                          // normalize win-style separators
         while (!T.empty() && T.front() == '/') T.erase(T.begin());          // no leading slash → clean join
@@ -153,6 +153,9 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         if (T.empty()) return Base;
         return Base.empty() ? T : (Base + "/" + T);
     };
+    // The mount TARGET is the common case; a cross-target VFSDeltaLayer also carries BASE_TARGET (the target of its
+    // byte-base zip), resolved identically so the two strings match the FS's per-target base map.
+    auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) { return ResolveTargetKey(Base, Sub, "TARGET"); };
 
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
@@ -166,8 +169,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 
         std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
         std::string Target = ResolveTarget(std::string(), Sub);   // VFS-root-relative — no implicit CONTENT_ROOT prefix
-        Layers.push_back({{"type", LType}, {"source", Source.string()}, {"target", Target},
-                          {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
+        nlohmann::ordered_json LayerJ = {{"type", LType}, {"source", Source.string()}, {"target", Target},
+                          {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
+        if (LType == "delta" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
+            LayerJ["baseTarget"] = ResolveTargetKey(std::string(), Sub, "BASE_TARGET");   // cross-target byte-base
+        Layers.push_back(LayerJ);
     }
 
     //CROSS-NAMESPACE NESTING: an INNER chain runner (e.g. a win32 emulator under proton) runs inside the boundary's
@@ -185,8 +191,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                 const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : (Type == "VFSDeltaLayer") ? "delta" : "";
                 if (LType.empty()) continue;
                 std::string Target = ResolveTarget(Base, Sub);
-                Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},
-                                  {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
+                nlohmann::ordered_json LayerJ = {{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},
+                                  {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
+                if (LType == "delta" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
+                    LayerJ["baseTarget"] = ResolveTargetKey(Base, Sub, "BASE_TARGET");
+                Layers.push_back(LayerJ);
             }
         }
 
