@@ -317,6 +317,7 @@ int main(int argc, char *argv[])
     const std::string IpfsRepo = (AppDataDir.absolutePath() + "/IPFS").toStdString();
     const bool HeadlessNeedsNode =
         LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs || !LaunchParameters.UnpinCid.empty()
+        || !LaunchParameters.DropRefCid.empty()
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
@@ -356,6 +357,17 @@ int main(int argc, char *argv[])
             std::this_thread::sleep_for(std::chrono::seconds(1));
         const bool Ok = IpfsWrapper::Unpin(LaunchParameters.UnpinCid);
         LogOut("main.cpp", (Ok ? "Unpinned " : "Unpin failed / not pinned: ") + LaunchParameters.UnpinCid);
+        return Ok ? 0 : 1;
+    }
+
+    //HEADLESS: delete a CID's filestore-reference closure (+ unpin), so a subsequent add re-references its content at
+    //its CURRENT path — the repair for an orphaned/stale reference the plain re-add would otherwise dedup-skip. Then exit.
+    if (!LaunchParameters.DropRefCid.empty())
+    {
+        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        const bool Ok = IpfsWrapper::DropRef(LaunchParameters.DropRefCid);
+        LogOut("main.cpp", (Ok ? "Dropped reference closure for " : "Drop-ref failed: ") + LaunchParameters.DropRefCid);
         return Ok ? 0 : 1;
     }
 
@@ -1132,6 +1144,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--unpin" && i + 1 < argc)
         {
             RuntimeParameters.UnpinCid         = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--drop-ref" && i + 1 < argc)
+        {
+            RuntimeParameters.DropRefCid       = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--friend-code")

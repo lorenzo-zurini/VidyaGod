@@ -50,6 +50,7 @@ struct LaunchParameters
     bool PrintPeerId = false;                                             //--peer-id: print this node's peer ID + dialable addrs, then exit
     bool PrintPinLs = false;                                              //--pin-ls: print the recursively-pinned (seeded) CIDs in this repo, then exit
     std::string UnpinCid;                                                 //--unpin <cid>: drop a recursive pin (stop seeding/showing it) then exit
+    std::string DropRefCid;                                               //--drop-ref <cid>: delete a CID's filestore-reference closure + unpin (so a later add re-references it at a new path) then exit — orphan/stale-ref repair
     std::string ConnectAddr;                                              //--connect <MULTIADDR>: dial this peer before fetching (direct peering / controlled benchmark)
     std::string DataDir;                                                  //--data-dir <PATH>: override the app data dir (testing: second instance with its own repo + lock)
     std::string PackageDirOverride;                                       //--package-dir <PATH>: override the launch package/bundle path
