@@ -698,6 +698,18 @@ int main(int argc, char *argv[])
         return Errors.empty() ? 0 : 1;
     }
 
+    //HEADLESS: resolve cross-layer case conflicts by canonicalizing the higher-priority layers' zip entries to
+    //the base layer's case (unpack→rename→repackage STORE), so patches/add-ons override cleanly, then exit.
+    if (LaunchParameters.FixCaseConflicts)
+    {
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+        std::vector<std::string> Log;
+        const int Fixed = ManifestModel::FixCaseConflicts(Index, Log);
+        for (const auto &Line : Log) LogOut("fix-case-conflicts", Line);
+        LogSucc("fix-case-conflicts", "Rewrote " + std::to_string(Fixed) + " zip(s). Re-run --validate-nodes to confirm.");
+        return 0;
+    }
+
     //HEADLESS: reduce a version chain to one base full zip + per-version .vgdelta layers (byte-verified).
     //Each node after the first has its VFSZipLayer replaced by a VFSDeltaLayer diffed against the version
     //before it (overlay-relative chaining) and is reparented onto it; the now-redundant full zips are deleted.
@@ -1089,6 +1101,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.ValidateNodes   = true;
             RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--fix-case-conflicts")
+        {
+            RuntimeParameters.FixCaseConflicts = true;
+            RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--convert-delta-chain")
         {

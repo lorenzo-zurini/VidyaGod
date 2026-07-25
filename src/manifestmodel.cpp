@@ -950,4 +950,148 @@ bool PackageHasContent(const nlohmann::ordered_json &Manifest)
     return Any;
 }
 
+// ---------------------------------------------------------------------------
+// Case-conflict resolution — the fix for FindCrossLayerCaseCollisions errors.
+// Two layers in a launchable's closure contribute paths differing only in case (e.g. base 'server.dll' + patch
+// 'Server.dll', or base 'CONTENT/' + add-on 'content/'). On the case-sensitive FUSE mount both exist, so the
+// higher-priority layer fails to override and wine's lookup can hit the wrong file. We CANONICALIZE: within each
+// closure (base-first load order) the first exact case seen for a path component is canonical; any later layer's
+// mismatch is renamed to it. Only the higher-priority zips are rewritten (unpack→rename→repackage, STORE, same
+// structure); the base is never touched.
+// ---------------------------------------------------------------------------
+
+// Component-wise canonicalization across every launchable closure → per-zip {oldEntry -> newEntry}.
+static std::map<std::string, std::map<std::string, std::string>>
+ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
+{
+    std::map<std::string, std::vector<std::string>> ZipCache;
+    std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
+
+    for (const auto &[LId, LN] : Idx.Nodes)
+    {
+        if (!LN.IsLaunchable()) continue;
+        std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
+
+        for (const std::string &Id : ResolveNodeOrder(Idx, LN.NodeId, {}))
+        {
+            const Node *N = Idx.Find(Id);
+            if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+            for (const auto &L : N->Layers)
+            {
+                if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(L, N->BundleDir, Local, Cid);
+                std::error_code Ec;
+                if (Local == N->BundleDir || !std::filesystem::exists(Local, Ec)
+                    || std::filesystem::is_directory(Local, Ec)) continue;   // only rewrite ZIPs (skip dir layers)
+                const std::string Target  = L.value("TARGET", std::string());
+                const std::string ZipPath = Local.string();
+
+                for (const std::string &Entry : ZipEntriesCached(ZipPath, ZipCache))
+                {
+                    const std::string Full = JoinTarget(Target, Entry);
+                    std::vector<std::string> Comp = SplitPath(Full);
+                    std::string Prefix, NewFull;
+                    bool Changed = false;
+                    for (size_t k = 0; k < Comp.size(); ++k)
+                    {
+                        const std::string Key = Prefix.empty() ? ToLowerAscii(Comp[k]) : (Prefix + "/" + ToLowerAscii(Comp[k]));
+                        auto It = Canon.find(Key);
+                        std::string CanonC;
+                        if (It == Canon.end()) { Canon.emplace(Key, Comp[k]); CanonC = Comp[k]; }
+                        else CanonC = It->second;
+                        if (CanonC != Comp[k]) Changed = true;
+                        if (k) NewFull += '/';
+                        NewFull += CanonC;
+                        Prefix = Key;
+                    }
+                    if (!Changed) continue;
+                    std::string NewEntry = NewFull;
+                    if (!Target.empty())
+                    {
+                        const std::string Pfx = Target + "/";
+                        if (NewFull.rfind(Pfx, 0) != 0) continue;   // defensive: Target case must be stable
+                        NewEntry = NewFull.substr(Pfx.size());
+                    }
+                    auto &M = Renames[ZipPath];
+                    auto Ex = M.find(Entry);
+                    if (Ex != M.end() && Ex->second != NewEntry)
+                        Log.push_back("case-fix: conflicting canonicalization of '" + Entry + "' in " + ZipPath + " (skipped)");
+                    else
+                        M[Entry] = NewEntry;
+                }
+            }
+        }
+    }
+    return Renames;
+}
+
+// Rewrite one zip applying entry renames — libzip copies each entry's data (STORE, no re-compress) into a temp
+// archive under the new name, preserving structure/attrs/mtime, then atomically replaces the original.
+static bool ApplyZipRenames(const std::string &ZipPath, const std::map<std::string, std::string> &Renames,
+                            std::vector<std::string> &Log)
+{
+    int Err = 0;
+    zip_t *Src = zip_open(ZipPath.c_str(), ZIP_RDONLY, &Err);
+    if (!Src) { Log.push_back("case-fix: cannot open " + ZipPath); return false; }
+    const std::string Tmp = ZipPath + ".casefix.tmp";
+    zip_t *Dst = zip_open(Tmp.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &Err);
+    if (!Dst) { zip_close(Src); Log.push_back("case-fix: cannot create " + Tmp); return false; }
+
+    const zip_int64_t N = zip_get_num_entries(Src, 0);
+    bool Ok = true;
+    for (zip_int64_t i = 0; i < N && Ok; ++i)
+    {
+        const char *Name = zip_get_name(Src, (zip_uint64_t)i, 0);
+        if (!Name) { Ok = false; break; }
+        std::string Nm = Name;
+        auto It = Renames.find(Nm);
+        std::string NewNm = (It != Renames.end()) ? It->second : Nm;
+
+        if (!Nm.empty() && Nm.back() == '/')   // explicit directory entry
+        {
+            std::string D = NewNm; if (!D.empty() && D.back() == '/') D.pop_back();
+            if (zip_dir_add(Dst, D.c_str(), ZIP_FL_ENC_UTF_8) < 0) Ok = false;
+            continue;
+        }
+        zip_source_t *S = zip_source_zip_file(Dst, Src, (zip_uint64_t)i, 0, 0, -1, nullptr);
+        if (!S) { Ok = false; break; }
+        zip_int64_t Ix = zip_file_add(Dst, NewNm.c_str(), S, ZIP_FL_ENC_UTF_8 | ZIP_FL_OVERWRITE);
+        if (Ix < 0) { zip_source_free(S); Ok = false; break; }
+        zip_set_file_compression(Dst, (zip_uint64_t)Ix, ZIP_CM_STORE, 0);   // keep STORE (FUSE needs it)
+        zip_uint8_t Ops = 0; zip_uint32_t Attr = 0;
+        if (zip_file_get_external_attributes(Src, (zip_uint64_t)i, 0, &Ops, &Attr) == 0)
+            zip_file_set_external_attributes(Dst, (zip_uint64_t)Ix, 0, Ops, Attr);
+        zip_stat_t St; zip_stat_init(&St);
+        if (zip_stat_index(Src, (zip_uint64_t)i, 0, &St) == 0 && (St.valid & ZIP_STAT_MTIME))
+            zip_file_set_mtime(Dst, (zip_uint64_t)Ix, St.mtime, 0);
+    }
+
+    std::error_code Ec;
+    if (!Ok) { zip_discard(Dst); zip_close(Src); std::filesystem::remove(Tmp, Ec); Log.push_back("case-fix: rewrite failed " + ZipPath); return false; }
+    if (zip_close(Dst) < 0) { zip_close(Src); std::filesystem::remove(Tmp, Ec); Log.push_back("case-fix: finalize failed " + ZipPath); return false; }
+    zip_close(Src);
+    std::filesystem::rename(Tmp, ZipPath, Ec);   // atomic replace
+    if (Ec) { Log.push_back("case-fix: replace failed " + ZipPath); return false; }
+    return true;
+}
+
+int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log, const std::filesystem::path *ScopeDir)
+{
+    auto Renames = ComputeCaseRenames(Idx, Log);
+    std::string Scope;
+    if (ScopeDir) { std::error_code Ec; Scope = std::filesystem::weakly_canonical(*ScopeDir, Ec).string(); if (Ec) Scope = ScopeDir->string(); }
+    int Fixed = 0;
+    for (const auto &[ZipPath, M] : Renames)
+    {
+        if (M.empty()) continue;
+        if (!Scope.empty() && ZipPath.rfind(Scope, 0) != 0) continue;   // outside the requested bundle → leave it
+        Log.push_back("case-fix: " + std::filesystem::path(ZipPath).filename().string()
+                      + " — " + std::to_string(M.size()) + (M.size() == 1 ? " entry" : " entries"));
+        for (const auto &[O, Nw] : M) Log.push_back("    " + O + "  ->  " + Nw);
+        if (ApplyZipRenames(ZipPath, M, Log)) ++Fixed;
+    }
+    return Fixed;
+}
+
 } // namespace ManifestModel

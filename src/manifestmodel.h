@@ -141,6 +141,15 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
 void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, std::vector<std::string> &Warnings,
                        const std::set<std::string> *OnlyNodes = nullptr);
 
+// Resolves cross-layer case conflicts (the FindCrossLayerCaseCollisions errors) by canonicalizing the
+// higher-priority layers' zip entries to the base layer's case (unpack→rename→repackage STORE, same
+// structure; the base zip is never touched). Canonicalization always uses the full index (correct base-case
+// resolution); ScopeDir, if given, restricts which zips are actually rewritten to those under that directory
+// (so the Package Editor button fixes only the open bundle). Returns the number of zips rewritten; Log gets a
+// human report. Used by --fix-case-conflicts and the Package Editor "Fix case conflicts" action.
+int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log,
+                     const std::filesystem::path *ScopeDir = nullptr);
+
 // ----- VFS layer helpers (the dedup foundation) -----
 // True if every file entry in the zip at ZipPath is STOREd (uncompressed) — the form VidyaGodFS can mount (it
 // reads entries at their backing offset and cannot inflate DEFLATE). A missing/unreadable zip is treated as true

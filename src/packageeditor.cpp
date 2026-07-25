@@ -1,5 +1,6 @@
 #include "packageeditor.h"
-#include "packageeditormodel.h"   // the state/signal hub
+#include "packageeditormodel.h"
+#include "manifestmodel.h"   // the state/signal hub
 #include "nodeeditor.h"           // per-node tab widget
 #include "jsonraweditor.h"        // raw-JSON tab widget
 #include "validationpanel.h"      // docked validation panel
@@ -10,6 +11,7 @@
 #include <QScreen>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <filesystem>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
@@ -50,10 +52,14 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
     // Toolbar: add a node / publish the bundle.
     QHBoxLayout * Toolbar = new QHBoxLayout();
     Toolbar->setSpacing(1);
-    QPushButton * AddNodeBtn = new QPushButton("Add Node", this);
-    QPushButton * PublishBtn = new QPushButton("Publish",  this);
+    QPushButton * AddNodeBtn  = new QPushButton("Add Node", this);
+    QPushButton * FixCaseBtn  = new QPushButton("Fix Case Conflicts", this);
+    QPushButton * PublishBtn  = new QPushButton("Publish",  this);
+    FixCaseBtn->setToolTip("Resolve cross-layer case conflicts: rename case-colliding zip entries in the higher-priority\n"
+                           "layers to the base layer's case (unpack→rename→repackage) so patches/add-ons override cleanly.");
     Toolbar->addWidget(AddNodeBtn);
     Toolbar->addStretch();
+    Toolbar->addWidget(FixCaseBtn);
     Toolbar->addWidget(PublishBtn);
     MainLayout->addLayout(Toolbar);
 
@@ -80,6 +86,21 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
                                : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
         }
         else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
+    });
+
+    //Fix case conflicts: canonicalize case-colliding zip entries in this bundle's higher-priority layers to the
+    //base layer's case (unpack→rename→repackage STORE) so patches/add-ons override cleanly on the case-sensitive mount.
+    connect(FixCaseBtn, &QPushButton::clicked, this, [this](){
+        if (!PackageDir) return;
+        Model->SaveNodes();
+        std::vector<std::string> Log;
+        const std::filesystem::path Scope = PackageDir->path().toStdString();   // only rewrite THIS bundle's zips
+        const int Fixed = ManifestModel::FixCaseConflicts(Model->BuildExecIndex(), Log, &Scope);
+        Model->Revalidate();
+        if (Fixed == 0) { QMessageBox::information(this, "Fix Case Conflicts", "No cross-layer case conflicts found in this package."); return; }
+        QString Report; for (const auto &L : Log) Report += QString::fromStdString(L) + "\n";
+        QMessageBox::information(this, "Fix Case Conflicts",
+            QString("Rewrote %1 zip(s) — case-colliding entries were renamed to the base layer's case.\n\n%2").arg(Fixed).arg(Report));
     });
 
     // Node graph overview — a clickable DAG sidebar on the LEFT of the editor. Flows top→down (launchables on top,

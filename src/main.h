@@ -39,6 +39,7 @@ struct LaunchParameters
     std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)
     bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
     bool ValidateNodes = false;                                          //--validate-nodes: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
+    bool FixCaseConflicts = false;                                       //--fix-case-conflicts: canonicalize cross-layer case-colliding zip entries (unpack/rename/repackage) so patches/add-ons override cleanly, then exit
     bool ListNodes = false;                                              //--list-nodes: print the presentable library tiles (grouped launchable nodes) + hydration status, then exit
     std::vector<std::string> ConvertDeltaChain;                          //--convert-delta-chain <baseNode> <node2> ...: reduce a version chain to a base full zip + per-version .vgdelta layers (byte-verified), then exit
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit
