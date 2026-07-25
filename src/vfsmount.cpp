@@ -158,9 +158,10 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     {
         std::string Type = Sub.value("TYPE", std::string());
         std::string LType;
-        if      (Type == "VFSZipLayer")  LType = "zip";
-        else if (Type == "VFSDirLayer")  LType = "dir";
-        else if (Type == "VFSFileLayer") LType = "file";
+        if      (Type == "VFSZipLayer")   LType = "zip";
+        else if (Type == "VFSDirLayer")   LType = "dir";
+        else if (Type == "VFSFileLayer")  LType = "file";
+        else if (Type == "VFSDeltaLayer") LType = "delta";   // a .vgdelta over the same-TARGET zip below in the closure
         else continue;
 
         std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
@@ -181,7 +182,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
             for (const auto &Sub : L.Layers)
             {
                 const std::string Type = Sub.value("TYPE", std::string());
-                const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
+                const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : (Type == "VFSDeltaLayer") ? "delta" : "";
                 if (LType.empty()) continue;
                 std::string Target = ResolveTarget(Base, Sub);
                 Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},

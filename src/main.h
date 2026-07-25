@@ -40,6 +40,7 @@ struct LaunchParameters
     bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
     bool ValidateNodes = false;                                          //--validate-nodes: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
     bool ListNodes = false;                                              //--list-nodes: print the presentable library tiles (grouped launchable nodes) + hydration status, then exit
+    std::vector<std::string> ConvertDeltaChain;                          //--convert-delta-chain <baseNode> <node2> ...: reduce a version chain to a base full zip + per-version .vgdelta layers (byte-verified), then exit
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit
     bool SeedCoversOnly = false;                                          //--seed-covers <DIR>: like --seed but ONLY re-pins META.COVER refs (skips the big layers)
     bool SeedOverwrite = false;                                           //--overwrite: seed in OVERWRITE mode (re-reference every file; default is additive — only new/orphaned)

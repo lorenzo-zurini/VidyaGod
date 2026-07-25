@@ -3,6 +3,7 @@
 #include "commonutils.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
+#include "vgdelta.h"       // .vgdelta generate + verify (shared with vidyagodfs) — the --convert-delta-chain tool
 #include "prelaunchwindow.h"
 #include "gamepicker.h"
 #include "containerwrapper.h"
@@ -20,6 +21,8 @@
 #include <thread>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -683,6 +686,103 @@ int main(int argc, char *argv[])
         return Errors.empty() ? 0 : 1;
     }
 
+    //HEADLESS: reduce a version chain to one base full zip + per-version .vgdelta layers (byte-verified).
+    //Each node after the first has its VFSZipLayer replaced by a VFSDeltaLayer diffed against the version
+    //before it (overlay-relative chaining) and is reparented onto it; the now-redundant full zips are deleted.
+    if (!LaunchParameters.ConvertDeltaChain.empty())
+    {
+        namespace fs = std::filesystem;
+        const auto &Chain = LaunchParameters.ConvertDeltaChain;
+        if (Chain.size() < 2) { LogErr("convert-delta", "need >=2 nodes: <baseNode> <newer> [<newer>...]"); return 1; }
+        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+
+        // A ByteSource over an mmap (for byte-verification of the reconstructed view).
+        struct MapSrc : ByteSource {
+            int fd = -1; const uint8_t *p = nullptr; uint64_t n = 0;
+            bool Map(const std::string &path) { fd = ::open(path.c_str(), O_RDONLY); if (fd < 0) return false;
+                struct stat s{}; if (fstat(fd, &s)) return false; n = (uint64_t)s.st_size;
+                p = (const uint8_t *)::mmap(nullptr, n, PROT_READ, MAP_PRIVATE, fd, 0); return p != MAP_FAILED; }
+            ~MapSrc() override { if (p && p != MAP_FAILED) ::munmap((void *)p, n); if (fd >= 0) ::close(fd); }
+            ssize_t pread(void *b, size_t k, uint64_t o) override { if (o >= n) return 0; uint64_t a = n - o; size_t w = k < a ? k : a; std::memcpy(b, p + o, w); return (ssize_t)w; }
+            uint64_t size() const override { return n; }
+        };
+
+        struct V { const Node *node = nullptr; int layerIdx = -1; std::string zipPath, target; };
+        std::vector<V> vs;
+        for (const auto &id : Chain)
+        {
+            const Node *n = Index.Find(id);
+            if (!n) { LogErr("convert-delta", "node not found: " + id); return 1; }
+            V v; v.node = n;
+            for (int k = 0; k < (int)n->Layers.size(); ++k)
+                if (n->Layers[k].value("TYPE", std::string()) == "VFSZipLayer") { v.layerIdx = k; break; }
+            if (v.layerIdx < 0) { LogErr("convert-delta", "no VFSZipLayer in " + id); return 1; }
+            fs::path local; std::string cid;
+            ManifestModel::LayerLocator(n->Layers[v.layerIdx], n->BundleDir, local, cid);
+            v.zipPath = local.string();
+            v.target  = n->Layers[v.layerIdx].value("TARGET", std::string());
+            if (!fs::exists(v.zipPath)) { LogErr("convert-delta", "missing zip for " + id + ": " + v.zipPath); return 1; }
+            vs.push_back(std::move(v));
+        }
+
+        uint64_t before = 0; for (auto &v : vs) before += fs::file_size(v.zipPath);
+        uint64_t after  = fs::file_size(vs[0].zipPath);   // the base full zip stays
+
+        // Pass 1: generate + byte-verify every delta against the ORIGINAL prior zip (all still present), write
+        // the .vgdelta and rewrite the node JSON. Deletion of the redundant full zips is deferred to pass 2.
+        std::vector<std::string> toDelete;
+        for (size_t i = 1; i < vs.size(); ++i)
+        {
+            auto base = std::make_shared<MapSrc>();
+            auto tgt  = std::make_shared<MapSrc>();
+            if (!base->Map(vs[i - 1].zipPath) || !tgt->Map(vs[i].zipPath)) { LogErr("convert-delta", "mmap failed"); return 1; }
+            LogOut("convert-delta", "diff " + vs[i].node->NodeId + " against " + vs[i - 1].node->NodeId + " ...");
+            std::vector<uint8_t> delta = vgdelta::GenerateDelta(base->p, base->n, tgt->p, tgt->n);
+
+            // byte-verify: reconstruct the target view (delta over the same base) and compare to the real zip.
+            std::string derr;
+            auto ds = vgdelta::DeltaByteSource::Create(std::make_shared<MemByteSource>(delta), base, derr, false);
+            if (!ds || ds->size() != tgt->n) { LogErr("convert-delta", "verify: create/size (" + derr + ")"); return 1; }
+            {
+                const size_t CH = size_t(8) << 20; std::vector<uint8_t> buf(CH); uint64_t off = 0;
+                while (off < tgt->n) {
+                    size_t want = (size_t)std::min<uint64_t>(CH, tgt->n - off), got = 0;
+                    while (got < want) { ssize_t r = ds->pread(buf.data() + got, want - got, off + got); if (r <= 0) { LogErr("convert-delta", "verify read"); return 1; } got += (size_t)r; }
+                    if (std::memcmp(buf.data(), tgt->p + off, want) != 0) { LogErr("convert-delta", "BYTE MISMATCH — aborting, nothing changed"); return 1; }
+                    off += want;
+                }
+            }
+
+            // write the delta blob + rewrite the node JSON (reparent + swap the zip layer for a delta layer).
+            std::string blob = "delta_from__" + vs[i - 1].node->NodeId + ".vgdelta";
+            { std::ofstream o(vs[i].node->BundleDir / blob, std::ios::binary); o.write((const char *)delta.data(), (std::streamsize)delta.size()); }
+            after += delta.size();
+
+            nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
+            nlohmann::ordered_json parents = J.value("PARENTS", nlohmann::ordered_json::array());
+            if (!parents.is_array()) parents = nlohmann::ordered_json::array();
+            bool have = false; for (auto &p : parents) if (p == vs[i - 1].node->NodeId) have = true;
+            if (!have) parents.push_back(vs[i - 1].node->NodeId);
+            J["PARENTS"] = parents;
+            J["LAYERS"][vs[i].layerIdx] = nlohmann::ordered_json{ {"TYPE", "VFSDeltaLayer"}, {"PATH", blob}, {"TARGET", vs[i].target} };
+            { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
+
+            toDelete.push_back(vs[i].zipPath);
+            LogSucc("convert-delta", "  " + vs[i].node->NodeId + " ✓ verified  (" + std::to_string(delta.size() >> 20) + " MB delta)");
+        }
+
+        // The old full zips are now redundant (byte-verified recoverable from base + deltas), but deletion is
+        // left to the caller so the conversion stays reversible until they choose to reclaim the space.
+        uint64_t reclaim = 0;
+        for (const auto &z : toDelete) { std::error_code ec; reclaim += fs::file_size(z, ec); }
+        LogSucc("convert-delta", "chain reduced (verified): base+deltas = " + std::to_string(after >> 20)
+                + " MB vs " + std::to_string(before >> 20) + " MB of full zips ("
+                + std::to_string(before ? 100 - after * 100 / before : 0) + "% smaller). Reclaim "
+                + std::to_string(reclaim >> 20) + " MB by deleting the now-unreferenced full zips:");
+        for (const auto &z : toDelete) LogOut("convert-delta", "  rm  " + z);
+        return 0;
+    }
+
     //HEADLESS: print the presentable library tiles (grouped launchable nodes) + hydration status.
     if (LaunchParameters.ListNodes)
     {
@@ -976,6 +1076,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--validate-nodes")
         {
             RuntimeParameters.ValidateNodes   = true;
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--convert-delta-chain")
+        {
+            //Everything after this flag (until the next --option) is a version chain: base node first, then
+            //each newer version to reduce to a .vgdelta over the one before it.
+            while (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0)
+                RuntimeParameters.ConvertDeltaChain.push_back(argv[++i]);
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--seed" && i + 1 < argc)

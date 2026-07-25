@@ -689,7 +689,7 @@ bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed)
 
 bool IsVfsLayer(const std::string &Type)
 {
-    return Type == "VFSZipLayer" || Type == "VFSDirLayer" || Type == "VFSFileLayer";
+    return Type == "VFSZipLayer" || Type == "VFSDirLayer" || Type == "VFSFileLayer" || Type == "VFSDeltaLayer";
 }
 
 std::string LayerType(const nlohmann::ordered_json &Sub)

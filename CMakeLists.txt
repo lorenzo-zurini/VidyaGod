@@ -23,6 +23,7 @@ find_package(Qt6 CONFIG REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWi
 find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
+pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generation/verification (shared with vidyagodfs)
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
@@ -68,6 +69,10 @@ set(SHARED_SOURCES
 
     src/jsonoperations.h
     src/jsonoperations.cpp
+
+    # Shared with vidyagodfs: the .vgdelta binary-delta format. The FS applies deltas; the app generates +
+    # byte-verifies them (the convert action). One implementation, compiled into both (bytesource.h is header-only).
+    VidyaGodFS/src/vgdelta.cpp
 
     src/launchparams.h
     src/launchparams.cpp
@@ -213,7 +218,8 @@ set(SHARED_SOURCES
 add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)
+target_include_directories(vidyagod_objs PUBLIC VidyaGodFS/src)   # vgdelta.h / bytesource.h
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -258,6 +264,8 @@ add_executable(vg_tests
     tests/test_registrywrapper.cpp
     tests/test_fileedits.cpp
     tests/test_depcheck.cpp
+    tests/test_vgdelta.cpp
+    VidyaGodFS/src/vgdelta.cpp   # .vgdelta format (generate + apply) — shared with vidyagodfs
     src/manifestmodel.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
@@ -265,8 +273,8 @@ add_executable(vg_tests
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
-target_include_directories(vg_tests PRIVATE src)
-target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP)
+target_include_directories(vg_tests PRIVATE src VidyaGodFS/src)
+target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
