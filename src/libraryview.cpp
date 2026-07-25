@@ -100,27 +100,10 @@ void LibraryGameCard::play()
 {
     if (!Index || GroupNodeIds.empty()) return;
 
-    //Validate the node graph before launching; hard errors block launch. Scope it to THIS package's own closure
-    //(its editions + their PARENTS) so an unrelated package's issues — e.g. another game's legitimate cross-layer
-    //case collisions — never surface here or block this launch.
-    {
-        std::set<std::string> Scope;
-        for (const std::string &Ed : GroupNodeIds)
-        {
-            Scope.insert(Ed);
-            for (const std::string &Id : ManifestModel::ResolveNodeOrder(*Index, Ed, {})) Scope.insert(Id);
-        }
-        std::vector<std::string> ValErr, ValWarn;
-        ManifestModel::ValidateNodeGraph(*Index, ValErr, ValWarn, &Scope);
-        for (const auto &W : ValWarn) LogWarn("LibraryGameCard", "Node graph: " + W);
-        if (!ValErr.empty())
-        {
-            QString Msg = "This package's node graph has errors and cannot be launched:\n\n";
-            for (const auto &E : ValErr) Msg += "• " + QString::fromStdString(E) + "\n";
-            QMessageBox::critical(nullptr, "Manifest Error", Msg);
-            return;
-        }
-    }
+    //Node-graph validity is an AUTHORING concern, checked on demand in the Package Editor ("Check Package Validity"),
+    //NOT on every launch: for large packages (e.g. a 900-deep delta chain with a launchable per version) validating
+    //every edition's closure here is O(N²) and would stall the Play button. Regular launch assumes packages are valid;
+    //a malformed graph fails loudly downstream in resolution/mount, and fixing it is the author's job.
 
     //Gate: a USABLE runner must exist for the (representative) edition — a PATH runner present on the system or a
     //hydrated build runner. A compatible-but-not-installed runner does NOT count (you can't launch without it).

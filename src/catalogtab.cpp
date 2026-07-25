@@ -169,6 +169,7 @@ void CatalogTab::rebuild()
 
     //One card per un-hydrated presentable group: at least one edition's content is still missing AND fetchable
     //over IPFS. (A fully-hydrated group lives in the Library tab.)
+    const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
     for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
@@ -176,8 +177,12 @@ void CatalogTab::rebuild()
         for (const Node * N : Group)
         {
             Ids.push_back(N->NodeId);
-            if (!PackageCatalog::NodeHydrated(Model.catalogIndex(), N->NodeId)) AnyMissing = true;
-            if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()) AnyFetchable = true;
+            auto H = Hyd.find(N->NodeId);
+            if (H == Hyd.end() || !H->second.Hydrated)   // only an un-hydrated edition needs its (closure-walked) CIDs checked
+            {
+                AnyMissing = true;
+                if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()) AnyFetchable = true;
+            }
         }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;
         auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));

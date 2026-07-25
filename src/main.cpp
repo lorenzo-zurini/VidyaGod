@@ -816,13 +816,14 @@ int main(int argc, char *argv[])
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
         auto Groups = PackageCatalog::PresentableGroups(Index);
+        const auto Hyd = PackageCatalog::HydrationMap(Index);   // O(N+E) once, not per-launchable
         LogOut("list-nodes", std::to_string(Groups.size()) + " library tile(s):");
         for (const auto &G : Groups)
         {
             const Node *Rep = G.front();
             std::string Variants;
             for (const Node *N : G)
-                Variants += " " + N->NodeId + (PackageCatalog::NodeHydrated(Index, N->NodeId) ? "[hydrated]" : "[remote]");
+                Variants += " " + N->NodeId + ((Hyd.count(N->NodeId) && Hyd.at(N->NodeId).Hydrated) ? "[hydrated]" : "[remote]");
             LogOut("list-nodes", "  " + (Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId)
                    + "  (game " + Rep->GameKey() + "):" + Variants);
         }

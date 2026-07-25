@@ -150,6 +150,7 @@ void LibraryTab::buildCards()
     qDeleteAll(*LibraryGameCards); LibraryGameCards->clear();
     //One tile per presentable GROUP of launchable nodes. Only HYDRATED groups (every edition's content present
     //locally) appear in the Library; un-hydrated ones live in the Available tab.
+    const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());   // O(N+E) once — never per-launchable (deep chains → O(N²))
     for (const std::vector<const Node*> & Group : PackageCatalog::PresentableGroups(Model.catalogIndex()))
     {
         std::vector<std::string> Ids;
@@ -157,8 +158,9 @@ void LibraryTab::buildCards()
         for (const Node * N : Group)
         {
             Ids.push_back(N->NodeId);
-            if (!PackageCatalog::NodeHydrated(Model.catalogIndex(), N->NodeId)) AllHydrated = false;
-            if (PackageCatalog::NodeHasContent(Model.catalogIndex(), N->NodeId)) HasContent = true;
+            auto H = Hyd.find(N->NodeId);
+            if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
+            if (H != Hyd.end() && H->second.HasContent) HasContent = true;
         }
         if (!AllHydrated || Ids.empty() || !HasContent) continue;   // skip content-less/malformed (vacuously hydrated)
         auto * c = new LibraryGameCard(Model.config(), &Model.catalogIndex(), std::move(Ids));

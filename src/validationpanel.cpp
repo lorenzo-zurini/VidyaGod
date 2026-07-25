@@ -21,6 +21,18 @@ ValidationPanel::ValidationPanel(PackageEditorModel * model, QWidget * parent)
 void ValidationPanel::refresh()
 {
     if (!Model) return;
+
+    // Validation is on-demand (the "Check Package Validity" button) — before it's run (or after an edit) the results
+    // are stale, so show a neutral prompt rather than a misleading "✓ OK".
+    if (!Model->validated())
+    {
+        setTitle("Validation  —  not checked");
+        View->setHtml("<span style='color:#888'>Click <b>Check Package Validity</b> to validate the node graph "
+                      "(dangling/cyclic PARENTS, layer paths, runner resolution, cross-layer case collisions).</span>");
+        setStyleSheet(QString());
+        return;
+    }
+
     const auto & Errors   = Model->validationErrors();
     const auto & Warnings = Model->validationWarnings();
 

@@ -132,6 +132,12 @@ bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // True iff the node's closure defines at least one VFS content layer — i.e. it's a real, downloadable game and not a
 // content-less/malformed node (which is vacuously "hydrated"). Gate Library/Installed-Packages visibility on this.
 bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// Bulk hydration for the WHOLE index in O(N+E): computes {Hydrated, HasContent} for every node via one topological
+// pass over PARENTS (a node's value = its own layers ⊕ its parents'), memoizing per-node and stat-caching per path.
+// Use this instead of calling NodeHydrated/NodeHasContent per-launchable when building library/catalog tiles —
+// otherwise a package with a launchable per version over a deep delta chain is O(N²) (each closure re-walked + re-stat).
+struct NodeHydration { bool Hydrated = true; bool HasContent = false; };
+std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx);
 // Inverse of HydrateNode: delete the node closure's local content-layer files (keep manifests + cover) and unpin +
 // drop-ref their CIDs, so the package returns to the Catalog as re-downloadable and the node stops seeding it.
 // Returns the number of files removed. Use only for managed (library-root) packages, never local/portable ones.

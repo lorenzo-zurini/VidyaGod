@@ -85,7 +85,7 @@ void PackageEditorModel::LoadNodes()
     if (Doc["NODES"].empty())
         Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"LAYERS", json::array()} }));   // a bare content node
 
-    Revalidate();
+    Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc["NODES"].size()) + " node(s).");
 }
 
@@ -132,7 +132,7 @@ void PackageEditorModel::SaveNodes()
     if (!Ok) LogErr("PackageEditorModel", "One or more node files failed to save.");
 
     emit savedToDisk(PackageDir->path());
-    Revalidate();   // emits validationChanged
+    Validated = false; emit validationChanged();   // edits invalidate the last check; re-run on demand via the button
 }
 
 // ============================================================================
@@ -161,6 +161,7 @@ void PackageEditorModel::Revalidate()
             for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
         }
     ManifestModel::ValidateNodeGraph(Idx, ValErrors, ValWarnings, &Scope);
+    Validated = true;
     emit validationChanged();
 }
 

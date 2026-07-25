@@ -40,6 +40,7 @@ public:
     const nlohmann::ordered_json * globalConfig() const  { return GlobalConfigJSON; }
     const std::vector<std::string> & validationErrors()   const { return ValErrors; }
     const std::vector<std::string> & validationWarnings() const { return ValWarnings; }
+    bool validated() const { return Validated; }   // false = not checked since last edit (validation is on-demand)
 
     // ── Bundle open + node file I/O (one file per node) ──
     void initPackage(const QString & preselectedPath, QWidget * dirPickerParent);   // pick dir (if empty) + LoadNodes
@@ -94,6 +95,7 @@ private:
     const nlohmann::ordered_json * GlobalConfigJSON = nullptr;
     QWidget *                      DialogParent = nullptr;
     std::vector<std::string>       ValErrors, ValWarnings;
+    bool                           Validated = false;   // set by Revalidate(); cleared on any edit/load
     mutable NodeIndex              ExecIndexCache;            // BuildExecIndex() result, lazily (re)built by ExecIndex()
     mutable bool                   ExecIndexValid = false;
 };

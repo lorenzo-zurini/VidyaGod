@@ -52,13 +52,17 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
     // Toolbar: add a node / publish the bundle.
     QHBoxLayout * Toolbar = new QHBoxLayout();
     Toolbar->setSpacing(1);
-    QPushButton * AddNodeBtn  = new QPushButton("Add Node", this);
-    QPushButton * FixCaseBtn  = new QPushButton("Fix Case Conflicts", this);
-    QPushButton * PublishBtn  = new QPushButton("Publish",  this);
+    QPushButton * AddNodeBtn   = new QPushButton("Add Node", this);
+    QPushButton * ValidateBtn  = new QPushButton("Check Package Validity", this);
+    QPushButton * FixCaseBtn   = new QPushButton("Fix Case Conflicts", this);
+    QPushButton * PublishBtn   = new QPushButton("Publish",  this);
+    ValidateBtn->setToolTip("Validate the node graph on demand: dangling/cyclic PARENTS, layer paths, runner resolution,\n"
+                            "cross-layer case collisions. Authoring-only — the regular launcher assumes packages are valid.");
     FixCaseBtn->setToolTip("Resolve cross-layer case conflicts: rename case-colliding zip entries in the higher-priority\n"
                            "layers to the base layer's case (unpack→rename→repackage) so patches/add-ons override cleanly.");
     Toolbar->addWidget(AddNodeBtn);
     Toolbar->addStretch();
+    Toolbar->addWidget(ValidateBtn);
     Toolbar->addWidget(FixCaseBtn);
     Toolbar->addWidget(PublishBtn);
     MainLayout->addLayout(Toolbar);
@@ -86,6 +90,18 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
                                : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
         }
         else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
+    });
+
+    //Check package validity: on-demand node-graph validation (the regular launcher no longer validates per-launch).
+    //Can be slow for very large packages (deep chains) — that's fine as an explicit authoring action.
+    connect(ValidateBtn, &QPushButton::clicked, this, [this](){
+        QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+        Model->Revalidate();
+        QGuiApplication::restoreOverrideCursor();
+        const int Errs = (int)Model->validationErrors().size(), Warns = (int)Model->validationWarnings().size();
+        if (!Errs && !Warns) QMessageBox::information(this, "Check Package Validity", "✓ No problems found.");
+        else QMessageBox::warning(this, "Check Package Validity",
+            QString("%1 error(s), %2 warning(s) — see the Validation panel below.").arg(Errs).arg(Warns));
     });
 
     //Fix case conflicts: canonicalize case-colliding zip entries in this bundle's higher-priority layers to the

@@ -791,6 +791,47 @@ bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
     return Has;
 }
 
+std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx)
+{
+    std::unordered_map<std::string, NodeHydration> Memo;
+    std::unordered_map<std::string, bool> StatCache;                 // local path -> exists (each unique jar/delta stat'd once)
+    std::function<NodeHydration(const std::string &)> Compute = [&](const std::string &Id) -> NodeHydration {
+        auto It = Memo.find(Id);
+        if (It != Memo.end()) return It->second;
+        Memo[Id] = {true, false};                                    // cycle guard (graph is a DAG; validation checks this)
+        NodeHydration R;                                             // {Hydrated=true, HasContent=false}
+        const Node *N = Idx.Find(Id);
+        // Own content layers (runner nodes contribute nothing — their layers are never mounted as content).
+        if (N && !N->IsRunner() && N->Layers.is_array())
+            for (const auto &L : N->Layers)
+            {
+                if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
+                R.HasContent = true;
+                std::filesystem::path Local; std::string Cid;
+                LayerLocator(L, N->BundleDir, Local, Cid);
+                const std::string Key = Local.string();
+                auto Sc = StatCache.find(Key);
+                bool Exists;
+                if (Sc != StatCache.end()) Exists = Sc->second;
+                else { std::error_code Ec; Exists = std::filesystem::exists(Local, Ec); StatCache[Key] = Exists; }
+                if (!Exists) R.Hydrated = false;
+            }
+        // Fold in the parents' (already-memoized) closure result.
+        if (N)
+            for (const std::string &P : N->Parents)
+            {
+                if (!Idx.Find(P)) continue;
+                const NodeHydration PC = Compute(P);
+                R.Hydrated    = R.Hydrated && PC.Hydrated;
+                R.HasContent  = R.HasContent || PC.HasContent;
+            }
+        Memo[Id] = R;
+        return R;
+    };
+    for (const auto &[Id, N] : Idx.Nodes) { (void)N; Compute(Id); }
+    return Memo;
+}
+
 int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     // Inverse of HydrateNode: delete the node closure's local content-layer files (keeping the manifests + cover, so
