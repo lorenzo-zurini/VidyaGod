@@ -274,6 +274,27 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
 //Finds the variant in MANIFESTJSON matching ContainerParams.VariantID
 //under SUBGAMES[ContainerParams.subgame_id].VARIANTS and populates exe/work-dir/args fields.
 //Must be called AFTER BuildSubComponentsArray and BEFORE BuildContainerRuntime.
+// A VFS-anchored CONTENTPATH/WORKDIR (authored the same way as layer TARGETs — e.g.
+// "%PrefixRoot%/drive_c/%PackageUID%/Foo.exe", substituting to "pfx/drive_c/17260/Foo.exe") expressed relative to the
+// runner's content root. The guest-path template ("C:\<uid>\%REL%" for wine, identity for native) and the runner's
+// %ContentPath% consume this relative form. ContentRoot is the runner's mount root ("pfx/drive_c/%PackageUID%" for
+// proton/wine; "" for a native runner whose content root IS the VFS root — a no-op here). Both inputs are pre-
+// substituted; separators/edge slashes are normalized before comparison.
+static std::string ContentRootRelative(std::string Path, std::string ContentRoot)
+{
+    auto Normalize = [](std::string &S) {
+        for (char &c : S) if (c == '\\') c = '/';
+        while (!S.empty() && S.front() == '/') S.erase(S.begin());
+        while (!S.empty() && S.back()  == '/') S.pop_back();
+    };
+    Normalize(Path); Normalize(ContentRoot);
+    if (ContentRoot.empty()) return Path;
+    if (Path == ContentRoot) return std::string();
+    const std::string Prefix = ContentRoot + "/";
+    if (Path.rfind(Prefix, 0) == 0) return Path.substr(Prefix.size());
+    return Path;
+}
+
 bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.VariantID.empty())
@@ -304,15 +325,27 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
         }
     }
     LogSucc("ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.subgame_id);
-    // The variant declares ONE universal target path — CONTENTPATH: the path (relative to the program mount) to
-    // whatever the runner runs or loads (an exe, a ROM, a data root, or nothing for a self-contained runner).
-    // The runner composes how it's used from %ContentPath% (relative) / %Content% (absolute host) in its ARGS.
+    // The variant declares ONE universal target path — CONTENTPATH: the VFS-root-anchored path (authored like layer
+    // TARGETs, e.g. "%PrefixRoot%/drive_c/%PackageUID%/Foo.exe") to whatever the runner runs or loads (an exe, a ROM,
+    // a data root, or nothing for a self-contained runner). Its absolute host path is that location under the runtime
+    // mount; the runner composes how it's used from %ContentPath% (content-root-relative) / %Content% (absolute host).
     {
         std::string ExeStr = Resolved.value("CONTENTPATH", std::string());
         VarSubst::StringVariableSubstitution(ExeStr, ContainerParams.GetVariablesMap());
-        ContainerParams.ExePathRelative = std::filesystem::path(ExeStr);
+        for (char &c : ExeStr) if (c == '\\') c = '/';
+        while (!ExeStr.empty() && ExeStr.front() == '/') ExeStr.erase(ExeStr.begin());
+        while (!ExeStr.empty() && ExeStr.back()  == '/') ExeStr.pop_back();
+        if (ExeStr.empty())                                                  // self-contained runner (no CONTENTPATH)
+        {
+            ContainerParams.ExePathRelative.clear();
+            ContainerParams.ExePathComplete = ContainerParams.ProgramPath;
+        }
+        else
+        {
+            ContainerParams.ExePathComplete = ContainerParams.RuntimePath / ExeStr;
+            ContainerParams.ExePathRelative = std::filesystem::path(ContentRootRelative(ExeStr, ContainerParams.ContentRoot));
+        }
     }
-    ContainerParams.ExePathComplete = ContainerParams.ProgramPath / ContainerParams.ExePathRelative;
     LogOut("ResolveExecutableDefinition", "ContentPath: " + ContainerParams.ExePathRelative.string());
     LogOut("ResolveExecutableDefinition", "Content: " + ContainerParams.ExePathComplete.string());
     auto &WorkDirVal = Resolved["WORKDIR"];
@@ -320,8 +353,11 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     {
         std::string WorkDirStr = std::string(WorkDirVal);
         VarSubst::StringVariableSubstitution(WorkDirStr, ContainerParams.GetVariablesMap());
-        ContainerParams.WorkDirPathRelative = std::filesystem::path(WorkDirStr);
-        ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath / ContainerParams.WorkDirPathRelative;
+        for (char &c : WorkDirStr) if (c == '\\') c = '/';
+        while (!WorkDirStr.empty() && WorkDirStr.front() == '/') WorkDirStr.erase(WorkDirStr.begin());
+        while (!WorkDirStr.empty() && WorkDirStr.back()  == '/') WorkDirStr.pop_back();
+        ContainerParams.WorkDirPathRelative = std::filesystem::path(ContentRootRelative(WorkDirStr, ContainerParams.ContentRoot));
+        ContainerParams.WorkDirPathComplete = ContainerParams.RuntimePath / WorkDirStr;
     }
     else if (!ContainerParams.ExePathRelative.empty())
     {
