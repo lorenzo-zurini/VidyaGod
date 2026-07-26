@@ -135,31 +135,48 @@ void LinkGames(NodeIndex &Idx)
     // Meta inheritance is FIELD-LEVEL last-wins across the closure (ComposeAcrossClosure over every presentable node) —
     // the same merge as the launch-time DeclareExec composition — so a variant can override an individual tile field and
     // still inherit the rest. The Game KEY itself is the nearest presentable ancestor (grouping is a single edge).
-    struct Link { std::string Game; nlohmann::ordered_json Meta; };
-    std::map<std::string, Link> Links;
+    // Computed in ONE memoized pass over PARENTS (O(N+E)) rather than a ResolveNodeOrder + ComposeAcrossClosure walk
+    // PER launchable — the latter is O(N²) for deep chains (e.g. a 900-version Minecraft package whose launchables all
+    // group under one tile through a ~900-deep delta chain: the per-launchable closure walk timed the catalog out).
+    // Per node: `Nearest` = the nearest presentable node INCLUDING itself; `Meta` = presentable Meta field-merged over
+    // its closure (parents-before-children, own last) — matching ComposeAcrossClosure for the single-game-ancestor case.
+    struct G { std::string Nearest; nlohmann::ordered_json Meta; };
+    std::unordered_map<std::string, G> Memo;
+    std::function<const G &(const std::string &)> Compose = [&](const std::string &Id) -> const G & {
+        auto It = Memo.find(Id);
+        if (It != Memo.end()) return It->second;
+        G &g = Memo[Id];                                                     // insert placeholder (cycle guard; graph is a DAG)
+        g.Meta = nlohmann::ordered_json::object();
+        const Node *N = Idx.Find(Id);
+        if (!N) return g;
+        for (const std::string &P : N->Parents)                             // parents first = lower priority
+        {
+            if (!Idx.Find(P)) continue;
+            const G &pg = Compose(P);
+            for (const auto &[K, V] : pg.Meta.items()) g.Meta[K] = V;
+        }
+        if (N->Presentable())
+        {
+            for (const auto &[K, V] : N->Meta.items()) g.Meta[K] = V;        // own metadata wins (most specific)
+            g.Nearest = Id;
+        }
+        else                                                                // nearest presentable ancestor: a presentable
+        {                                                                   // direct parent first, else the nearest via a parent
+            for (const std::string &P : N->Parents) { const Node *A = Idx.Find(P); if (A && A->Presentable()) { g.Nearest = P; break; } }
+            if (g.Nearest.empty())
+                for (const std::string &P : N->Parents) { if (!Idx.Find(P)) continue; const G &pg = Compose(P); if (!pg.Nearest.empty()) { g.Nearest = pg.Nearest; break; } }
+        }
+        return g;
+    };
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (!N.IsLaunchable() || N.Presentable()) continue;                  // not a variant needing a game link
-        nlohmann::ordered_json Meta = ComposeAcrossClosure(Idx, Id, {},
-            [](const Node &A) -> const nlohmann::ordered_json * { return A.Presentable() ? &A.Meta : nullptr; });
-        if (Meta.empty()) continue;                                          // no presentable ancestor → not a variant
-        // Nearest presentable ancestor (closure is parents-before-children, this node last → scan back from the end).
-        std::string Game;
-        const std::vector<std::string> Order = ResolveNodeOrder(Idx, Id, {});
-        for (auto It = Order.rbegin(); It != Order.rend() && Game.empty(); ++It)
-        {
-            if (*It == Id) continue;
-            const Node *A = Idx.Find(*It);
-            if (A && A->Presentable()) Game = A->NodeId;
-        }
-        Links[Id] = { Game, std::move(Meta) };
-    }
-    for (auto &[Id, L] : Links)
-    {
-        Node &N = Idx.Nodes[Id];
-        N.Game = L.Game;
-        N.Meta = L.Meta;                                                     // the closure-composed tile metadata
-        if (N.Uid.empty()) N.Uid = L.Meta.value("UID", std::string());
+        const G &g = Compose(Id);
+        if (g.Meta.empty() || g.Nearest.empty()) continue;                   // no presentable ancestor → not a variant
+        Node &Nn = Idx.Nodes[Id];
+        Nn.Game = g.Nearest;                                                 // nearest presentable ancestor (the tile key)
+        Nn.Meta = g.Meta;                                                    // the closure-composed tile metadata
+        if (Nn.Uid.empty()) Nn.Uid = g.Meta.value("UID", std::string());
     }
 }
 
