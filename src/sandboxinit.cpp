@@ -66,8 +66,8 @@ bool MountOne(const std::string &helper, const std::string &spec, const std::str
         _exit(127);
     }
 
-    for (int i = 0; i < 100; ++i)   // up to ~10 s
-    {
+    for (int i = 0; i < 300; ++i)   // up to ~30 s (a very deep .vgdelta chain takes a few s to compose + enumerate;
+    {                               // returns the instant the mount appears, so the higher cap only helps slow mounts
         struct stat mst{};
         if (stat(mnt.c_str(), &mst) == 0 && (!haveBefore || mst.st_dev != before.st_dev)) return true;
         int status = 0;
