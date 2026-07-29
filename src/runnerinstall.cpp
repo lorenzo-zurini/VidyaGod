@@ -81,6 +81,14 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
     //Non-PREFIX_GENERATE runners have no prefix to build — nothing to do.
     if (!E.value("PREFIX_GENERATE", false)) return true;
 
+    //Node-declared prefix: the runner ships its prefix as node LAYERS (a config_info FileEdit + default_pfx/DLL
+    //VFSDirLayers), assembled from the delta chain at launch. No per-machine wineboot, no DEFPREFIX artifact — the
+    //install step is GONE. (Detected by the config_info FileEdit the authoring emits.)
+    if (R->Layers.is_array())
+        for (const auto &L : R->Layers)
+            if (L.value("TYPE", std::string()) == "FileEdit" && L.value("FILE", std::string()) == "config_info")
+            { LogOut("RunnerInstall::GenerateRunnerDefPrefix", "Node-declared prefix — no wineboot/DEFPREFIX for " + RunnerNodeId); return true; }
+
     const std::filesystem::path DefArtifact = RunnerWrapper::DefPrefixDir(R->BundleDir.string());
     const std::filesystem::path Sentinel    = DefPrefixSentinel(*R);
 
