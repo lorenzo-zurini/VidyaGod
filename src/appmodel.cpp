@@ -282,18 +282,3 @@ void AppModel::importRunner(const QString & runnerNodeId)
     emit runnerImportRequested(runnerNodeId);
 }
 
-void AppModel::generateRunnerDefPrefix(const QString & runnerNodeId, bool force)
-{
-    // Rebuild ONLY the DEFPREFIX (no download — the build is already local). Off-thread; reads a private index copy so
-    // it never races the GUI thread. This is the deliberate, re-runnable prefix step (Settings → Runners button / CLI).
-    const std::string Rid = runnerNodeId.toStdString();
-    NodeIndex Idx = CatalogIndex;
-    std::thread([this, Rid, force, Idx = std::move(Idx)]{
-        std::string Err;
-        const bool Ok = RunnerInstall::GenerateRunnerDefPrefix(Idx, Rid, force, &Err);
-        QMetaObject::invokeMethod(this, [this, Ok, Err]{
-            if (!Ok) LogErr("AppModel::generateRunnerDefPrefix", "DEFPREFIX generation failed: " + Err);
-            rebuildCatalog();   // emits catalogChanged (Runners page refresh)
-        }, Qt::QueuedConnection);
-    }).detach();
-}

@@ -129,54 +129,10 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
 
-    //Prefix base. Prefer the tiny RECIPE (config_info template + wineboot RegEdits, captured once at import) and
-    //ASSEMBLE the prefix from the already-mounted wine chain: default_pfx as the pfx structure + the builtin DLLs
-    //mounted straight into system32/syswow64. We seed a matching version+config_info into the writelayer so proton
-    //skips its own DLL copy (setup_prefix's `old_ver != CURRENT or config != prefix_info` gate) and reads the DLLs
-    //from the chain — ZERO COPY, no 700 MB DEFPREFIX. Legacy runners (no recipe) fall back to the whole DEFPREFIX tree.
-    // A runner may declare its prefix ASSEMBLY as node LAYERS (default_pfx/DLL VFSDirLayers + config_info/marker FileEdits,
-    // routed into SubComponentsArray by the resolver) — the generic loop below + BuildDefaultData handle it with no special
-    // case. Detect that (a config_info FileEdit) and skip the transitional recipe assembly / legacy DEFPREFIX tree.
-    bool NodePrefix = false;
-    for (const auto &S : ContainerParams.SubComponentsArray)
-        if (S.value("TYPE", std::string()) == "FileEdit" && S.value("FILE", std::string()) == "config_info") { NodePrefix = true; break; }
-    const std::filesystem::path RecipeDir = ContainerParams.DefPrefixPath.empty() ? std::filesystem::path()
-                                          : ContainerParams.DefPrefixPath.parent_path() / "recipe";
-    const bool HaveRecipe = !NodePrefix && ContainerParams.PrefixGenerate && !RecipeDir.empty()
-                            && std::filesystem::exists(RecipeDir / "config_info.tmpl");
-    if (NodePrefix)
-        LogOut("VfsMount::BuildLayerSpec", "Prefix assembled from runner-node layers (no recipe/DEFPREFIX special-case).");
-    else if (HaveRecipe)
-    {
-        std::ifstream in(RecipeDir / "config_info.tmpl"); std::stringstream ss; ss << in.rdbuf(); std::string CI = ss.str();
-        auto Sub = [&](std::string s){
-            for (size_t p; (p = s.find("%RunnerMount%")) != std::string::npos; ) s.replace(p, 13, ContainerParams.RunnerMountPath.string());
-            for (size_t p; (p = s.find("%TempPath%"))    != std::string::npos; ) s.replace(p, 10, ContainerParams.TempPath.string());
-            return s; };
-        const std::string CIsub = Sub(CI);
-        std::vector<std::string> L; { std::stringstream ls(CIsub); std::string ln; while (std::getline(ls, ln)) L.push_back(ln); }
-        auto Trim = [](std::string s){ while (!s.empty() && (s.back()=='/'||s.back()=='\r'||s.back()=='\n')) s.pop_back(); return s; };
-        const std::string LibDir = L.size() > 2 ? Trim(L[2]) : std::string();   // %RunnerMount%/files/lib
-        const std::string DefPfx = L.size() > 7 ? Trim(L[7]) : std::string();   // %RunnerMount%/files/share/default_pfx
-        //Assembly layers: default_pfx structure at pfx, then the builtin DLLs mounted into system32/syswow64 (no copy).
-        if (!DefPfx.empty())
-            Layers.push_back({{"type","dir"},{"source",DefPfx},{"target","pfx"},{"rw",false}});
-        if (!LibDir.empty())
-        {
-            Layers.push_back({{"type","dir"},{"source",LibDir + "/wine/x86_64-windows"},{"target","pfx/drive_c/windows/system32"},{"rw",false}});
-            Layers.push_back({{"type","dir"},{"source",LibDir + "/wine/i386-windows"}, {"target","pfx/drive_c/windows/syswow64"},{"rw",false}});
-        }
-        //Seed the compat-data markers into the writelayer so proton's setup_prefix short-circuits: version+config_info
-        //match → no update_builtin_libs (DLL copy); creation_sync_guard present → no copy_pfx (the default_pfx copy).
-        std::error_code Ec2; std::filesystem::create_directories(ContainerParams.WriteLayerPath / "pfx", Ec2);
-        std::ofstream(ContainerParams.WriteLayerPath / "config_info") << CIsub;
-        { std::ifstream vin(RecipeDir / "version"); std::stringstream vs; vs << vin.rdbuf(); std::ofstream(ContainerParams.WriteLayerPath / "version") << vs.str(); }
-        std::filesystem::copy_file(RecipeDir / "tracked_files", ContainerParams.WriteLayerPath / "tracked_files", std::filesystem::copy_options::overwrite_existing, Ec2);
-        std::ofstream(ContainerParams.WriteLayerPath / "pfx" / "creation_sync_guard");   // proton: prefix already created
-        LogOut("VfsMount::BuildLayerSpec", "Assembled prefix from recipe (zero-copy): default_pfx + builtin DLLs mounted, markers seeded.");
-    }
-    else if (ContainerParams.PrefixGenerate && !ContainerParams.DefPrefixPath.empty())
-        Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefPrefixPath.string()}, {"target", ""}, {"rw", false}});
+    //Prefix assembly has NO special case: a prefix-generating runner declares it as node LAYERS (default_pfx/DLL
+    //VFSDirLayers + config_info/marker FileEdits), routed into SubComponentsArray by the resolver, so the generic
+    //layer loop below + BuildDefaultData assemble the prefix from the delta chain — ZERO COPY, no wineboot, no
+    //DEFPREFIX tree. Nothing to do here.
 
     //Host content placement is a RUNNER property (CONTENT_ROOT, resolved): "" = root; "drive_c/<UID>" maps
     //the game under Wine's C:; "pfx/drive_c/<UID>" places it inside Proton's pfx. Same game, different runner.

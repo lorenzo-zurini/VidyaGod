@@ -40,21 +40,6 @@ void LaunchThread::run()
             emit progressChanged(5);
             emit statusChanged("Initializing container...");
         }
-        else if (ctx.find("InitializeDefPrefix") != std::string::npos)
-        {
-            if (msg.find("Initialising") != std::string::npos)
-            {
-                emit progressChanged(10);
-                emit statusChanged("Initializing Wine prefix...");
-            }
-            else if (msg.find("successful") != std::string::npos ||
-                     msg.find("SUC") != std::string::npos ||
-                     msg.find("Prefix initialisation successful") != std::string::npos)
-            {
-                emit progressChanged(25);
-                emit statusChanged("Prefix ready.");
-            }
-        }
         else if (ctx.find("BuildDefaultData") != std::string::npos)
         {
             emit progressChanged(35);

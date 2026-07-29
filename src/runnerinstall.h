@@ -23,7 +23,6 @@ namespace RunnerInstall
 //wipes any existing/partial artifact and rebuilds (a deliberate re-do). A non-PREFIX_GENERATE runner is a no-op
 //success. On failure the fetched build is KEPT (only the partial prefix is dropped) so a retry is prefix-only, and the
 //wineboot stderr tail is folded into *Error so the failure is diagnosable.
-bool GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::string &RunnerNodeId, bool Force, std::string *Error = nullptr);
 
 //Gather (without fetching) a runner node's missing build-layer download targets, appending to Out — so the single
 //download batch (beginDownload) pools a game's content with its runners' builds. Returns false (with *Error) only on a

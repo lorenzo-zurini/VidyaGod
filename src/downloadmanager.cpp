@@ -312,12 +312,8 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
             for (const std::string & Rid : RunnerIds)
                 if (!RunnerInstall::CollectRunnerNodeTargets(Snapshot, Rid, Targets, &Err)) { Ok = false; break; }
         if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
-        // Builds are now present locally → generate each runner's DEFPREFIX (proton/wine wineboot). This is the ONE
-        // download pump's post-fetch step; a runner install is just this batch with runner-build targets. Idempotent
-        // (skips a runner whose completion sentinel already exists — force-rebuild is a separate deliberate action).
-        if (Ok)
-            for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::GenerateRunnerDefPrefix(Snapshot, Rid, /*force*/false, &Err)) { Ok = false; break; }
+        // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch
+        // (node-declared layers), so there is NO post-fetch generation step — fetching the build IS the install.
         QMetaObject::invokeMethod(this, [this, Ok, Err, Key]{
             DownloadingUids.remove(Key);
             const bool Cancelled = CancellingUids.remove(Key);

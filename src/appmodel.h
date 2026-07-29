@@ -60,7 +60,6 @@ public:
     // tab's health check, so orphans are repaired the moment they're noticed rather than only on next launch.
     void healOrphansIfAny();
     void importRunner(const QString & runnerNodeId);   // emit runnerImportRequested → the ONE download pump (build fetch + DEFPREFIX)
-    void generateRunnerDefPrefix(const QString & runnerNodeId, bool force);   // (re)build only the DEFPREFIX off-thread (no download)
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
     void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries

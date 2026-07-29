@@ -128,12 +128,9 @@ bool ContainerWrapper::BuildContainerRuntime()
     //go to DEFAULTDATA below. One code path, no installed-vs-not branching for edits.
     if (PrefixGen)
     {
-        if (ContainerParams.RunnerShipsBuild)
-            //Installed runner: build is pre-provisioned. Mount it read-only at RunnerMountPath; DEFPREFIX is
-            //the one-time read-only artifact (no wineboot). We only READ its hives when building DEFAULTDATA.
-            { if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false; }
-        else
-            RegistryLayer::InitializeDefPrefix(this->ContainerParams);
+        //Installed runner: build is pre-provisioned. Mount it read-only at RunnerMountPath; the prefix is assembled
+        //from it via the runner node's declared layers (no wineboot, no DEFPREFIX artifact).
+        if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
 
         //Probe the mounted runner's prefix LAYOUT (new files/lib vs old dist/lib64) into launch vars, so a runner
         //node's prefix-assembly layers (default_pfx/DLL VFSDirLayers + config_info FileEdit) are IDENTICAL across

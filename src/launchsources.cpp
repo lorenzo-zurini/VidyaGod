@@ -109,23 +109,8 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
         LogErr("LaunchSources::EnsureSources", "Missing layer content (no local file, no source): " + Local.string());
     }
 
-    //A runner that declares its prefix as node LAYERS (a config_info FileEdit) needs no DEFPREFIX artifact — it
-    //assembles from the delta chain at launch. Only the legacy per-machine-generated prefix requires the artifact.
-    bool NodeDeclaredPrefix = false;
-    for (const auto &S : ContainerParams.SubComponentsArray)
-        if (S.value("TYPE", std::string()) == "FileEdit" && S.value("FILE", std::string()) == "config_info")
-            { NodeDeclaredPrefix = true; break; }
-
-    //An installed prefix-generating runner must have its one-time DEFPREFIX artifact (generated at import).
-    if (ContainerParams.RunnerShipsBuild && ContainerParams.PrefixGenerate && !NodeDeclaredPrefix)
-    {
-        std::error_code Ec;
-        if (ContainerParams.DefPrefixPath.empty() || !std::filesystem::exists(ContainerParams.DefPrefixPath, Ec))
-        {
-            Ok = false;
-            LogErr("LaunchSources::EnsureSources", "Runner not imported: missing DEFPREFIX artifact " + ContainerParams.DefPrefixPath.string());
-        }
-    }
+    //A prefix-generating runner declares its prefix as node LAYERS and assembles it from the delta chain at launch —
+    //there is no DEFPREFIX artifact to require. (The per-machine generated prefix has been removed entirely.)
 
     if (!Ok) LogErr("LaunchSources::EnsureSources", "Required dependencies are unavailable — launch blocked.");
     return Ok;

@@ -9,7 +9,6 @@ namespace RegistryLayer
 {
 //Initializes the Wine prefix at DefPrefixPath by running `wineboot` via the runner. DefPrefixPath becomes the
 //base (root) layer of the vidyagodfs spec. Wine/proton runners only.
-bool InitializeDefPrefix(struct ContainerParams &ContainerParams);
 
 //Builds the DEFAULTDATA layer (regenerated each launch): all package-encoded BASE (non-OVERRIDE) edits — FileEdits
 //as files, RegEdits as full hives copied-from-and-shadowing DEFPREFIX, plus merged persisted KEEP registry-subtrees.
