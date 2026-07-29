@@ -4,7 +4,9 @@
 #include "processenv.h"      // RunCommand + SystemToolEnv
 #include "runnerwrapper.h"   // RunnerWrapper::DefPrefixDir
 #include "ipfswrapper.h"     // IpfsWrapper (build-layer content fetch)
+#include "registrywrapper.h" // RegistryWrapper::DiffToRegEdits (capture wineboot's registry delta as RegEdits)
 #include "commonutils.h"     // Log*
+#include <sstream>
 
 #include <QProcess>
 #include <QString>
@@ -149,6 +151,11 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
     Vars["RunnerMount"] = MountDir.string();
     Vars["RuntimePath"] = DefArtifact.string();
     Vars["TempPath"]    = DefArtifact.string();
+    //Fold the runner-closure CustomVar defaults (already gathered in TgtVars) into the ENV substitution so the wineboot
+    //runs with the SAME toggle values a game launch does (e.g. PROTON_USE_WINED3D → "0", not the literal "%..%"). Proton
+    //derives config_info fields (use_wined3d/use_dxvk_dxgi) from these — if they differ, the captured recipe's config_info
+    //won't match at launch and proton re-copies the DLLs instead of using the mounted ones (defeats zero-copy).
+    for (const auto &[K, V] : TgtVars) Vars.emplace(K, V);
 
     std::string Program = E.value("EXECUTABLE", std::string("%RunnerMount%/proton"));
     VarSubst::StringVariableSubstitution(Program, Vars);
@@ -172,6 +179,36 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
     const std::string Sout = P.readAllStandardOutput().toStdString();
     std::cout << Serr << '\n' << Sout << '\n';
     const bool BootOk = (P.exitStatus() == QProcess::NormalExit && P.exitCode() == 0 && std::filesystem::exists(PrefixDir, Ec));
+
+    // Capture a tiny PREFIX RECIPE while the build is still mounted: config_info (with the mount paths templatized to
+    // %RunnerMount%/%TempPath% so it matches at launch regardless of where the build mounts), the wineboot registry
+    // delta as declarative RegEdits (vs the shipped default_pfx), and tracked_files/version. This is what lets the
+    // prefix be ASSEMBLED from mounts at launch — proton sees a matching version+config_info and skips its DLL copy —
+    // instead of storing a ~700 MB DEFPREFIX tree per runner-version.
+    if (BootOk)
+    {
+        const std::filesystem::path Recipe = Bundle / "DEFPREFIX" / "recipe";
+        std::filesystem::create_directories(Recipe, Ec);
+        std::string DefaultPfxDir;
+        { std::ifstream in(DefArtifact / "config_info"); std::stringstream ss; ss << in.rdbuf(); std::string CI = ss.str();
+          //config_info line 8 (index 7) is default_pfx_dir — grab it (absolute, mount still up) for the RegEdit baseline.
+          { std::stringstream ls(CI); std::string ln; for (int i = 0; std::getline(ls, ln); ++i) if (i == 7) { DefaultPfxDir = ln; break; } }
+          auto Repl = [&](const std::string &F, const std::string &T){ if (F.empty()) return; size_t p; while ((p = CI.find(F)) != std::string::npos) CI.replace(p, F.size(), T); };
+          Repl(MountDir.string(), "%RunnerMount%"); Repl(DefArtifact.string(), "%TempPath%");
+          //config_info line 12 (index 11) is builtin_dll_copy. The wineboot captured GE's protonfixes "*", but at LAUNCH
+          //we inject a user_settings.py that restores proton's default list (VfsMount::ProtonDefaultDllCopy) so builtins
+          //symlink instead of copy. Record THAT here so the captured config_info matches the launch → config-match skip.
+          { std::vector<std::string> Ls; { std::stringstream ls(CI); std::string ln; while (std::getline(ls, ln)) Ls.push_back(ln); }
+            if (Ls.size() > 11) { Ls[11] = VfsMount::ProtonDefaultDllCopy; CI.clear(); for (size_t i = 0; i < Ls.size(); ++i) CI += Ls[i] + (i + 1 < Ls.size() ? "\n" : ""); } }
+          std::ofstream(Recipe / "config_info.tmpl") << CI; }
+        if (!DefaultPfxDir.empty())
+        { RegistryWrapper Pfx, Base;
+          if (Pfx.LoadPrefix(PrefixDir) && Base.LoadPrefix(DefaultPfxDir))
+              std::ofstream(Recipe / "wineboot.regedits.json") << Pfx.DiffToRegEdits(Base).dump(1); }
+        std::filesystem::copy_file(DefArtifact / "tracked_files", Recipe / "tracked_files", std::filesystem::copy_options::overwrite_existing, Ec);
+        std::filesystem::copy_file(DefArtifact / "version",       Recipe / "version",       std::filesystem::copy_options::overwrite_existing, Ec);
+        LogSucc("RunnerInstall::GenerateRunnerDefPrefix", "Captured prefix recipe (config_info + wineboot RegEdits + tracked_files) at " + Recipe.string());
+    }
 
     RunCommand("fusermount3", {"-uz", MountDir.string()}, SystemToolEnv());
     std::filesystem::remove_all(MountDir, Ec);                                   // drop the transient build mountpoint

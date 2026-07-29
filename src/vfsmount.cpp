@@ -3,6 +3,8 @@
 #include "commonutils.h"        // Log*
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
 #include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)
+#include <fstream>              // prefix-recipe read + marker seeding (zero-copy prefix assembly)
+#include <sstream>
 
 #include <QApplication>
 #include <QMessageBox>
@@ -127,9 +129,45 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
 
-    //DEFPREFIX base — lowest priority, at the runtime root. Mounted whole when the runner generates a prefix
-    //(its drive_c / pfx structure and compat-data bookkeeping show at the root the launcher's env points at).
-    if (ContainerParams.PrefixGenerate && !ContainerParams.DefPrefixPath.empty())
+    //Prefix base. Prefer the tiny RECIPE (config_info template + wineboot RegEdits, captured once at import) and
+    //ASSEMBLE the prefix from the already-mounted wine chain: default_pfx as the pfx structure + the builtin DLLs
+    //mounted straight into system32/syswow64. We seed a matching version+config_info into the writelayer so proton
+    //skips its own DLL copy (setup_prefix's `old_ver != CURRENT or config != prefix_info` gate) and reads the DLLs
+    //from the chain — ZERO COPY, no 700 MB DEFPREFIX. Legacy runners (no recipe) fall back to the whole DEFPREFIX tree.
+    const std::filesystem::path RecipeDir = ContainerParams.DefPrefixPath.empty() ? std::filesystem::path()
+                                          : ContainerParams.DefPrefixPath.parent_path() / "recipe";
+    const bool HaveRecipe = ContainerParams.PrefixGenerate && !RecipeDir.empty()
+                            && std::filesystem::exists(RecipeDir / "config_info.tmpl");
+    if (HaveRecipe)
+    {
+        std::ifstream in(RecipeDir / "config_info.tmpl"); std::stringstream ss; ss << in.rdbuf(); std::string CI = ss.str();
+        auto Sub = [&](std::string s){
+            for (size_t p; (p = s.find("%RunnerMount%")) != std::string::npos; ) s.replace(p, 13, ContainerParams.RunnerMountPath.string());
+            for (size_t p; (p = s.find("%TempPath%"))    != std::string::npos; ) s.replace(p, 10, ContainerParams.TempPath.string());
+            return s; };
+        const std::string CIsub = Sub(CI);
+        std::vector<std::string> L; { std::stringstream ls(CIsub); std::string ln; while (std::getline(ls, ln)) L.push_back(ln); }
+        auto Trim = [](std::string s){ while (!s.empty() && (s.back()=='/'||s.back()=='\r'||s.back()=='\n')) s.pop_back(); return s; };
+        const std::string LibDir = L.size() > 2 ? Trim(L[2]) : std::string();   // %RunnerMount%/files/lib
+        const std::string DefPfx = L.size() > 7 ? Trim(L[7]) : std::string();   // %RunnerMount%/files/share/default_pfx
+        //Assembly layers: default_pfx structure at pfx, then the builtin DLLs mounted into system32/syswow64 (no copy).
+        if (!DefPfx.empty())
+            Layers.push_back({{"type","dir"},{"source",DefPfx},{"target","pfx"},{"rw",false}});
+        if (!LibDir.empty())
+        {
+            Layers.push_back({{"type","dir"},{"source",LibDir + "/wine/x86_64-windows"},{"target","pfx/drive_c/windows/system32"},{"rw",false}});
+            Layers.push_back({{"type","dir"},{"source",LibDir + "/wine/i386-windows"}, {"target","pfx/drive_c/windows/syswow64"},{"rw",false}});
+        }
+        //Seed the compat-data markers into the writelayer so proton's setup_prefix short-circuits: version+config_info
+        //match → no update_builtin_libs (DLL copy); creation_sync_guard present → no copy_pfx (the default_pfx copy).
+        std::error_code Ec2; std::filesystem::create_directories(ContainerParams.WriteLayerPath / "pfx", Ec2);
+        std::ofstream(ContainerParams.WriteLayerPath / "config_info") << CIsub;
+        { std::ifstream vin(RecipeDir / "version"); std::stringstream vs; vs << vin.rdbuf(); std::ofstream(ContainerParams.WriteLayerPath / "version") << vs.str(); }
+        std::filesystem::copy_file(RecipeDir / "tracked_files", ContainerParams.WriteLayerPath / "tracked_files", std::filesystem::copy_options::overwrite_existing, Ec2);
+        std::ofstream(ContainerParams.WriteLayerPath / "pfx" / "creation_sync_guard");   // proton: prefix already created
+        LogOut("VfsMount::BuildLayerSpec", "Assembled prefix from recipe (zero-copy): default_pfx + builtin DLLs mounted, markers seeded.");
+    }
+    else if (ContainerParams.PrefixGenerate && !ContainerParams.DefPrefixPath.empty())
         Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefPrefixPath.string()}, {"target", ""}, {"rw", false}});
 
     //Host content placement is a RUNNER property (CONTENT_ROOT, resolved): "" = root; "drive_c/<UID>" maps
@@ -328,6 +366,29 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
             BaseTarget = SubstTarget(std::string(Sub["BASE_TARGET"]));
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
                                           SubstTarget(Sub.value("TARGET", std::string())), BaseTarget));
+    }
+    // Neutralize GE-Proton's protonfixes hack `os.environ['PROTON_DLL_COPY']='*'`, which forces update_builtin_libs
+    // to COPY every builtin DLL into the prefix (~650 MB) instead of symlinking. GE does this to protect the SHARED
+    // wine build from per-game DLL edits — but our wine build is a read-only mount with a copy-up overlay, so any
+    // per-game edit already lands in the writelayer and never touches the shared build. So the hack is pointless here.
+    // proton does `import user_settings` (from its install dir, on sys.path) BEFORE setup_prefix runs; a user_settings.py
+    // whose import has the side-effect of restoring proton's default DLL_COPY list makes builtins SYMLINK into the
+    // mounted lib/wine — cheap, pristine, and robust to any config change (a toggle flip re-symlinks instead of
+    // re-copying 650 MB). GE ships user_settings.sample.py, never user_settings.py, so there is nothing to clobber.
+    if (ContainerParams.PrefixGenerate)
+    {
+        // NB: a vidyagodfs "file" layer takes its mount NAME from the SOURCE basename (overlay.cpp fileBase),
+        // and TARGET is the containing directory. So the source must literally be named user_settings.py, target "".
+        const std::filesystem::path US = ContainerParams.TempPath / "user_settings.py";
+        std::error_code UsEc; std::filesystem::create_directories(ContainerParams.TempPath, UsEc);
+        std::ofstream uf(US);
+        uf << "import os\n"
+              "# VidyaGod: undo protonfixes' PROTON_DLL_COPY='*' so wine builtins symlink into the RO wine mount\n"
+              "# (the copy-up overlay already isolates per-game DLL edits). This is proton's own upstream default list.\n"
+              "os.environ['PROTON_DLL_COPY'] = '" << VfsMount::ProtonDefaultDllCopy << "'\n"
+              "user_settings = {}\n";
+        uf.close();
+        Layers.push_back({{"type", "file"}, {"source", US.string()}, {"target", ""}, {"rw", false}});
     }
     Spec["layers"] = Layers;
 

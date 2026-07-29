@@ -952,6 +952,11 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
             RunnerComps.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}});
             RunnerBuildIds.push_back(N->NodeId);
         }
+        //The runner NODE itself carries the placement CustomVars (e.g. %DXVK_TARGET%/%FONTS_TARGET% that mount its lib
+        //components at the right prefix paths). The loop above skips it (it's the DeclareRunner boundary), so add it
+        //back — otherwise those knobs never reach ResolveCustomVariables and the components mount at literal %TARGET%.
+        RunnerComps.push_back({{"COMPONENTID", RunnerNode->NodeId}, {"SUBCOMPONENTS", AbsLayers(RunnerNode)}});
+        RunnerBuildIds.push_back(RunnerNode->NodeId);
         CP.RunnerComponents = RunnerComps;
         CP.RunnerRecipe     = RunnerBuildIds;
         CP.RunnerEndpoints  = CP.UnifiedRuntime ? RunnerBuildIds : std::vector<std::string>{};
