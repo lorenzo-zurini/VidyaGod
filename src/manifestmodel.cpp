@@ -42,6 +42,7 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
             Out.HostPlatform = L.value("PLATFORM", Out.HostPlatform);
             Out.Label        = L.value("LABEL", Out.Label);
             Out.Recommended  = L.value("RECOMMENDED", Out.Recommended);
+            Out.RecommendedRunner = L.value("RUNNER", Out.RecommendedRunner);   // soft package-side runner recommendation
         }
         else if (T == "DeclareRunner")
         {
@@ -704,14 +705,36 @@ bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed)
     return AllStored;
 }
 
-bool IsVfsLayer(const std::string &Type)
+//The vidyagodfs mount-spec "type" for a package layer TYPE ("zip"/"dir"/"file"/"delta"), or "" if not a VFS layer.
+//THE single source of truth for the layer→spec kind: every mount-spec builder (game content, inner-runner nesting,
+//runner build, DEFPREFIX gen) maps through here, so none can silently drop a layer kind (a real bug once: the runner
+//builders omitted VFSDeltaLayer → delta-chained runners served only their base).
+std::string VfsSpecType(const std::string &Type)
 {
-    return Type == "VFSZipLayer" || Type == "VFSDirLayer" || Type == "VFSFileLayer" || Type == "VFSDeltaLayer";
+    return Type == "VFSZipLayer"  ? "zip" : Type == "VFSDirLayer"   ? "dir"
+         : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta" : "";
 }
+
+bool IsVfsLayer(const std::string &Type) { return !VfsSpecType(Type).empty(); }
 
 std::string LayerType(const nlohmann::ordered_json &Sub)
 {
     return Sub.is_object() ? Sub.value("TYPE", std::string()) : std::string();
+}
+
+//Build ONE vidyagodfs spec-layer object from a package VFS layer `Sub`, with caller-resolved `Source`/`Target` (and, for
+//a cross-target delta, `BaseTarget`). Returns a null json if `Sub` is not a VFS layer (caller skips). Centralizes the
+//entry skeleton + the delta baseTarget field so every mount builder stays byte-for-byte consistent. The source/target
+//resolution stays at the call site because it genuinely differs (package path vs per-link base prefix vs var-subst).
+nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
+                                        const std::string &Target, const std::string &BaseTarget)
+{
+    const std::string LType = VfsSpecType(Sub.value("TYPE", std::string()));
+    if (LType.empty()) return nullptr;
+    nlohmann::ordered_json J = {{"type", LType}, {"source", Source}, {"target", Target},
+                                {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
+    if (LType == "delta" && !BaseTarget.empty()) J["baseTarget"] = BaseTarget;
+    return J;
 }
 
 void ForEachVfsLayer(const nlohmann::ordered_json &Components,

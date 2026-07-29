@@ -61,6 +61,9 @@ struct Node {
                                              // DeclareLibraryItem ancestor edge; "" ⇒ self = single-variant tile)
     std::string Label;                       // variant label for the picker (DeclareExec.LABEL)
     bool Recommended = false;                // RECOMMENDED — the default variant within its game (DeclareExec.RECOMMENDED)
+    std::string RecommendedRunner;           // RUNNER — a runner node id this launchable recommends (DeclareExec.RUNNER); a
+                                             // soft, package-side default that seeds USERSETTINGS.PREFERRED_RUNNER (register.
+                                             // time) — NOT a runner-pick tier; the user still overrides in the picker
     nlohmann::ordered_json Meta;             // the library tile metadata (DeclareLibraryItem); inherited onto variants by LinkGames
     std::string HostPlatform;                // DeclareExec.PLATFORM (launchable) or DeclareRunner.HOST
     std::vector<std::string> GuestPlatform;  // DeclareRunner.GUEST[]
@@ -155,10 +158,17 @@ int FixCaseConflicts(const NodeIndex &Idx, std::vector<std::string> &Log,
 // reads entries at their backing offset and cannot inflate DEFLATE). A missing/unreadable zip is treated as true
 // (other checks cover presence). If FirstCompressed is non-null, it receives the first compressed entry's name.
 bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed = nullptr);
-// True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File).
+// The vidyagodfs mount-spec type for a package layer TYPE ("zip"/"dir"/"file"/"delta"), "" if not a VFS layer. The
+// single source of truth for the layer→spec kind, shared by IsVfsLayer and every mount-spec builder.
+std::string VfsSpecType(const std::string &Type);
+// True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File/Delta).
 bool IsVfsLayer(const std::string &Type);
 // A subcomponent's TYPE ("" if absent).
 std::string LayerType(const nlohmann::ordered_json &Sub);
+// Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target (and a delta's
+// BaseTarget). Null json if `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift.
+nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
+                                        const std::string &Target, const std::string &BaseTarget = "");
 // Invokes Fn on every VFS-layer subcomponent across a COMPONENTS array (any json shape is tolerated).
 void ForEachVfsLayer(const nlohmann::ordered_json &Components,
                      const std::function<void(const nlohmann::ordered_json &Sub)> &Fn);

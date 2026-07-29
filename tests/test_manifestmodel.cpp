@@ -237,12 +237,13 @@ TEST(declare_layers_derive_identity)
     Node N;
     ordered_json lj; lj["NODE_ID"] = "g";
     lj["LAYERS"] = ordered_json::array({ ordered_json{{"TYPE","DeclareExec"},{"PLATFORM","win32"},
-                    {"CONTENTPATH","game.exe"},{"LABEL","Vanilla"},{"RECOMMENDED",true}} });
+                    {"CONTENTPATH","game.exe"},{"LABEL","Vanilla"},{"RECOMMENDED",true},{"RUNNER","geproton_9_20_runner"}} });
     CHECK(ManifestModel::ParseNode(lj, "f.json", "/b", N));
     CHECK(N.IsLaunchable()); CHECK(!N.IsRunner());
     CHECK_EQ(N.HostPlatform, std::string("win32"));
     CHECK_EQ(N.Exec.value("CONTENTPATH", std::string()), std::string("game.exe"));
     CHECK_EQ(N.Label, std::string("Vanilla")); CHECK(N.Recommended);
+    CHECK_EQ(N.RecommendedRunner, std::string("geproton_9_20_runner"));   // DeclareExec.RUNNER → soft package-side runner
 
     Node R;
     ordered_json rj; rj["NODE_ID"] = "wine";

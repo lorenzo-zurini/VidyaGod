@@ -159,21 +159,12 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
-        std::string Type = Sub.value("TYPE", std::string());
-        std::string LType;
-        if      (Type == "VFSZipLayer")   LType = "zip";
-        else if (Type == "VFSDirLayer")   LType = "dir";
-        else if (Type == "VFSFileLayer")  LType = "file";
-        else if (Type == "VFSDeltaLayer") LType = "delta";   // a .vgdelta over the same-TARGET zip below in the closure
-        else continue;
-
-        std::filesystem::path Source = ResolveLayerSource(Sub, ContainerParams.PackagePath);
-        std::string Target = ResolveTarget(std::string(), Sub);   // VFS-root-relative — no implicit CONTENT_ROOT prefix
-        nlohmann::ordered_json LayerJ = {{"type", LType}, {"source", Source.string()}, {"target", Target},
-                          {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
-        if (LType == "delta" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
-            LayerJ["baseTarget"] = ResolveTargetKey(std::string(), Sub, "BASE_TARGET");   // cross-target byte-base
-        Layers.push_back(LayerJ);
+        if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+        std::string BaseTarget;                                   // cross-target byte-base of a VFSDeltaLayer (else empty)
+        if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
+            BaseTarget = ResolveTargetKey(std::string(), Sub, "BASE_TARGET");
+        Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.PackagePath),
+                                          ResolveTarget(std::string(), Sub), BaseTarget));   // VFS-root-relative target
     }
 
     //CROSS-NAMESPACE NESTING: an INNER chain runner (e.g. a win32 emulator under proton) runs inside the boundary's
@@ -187,15 +178,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                                                          : (ContentRoot + "/" + LaunchResolver::InnerRunnerMountRel(L.NodeId));
             for (const auto &Sub : L.Layers)
             {
-                const std::string Type = Sub.value("TYPE", std::string());
-                const std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : (Type == "VFSDeltaLayer") ? "delta" : "";
-                if (LType.empty()) continue;
-                std::string Target = ResolveTarget(Base, Sub);
-                nlohmann::ordered_json LayerJ = {{"type", LType}, {"source", ResolveLayerSource(Sub, L.PackagePath)}, {"target", Target},
-                                  {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
-                if (LType == "delta" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
-                    LayerJ["baseTarget"] = ResolveTargetKey(Base, Sub, "BASE_TARGET");
-                Layers.push_back(LayerJ);
+                if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+                std::string BaseTarget;
+                if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
+                    BaseTarget = ResolveTargetKey(Base, Sub, "BASE_TARGET");
+                Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath), ResolveTarget(Base, Sub), BaseTarget));
             }
         }
 
@@ -319,14 +306,28 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     Spec["uid"] = 1000; Spec["gid"] = 1000;
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
+    // A runner build may itself be a .vgdelta CHAIN (many Proton versions = base + deltas); MakeVfsSpecLayer handles
+    // VFSDeltaLayer so pinning a specific version reconstructs it (its base zip precedes it — closure order is
+    // parents-first). TARGET/BASE_TARGET are bare (beside the runner-mount root — no per-link base prefix here) and
+    // %VAR%-substituted from the closure, so a SHARED library node (e.g. a dedup'd dxvk pinned by many proton versions)
+    // can place itself per-referrer via TARGET:"%DXVK_TARGET%" — the composing runner defines DXVK_TARGET.
+    const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
+    auto SubstTarget = [&](const std::string &In) -> std::string {
+        std::string T = In;
+        VarSubst::StringVariableSubstitution(T, Vars);
+        for (char &c : T) if (c == '\\') c = '/';
+        while (!T.empty() && T.front() == '/') T.erase(T.begin());
+        while (!T.empty() && T.back()  == '/') T.pop_back();
+        return T;
+    };
     for (auto &Sub : ContainerParams.RunnerLayers)
     {
-        const std::string Type = Sub.value("TYPE", std::string());
-        std::string LType = (Type == "VFSZipLayer") ? "zip" : (Type == "VFSDirLayer") ? "dir" : (Type == "VFSFileLayer") ? "file" : "";
-        if (LType.empty()) continue;
-        std::string Target = Sub.value("TARGET", std::string());            // beside the runner-mount root
-        Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath)},
-                          {"target", Target}, {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
+        if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+        std::string BaseTarget;
+        if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
+            BaseTarget = SubstTarget(std::string(Sub["BASE_TARGET"]));
+        Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
+                                          SubstTarget(Sub.value("TARGET", std::string())), BaseTarget));
     }
     Spec["layers"] = Layers;
 

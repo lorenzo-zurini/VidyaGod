@@ -106,16 +106,37 @@ bool RunnerInstall::GenerateRunnerDefPrefix(const NodeIndex &Idx, const std::str
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = MountDir.string(); Spec["uid"] = 1000; Spec["gid"] = 1000;
     Spec["readonly"] = true; Spec["writelayer"] = nullptr;
+    // Collect CustomVar DEFAULTs from the runner closure so a shared library node's TARGET:"%X_TARGET%" resolves during
+    // prefix generation too (the composing runner defines X_TARGET; there is no user override at prefix-gen time, so the
+    // author DEFAULT is exactly right). Mirrors the launch-time substitution in VfsMount::MountRunnerBuild.
+    std::map<std::string, std::string> TgtVars;
+    auto CollectCvars = [&](const Node *C){
+        if (!C || !C->Layers.is_array()) return;
+        for (const auto &S : C->Layers)
+            if (S.value("TYPE", std::string()) == "CustomVar" && S.contains("KEY") && S["KEY"].is_string())
+                TgtVars[std::string(S["KEY"])] = S.value("DEFAULT", std::string());
+    };
+    for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId)) CollectCvars(C);
+    CollectCvars(R);   // the runner node itself carries the placement bindings (X_TARGET) — RunnerBuildNodes omits it
+    auto SubstTarget = [&](const std::string &In) -> std::string {
+        std::string T = In;
+        VarSubst::StringVariableSubstitution(T, TgtVars);
+        for (char &c : T) if (c == '\\') c = '/';
+        while (!T.empty() && T.front() == '/') T.erase(T.begin());
+        while (!T.empty() && T.back()  == '/') T.pop_back();
+        return T;
+    };
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
         for (const auto &S : C->Layers)
         {
-            const std::string T = S.value("TYPE", std::string());
-            const std::string LType = (T == "VFSZipLayer") ? "zip" : (T == "VFSDirLayer") ? "dir" : (T == "VFSFileLayer") ? "file" : "";
-            if (LType.empty()) continue;
-            Layers.push_back({{"type", LType}, {"source", ResolveLayerSource(S, C->BundleDir)},
-                              {"target", S.value("TARGET", std::string())},
-                              {"submounts", S.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}});
+            // A runner build may be a .vgdelta CHAIN (Proton versions = base + deltas): MakeVfsSpecLayer handles
+            // VFSDeltaLayer so the DEFPREFIX is generated from the actual pinned version, not just the base zip.
+            if (!IsVfsLayer(S.value("TYPE", std::string()))) continue;
+            std::string BaseTarget;
+            if (S.value("TYPE", std::string()) == "VFSDeltaLayer" && S.contains("BASE_TARGET") && S["BASE_TARGET"].is_string())
+                BaseTarget = SubstTarget(std::string(S["BASE_TARGET"]));
+            Layers.push_back(MakeVfsSpecLayer(S, ResolveLayerSource(S, C->BundleDir), SubstTarget(S.value("TARGET", std::string())), BaseTarget));
         }
     Spec["layers"] = Layers;
     if (!VfsMount::SpawnVidyagodfs(Spec, MountDir, Bundle / "DEFPREFIX" / ".buildmount.spec.json"))

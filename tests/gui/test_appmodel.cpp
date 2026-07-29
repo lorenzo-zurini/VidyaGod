@@ -64,6 +64,30 @@ private slots:
         QVERIFY(true);
     }
 
+    // Registering a package whose launchable declares DeclareExec.RUNNER seeds the package's PREFERRED_RUNNER
+    // (a soft, package-side runner recommendation the user later overrides). A fresh entry only — never clobbers a
+    // user's existing choice.
+    void register_seeds_preferred_runner_from_declareexec_runner()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        QTemporaryDir pkg; QVERIFY(pkg.isValid());
+        json node = { {"NODE_ID", "tg"},
+            {"LAYERS", json::array({
+                json{{"TYPE", "DeclareLibraryItem"}, {"UID", "999"}, {"TITLE", "Test Game"}},
+                json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"},
+                     {"RUNNER", "geproton_10_20_runner"}} })} };
+        { std::ofstream f((pkg.path() + "/tg.json").toStdString()); f << node.dump(); }
+
+        json cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &appDir);
+        auto [added, skipped] = m.importPackagesFromDir(pkg.path());
+        QCOMPARE(added, 1);
+        QCOMPARE((int)cfg["LIBRARY"].size(), 1);
+        QCOMPARE(cfg["LIBRARY"][0]["USERSETTINGS"]["PREFERRED_RUNNER"].get<std::string>(),
+                 std::string("geproton_10_20_runner"));
+    }
+
     // The ctor applies the persisted CardPixelWidth (so a restart restores the user's zoom).
     void ctor_restores_persisted_card_width()
     {

@@ -91,6 +91,17 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
 
         nlohmann::ordered_json Slim;
         Slim["PACKAGEUID"] = Uid; Slim["PACKAGENAME"] = Name; Slim["PATH"] = Path.toStdString();
+
+        // Seed the package-side recommended runner (DeclareExec.RUNNER) into PREFERRED_RUNNER. This is a fresh entry
+        // (the dup check above skips existing ones), so it never overwrites a user's choice; PickRunnerNode reads it
+        // as usual and the user overrides in the picker. Prefer the representative launchable, else any launchable
+        // that declares one (a RECOMMENDED one wins).
+        std::string RecRunner = Rep->RecommendedRunner;
+        if (RecRunner.empty())
+            for (const auto & [Id, N] : BIdx.Nodes)
+                if (N.IsLaunchable() && !N.RecommendedRunner.empty()) { RecRunner = N.RecommendedRunner; if (N.Recommended) break; }
+        if (!RecRunner.empty()) Slim["USERSETTINGS"]["PREFERRED_RUNNER"] = RecRunner;
+
         (*Config)["LIBRARY"].push_back(Slim);
         ++Added;
     }
