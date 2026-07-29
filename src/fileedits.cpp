@@ -1,5 +1,6 @@
 #include "fileedits.h"
 #include "commonutils.h"   // Log*
+#include "varsubst.h"      // %variable% substitution in FileEdit VALUEs (e.g. config_info's %RunnerMount%/%TempPath%)
 
 #include <filesystem>
 #include <fstream>
@@ -46,6 +47,10 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
     LogOut("FileEdits::ProcessFileEdits",
            std::string(OverridePass ? "Override" : "Base") + " FileEdit pass. Base: " + BasePath.string());
 
+    // FILE and VALUE are %variable%-substituted (like layer TARGETs / runner ENV), so a FileEdit can write runtime-
+    // derived content — e.g. proton's config_info marker whose paths are "%RunnerMount%/files/..." / "%TempPath%".
+    const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
+
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (Sub.value("TYPE", std::string()) != "FileEdit") continue;
@@ -54,6 +59,8 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         std::string Mode  = Sub.value("MODE",  std::string());
         std::string File  = Sub.value("FILE",  std::string());
         std::string Value = Sub.value("VALUE", std::string());
+        VarSubst::StringVariableSubstitution(File,  Vars);
+        VarSubst::StringVariableSubstitution(Value, Vars);
         std::filesystem::path FilePath = BasePath / File;
 
         if (Mode == "ConfigWrite")

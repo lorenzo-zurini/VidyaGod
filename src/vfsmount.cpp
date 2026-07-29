@@ -134,11 +134,19 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //mounted straight into system32/syswow64. We seed a matching version+config_info into the writelayer so proton
     //skips its own DLL copy (setup_prefix's `old_ver != CURRENT or config != prefix_info` gate) and reads the DLLs
     //from the chain — ZERO COPY, no 700 MB DEFPREFIX. Legacy runners (no recipe) fall back to the whole DEFPREFIX tree.
+    // A runner may declare its prefix ASSEMBLY as node LAYERS (default_pfx/DLL VFSDirLayers + config_info/marker FileEdits,
+    // routed into SubComponentsArray by the resolver) — the generic loop below + BuildDefaultData handle it with no special
+    // case. Detect that (a config_info FileEdit) and skip the transitional recipe assembly / legacy DEFPREFIX tree.
+    bool NodePrefix = false;
+    for (const auto &S : ContainerParams.SubComponentsArray)
+        if (S.value("TYPE", std::string()) == "FileEdit" && S.value("FILE", std::string()) == "config_info") { NodePrefix = true; break; }
     const std::filesystem::path RecipeDir = ContainerParams.DefPrefixPath.empty() ? std::filesystem::path()
                                           : ContainerParams.DefPrefixPath.parent_path() / "recipe";
-    const bool HaveRecipe = ContainerParams.PrefixGenerate && !RecipeDir.empty()
+    const bool HaveRecipe = !NodePrefix && ContainerParams.PrefixGenerate && !RecipeDir.empty()
                             && std::filesystem::exists(RecipeDir / "config_info.tmpl");
-    if (HaveRecipe)
+    if (NodePrefix)
+        LogOut("VfsMount::BuildLayerSpec", "Prefix assembled from runner-node layers (no recipe/DEFPREFIX special-case).");
+    else if (HaveRecipe)
     {
         std::ifstream in(RecipeDir / "config_info.tmpl"); std::stringstream ss; ss << in.rdbuf(); std::string CI = ss.str();
         auto Sub = [&](std::string s){
@@ -194,6 +202,17 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     // The mount TARGET is the common case; a cross-target VFSDeltaLayer also carries BASE_TARGET (the target of its
     // byte-base zip), resolved identically so the two strings match the FS's per-target base map.
     auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) { return ResolveTargetKey(Base, Sub, "TARGET"); };
+    // A layer's SOURCE is %variable%-substituted too (like TARGET): after substitution an ABSOLUTE path is used as-is
+    // (LayerLocator), so a node can source from a RUNTIME path — e.g. a prefix-assembly VFSDirLayer with
+    // PATH "%RunnerMount%/files/share/default_pfx". Package-content layers carry no %VAR% and are unaffected.
+    auto ResolveSource = [&](const nlohmann::ordered_json &Sub, const std::filesystem::path &PkgPath) -> std::string {
+        nlohmann::ordered_json S = Sub;
+        auto SubP = [&](nlohmann::ordered_json &J){ if (J.contains("PATH") && J["PATH"].is_string()) {
+            std::string P = J["PATH"]; VarSubst::StringVariableSubstitution(P, Vars); J["PATH"] = P; } };
+        SubP(S);
+        if (S.contains("SOURCE") && S["SOURCE"].is_object()) SubP(S["SOURCE"]);
+        return ResolveLayerSource(S, PkgPath);
+    };
 
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
@@ -201,7 +220,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         std::string BaseTarget;                                   // cross-target byte-base of a VFSDeltaLayer (else empty)
         if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
             BaseTarget = ResolveTargetKey(std::string(), Sub, "BASE_TARGET");
-        Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.PackagePath),
+        Layers.push_back(MakeVfsSpecLayer(Sub, ResolveSource(Sub, ContainerParams.PackagePath),
                                           ResolveTarget(std::string(), Sub), BaseTarget));   // VFS-root-relative target
     }
 

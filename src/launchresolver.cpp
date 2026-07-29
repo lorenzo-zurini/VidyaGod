@@ -998,6 +998,19 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     DerivePaths(CP, GlobalConfigJSON);
     ResolveCustomVariables(ComponentPool, CP, GlobalConfigJSON);
     BuildSubComponentsArray(ComponentPool, CP);
+    //A prefix-generating runner contributes prefix-ASSEMBLY layers to the RUNTIME closure: default_pfx/DLL VFSDirLayers
+    //(sourced from "%RunnerMount%/..." — the enabler substitutes the runtime path), config_info/version/marker FileEdits,
+    //and wineboot RegEdits. They live on the runner NODE (its content comes from PARENTS, so its own LAYERS are otherwise
+    //ignored), so route the VFS/FileEdit/RegEdit ones into SubComponentsArray here — appended RAW (their %RunnerMount%/
+    //%TempPath% resolve downstream, at mount/edit time). The generic BuildLayerSpec loop + BuildDefaultData then assemble
+    //the prefix with NO special-case branch. Persist/CustomVar stay handled by RunnerPersistLayers / the resolver.
+    if (const Node *RN = Idx.Find(CP.RunnerID); RN && RN->Layers.is_array())
+        for (const auto &L : RN->Layers)
+        {
+            const std::string T = L.value("TYPE", std::string());
+            if (ManifestModel::IsVfsLayer(T) || T == "FileEdit" || T == "RegEdit")
+                CP.SubComponentsArray.push_back(L);
+        }
     DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "
             + std::to_string(CP.Recipe.size()) + " component(s)).");
