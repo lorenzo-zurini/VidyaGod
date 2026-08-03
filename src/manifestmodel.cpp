@@ -4,6 +4,8 @@
 
 #include <set>
 #include <map>
+#include <unordered_set>
+#include <unordered_map>
 #include <fstream>
 #include <algorithm>
 #include <regex>
@@ -193,15 +195,26 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
     //each node's own optional/EXCLUDE gate. A required parent is always pulled; an optional one only if its
     //toggle (else DEFAULT) is on and it doesn't conflict with an already-kept node. We only descend INTO a node
     //we keep, so an optional node's unique ancestors are naturally dropped with it (the hierarchy gate).
-    std::set<std::string> Enabled;
-    std::set<std::string> Kept;                                            // for symmetric EXCLUDE (first-kept wins)
+    //Pure membership sets (never iterated in order — the topological order is carried by `Order` below), so hash
+    //sets over the tree-based std::set: on a deep chain these are probed millions of times and string-key tree
+    //compares were a top validate-pass cost.
+    std::unordered_set<std::string> Enabled;
+    std::unordered_set<std::string> Kept;                                  // for symmetric EXCLUDE (first-kept wins)
+    std::unordered_set<std::string> ExcludedByKept;                        // ∪ of Exclude targets of every kept node
+    //Keep a node: record it, and fold its Exclude list into ExcludedByKept so the symmetric check below is O(1).
+    auto Keep = [&](const std::string &Id, const Node *N) {
+        Enabled.insert(Id); Kept.insert(Id);
+        if (N) for (const auto &E : N->Exclude) ExcludedByKept.insert(E);
+    };
+    //A candidate conflicts if it excludes an already-kept node, OR an already-kept node excludes it. The second
+    //arm was an O(|Kept|·log N) scan-with-Find (the validate-pass hot spot on deep chains); ExcludedByKept makes
+    //it an O(1) membership test — the union is maintained incrementally as nodes are kept.
     auto Conflicts = [&](const Node &N) {
         for (const auto &E : N.Exclude) if (Kept.count(E)) return true;    // this node excludes a kept one
-        for (const auto &K : Kept) { const Node *KN = Idx.Find(K); if (KN) for (const auto &E : KN->Exclude) if (E == N.NodeId) return true; }
-        return false;
+        return ExcludedByKept.count(N.NodeId) != 0;                        // a kept node excludes this one
     };
     std::vector<std::string> Frontier = { LaunchNodeId };
-    Enabled.insert(LaunchNodeId); Kept.insert(LaunchNodeId);
+    Keep(LaunchNodeId, Idx.Find(LaunchNodeId));
     while (!Frontier.empty())
     {
         const std::string Cur = Frontier.front(); Frontier.erase(Frontier.begin());
@@ -226,15 +239,15 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
                 if (!On) continue;
             }
             if (Conflicts(*P)) continue;
-            Enabled.insert(Pid); Kept.insert(Pid); Frontier.push_back(Pid);
+            Keep(Pid, P); Frontier.push_back(Pid);
         }
     }
 
     //Phase 2 — topo-order the enabled subgraph: emit a node only after all its enabled parents (post-order DFS
     //following PARENTS in list order). The launchable, having no enabled children, is emitted last = highest
     //priority. Cycles are reported and broken (the back-edge is skipped) so resolution still completes.
-    std::set<std::string> Visited;
-    std::set<std::string> OnStack;
+    std::unordered_set<std::string> Visited;
+    std::unordered_set<std::string> OnStack;
     std::function<void(const std::string &)> Emit = [&](const std::string &Id) {
         if (Visited.count(Id)) return;
         if (OnStack.count(Id)) { LogWarn("ManifestModel::ResolveNodeOrder", "Cycle through node '" + Id + "' — breaking edge."); return; }
@@ -277,7 +290,7 @@ std::string ToLowerAscii(std::string S) { for (char &c : S) c = (char)std::tolow
 
 // The regular file paths inside a zip (slash-normalized, directory entries dropped). Empty on open failure.
 const std::vector<std::string> &ZipEntriesCached(const std::string &Path,
-        std::map<std::string, std::vector<std::string>> &Cache)
+        std::unordered_map<std::string, std::vector<std::string>> &Cache)
 {
     auto It = Cache.find(Path);
     if (It != Cache.end()) return It->second;
@@ -316,7 +329,7 @@ std::string JoinTarget(std::string Target, std::string Rel)
 // The case-sensitive set of content-root-relative file paths a launchable's closure provides, from LOCALLY-present
 // VFS layers only (zips via libzip, dirs walked). AnyLocal=≥1 layer read; AllLocal=every VFS layer was on disk.
 void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
-        std::map<std::string, std::vector<std::string>> &ZipCache,
+        std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
         std::set<std::string> &Files, bool &AnyLocal, bool &AllLocal)
 {
     AnyLocal = false; AllLocal = true;
@@ -363,11 +376,11 @@ std::vector<std::string> SplitPath(const std::string &S)
 // upstream game's own content (unavoidable, merges fine on real Windows) and are deliberately ignored. A directory-case
 // difference collapses to one report; GlobalSeen dedups the same collision across launchables that share the content.
 void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
-        std::map<std::string, std::vector<std::string>> &ZipCache,
-        std::vector<std::string> &Out, std::set<std::string> &GlobalSeen)
+        std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
+        std::vector<std::string> &Out, std::unordered_set<std::string> &GlobalSeen)
 {
-    std::map<std::string, std::pair<std::string, std::string>> Seen;  // lowercased path -> (exact path, layer label)
-    std::set<std::string> LocalReported;                             // collapse repeats within this launchable
+    std::unordered_map<std::string, std::pair<std::string, std::string>> Seen;  // lowercased path -> (exact path, layer label)
+    std::unordered_set<std::string> LocalReported;                             // collapse repeats within this launchable
 
     auto Consider = [&](const std::string &F, const std::string &Lbl)
     {
@@ -418,8 +431,8 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                        const std::set<std::string> *OnlyNodes)
 {
     const std::string Machine = MachinePlatform();
-    std::map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
-    std::set<std::string> CrossLayerSeen;                       // dedup cross-layer case collisions across launchables
+    std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
+    std::unordered_set<std::string> CrossLayerSeen;             // dedup cross-layer case collisions across launchables
 
     //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
     auto HasRunnerFor = [&](const std::string &Host) {
@@ -429,6 +442,23 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         return false;
     };
 
+    //A VFS layer whose PATH/SOURCE.PATH carries a %VAR% is RUNTIME-SOURCED: its source is a mount path resolved at
+    //launch (e.g. a proton prefix-assembly layer PATH="%DefaultPfxDir%" pointing into the runner mount), NOT local
+    //authoring content. Such layers are never seeded to IPFS and, on a runner node, ARE used (routed to the prefix
+    //assembly) rather than ignored — so the "convert to STORE zip" / "runner layers are IGNORED" warnings don't apply.
+    auto RuntimeSourced = [](const nlohmann::ordered_json &L) {
+        const std::string P = L.value("PATH", std::string());
+        if (P.find('%') != std::string::npos) return true;
+        if (L.contains("SOURCE") && L["SOURCE"].is_object())
+            return std::string(L["SOURCE"].value("PATH", std::string())).find('%') != std::string::npos;
+        return false;
+    };
+
+    //Cycle-detection memo shared across the whole pass: a node proven acyclic (fully explored with no back-edge)
+    //never participates in a cycle, so later roots skip it. Hoisting this out of the per-node loop turns the
+    //check from O(N·depth) — every node re-walking its whole ancestor chain, quadratic on a deep delta chain — into
+    //O(N+E) total. OnStack stays per-root (a cycle is a back-edge on the current root's path).
+    std::unordered_set<std::string> CycleDone;
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (OnlyNodes && !OnlyNodes->count(Id)) continue;   // scoped validation: skip nodes outside the requested set
@@ -440,14 +470,14 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
 
         //No cycles reachable from this node (DFS over PARENTS).
         {
-            std::set<std::string> OnStack, Done;
+            std::unordered_set<std::string> OnStack;
             std::function<bool(const std::string &)> HasCycle = [&](const std::string &Cur) -> bool {
-                if (Done.count(Cur)) return false;
+                if (CycleDone.count(Cur)) return false;
                 if (OnStack.count(Cur)) return true;
                 OnStack.insert(Cur);
                 const Node *C = Idx.Find(Cur);
                 if (C) for (const std::string &P : C->Parents) if (Idx.Find(P) && HasCycle(P)) return true;
-                OnStack.erase(Cur); Done.insert(Cur);
+                OnStack.erase(Cur); CycleDone.insert(Cur);
                 return false;
             };
             if (HasCycle(Id)) Errors.push_back(Tag + ": PARENTS form a cycle");
@@ -458,7 +488,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //ship the runtime as the runner's own LAYERS get a runner with no build. Warn and point at the fix.
         if (N.IsRunner() && N.Layers.is_array())
             for (const auto &L : N.Layers)
-                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())))
+                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())) && !RuntimeSourced(L))
                 {
                     Warnings.push_back(Tag + ": a runner node carries its own VFS layer ('" + LayerType(L)
                         + "') — runner layers are IGNORED (the build is taken from the runner's PARENT content nodes). "
@@ -480,7 +510,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                     //A VFSDirLayer is an UNZIPPED authoring intermediary: it runs from the editor but cannot be
                     //published (IPFS seeds files/zips only). Warn — not an error — so the node still test-runs; use
                     //the layer's "→ ZIP" button to convert it to a STORE zip before publishing.
-                    if (LType == "VFSDirLayer")
+                    if (LType == "VFSDirLayer" && !RuntimeSourced(L))
                         Warnings.push_back(Tag + ": VFSDirLayer '" + std::string(L.value("PATH", std::string()))
                             + "' is an unzipped authoring layer — convert it to a STORE zip ('→ ZIP') before publishing "
                             "(dir layers cannot be seeded to IPFS).");
@@ -608,9 +638,14 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //global map: %REL% is injected by the guest-path templater (LaunchResolver). A %KEY% that is neither a built-in nor
     //declared by some CustomVar is almost always a typo and would survive as a literal.
     static const std::set<std::string> Builtins = []{
-        // Context token that is a valid built-in but NOT in a default GetVariablesMap: %REL% is injected by the
-        // guest-path templater (LaunchResolver), so it is always a legitimate reference — name it here.
-        std::set<std::string> B = { "REL" };
+        // Context tokens that are valid built-ins but NOT in a default GetVariablesMap because they are injected at
+        // launch AFTER a runtime probe, so they can't be known statically — always legitimate references, named here:
+        //  • %REL% — injected by the guest-path templater (LaunchResolver).
+        //  • the prefix-layout probe vars — set by ContainerWrapper once the runner build is mounted and its layout
+        //    (files/ vs dist/, lib vs lib64, system.reg mtime) is probed; the node-declared proton prefix layers
+        //    reference them (see ContainerWrapper::BuildContainerRuntime).
+        std::set<std::string> B = { "REL", "DefaultPfxDir", "WineFontsDir", "WineLibDir",
+                                    "WineSys32Dir", "WineSysWow64Dir", "SysRegMtime" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
         return B;
@@ -1004,7 +1039,7 @@ bool PackageHasContent(const nlohmann::ordered_json &Manifest)
 static std::map<std::string, std::map<std::string, std::string>>
 ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
 {
-    std::map<std::string, std::vector<std::string>> ZipCache;
+    std::unordered_map<std::string, std::vector<std::string>> ZipCache;
     std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
 
     for (const auto &[LId, LN] : Idx.Nodes)

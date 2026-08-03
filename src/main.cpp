@@ -670,15 +670,50 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    //HEADLESS: validate the whole node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...).
+    //HEADLESS: validate the node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...). Bare form
+    //scans the WHOLE catalog; `--validate-nodes <pkg>` scopes to one package (UID / bundle dir / node id) + its
+    //PARENTS closure — a fast pre-publish check that never pays the cross-package content scan (e.g. a huge
+    //delta-chained package you aren't touching). Cross-package content is still consulted for the in-scope nodes.
     if (LaunchParameters.ValidateNodes)
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::vector<std::string> Errors, Warnings;
-        ManifestModel::ValidateNodeGraph(Index, Errors, Warnings);
+
+        std::set<std::string> Scope;
+        if (!LaunchParameters.ValidateScope.empty())
+        {
+            const std::string &S = LaunchParameters.ValidateScope;
+            std::error_code Ec;
+            const std::string SAbs = std::filesystem::exists(S, Ec)
+                ? std::filesystem::weakly_canonical(S, Ec).string() : std::string();
+            //Seed nodes belonging to the requested package: matched by node id, package UID, bundle-dir path
+            //(exact/prefix), or bundle-dir name. Each seed then pulls in its whole PARENTS closure (as the editor does).
+            std::vector<std::string> Seeds;
+            for (const auto &[Id, N] : Index.Nodes)
+            {
+                bool Match = (Id == S) || (!N.Uid.empty() && N.Uid == S)
+                          || (std::filesystem::path(N.BundleDir).filename().string() == S);
+                if (!Match && !SAbs.empty() && !N.BundleDir.empty())
+                {
+                    const std::string B = std::filesystem::weakly_canonical(N.BundleDir, Ec).string();
+                    Match = (B == SAbs) || (B.rfind(SAbs + "/", 0) == 0);
+                }
+                if (Match) Seeds.push_back(Id);
+            }
+            for (const std::string &Sd : Seeds)
+            {
+                Scope.insert(Sd);
+                for (const std::string &Dep : ManifestModel::ResolveNodeOrder(Index, Sd, {})) Scope.insert(Dep);
+            }
+            if (Scope.empty()) { LogErr("validate-nodes", "scope '" + S + "' matched no package/node."); return 1; }
+        }
+
+        ManifestModel::ValidateNodeGraph(Index, Errors, Warnings, Scope.empty() ? nullptr : &Scope);
         for (const auto &W : Warnings) LogWarn("validate-nodes", W);
         for (const auto &E : Errors)   LogErr ("validate-nodes", E);
-        LogOut("validate-nodes", "Validated " + std::to_string(Index.Nodes.size()) + " node(s): "
+        const std::string Extent = Scope.empty() ? (std::to_string(Index.Nodes.size()) + " node(s)")
+                                                  : (std::to_string(Scope.size()) + " node(s) in scope '" + LaunchParameters.ValidateScope + "'");
+        LogOut("validate-nodes", "Validated " + Extent + ": "
                + std::to_string(Errors.size()) + " error(s), " + std::to_string(Warnings.size()) + " warning(s).");
         return Errors.empty() ? 0 : 1;
     }
@@ -1091,6 +1126,9 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.ValidateNodes   = true;
             RuntimeParameters.RunningHeadless = true;
+            //Optional scope: `--validate-nodes <pkg>` validates only that package (UID / bundle dir / node id) and
+            //its PARENTS closure — fast pre-publish check. Bare `--validate-nodes` still scans the whole catalog.
+            if (i + 1 < argc && argv[i + 1][0] != '-') RuntimeParameters.ValidateScope = argv[++i];
         }
         else if (arg == "--fix-case-conflicts")
         {
