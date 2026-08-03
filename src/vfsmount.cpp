@@ -342,29 +342,12 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
                                           SubstTarget(Sub.value("TARGET", std::string())), BaseTarget));
     }
-    // Neutralize GE-Proton's protonfixes hack `os.environ['PROTON_DLL_COPY']='*'`, which forces update_builtin_libs
-    // to COPY every builtin DLL into the prefix (~650 MB) instead of symlinking. GE does this to protect the SHARED
-    // wine build from per-game DLL edits — but our wine build is a read-only mount with a copy-up overlay, so any
-    // per-game edit already lands in the writelayer and never touches the shared build. So the hack is pointless here.
-    // proton does `import user_settings` (from its install dir, on sys.path) BEFORE setup_prefix runs; a user_settings.py
-    // whose import has the side-effect of restoring proton's default DLL_COPY list makes builtins SYMLINK into the
-    // mounted lib/wine — cheap, pristine, and robust to any config change (a toggle flip re-symlinks instead of
-    // re-copying 650 MB). GE ships user_settings.sample.py, never user_settings.py, so there is nothing to clobber.
-    if (ContainerParams.PrefixGenerate)
-    {
-        // NB: a vidyagodfs "file" layer takes its mount NAME from the SOURCE basename (overlay.cpp fileBase),
-        // and TARGET is the containing directory. So the source must literally be named user_settings.py, target "".
-        const std::filesystem::path US = ContainerParams.TempPath / "user_settings.py";
-        std::error_code UsEc; std::filesystem::create_directories(ContainerParams.TempPath, UsEc);
-        std::ofstream uf(US);
-        uf << "import os\n"
-              "# VidyaGod: undo protonfixes' PROTON_DLL_COPY='*' so wine builtins symlink into the RO wine mount\n"
-              "# (the copy-up overlay already isolates per-game DLL edits). This is proton's own upstream default list.\n"
-              "os.environ['PROTON_DLL_COPY'] = '" << VfsMount::ProtonDefaultDllCopy << "'\n"
-              "user_settings = {}\n";
-        uf.close();
-        Layers.push_back({{"type", "file"}, {"source", US.string()}, {"target", ""}, {"rw", false}});
-    }
+    // NB: GE-Proton's protonfixes hack forces PROTON_DLL_COPY='*' (COPY every builtin DLL into the prefix, ~650 MB,
+    // instead of symlinking). It is neutralized by the `proton-settings` content node, which every runner PARENTs:
+    // it ships a user_settings.py (VFSFileLayer, TARGET "") mounted right here at the runner-mount root, and proton
+    // `import user_settings` (from its install dir, on sys.path) BEFORE setup_prefix runs — the import's side-effect
+    // restores proton's default DLL_COPY list, so builtins SYMLINK into the RO wine mount. Pure node data; no engine
+    // special-case (the loop above already mounted it like any other runner-build VFS layer).
     Spec["layers"] = Layers;
 
     const std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.runner.spec.json";
