@@ -965,11 +965,11 @@ int main(int argc, char *argv[])
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
 // fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
 // package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "QmdMCw8q4g2AUcZ6h68GUb2UYXqT8PSi3CPpg6VzxTpvGH"; }   // JSON-only runners Meta-CID
+static std::string DefaultRunnerSourceCID() { return "QmRLsCVaqvoYcmxYBqqEcEGKEwHYwAU7BRewmi9144izwo"; }   // JSON-only runners Meta-CID
 // Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
 // games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
 // exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
-static std::string DefaultLibrarySourceCID() { return "QmexKye5YQj6isiriviSGh15s5rn7RNa224f58uScs3ZCx"; }   // JSON-only libraries Meta-CID
+static std::string DefaultLibrarySourceCID() { return "QmeuPC4d4zNiH27SXoirRG9XQSXLkHEZucH8W2ErcZHqDZ"; }   // JSON-only libraries Meta-CID
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
