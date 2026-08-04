@@ -199,12 +199,26 @@ void AppModel::syncSources()
 {
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
     std::thread([this, Cfg]{
+        // Snapshot LIBRARY before the sync mutates it, so we can tell whether anything actually changed. On the common
+        // launch (sources already present + unchanged) SyncPackageSources is a no-op, so we must NOT rebuild the catalog:
+        // the ctor already built it, and a redundant BuildCatalogIndex here — posted to the MAIN thread while the IPFS
+        // node is simultaneously starting up — is what froze the UI for several seconds on launch. When it DID change
+        // (first run / a source CID bump), build the new index HERE on the worker thread and only swap it in on the main
+        // thread, so even that path never blocks the UI.
+        const nlohmann::ordered_json OrigLib = Cfg->value("LIBRARY", nlohmann::ordered_json::array());
         PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
-        QMetaObject::invokeMethod(this, [this, Cfg]{
-            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
-            save();
-            rebuildCatalog();              // emits catalogChanged
-            emit packageSourcesChanged();
+        const bool Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
+        NodeIndex NewIndex;
+        if (Changed) NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan OFF the main thread
+        QMetaObject::invokeMethod(this, [this, Cfg, Changed, NewIndex = std::move(NewIndex)]() mutable {
+            if (Changed)
+            {
+                (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+                save();
+                CatalogIndex = std::move(NewIndex);   // cheap swap on the main thread (build already done)
+                emit catalogChanged();
+                emit packageSourcesChanged();
+            }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
         }, Qt::QueuedConnection);
     }).detach();
