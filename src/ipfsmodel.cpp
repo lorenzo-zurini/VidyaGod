@@ -306,8 +306,6 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
     Status.totalSize = Total;
     emit nodeStatusChanged();
 
-    rebuildLabels();
-
     // The set of CIDs that SHOULD be present: pins + in-flight transfers + configured-but-unfetched sources.
     QSet<QString> Desired;
     for (const auto & P : pins) Desired.insert(QString::fromStdString(P.Cid));
@@ -344,7 +342,6 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
     // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending.
     for (const auto & P : pins) {
         const QString cid = QString::fromStdString(P.Cid);
-        ensureLabels(cid);
         CidState & s = Cids[cid];
         const bool MidTransfer = (s.phase == CidState::Downloading || s.phase == CidState::Pinning
                                || s.phase == CidState::Stalled || s.phase == CidState::Errored || s.phase == CidState::Queued);
@@ -353,10 +350,14 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
         if (s.size < 0) ensureSize(cid);
     }
     for (const QString & cid : PendingSources) {
-        ensureLabels(cid);
         CidState & s = Cids[cid];
         s.phase = CidState::Pending; s.pct = -1.0; s.size = -1;
     }
+
+    // Label every CID in ONE pass now that all pins/pending are in the map: BuildCidLabels scans the whole catalog,
+    // so calling it per-CID (the old ensureLabels-in-loop) was O(pins × nodes) — a multi-second main-thread freeze
+    // once the pinset grew to hundreds. rebuildLabels builds the map once and applies it to every entry: O(nodes + cids).
+    rebuildLabels();
 
     emit modelReset();
     gatherHealth();

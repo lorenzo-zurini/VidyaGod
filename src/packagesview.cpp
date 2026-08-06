@@ -52,18 +52,27 @@ void PackagesView::rebuildList()
     QGridLayout * g = new QGridLayout(w); w->setLayout(g);
     int row = 0;
     auto & Lib = (*Model.config())["LIBRARY"];
+
+    //Which bundle dirs have a HYDRATED launchable node — computed in ONE pass over the already-built catalog index.
+    //Previously this re-parsed every package's JSON from disk per LIBRARY entry (ScanBundleNodes in the loop), which
+    //was O(packages × nodes) of parsing on the main thread and a real chunk of the launch freeze. The index already
+    //holds every node with its BundleDir, so filter that instead. Paths are lexically normalized so a trailing-slash /
+    //separator difference between a node's BundleDir and the LIBRARY PATH doesn't cause a false miss.
+    const NodeIndex & Idx = Model.catalogIndex();
+    auto Norm = [](const std::filesystem::path & P){ return P.lexically_normal().generic_string(); };
+    std::set<std::string> HydratedBundles;
+    for (const auto & [NodeId, N] : Idx.Nodes)
+        if (N.IsLaunchable() && !N.BundleDir.empty()
+            && PackageCatalog::NodeHasContent(Idx, NodeId) && PackageCatalog::NodeHydrated(Idx, NodeId))
+            HydratedBundles.insert(Norm(N.BundleDir));
+
     for (int i = 0; i < (int)Lib.size(); i++) {
         //Only HYDRATED packages (content present locally) are listed — synced-but-not-downloaded repo entries
         //live in the Available tab, not here. Content-less packages (a malformed game with no layers, or a
         //PATH-only runner) are vacuously hydrated, so require real content to exclude them.
         const std::string LibPath = Lib[i].value("PATH", std::string());
         //Only HYDRATED bundles with a launchable node appear here (a runner-only bundle has none).
-        NodeIndex BIdx; ManifestModel::ScanBundleNodes(LibPath, BIdx);
-        bool AnyHydratedLaunchable = false;
-        for (const auto & [NodeId, N] : BIdx.Nodes)
-            if (N.IsLaunchable() && PackageCatalog::NodeHasContent(Model.catalogIndex(), NodeId)
-                && PackageCatalog::NodeHydrated(Model.catalogIndex(), NodeId)) { AnyHydratedLaunchable = true; break; }
-        if (!AnyHydratedLaunchable) continue;   // require REAL content present (excludes content-less/malformed)
+        if (LibPath.empty() || !HydratedBundles.count(Norm(LibPath))) continue;   // require REAL content present
         g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGENAME", std::string())),w),row,0);
         g->addWidget(new QLabel(QString::fromStdString(Lib[i].value("PACKAGEUID", std::string())),w),row,1);
         QPushButton * rb = new QPushButton("Remove", w);

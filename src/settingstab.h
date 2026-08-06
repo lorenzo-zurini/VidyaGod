@@ -2,6 +2,8 @@
 #define SETTINGSTAB_H
 
 #include <QWidget>
+#include <vector>
+#include <functional>
 
 class AppModel;
 class QListWidget;
@@ -20,9 +22,13 @@ public:
     SettingsTab(AppModel &model, QWidget *parent = nullptr);
 
 private:
+    void showPage(int row);   // build the page on first visit (lazy), then show it
+
     AppModel &Model;
     QListWidget    *CategoryList = nullptr;
     QStackedWidget *Stack        = nullptr;
+    std::vector<QWidget *>                 Pages;          // built lazily; nullptr until first visited
+    std::vector<std::function<QWidget *()>> PageFactories;  // one per sidebar row
 };
 
 #endif // SETTINGSTAB_H
