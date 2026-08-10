@@ -51,6 +51,13 @@ static std::filesystem::path SandboxieDir()
     return {};
 }
 
+// The per-launch box name, derived stably from the game's runtime dir so Wrap() and TerminateBox()
+// agree without threading extra state through ContainerParams.
+static std::string BoxNameFor(const std::string &WorkDir)
+{
+    return "VidyaGod_" + std::to_string(std::hash<std::string>{}(WorkDir));
+}
+
 // Usable when the install is present AND the Sandboxie service (SbieSvc, which fronts the SbieDrv kernel
 // driver) is running. Mirrors the bwrap functional probe: if the machine can't sandbox, a launch simply
 // degrades to unsandboxed (ContainerWrapper gates Wrap() on Available()).
@@ -73,7 +80,7 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
 
     // A per-launch box, named stably from the game's runtime dir so re-launches of the same package reuse
     // one box (its virtualized state can carry across runs where useful; captured writes are auto-deleted).
-    const std::string BoxName = "VidyaGod_" + std::to_string(std::hash<std::string>{}(Opts.WorkDir));
+    const std::string BoxName = BoxNameFor(Opts.WorkDir);
     const QString     Box     = QString::fromStdString(BoxName);
     const QString     SbieIni = QString::fromStdString((Dir / "SbieIni.exe").string());
 
@@ -107,6 +114,18 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
 
     Program   = (Dir / "Start.exe").string();
     Arguments = A;
+}
+
+void TerminateBox(const std::string &WorkDir)
+{
+    const std::filesystem::path Dir = SandboxieDir();
+    if (Dir.empty() || WorkDir.empty()) return;
+    // Start.exe /box:<box> /terminate reaps every process still running in the box (the game plus any
+    // Sandboxie helper processes), so nothing survives a KillGame. Harmless if the box was never used.
+    QProcess Q;
+    Q.start(QString::fromStdString((Dir / "Start.exe").string()),
+            {"/box:" + QString::fromStdString(BoxNameFor(WorkDir)), "/terminate"});
+    Q.waitForFinished(5000);
 }
 
 } // namespace SandboxLayer

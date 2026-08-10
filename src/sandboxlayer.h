@@ -57,6 +57,12 @@ bool Available();
 // without bwrap installed. The caller gates this on Available().
 void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments);
 
+// Tear down the sandbox for a launch keyed by its WorkDir (the value passed as Options.WorkDir). On
+// Windows this terminates the Sandboxie box (Start.exe /terminate) so no boxed process lingers after
+// a KillGame; on Linux it is a no-op (bwrap dies with the game's process group). Safe to call even
+// when the launch was never sandboxed.
+void TerminateBox(const std::string &WorkDir);
+
 // ---- the in-sandbox runtime (VidyaGod --sandbox-init …), implemented in sandboxinit.cpp ----
 // True if this process was invoked as the sandbox init (bwrap's payload).
 bool IsSandboxInit(int argc, char **argv);

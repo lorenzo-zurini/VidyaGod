@@ -521,6 +521,12 @@ void ContainerWrapper::KillGame()
     qint64 Pid = ActiveRunProcess->processId();
     if (Pid > 0)
     {
+#ifdef _WIN32
+        //Kill the launched process tree — taskkill /T reaps children (Start.exe + the game, or the game
+        //directly). Then terminate the Sandboxie box so no boxed helper lingers (no-op if unsandboxed).
+        QProcess Pr; Pr.start("taskkill", {"/PID", QString::number(Pid), "/T", "/F"}); Pr.waitForFinished(-1);
+        SandboxLayer::TerminateBox(this->ContainerParams.WorkDirPathComplete.string());
+#else
         //Kill the entire process group (wine, wineserver, game children) in one shot.
         //SIGKILL the group first, then the direct process as a fallback. (System tools — strip the
         //AppImage LD_LIBRARY_PATH so they load host libs, via SystemToolEnv.)
@@ -533,6 +539,7 @@ void ContainerWrapper::KillGame()
         RunSys("bash", {"-c",
             "pgrep -P " + QString::number(Pid) + " | xargs -r kill -9 2>/dev/null; "
             "kill -9 " + QString::number(Pid) + " 2>/dev/null"});
+#endif
     }
 
     ActiveRunProcess->kill(); // Qt-level cleanup in case process didn't die

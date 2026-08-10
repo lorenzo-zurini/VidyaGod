@@ -118,6 +118,8 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     Program   = "bwrap";
     Arguments = A;
 }
+
+void TerminateBox(const std::string &) {}   // no-op: bwrap dies with the game's process group
 #endif // !_WIN32
 
 } // namespace SandboxLayer
