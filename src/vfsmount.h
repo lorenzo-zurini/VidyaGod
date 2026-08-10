@@ -24,7 +24,7 @@ bool MountVFS(struct ContainerParams &ContainerParams);
 //Writes Spec to SpecPath, spawns vidyagodfs onto Mountpoint, polls until live. The low-level mount primitive
 //shared by MountVFS, the runner mount, and runner install.
 bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
-                     const std::filesystem::path &SpecPath);
+                     const std::filesystem::path &SpecPath, long long *OutPid = nullptr);
 
 //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath. No-op when the runner ships no build.
 bool MountRunnerBuild(struct ContainerParams &ContainerParams);

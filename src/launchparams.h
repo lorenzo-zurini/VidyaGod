@@ -178,6 +178,9 @@ public:
 
     //VFSWRAPPER CLASS — the runtime is one vidyagodfs FUSE mount at RuntimePath (see BuildLayerSpec/MountVFS).
     std::vector<std::filesystem::path> CleanupUnmountPaths; //Purely-ephemeral FUSE mount(s) — lazy-unmounted on Cleanup()
+    //Windows/WinFsp only: PIDs of the spawned vidyagodfs helpers. WinFsp unmounts when its serving process
+    //exits, so Cleanup() terminates these (there is no fusermount3). Unused on Linux (fusermount3 by path).
+    std::vector<long long> VfsHelperPids;
     //Durable-backed mount: the vidyagodfs RUNTIME mount whenever durable data is reachable through it
     //(whole-runtime keep's writelayer or any KEEP-dir RW passthrough). It exposes PackagePath/USERDATA, so it
     //MUST be non-lazily unmounted and verified before Cleanup() wipes TempPath — else remove_all could

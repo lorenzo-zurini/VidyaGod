@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QProcess>
 #include <QString>
 #include <QThread>
 
@@ -268,11 +269,13 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     }
 
     std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.spec.json";
-    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RuntimePath, SpecPath))
+    long long HelperPid = 0;
+    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RuntimePath, SpecPath, &HelperPid))
     {
         LogErr("VfsMount::MountVFS", "vidyagodfs mount did not appear at " + ContainerParams.RuntimePath.string());
         return false;
     }
+    if (HelperPid > 0) ContainerParams.VfsHelperPids.push_back(HelperPid);   // Windows: terminated on Cleanup
 
     //Durable-backed when a live RW path reaches USERDATA through the mount: a whole-runtime keep (writelayer IS
     //UserDataPath) or any KEEP-dir passthrough. KEEP files/registry are copy-captured before unmount, not live.
@@ -286,26 +289,46 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 
 //Low-level vidyagodfs mount: write Spec to SpecPath, spawn the helper onto Mountpoint, poll until live.
 bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
-                                       const std::filesystem::path &SpecPath)
+                                       const std::filesystem::path &SpecPath, long long *OutPid)
 {
-    std::filesystem::create_directories(Mountpoint);
     {
-        std::ofstream Out(SpecPath);
+        std::ofstream Out(SpecPath);   // SpecPath lives under TempPath (already created) — safe on both OSes
         if (!Out) { LogErr("VfsMount::SpawnVidyagodfs", "Cannot write spec " + SpecPath.string()); return false; }
         Out << Spec.dump(2);
     }
     const std::string Helper = VidyagodfsPath();
     LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
-    //--watch-pid: the helper's watchdog auto-unmounts if this process dies, instead of leaking a mount.
-    int result = RunCommand(Helper, {SpecPath.string(), Mountpoint.string(),
-                                                       "--watch-pid", std::to_string(QCoreApplication::applicationPid()), "-o", "auto_cache"});
+    //--watch-pid: the helper's watchdog auto-unmounts if this (spawner) process dies, so a crash never leaks a mount.
+    const std::string WatchPid = std::to_string(QCoreApplication::applicationPid());
+#ifdef _WIN32
+    // WinFsp CREATES the mountpoint itself (a reparse-point dir, or a drive letter) — mounting onto an
+    // existing directory fails, so unlike Linux we must NOT pre-create it. And WinFsp's fuse_main BLOCKS
+    // serving (no daemonize), so start the helper detached and poll until the mountpoint materializes.
+    QStringList Args{ QString::fromStdString(SpecPath.string()), QString::fromStdString(Mountpoint.string()),
+                      "--watch-pid", QString::fromStdString(WatchPid) };
+    qint64 Pid = 0;
+    if (!QProcess::startDetached(QString::fromStdString(Helper), Args, QString(), &Pid))
+    { LogErr("VfsMount::SpawnVidyagodfs", "Failed to start " + Helper); return false; }
+    if (OutPid) *OutPid = (long long)Pid;
+    for (int i = 0; i < 100; ++i)   // ~10s: mountpoint appears once WinFsp has mounted (exists() flips false→true)
+    {
+        if (std::filesystem::exists(Mountpoint)) { LogSucc("VfsMount::SpawnVidyagodfs", "mount live at " + Mountpoint.string()); return true; }
+        QThread::msleep(100);
+    }
+    LogErr("VfsMount::SpawnVidyagodfs", "vidyagodfs mount did not appear at " + Mountpoint.string());
+    return false;
+#else
+    std::filesystem::create_directories(Mountpoint);   // FUSE mounts onto an existing empty dir
+    int result = RunCommand(Helper, {SpecPath.string(), Mountpoint.string(), "--watch-pid", WatchPid, "-o", "auto_cache"});
     LogOut("VfsMount::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
+    if (OutPid) *OutPid = 0;   // Linux unmounts by mountpoint (fusermount3), not by pid
     for (int i = 0; i < 50; ++i)
     {
         if (!VfsMount::MountpointsUnder(Mountpoint).empty()) return true;
         QThread::msleep(100);
     }
     return false;
+#endif
 }
 
 //Mounts the selected runner's build (its VFSZipLayer subcomponents) read-only at RunnerMountPath — the
@@ -354,11 +377,13 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     Spec["layers"] = Layers;
 
     const std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.runner.spec.json";
-    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RunnerMountPath, SpecPath))
+    long long RunnerHelperPid = 0;
+    if (!VfsMount::SpawnVidyagodfs(Spec, ContainerParams.RunnerMountPath, SpecPath, &RunnerHelperPid))
     {
         LogErr("VfsMount::MountRunnerBuild", "runner build mount did not appear at " + ContainerParams.RunnerMountPath.string());
         return false;
     }
+    if (RunnerHelperPid > 0) ContainerParams.VfsHelperPids.push_back(RunnerHelperPid);   // Windows: terminated on Cleanup
     ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RunnerMountPath);  // ephemeral, lazy unmount
     LogSucc("VfsMount::MountRunnerBuild", "Mounted runner build at " + ContainerParams.RunnerMountPath.string());
     return true;

@@ -553,6 +553,31 @@ bool ContainerWrapper::Cleanup()
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
     bool DurableUnmountOk = true;
+#ifdef _WIN32
+    // WinFsp has no fusermount3: it unmounts when its serving process exits, and the FSD tears the mount
+    // down even on a forced kill (the mount is owned by the process handle). So terminate every spawned
+    // vidyagodfs helper (/F is synchronous on termination, /T also reaps any children), then confirm the
+    // durable mountpoints have vanished before we allow the TEMP wipe.
+    for (long long Pid : ContainerParams.VfsHelperPids)
+        RunCommand("taskkill", {"/PID", std::to_string(Pid), "/T", "/F"}, SystemToolEnv());
+    for (auto It = ContainerParams.CleanupPersistPaths.rbegin(); It != ContainerParams.CleanupPersistPaths.rend(); ++It)
+    {
+        bool Gone = false;
+        for (int Attempt = 0; Attempt < 25 && !Gone; ++Attempt)   // ~5s for the kernel to drop the mount
+        {
+            if (!std::filesystem::exists(*It)) Gone = true;
+            else QThread::msleep(200);
+        }
+        if (!Gone)
+        {
+            LogErr("ContainerWrapper::Cleanup", "DURABLE WinFsp mount still present after helper kill: " + It->string());
+            DurableUnmountOk = false;
+        }
+    }
+    // Ephemeral mounts: best-effort settle, never gate the wipe.
+    for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
+        for (int Attempt = 0; Attempt < 15 && std::filesystem::exists(UnmountPath); ++Attempt) QThread::msleep(200);
+#else
     for (auto It = ContainerParams.CleanupPersistPaths.rbegin(); It != ContainerParams.CleanupPersistPaths.rend(); ++It)
     {
         bool Unmounted = false;
@@ -574,6 +599,7 @@ bool ContainerWrapper::Cleanup()
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
         RunCommand("fusermount3", {"-uz", UnmountPath.string()}, SystemToolEnv());
+#endif
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)

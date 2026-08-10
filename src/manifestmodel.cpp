@@ -808,8 +808,15 @@ std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::fil
 
 // ----- platform -----
 
+// The host platform a runner variant's HOST_PLATFORM must match, and which native content runs directly
+// through the appended native terminal (win64 games on Windows, linux64 on Linux).
+#ifdef _WIN32
+std::string MachinePlatform() { return "win64"; }
+std::string HostPlatform()    { return "win64"; }
+#else
 std::string MachinePlatform() { return "linux64"; }
 std::string HostPlatform()    { return "linux64"; }
+#endif
 
 // ----- game / component / variant / module lookups -----
 
