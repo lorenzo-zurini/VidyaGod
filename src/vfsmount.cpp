@@ -35,14 +35,19 @@ using namespace ManifestModel;
 //in headless mode before any QApplication exists), else on PATH.
 static std::string VidyagodfsPath()
 {
+#ifdef _WIN32
+    constexpr const char *HelperName = "vidyagodfs.exe";
+#else
+    constexpr const char *HelperName = "vidyagodfs";
+#endif
     std::filesystem::path Self = Platform::SelfExe();
     if (!Self.empty())
     {
         std::error_code ec;
-        std::filesystem::path CoLocated = Self.parent_path() / "vidyagodfs";
+        std::filesystem::path CoLocated = Self.parent_path() / HelperName;
         if (std::filesystem::exists(CoLocated, ec)) return CoLocated.string();
     }
-    return "vidyagodfs";
+    return HelperName;
 }
 
 //Returns the name of the first COMPRESSED (non-STORE) entry in the zip at Path, or "" if every entry
