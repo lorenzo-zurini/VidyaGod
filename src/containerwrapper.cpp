@@ -416,7 +416,11 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     {
         SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams, SandboxDefaultOn(GlobalConfigJSON));
         if (SbOpts.Enabled && !SandboxLayer::Available())
+#ifdef _WIN32
+            LogOut("ContainerWrapper::Execute", "Sandbox unavailable on this machine (Sandboxie not installed / SbieSvc not running) — launching normally.");
+#else
             LogOut("ContainerWrapper::Execute", "Sandbox unavailable on this machine (no bwrap / unprivileged user namespaces disabled) — launching normally.");
+#endif
         else if (SbOpts.Enabled && ContainerParams.SandboxMounts.empty())
             LogWarn("ContainerWrapper::Execute", "Sandbox requested but no runtime mount was prepared — launching normally.");
         else if (SbOpts.Enabled)
@@ -452,9 +456,13 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
             }
 
             SandboxLayer::Wrap(SbOpts, Program, Arguments);
+#ifdef _WIN32
+            LogOut("ContainerWrapper::Execute", "Sandbox: Sandboxie box (host FS + registry virtualization; VidyaGod writelayer/saves granted pass-through)");
+#else
             LogOut("ContainerWrapper::Execute", std::string("Sandbox: nested bubblewrap (net ")
                    + (SbOpts.Net == SandboxLayer::NetMode::Isolated ? "isolated" : "host") + ", "
                    + std::to_string(SbOpts.Mounts.size()) + " mount(s)" + (OverlayServing ? ", overlay" : "") + ")");
+#endif
         }
     }
 

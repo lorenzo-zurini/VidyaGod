@@ -96,6 +96,7 @@ set(SHARED_SOURCES
 
     src/sandboxlayer.h
     src/sandboxlayer.cpp
+    src/sandboxlayer_win.cpp   # Windows Sandboxie backend (Available/Wrap); #ifdef _WIN32, empty on Linux
     src/sandboxinit.cpp
 
     src/friendstab.h

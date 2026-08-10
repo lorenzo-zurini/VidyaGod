@@ -53,6 +53,7 @@ Options FromParams(const ContainerParams &CP, bool DefaultOn)
     return O;
 }
 
+#ifndef _WIN32   // ---- Linux bubblewrap backend. The Windows Sandboxie backend is in sandboxlayer_win.cpp ----
 bool Available()
 {
     // Functional probe (not just `which bwrap`): actually create a throwaway sandbox with the SAME namespace + cap
@@ -117,5 +118,6 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     Program   = "bwrap";
     Arguments = A;
 }
+#endif // !_WIN32
 
 } // namespace SandboxLayer
