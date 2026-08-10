@@ -1,4 +1,5 @@
 #include "depcheck.h"
+#include "platform/platform.h"
 
 #include <array>
 #include <cstdio>
@@ -157,10 +158,10 @@ SystemState ProbeSystem()
     St.distro    = DistroFromOsRelease();
 
     // Bundled files sit next to the app binary (resolved via /proc/self/exe — no Qt/QApplication needed).
-    std::error_code Ec;
-    const std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", Ec);
-    const std::filesystem::path BinDir = Ec ? std::filesystem::path() : Self.parent_path();
+    const std::filesystem::path Self = Platform::SelfExe();
+    const std::filesystem::path BinDir = Self.empty() ? std::filesystem::path() : Self.parent_path();
 
+    std::error_code Ec;
     for (const DepItem &I : AllDeps())
     {
         if (I.kind == Kind::Binary) { if (OnPath(I.Token)) St.Binaries.insert(I.Token); }

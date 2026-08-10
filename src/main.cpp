@@ -1,5 +1,6 @@
 #include "main.h"
 #include "apppaths.h"
+#include "platform/platform.h"
 #include "commonutils.h"
 #include "manifestmodel.h"
 #include "packagecatalog.h"
@@ -226,9 +227,8 @@ int main(int argc, char *argv[])
         AppLocation = std::filesystem::path(AppImagePath).parent_path();
     else
     {
-        std::error_code SelfEc;
-        std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", SelfEc);
-        if (!SelfEc) AppLocation = Self.parent_path();
+        std::filesystem::path Self = Platform::SelfExe();
+        if (!Self.empty()) AppLocation = Self.parent_path();
     }
 
     QString AppDataPath = QDir::homePath() + "/.VidyaGod";

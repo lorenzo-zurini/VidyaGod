@@ -36,6 +36,10 @@ set(SHARED_SOURCES
     src/apppaths.h
     src/apppaths.cpp
 
+    # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
+    src/platform/platform.h
+    src/platform/platform_posix.cpp
+
     src/libraryview.h
     src/libraryview.cpp
     src/mainwindow.h
@@ -272,6 +276,7 @@ add_executable(vg_tests
     src/fileedits.cpp
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
+    src/platform/platform_posix.cpp   # Platform::SelfExe (used by depcheck)
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src VidyaGodFS/src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)

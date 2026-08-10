@@ -1,4 +1,5 @@
 #include "sandboxlayer.h"
+#include "platform/platform.h"
 
 #include <string>
 #include <vector>
@@ -33,9 +34,8 @@ void Warn(const char *msg) { std::fprintf(stderr, "[sandbox-init] %s\n", msg); s
 // Resolve the co-located vidyagodfs helper (beside this binary), mirroring VfsMount::VidyagodfsPath.
 std::string VidyagodfsPath()
 {
-    std::error_code Ec;
-    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", Ec);
-    if (!Ec)
+    std::filesystem::path Self = Platform::SelfExe();
+    if (!Self.empty())
     {
         std::filesystem::path Cand = Self.parent_path() / "vidyagodfs";
         if (std::filesystem::exists(Cand)) return Cand.string();

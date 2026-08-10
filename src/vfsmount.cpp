@@ -1,4 +1,5 @@
 #include "vfsmount.h"
+#include "platform/platform.h"
 #include "processenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
@@ -33,10 +34,10 @@ using namespace ManifestModel;
 //in headless mode before any QApplication exists), else on PATH.
 static std::string VidyagodfsPath()
 {
-    std::error_code ec;
-    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec)
+    std::filesystem::path Self = Platform::SelfExe();
+    if (!Self.empty())
     {
+        std::error_code ec;
         std::filesystem::path CoLocated = Self.parent_path() / "vidyagodfs";
         if (std::filesystem::exists(CoLocated, ec)) return CoLocated.string();
     }

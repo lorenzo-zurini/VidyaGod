@@ -1,5 +1,6 @@
 #include "sandboxlayer.h"
 #include "launchparams.h"
+#include "platform/platform.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -70,9 +71,8 @@ bool Available()
 // --ro-bind / /).
 static std::string SelfExe()
 {
-    std::error_code Ec;
-    std::filesystem::path Self = std::filesystem::read_symlink("/proc/self/exe", Ec);
-    return Ec ? std::string("VidyaGod") : Self.string();
+    std::filesystem::path Self = Platform::SelfExe();
+    return Self.empty() ? std::string("VidyaGod") : Self.string();
 }
 
 void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
