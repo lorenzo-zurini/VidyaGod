@@ -7,6 +7,12 @@
 #include <cstdio>
 #include <cstring>
 
+// The entire sandbox-init runtime is bwrap-specific (Linux mount + network namespaces, TUN, SCM_RIGHTS).
+// It never runs on other platforms — Available() is false there and nothing invokes `--sandbox-init` — so
+// guard the whole implementation (and its Linux-only headers). Windows isolation arrives later as a
+// separate Sandboxie flow (port plan §3); until then a launch runs unsandboxed.
+#ifdef __linux__
+
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -180,3 +186,12 @@ int RunSandboxInit(int argc, char **argv)
 }
 
 } // namespace SandboxLayer
+
+#else  // !__linux__ — inert stubs; the bwrap sandbox-init is Linux-only (see the guard note above).
+
+namespace SandboxLayer {
+bool IsSandboxInit(int, char **)  { return false; }
+int  RunSandboxInit(int, char **) { return 1; }
+} // namespace SandboxLayer
+
+#endif // __linux__

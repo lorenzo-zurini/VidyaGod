@@ -100,7 +100,9 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     };
     for (const std::string &P : Opts.WritableBinds) bindRW(P);
     bindRW("/tmp");                                                        // X11 socket + scratch
+#ifdef __linux__
     bindRW("/run/user/" + std::to_string(static_cast<unsigned>(::getuid()))); // Wayland / PipeWire / Pulse
+#endif
 
     // The payload: re-invoke ourselves as the in-sandbox init, which mounts the specs (+ TUN) then execs the game.
     A << "--" << QString::fromStdString(SelfExe()) << "--sandbox-init";

@@ -10,6 +10,7 @@
 // ---------------------------------------------------------------------------
 
 #include <filesystem>
+#include <string>
 
 namespace Platform {
 
@@ -19,6 +20,15 @@ namespace Platform {
 //   POSIX:   read_symlink("/proc/self/exe")
 //   Windows: GetModuleFileNameW(nullptr, …)
 std::filesystem::path SelfExe();
+
+// Single-instance guard: try to become the sole running instance, keyed by `Key` (a stable
+// per-user string — the app passes its lock-file path). Returns true if acquired (held until the
+// process exits — intentionally never released early, mirroring the lock fd/handle lifetime), false
+// if another live instance already holds it (or the guard couldn't be established).
+//   POSIX:   open(Key) + flock(LOCK_EX|LOCK_NB); the fd is leaked, so the kernel releases the lock
+//            automatically on exit OR crash (no stale lock survives a crashed instance).
+//   Windows: a named mutex derived from Key; ERROR_ALREADY_EXISTS ⇒ another instance holds it.
+bool AcquireSingleInstanceLock(const std::string &Key);
 
 } // namespace Platform
 

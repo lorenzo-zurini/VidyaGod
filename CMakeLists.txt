@@ -28,6 +28,13 @@ pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generatio
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
 
+# Host-OS abstraction seam: POSIX impl on Linux, Win32 impl on Windows (selected here, one or the other).
+if(WIN32)
+    set(VG_PLATFORM_SRC src/platform/platform_win.cpp)
+else()
+    set(VG_PLATFORM_SRC src/platform/platform_posix.cpp)
+endif()
+
 # Everything except the entry point (main.cpp) + translations. Compiled once into an OBJECT library so both the
 # VidyaGod executable and the GUI test exe reuse the same objects.
 set(SHARED_SOURCES
@@ -38,7 +45,7 @@ set(SHARED_SOURCES
 
     # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
     src/platform/platform.h
-    src/platform/platform_posix.cpp
+    ${VG_PLATFORM_SRC}
 
     src/libraryview.h
     src/libraryview.cpp
@@ -276,7 +283,7 @@ add_executable(vg_tests
     src/fileedits.cpp
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
-    src/platform/platform_posix.cpp   # Platform::SelfExe (used by depcheck)
+    ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src VidyaGodFS/src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)

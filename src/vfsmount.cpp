@@ -55,14 +55,17 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
     auto rd32 = [](const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); };
     auto rd64 = [](const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = (v << 8) | p[i]; return v; };
 
-    int fd = ::open(Path.c_str(), O_RDONLY);
-    if (fd < 0) return "";
-    struct stat stt; if (::fstat(fd, &stt) != 0) { ::close(fd); return ""; }
-    uint64_t fsize = (uint64_t)stt.st_size;
+    // Portable positioned reads via ifstream (POSIX pread has no MinGW equivalent). Single reader, so
+    // seeking the shared cursor per call is fine.
+    std::ifstream File(Path, std::ios::binary);
+    if (!File) return "";
+    File.seekg(0, std::ios::end);
+    uint64_t fsize = (uint64_t)File.tellg();
     auto preadAll = [&](void *b, size_t n, uint64_t off) -> bool {
-        uint8_t *p = (uint8_t *)b; size_t d = 0;
-        while (d < n) { ssize_t r = ::pread(fd, p + d, n - d, (off_t)(off + d)); if (r <= 0) return false; d += (size_t)r; }
-        return true;
+        File.clear();
+        File.seekg((std::streamoff)off, std::ios::beg);
+        File.read((char *)b, (std::streamsize)n);
+        return (uint64_t)File.gcount() == n;
     };
 
     std::string result;
@@ -103,7 +106,6 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
             }
         }
     }
-    ::close(fd);
     return result;
 }
 
@@ -295,8 +297,8 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
     const std::string Helper = VidyagodfsPath();
     LogOut("VfsMount::SpawnVidyagodfs", "Mounting " + Mountpoint.string() + " via " + Helper);
     //--watch-pid: the helper's watchdog auto-unmounts if this process dies, instead of leaking a mount.
-    int result = RunCommand(Helper, {SpecPath, Mountpoint,
-                                                       "--watch-pid", std::to_string(getpid()), "-o", "auto_cache"});
+    int result = RunCommand(Helper, {SpecPath.string(), Mountpoint.string(),
+                                                       "--watch-pid", std::to_string(QCoreApplication::applicationPid()), "-o", "auto_cache"});
     LogOut("VfsMount::SpawnVidyagodfs", "vidyagodfs spawn exit: " + std::to_string(result));
     for (int i = 0; i < 50; ++i)
     {

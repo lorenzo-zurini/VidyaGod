@@ -460,7 +460,7 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
 
     QProcess RunProcess;
     RunProcess.setProgram(QString::fromStdString(Program));
-    RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir));
+    RunProcess.setWorkingDirectory(QString::fromStdString(FinalWorkDir.string()));
     RunProcess.setArguments(Arguments);
     RunProcess.setProcessEnvironment(RunProcessEnvironment);
     //Stream the runner's output (and its grandchildren — proton's python wrapper, wine, the game) straight to our
@@ -559,21 +559,21 @@ bool ContainerWrapper::Cleanup()
         for (int Attempt = 0; Attempt < 5 && !Unmounted; ++Attempt)
         {
             if (Attempt > 0) QThread::msleep(200); //give a lingering wineserver time to release
-            if (RunCommand("fusermount3", {"-u", *It}, SystemToolEnv()) == 0)
+            if (RunCommand("fusermount3", {"-u", It->string()}, SystemToolEnv()) == 0)
                 Unmounted = true;
         }
         if (!Unmounted)
         {
             LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries: " + It->string());
             //Lazy-detach so it eventually clears, but mark the wipe unsafe for this run.
-            RunCommand("fusermount3", {"-uz", *It}, SystemToolEnv());
+            RunCommand("fusermount3", {"-uz", It->string()}, SystemToolEnv());
             DurableUnmountOk = false;
         }
     }
 
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
-        RunCommand("fusermount3", {"-uz", UnmountPath}, SystemToolEnv());
+        RunCommand("fusermount3", {"-uz", UnmountPath.string()}, SystemToolEnv());
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.
     if (!DurableUnmountOk)

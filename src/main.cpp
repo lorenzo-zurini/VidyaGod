@@ -20,29 +20,14 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
-#include <fcntl.h>
-#include <sys/file.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
+#include <fstream>           // portable positioned reads (convert-delta-chain byte-verify)
+#ifdef __linux__
+#include <unistd.h>          // the overlay-sandbox ping test (Linux/bwrap-only) forks + execvp's + waitpid's
 #include <sys/wait.h>
-#include <unistd.h>
+#endif
 
-//Single-instance guard. Opens (creating if needed) a lock file under ~/.VidyaGod and takes an
-//exclusive, non-blocking flock on it. Returns the held fd on success, or -1 if another live instance
-//already holds it. The lock is owned by the open fd, so the kernel releases it automatically when this
-//process exits OR crashes — a previous crashed instance never blocks a new one, and no stale-lock
-//bookkeeping is needed. The returned fd is intentionally kept open for the whole process lifetime.
-static int AcquireSingleInstanceLock(const std::string &LockPath)
-{
-    //O_CLOEXEC is essential: spawned children (wine/proton/git/vidyagodfs) must NOT inherit this fd, or a lingering
-    //wine background process (services.exe/wineserver/…) keeps the flock held after VidyaGod exits, making every
-    //later run falsely abort with "another instance is already running".
-    int Fd = ::open(LockPath.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
-    if (Fd < 0) return -1;
-    if (::flock(Fd, LOCK_EX | LOCK_NB) != 0) { ::close(Fd); return -1; }
-    return Fd;
-}
-
+// Single-instance guard now lives behind the Platform shim (Platform::AcquireSingleInstanceLock):
+// POSIX flock on a lock file on Linux, a session-named mutex on Windows. See platform.h.
 
 //Application-wide event filter that stops a QComboBox from changing its value when the mouse
 //wheel is scrolled over it (a very easy way to accidentally mutate settings). Qt's
@@ -124,6 +109,7 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
 //creates + addresses the TUN inside the sandbox netns and hands its fd to our libp2p forwarder; the sandboxed shell
 //then pings the peer. Returns the ping's exit code (0 = replies received = packets crossed the tunnel). This is what
 //a real session game launch does, with `ping` standing in for the game. Rootless (CAP_NET_ADMIN via the userns).
+#ifdef __linux__
 static int RunOverlaySandboxPing()
 {
     // Pull our vIP + the online friends' vIPs from the friend LAN (host-less; each vIP = f(peerID)); ping the first.
@@ -172,6 +158,13 @@ static int RunOverlaySandboxPing()
     else         LogErr ("main.cpp", "overlay ping did not get replies (rc=" + std::to_string(rc) + ")");
     return rc;
 }
+#else  // !__linux__ — the overlay ping test is bwrap/TUN-based (Linux-only); inert stub elsewhere.
+static int RunOverlaySandboxPing()
+{
+    LogErr("main.cpp", "--overlay ping test is only available on Linux (bwrap sandbox + TUN).");
+    return -1;
+}
+#endif // __linux__
 
 int main(int argc, char *argv[])
 {
@@ -278,10 +271,10 @@ int main(int argc, char *argv[])
     bool BypassInstanceLock = false;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bypass-single-instance-lock") BypassInstanceLock = true;
 
-    int InstanceLockFd = AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
-    if (InstanceLockFd < 0 && BypassInstanceLock)
+    bool InstanceLockHeld = Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
+    if (!InstanceLockHeld && BypassInstanceLock)
         LogWarn("main.cpp", "Single-instance lock held, but --bypass-single-instance-lock given — proceeding without the lock.");
-    else if (InstanceLockFd < 0)
+    else if (!InstanceLockHeld)
     {
         LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting.");
         if (!LaunchParameters.RunningHeadless)
@@ -741,12 +734,23 @@ int main(int argc, char *argv[])
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
 
         // A ByteSource over an mmap (for byte-verification of the reconstructed view).
+        // Reads the whole zip into RAM (no mmap → portable). GenerateDelta already needs the full base +
+        // target in memory (it indexes the entire base), so mmap wasn't saving footprint here anyway; eager
+        // read is equivalent for this one-shot maintenance CLI. Keeps .p/.n for the byte-verify below.
         struct MapSrc : ByteSource {
-            int fd = -1; const uint8_t *p = nullptr; uint64_t n = 0;
-            bool Map(const std::string &path) { fd = ::open(path.c_str(), O_RDONLY); if (fd < 0) return false;
-                struct stat s{}; if (fstat(fd, &s)) return false; n = (uint64_t)s.st_size;
-                p = (const uint8_t *)::mmap(nullptr, n, PROT_READ, MAP_PRIVATE, fd, 0); return p != MAP_FAILED; }
-            ~MapSrc() override { if (p && p != MAP_FAILED) ::munmap((void *)p, n); if (fd >= 0) ::close(fd); }
+            std::vector<uint8_t> d; const uint8_t *p = nullptr; uint64_t n = 0;
+            bool Map(const std::string &path) {
+                std::ifstream f(path, std::ios::binary);
+                if (!f) return false;
+                f.seekg(0, std::ios::end);
+                std::streamoff sz = f.tellg();
+                if (sz < 0) return false;
+                d.resize((size_t)sz);
+                f.seekg(0, std::ios::beg);
+                f.read((char *)d.data(), sz);
+                if ((std::streamoff)f.gcount() != sz) return false;
+                p = d.data(); n = (uint64_t)sz;
+                return true; }
             ssize_t pread(void *b, size_t k, uint64_t o) override { if (o >= n) return 0; uint64_t a = n - o; size_t w = k < a ? k : a; std::memcpy(b, p + o, w); return (ssize_t)w; }
             uint64_t size() const override { return n; }
         };

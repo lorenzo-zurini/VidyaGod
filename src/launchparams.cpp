@@ -36,12 +36,12 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //Structural placement anchor — the prefix dir relative to the VFS root. All inside-prefix placement composes off it.
     VariablesMap["PrefixRoot"]   = this->PrefixRoot;
     //Host-absolute roots (not composable from mount-relative tokens) — consumed by runner ENV/EXECUTABLE.
-    VariablesMap["RuntimePath"]  = this->RuntimePath;   // the VFS mount root as a host path (WINEPREFIX / STEAM_COMPAT_DATA_PATH)
+    VariablesMap["RuntimePath"]  = this->RuntimePath.string();   // the VFS mount root as a host path (WINEPREFIX / STEAM_COMPAT_DATA_PATH)
     VariablesMap["RunnerMount"]  = this->UnifiedRuntime ? this->RuntimePath.string() : this->RunnerMountPath.string();
-    VariablesMap["TempPath"]     = this->TempPath;
+    VariablesMap["TempPath"]     = this->TempPath.string();
     //Exe locator — the resolved per-variant CONTENTPATH (guest-relative + absolute host path).
-    VariablesMap["ContentPath"]  = this->ExePathRelative;
-    VariablesMap["Content"]      = this->ExePathComplete;
+    VariablesMap["ContentPath"]  = this->ExePathRelative.string();
+    VariablesMap["Content"]      = this->ExePathComplete.string();
     //Custom variables last (may shadow a built-in).
     for (auto &[Key, Value] : this->CustomVariables)
         VariablesMap[Key] = Value;
