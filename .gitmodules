@@ -7,6 +7,3 @@
 [submodule "MetaPackageFormat"]
 	path = MetaPackageFormat
 	url = https://github.com/lorenzo-zurini/MetaPackageFormat.git
-[submodule "external/Sandboxie"]
-	path = external/Sandboxie
-	url = https://github.com/sandboxie-plus/Sandboxie

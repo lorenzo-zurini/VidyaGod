@@ -70,26 +70,14 @@ Section "VidyaGod (required)" SecApp
   WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\VidyaGod" "NoRepair" 1
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
-  ; --- Sandboxie (game isolation) — bundled from the external/Sandboxie submodule (built by
-  ;     tools/build_sandboxie.cmd + staged by windeploy.sh into Sandboxie\). Register + start its service,
-  ;     which loads the SbieDrv.sys kernel driver; sandboxlayer_win.cpp then drives the bundled Start.exe.
-  ;     (SbieDrv.sys must be signed to load on x64 Windows — see tools/build_sandboxie.cmd.)
-  IfFileExists "$INSTDIR\Sandboxie\SbieSvc.exe" 0 sbie_none
-    DetailPrint "Registering bundled Sandboxie service (game isolation)..."
-    ExecWait '"$INSTDIR\Sandboxie\SbieSvc.exe" /install'
-    ExecWait 'sc start SbieSvc'
-    Goto sbie_done
-  sbie_none:
-    DetailPrint "Sandboxie not bundled — launches run unsandboxed. Build it with tools\build_sandboxie.cmd (VS + WDK)."
+  ; Sandboxie (game isolation) is an OPTIONAL external dependency — install Sandboxie-Plus separately.
+  ; Informational only; VidyaGod runs unsandboxed if it is absent.
+  IfFileExists "$PROGRAMFILES64\Sandboxie-Plus\Start.exe" sbie_done 0
+    DetailPrint "Note: install Sandboxie-Plus (https://sandboxie-plus.com) to enable game isolation; without it launches run unsandboxed."
   sbie_done:
 SectionEnd
 
 Section "Uninstall"
-  ; Stop + deregister the bundled Sandboxie service (and its driver) before removing files.
-  IfFileExists "$INSTDIR\Sandboxie\SbieSvc.exe" 0 +4
-    ExecWait 'sc stop SbieSvc'
-    ExecWait '"$INSTDIR\Sandboxie\SbieSvc.exe" /uninstall'
-    Sleep 500
   Delete "$SMPROGRAMS\VidyaGod\VidyaGod.lnk"
   RMDir  "$SMPROGRAMS\VidyaGod"
   Delete "$DESKTOP\VidyaGod.lnk"

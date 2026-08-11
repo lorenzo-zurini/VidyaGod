@@ -22,8 +22,6 @@
 #ifdef _WIN32
 
 #include "sandboxlayer.h"
-#include "launchparams.h"      // ContainerParams (for FromParams' Var lookups, declared in sandboxlayer.cpp)
-#include "platform/platform.h"
 
 #include <QProcess>
 #include <QString>
@@ -37,20 +35,13 @@
 
 namespace SandboxLayer {
 
-// Locate the Sandboxie binaries (Start.exe + SbieIni.exe). VidyaGod ships its OWN copy, built from the
-// external/Sandboxie submodule and bundled in a "Sandboxie" folder beside the executable — that vendored
-// copy is preferred so we don't depend on a separately-installed Sandboxie-Plus. A system-wide install is
-// only a dev-machine fallback.
+// Locate an installed Sandboxie-Plus (Start.exe + SbieIni.exe), typically %ProgramFiles%\Sandboxie-Plus.
+// Sandboxie is an external dependency (installed separately, like WinFsp) — VidyaGod drives its Start.exe;
+// it does not ship its own copy.
 static std::filesystem::path SandboxieDir()
 {
     std::error_code Ec;
-    std::filesystem::path Self = Platform::SelfExe();
-    if (!Self.empty())
-    {
-        std::filesystem::path Bundled = Self.parent_path() / "Sandboxie";   // our vendored, bundled copy
-        if (std::filesystem::exists(Bundled / "Start.exe", Ec)) return Bundled;
-    }
-    for (const char *Env : {"ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"})   // fallback: system install
+    for (const char *Env : {"ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"})
     {
         const char *P = std::getenv(Env);
         if (!P) continue;

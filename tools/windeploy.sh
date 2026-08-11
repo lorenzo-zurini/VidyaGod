@@ -46,17 +46,6 @@ while IFS= read -r p; do copydeps "$p"; done < <(find "$DIST" -name '*.dll')
 # One more pass so deps-of-deps just copied are themselves satisfied.
 while IFS= read -r p; do copydeps "$p"; done < <(find "$DIST" -maxdepth 1 -name '*.dll')
 
-# Vendored Sandboxie (built from the external/Sandboxie submodule by tools/build_sandboxie.cmd into
-# staging/Sandboxie). Bundled beside the exe as Sandboxie/ — sandboxlayer_win.cpp prefers this vendored
-# copy over any system install. The installer registers its SbieSvc service (which loads SbieDrv.sys).
-if [ -d staging/Sandboxie ] && ls staging/Sandboxie/Start.exe >/dev/null 2>&1; then
-    mkdir -p "$DIST/Sandboxie"
-    cp staging/Sandboxie/* "$DIST/Sandboxie/"
-    echo "== bundled vendored Sandboxie ($(ls staging/Sandboxie | wc -l) files) =="
-else
-    echo "== NOTE: staging/Sandboxie not found — build it with tools/build_sandboxie.cmd (VS + WDK) to bundle isolation; without it launches run unsandboxed =="
-fi
-
 # Wintun runtime (the multiplayer friend-LAN overlay adapter). The Go wintun binding LoadLibrary's wintun.dll at
 # runtime, so ship the official signed DLL beside the exe. Stage it at staging/wintun.dll (the amd64 build from
 # https://www.wintun.net). Off by default (Settings.LanEnabled), so absence only disables multiplayer.
@@ -69,4 +58,5 @@ fi
 
 echo "== done =="
 echo "dist: $(du -sh "$DIST" | cut -f1), $(find "$DIST" -name '*.dll' | wc -l) DLL(s), $(find "$DIST" -name '*.exe' | wc -l) exe(s)"
-echo "NOTE: install WinFsp on the target (kernel driver — not bundlable in a portable folder)."
+echo "NOTE: install WinFsp on the target (required — kernel driver, not bundlable in a portable folder)."
+echo "NOTE: install Sandboxie-Plus for game isolation (optional — launches run unsandboxed without it)."
