@@ -57,6 +57,16 @@ else
     echo "== NOTE: staging/Sandboxie not found — build it with tools/build_sandboxie.cmd (VS + WDK) to bundle isolation; without it launches run unsandboxed =="
 fi
 
+# Wintun runtime (the multiplayer friend-LAN overlay adapter). The Go wintun binding LoadLibrary's wintun.dll at
+# runtime, so ship the official signed DLL beside the exe. Stage it at staging/wintun.dll (the amd64 build from
+# https://www.wintun.net). Off by default (Settings.LanEnabled), so absence only disables multiplayer.
+if [ -f staging/wintun.dll ]; then
+    cp staging/wintun.dll "$DIST/"
+    echo "== bundled wintun.dll (multiplayer overlay) =="
+else
+    echo "== NOTE: staging/wintun.dll not found — friend-LAN multiplayer needs it (official signed DLL from wintun.net) =="
+fi
+
 echo "== done =="
 echo "dist: $(du -sh "$DIST" | cut -f1), $(find "$DIST" -name '*.dll' | wc -l) DLL(s), $(find "$DIST" -name '*.exe' | wc -l) exe(s)"
 echo "NOTE: install WinFsp on the target (kernel driver — not bundlable in a portable folder)."
