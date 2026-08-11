@@ -1,4 +1,4 @@
-name: Build AppImage
+name: Build
 
 on:
   push:
@@ -7,7 +7,10 @@ on:
     branches: [ main ]
 
 jobs:
-  appimage:
+  # ---------------------------------------------------------------------------
+  # Linux: build all targets + run tests, then package a portable AppImage.
+  # ---------------------------------------------------------------------------
+  linux:
     runs-on: ubuntu-22.04
 
     steps:
@@ -27,11 +30,21 @@ jobs:
           sudo apt update
           sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 libfuse3-dev tree \
-            libxkbcommon-dev nlohmann-json3-dev libzip-dev wget pkg-config
+            libxkbcommon-dev nlohmann-json3-dev wget pkg-config \
+            zlib1g-dev libbz2-dev liblzma-dev libzstd-dev
 
-          # Make Qt6 binaries available in PATH
-          export PATH=/usr/lib/qt6/bin:$PATH
-          qmake -v
+      - name: Build libzip from source (22.04's libzip is too old for zip_source_zip_file)
+        run: |
+          # Ubuntu 22.04 ships libzip 1.7; the case-conflict resolver needs zip_source_zip_file (libzip 1.10+).
+          # Build a recent libzip into /usr/local so pkg-config/gcc pick it up ahead of the system one, while
+          # keeping the AppImage on 22.04's older glibc for portability.
+          sudo apt-get remove -y libzip-dev || true
+          wget -q https://libzip.org/download/libzip-1.10.1.tar.gz
+          tar xf libzip-1.10.1.tar.gz
+          cmake -S libzip-1.10.1 -B libzip-build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
+          cmake --build libzip-build -j"$(nproc)"
+          sudo cmake --install libzip-build
+          sudo ldconfig
 
       - name: Test embedded IPFS node (offline)
         run: |
@@ -45,10 +58,12 @@ jobs:
           # (libvgipfs.so, built by CMake via `go build -buildmode=c-shared` and linked into VidyaGod).
           # -DVIDYAGOD_WERROR=ON: warnings fail the build in CI (local dev stays non-blocking) + export
           # compile_commands.json for the clang-tidy step.
+          export PATH=/usr/lib/qt6/bin:$PATH
+          export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}   # the source-built libzip 1.10.1
           mkdir -p build
           cd build
           cmake .. -DVIDYAGOD_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          make -j$(nproc)
+          make -j"$(nproc)"
 
       - name: C++ unit tests (ctest)
         run: ctest --test-dir build --output-on-failure
@@ -57,41 +72,27 @@ jobs:
         continue-on-error: true   # advisory for now — surfaces issues without gating the build
         run: |
           sudo apt install -y clang-tidy
-          # Run over our own sources only (HeaderFilterRegex in .clang-tidy scopes headers to src/).
           clang-tidy -p build $(git ls-files 'src/*.cpp')
 
       - name: Prepare AppDir
         run: |
           set -euxo pipefail
-
-          mkdir -p AppDir/usr/bin
-          mkdir -p AppDir/usr/lib
-          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
-
-          # Copy the app binary AND the FUSE helper. vidyagodfs MUST sit beside VidyaGod in
-          # usr/bin — the app locates it via /proc/self/exe (the binary's own directory).
+          mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/icons/hicolor/256x256/apps
+          # vidyagodfs MUST sit beside VidyaGod in usr/bin — the app locates it via /proc/self/exe.
           cp build/VidyaGod AppDir/usr/bin/
           cp build/vidyagodfs AppDir/usr/bin/
-
-          # The embedded IPFS node is linked into VidyaGod (DT_NEEDED libvgipfs.so, $ORIGIN rpath). Put it in
-          # usr/lib so AppRun's LD_LIBRARY_PATH=$APPDIR/usr/lib resolves it at runtime, AND beside the binary in
-          # usr/bin so the $ORIGIN rpath resolves it too (and linuxdeployqt finds it while bundling VidyaGod).
+          # The embedded IPFS node is linked into VidyaGod ($ORIGIN rpath). Put it in usr/lib (AppRun's
+          # LD_LIBRARY_PATH) AND beside the binary in usr/bin (the $ORIGIN rpath + linuxdeployqt bundling).
           cp build/libvgipfs.so AppDir/usr/lib/
           cp build/libvgipfs.so AppDir/usr/bin/
-
-          # Copy desktop file
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
-
-          # Copy main icon
           cp resources/org.vidyagod.VidyaGod.png AppDir/
-
-          # Copy AppRun
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
       - name: Download linuxdeploy
         run: |
-          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
 
       - name: Bundle vidyagodfs (libzip + libfuse3) and libvgipfs (its deps)
@@ -102,16 +103,13 @@ jobs:
 
       - name: Download linuxdeployqt
         run: |
-          wget https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
+          wget -q https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage
           chmod +x linuxdeployqt-continuous-x86_64.AppImage
 
       - name: Bundle main app with linuxdeployqt
         run: |
           export PATH=/usr/lib/qt6/bin:$PATH
-          # Let linuxdeployqt resolve VidyaGod's NEEDED libvgipfs.so while processing the binary.
           export LD_LIBRARY_PATH="$PWD/build:$PWD/AppDir/usr/lib:$LD_LIBRARY_PATH"
-
-          # Bundle your Qt app
           ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
 
       - name: Upload AppImage
@@ -119,3 +117,84 @@ jobs:
         with:
           name: VidyaGod-AppImage
           path: "VidyaGod*.AppImage"
+
+  # ---------------------------------------------------------------------------
+  # Windows: build all targets with MinGW-w64 (MSYS2), package a portable dist
+  # (windeployqt) and an NSIS installer.
+  # ---------------------------------------------------------------------------
+  windows:
+    runs-on: windows-2022
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 + MinGW-w64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qt6-tools
+            mingw-w64-x86_64-libzip
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-nlohmann-json
+            mingw-w64-x86_64-go
+
+      - name: Install WinFsp SDK (headers + lib for the vidyagodfs build)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/winfsp/winfsp/releases/download/v2.0/winfsp-2.0.23075.msi"
+          Invoke-WebRequest -Uri $url -OutFile winfsp.msi
+          # ADDLOCAL=ALL includes the Developer feature (inc/fuse3 + lib/winfsp-x64.lib + bin/winfsp-x64.dll).
+          Start-Process msiexec.exe -ArgumentList '/i','winfsp.msi','/qn','ADDLOCAL=ALL' -Wait
+
+      - name: Install NSIS (installer builder)
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build VidyaGod (MinGW-w64)
+        run: |
+          # MSYS2's Go binary is trimmed and needs GOROOT in the env.
+          export GOROOT=/mingw64/lib/go
+          export PATH=/mingw64/bin:$PATH
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DWINFSP_ROOT="C:/Program Files (x86)/WinFsp" -B build
+          cmake --build build
+
+      - name: Package portable distribution (windeployqt)
+        run: |
+          export PATH=/mingw64/bin:$PATH
+          bash tools/windeploy.sh build dist
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $dist = "$env:GITHUB_WORKSPACE\dist"
+          $out  = "$env:GITHUB_WORKSPACE\VidyaGodSetup.exe"
+          $nsi  = "$env:GITHUB_WORKSPACE\tools\vidyagod.nsi"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" "/DDISTDIR=$dist" "/DOUTFILE=$out" "$nsi"
+
+      - name: Upload portable dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: VidyaGod-Windows-portable
+          path: dist/**
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: VidyaGod-Windows-Installer
+          path: VidyaGodSetup.exe
