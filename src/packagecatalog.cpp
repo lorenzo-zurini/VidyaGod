@@ -6,6 +6,7 @@
 #include "ipfswrapper.h"
 #include "runnerwrapper.h"
 #include "containerwrapper.h"   // RunnerNodeImported (runner install state) — .cpp-only include avoids a header cycle
+#include "varsubst.h"           // %KEY% substitution — resolve CustomVar-templated content-layer PATHs for hydration
 
 #include <QDir>
 #include <QFile>
@@ -768,13 +769,51 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
     }
 }
 
+// The global CustomVar default namespace (KEY -> DEFAULT) across the whole node graph. CustomVars resolve in ONE
+// global namespace (see LaunchResolver::ResolveCustomVariables), so a single map suffices to substitute the %KEY%
+// tokens that appear in content-layer PATHs — e.g. a shared library node whose PATH is "%dgv_zip%". Later (more
+// specific) declarations win, matching the launch resolver's hierarchy; for hydration only the file identity matters.
+static std::map<std::string, std::string> CustomVarDefaults(const NodeIndex &Idx)
+{
+    std::map<std::string, std::string> Vars;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        (void)Id;
+        if (!N.Layers.is_array()) continue;
+        for (const auto &L : N.Layers)
+            if (L.is_object() && L.value("TYPE", std::string()) == "CustomVar")
+            {
+                const std::string Key = L.value("KEY", std::string());
+                if (!Key.empty()) Vars[Key] = L.value("DEFAULT", std::string());
+            }
+    }
+    return Vars;
+}
+
+// Does a content layer's resolved backing file exist? A PATH may be CustomVar-templated ("%dgv_zip%" -> a real zip);
+// substitute the global var namespace first, then stat. A path that STILL carries a %token% after substitution is
+// runtime-sourced (e.g. a runner's "%RunnerMount%/..." prefix mount) — it resolves to a live mount at launch, not to
+// on-disk content, so it is not a missing file (mirrors LaunchSources' IsRuntimeSourcedLayer skip). Without this,
+// every game whose closure includes a %var%-pathed shared library (dgVoodoo/DxWnd/ASILoader) reads as un-hydrated.
+static bool ResolvedLayerExists(const std::filesystem::path &Local, const std::map<std::string, std::string> &Vars)
+{
+    std::string S = Local.string();
+    if (S.find('%') != std::string::npos)
+    {
+        VarSubst::StringVariableSubstitution(S, Vars);
+        if (S.find('%') != std::string::npos) return true;   // still unresolved → runtime-sourced, not on-disk content
+    }
+    std::error_code Ec;
+    return std::filesystem::exists(S, Ec);
+}
+
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     if (!Idx.Find(LaunchNodeId)) return false;
+    const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);
     bool AllPresent = true;
     ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string&){
-        std::error_code Ec;
-        if (!std::filesystem::exists(Local, Ec)) AllPresent = false;
+        if (!ResolvedLayerExists(Local, Vars)) AllPresent = false;
     });
     return AllPresent;
 }
@@ -793,6 +832,7 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
 {
     std::unordered_map<std::string, NodeHydration> Memo;
     std::unordered_map<std::string, bool> StatCache;                 // local path -> exists (each unique jar/delta stat'd once)
+    const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);   // resolve %dgv_zip% etc. before stat'ing
     std::function<NodeHydration(const std::string &)> Compute = [&](const std::string &Id) -> NodeHydration {
         auto It = Memo.find(Id);
         if (It != Memo.end()) return It->second;
@@ -811,7 +851,7 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
                 auto Sc = StatCache.find(Key);
                 bool Exists;
                 if (Sc != StatCache.end()) Exists = Sc->second;
-                else { std::error_code Ec; Exists = std::filesystem::exists(Local, Ec); StatCache[Key] = Exists; }
+                else { Exists = ResolvedLayerExists(Local, Vars); StatCache[Key] = Exists; }
                 if (!Exists) R.Hydrated = false;
             }
         // Fold in the parents' (already-memoized) closure result.
