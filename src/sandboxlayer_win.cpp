@@ -37,14 +37,23 @@
 
 namespace SandboxLayer {
 
-// Locate the Sandboxie-Plus install (Start.exe + SbieIni.exe), typically %ProgramFiles%\Sandboxie-Plus.
+// Locate the Sandboxie binaries (Start.exe + SbieIni.exe). VidyaGod ships its OWN copy, built from the
+// external/Sandboxie submodule and bundled in a "Sandboxie" folder beside the executable — that vendored
+// copy is preferred so we don't depend on a separately-installed Sandboxie-Plus. A system-wide install is
+// only a dev-machine fallback.
 static std::filesystem::path SandboxieDir()
 {
-    for (const char *Env : {"ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"})
+    std::error_code Ec;
+    std::filesystem::path Self = Platform::SelfExe();
+    if (!Self.empty())
+    {
+        std::filesystem::path Bundled = Self.parent_path() / "Sandboxie";   // our vendored, bundled copy
+        if (std::filesystem::exists(Bundled / "Start.exe", Ec)) return Bundled;
+    }
+    for (const char *Env : {"ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"})   // fallback: system install
     {
         const char *P = std::getenv(Env);
         if (!P) continue;
-        std::error_code Ec;
         std::filesystem::path D = std::filesystem::path(P) / "Sandboxie-Plus";
         if (std::filesystem::exists(D / "Start.exe", Ec)) return D;
     }
