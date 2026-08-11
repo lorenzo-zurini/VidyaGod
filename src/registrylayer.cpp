@@ -2,7 +2,7 @@
 #include "fileedits.h"       // FileEdits::ProcessFileEdits (base FileEdits → DEFAULTDATA)
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution (wineboot arg/env expansion)
 #include "registrywrapper.h" // hive load/save/merge
-#include "processenv.h"      // SystemToolEnv (system runner, not AppImage libs)
+#include "procenv.h"      // SystemToolEnv (system runner, not AppImage libs)
 #include "commonutils.h"     // Log*
 
 #include <QProcess>

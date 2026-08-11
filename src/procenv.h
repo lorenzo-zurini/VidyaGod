@@ -1,5 +1,5 @@
-#ifndef PROCESSENV_H
-#define PROCESSENV_H
+#ifndef PROCENV_H
+#define PROCENV_H
 
 #include <QProcessEnvironment>
 #include <QStringList>
@@ -38,10 +38,10 @@ inline QProcessEnvironment SystemToolEnv(QProcessEnvironment Env = QProcessEnvir
 
 // Synchronously runs Program with Arguments in ProcessEnvironment (waits indefinitely so long-running installers
 // and wine boots don't time out). Dumps the child's stdout/stderr to the log. Returns the process exit code, or
-// -1 if it failed to start or crashed. Defined in processenv.cpp. (Generic process runner — no container coupling;
+// -1 if it failed to start or crashed. Defined in procenv.cpp. (Generic process runner — no container coupling;
 // lifted out of ContainerWrapper.)
 int RunCommand(std::string Program, std::vector<std::string> Arguments,
                QProcessEnvironment ProcessEnvironment = QProcessEnvironment::systemEnvironment(),
                const std::string &WorkingDirectory = "");
 
-#endif // PROCESSENV_H
+#endif // PROCENV_H

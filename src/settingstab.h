@@ -21,9 +21,9 @@ class SettingsTab : public QWidget
 public:
     SettingsTab(AppModel &model, QWidget *parent = nullptr);
 
-private:
-    void showPage(int row);   // build the page on first visit (lazy), then show it
+    void showPage(int row);   // build the page on first visit (lazy), then show it (also used to navigate)
 
+private:
     AppModel &Model;
     QListWidget    *CategoryList = nullptr;
     QStackedWidget *Stack        = nullptr;

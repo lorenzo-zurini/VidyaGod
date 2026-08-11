@@ -67,7 +67,7 @@ private:
     //InitializeDefPrefix/BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
     //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
 
-    //(RunCommand moved to processenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution
+    //(RunCommand moved to procenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution
     //— the pure %token% engine — moved to VarSubst; see varsubst.h.)
 
 private:

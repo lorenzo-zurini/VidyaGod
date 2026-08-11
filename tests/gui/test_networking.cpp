@@ -13,6 +13,7 @@
 #include "ipfstab.h"
 #include "ipfswrapper.h"
 #include "apppaths.h"
+#include "settingstab.h"
 
 using json = nlohmann::ordered_json;
 
@@ -42,6 +43,13 @@ private slots:
         IpfsTab * tab = mw.findChild<IpfsTab *>();
         QVERIFY(tab != nullptr);
         QVERIFY(!tab->findChildren<QLabel *>().isEmpty());
+
+        // SettingsTab builds each subpage lazily on first visit, so the IPFS page's "Enable networking"
+        // checkbox doesn't exist until we navigate to it. Show the IPFS page first.
+        SettingsTab * settings = mw.findChild<SettingsTab *>();
+        QVERIFY(settings != nullptr);
+        settings->showPage(5);   // row 5 == "IPFS" in SettingsTab's category order
+        QApplication::processEvents();
 
         // Tick Settings → IPFS "Enable networking" → drives the model → MainWindow starts the node off-thread.
         QCheckBox * netCb = nullptr;

@@ -1,6 +1,6 @@
 #include "containerwrapper.h"
 #include "commonutils.h"
-#include "processenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
+#include "procenv.h"      // RunCommand / SystemToolEnv (fusermount on cleanup + the game launch)
 #include "sandboxlayer.h"    // optional bubblewrap wrap of the launched game (opt-in via VIDYAGOD_SANDBOX)
 #include "ipfswrapper.h"     // IpfsWrapper::OverlayServe/OverlayStop (nested-sandbox overlay TUN handoff)
 
@@ -223,7 +223,7 @@ bool ContainerWrapper::BuildVirtualFilesystem()
 
 
 
-//(RunCommand — the generic synchronous QProcess runner — moved to processenv.{h,cpp} as a free function.)
+//(RunCommand — the generic synchronous QProcess runner — moved to procenv.{h,cpp} as a free function.)
 
 //=====================================================================================================================================================================
 //                                                                    REGISTRYWRAPPER CLASS

@@ -2,7 +2,7 @@
 #include "packageeditormodel.h"
 #include "covercache.h"
 #include "manifestmodel.h"   // ManifestModel::ZipFullyStored (STORE-zip check for the re-store action)
-#include "processenv.h"   // RunCommand (LAYERS zip<->dir convert)
+#include "procenv.h"   // RunCommand (LAYERS zip<->dir convert)
 #include "commonutils.h"
 
 #include <QBuffer>

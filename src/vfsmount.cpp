@@ -1,6 +1,6 @@
 #include "vfsmount.h"
 #include "platform/platform.h"
-#include "processenv.h"         // SystemToolEnv + RunCommand
+#include "procenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
 #include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)

@@ -120,8 +120,8 @@ set(SHARED_SOURCES
     src/runnerinstall.h
     src/runnerinstall.cpp
 
-    src/processenv.h
-    src/processenv.cpp
+    src/procenv.h
+    src/procenv.cpp
 
     src/containerwrapper.h
     src/containerwrapper.cpp
