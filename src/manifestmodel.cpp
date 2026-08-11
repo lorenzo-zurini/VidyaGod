@@ -347,7 +347,12 @@ void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
             if (!std::filesystem::exists(Local, Ec)) { AllLocal = false; continue; }   // remote-only / not hydrated
             AnyLocal = true;
             const std::string Target = L.value("TARGET", std::string());
-            if (std::filesystem::is_directory(Local, Ec))
+            if (LayerType(L) == "VFSFileLayer")
+                //A VFSFileLayer mounts one file at TARGET/<source basename> (overlay.cpp: fileVPath) — its Local is a
+                //regular file, NOT a zip, so it must be added directly (else ZipEntriesCached opens it as an archive,
+                //finds nothing, and the CONTENTPATH check false-positives "not found in the package content").
+                Files.insert(JoinTarget(Target, Local.filename().string()));
+            else if (std::filesystem::is_directory(Local, Ec))
                 for (auto It = std::filesystem::recursive_directory_iterator(Local, Ec);
                      !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
                 {

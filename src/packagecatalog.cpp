@@ -189,6 +189,8 @@ static BundleIdentity ScanBundleIdentity(const std::string &BundleDir)
     BundleIdentity Id;
     NodeIndex Idx;
     ManifestModel::ScanBundleNodes(BundleDir, Idx);
+    ManifestModel::LinkGames(Idx);   // a launchable variant inherits its tile's UID/TITLE (DeclareExec + DeclareLibraryItem
+                                     // may live on separate nodes); without this, such a bundle is mislabelled by its exec node-id
     const Node *Rep = nullptr;                                                    // prefer a presentable launchable
     for (const auto &[NodeId, N] : Idx.Nodes)
     {
