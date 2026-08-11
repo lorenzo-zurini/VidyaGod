@@ -18,6 +18,7 @@ int  VgStarted(void);   // 1 if the node repo is open
 int  VgOnline(void);    // 1 if the node's network stack is up (joined the swarm/DHT)
 
 int  VgAddNoCopy(const char *path, char **outCid, char **errOut);   // seed a file by reference (filestore --nocopy)
+int  VgAddNoCopyMeta(const char *path, char **outCid, char **errOut); // seed a TEXT-ONLY Meta-CID in place (*.json only, no staging)
 int  VgFetchToPath(const char *cid, const char *dest, char **errOut); // materialize + seed in place (no duplication)
 int  VgFetchDirToPath(const char *cid, const char *dest, char **errOut); // recursively materialize a UnixFS DIRECTORY CID (online)
 

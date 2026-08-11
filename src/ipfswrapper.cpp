@@ -175,6 +175,17 @@ std::string AddNoCopy(const std::string &PathStr, std::string *Error)
     return CidS;
 }
 
+std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
+{
+    if (PathStr.empty()) { if (Error) *Error = "empty path"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgAddNoCopyMeta(PathStr.c_str(), &Cid, &Err);
+    const std::string CidS = TakeStr(Cid);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("meta add failed: " + PathStr) : ErrS; return std::string(); }
+    return CidS;
+}
+
 std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error)
 {
     if (Cid.empty())         { if (Error) *Error = "empty CID";              return std::string(); }

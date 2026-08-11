@@ -596,9 +596,10 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
 
 // Mint a JSON-only Meta-CID for SrcDir (a single bundle OR a collection of bundle subdirs): (1) ensure every package's
 // VFS content + covers are content-addressed (idempotent PublishPackage — writes SOURCE.CID into the node JSON);
-// (2) mirror the JSON-only tree into StagingDir (which MUST persist — the CID seeds from there by reference);
-// (3) AddNoCopy(StagingDir) → the folder CID. Returns "" on failure.
-std::string PublishMetaCid(const std::string &SrcDir, const std::string &StagingDir, std::string *Error)
+// (2) AddNoCopyMeta(SrcDir) → the folder CID, seeded IN PLACE from the *.json manifests (no staging mirror; content +
+// DEFPREFIX/USERDATA are excluded by the filestore builder itself). The CID is identical to a JSON-only mirror's.
+// Returns "" on failure.
+std::string PublishMetaCid(const std::string &SrcDir, std::string *Error)
 {
     auto Fail = [&](const std::string &M) -> std::string { if (Error) *Error = M; LogErr("PackageCatalog::PublishMetaCid", M); return {}; };
     std::error_code Ec;
@@ -618,16 +619,11 @@ std::string PublishMetaCid(const std::string &SrcDir, const std::string &Staging
             if (!EnsureSeeded(Sub.path().string())) return {};
         }
 
-    // 2. Build the persistent JSON-only tree.
-    std::filesystem::remove_all(StagingDir, Ec);
-    const int Copied = MirrorDehydrated(SrcDir, StagingDir);
-    if (Copied == 0) return Fail("no JSON fragments under " + SrcDir);
-
-    // 3. Add-by-reference → the Meta folder CID (seeds from StagingDir).
+    // 2. Add-by-reference, text-only, IN PLACE → the Meta folder CID (seeds straight from the package tree's *.json).
     std::string E;
-    const std::string Cid = IpfsWrapper::AddNoCopy(StagingDir, &E);
-    if (Cid.empty()) return Fail("AddNoCopy(" + StagingDir + "): " + E);
-    LogSucc("PackageCatalog::PublishMetaCid", "Meta-CID " + Cid + " (" + std::to_string(Copied) + " JSON fragment(s), text-only) <- " + SrcDir);
+    const std::string Cid = IpfsWrapper::AddNoCopyMeta(SrcDir, &E);
+    if (Cid.empty()) return Fail("AddNoCopyMeta(" + SrcDir + "): " + E);
+    LogSucc("PackageCatalog::PublishMetaCid", "Meta-CID " + Cid + " (text-only, in place) <- " + SrcDir);
     return Cid;
 }
 

@@ -57,6 +57,9 @@ std::string FetchDirToPath(const std::string &Cid, const std::string &DestDir, s
 // publishing dehydrates a package: each layer's local content is added → its CID is recorded in the manifest.
 // Works offline (content enters the local repo); peers receive it once the node is online.
 std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
+// Seed a TEXT-ONLY Meta-CID directly from a package dir/collection: references the *.json manifests in place (no
+// staging mirror), skipping content + DEFPREFIX/USERDATA. Same CID as adding a JSON-only mirror of the tree.
+std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr);
 
 // ----- concurrency throttle: cap how many FetchToPath calls run at once (configurable) -----
 // A single global limit shared across all downloads (every package's hydrate worker draws from it), so the user can

@@ -99,7 +99,7 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // Mint a JSON-only Meta-CID for SrcDir (single bundle OR a dir of bundle subdirs): idempotently content-address content
 // + covers (PublishPackage), mirror the JSON-only tree into StagingDir (must persist — the CID seeds from there by
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
-std::string PublishMetaCid(const std::string &SrcDir, const std::string &StagingDir, std::string *Error = nullptr);
+std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
