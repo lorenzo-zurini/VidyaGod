@@ -26,9 +26,9 @@ where msbuild >nul 2>nul || (echo ERROR: msbuild not found. Open a "x64 Native T
 if not exist "%SBIE%\Sandbox.sln" (echo ERROR: submodule missing. Run: git submodule update --init external/Sandboxie & exit /b 1)
 
 echo == Building Sandboxie core (user-mode: Start / SbieSvc / SbieDll / SbieIni) ==
-msbuild "%SBIE%\Sandbox.sln"    /m /p:Configuration=Release /p:Platform=%ARCH% || exit /b 1
+msbuild "%SBIE%\Sandbox.sln"    /m /p:Configuration=SbieRelease /p:Platform=%ARCH% || exit /b 1
 echo == Building Sandboxie kernel driver (SbieDrv.sys — requires the WDK) ==
-msbuild "%SBIE%\SandboxDrv.sln" /m /p:Configuration=Release /p:Platform=%ARCH% || exit /b 1
+msbuild "%SBIE%\SandboxDrv.sln" /m /p:Configuration=SbieRelease /p:Platform=%ARCH% || exit /b 1
 
 echo == Staging the minimal binary set -^> %OUT% ==
 if not exist "%OUT%" mkdir "%OUT%"
