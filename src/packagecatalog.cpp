@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QStringList>
+#include <cstdint>
 #include <map>
 #include <fstream>
 #include <filesystem>
@@ -790,32 +791,42 @@ static std::map<std::string, std::string> CustomVarDefaults(const NodeIndex &Idx
     return Vars;
 }
 
-// Does a content layer's resolved backing file exist? A PATH may be CustomVar-templated ("%dgv_zip%" -> a real zip);
-// substitute the global var namespace first, then stat. A path that STILL carries a %token% after substitution is
-// runtime-sourced (e.g. a runner's "%RunnerMount%/..." prefix mount) — it resolves to a live mount at launch, not to
-// on-disk content, so it is not a missing file (mirrors LaunchSources' IsRuntimeSourcedLayer skip). Without this,
-// every game whose closure includes a %var%-pathed shared library (dgVoodoo/DxWnd/ASILoader) reads as un-hydrated.
-static bool ResolvedLayerExists(const std::filesystem::path &Local, const std::map<std::string, std::string> &Vars)
+// How a content layer's PATH resolves against the local filesystem — the path-only half of its fetch state (the CID
+// half is applied at the call site, since it decides fetchable-vs-broken). A PATH may be CustomVar-templated
+// ("%dgv_zip%" -> a real zip); substitute the global var namespace first. A path that STILL carries a %token% after
+// substitution is RUNTIME-sourced (a runner's "%RunnerMount%/..." prefix mount) — it resolves to a live mount at
+// launch, not to on-disk content (mirrors LaunchSources' IsRuntimeSourcedLayer skip).
+enum class PathState : std::uint8_t { Runtime, Present, Missing };
+static PathState ResolvePathState(const std::filesystem::path &Local, const std::map<std::string, std::string> &Vars)
 {
     std::string S = Local.string();
     if (S.find('%') != std::string::npos)
     {
         VarSubst::StringVariableSubstitution(S, Vars);
-        if (S.find('%') != std::string::npos) return true;   // still unresolved → runtime-sourced, not on-disk content
+        if (S.find('%') != std::string::npos) return PathState::Runtime;
     }
     std::error_code Ec;
-    return std::filesystem::exists(S, Ec);
+    return std::filesystem::exists(S, Ec) ? PathState::Present : PathState::Missing;
+}
+
+// HYDRATION = "everything fetchable has been fetched" (NOT "every backing file exists"). A content layer is un-hydrated
+// ONLY when it is FETCHABLE-MISSING: its backing file is absent AND it carries a remote source (CID) to fetch it from.
+// A missing local-only layer (no CID) is not un-hydrated — there is nothing to fetch; it is a broken/incomplete package,
+// which --validate-nodes owns, not the download button. A runtime-sourced %path% has no on-disk file at all.
+static bool LayerFetchableMissing(PathState PS, const std::string &Cid)
+{
+    return PS == PathState::Missing && !Cid.empty();
 }
 
 bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     if (!Idx.Find(LaunchNodeId)) return false;
     const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);
-    bool AllPresent = true;
-    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string&){
-        if (!ResolvedLayerExists(Local, Vars)) AllPresent = false;
+    bool AllFetched = true;
+    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
+        if (LayerFetchableMissing(ResolvePathState(Local, Vars), Cid)) AllFetched = false;
     });
-    return AllPresent;
+    return AllFetched;
 }
 
 bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
@@ -831,7 +842,7 @@ bool NodeHasContent(const NodeIndex &Idx, const std::string &LaunchNodeId)
 std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx)
 {
     std::unordered_map<std::string, NodeHydration> Memo;
-    std::unordered_map<std::string, bool> StatCache;                 // local path -> exists (each unique jar/delta stat'd once)
+    std::unordered_map<std::string, PathState> StatCache;            // raw local path -> resolved path state (stat'd once)
     const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);   // resolve %dgv_zip% etc. before stat'ing
     std::function<NodeHydration(const std::string &)> Compute = [&](const std::string &Id) -> NodeHydration {
         auto It = Memo.find(Id);
@@ -849,10 +860,10 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
                 LayerLocator(L, N->BundleDir, Local, Cid);
                 const std::string Key = Local.string();
                 auto Sc = StatCache.find(Key);
-                bool Exists;
-                if (Sc != StatCache.end()) Exists = Sc->second;
-                else { Exists = ResolvedLayerExists(Local, Vars); StatCache[Key] = Exists; }
-                if (!Exists) R.Hydrated = false;
+                PathState PS;
+                if (Sc != StatCache.end()) PS = Sc->second;
+                else { PS = ResolvePathState(Local, Vars); StatCache[Key] = PS; }
+                if (LayerFetchableMissing(PS, Cid)) R.Hydrated = false;
             }
         // Fold in the parents' (already-memoized) closure result.
         if (N)

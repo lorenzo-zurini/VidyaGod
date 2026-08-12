@@ -52,20 +52,29 @@ private slots:
         QVERIFY(PackageCatalog::NodeHydrated(idx, "game"));      // data dir present
     }
 
-    // NodeHydrated flips to false once the content is gone.
-    void node_hydrated_tracks_content_presence()
+    // NodeHydrated = "everything FETCHABLE has been fetched", NOT "every backing file exists". A missing content layer
+    // is un-hydrated ONLY when it carries a CID (a remote source to fetch from). A missing LOCAL-ONLY layer (no CID) is
+    // not un-hydrated — there is nothing to download; a broken package is --validate-nodes' concern, not the tile's.
+    void node_hydrated_tracks_fetchable_content()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+        // Missing file + a CID → FETCHABLE-MISSING → un-hydrated (the download button has work to do).
+        writeJson(dir.path() + "/remote.json", json{{"NODE_ID", "remote"},
             {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
-                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
+                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"},
+                                          {"SOURCE", json{{"TYPE", "ipfs"}, {"CID", "Qmdeadbeef"}}}} })}});
+        // Missing file + NO CID → local-only, nothing to fetch → hydrated (broken-ness surfaces via validation).
+        writeJson(dir.path() + "/localonly.json", json{{"NODE_ID", "localonly"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
+                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "solo.bin"}} })}});
 
         NodeIndex idx0; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx0);
-        QVERIFY(!PackageCatalog::NodeHydrated(idx0, "game"));    // blob.bin missing
+        QVERIFY(!PackageCatalog::NodeHydrated(idx0, "remote"));     // CID-backed blob.bin not fetched yet
+        QVERIFY(PackageCatalog::NodeHydrated(idx0, "localonly"));   // no CID → nothing fetchable is missing
 
-        writeFile(dir.path() + "/blob.bin");
+        writeFile(dir.path() + "/blob.bin");                        // the fetch lands the file locally
         NodeIndex idx1; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx1);
-        QVERIFY(PackageCatalog::NodeHydrated(idx1, "game"));
+        QVERIFY(PackageCatalog::NodeHydrated(idx1, "remote"));      // now fully fetched
     }
 
     // #8/#9: DehydrateNode deletes the content-layer files (keeping the manifest) and reports what it removed.
