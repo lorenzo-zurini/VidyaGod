@@ -7,6 +7,9 @@
 #include "runnerwrapper.h"
 #include "containerwrapper.h"   // RunnerNodeImported (runner install state) — .cpp-only include avoids a header cycle
 #include "varsubst.h"           // %KEY% substitution — resolve CustomVar-templated content-layer PATHs for hydration
+#include "launchresolver.h"     // ResolveChainIds — pool a game's resolved runner chain into its hydrate (full-closure)
+#include "runnerinstall.h"      // CollectRunnerNodeTargets — a runner node's build download targets
+#include "launchparams.h"       // ContainerParams (minimal, for the chain resolve)
 
 #include <QDir>
 #include <QFile>
@@ -950,10 +953,39 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
     return true;
 }
 
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles, std::string *Error)
+bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                               const nlohmann::ordered_json &GlobalConfigJSON,
+                               std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
+{
+    // A downloaded game is only PLAYABLE once its runtime is present too — so a full-closure hydrate pools the resolved
+    // runner CHAIN's build content (e.g. a Minecraft version's java_<major> JRE, or a wine game's Proton build) into the
+    // same fetch batch. The game's own PARENTS closure (dgVoodoo/jlib_*/DirectPlay content nodes) is already covered by
+    // CollectContentTargets — only the runner, which the closure walk skips (IsRunner), is added here. A native /
+    // build-less runner (kNativeTerminalId, a PATH runner) contributes nothing. Best-effort: an unresolvable chain is
+    // not fatal to the game content fetch (the launch itself will report a missing runner).
+    const Node *Launch = Idx.Find(LaunchNodeId);
+    if (!Launch) return true;
+    ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
+    Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
+    for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
+    {
+        if (RunnerId == LaunchResolver::kNativeTerminalId) continue;
+        std::string E;
+        if (!RunnerInstall::CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))
+            LogWarn("PackageCatalog::CollectRunnerChainTargets", "runner '" + RunnerId + "': " + E);
+    }
+    (void)Error;
+    return true;
+}
+
+bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles,
+                 std::string *Error, const nlohmann::ordered_json *GlobalConfigJSON)
 {
     std::vector<IpfsWrapper::FetchTarget> Targets;
     if (!CollectContentTargets(Idx, LaunchNodeId, Toggles, Targets, Error)) return false;
+    // Full-closure: also pool the resolved runner chain's build so the game is immediately launchable (identity = the
+    // node's Declare* layers; a game hydrate pulls the whole runtime, no separate "install the runner" step).
+    if (GlobalConfigJSON) CollectRunnerChainTargets(Idx, LaunchNodeId, *GlobalConfigJSON, Targets, Error);
     if (!IpfsWrapper::FetchTargetsConcurrent(Targets, Error))
     { LogErr("PackageCatalog::HydrateNode", "hydrate failed for '" + LaunchNodeId + "'"); return false; }
     LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Targets.size()) + " file(s)).");

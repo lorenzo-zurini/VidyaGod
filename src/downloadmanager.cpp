@@ -300,14 +300,19 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     // Snapshot the node index for THIS worker: concurrent downloads must not read the shared CatalogIndex while a
     // completing download reassigns it (rebuildCatalog). (DEFPREFIX generation reads only the index, not the config.)
     NodeIndex Snapshot = Model.catalogIndex();
-    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot)]{
+    nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
+    std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
         std::string Err; bool Ok = true;
-        // Pool EVERY fetch — all selected launchables' content layers + all selected runners' build layers — into
-        // ONE concurrent batch, so the game and its runner(s) download TOGETHER (bounded by MaxConcurrentDownloads)
-        // instead of phase-by-phase (which left a runner's big build "Queued" behind the game content).
+        // Pool EVERY fetch — all selected launchables' content layers + each launchable's RESOLVED runner chain build +
+        // any extra runners the user ticked — into ONE concurrent batch, so a game downloads TOGETHER with the runtime
+        // it needs (bounded by MaxConcurrentDownloads). Auto-pooling the resolved chain makes a downloaded game
+        // immediately playable regardless of the runner checklist (dedup handles overlap with a ticked runner).
         std::vector<IpfsWrapper::FetchTarget> Targets;
         for (const std::string & Lid : LaunchIds)
+        {
             if (!PackageCatalog::CollectContentTargets(Snapshot, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
+            PackageCatalog::CollectRunnerChainTargets(Snapshot, Lid, ConfigSnap, Targets, &Err);   // best-effort runtime
+        }
         if (Ok)
             for (const std::string & Rid : RunnerIds)
                 if (!RunnerInstall::CollectRunnerNodeTargets(Snapshot, Rid, Targets, &Err)) { Ok = false; break; }

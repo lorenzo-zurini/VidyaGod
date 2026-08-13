@@ -159,6 +159,35 @@ private slots:
         QVERIFY(targets.size() >= 2);
     }
 
+    // Full-closure hydrate: CollectRunnerChainTargets auto-resolves the game's runner via the PLATFORM GRAPH (no
+    // manually-named runner) and pools its build — so a downloaded game is immediately playable. Same graph as above:
+    // the game (PLATFORM win32) resolves to the wine runner (GUEST [win32]) whose build (CID_WINE) must be fetched.
+    void hydrate_pools_resolved_runner_chain()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "g"}},
+                                     json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })},
+            {"PARENTS", json::array({"content"})}});
+        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"LAYERS", json::array({
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_GAME"}}}} })}});
+        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"},
+            {"LAYERS", json::array({ json{{"TYPE", "DeclareRunner"}, {"HOST", ManifestModel::MachinePlatform()},
+                                          {"GUEST", json::array({"win32"})}, {"EXECUTABLE", "x"}} })},
+            {"PARENTS", json::array({"winebuild"})}});
+        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"LAYERS", json::array({
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "wine.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_WINE"}}}} })}});
+
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
+
+        json cfg = json::object();                                 // no runner pin → default platform-graph resolve
+        std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
+        QVERIFY(PackageCatalog::CollectRunnerChainTargets(idx, "game", cfg, targets, &err));
+        bool hasWine = false;
+        for (const auto & t : targets) { if (t.Cid == "CID_WINE") hasWine = true; }
+        QVERIFY(hasWine);                       // runner build auto-pooled purely from the game's resolved chain
+    }
+
     // A locally-added bundle (a LIBRARY entry whose PATH is OUTSIDE any repo dir) must be indexed by the catalog —
     // BuildCatalogIndex scans LocalPackageDirs alongside the repo roots. Regression: external bundles silently never
     // showed because only repo dirs were scanned.

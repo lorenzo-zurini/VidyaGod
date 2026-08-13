@@ -66,6 +66,9 @@ void RunnersPage::rebuild()
         Runners.push_back(&N);
     }
     std::sort(Runners.begin(), Runners.end(), [](const Node* A, const Node* B){ return A->NodeId < B->NodeId; });
+    // SAME fetch-based hydration model as the Catalog/Library tabs — a runner is no different from a game package:
+    // its state is read from HydrationMap (build content fetched?), not a bespoke runner-only predicate. O(N+E) once.
+    const auto Hyd = PackageCatalog::HydrationMap(Model.catalogIndex());
     if (Runners.empty())
     {
         QLabel * none = new QLabel("No runners found in your repositories.", contents);
@@ -82,34 +85,35 @@ void RunnersPage::rebuild()
         for (const auto & P : R->GuestPlatform) guest += (guest.isEmpty() ? "" : ", ") + QString::fromStdString(P);
         const QString Desc = QString::fromStdString(R->HostPlatform) + " → [" + guest + "]";
 
-        const bool Avail      = RunnerWrapper::ExecutableAvailable(R->Exec);
-        const bool Ships      = !PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty();
-        const bool BuildReady = RunnerInstall::RunnerBuildPresent(Model.catalogIndex(), rid);   // build layers hydrated
+        const bool Avail = RunnerWrapper::ExecutableAvailable(R->Exec);
+        auto Hit = Hyd.find(rid);
+        const bool HasContent = (Hit != Hyd.end()) && Hit->second.HasContent;   // ships a downloadable build (== a game's content)
+        const bool Hydrated   = (Hit == Hyd.end()) || Hit->second.Hydrated;     // build fully fetched (fetch-based, same as games)
 
-        // A shipped runner is READY once its build is fetched — the prefix assembles from the build at launch
-        // (node-declared, no generation step). Build missing → offer Import (feeds the download pump; needs the node
-        // online). No separate DEFPREFIX stage anymore.
+        // A runner is READY once its build content is hydrated — identical to a game being in the Library rather than the
+        // Catalog (the prefix assembles from the build at launch; no generation step). Build not yet fetched → offer
+        // Download (the same download pump). A runner with no downloadable build is a system/built-in runner.
         QHBoxLayout * row = new QHBoxLayout();
         row->addWidget(new QLabel(Desc, card), 1);
         QLabel * st = new QLabel(card);
-        if (!Ships && Avail)   st->setText("<span style='color:#8f98a0;'>built-in</span>");
-        else if (!Ships)       st->setText("<span style='color:#c0726a;'>not installed on system</span>");
-        else if (BuildReady)   st->setText("<span style='color:#5fb55f;'>Ready</span>");
-        else                   st->setText("<span style='color:#c0726a;'>Not imported</span>");
+        if (!HasContent && Avail)   st->setText("<span style='color:#8f98a0;'>built-in</span>");
+        else if (!HasContent)       st->setText("<span style='color:#c0726a;'>not available on system</span>");
+        else if (Hydrated)          st->setText("<span style='color:#5fb55f;'>Ready</span>");
+        else                        st->setText("<span style='color:#c0726a;'>Not downloaded</span>");
         row->addWidget(st);
 
-        if (Ships && !BuildReady && IpfsWrapper::Available())
+        if (HasContent && !Hydrated && IpfsWrapper::Available())
         {
-            QPushButton * btn = new QPushButton("Import", card);
+            QPushButton * btn = new QPushButton("Download", card);
             connect(btn, &QPushButton::clicked, this, [this, rid, btn, st]{
                 if (!IpfsFetchReady(this)) return;              // need the embedded node online to fetch
-                btn->setEnabled(false); btn->setText("Importing…");
-                st->setText("<span style='color:#c6a15f;'>Importing… (see IPFS tab)</span>");
+                btn->setEnabled(false); btn->setText("Downloading…");
+                st->setText("<span style='color:#c6a15f;'>Downloading… (see IPFS tab)</span>");
                 Model.importRunner(QString::fromStdString(rid));   // → download pump; catalogChanged rebuilds this page
             });
             row->addWidget(btn);
         }
-        else if (Ships && !BuildReady)
+        else if (HasContent && !Hydrated)
         {
             QLabel * need = new QLabel("IPFS unavailable", card);
             need->setStyleSheet("color:#8f98a0;font-style:italic;");

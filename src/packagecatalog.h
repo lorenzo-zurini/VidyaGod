@@ -154,11 +154,20 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
 bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                            const std::map<std::string, bool> &Toggles,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
+// Gather (without fetching) the build download targets of the launchable's RESOLVED runner CHAIN, appending to Out —
+// so a full-closure hydrate pulls the game's runtime (JRE / Proton build) alongside its content. The game's own PARENTS
+// closure (library content nodes) is already covered by CollectContentTargets; this adds only the runner (which the
+// closure walk skips). Best-effort — an unresolvable chain is not fatal.
+bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                               const nlohmann::ordered_json &GlobalConfigJSON,
+                               std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
 // bundle PATH, concurrently (bounded by MaxConcurrentDownloads). Worker-thread (blocks). False (with *Error) on a
-// failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.)
+// failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.) When GlobalConfigJSON is
+// given, ALSO pools the resolved runner chain's build (CollectRunnerChainTargets) so the game is immediately playable.
 bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                 const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr);
+                 const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr,
+                 const nlohmann::ordered_json *GlobalConfigJSON = nullptr);
 
 } // namespace PackageCatalog
 
