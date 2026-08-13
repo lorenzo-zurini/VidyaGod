@@ -682,6 +682,17 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
         if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
     }
+    //Soft PACKAGE-SIDE pin: the launch NODE's DeclareExec.RUNNER (RecommendedRunner). Lets a MULTI-VERSION package
+    //pick a PER-VERSION runner — e.g. each Minecraft version selecting its Java major (java_8/java_17/...) — which the
+    //per-package USERSETTINGS.PREFERRED_RUNNER cannot express. Ranks below an explicit user pin (RunnerChainIds /
+    //RUNNER_CHAIN) and only applies when the recommended runner is a real, available runner that serves the content
+    //platform. The Pinned validation below then verifies it reaches the machine and appends the native terminal.
+    if (Pinned.empty() && !Launch.RecommendedRunner.empty())
+    {
+        const Node *R = Idx.Find(Launch.RecommendedRunner);
+        if (R && R->IsRunner() && RunnerAvailable(Idx, *R) && RunnerServes(R, Launch.HostPlatform))
+            Pinned.push_back(Launch.RecommendedRunner);
+    }
     if (!Pinned.empty())
     {
         std::string Cur = Launch.HostPlatform;
