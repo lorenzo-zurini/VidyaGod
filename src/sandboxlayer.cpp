@@ -22,14 +22,6 @@
 
 namespace SandboxLayer {
 
-static bool Truthy(const std::string &V)
-{
-    std::string L;
-    L.reserve(V.size());
-    for (char C : V) L.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(C))));
-    return L == "on" || L == "true" || L == "1" || L == "yes";
-}
-
 // Look up a custom variable case-sensitively (the launch namespace uses UPPER_SNAKE keys).
 static std::string Var(const ContainerParams &CP, const std::string &Key)
 {
@@ -39,10 +31,11 @@ static std::string Var(const ContainerParams &CP, const std::string &Key)
 
 bool Requested(const ContainerParams &CP, bool DefaultOn)
 {
-    const std::string V = Var(CP, "VIDYAGOD_SANDBOX");
-    if (!V.empty())   // explicit per-launch / per-package / session override wins over the launcher default
-        return Truthy(V);
-    return DefaultOn;
+    // Sandboxing is MANDATORY — always on, for security and parity with the Windows (Sandboxie) path. It is no longer a
+    // toggle: the VIDYAGOD_SANDBOX opt-out and the launcher default are intentionally ignored (an un-sandboxable machine
+    // fails the launch rather than running the game unconfined). VIDYAGOD_SANDBOX_NET (net mode) is a separate knob.
+    (void)CP; (void)DefaultOn;
+    return true;
 }
 
 Options FromParams(const ContainerParams &CP, bool DefaultOn)

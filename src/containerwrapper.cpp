@@ -124,36 +124,34 @@ bool ContainerWrapper::BuildContainerRuntime()
         return false;
     }
 
-    //Provision the Wine prefix (DEFPREFIX) — only when the runner asks for one. Left pristine; base edits
-    //go to DEFAULTDATA below. One code path, no installed-vs-not branching for edits.
-    if (PrefixGen)
-    {
-        //Installed runner: build is pre-provisioned. Mount it read-only at RunnerMountPath; the prefix is assembled
-        //from it via the runner node's declared layers (no wineboot, no DEFPREFIX artifact).
-        if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
+    //Mount the runner's shipped build READ-ONLY at RunnerMountPath — proton's wine prefix OR a NATIVE runner's runtime
+    //(e.g. a java runner's JRE, shipped via its jre_N PARENT). This must run whenever the runner ships a build; it is
+    //NOT gated on PrefixGenerate — a native runner ships a build without generating a wine prefix, and gating on
+    //PrefixGen was why a java runner's %RunnerMount%/__jre never got mounted (execvp → 127). MountRunnerBuild self-guards
+    //on RunnerShipsBuild/UnifiedRuntime, so this is a no-op for a runnerless / unified / build-less launch.
+    if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
 
-        //Probe the mounted runner's prefix LAYOUT (new files/lib vs old dist/lib64) into launch vars, so a runner
-        //node's prefix-assembly layers (default_pfx/DLL VFSDirLayers + config_info FileEdit) are IDENTICAL across
-        //all ~150 versions — the layout paths + system.reg mtime resolve here from the live mount. These mirror
-        //proton's own fonts_dir/lib_dir/default_pfx_dir + getmtimestr(system.reg), so its config_info fast-path
-        //fires (zero-copy). NB: both proton and this probe stat the SAME mounted system.reg → the mtime matches.
-        if (ContainerParams.RunnerShipsBuild && !ContainerParams.RunnerMountPath.empty())
-        {
-            const std::filesystem::path RM = ContainerParams.RunnerMountPath;
-            std::error_code Pec;
-            const std::string Root = std::filesystem::exists(RM / "files" / "lib" / "wine", Pec) ? "files" : "dist";
-            const std::string Lib  = (Root == "files") ? "lib" : "lib64";
-            auto &V = ContainerParams.CustomVariables;
-            V["DefaultPfxDir"]   = (RM / Root / "share" / "default_pfx").string() + "/";
-            V["WineFontsDir"]    = (RM / Root / "share" / "fonts").string() + "/";
-            V["WineLibDir"]      = (RM / Root / Lib).string() + "/";
-            V["WineSys32Dir"]    = (RM / Root / Lib / "wine" / "x86_64-windows").string();
-            V["WineSysWow64Dir"] = (RM / Root / Lib / "wine" / "i386-windows").string();
-            struct stat St{};
-            const std::string SysReg = (RM / Root / "share" / "default_pfx" / "system.reg").string();
-            V["SysRegMtime"] = (::stat(SysReg.c_str(), &St) == 0) ? (std::to_string((long long)St.st_mtime) + ".0") : "0";
-            LogOut("ContainerWrapper::BuildContainerRuntime", "Probed prefix layout: " + Root + " (sysreg mtime " + V["SysRegMtime"] + ")");
-        }
+    //Provision the Wine prefix LAYOUT probe — ONLY when the runner GENERATES a prefix (proton). Probes the mounted
+    //runner's layout (new files/lib vs old dist/lib64) into launch vars so a runner node's prefix-assembly layers
+    //(default_pfx/DLL VFSDirLayers + config_info FileEdit) are IDENTICAL across all ~150 versions — the layout paths +
+    //system.reg mtime resolve from the live mount, mirroring proton's fonts_dir/lib_dir/default_pfx_dir + system.reg
+    //mtime so its config_info fast-path fires (zero-copy). Irrelevant to native runners (no wine prefix).
+    if (PrefixGen && ContainerParams.RunnerShipsBuild && !ContainerParams.RunnerMountPath.empty())
+    {
+        const std::filesystem::path RM = ContainerParams.RunnerMountPath;
+        std::error_code Pec;
+        const std::string Root = std::filesystem::exists(RM / "files" / "lib" / "wine", Pec) ? "files" : "dist";
+        const std::string Lib  = (Root == "files") ? "lib" : "lib64";
+        auto &V = ContainerParams.CustomVariables;
+        V["DefaultPfxDir"]   = (RM / Root / "share" / "default_pfx").string() + "/";
+        V["WineFontsDir"]    = (RM / Root / "share" / "fonts").string() + "/";
+        V["WineLibDir"]      = (RM / Root / Lib).string() + "/";
+        V["WineSys32Dir"]    = (RM / Root / Lib / "wine" / "x86_64-windows").string();
+        V["WineSysWow64Dir"] = (RM / Root / Lib / "wine" / "i386-windows").string();
+        struct stat St{};
+        const std::string SysReg = (RM / Root / "share" / "default_pfx" / "system.reg").string();
+        V["SysRegMtime"] = (::stat(SysReg.c_str(), &St) == 0) ? (std::to_string((long long)St.st_mtime) + ".0") : "0";
+        LogOut("ContainerWrapper::BuildContainerRuntime", "Probed prefix layout: " + Root + " (sysreg mtime " + V["SysRegMtime"] + ")");
     }
 
     //Materialise every package-encoded BASE edit into the DEFAULTDATA layer (between the component layers
@@ -204,7 +202,11 @@ bool ContainerWrapper::BuildContainerRuntime()
                 ContainerParams.SandboxMounts.emplace_back(SpecPath.string(), Mnt.string());
         };
         Record(ContainerParams.TempPath / "vidyagodfs.spec.json", ContainerParams.RuntimePath);
-        if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime && !ContainerParams.RunnerLayers.empty())
+        //The RUNNER build mount (e.g. a native runner's JRE) must be bound INSIDE the sandbox too, else its executable
+        //(%RunnerMount%/...) is unreachable in the namespace and execvp fails with 127. RunnerShipsBuild already proves a
+        //build mount was created (its content may live entirely in the runner's PARENTS, so the runner NODE's own LAYERS
+        //can be empty — do NOT gate on that); Record() no-ops if the runner spec wasn't written.
+        if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
             Record(ContainerParams.TempPath / "vidyagodfs.runner.spec.json", ContainerParams.RunnerMountPath);
     }
 
@@ -414,16 +416,16 @@ bool ContainerWrapper::Execute(std::string OverrideExe)
     bool OverlayServing = false;
     if (!Override)
     {
-        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams, SandboxDefaultOn(GlobalConfigJSON));
-        if (SbOpts.Enabled && !SandboxLayer::Available())
+        SandboxLayer::Options SbOpts = SandboxLayer::FromParams(ContainerParams, true);   // Enabled is always true (MANDATORY)
+        if (!SandboxLayer::Available())
+        {
 #ifdef _WIN32
-            LogOut("ContainerWrapper::Execute", "Sandbox unavailable on this machine (Sandboxie not installed / SbieSvc not running) — launching normally.");
+            LogErr("ContainerWrapper::Execute", "Sandbox is MANDATORY but unavailable (Sandboxie not installed / SbieSvc not running) — refusing to launch unsandboxed.");
 #else
-            LogOut("ContainerWrapper::Execute", "Sandbox unavailable on this machine (no bwrap / unprivileged user namespaces disabled) — launching normally.");
+            LogErr("ContainerWrapper::Execute", "Sandbox is MANDATORY but unavailable (no bwrap / unprivileged user namespaces disabled) — refusing to launch unsandboxed.");
 #endif
-        else if (SbOpts.Enabled && ContainerParams.SandboxMounts.empty())
-            LogWarn("ContainerWrapper::Execute", "Sandbox requested but no runtime mount was prepared — launching normally.");
-        else if (SbOpts.Enabled)
+            return false;
+        }
         {
             for (const auto &[Spec, Mnt] : ContainerParams.SandboxMounts)
                 SbOpts.Mounts.push_back({Spec, Mnt});

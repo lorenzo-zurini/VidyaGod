@@ -1,5 +1,5 @@
-// Tests for SandboxLayer — the opt-in bubblewrap wrapper for the launched game. Wrap() is pure argv construction
-// (no bwrap needed), so we assert: the sandbox is off unless VIDYAGOD_SANDBOX is truthy; the network mode reads from
+// Tests for SandboxLayer — the MANDATORY bubblewrap wrapper for the launched game. Wrap() is pure argv construction
+// (no bwrap needed), so we assert: the sandbox is always on (no opt-out); the network mode reads from
 // VIDYAGOD_SANDBOX_NET; and the produced argv mounts the host root read-only, unshares the net only when isolated,
 // and ends with `-- <origProgram> <origArgs...>` so the real command is preserved verbatim.
 
@@ -22,17 +22,18 @@ class SandboxTest : public QObject
     }
 
 private slots:
-    void on_by_default_with_overrides()
+    void mandatory_always_on()
     {
-        // Default ON: an unremarkable launch is sandboxed.
+        // Sandboxing is MANDATORY (security + parity with the Windows Sandboxie path): Requested is ALWAYS true,
+        // regardless of the now-ignored launcher default or the VIDYAGOD_SANDBOX var. There is no opt-out — an
+        // un-sandboxable machine fails the launch (ContainerWrapper::Execute) rather than running the game unconfined.
         QVERIFY(SandboxLayer::Requested(params({})));
-        // The global default can be turned off (Settings.SandboxByDefault=false).
-        QVERIFY(!SandboxLayer::Requested(params({}), /*DefaultOn=*/false));
-        // An explicit per-launch/package/session VIDYAGOD_SANDBOX override always wins over the default.
-        QVERIFY(!SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "off"}})));
-        QVERIFY(!SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "false"}})));
+        QVERIFY(SandboxLayer::Requested(params({}), /*DefaultOn=*/false));
+        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "off"}})));        // opt-out ignored
+        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "false"}}), /*DefaultOn=*/false));
         QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "on"}}), /*DefaultOn=*/false));
-        QVERIFY(SandboxLayer::Requested(params({{"VIDYAGOD_SANDBOX", "1"}}), /*DefaultOn=*/false));
+        // Enabled follows Requested — a launch always builds a sandbox.
+        QVERIFY(SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "off"}})).Enabled);
     }
 
     void net_mode_from_var()

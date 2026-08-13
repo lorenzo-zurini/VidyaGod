@@ -345,6 +345,11 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     if (!ContainerParams.RunnerShipsBuild || ContainerParams.UnifiedRuntime) return true;
     if (ContainerParams.RunnerLayers.empty()) return true;
 
+    //Ensure TempPath (for the spec) + the RUNNER mountpoint exist. This mount can run before MountVFS (which otherwise
+    //creates TempPath), e.g. for a native runner that ships a build without generating a wine prefix — CleanStaleRuntime
+    //may have removed TempPath, and SpawnVidyagodfs does not create it. create_directories is idempotent.
+    { std::error_code Mec; std::filesystem::create_directories(ContainerParams.RunnerMountPath, Mec); }
+
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = ContainerParams.RunnerMountPath.string();
     Spec["uid"] = 1000; Spec["gid"] = 1000;
