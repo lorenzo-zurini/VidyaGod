@@ -76,7 +76,20 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         //No wineserver quiesce needed: InitializeDefPrefix / the installed artifact leave DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
-        RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>
+        //BASE registry = the legacy per-machine DEFPREFIX (hives at <artifact>/<PrefixRoot>). For a node-declared
+        //zero-copy prefix (proton-decompose) there IS no DEFPREFIX — the base is proton's default_pfx template,
+        //mounted at pfx (%DefaultPfxDir%). Its hives live at the template ROOT (default_pfx IS the pfx). We MUST load
+        //that base: otherwise LoadPrefix reads an empty (non-existent DEFPREFIX) dir, and the saved system.reg holds
+        //only the ~5 base RegEdits — which then SHADOWS default_pfx's full system.reg, gutting the registry (proton's
+        //HKLM ACM DriverCache is lost → msacm32 rebuilds it by opening the codecs at game time, re-entering a native
+        //winmm proxy mid-init → "cannot load original winmm.dll"). Loading default_pfx keeps the full registry (cache
+        //included) as the base, so the edits layer on top and the shadow is complete, not partial.
+        std::filesystem::path BaseHives = HiveDir(ContainerParams, ContainerParams.DefPrefixPath);
+        if (auto It = ContainerParams.CustomVariables.find("DefaultPfxDir");
+            It != ContainerParams.CustomVariables.end() && !It->second.empty()
+            && std::filesystem::exists(std::filesystem::path(It->second)))
+            BaseHives = It->second;                                                // default_pfx: hives at its root
+        RW.LoadPrefix(BaseHives);
         if (HaveBaseReg)
             RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
         if (HavePersistKeys)
