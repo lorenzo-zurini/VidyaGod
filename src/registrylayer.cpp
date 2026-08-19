@@ -76,20 +76,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         //No wineserver quiesce needed: InitializeDefPrefix / the installed artifact leave DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
-        //BASE registry = the legacy per-machine DEFPREFIX (hives at <artifact>/<PrefixRoot>). For a node-declared
-        //zero-copy prefix (proton-decompose) there IS no DEFPREFIX — the base is proton's default_pfx template,
-        //mounted at pfx (%DefaultPfxDir%). Its hives live at the template ROOT (default_pfx IS the pfx). We MUST load
-        //that base: otherwise LoadPrefix reads an empty (non-existent DEFPREFIX) dir, and the saved system.reg holds
-        //only the ~5 base RegEdits — which then SHADOWS default_pfx's full system.reg, gutting the registry (proton's
-        //HKLM ACM DriverCache is lost → msacm32 rebuilds it by opening the codecs at game time, re-entering a native
-        //winmm proxy mid-init → "cannot load original winmm.dll"). Loading default_pfx keeps the full registry (cache
-        //included) as the base, so the edits layer on top and the shadow is complete, not partial.
-        std::filesystem::path BaseHives = HiveDir(ContainerParams, ContainerParams.DefPrefixPath);
-        if (auto It = ContainerParams.CustomVariables.find("DefaultPfxDir");
-            It != ContainerParams.CustomVariables.end() && !It->second.empty()
-            && std::filesystem::exists(std::filesystem::path(It->second)))
-            BaseHives = It->second;                                                // default_pfx: hives at its root
-        RW.LoadPrefix(BaseHives);
+        RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>
         if (HaveBaseReg)
             RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
         if (HavePersistKeys)
@@ -99,6 +86,23 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             for (const std::string &RegPath : ContainerParams.KeepRegKeys)
                 if (RW.MergeKeyFrom(Durable, RegPath))
                     LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
+        }
+        //ACM DriverCache carry-over (targeted): for a node-declared zero-copy prefix there is no DEFPREFIX, so the base
+        //loaded above is EMPTY and the saved system.reg (base RegEdits only) SHADOWS default_pfx's full system.reg. That's
+        //deliberate — games run on wine's own defaults (a full default_pfx overlay regressed some). EXCEPT wine's msacm32
+        //validates its ACM codec cache from HKLM\...\AudioCompressionManager\DriverCache; with it gone it REBUILDS the
+        //cache by opening each codec at game time, and a codec's winmm import re-enters a game's native DxWnd winmm proxy
+        //mid-DllMain → msacm32 init fails ("cannot load original winmm.dll" for CD-audio games). So carry over ONLY that
+        //subtree from default_pfx (both the win64 view and the Wow6432Node/32-bit view the game actually reads) — nothing
+        //else — so msacm32 trusts the cache and never opens a codec at game time.
+        if (auto It = ContainerParams.CustomVariables.find("DefaultPfxDir");
+            It != ContainerParams.CustomVariables.end() && !It->second.empty()
+            && std::filesystem::exists(std::filesystem::path(It->second)))
+        {
+            RegistryWrapper Dpfx;
+            Dpfx.LoadPrefix(It->second);                                            // default_pfx hives at its root
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\AudioCompressionManager");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\AudioCompressionManager");
         }
         const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
         std::filesystem::create_directories(HiveOut, Ec);
