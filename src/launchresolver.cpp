@@ -1004,16 +1004,34 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     //A prefix-generating runner contributes prefix-ASSEMBLY layers to the RUNTIME closure: default_pfx/DLL VFSDirLayers
     //(sourced from "%RunnerMount%/..." — the enabler substitutes the runtime path), config_info/version/marker FileEdits,
     //and wineboot RegEdits. They live on the runner NODE (its content comes from PARENTS, so its own LAYERS are otherwise
-    //ignored), so route the VFS/FileEdit/RegEdit ones into SubComponentsArray here — appended RAW (their %RunnerMount%/
-    //%TempPath% resolve downstream, at mount/edit time). The generic BuildLayerSpec loop + BuildDefaultData then assemble
-    //the prefix with NO special-case branch. Persist/CustomVar stay handled by RunnerPersistLayers / the resolver.
+    //ignored), so route the VFS/FileEdit/RegEdit ones into SubComponentsArray here (their %RunnerMount%/%TempPath% resolve
+    //downstream, at mount/edit time). The generic BuildLayerSpec loop + BuildDefaultData then assemble the prefix with NO
+    //special-case branch. Persist/CustomVar stay handled by RunnerPersistLayers / the resolver.
+    //
+    //LAYER PRIORITY (vidyagodfs: later layer = higher priority): the wine prefix (default_pfx + system32/syswow64 builtin
+    //DLLs) is the BASE SYSTEM — it must sit BENEATH the game/library content so a package's native override DLLs win over
+    //wine's builtins at the same path (e.g. DirectPlay's native dplayx.dll in syswow64 overriding proton's builtin). So the
+    //runner's prefix-assembly VFS layers are PREPENDED (lowest priority), NOT appended. Appending them (the proton-decompose
+    //regression) put wine builtins ON TOP, shadowing every syswow64/system32 native override (DirectPlay broke; any
+    //game-supplied system DLL was masked). FileEdit/RegEdit are order-independent (separate DEFAULTDATA/registry passes) so
+    //they stay appended.
     if (const Node *RN = Idx.Find(CP.RunnerID); RN && RN->Layers.is_array())
+    {
+        nlohmann::ordered_json PrefixVfs = nlohmann::ordered_json::array();   // base system → front (low priority)
+        nlohmann::ordered_json Edits     = nlohmann::ordered_json::array();   // order-independent → back
         for (const auto &L : RN->Layers)
         {
             const std::string T = L.value("TYPE", std::string());
-            if (ManifestModel::IsVfsLayer(T) || T == "FileEdit" || T == "RegEdit")
-                CP.SubComponentsArray.push_back(L);
+            if (ManifestModel::IsVfsLayer(T))          PrefixVfs.push_back(L);
+            else if (T == "FileEdit" || T == "RegEdit") Edits.push_back(L);
         }
+        if (!PrefixVfs.empty())
+        {
+            for (auto &L : CP.SubComponentsArray) PrefixVfs.push_back(std::move(L));   // game/library content ON TOP
+            CP.SubComponentsArray = std::move(PrefixVfs);
+        }
+        for (auto &L : Edits) CP.SubComponentsArray.push_back(std::move(L));
+    }
     DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "
             + std::to_string(CP.Recipe.size()) + " component(s)).");
