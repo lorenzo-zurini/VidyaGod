@@ -967,7 +967,7 @@ int main(int argc, char *argv[])
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
 // fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
 // package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "QmQGh55n49Md2ZzNRq4oYmxFpk8Dqnm8P1vDoyPJxHNP5w"; }   // JSON-only runners Meta-CID
+static std::string DefaultRunnerSourceCID() { return "Qmc2NAQfunvfwoMwAmskMGa5xTBwptg1sdcBZ7K78QNsxH"; }   // JSON-only runners Meta-CID (symlink-free archives, 2026-08-20)
 // Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
 // games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
 // exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
