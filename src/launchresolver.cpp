@@ -39,7 +39,8 @@ using namespace PackageCatalog;
 //Per-key source priority (highest to lowest):
 //  1. ContainerParams.VariableOverrides — set from --var KEY=VALUE CLI flags or UI picker
 //  2. GlobalConfigJSON["USERSETTINGS"][PackageUID]["VARIABLES"] — persisted user choices
-//  3. the winning DEFAULT (or, for a secret+POOL var, one pool entry picked per launch)
+//  3. the winning DEFAULT (or, for a secret+POOL var with nothing persisted yet, one pool entry drawn ONCE as a
+//     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
@@ -101,8 +102,8 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         }
     }
 
-    //Each key's RAW source value: priority CLI > USERSETTINGS > winning DEFAULT; a secret+POOL var picks one pool
-    //entry ONCE per launch (CLI override still wins). Sources are unsubstituted; cross-references resolve in Phase 2.
+    //Each key's RAW source value: priority CLI > USERSETTINGS > winning DEFAULT; a secret+POOL var falls back to a
+    //one-time pool seed only when nothing is persisted. Sources are unsubstituted; cross-references resolve in Phase 2.
     std::map<std::string, std::string> Sources;
     std::set<std::string> Secret;                                  // keys whose value must not be logged
     for (const std::string &Key : KeyOrder)
@@ -114,11 +115,30 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         if (Pooled) Secret.insert(Key);
         if (Pooled && !ContainerParams.VariableOverrides.count(Key))
         {
-            const auto &Pool = UI["POOL"];
-            static std::mt19937 Rng(std::random_device{}());
-            std::uniform_int_distribution<size_t> Dist(0, Pool.size() - 1);
-            const size_t Pick = Dist(Rng);
-            Sources[Key] = Pool[Pick].is_string() ? Pool[Pick].get<std::string>() : std::string();
+            //A POOL is a one-time SEED, not a per-launch rotation: once a value is persisted (seeded here on the
+            //first launch, or typed by the user in the prelaunch window) it must stick, or a game that binds the
+            //value to durable state — a CD key written into its prefix, an account name — would see it change
+            //under it every launch. So: persisted value wins; only when there is none do we draw from the pool,
+            //and we hand the draw back for the caller to persist.
+            auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
+            std::string Saved;
+            if (US.contains("VARIABLES") && US["VARIABLES"].contains(Key) && US["VARIABLES"][Key].is_string())
+                Saved = US["VARIABLES"][Key];
+            if (!Saved.empty())
+            {
+                LogOut("ResolveCustomVariables", "User setting: " + Key + " = [secret]");
+                Sources[Key] = Saved;
+            }
+            else
+            {
+                const auto &Pool = UI["POOL"];
+                static std::mt19937 Rng(std::random_device{}());
+                std::uniform_int_distribution<size_t> Dist(0, Pool.size() - 1);
+                const size_t Pick = Dist(Rng);
+                Sources[Key] = Pool[Pick].is_string() ? Pool[Pick].get<std::string>() : std::string();
+                ContainerParams.PickedSecrets[Key] = Sources[Key];
+                LogOut("ResolveCustomVariables", "Pool seed (first launch): " + Key + " = [secret]");
+            }
         }
         else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()));
     }

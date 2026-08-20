@@ -17,6 +17,7 @@
 #include <QPixmap>
 #include <QFont>
 #include <QLineEdit>
+#include <QRandomGenerator>
 #include <QDoubleSpinBox>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
@@ -644,20 +645,21 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             }
             else if (Control == "secret")
             {
-                if (UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty())
+                // Always editable and always collected — a POOL is only a SEED for the first launch. `Initial` is
+                // already the persisted value when there is one; otherwise draw one pool entry so the field is
+                // pre-filled and gets persisted on launch like any other value. The user can overwrite it (their
+                // own CD key, account name, …) and that choice then sticks.
+                QLineEdit* Edit = new QLineEdit(CustomVarGroup);
+                Edit->setEchoMode(QLineEdit::Password);
+                if (Initial.empty() && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty())
                 {
-                    // engine rotates a value from the pool each launch — show an info row, collect nothing (no CVKey).
-                    QLabel* Info = new QLabel("(auto — set each launch)", CustomVarGroup);
-                    Info->setStyleSheet("color:#8f98a0;font-style:italic;");
-                    Field = Info;
+                    const auto& Pool = UI["POOL"];
+                    const size_t Pick = static_cast<size_t>(QRandomGenerator::global()->bounded(int(Pool.size())));
+                    if (Pool[Pick].is_string()) Initial = Pool[Pick].get<std::string>();
+                    Edit->setPlaceholderText("from pool — edit to use your own");
                 }
-                else
-                {
-                    QLineEdit* Edit = new QLineEdit(CustomVarGroup);
-                    Edit->setEchoMode(QLineEdit::Password);
-                    Edit->setText(QString::fromStdString(Initial));
-                    Field = Edit;
-                }
+                Edit->setText(QString::fromStdString(Initial));
+                Field = Edit;
             }
             else // text
             {
@@ -736,8 +738,9 @@ void PreLaunchWindow::onLaunchClicked()
     // The chosen runner daisy-chain (innermost→outermost). Persisted as RUNNER_CHAIN and passed to the worker.
     const std::vector<std::string>& SelectedChain = CurrentChain;
 
-    // Collect the editable CustomVar control values (bare KEY -> value). Secret-pool vars carry no control, so the
-    // engine rotates them; hidden (WHEN=false) rows are still collected — harmless, they just aren't shown.
+    // Collect the editable CustomVar control values (bare KEY -> value), secrets included: persisting a secret's
+    // first pool draw is what makes it stable across launches. Hidden (WHEN=false) rows are still collected —
+    // harmless, they just aren't shown.
     std::map<std::string, std::string> PickerVars = CollectVarValues(CustomVarGroup);
 
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).

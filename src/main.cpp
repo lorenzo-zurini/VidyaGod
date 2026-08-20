@@ -886,6 +886,24 @@ int main(int argc, char *argv[])
             LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());
             return 0;
         }
+        //Persist any secret seeded from its POOL this launch, so the value is stable from here on (the GUI does the
+        //same through the prelaunch picker). Without this a CLI launch would redraw a different key every time and
+        //whatever the game wrote into its prefix from the previous one would no longer match.
+        if (!NewContainerWrapper.ContainerParams.PickedSecrets.empty()
+            && !NewContainerWrapper.ContainerParams.PackageUID.empty())
+        {
+            const std::string &Uid = NewContainerWrapper.ContainerParams.PackageUID;
+            auto US = PackageCatalog::GetPackageUserSettings(GlobalConfigJSON, Uid);
+            nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
+                                          ? US["VARIABLES"] : nlohmann::ordered_json::object();
+            for (const auto &[K, V] : NewContainerWrapper.ContainerParams.PickedSecrets) Vars[K] = V;
+            PackageCatalog::SetPackageUserSetting(GlobalConfigJSON, Uid, "VARIABLES", Vars);
+            QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
+            if (JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
+                LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())
+                                   + " pool-seeded secret(s) for package " + Uid + ".");
+        }
+
         //Bail if the runtime couldn't be built (no compatible runner, unmountable/compressed layers, missing
         //dependencies, …). Without this the engine would proceed to Execute() an empty/garbage command and report
         //a misleading clean exit (code 0) for a launch that never actually ran.

@@ -325,6 +325,15 @@ add_gui_test(test_sandbox)
 set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1")
 
 # ---- Offscreen screenshot tool (manual): renders real widgets to PNG via QWidget::grab(). Not a ctest.
+add_executable(vg_prelaunch_probe EXCLUDE_FROM_ALL tests/gui/prelaunch_probe.cpp)
+target_link_libraries(vg_prelaunch_probe PRIVATE
+    vidyagod_objs
+    Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
+target_include_directories(vg_prelaunch_probe PRIVATE src)
+target_compile_options(vg_prelaunch_probe PRIVATE ${VG_WARNINGS})
+set_target_properties(vg_prelaunch_probe PROPERTIES BUILD_RPATH "$ORIGIN")
+
 add_executable(vg_screenshots EXCLUDE_FROM_ALL tests/gui/screenshot_tool.cpp)
 target_link_libraries(vg_screenshots PRIVATE
     vidyagod_objs

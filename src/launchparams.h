@@ -124,6 +124,11 @@ public:
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT
     std::map<std::string, std::string> VariableOverrides;           //PASSED (CLI --var KEY=VALUE); highest-priority source for CustomVariables
+    //AUTO-RESOLVED (out): secret+POOL keys seeded from their pool THIS launch because nothing was persisted yet.
+    //A pool is a one-time seed, not a per-launch rotation, so the caller (which owns the mutable config) must
+    //persist these into USERSETTINGS.VARIABLES — the game then keeps the same key forever (and the user can
+    //still overwrite it in the prelaunch window). Empty once a value is persisted.
+    std::map<std::string, std::string> PickedSecrets;
 
     //Module toggles (optional modules only; REQUIRED modules ignore this):
     std::map<std::string, bool> ModuleStates;                       //PASSED (UI tree / --module COMP=on|off); component → enabled. Absent → REQUIRED||DEFAULT
