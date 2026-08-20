@@ -9,9 +9,12 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 
 //The registry-hive directory under a layer/runtime root: the prefix root (CONTENT_ROOT up to /drive_c) is
@@ -103,6 +106,65 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             Dpfx.LoadPrefix(It->second);                                            // default_pfx hives at its root
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\AudioCompressionManager");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\AudioCompressionManager");
+            //HKLM\System carry-over (targeted, like the ACM one): the shadowing above also drops System\Select +
+            //System\CurrentControlSet (the ControlSet link) and ControlSet001\Services\*. Without Services\MountMgr
+            //wine never starts mountmgr.sys, so \\.\MountPointManager doesn't exist and a game's volume enumeration
+            //gets NULLs (NFS U2's drive scan then InitializeCriticalSection(NULL+0x28) → c0000005 at launch).
+            //Deliberately NOT the whole System hive — the template's full System (Enum\*, Class\*, device state from
+            //the proton BUILD machine) regressed the same launch when merged wholesale; these three are the verified
+            //minimum (bisected on a working prefix).
+            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\Select");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\CurrentControlSet");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\ControlSet001\\Services\\MountMgr");
+            //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
+            if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
+            {
+                std::stringstream Ss(Extra);
+                for (std::string Key; std::getline(Ss, Key, ';');)
+                    if (!Key.empty())
+                        LogOut("RegistryLayer::BuildDefaultData", "VG_REG_MERGE_EXTRA " + Key + " -> "
+                               + (RW.MergeKeyFrom(Dpfx, Key) ? "merged" : "MISS"));
+            }
+            //Freeze wine's implicit prefix update: the template's .update-timestamp carries the ORIGINAL proton
+            //build's wine.inf mtime, which never matches the delta-chain mount's mtimes → wineboot decides the
+            //prefix is stale and re-runs its update ON EVERY COLD LAUNCH, racing the game (services like mountmgr
+            //come up mid-flight; with pristine-by-default persistence every launch is cold). "disable" is wineboot's
+            //documented sentinel for "never update". Written into DEFAULTDATA so it overlays the template's file.
+            const std::filesystem::path TsDir = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
+            std::filesystem::create_directories(TsDir, Ec);
+            std::ofstream Ts(TsDir / ".update-timestamp", std::ios::trunc);
+            Ts << "disable\n";
+            //Re-anchor the template's ESCAPING relative symlinks (what proton's setup_prefix would have done): the
+            //template ships e.g. drivers/mountmgr.sys -> ../../../../../../lib/wine/x86_64-windows/mountmgr.sys,
+            //which resolves correctly only in proton's own tree (share/default_pfx/..). Mounted at <prefix>/pfx the
+            //walk exits the mount into nothing → wine's driver load fails (ZwLoadDriver c0000142, no mountmgr, no
+            //\\.\MountPointManager → volume-enumerating games crash). Recreate each such link in DEFAULTDATA as an
+            //ABSOLUTE link to the target resolved against the REAL template location (the runner mount). In-template
+            //links (dosdevices/c: -> ../drive_c) resolve fine through the mount and are left alone.
+            const std::filesystem::path PfxRoot = std::filesystem::weakly_canonical(It->second, Ec);
+            for (std::filesystem::recursive_directory_iterator
+                     Iter(PfxRoot, std::filesystem::directory_options::skip_permission_denied, Ec), End;
+                 Iter != End; Iter.increment(Ec))
+            {
+                if (Ec || !Iter->is_symlink(Ec))
+                    continue;
+                const std::filesystem::path Target = std::filesystem::read_symlink(Iter->path(), Ec);
+                if (Ec || Target.is_absolute())
+                    continue;
+                const std::filesystem::path Resolved =
+                    std::filesystem::weakly_canonical(Iter->path().parent_path() / Target, Ec);
+                if (Ec || Resolved.string().rfind(PfxRoot.string() + "/", 0) == 0)
+                    continue;                                                       // stays inside the template — fine
+                const std::filesystem::path Rel = std::filesystem::relative(Iter->path(), PfxRoot, Ec);
+                if (Ec)
+                    continue;
+                const std::filesystem::path Out = TsDir / Rel;
+                std::filesystem::create_directories(Out.parent_path(), Ec);
+                std::filesystem::remove(Out, Ec);
+                std::filesystem::create_symlink(Resolved, Out, Ec);
+                if (Ec)
+                    LogWarn("RegistryLayer::BuildDefaultData", "Failed to re-anchor template symlink " + Rel.string());
+            }
         }
         const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
         std::filesystem::create_directories(HiveOut, Ec);
