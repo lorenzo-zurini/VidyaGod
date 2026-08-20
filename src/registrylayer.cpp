@@ -134,37 +134,10 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             std::filesystem::create_directories(TsDir, Ec);
             std::ofstream Ts(TsDir / ".update-timestamp", std::ios::trunc);
             Ts << "disable\n";
-            //Re-anchor the template's ESCAPING relative symlinks (what proton's setup_prefix would have done): the
-            //template ships e.g. drivers/mountmgr.sys -> ../../../../../../lib/wine/x86_64-windows/mountmgr.sys,
-            //which resolves correctly only in proton's own tree (share/default_pfx/..). Mounted at <prefix>/pfx the
-            //walk exits the mount into nothing → wine's driver load fails (ZwLoadDriver c0000142, no mountmgr, no
-            //\\.\MountPointManager → volume-enumerating games crash). Recreate each such link in DEFAULTDATA as an
-            //ABSOLUTE link to the target resolved against the REAL template location (the runner mount). In-template
-            //links (dosdevices/c: -> ../drive_c) resolve fine through the mount and are left alone.
-            const std::filesystem::path PfxRoot = std::filesystem::weakly_canonical(It->second, Ec);
-            for (std::filesystem::recursive_directory_iterator
-                     Iter(PfxRoot, std::filesystem::directory_options::skip_permission_denied, Ec), End;
-                 Iter != End; Iter.increment(Ec))
-            {
-                if (Ec || !Iter->is_symlink(Ec))
-                    continue;
-                const std::filesystem::path Target = std::filesystem::read_symlink(Iter->path(), Ec);
-                if (Ec || Target.is_absolute())
-                    continue;
-                const std::filesystem::path Resolved =
-                    std::filesystem::weakly_canonical(Iter->path().parent_path() / Target, Ec);
-                if (Ec || Resolved.string().rfind(PfxRoot.string() + "/", 0) == 0)
-                    continue;                                                       // stays inside the template — fine
-                const std::filesystem::path Rel = std::filesystem::relative(Iter->path(), PfxRoot, Ec);
-                if (Ec)
-                    continue;
-                const std::filesystem::path Out = TsDir / Rel;
-                std::filesystem::create_directories(Out.parent_path(), Ec);
-                std::filesystem::remove(Out, Ec);
-                std::filesystem::create_symlink(Resolved, Out, Ec);
-                if (Ec)
-                    LogWarn("RegistryLayer::BuildDefaultData", "Failed to re-anchor template symlink " + Rel.string());
-            }
+            //NOTE: the template's ESCAPING relative symlinks (drivers/mountmgr.sys →
+            //../../../../../../lib/wine/…, valid only in proton's own tree) are handled by vidyagodfs's
+            //symlink abolition: archive links are chased to their in-archive target and served as REGULAR
+            //files, so the driver loads without any symlink existing anywhere. No re-anchoring needed here.
         }
         const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
         std::filesystem::create_directories(HiveOut, Ec);
