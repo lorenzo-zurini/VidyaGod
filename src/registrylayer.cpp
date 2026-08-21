@@ -106,6 +106,16 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             Dpfx.LoadPrefix(It->second);                                            // default_pfx hives at its root
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\AudioCompressionManager");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\AudioCompressionManager");
+            //COM class registry. Software\Classes is where wine registers every in-process COM server it ships
+            //(HKCR is just a view of it) — dsound, xaudio2, quartz, the shell, … Shadowing left the composed
+            //prefix with ONE such key against the template's ~15k, so every CoCreateInstance of a builtin class
+            //returned REGDB_E_CLASSNOTREG (0x80040154). That is the `err:ole:com_get_class_object … not
+            //registered` line present in EVERY game's log here, and it is fatal where a game depends on it:
+            //Silent Hill 2 EE's DirectSoundCreate8 fails and the game then spins forever without drawing a frame
+            //(GPU device created, 0% GPU, black window), Scarface reports "No DirectSound Found on this machine".
+            //Merged wholesale: it is a static, machine-independent table that a real prefix always has.
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Classes");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Classes");
             //HKLM\System carry-over (targeted, like the ACM one): the shadowing above also drops System\Select +
             //System\CurrentControlSet (the ControlSet link) and ControlSet001\Services\*. Without Services\MountMgr
             //wine never starts mountmgr.sys, so \\.\MountPointManager doesn't exist and a game's volume enumeration
