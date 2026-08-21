@@ -81,10 +81,6 @@ set(SHARED_SOURCES
     src/jsonoperations.h
     src/jsonoperations.cpp
 
-    # Shared with vidyagodfs: the .vgdelta binary-delta format. The FS applies deltas; the app generates +
-    # byte-verifies them (the convert action). One implementation, compiled into both (bytesource.h is header-only).
-    VidyaGodFS/src/vgdelta.cpp
-
     src/launchparams.h
     src/launchparams.cpp
 
@@ -228,10 +224,13 @@ set(SHARED_SOURCES
 # Shared object library (AUTOMOC/UIC/RCC are global, so QObject classes here get MOC'd). Linking the Qt/json/zip
 # imported targets propagates their include dirs to the object compilation.
 add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
+# vgfs_core (from the VidyaGodFS submodule below) supplies the shared .vgdelta format and the zipscan
+# ZIP64 central-directory walker — ONE compilation of each, linked everywhere, instead of the old
+# per-target recompiles of vgdelta.cpp with divergent flags.
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)
-target_include_directories(vidyagod_objs PUBLIC VidyaGodFS/src)   # vgdelta.h / bytesource.h
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
+target_include_directories(vidyagod_objs PUBLIC VidyaGodFS/src)   # vgdelta.h / bytesource.h / zipscan.h
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
@@ -251,8 +250,13 @@ if(VIDYAGOD_SANITIZE)
 endif()
 
 # ---- vidyagodfs: the custom FUSE filesystem, built from its own repo (git submodule) ----
-# It defines the `vidyagodfs` target (links libfuse3 + libzip). Place its binary next to VidyaGod in
-# the build root so the app finds it via /proc/self/exe and the AppImage step can bundle it.
+# It defines the `vidyagodfs` target (links libfuse3 + libzip) plus the vgfs_core static lib the app
+# links for vgdelta/zipscan. Place its binary next to VidyaGod in the build root so the app finds it
+# via /proc/self/exe and the AppImage step can bundle it. The parent's hardening options drive the
+# submodule's (CMP0077: these pre-sets win over the subproject's option() defaults) so -Werror and
+# the sanitizers gate the FUSE code exactly like the app code.
+set(VGFS_WERROR   ${VIDYAGOD_WERROR})
+set(VGFS_SANITIZE ${VIDYAGOD_SANITIZE})
 add_subdirectory(VidyaGodFS)
 set_target_properties(vidyagodfs PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
@@ -277,7 +281,6 @@ add_executable(vg_tests
     tests/test_fileedits.cpp
     tests/test_depcheck.cpp
     tests/test_vgdelta.cpp
-    VidyaGodFS/src/vgdelta.cpp   # .vgdelta format (generate + apply) — shared with vidyagodfs
     src/manifestmodel.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
@@ -287,8 +290,13 @@ add_executable(vg_tests
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
 target_include_directories(vg_tests PRIVATE src VidyaGodFS/src)
-target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD)
+target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+if(VIDYAGOD_SANITIZE)
+    # The delta/registry/varsubst logic is exercised HERE — the sanitizer must cover the test exe too.
+    target_compile_options(vg_tests PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(vg_tests    PRIVATE -fsanitize=address,undefined)
+endif()
 set_target_properties(vg_tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
 add_test(NAME vg_tests COMMAND vg_tests)
 

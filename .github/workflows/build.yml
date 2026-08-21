@@ -72,7 +72,10 @@ jobs:
         continue-on-error: true   # advisory for now — surfaces issues without gating the build
         run: |
           sudo apt install -y clang-tidy
-          clang-tidy -p build $(git ls-files 'src/*.cpp')
+          # 'src/*.cpp' is a git glob that doesn't cross '/', silently skipping src/platform/ and the
+          # whole FUSE submodule — use recursive globs so every compiled TU is linted.
+          clang-tidy -p build $(git ls-files 'src/**/*.cpp' 'src/*.cpp') \
+                              $(git -C VidyaGodFS ls-files 'src/*.cpp' | sed 's|^|VidyaGodFS/|')
 
       - name: Prepare AppDir
         run: |
