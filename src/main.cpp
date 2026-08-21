@@ -23,6 +23,11 @@
 #include <fstream>           // portable positioned reads (convert-delta-chain byte-verify)
 #ifdef __linux__
 #include <unistd.h>          // the overlay-sandbox ping test (Linux/bwrap-only) forks + execvp's + waitpid's
+#ifndef _WIN32
+#include <fcntl.h>           // --convert-delta-chain maps the archives (open/O_RDONLY)
+#include <sys/mman.h>        //   … mmap/madvise: keep multi-GB inputs in evictable page cache, not anon RAM
+#include <sys/stat.h>        //   … fstat for the mapped length
+#endif
 #include <sys/wait.h>
 #endif
 
@@ -731,12 +736,30 @@ int main(int argc, char *argv[])
         if (Chain.size() < 2) { LogErr("convert-delta", "need >=2 nodes: <baseNode> <newer> [<newer>...]"); return 1; }
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
 
-        // A ByteSource over an mmap (for byte-verification of the reconstructed view).
-        // Reads the whole zip into RAM (no mmap → portable). GenerateDelta already needs the full base +
-        // target in memory (it indexes the entire base), so mmap wasn't saving footprint here anyway; eager
-        // read is equivalent for this one-shot maintenance CLI. Keeps .p/.n for the byte-verify below.
+        // A ByteSource over the archive, flat-addressable for GenerateDelta and for the byte-verify below.
+        // MAPPED, not read into RAM: a chain step holds base + target open at once (here 2.3 GB + 8 GB), and as
+        // anonymous memory that alone exceeded what a 32 GB desktop could give a background job — the conversion
+        // was OOM-killed. Mapped pages are file-backed page cache: the kernel evicts them under pressure instead
+        // of killing us, and each archive is read once, sequentially. Windows keeps the eager read (no mmap in
+        // the portable subset used here); its own conversions are small.
         struct MapSrc : ByteSource {
-            std::vector<uint8_t> d; const uint8_t *p = nullptr; uint64_t n = 0;
+            const uint8_t *p = nullptr; uint64_t n = 0;
+#ifndef _WIN32
+            int fd = -1; void *m = nullptr;
+            bool Map(const std::string &path) {
+                fd = ::open(path.c_str(), O_RDONLY);
+                if (fd < 0) return false;
+                struct stat st{};
+                if (::fstat(fd, &st) != 0 || st.st_size <= 0) return false;
+                n = (uint64_t)st.st_size;
+                m = ::mmap(nullptr, (size_t)n, PROT_READ, MAP_PRIVATE, fd, 0);
+                if (m == MAP_FAILED) { m = nullptr; return false; }
+                ::madvise(m, (size_t)n, MADV_SEQUENTIAL);
+                p = (const uint8_t *)m;
+                return true; }
+            ~MapSrc() override { if (m) ::munmap(m, (size_t)n); if (fd >= 0) ::close(fd); }
+#else
+            std::vector<uint8_t> d;
             bool Map(const std::string &path) {
                 std::ifstream f(path, std::ios::binary);
                 if (!f) return false;
@@ -749,6 +772,7 @@ int main(int argc, char *argv[])
                 if ((std::streamoff)f.gcount() != sz) return false;
                 p = d.data(); n = (uint64_t)sz;
                 return true; }
+#endif
             ssize_t pread(void *b, size_t k, uint64_t o) override { if (o >= n) return 0; uint64_t a = n - o; size_t w = k < a ? k : a; std::memcpy(b, p + o, w); return (ssize_t)w; }
             uint64_t size() const override { return n; }
         };
@@ -783,7 +807,11 @@ int main(int argc, char *argv[])
             auto tgt  = std::make_shared<MapSrc>();
             if (!base->Map(vs[i - 1].zipPath) || !tgt->Map(vs[i].zipPath)) { LogErr("convert-delta", "mmap failed"); return 1; }
             LogOut("convert-delta", "diff " + vs[i].node->NodeId + " against " + vs[i - 1].node->NodeId + " ...");
-            std::vector<uint8_t> delta = vgdelta::GenerateDelta(base->p, base->n, tgt->p, tgt->n);
+            // Spill scratch next to the archives, NOT in the system temp dir — /tmp is a tmpfs on most desktops,
+            // so spilling several GB there would just move the memory pressure instead of relieving it.
+            std::vector<uint8_t> delta = vgdelta::GenerateDelta(base->p, base->n, tgt->p, tgt->n,
+                                                                vgdelta::DEFAULT_BLOCK,
+                                                                vs[i].node->BundleDir.string());
 
             // byte-verify: reconstruct the target view (delta over the same base) and compare to the real zip.
             std::string derr;
