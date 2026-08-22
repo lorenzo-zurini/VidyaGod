@@ -351,7 +351,7 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
 //Collisions mean two files differ only in case — problematic under Wine because its
 //filesystem emulation may resolve to the wrong file depending on access order.
 //Reports all conflicts via a QMessageBox warning and returns false if any are found.
-bool VfsMount::CheckCaseConflicts(std::filesystem::path DirectoryPath)
+bool VfsMount::CheckCaseConflicts(const std::filesystem::path &DirectoryPath)
 {
     std::unordered_set<std::string> FilePathList;
     std::unordered_set<std::string> CaseConflictList;

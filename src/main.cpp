@@ -11,7 +11,6 @@
 #include "ipfswrapper.h"
 #include "sandboxlayer.h"
 #include "depcheck.h"
-#include "vgipfsapi.h"
 
 #include <QComboBox>
 #include <QAbstractScrollArea>
@@ -185,8 +184,6 @@ int main(int argc, char *argv[])
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
     LogOut("main.cpp", "Running VidyaGod in " + LaunchParameters.CurrentPath.string());
     LogOut("main.cpp", "Headless PackagePath: " + LaunchParameters.HeadlessPackagePath.string());
-    LogOut("main.cpp", "Headless GameID: " + LaunchParameters.HeadlessGameID);
-    LogOut("main.cpp", "Headless ComponentID: " + LaunchParameters.HeadlessComponentID);
 
     //Check if dependencies exist in the system.
     //Non-fatal: warns but continues so the GUI still opens when VFS is not needed. In GUI mode a dialog
@@ -1062,10 +1059,11 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     return true;
 }
 
-//Delegates to FSOps::CheckPackageValid to test whether CurrentPath contains MANIFEST.json.
-bool IsRunningInPackageDir(std::filesystem::path CurrentPath)
+//True when CurrentPath is a package bundle (contains NODE_ID node files — see FSOps::CheckPackageValid).
+bool IsRunningInPackageDir(const std::filesystem::path &CurrentPath)
 {
-    if (FSOps::CheckPackageValid(new QDir(CurrentPath))) //Convert FSOPS to stdlib! Remove unnecessary heap variable!
+    QDir Dir(QString::fromStdString(CurrentPath.string()));   // stack QDir — the old heap one leaked every call
+    if (FSOps::CheckPackageValid(&Dir))
     {
         LogOut("main.cpp", "Running in PACKAGEDIR — opening its launcher (self-contained, no library/IPFS).");
         return true;
@@ -1096,14 +1094,6 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.HeadlessPackagePath = argv[++i];
             RuntimeParameters.HasHeadlessPackagePath = true;
             RuntimeParameters.RunningHeadless = true;
-        }
-        else if (arg == "--game" && i + 1 < argc)
-        {
-            RuntimeParameters.HeadlessGameID = argv[++i];
-        }
-        else if (arg == "--component" && i + 1 < argc)
-        {
-            RuntimeParameters.HeadlessComponentID = argv[++i];
         }
         else if (arg == "--node" && i + 1 < argc)
         {
@@ -1279,10 +1269,6 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
                 bool on = (val == "on" || val == "true" || val == "1" || val == "yes");
                 RuntimeParameters.ModuleStates[kv.substr(0, eq)] = on;
             }
-        }
-        else if (arg == "--variant" && i + 1 < argc)
-        {
-            RuntimeParameters.VariantID = argv[++i];
         }
         else if (arg == "--import-runner" && i + 1 < argc)
         {

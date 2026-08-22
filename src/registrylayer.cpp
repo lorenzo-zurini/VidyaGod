@@ -74,7 +74,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
     //Base RegEdits + persisted reg-key subtrees → DEFAULTDATA hives, built from DEFPREFIX (never mutating it).
     if (HaveBaseReg || HavePersistKeys)
     {
-        //No wineserver quiesce needed: InitializeDefPrefix / the installed artifact leave DEFPREFIX quiescent,
+        //No wineserver quiesce needed: the installed artifact leaves DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
         RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>

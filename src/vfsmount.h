@@ -30,7 +30,7 @@ bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::
 bool MountRunnerBuild(struct ContainerParams &ContainerParams);
 
 //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths differ only in case.
-bool CheckCaseConflicts(std::filesystem::path DirectoryPath);
+bool CheckCaseConflicts(const std::filesystem::path &DirectoryPath);
 
 //Every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first (children before parents).
 std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);

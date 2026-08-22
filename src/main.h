@@ -34,8 +34,6 @@ struct LaunchParameters
     bool StartInTray = false;                                            //--tray: come up hidden in the system tray (used by the start-on-login autostart entry)
     bool HasHeadlessPackagePath = false;                                  //True when a package path has been resolved (CLI or auto-detect)
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
-    std::string HeadlessGameID;                                           //Game to launch (empty = use default)
-    std::string HeadlessComponentID;                                      //Component override (empty = resolved from game)
     std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)
     bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
     bool ValidateNodes = false;                                          //--validate-nodes [pkg]: validate the node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
@@ -95,4 +93,4 @@ static LaunchParameters ParseCommandLineArguments(int argc, char* argv[]);
 //Returns true if CurrentPath looks like a VidyaGod package directory
 //(i.e. FSOps::CheckPackageValid passes for it).
 //Enables automatic headless launch when the binary is run from inside a package.
-static bool IsRunningInPackageDir(std::filesystem::path CurrentPath);
+static bool IsRunningInPackageDir(const std::filesystem::path &CurrentPath);

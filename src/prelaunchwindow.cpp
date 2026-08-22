@@ -432,7 +432,6 @@ void PreLaunchWindow::RebuildModuleTree()
     QSignalBlocker B(ModuleTree);
     ModuleTree->clear();
     ModuleExcludes.clear();
-    LockedModules.clear();
 
     const Node* L = CurrentLaunch();
     if (!L) { ModuleGroup->setVisible(false); return; }

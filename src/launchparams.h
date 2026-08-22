@@ -12,7 +12,7 @@
 
 //True if a raw (pre-substitution) runner ARG references the launch target via a content token. Used to drop the
 //content-bearing args when swapping the target — an OverrideExe (tooling) or the wineboot prefix-init. Shared by
-//the registry layer (InitializeDefPrefix), runner install (ImportRunner), and the orchestrator (Execute).
+//the registry layer (RegistryLayer), runner install (RunnerInstall), and the orchestrator (Execute).
 inline bool ArgReferencesContent(const std::string &RawArg)
 {
     return RawArg.find("%Content%") != std::string::npos

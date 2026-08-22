@@ -53,7 +53,8 @@ void RunnersPage::rebuild()
     intro->setStyleSheet("color:#8f98a0;font-size:9pt;");
     v->addWidget(intro);
 
-    //Runners are the ROLE:"runner" nodes of the global catalog graph — one card per runner node. An EMBEDDED runner
+    //Runners are the DeclareRunner-carrying nodes of the global catalog graph (Node::IsRunner() — there is no ROLE
+    //field). One card per runner node. An EMBEDDED runner
     //(bundled inside a game package) is hidden until installed — it's offered in that game's download dialog instead;
     //global runners always show (installed or installable via the Import button below).
     std::vector<const Node*> Runners;

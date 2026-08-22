@@ -58,13 +58,12 @@ public:
     //launchresolver.h. The %token% engine moved to VarSubst. The vidyagodfs mount subsystem (BuildLayerSpec/
     //MountVFS/SpawnVidyagodfs/MountRunnerBuild/CheckCaseConflicts/MountpointsUnder/CleanStaleRuntime) moved to
     //VfsMount; dependency pre-flight + materialize (VerifyDependencies/EnsureSources/MaterializeLayers) to
-    //LaunchSources. Catalog/Sync/Publish to PackageCatalog. ImportRunner stays here — it needs the mount +
-    //wineboot machinery.)
+    //LaunchSources. Catalog/Sync/Publish to PackageCatalog. Runner install lives in RunnerInstall.)
 
 private:
     //(Runner install — ImportRunner/ImportRunnerNode/RunnerNodeImported — moved to RunnerInstall; see runnerinstall.h.)
     //(Wine prefix/registry/DEFAULTDATA + registry-persistence moved to RegistryLayer — see registrylayer.h:
-    //InitializeDefPrefix/BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
+    //BuildDefaultData/ApplyOverrideRegEdits/Seed+CapturePersistRegistry/CapturePersistRegKeys.
     //File-persistence (Seed/CapturePersistFiles) moved to PersistLayer; FileEdit/DllOverride to FileEdits.)
 
     //(RunCommand moved to procenv.{h,cpp} (free function); TranslateCustomVarValue / StringVariableSubstitution

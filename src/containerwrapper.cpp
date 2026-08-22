@@ -99,7 +99,7 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     //Verify every dependency is satisfiable (runner build cached, DEFPREFIX present, game layers local-or-fetchable),
     //then materialize any missing game-layer content from a backend (IPFS) to its expected local path. Both run
-    //before InitializeDefPrefix/mount — the content must exist on disk by then. Abort if anything can't be provided.
+    //before the prefix layers mount — the content must exist on disk by then. Abort if anything can't be provided.
     if (!LaunchSources::EnsureSources(this->ContainerParams))
     {
         LogErr("ContainerWrapper::BuildContainerRuntime", "Required sources unavailable — aborting.");
@@ -189,7 +189,11 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Build the layer-spec (DEFPREFIX + VFS subcomponents target-rooted + PERSIST dirs as RW
     //passthrough) and mount it as a single vidyagodfs filesystem at RuntimePath.
     if (!VfsMount::MountVFS(this->ContainerParams)) return false;
-    VfsMount::CheckCaseConflicts(ContainerParams.RuntimePath);
+    //Case-conflict scan: a FULL walk of the freshly-mounted FUSE tree (every file, through the FS) whose
+    //result was advisory-only — pure launch latency on big games. --validate-nodes already case-checks
+    //package data at rest, so the runtime walk is DEBUG-opt-in now (VG_CASE_CHECK=1).
+    if (const char *CC = std::getenv("VG_CASE_CHECK"); CC && *CC == '1')
+        VfsMount::CheckCaseConflicts(ContainerParams.RuntimePath);
 
     //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
@@ -234,16 +238,8 @@ bool ContainerWrapper::BuildContainerRuntime()
 
 //(RunCommand — the generic synchronous QProcess runner — moved to procenv.{h,cpp} as a free function.)
 
-//=====================================================================================================================================================================
-//                                                                    REGISTRYWRAPPER CLASS
-//=====================================================================================================================================================================
 
 
-
-
-//=====================================================================================================================================================================
-//                                                                          VFSWRAPPER CLASS
-//=====================================================================================================================================================================
 
 
 
@@ -276,10 +272,6 @@ bool ContainerWrapper::BuildContainerRuntime()
 
 
 
-
-//=====================================================================================================================================================================
-//                                                                          RUNNER CLASS
-//=====================================================================================================================================================================
 
 //Launches the game using the resolved runner and environment.
 //

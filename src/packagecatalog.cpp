@@ -238,7 +238,6 @@ static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, 
     {
         if (E.value("PACKAGEUID", std::string()) != Uid) continue;
         E["PACKAGENAME"] = Name; E["PATH"] = Dir; E["CIDSOURCE"] = SourceCid;
-        E.erase("PACKAGEVERSION");
         return;
     }
     nlohmann::ordered_json Slim;

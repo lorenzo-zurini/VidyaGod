@@ -320,36 +320,22 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
         LogWarn("ResolveExecutableDefinition", "No VariantID set — skipping.");
         return true;
     }
-    // Source the exec definition: the launch node's EXEC (native node path) or the matching GAME variant (old path).
-    const bool NodePath = (ContainerParams.NodeIdx != nullptr);
+    // Source the exec definition from the node graph — every launch is node-native (the pre-cutover
+    // MANIFEST/GAMES/VARIANTS branch that used to live here was unreachable: NodeIdx is always set).
     nlohmann::ordered_json Resolved = nlohmann::ordered_json::object();
-    if (NodePath)
-    {
-        if (ContainerParams.ComposedExec.is_object() && !ContainerParams.ComposedExec.empty())
-            Resolved = ContainerParams.ComposedExec;          // the closure-composed DeclareExec (variant overrides base)
-        else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id); L && L->Exec.is_object())
-            Resolved = L->Exec;                               // empty EXEC = self-contained launchable (e.g. gemrb) — OK
-    }
-    else
-    {
-        int SubgameIdx = FindGameIndex(MANIFESTJSON, ContainerParams.subgame_id);
-        if (SubgameIdx != -1 && MANIFESTJSON["GAMES"][SubgameIdx].contains("VARIANTS"))
-            for (auto &V : MANIFESTJSON["GAMES"][SubgameIdx]["VARIANTS"])
-                if (V.value("VARIANT_ID", std::string()) == ContainerParams.VariantID) { Resolved = V; break; }
-        if (Resolved.is_null() || Resolved.empty())
-        {
-            LogErr("ResolveExecutableDefinition", "No variant found for VARIANT_ID='" + ContainerParams.VariantID + "' in subgame '" + ContainerParams.subgame_id + "'");
-            return false;
-        }
-    }
+    if (ContainerParams.ComposedExec.is_object() && !ContainerParams.ComposedExec.empty())
+        Resolved = ContainerParams.ComposedExec;          // the closure-composed DeclareExec (variant overrides base)
+    else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id); L && L->Exec.is_object())
+        Resolved = L->Exec;                               // empty EXEC = self-contained launchable (e.g. gemrb) — OK
     LogSucc("ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.subgame_id);
     // The variant declares ONE universal target path — CONTENTPATH: the VFS-root-anchored path (authored like layer
     // TARGETs, e.g. "%PrefixRoot%/drive_c/%PackageUID%/Foo.exe") to whatever the runner runs or loads (an exe, a ROM,
     // a data root, or nothing for a self-contained runner). Its absolute host path is that location under the runtime
     // mount; the runner composes how it's used from %ContentPath% (content-root-relative) / %Content% (absolute host).
+    const std::map<std::string, std::string> ExecVars = ContainerParams.GetVariablesMap();
     {
         std::string ExeStr = Resolved.value("CONTENTPATH", std::string());
-        VarSubst::StringVariableSubstitution(ExeStr, ContainerParams.GetVariablesMap());
+        VarSubst::StringVariableSubstitution(ExeStr, ExecVars);
         for (char &c : ExeStr) if (c == '\\') c = '/';
         while (!ExeStr.empty() && ExeStr.front() == '/') ExeStr.erase(ExeStr.begin());
         while (!ExeStr.empty() && ExeStr.back()  == '/') ExeStr.pop_back();
@@ -370,7 +356,7 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     if (!WorkDirVal.is_null() && WorkDirVal.is_string() && !std::string(WorkDirVal).empty())
     {
         std::string WorkDirStr = std::string(WorkDirVal);
-        VarSubst::StringVariableSubstitution(WorkDirStr, ContainerParams.GetVariablesMap());
+        VarSubst::StringVariableSubstitution(WorkDirStr, ExecVars);
         for (char &c : WorkDirStr) if (c == '\\') c = '/';
         while (!WorkDirStr.empty() && WorkDirStr.front() == '/') WorkDirStr.erase(WorkDirStr.begin());
         while (!WorkDirStr.empty() && WorkDirStr.back()  == '/') WorkDirStr.pop_back();
@@ -392,7 +378,7 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     if (!ExeArgsVal.is_null() && ExeArgsVal.is_string() && !std::string(ExeArgsVal).empty())
     {
         std::string Args = std::string(ExeArgsVal);
-        VarSubst::StringVariableSubstitution(Args, ContainerParams.GetVariablesMap());
+        VarSubst::StringVariableSubstitution(Args, ExecVars);
         std::istringstream iss(Args);
         for (std::string tok; std::getline(iss, tok, ' ');) ContainerParams.ExeArgs.push_back(tok);
     }
@@ -407,6 +393,9 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
 //DerivePersistence. MANIFEST order is preserved, which determines VFS layer stacking order.
 bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
+    //Vars are fully resolved before this step (ResolveCustomVariables ran) — ONE map for the whole pass.
+    //The old code rebuilt the entire variables map for EVERY subcomponent.
+    const std::map<std::string, std::string> FrozenVars = ContainerParams.GetVariablesMap();
     //Iterate in Recipe order (ancestor-first) so VFS layers are stacked correctly regardless
     //of how components are ordered in the manifest. For each Recipe entry, find the component
     //by ID and collect its subcomponents.
@@ -428,7 +417,7 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();
-            VarSubst::StringVariableSubstitution(SubJSON, ContainerParams.GetVariablesMap());
+            VarSubst::StringVariableSubstitution(SubJSON, FrozenVars);
             ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(SubJSON));
             LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
         }
@@ -869,13 +858,14 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     //[snes9x_guest_exe, rom_guest].
     std::vector<std::string> Argv;     // full guest argv of the inner stack (program first)
     std::string PrevGuestCmd;          // inner command rendered as a single guest path token (for %Content% of the next)
+    const std::map<std::string, std::string> NestBaseVars = CP.GetVariablesMap();   // hoisted out of the link/arg loops
     for (int i = 0; i < B; ++i)
     {
         const RunnerLink &L = CP.RunnerChain[i];
         //This inner runner's own executable, as a CONTENT_ROOT-relative path then a guest path. EXECUTABLE is a
         //build-relative path for a nestable inner runner (no %RunnerMount% — that mount doesn't exist inside the guest).
         std::string ExeRel = L.Executable;
-        { std::map<std::string, std::string> V = CP.GetVariablesMap(); VarSubst::StringVariableSubstitution(ExeRel, V); }
+        VarSubst::StringVariableSubstitution(ExeRel, NestBaseVars);
         while (!ExeRel.empty() && (ExeRel.front() == '/' )) ExeRel.erase(ExeRel.begin());
         const std::string ExeRelUnderRoot = InnerRunnerMountRel(L.NodeId) + (ExeRel.empty() ? "" : "/" + ExeRel);
         const std::string ExeGuest = GuestPath(Template, ExeRelUnderRoot, CP);
@@ -884,12 +874,12 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
         //the innermost), expressed as a guest path. Other %tokens% expand normally.
         const std::string Target = (i == 0) ? ContentGuest : PrevGuestCmd;
         std::vector<std::string> ThisArgs;
-        for (const std::string &Raw : L.Args)
         {
-            std::map<std::string, std::string> V = CP.GetVariablesMap();
+            //One override map per LINK (the old code rebuilt the whole variables map per ARG).
+            std::map<std::string, std::string> V = NestBaseVars;
             V["Content"] = Target; V["ContentPath"] = Target;
-            std::string A = Raw; VarSubst::StringVariableSubstitution(A, V);
-            ThisArgs.push_back(A);
+            for (const std::string &Raw : L.Args)
+            { std::string A = Raw; VarSubst::StringVariableSubstitution(A, V); ThisArgs.push_back(A); }
         }
 
         //Nest: this runner's [exe, its args] runs the previous inner command, so prepend it to the growing argv.

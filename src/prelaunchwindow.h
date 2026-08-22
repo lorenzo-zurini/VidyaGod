@@ -138,7 +138,6 @@ private:
     QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
     std::map<std::string, std::set<std::string>> ModuleExcludes; // node -> mutually-exclusive nodes (symmetric)
-    std::set<std::string>                        LockedModules;  // (unused for nodes; kept for the tree helpers)
     QTextEdit*    ConsoleEdit       = nullptr;
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;
