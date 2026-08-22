@@ -8,6 +8,8 @@
 
 class QLabel;
 class QNetworkAccessManager;
+class QGroupBox;
+class QGridLayout;
 
 // The per-node editor sections (one tab's worth, composed by NodeEditor). Each is a NodeSection (titled QGroupBox
 // bound to model + node index) that renders + edits one concern of the node, editing only through the model.
@@ -34,6 +36,14 @@ protected:
 
 private:
     void ApplyCoverImage(QLabel * CoverLabel, const QByteArray & Data, const QString & Extension, int NodeIdx, int LayerIdx);
+    // Per-LayerType row builders (P6 split of the former single-ctor if/else ladder).
+    void BuildVfsLayerRows  (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LayerType, const QString & LPath);
+    void BuildRegEditRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
+    void BuildDllOverrideRows(QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
+    void BuildFileEditRows  (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
+    void BuildPersistRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
+    void BuildDeclareRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LayerType, const QString & LPath);
+    void BuildCustomVarRows (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
     QNetworkAccessManager * NetMgr = nullptr;
 };
 

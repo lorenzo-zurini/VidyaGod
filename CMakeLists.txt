@@ -100,6 +100,10 @@ set(SHARED_SOURCES
 
     src/launchresolver.h
     src/launchresolver.cpp
+    src/launchresolver_vars.cpp
+    src/launchresolver_persist.cpp
+    src/launchresolver_exec.cpp
+    src/launchresolver_chain.cpp
 
     src/sandboxlayer.h
     src/sandboxlayer.cpp
@@ -138,6 +142,7 @@ set(SHARED_SOURCES
 
     src/packagecatalog.h
     src/packagecatalog.cpp
+    src/packagecatalog_publish.cpp
 
     src/registrywrapper.h
     src/registrywrapper.cpp

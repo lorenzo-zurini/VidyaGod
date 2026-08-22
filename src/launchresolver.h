@@ -18,6 +18,10 @@ namespace LaunchResolver
 //graph (back-compat / safety net). The native terminal forwards the inner command unchanged in the host namespace.
 inline constexpr const char *kNativeTerminalId = "__native__";
 
+//Absolutize a layer's PATH / SOURCE.PATH against the owning node's BundleDir (in place) — shared between
+//the resolution spine and the chain TU (P6 split).
+void AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path &BundleDir);
+
 //Resolves the shortest runner CHAIN (innermost→outermost runner node ids) to run a launch node's content on this
 //machine: a BFS over runner edges GUEST→HOST from the launch node's platform to MachinePlatform(), ALWAYS terminated
 //by a native runner (HOST==GUEST==machine) — an authored native runner if one is available, else kNativeTerminalId.
