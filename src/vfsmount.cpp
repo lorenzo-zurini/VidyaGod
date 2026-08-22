@@ -4,6 +4,9 @@
 #include "commonutils.h"        // Log*
 #include "launchresolver.h"     // BoundaryLinkIndex / InnerRunnerMountRel (cross-namespace inner-runner mounts)
 #include "varsubst.h"           // %variable% substitution in layer TARGETs (e.g. %ContentDir% → next to the exe)
+#include "zipscan.h"            // shared ZIP64 CD walker (STORE check) — from the FS repo via vgfs_core
+#include "hostio.h"             // HostIO::Open/Fstat for the ByteSource over a plain zip file
+#include "bytesource.h"         // FdByteSource
 #include <fstream>              // prefix-recipe read + marker seeding (zero-copy prefix assembly)
 #include <sstream>
 
@@ -51,68 +54,18 @@ static std::string VidyagodfsPath()
 }
 
 //Returns the name of the first COMPRESSED (non-STORE) entry in the zip at Path, or "" if every entry
-//is STORED (or the archive can't be parsed). Self-contained (no libzip): walks the zip central
-//directory (ZIP64-aware) and checks each record's compression-method field (offset 10; 0 == STORE).
+//is STORED (or the archive can't be parsed). Delegates to zipscan (the FS repo's shared ZIP64
+//central-directory walker) — this file used to carry a near-identical hand-rolled copy of that walk.
 //Used to block compressed zip layers before mounting — vidyagodfs serves zip layers zero-copy, which
 //requires STORE.
 static std::string ZipFirstCompressedEntry(const std::string &Path)
 {
-    auto rd16 = [](const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); };
-    auto rd32 = [](const uint8_t *p) { return (uint32_t)(p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24)); };
-    auto rd64 = [](const uint8_t *p) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = (v << 8) | p[i]; return v; };
-
-    // Portable positioned reads via ifstream (POSIX pread has no MinGW equivalent). Single reader, so
-    // seeking the shared cursor per call is fine.
-    std::ifstream File(Path, std::ios::binary);
-    if (!File) return "";
-    File.seekg(0, std::ios::end);
-    uint64_t fsize = (uint64_t)File.tellg();
-    auto preadAll = [&](void *b, size_t n, uint64_t off) -> bool {
-        File.clear();
-        File.seekg((std::streamoff)off, std::ios::beg);
-        File.read((char *)b, (std::streamsize)n);
-        return (uint64_t)File.gcount() == n;
-    };
-
-    std::string result;
-    if (fsize >= 22)
-    {
-        uint64_t tail = std::min<uint64_t>(fsize, 22 + 65535);
-        std::vector<uint8_t> buf(tail);
-        if (preadAll(buf.data(), tail, fsize - tail))
-        {
-            long eocd = -1;
-            for (long i = (long)tail - 22; i >= 0; --i) if (rd32(&buf[i]) == 0x06054b50u) { eocd = i; break; }
-            if (eocd >= 0)
-            {
-                const uint8_t *E = &buf[eocd];
-                uint64_t total = rd16(E + 10), cdoff = rd32(E + 16), eocdOff = fsize - tail + (uint64_t)eocd;
-                if (cdoff == 0xFFFFFFFFu || total == 0xFFFFu) // ZIP64
-                {
-                    uint8_t loc[20], z64[56];
-                    if (eocdOff >= 20 && preadAll(loc, 20, eocdOff - 20) && rd32(loc) == 0x07064b50u)
-                    {
-                        uint64_t z = rd64(loc + 8);
-                        if (preadAll(z64, 56, z) && rd32(z64) == 0x06064b50u) { total = rd64(z64 + 32); cdoff = rd64(z64 + 48); }
-                    }
-                }
-                uint64_t pos = cdoff;
-                for (uint64_t i = 0; i < total && result.empty(); ++i)
-                {
-                    uint8_t rec[46];
-                    if (!preadAll(rec, 46, pos) || rd32(rec) != 0x02014b50u) break;
-                    uint16_t method = rd16(rec + 10), nl = rd16(rec + 28), el = rd16(rec + 30), cl = rd16(rec + 32);
-                    if (method != 0) // not STORE
-                    {
-                        std::vector<uint8_t> nm(nl);
-                        result = (nl && preadAll(nm.data(), nl, pos + 46)) ? std::string((const char *)nm.data(), nl) : "(entry)";
-                    }
-                    pos += 46u + nl + el + cl;
-                }
-            }
-        }
-    }
-    return result;
+    HostIO::Fd Fd = HostIO::Open(Path, 0 /*O_RDONLY*/);
+    if (Fd < 0) return "";
+    HostIO::Stat St;
+    if (HostIO::Fstat(Fd, St) != 0) { HostIO::Close(Fd); return ""; }
+    FdByteSource Src(Fd, St.size, /*ownFd=*/true);   // closes Fd on destruction
+    return zipscan::FirstCompressedEntry(Src);
 }
 
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (when the runner
@@ -158,9 +111,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
         std::string T = Sub[Key];
         VarSubst::StringVariableSubstitution(T, Vars);
-        for (char &c : T) if (c == '\\') c = '/';                          // normalize win-style separators
-        while (!T.empty() && T.front() == '/') T.erase(T.begin());          // no leading slash → clean join
-        while (!T.empty() && T.back()  == '/') T.pop_back();
+        T = NormalizeTargetPath(T);                                         // win separators + slash trim
         if (T.empty()) return Base;
         return Base.empty() ? T : (Base + "/" + T);
     };
@@ -364,10 +315,7 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     auto SubstTarget = [&](const std::string &In) -> std::string {
         std::string T = In;
         VarSubst::StringVariableSubstitution(T, Vars);
-        for (char &c : T) if (c == '\\') c = '/';
-        while (!T.empty() && T.front() == '/') T.erase(T.begin());
-        while (!T.empty() && T.back()  == '/') T.pop_back();
-        return T;
+        return NormalizeTargetPath(T);
     };
     for (auto &Sub : ContainerParams.RunnerLayers)
     {
@@ -524,7 +472,7 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
     //non-lazy unmount spews while a lingering wineserver still holds handles; the actual teardown
     //then finishes in the background, so we VERIFY it has fully cleared below before touching disk.
     for (const std::string &Mount : StaleMounts)
-        RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
+        VfsMount::UnmountLazy(Mount);
 
     //Save-safety gate (mirrors Cleanup): poll until nothing under TempPath is mounted, so remove_all
     //can never traverse a still-live PERSIST bind into PackagePath/USERDATA. Wait, don't assume.
@@ -549,4 +497,28 @@ void VfsMount::CleanStaleRuntime(const std::filesystem::path &TempPath)
         else if (!StaleMounts.empty() || Exists)
             LogSucc("VfsMount::CleanStaleRuntime", "Stale runtime cleared.");
     }
+}
+bool VfsMount::UnmountDurable(const std::string &Mount, int Retries)
+{
+#ifdef _WIN32
+    (void)Mount; (void)Retries; return true;
+#else
+    for (int Attempt = 0; Attempt < Retries; ++Attempt)
+    {
+        if (Attempt > 0) QThread::msleep(200);   // give a lingering wineserver time to release
+        if (RunCommand("fusermount3", {"-u", Mount}, SystemToolEnv()) == 0) return true;
+    }
+    //Lazy-detach so it eventually clears; the caller must treat the wipe as unsafe for this run.
+    RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
+    return false;
+#endif
+}
+
+void VfsMount::UnmountLazy(const std::string &Mount)
+{
+#ifndef _WIN32
+    RunCommand("fusermount3", {"-uz", Mount}, SystemToolEnv());
+#else
+    (void)Mount;
+#endif
 }

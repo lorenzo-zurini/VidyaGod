@@ -27,4 +27,9 @@ inline void LogErr (const std::string& ctx, const std::string& msg) { Log(LogLev
 inline void LogWarn(const std::string& ctx, const std::string& msg) { Log(LogLevel::WARN, ctx, msg); }
 inline void LogSucc(const std::string& ctx, const std::string& msg) { Log(LogLevel::SUCC, ctx, msg); }
 
+//Human-readable byte size ("1.4 GB"); "?" for a negative (unknown) count. THE single implementation —
+//it was copy-pasted in three files (ipfswrapper/downloadmanager/ipfstab); QString callers wrap with
+//QString::fromStdString.
+std::string HumanBytes(long long Bytes);
+
 #endif // COMMONUTILS_H

@@ -129,6 +129,13 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
                                           const std::map<std::string, bool> &Toggles,
                                           std::vector<std::string> *Missing = nullptr);
 
+// Visits every resolvable node in RootId's closure (ResolveNodeOrder order) EXCEPT RootId itself — the
+// "walk a runner's content closure" skeleton that used to be hand-rolled at four call sites (RunnerBuildNodes,
+// RunnerShipsBuild, BuildLink, InitializeFromNode). Each caller keeps its own per-node filter/body.
+void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
+                        const std::map<std::string, bool> &Toggles,
+                        const std::function<void(const Node &)> &Visit);
+
 // The OPTIONAL nodes reachable from a launchable via the PARENTS closure (for the picker's toggle list),
 // in discovery order. Runner nodes are excluded. Gating/EXCLUDE between them is resolved at launch by
 // ResolveNodeOrder; the picker just lists them as checkboxes.
@@ -165,6 +172,14 @@ std::string VfsSpecType(const std::string &Type);
 bool IsVfsLayer(const std::string &Type);
 // A subcomponent's TYPE ("" if absent).
 std::string LayerType(const nlohmann::ordered_json &Sub);
+// The editable META metadata fields (rendered as flat forms by the package editor). Package-format
+// knowledge, owned here — the editor widgets used to keep two divergent copies of this list.
+const std::vector<std::string> &MetaEditableFields();
+// Normalize a layer TARGET / runtime-relative path: backslashes → slashes, leading/trailing slashes trimmed.
+// This is the parent-side twin of VidyaGodFS's NormalizeVPath (layerspec.cpp) MINUS the FS's zip-name context —
+// the two must agree so target strings match the FS's per-target base map (a parity test pins that; the FS side
+// additionally never sees backslashes, its inputs being zip entry names). Was inlined ×3 across the engine.
+std::string NormalizeTargetPath(std::string P);
 // Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target (and a delta's
 // BaseTarget). Null json if `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift.
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,

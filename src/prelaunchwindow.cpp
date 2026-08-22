@@ -584,9 +584,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
         { const Node* N = Index->Find(Id); if (N && !N->IsRunner()) Nodes.push_back({Id, true}); }
     }
 
-    auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-    const nlohmann::ordered_json SavedVars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
-                                              ? US["VARIABLES"] : nlohmann::ordered_json::object();
+    const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID);
 
     // Group boxes keyed by title (UI.GROUP, or "Options"; runner knobs get a "Runner · " prefix), in first-seen order.
     std::vector<QGroupBox*> Boxes; std::map<std::string, QVBoxLayout*> ByTitle;
@@ -760,14 +758,7 @@ void PreLaunchWindow::onLaunchClicked()
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).
     if (!PackageUID.empty())
     {
-        if (!PickerVars.empty())
-        {
-            auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
-            nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
-                                           ? US["VARIABLES"] : nlohmann::ordered_json::object();
-            for (const auto& [K, V] : PickerVars) Vars[K] = V;
-            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
-        }
+        PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars);
         nlohmann::ordered_json Mods = nlohmann::ordered_json::object();
         for (const auto& [N, On] : CollectModuleStates()) Mods[N] = On;
         PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "MODULES", Mods);

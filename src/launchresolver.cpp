@@ -43,6 +43,10 @@ using namespace PackageCatalog;
 //     seed and reported in ContainerParams.PickedSecrets for the caller to persist)
 bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams, const nlohmann::ordered_json &GlobalConfigJSON)
 {
+    //ONE snapshot of the package's persisted VARIABLES for the whole resolve. The old code re-ran the
+    //O(LIBRARY) settings scan (with a deep USERSETTINGS copy) for EVERY custom-var key.
+    const nlohmann::ordered_json SavedVars = GetPackageVariables(GlobalConfigJSON, ContainerParams.PackageUID);
+
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
     {
@@ -51,10 +55,9 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             LogOut("ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
             return ContainerParams.VariableOverrides.at(Key);
         }
-        auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
-        if (US.contains("VARIABLES") && US["VARIABLES"].contains(Key))
+        if (SavedVars.contains(Key))
         {
-            std::string Val = US["VARIABLES"][Key];
+            std::string Val = SavedVars[Key];
             LogOut("ResolveCustomVariables", "User setting: " + Key + " = " + Val);
             return Val;
         }
@@ -120,10 +123,9 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             //value to durable state — a CD key written into its prefix, an account name — would see it change
             //under it every launch. So: persisted value wins; only when there is none do we draw from the pool,
             //and we hand the draw back for the caller to persist.
-            auto US = GetPackageUserSettings(GlobalConfigJSON, ContainerParams.PackageUID);
             std::string Saved;
-            if (US.contains("VARIABLES") && US["VARIABLES"].contains(Key) && US["VARIABLES"][Key].is_string())
-                Saved = US["VARIABLES"][Key];
+            if (SavedVars.contains(Key) && SavedVars[Key].is_string())
+                Saved = SavedVars[Key];
             if (!Saved.empty())
             {
                 LogOut("ResolveCustomVariables", "User setting: " + Key + " = [secret]");
@@ -300,14 +302,10 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
 // %ContentPath% consume this relative form. ContentRoot is the runner's mount root ("pfx/drive_c/%PackageUID%" for
 // proton/wine; "" for a native runner whose content root IS the VFS root — a no-op here). Both inputs are pre-
 // substituted; separators/edge slashes are normalized before comparison.
-static std::string ContentRootRelative(std::string Path, std::string ContentRoot)
+static std::string ContentRootRelative(const std::string &RawPath, const std::string &RawContentRoot)
 {
-    auto Normalize = [](std::string &S) {
-        for (char &c : S) if (c == '\\') c = '/';
-        while (!S.empty() && S.front() == '/') S.erase(S.begin());
-        while (!S.empty() && S.back()  == '/') S.pop_back();
-    };
-    Normalize(Path); Normalize(ContentRoot);
+    std::string Path        = NormalizeTargetPath(RawPath);
+    std::string ContentRoot = NormalizeTargetPath(RawContentRoot);
     if (ContentRoot.empty()) return Path;
     if (Path == ContentRoot) return std::string();
     const std::string Prefix = ContentRoot + "/";
@@ -610,16 +608,24 @@ bool RunnerServes(const Node *R, const std::string &Platform)
 //True if a runner SHIPS ITS OWN BUILD: any VFS layer in its content closure (its PARENTS). Such a runner's executable
 //resolves from the mounted build, not the system PATH — so it's "available" even when EXECUTABLE is a bare command
 //(e.g. a win32 emulator "snes9x.exe" nested under proton). Local-PATH or CID layers both count.
+//Absolutize a layer's PATH and SOURCE.PATH against the owning node's BundleDir (in place). Shared by
+//BuildLink and the resolver's AbsLayers — the two used to carry byte-identical copies of this guard pair.
+static void AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path &BundleDir)
+{
+    if (L.contains("PATH") && L["PATH"].is_string())
+    { std::filesystem::path P = std::string(L["PATH"]); if (!P.is_absolute()) L["PATH"] = (BundleDir / P).string(); }
+    if (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH") && L["SOURCE"]["PATH"].is_string())
+    { std::filesystem::path P = std::string(L["SOURCE"]["PATH"]); if (!P.is_absolute()) L["SOURCE"]["PATH"] = (BundleDir / P).string(); }
+}
+
 bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
 {
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, R.NodeId, {}))
-    {
-        if (Id == R.NodeId) continue;
-        const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) return true;
-    }
-    return false;
+    bool Ships = false;
+    ManifestModel::ForEachClosureNode(Idx, R.NodeId, {}, [&](const Node &N) {
+        if (Ships || N.IsRunner() || !N.Layers.is_array()) return;
+        for (const auto &L : N.Layers) if (IsVfsLayer(LayerType(L))) { Ships = true; return; }
+    });
+    return Ships;
 }
 
 //A runner can be used on this machine when its executable resolves on the system PATH OR it ships its own build (the
@@ -697,26 +703,31 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     L.GuestPathTemplate= E.value("GUEST_PATH", std::string());
     L.HostPlatform     = R->HostPlatform;
     L.GuestPlatform    = R->GuestPlatform;
-    for (const std::string &Cid : ManifestModel::ResolveNodeOrder(Idx, R->NodeId, Toggles))
-    {
-        if (Cid == R->NodeId) continue;
-        const Node *N = Idx.Find(Cid);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-        for (nlohmann::ordered_json Lay : N->Layers)
+    ManifestModel::ForEachClosureNode(Idx, R->NodeId, Toggles, [&](const Node &N) {
+        if (N.IsRunner() || !N.Layers.is_array()) return;
+        for (nlohmann::ordered_json Lay : N.Layers)
         {
             if (!IsVfsLayer(LayerType(Lay))) continue;
-            if (Lay.contains("PATH") && Lay["PATH"].is_string())
-            { std::filesystem::path P = std::string(Lay["PATH"]); if (!P.is_absolute()) Lay["PATH"] = (N->BundleDir / P).string(); }
-            if (Lay.contains("SOURCE") && Lay["SOURCE"].is_object() && Lay["SOURCE"].contains("PATH") && Lay["SOURCE"]["PATH"].is_string())
-            { std::filesystem::path P = std::string(Lay["SOURCE"]["PATH"]); if (!P.is_absolute()) Lay["SOURCE"]["PATH"] = (N->BundleDir / P).string(); }
+            AbsolutizeLayerPaths(Lay, N.BundleDir);
             L.Layers.push_back(std::move(Lay));
         }
-    }
+    });
     L.ShipsBuild = !L.Layers.empty();
     return L;
 }
 
 } // namespace
+
+//Every usable runner on this machine, sorted better-first (RECOMMENDED > package-local > node-id) for
+//deterministic BFS — shared by ResolveChainIds and ResolveChainTail (formerly duplicated verbatim).
+static std::vector<const Node *> AvailableRunnersSorted(const NodeIndex &Idx, const Node &Launch)
+{
+    std::vector<const Node *> Runners;
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.IsRunner() && RunnerAvailable(Idx, N)) Runners.push_back(&N);
+    std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
+    return Runners;
+}
 
 std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, const Node &Launch,
                                                          const struct ContainerParams &CP, const nlohmann::ordered_json &GlobalConfigJSON)
@@ -724,10 +735,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     const std::string Machine = MachinePlatform();
 
     //Available runners, sorted better-first (RECOMMENDED > package-local > node-id) for deterministic BFS.
-    std::vector<const Node *> Runners;
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsRunner() && RunnerAvailable(Idx, N)) Runners.push_back(&N);
-    std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
+    std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
     //1. Honor a pinned chain (passed CP.RunnerChainIds, else persisted RUNNER_CHAIN) when it forms a valid path to
     //   the machine. Append a terminal if the pin didn't include one.
@@ -778,10 +786,7 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
 {
     (void)GlobalConfigJSON;
     const std::string Machine = MachinePlatform();
-    std::vector<const Node *> Runners;
-    for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsRunner() && RunnerAvailable(Idx, N)) Runners.push_back(&N);
-    std::sort(Runners.begin(), Runners.end(), [&](const Node *A, const Node *B){ return RunnerBetterPtr(A, B, Launch); });
+    std::vector<const Node *> Runners = AvailableRunnersSorted(Idx, Launch);
 
     std::vector<std::string> Bridge;
     if (!FindBridge(FromPlatform, Machine, Runners, Bridge)) return {};          // FromPlatform can't reach the machine
@@ -933,10 +938,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         if (!N->Layers.is_array()) return Out;
         for (nlohmann::ordered_json L : N->Layers)
         {
-            if (L.contains("PATH") && L["PATH"].is_string())
-            { std::filesystem::path P = std::string(L["PATH"]); if (!P.is_absolute()) L["PATH"] = (N->BundleDir / P).string(); }
-            if (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH") && L["SOURCE"]["PATH"].is_string())
-            { std::filesystem::path P = std::string(L["SOURCE"]["PATH"]); if (!P.is_absolute()) L["SOURCE"]["PATH"] = (N->BundleDir / P).string(); }
+            AbsolutizeLayerPaths(L, N->BundleDir);
             Out.push_back(std::move(L));
         }
         return Out;
@@ -1003,14 +1005,11 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         //(RunnerComponents/RunnerRecipe) and the UNIFIED fold.
         nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
         std::vector<std::string> RunnerBuildIds;
-        for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNode->NodeId, CP.ModuleStates))
-        {
-            if (Id == RunnerNode->NodeId) continue;
-            const Node *N = Idx.Find(Id);
-            if (!N || N->IsRunner()) continue;
-            RunnerComps.push_back({{"COMPONENTID", N->NodeId}, {"SUBCOMPONENTS", AbsLayers(N)}});
-            RunnerBuildIds.push_back(N->NodeId);
-        }
+        ManifestModel::ForEachClosureNode(Idx, RunnerNode->NodeId, CP.ModuleStates, [&](const Node &N) {
+            if (N.IsRunner()) return;
+            RunnerComps.push_back({{"COMPONENTID", N.NodeId}, {"SUBCOMPONENTS", AbsLayers(&N)}});
+            RunnerBuildIds.push_back(N.NodeId);
+        });
         //The runner NODE itself carries the placement CustomVars (e.g. %DXVK_TARGET%/%FONTS_TARGET% that mount its lib
         //components at the right prefix paths). The loop above skips it (it's the DeclareRunner boundary), so add it
         //back — otherwise those knobs never reach ResolveCustomVariables and the components mount at literal %TARGET%.

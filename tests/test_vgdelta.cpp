@@ -21,14 +21,19 @@ std::vector<uint8_t> Rand(std::mt19937_64 &rng, size_t n) {
 bool RoundTrip(const std::vector<uint8_t> &base, const std::vector<uint8_t> &expect,
                std::shared_ptr<ByteSource> baseSrc) {
     auto d = GenerateDelta(base.data(), base.size(), expect.data(), expect.size());
+
+    // Whole-view byte verification goes through the SHARED vgdelta::VerifyDelta (the same routine
+    // --convert-delta-chain uses in production), so test and tool can never drift apart.
+    {
+        MemByteSource Target(expect);
+        std::string Verr;
+        if (!vgdelta::VerifyDelta(d, baseSrc, Target, Verr)) return false;
+    }
+
     std::string err;
     auto ds = DeltaByteSource::Create(std::make_shared<MemByteSource>(d), baseSrc, err, true);
     if (!ds) return false;
     if (ds->size() != expect.size()) return false;
-
-    std::vector<uint8_t> full(expect.size());
-    if (!expect.empty() && ds->pread(full.data(), full.size(), 0) != (ssize_t)expect.size()) return false;
-    if (full != expect) return false;
 
     for (size_t step : {(size_t)1, (size_t)777, (size_t)65536, (size_t)65535}) {
         for (size_t off = 0; off < expect.size(); off += step) {

@@ -79,17 +79,6 @@ extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, in
 static std::string TakeStr(char *S) { std::string R = S ? S : std::string(); if (S) VgFree(S); return R; }
 
 // Format a byte count the way `ipfs repo stat --human` used to, for the IPFS tab.
-static std::string HumanBytes(long long B)
-{
-    if (B < 0) return "?";
-    static const char *U[] = { "B", "KB", "MB", "GB", "TB", "PB" };
-    double V = double(B); int I = 0;
-    while (V >= 1024.0 && I < 5) { V /= 1024.0; ++I; }
-    char Buf[32];
-    std::snprintf(Buf, sizeof Buf, (I > 0 && V < 10.0) ? "%.1f %s" : "%.0f %s", V, U[I]);
-    return Buf;
-}
-
 // ----- download concurrency throttle -----
 // A resizable counting semaphore (mutex + condvar so the limit can change at runtime): DownloadSlot acquires before
 // a fetch and releases after, and at most g_MaxConcurrent slots are held at once. Raising the limit wakes waiters;

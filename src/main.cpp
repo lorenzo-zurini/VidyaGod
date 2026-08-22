@@ -735,46 +735,9 @@ int main(int argc, char *argv[])
         if (Chain.size() < 2) { LogErr("convert-delta", "need >=2 nodes: <baseNode> <newer> [<newer>...]"); return 1; }
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
 
-        // A ByteSource over the archive, flat-addressable for GenerateDelta and for the byte-verify below.
-        // MAPPED, not read into RAM: a chain step holds base + target open at once (here 2.3 GB + 8 GB), and as
-        // anonymous memory that alone exceeded what a 32 GB desktop could give a background job — the conversion
-        // was OOM-killed. Mapped pages are file-backed page cache: the kernel evicts them under pressure instead
-        // of killing us, and each archive is read once, sequentially. Windows keeps the eager read (no mmap in
-        // the portable subset used here); its own conversions are small.
-        struct MapSrc : ByteSource {
-            const uint8_t *p = nullptr; uint64_t n = 0;
-#ifndef _WIN32
-            int fd = -1; void *m = nullptr;
-            bool Map(const std::string &path) {
-                fd = ::open(path.c_str(), O_RDONLY);
-                if (fd < 0) return false;
-                struct stat st{};
-                if (::fstat(fd, &st) != 0 || st.st_size <= 0) return false;
-                n = (uint64_t)st.st_size;
-                m = ::mmap(nullptr, (size_t)n, PROT_READ, MAP_PRIVATE, fd, 0);
-                if (m == MAP_FAILED) { m = nullptr; return false; }
-                ::madvise(m, (size_t)n, MADV_SEQUENTIAL);
-                p = (const uint8_t *)m;
-                return true; }
-            ~MapSrc() override { if (m) ::munmap(m, (size_t)n); if (fd >= 0) ::close(fd); }
-#else
-            std::vector<uint8_t> d;
-            bool Map(const std::string &path) {
-                std::ifstream f(path, std::ios::binary);
-                if (!f) return false;
-                f.seekg(0, std::ios::end);
-                std::streamoff sz = f.tellg();
-                if (sz < 0) return false;
-                d.resize((size_t)sz);
-                f.seekg(0, std::ios::beg);
-                f.read((char *)d.data(), sz);
-                if ((std::streamoff)f.gcount() != sz) return false;
-                p = d.data(); n = (uint64_t)sz;
-                return true; }
-#endif
-            ssize_t pread(void *b, size_t k, uint64_t o) override { if (o >= n) return 0; uint64_t a = n - o; size_t w = k < a ? k : a; std::memcpy(b, p + o, w); return (ssize_t)w; }
-            uint64_t size() const override { return n; }
-        };
+        // Archives are MAPPED, not read into RAM (see MmapByteSource in the FS repo — it replaced the local
+        // MapSrc): a chain step holds base + target open at once, and eager reads OOM-killed a 32 GB desktop.
+        using MapSrc = MmapByteSource;
 
         struct V { const Node *node = nullptr; int layerIdx = -1; std::string zipPath, target; };
         std::vector<V> vs;
@@ -812,19 +775,9 @@ int main(int argc, char *argv[])
                                                                 vgdelta::DEFAULT_BLOCK,
                                                                 vs[i].node->BundleDir.string());
 
-            // byte-verify: reconstruct the target view (delta over the same base) and compare to the real zip.
-            std::string derr;
-            auto ds = vgdelta::DeltaByteSource::Create(std::make_shared<MemByteSource>(delta), base, derr, false);
-            if (!ds || ds->size() != tgt->n) { LogErr("convert-delta", "verify: create/size (" + derr + ")"); return 1; }
-            {
-                const size_t CH = size_t(8) << 20; std::vector<uint8_t> buf(CH); uint64_t off = 0;
-                while (off < tgt->n) {
-                    size_t want = (size_t)std::min<uint64_t>(CH, tgt->n - off), got = 0;
-                    while (got < want) { ssize_t r = ds->pread(buf.data() + got, want - got, off + got); if (r <= 0) { LogErr("convert-delta", "verify read"); return 1; } got += (size_t)r; }
-                    if (std::memcmp(buf.data(), tgt->p + off, want) != 0) { LogErr("convert-delta", "BYTE MISMATCH — aborting, nothing changed"); return 1; }
-                    off += want;
-                }
-            }
+            // byte-verify via the shared vgdelta::VerifyDelta (same routine the tests use — no drift).
+            if (std::string Verr; !vgdelta::VerifyDelta(delta, base, *tgt, Verr))
+            { LogErr("convert-delta", "VERIFY FAILED (" + Verr + ") — aborting, nothing changed"); return 1; }
 
             // write the delta blob + rewrite the node JSON (reparent + swap the zip layer for a delta layer).
             std::string blob = "delta_from__" + vs[i - 1].node->NodeId + ".vgdelta";
@@ -920,11 +873,7 @@ int main(int argc, char *argv[])
             && !NewContainerWrapper.ContainerParams.PackageUID.empty())
         {
             const std::string &Uid = NewContainerWrapper.ContainerParams.PackageUID;
-            auto US = PackageCatalog::GetPackageUserSettings(GlobalConfigJSON, Uid);
-            nlohmann::ordered_json Vars = (US.contains("VARIABLES") && US["VARIABLES"].is_object())
-                                          ? US["VARIABLES"] : nlohmann::ordered_json::object();
-            for (const auto &[K, V] : NewContainerWrapper.ContainerParams.PickedSecrets) Vars[K] = V;
-            PackageCatalog::SetPackageUserSetting(GlobalConfigJSON, Uid, "VARIABLES", Vars);
+            PackageCatalog::MergePackageVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets);
             QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
             if (JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
                 LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())

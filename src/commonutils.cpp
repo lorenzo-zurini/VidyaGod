@@ -52,3 +52,14 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     if (g_LogCallback)
         g_LogCallback(level, context, message);
 }
+
+std::string HumanBytes(long long Bytes)
+{
+    if (Bytes < 0) return "?";
+    static const char *U[] = { "B", "KB", "MB", "GB", "TB", "PB" };
+    double V = double(Bytes); int I = 0;
+    while (V >= 1024.0 && I < 5) { V /= 1024.0; ++I; }
+    char Buf[32];
+    std::snprintf(Buf, sizeof Buf, (I > 0 && V < 10.0) ? "%.1f %s" : "%.0f %s", V, U[I]);
+    return Buf;
+}

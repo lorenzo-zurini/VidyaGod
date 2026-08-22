@@ -40,15 +40,7 @@
 
 using json = nlohmann::ordered_json;
 
-// The META metadata fields rendered as a flat form under TITLE.
-static const std::vector<std::string> MetadataFields = {
-    "RELEASEDATE", "EDITION", "EDITIONDATE", "DEVELOPER", "PUBLISHER",
-    "TGDBID", "STEAMAPPID", "GOGPRODUCTID", "UMUID",
-    "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
-    "EDITOR", "ONLINEDRM",
-    "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
-    "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
-};
+// The META metadata field list lives in ManifestModel::MetaEditableFields (package-format knowledge).
 
 NodeIdentitySection::NodeIdentitySection(PackageEditorModel * model, int nodeIndex, QWidget * parent)
     : NodeSection("Identity", model, nodeIndex, parent)

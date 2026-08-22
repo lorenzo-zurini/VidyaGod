@@ -67,14 +67,7 @@ public:
     }
 };
 
-// Compact human-readable byte size ("—" for unknown/negative).
-static QString HumanBytes(long long N)
-{
-    if (N < 0) return QStringLiteral("—");
-    double B = double(N); const char * U[] = { "B", "KB", "MB", "GB", "TB" }; int I = 0;
-    while (B >= 1024.0 && I < 4) { B /= 1024.0; ++I; }
-    return QString::number(B, 'f', I == 0 ? 0 : 1) + " " + U[I];
-}
+#include "guiformat.h"   // HumanBytesQ — the one shared GUI byte formatter
 
 // Renders a CID's network availability ("health") as coloured text.
 static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
@@ -264,7 +257,7 @@ void IpfsTab::renderLeaf(const QString & cid)
     using P = IpfsModel::CidState;
 
     // Size.
-    leaf->setText(1, st.phase == P::Pending ? QString() : HumanBytes(st.size));
+    leaf->setText(1, st.phase == P::Pending ? QString() : HumanBytesQ(st.size));
     leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
 
     // Progress bar value + colour code.
@@ -293,7 +286,7 @@ void IpfsTab::renderLeaf(const QString & cid)
     }
     leaf->setData(2, Qt::DisplayRole, Bar);
     leaf->setData(2, StatusRole, Role);
-    leaf->setText(3, st.speedBps > 0 ? (HumanBytes((long long)st.speedBps) + "/s") : QString());
+    leaf->setText(3, st.speedBps > 0 ? (HumanBytesQ((long long)st.speedBps) + "/s") : QString());
     leaf->setText(4, Status);
     leaf->setForeground(4, Fg);
 
@@ -356,7 +349,7 @@ void IpfsTab::updateGroupTotals()
         if (n == 0) { IpfsPinGroups.remove(Key); delete g; continue; }
         long long GrpTotal = 0;
         for (int i = 0; i < n; ++i) GrpTotal += g->child(i)->data(1, Qt::UserRole).toLongLong();
-        g->setText(1, QString("%1 item%2 · %3").arg(n).arg(n == 1 ? "" : "s").arg(HumanBytes(GrpTotal)));
+        g->setText(1, QString("%1 item%2 · %3").arg(n).arg(n == 1 ? "" : "s").arg(HumanBytesQ(GrpTotal)));
     }
     for (const QString & Cat : IpfsPinCategories.keys())
     {
@@ -370,7 +363,7 @@ void IpfsTab::updateGroupTotals()
             CatItems += g->childCount();
             for (int j = 0; j < g->childCount(); ++j) CatTotal += g->child(j)->data(1, Qt::UserRole).toLongLong();
         }
-        c->setText(1, QString("%1 item%2 · %3").arg(CatItems).arg(CatItems == 1 ? "" : "s").arg(HumanBytes(CatTotal)));
+        c->setText(1, QString("%1 item%2 · %3").arg(CatItems).arg(CatItems == 1 ? "" : "s").arg(HumanBytesQ(CatTotal)));
     }
 }
 
@@ -387,7 +380,7 @@ void IpfsTab::paintStatus()
         return;
     }
     IpfsHintLabel->hide();
-    auto Rate = [](double Bps){ return Bps >= 1.0 ? (HumanBytes((long long)Bps) + "/s") : QStringLiteral("—"); };
+    auto Rate = [](double Bps){ return Bps >= 1.0 ? (HumanBytesQ((long long)Bps) + "/s") : QStringLiteral("—"); };
     auto Set = [this](int col, const QString & text, const QColor & fg = QColor()){
         QTableWidgetItem * it = IpfsStatusTable->item(0, col);
         it->setText(text);
@@ -396,9 +389,9 @@ void IpfsTab::paintStatus()
     Set(0, S.daemon ? QStringLiteral("● connected") : QStringLiteral("● connecting…"),
            S.daemon ? QColor("#5fb55f") : QColor("#d6a23e"));
     Set(1, S.daemon ? QString::number(S.peers) : QStringLiteral("—"));
-    Set(2, QString("%1 · %2").arg(S.pinCount).arg(HumanBytes(S.totalSize)));
+    Set(2, QString("%1 · %2").arg(S.pinCount).arg(HumanBytesQ(S.totalSize)));
     Set(3, Rate(S.downBps), S.downBps >= 1.0 ? QColor("#5fb55f") : QColor("#8f98a0"));
     Set(4, Rate(S.upBps),   S.upBps   >= 1.0 ? QColor("#4a90d9") : QColor("#8f98a0"));
     Set(5, S.repo.isEmpty() ? QStringLiteral("—") : S.repo);
-    Set(6, S.diskFree < 0 ? QStringLiteral("—") : QString("%1 free").arg(HumanBytes(S.diskFree)));
+    Set(6, S.diskFree < 0 ? QStringLiteral("—") : QString("%1 free").arg(HumanBytesQ(S.diskFree)));
 }

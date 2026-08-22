@@ -38,6 +38,14 @@ std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
 //Pre-launch hygiene: clears any runtime left under TempPath by a previously crashed/incomplete run — discovers
 //mounts from mountinfo, unmounts deepest-first, then removes TempPath (left in place if any mount refuses to detach).
 void CleanStaleRuntime(const std::filesystem::path &TempPath);
+
+//POSIX unmount helpers (no-ops on Windows — WinFsp mounts die with their serving process; see Cleanup):
+//UnmountDurable: up to `Retries` polite `fusermount3 -u` attempts 200ms apart (gives a lingering
+//wineserver time to release), falling back to a lazy `-uz` detach. Returns true iff the polite unmount
+//succeeded — false means the mount was only lazily detached and a TEMP wipe would be unsafe.
+bool UnmountDurable(const std::string &Mount, int Retries = 5);
+//UnmountLazy: fire-and-forget `-uz` — for ephemeral mounts whose backing store lives under TEMP.
+void UnmountLazy(const std::string &Mount);
 }
 
 #endif // VFSMOUNT_H

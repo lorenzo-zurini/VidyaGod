@@ -609,25 +609,16 @@ bool ContainerWrapper::Cleanup()
 #else
     for (auto It = ContainerParams.CleanupPersistPaths.rbegin(); It != ContainerParams.CleanupPersistPaths.rend(); ++It)
     {
-        bool Unmounted = false;
-        for (int Attempt = 0; Attempt < 5 && !Unmounted; ++Attempt)
+        if (!VfsMount::UnmountDurable(It->string()))
         {
-            if (Attempt > 0) QThread::msleep(200); //give a lingering wineserver time to release
-            if (RunCommand("fusermount3", {"-u", It->string()}, SystemToolEnv()) == 0)
-                Unmounted = true;
-        }
-        if (!Unmounted)
-        {
-            LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries: " + It->string());
-            //Lazy-detach so it eventually clears, but mark the wipe unsafe for this run.
-            RunCommand("fusermount3", {"-uz", It->string()}, SystemToolEnv());
+            LogErr("ContainerWrapper::Cleanup", "DURABLE mount still busy after retries (lazy-detached): " + It->string());
             DurableUnmountOk = false;
         }
     }
 
     //3. Ephemeral VFS mounts: lazy unmount is fine (their RW/source is all under TempPath).
     for (const std::filesystem::path &UnmountPath : ContainerParams.CleanupUnmountPaths)
-        RunCommand("fusermount3", {"-uz", UnmountPath.string()}, SystemToolEnv());
+        VfsMount::UnmountLazy(UnmountPath.string());
 #endif
 
     //4. Save-safety gate: never wipe while a durable mount could still be traversed.

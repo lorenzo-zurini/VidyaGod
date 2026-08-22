@@ -21,14 +21,7 @@
 using json = nlohmann::ordered_json;
 
 // The META metadata fields rendered as a flat form under TITLE (same set the old BuildUI used).
-static const std::vector<std::string> MetadataFields = {
-    "RELEASEDATE", "EDITION", "EDITIONDATE", "DEVELOPER", "PUBLISHER",
-    "TGDBID", "STEAMAPPID", "GOGPRODUCTID", "UMUID",
-    "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
-    "EDITOR", "ONLINEDRM",
-    "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
-    "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
-};
+// META field list: ManifestModel::MetaEditableFields.
 
 NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget * parent)
     : QWidget(parent), Model(model), N(nodeArrayIndex)

@@ -755,7 +755,40 @@ std::string VfsSpecType(const std::string &Type)
          : Type == "VFSFileLayer" ? "file": Type == "VFSDeltaLayer" ? "delta" : "";
 }
 
+void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
+                        const std::map<std::string, bool> &Toggles,
+                        const std::function<void(const Node &)> &Visit)
+{
+    for (const std::string &Id : ResolveNodeOrder(Idx, RootId, Toggles))
+    {
+        if (Id == RootId) continue;
+        const Node *N = Idx.Find(Id);
+        if (N) Visit(*N);
+    }
+}
+
 bool IsVfsLayer(const std::string &Type) { return !VfsSpecType(Type).empty(); }
+
+const std::vector<std::string> &MetaEditableFields()
+{
+    static const std::vector<std::string> Fields = {
+        "RELEASEDATE", "EDITION", "EDITIONDATE", "DEVELOPER", "PUBLISHER",
+        "TGDBID", "STEAMAPPID", "GOGPRODUCTID", "UMUID",
+        "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
+        "EDITOR", "ONLINEDRM",
+        "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
+        "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
+    };
+    return Fields;
+}
+
+std::string NormalizeTargetPath(std::string P)
+{
+    for (char &c : P) if (c == '\\') c = '/';
+    while (!P.empty() && P.front() == '/') P.erase(P.begin());
+    while (!P.empty() && P.back()  == '/') P.pop_back();
+    return P;
+}
 
 std::string LayerType(const nlohmann::ordered_json &Sub)
 {

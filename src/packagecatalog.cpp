@@ -36,6 +36,21 @@ nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &Glob
     return nlohmann::ordered_json::object();
 }
 
+nlohmann::ordered_json GetPackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID)
+{
+    nlohmann::ordered_json US = GetPackageUserSettings(GlobalConfigJSON, PackageUID);
+    if (US.contains("VARIABLES") && US["VARIABLES"].is_object()) return US["VARIABLES"];
+    return nlohmann::ordered_json::object();
+}
+
+void MergePackageVariables(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::map<std::string, std::string> &NewVars)
+{
+    if (NewVars.empty()) return;
+    nlohmann::ordered_json Vars = GetPackageVariables(GlobalConfigJSON, PackageUID);
+    for (const auto &[K, V] : NewVars) Vars[K] = V;
+    SetPackageUserSetting(GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
+}
+
 void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value)
 {
     if (!GlobalConfigJSON.contains("LIBRARY")) return;

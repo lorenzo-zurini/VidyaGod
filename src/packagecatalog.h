@@ -26,6 +26,14 @@ namespace PackageCatalog {
 nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID);
 void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value);
 
+//The package's persisted VARIABLES map (USERSETTINGS.VARIABLES), or an empty object. This is THE way to
+//read persisted knob/secret values — it replaces the `contains("VARIABLES") && is_object()` guard block
+//that used to be copy-pasted at every consumer.
+nlohmann::ordered_json GetPackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID);
+//Merges NewVars into the package's persisted VARIABLES (creating USERSETTINGS/VARIABLES as needed) and
+//writes it back via SetPackageUserSetting. The single write path for persisting knob/secret values.
+void MergePackageVariables(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::map<std::string, std::string> &NewVars);
+
 // ----- on-disk locations -----
 // The managed library root (hydrated content + disk-space checks): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);

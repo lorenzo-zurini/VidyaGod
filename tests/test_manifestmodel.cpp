@@ -301,3 +301,17 @@ TEST(declare_library_item_composes_field_level)
     CHECK_EQ(Meta.value("DEVELOPER", std::string()), std::string("Acme"));         // inherited from the tile
     CHECK_EQ(Meta.value("UID", std::string()), std::string("7"));                  // inherited from the tile
 }
+
+// Cross-repo parity: the parent's NormalizeTargetPath and the FS's NormalizeVPath (layerspec.cpp) MUST agree
+// on every slash-only case — target strings computed here have to match the FS's per-target base map. (The FS
+// side never sees backslashes — its inputs are zip entry names — so the win-separator cases pin only ours.)
+#include "layerspec.h"   // NormalizeVPath — linked from vgfs_core
+TEST(normalize_target_path_parity_with_fs)
+{
+    const char *SlashCases[] = { "", "/", "a", "/a", "a/", "/a/b/", "a/b/c", "//x//", "a/b//" };
+    for (const char *C : SlashCases)
+        CHECK_EQ(ManifestModel::NormalizeTargetPath(C), NormalizeVPath(C));
+    // Parent-only: windows separators normalize before the trim.
+    CHECK_EQ(ManifestModel::NormalizeTargetPath("a\\b\\c\\"), std::string("a/b/c"));
+    CHECK_EQ(ManifestModel::NormalizeTargetPath("\\pfx\\drive_c"), std::string("pfx/drive_c"));
+}

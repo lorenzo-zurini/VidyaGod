@@ -17,12 +17,9 @@ namespace {
 std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     std::vector<const Node *> Out;
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
-    {
-        if (Id == RunnerNodeId) continue;
-        const Node *C = Idx.Find(Id);
-        if (C && C->Layers.is_array() && !C->Layers.empty()) Out.push_back(C);
-    }
+    ManifestModel::ForEachClosureNode(Idx, RunnerNodeId, {}, [&](const Node &C) {
+        if (C.Layers.is_array() && !C.Layers.empty()) Out.push_back(&C);
+    });
     return Out;
 }
 

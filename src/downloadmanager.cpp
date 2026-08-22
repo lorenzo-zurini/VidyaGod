@@ -31,14 +31,7 @@
 #include <utility>
 #include <vector>
 
-// Compact human-readable byte size ("—" for unknown/negative) — local copy of the MainWindow helper.
-static QString HumanBytes(long long N)
-{
-    if (N < 0) return QStringLiteral("—");
-    double B = double(N); const char * U[] = { "B", "KB", "MB", "GB", "TB" }; int I = 0;
-    while (B >= 1024.0 && I < 4) { B /= 1024.0; ++I; }
-    return QString::number(B, 'f', I == 0 ? 0 : 1) + " " + U[I];
-}
+#include "guiformat.h"   // HumanBytesQ — the one shared GUI byte formatter
 
 DownloadManager::DownloadManager(AppModel &model, IpfsModel &ipfs, QWidget *dialogParent, QObject *parent)
     : QObject(parent), Model(model), Ipfs(ipfs), DialogParent(dialogParent)
@@ -219,8 +212,8 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         long long Sum = 0; bool AllKnown = true;
         for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
         SizeLabel->setText(QString("Free space: %1      Download: %2%3")
-            .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytes(FreeBytes))
-            .arg(HumanBytes(Sum)).arg(AllKnown ? "" : " (estimating…)"));
+            .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytesQ(FreeBytes))
+            .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
         SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;" : "color:#8f98a0;");
     };
     for (const auto & [Id, Cb] : GameChecks)   connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
