@@ -21,7 +21,7 @@ bool ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass
                       const std::filesystem::path &BaseDir = {});
 
 //Reads FilePath line by line and replaces any line starting with Key with Key+Value (prefix-matched INI patching).
-bool ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath);
+bool ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath);
 
 //Writes Value as the complete content of FilePath, creating parent dirs if needed.
 bool FileOverwrite(const std::string &Value, const std::filesystem::path &FilePath);

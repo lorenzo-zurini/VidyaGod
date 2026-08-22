@@ -13,7 +13,11 @@ option(VIDYAGOD_WERROR   "Treat C++ warnings as errors (CI)" OFF)
 option(VIDYAGOD_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 # -Wshadow=local (not full -Wshadow): high signal (local shadows local/param) without the noisy
 # ctor-param-named-like-member idiom. GCC flag (the project builds with g++).
-set(VG_WARNINGS -Wall -Wextra -Wshadow=local -Wnon-virtual-dtor)
+# array-bounds/stringop-overflow stay WARNINGS (not errors): newer GCC (observed on 16) fires known
+# false positives through std::shared_ptr's inplace control block + nlohmann at -O2, anchored in
+# system headers where -isystem can't suppress them.
+set(VG_WARNINGS -Wall -Wextra -Wshadow=local -Wnon-virtual-dtor
+    -Wno-error=array-bounds -Wno-error=stringop-overflow)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)

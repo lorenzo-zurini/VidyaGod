@@ -299,9 +299,8 @@ int main(int argc, char *argv[])
     //Initialization of GlobalConfigJSON, the central data structure of the program.
     //All runner definitions, library entries, and user settings live here.
     nlohmann::ordered_json GlobalConfigJSON;
-    if (InitializeGlobalConfigJSON(&GlobalConfigJSON, &AppDataDir))
+    if (!InitializeGlobalConfigJSON(&GlobalConfigJSON, &AppDataDir))
     {
-        //InitializeGlobalConfigJSON returns true on FAILURE (shell exit-code convention).
         LogErr("main.cpp", "Fatal error. GlobalConfigJSON initialization failed, aborting.");
         return 1;
     }
@@ -1081,8 +1080,8 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
 //Loads GlobalConfig.JSON from AppDataDir (or starts empty if it does not exist), then ensures the
 //config has the shape the app uses via EnsureGlobalConfigDefaults. The file is (re)written when it
 //was freshly created or when a missing top-level key had to be seeded.
-//Returns true on FAILURE, false on SUCCESS — matches shell exit-code convention so
-//callers can write `if (InitializeGlobalConfigJSON(...)) { /* handle error */ }`.
+//Returns true on success (the engine-wide bool convention — the old inverted shell-style
+//return was a foot-gun and is gone).
 bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir)
 {
     QFile GlobalConfigFile(AppDataDir->filePath("GlobalConfig.JSON"));
@@ -1092,7 +1091,7 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     {
         //LoadJSON returns non-zero on failure — don't silently overwrite a corrupt config.
         LogErr("main.cpp", "Failed to parse GlobalConfig.JSON, aborting.");
-        return true; //fail
+        return false;
     }
     if (!Existed) LogOut("main.cpp", "Config file not detected. Creating defaults...");
 
@@ -1107,11 +1106,11 @@ bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir 
     if (!JSONOps::SaveJSON(GlobalConfigJSON, &GlobalConfigFile))
     {
         LogErr("main.cpp", "GlobalConfig.JSON could not be written.");
-        return true; //fail
+        return false;
     }
 
     LogSucc("main.cpp", "GlobalConfigJSON initialized successfully.");
-    return false; //success
+    return true;
 }
 
 //Delegates to FSOps::CheckPackageValid to test whether CurrentPath contains MANIFEST.json.

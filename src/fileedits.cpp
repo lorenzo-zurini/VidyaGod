@@ -14,22 +14,21 @@
 bool FileEdits::ProcessDLLOverrides(struct ContainerParams &ContainerParams)
 {
     LogOut("FileEdits::ProcessDLLOverrides", "Processing DLL Overrides.");
-    for (size_t i = 0; i < ContainerParams.SubComponentsArray.size(); i++)
+    bool Ok = true;
+    for (const auto &SubComponentJSON : ContainerParams.SubComponentsArray)
     {
-        nlohmann::ordered_json SubComponentJSON = ContainerParams.SubComponentsArray[i];
-        if (SubComponentJSON["TYPE"] == "DllOverride")
+        if (SubComponentJSON.value("TYPE", std::string()) != "DllOverride") continue;
+        // A null DLLOVERRIDE is malformed package data: report it but keep collecting the valid ones —
+        // abandoning the loop mid-way used to silently drop every override after the bad entry.
+        if (SubComponentJSON.contains("DLLOVERRIDE") && !SubComponentJSON["DLLOVERRIDE"].is_null())
+            ContainerParams.DLLOverrides.push_back(SubComponentJSON["DLLOVERRIDE"]);
+        else
         {
-            if(!SubComponentJSON["DLLOVERRIDE"].is_null())
-            {
-                ContainerParams.DLLOverrides.push_back(SubComponentJSON["DLLOVERRIDE"]);
-            }
-            else
-            {
-                return false;
-            }
+            LogErr("FileEdits::ProcessDLLOverrides", "DllOverride with null/missing DLLOVERRIDE — skipped.");
+            Ok = false;
         }
     }
-    return true;
+    return Ok;
 }
 
 //Processes FileEdit subcomponents in two passes, split by the OVERRIDE flag.
@@ -51,6 +50,7 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
     // derived content — e.g. proton's config_info marker whose paths are "%RunnerMount%/files/..." / "%TempPath%".
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
 
+    bool Ok = true;
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (Sub.value("TYPE", std::string()) != "FileEdit") continue;
@@ -63,23 +63,28 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         VarSubst::StringVariableSubstitution(Value, Vars);
         std::filesystem::path FilePath = BasePath / File;
 
+        bool EditOk = true;
         if (Mode == "ConfigWrite")
-            FileEdits::ConfigWrite(Sub.value("KEY", std::string()), Value, FilePath);
+            EditOk = FileEdits::ConfigWrite(Sub.value("KEY", std::string()), Value, FilePath);
         else if (Mode == "Overwrite")
-            FileEdits::FileOverwrite(Value, FilePath);
+            EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
-            FileEdits::AppendLine(Value, FilePath);
+            EditOk = FileEdits::AppendLine(Value, FilePath);
         else
+        {
             LogWarn("FileEdits::ProcessFileEdits", "Unknown MODE: '" + Mode + "' — skipping.");
+            EditOk = false;
+        }
+        if (!EditOk) Ok = false;
     }
-    return true;
+    return Ok;
 }
 
 //Rewrites FilePath in-place: any line whose content starts with Key is replaced by Key+Value.
 //All other lines are preserved verbatim. Used to patch INI-style config files where
 //the key acts as a line prefix (e.g. "Resolution=") rather than a standalone token.
 //Returns false if the file cannot be opened for reading or writing.
-bool FileEdits::ConfigWrite(std::string Key, std::string Value, std::filesystem::path FilePath)
+bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
 {
     LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + " Key: " + Key + " Value: " + Value);
     std::ifstream inFile(FilePath);

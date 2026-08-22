@@ -43,7 +43,7 @@ using namespace ManifestModel;
 ContainerWrapper::ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalConfigJSON, nlohmann::ordered_json &Passed_MANIFESTJSON, struct ContainerParams &Passed_ContainerParams)
     : ContainerParams(Passed_ContainerParams), GlobalConfigJSON(Passed_GlobalConfigJSON), MANIFESTJSON(Passed_MANIFESTJSON)   // match member declaration order (ContainerParams is declared first)
 {
-    this->InitializeContainer();
+    InitOk = this->InitializeContainer();
 }
 
 //ContainerWrapper is now a thin SESSION ORCHESTRATOR: it owns the live config/manifest/ContainerParams and a single
@@ -77,6 +77,14 @@ bool ContainerWrapper::InitializeContainer()
 //Must be called after InitializeContainer() (done in constructor).
 bool ContainerWrapper::BuildContainerRuntime()
 {
+    //A failed InitializeContainer left ContainerParams half-populated — building a runtime on top of it
+    //produces confusing downstream failures (empty exec, no layers); fail loudly at the boundary instead.
+    if (!InitOk)
+    {
+        LogErr("ContainerWrapper::BuildContainerRuntime", "Container initialization failed — refusing to build the runtime.");
+        return false;
+    }
+
     //Friend LAN (opt-in, Settings.LanEnabled): merge the LAN launch vars into CustomVariables up front so the sandbox
     //evaluation below sees SANDBOX=on + SANDBOX_NET=isolated (records the mounts, forces the isolated netns) and Execute
     //picks up SELF_VIP/SUBNET/PEER_* to bring the overlay TUN up inside the game's own netns. The LAN is sandbox-only.
@@ -156,17 +164,20 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     //Materialise every package-encoded BASE edit into the DEFAULTDATA layer (between the component layers
     //and the WRITELAYER). FileEdits apply to any runner; base RegEdits are Wine-only (handled inside).
-    RegistryLayer::BuildDefaultData(this->ContainerParams);
+    //OBSERVABILITY STAGE (see the overhaul plan): failures are surfaced loudly but not yet fatal — after
+    //a few days of daily-use logs prove which ones occur in practice, the fatal/warn split gets decided.
+    if (!RegistryLayer::BuildDefaultData(this->ContainerParams))
+        LogWarn("ContainerWrapper::BuildContainerRuntime", "BuildDefaultData reported failures — DEFAULTDATA may be incomplete.");
 
     //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
     //No-op when PersistAll (durable RW branch already holds the reg files).
-    if (!ContainerParams.KeepRegHives.empty())
-        RegistryLayer::SeedPersistRegistry(this->ContainerParams);
+    if (!ContainerParams.KeepRegHives.empty() && !RegistryLayer::SeedPersistRegistry(this->ContainerParams))
+        LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted registry seed reported failures — saved settings may be missing this session.");
 
     //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
     //No-op when PersistAll or when none are declared.
-    if (!ContainerParams.KeepFiles.empty())
-        PersistLayer::SeedPersistFiles(this->ContainerParams);
+    if (!ContainerParams.KeepFiles.empty() && !PersistLayer::SeedPersistFiles(this->ContainerParams))
+        LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted file seed reported failures — saved files may be missing this session.");
 
     //Verify every layer's locator resolves before mounting — a missing source (e.g. a moved local file,
     //or a remote SOURCE not yet fetched) is surfaced now rather than silently mounting nothing.
@@ -183,11 +194,14 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
     //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
-    FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true);
+    if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
+        LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE FileEdits reported failures.");
     if (PrefixGen)
     {
-        FileEdits::ProcessDLLOverrides(this->ContainerParams);
-        RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams);
+        if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "DllOverride collection reported malformed entries.");
+        if (!RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE RegEdits failed to write the runtime hives.");
     }
 
     //----- SANDBOX prep: record the mounted spec(s) so the sandbox can RE-mount them inside its own namespace, ON TOP
@@ -211,13 +225,6 @@ bool ContainerWrapper::BuildContainerRuntime()
     }
 
     LogSucc("ContainerWrapper::BuildContainerRuntime", "Runtime ready.");
-    return true;
-}
-
-//STUB — VFS construction is currently handled inline in BuildContainerRuntime.
-bool ContainerWrapper::BuildVirtualFilesystem()
-{
-    LogOut("ContainerWrapper::BuildVirtualFilesystem", "Building virtual filesystem.");
     return true;
 }
 
@@ -288,7 +295,7 @@ bool ContainerWrapper::BuildVirtualFilesystem()
 //
 //WorkDir falls back to RuntimePath (VFS) or PackagePath if the configured path
 //does not exist in the mounted runtime.
-bool ContainerWrapper::Execute(std::string OverrideExe)
+bool ContainerWrapper::Execute(const std::string &OverrideExe)
 {
     const bool Override = !OverrideExe.empty();
     auto Subst = [&](std::string S){ VarSubst::StringVariableSubstitution(S, ContainerParams.GetVariablesMap()); return S; };
@@ -561,12 +568,17 @@ bool ContainerWrapper::Cleanup()
     std::error_code ec;
 
     //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted. No-op when PersistAll.
-    if (!ContainerParams.KeepRegHives.empty() && !ContainerParams.PersistAll)
-        RegistryLayer::CapturePersistRegistry(this->ContainerParams);
-    if (!ContainerParams.KeepFiles.empty() && !ContainerParams.PersistAll)
-        PersistLayer::CapturePersistFiles(this->ContainerParams);
-    if (!ContainerParams.KeepRegKeys.empty() && !ContainerParams.PersistAll)
-        RegistryLayer::CapturePersistRegKeys(this->ContainerParams);
+    //A capture failure means the user's session state was NOT saved — say so loudly (still proceed with
+    //cleanup: the runtime must come down regardless).
+    if (!ContainerParams.KeepRegHives.empty() && !ContainerParams.PersistAll
+        && !RegistryLayer::CapturePersistRegistry(this->ContainerParams))
+        LogErr("ContainerWrapper::Cleanup", "Registry persistence capture FAILED — this session's registry changes were not saved.");
+    if (!ContainerParams.KeepFiles.empty() && !ContainerParams.PersistAll
+        && !PersistLayer::CapturePersistFiles(this->ContainerParams))
+        LogErr("ContainerWrapper::Cleanup", "File persistence capture FAILED — this session's saved files were not stored.");
+    if (!ContainerParams.KeepRegKeys.empty() && !ContainerParams.PersistAll
+        && !RegistryLayer::CapturePersistRegKeys(this->ContainerParams))
+        LogErr("ContainerWrapper::Cleanup", "Registry-key persistence capture FAILED — this session's key state was not stored.");
 
     //2. Durable-backed mounts: non-lazy + verified, innermost-first (reverse registration order).
     bool DurableUnmountOk = true;

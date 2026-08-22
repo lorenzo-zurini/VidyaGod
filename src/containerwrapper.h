@@ -42,7 +42,7 @@ public:
 
     //Launches the game via the resolved runner. If OverrideExe is non-empty it is used
     //instead of the manifest's EXEPATH/ROM. Blocks until the process exits.
-    bool Execute(std::string OverrideExe = "");
+    bool Execute(const std::string &OverrideExe = "");
 
     //Sends SIGKILL to the game process started by Execute() if it is still running.
     //Safe to call from any thread; no-op if no process is active.
@@ -74,7 +74,10 @@ private:
     //Runs DecideComponent → DeriveContainerParams → CreateRecipe → BuildSubComponentsArray
     //in the required order. Called from the constructor.
     bool InitializeContainer();
-    bool BuildVirtualFilesystem(); //STUB — not yet implemented
+
+    //Result of the ctor's InitializeContainer() run. A failed resolve used to leave a half-populated
+    //wrapper that BuildContainerRuntime would happily build on; now the first build step checks this.
+    bool InitOk = false;
 
     nlohmann::ordered_json GlobalConfigJSON;
     nlohmann::ordered_json MANIFESTJSON;

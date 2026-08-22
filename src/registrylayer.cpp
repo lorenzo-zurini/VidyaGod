@@ -1,19 +1,11 @@
 #include "registrylayer.h"
 #include "fileedits.h"       // FileEdits::ProcessFileEdits (base FileEdits → DEFAULTDATA)
-#include "varsubst.h"        // VarSubst::StringVariableSubstitution (wineboot arg/env expansion)
 #include "registrywrapper.h" // hive load/save/merge
-#include "procenv.h"      // SystemToolEnv (system runner, not AppImage libs)
 #include "commonutils.h"     // Log*
-
-#include <QProcess>
-#include <QString>
-#include <QStringList>
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
-#include <map>
 #include <sstream>
 #include <string>
 
@@ -66,12 +58,18 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
 
     if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys) return true; // nothing to materialise
 
+    bool Ok = true;
     std::error_code Ec;
     std::filesystem::create_directories(ContainerParams.DefaultDataPath, Ec);
+    if (Ec)
+    {
+        LogErr("RegistryLayer::BuildDefaultData", "Cannot create DEFAULTDATA dir: " + Ec.message());
+        return false;
+    }
 
     //Base FileEdits → DEFAULTDATA (at their root-relative paths).
-    if (HaveBaseFileEdits)
-        FileEdits::ProcessFileEdits(ContainerParams, /*OverridePass=*/false, ContainerParams.DefaultDataPath);
+    if (HaveBaseFileEdits && !FileEdits::ProcessFileEdits(ContainerParams, /*OverridePass=*/false, ContainerParams.DefaultDataPath))
+        Ok = false;
 
     //Base RegEdits + persisted reg-key subtrees → DEFAULTDATA hives, built from DEFPREFIX (never mutating it).
     if (HaveBaseReg || HavePersistKeys)
@@ -152,10 +150,13 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
         std::filesystem::create_directories(HiveOut, Ec);
         if (!RW.SavePrefix(HiveOut))                                                // mounts at root → lands at /<PrefixRoot>
-            LogWarn("RegistryLayer::BuildDefaultData", "Failed to write DEFAULTDATA hives.");
+        {
+            LogErr("RegistryLayer::BuildDefaultData", "Failed to write DEFAULTDATA hives.");
+            Ok = false;
+        }
     }
-    LogSucc("RegistryLayer::BuildDefaultData", "DEFAULTDATA layer built at " + ContainerParams.DefaultDataPath.string());
-    return true;
+    if (Ok) LogSucc("RegistryLayer::BuildDefaultData", "DEFAULTDATA layer built at " + ContainerParams.DefaultDataPath.string());
+    return Ok;
 }
 
 //Applies OVERRIDE:true RegEdit subcomponents into the mounted runtime hives, post-MountVFS. Loading
@@ -195,16 +196,17 @@ bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
     const std::filesystem::path WriteHives = HiveDir(ContainerParams, ContainerParams.WriteLayerPath);
     std::error_code ec;
     std::filesystem::create_directories(WriteHives, ec);
+    bool Ok = !ec;
     for (const std::string &Name : ContainerParams.KeepRegHives)
     {
         const std::filesystem::path SrcReg = RegStore / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
         const std::filesystem::path DstReg = WriteHives / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("RegistryLayer::SeedPersistRegistry", "Could not seed " + Name + ": " + ec.message());
+        if (ec) { LogWarn("RegistryLayer::SeedPersistRegistry", "Could not seed " + Name + ": " + ec.message()); Ok = false; }
         else    LogOut("RegistryLayer::SeedPersistRegistry", "Seeded persisted " + Name);
     }
-    return true;
+    return Ok;
 }
 
 //Captures the session's KEEP hives by copying RuntimePath/<prefixroot>/<hive>.reg into UserDataPath/REGISTRY/.
@@ -215,6 +217,7 @@ bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerPara
     const std::filesystem::path RegStore = ContainerParams.UserDataPath / "REGISTRY";
     std::error_code ec;
     std::filesystem::create_directories(RegStore, ec);
+    bool Ok = !ec;
     const std::filesystem::path RunHives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
     for (const std::string &Name : ContainerParams.KeepRegHives)
     {
@@ -222,10 +225,10 @@ bool RegistryLayer::CapturePersistRegistry(struct ContainerParams &ContainerPara
         if (!std::filesystem::exists(SrcReg)) continue;
         const std::filesystem::path DstReg = RegStore / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("RegistryLayer::CapturePersistRegistry", "Could not capture " + Name + ": " + ec.message());
+        if (ec) { LogWarn("RegistryLayer::CapturePersistRegistry", "Could not capture " + Name + ": " + ec.message()); Ok = false; }
         else    LogOut("RegistryLayer::CapturePersistRegistry", "Captured " + Name);
     }
-    return true;
+    return Ok;
 }
 
 //Extracts each KEEP registry-subtree from the mounted RuntimePath hives and merges it into the
@@ -253,7 +256,10 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
         std::error_code ec;
         std::filesystem::create_directories(Store, ec);
         if (!Durable.SavePrefix(Store))
-            LogWarn("RegistryLayer::CapturePersistRegKeys", "Failed to write durable REGKEYS store.");
+        {
+            LogErr("RegistryLayer::CapturePersistRegKeys", "Failed to write durable REGKEYS store.");
+            return false;
+        }
     }
     return true;
 }

@@ -12,6 +12,7 @@ bool PersistLayer::SeedPersistFiles(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //durable RW branch already holds the files
     std::error_code ec;
+    bool Ok = true;
     for (const std::string &Rel : ContainerParams.KeepFiles)
     {
         const std::filesystem::path SrcFile = ContainerParams.UserDataPath  / Rel; //durable source (in package)
@@ -19,10 +20,10 @@ bool PersistLayer::SeedPersistFiles(struct ContainerParams &ContainerParams)
         const std::filesystem::path DstFile = ContainerParams.WriteLayerPath / Rel; //shadow in the RW top layer
         std::filesystem::create_directories(DstFile.parent_path(), ec);
         std::filesystem::copy_file(SrcFile, DstFile, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("PersistLayer::SeedPersistFiles", "Could not seed " + Rel + ": " + ec.message());
+        if (ec) { LogWarn("PersistLayer::SeedPersistFiles", "Could not seed " + Rel + ": " + ec.message()); Ok = false; }
         else    LogOut("PersistLayer::SeedPersistFiles", "Seeded persisted file " + Rel);
     }
-    return true;
+    return Ok;
 }
 
 //Captures each KEEP file by copying RuntimePath/<rel> into its durable home UserDataPath/<rel>.
@@ -32,6 +33,7 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
 {
     if (ContainerParams.PersistAll) return true; //already durable
     std::error_code ec;
+    bool Ok = true;
     for (const std::string &Rel : ContainerParams.KeepFiles)
     {
         const std::filesystem::path SrcFile = ContainerParams.RuntimePath  / Rel; //session result in the mounted union
@@ -39,8 +41,8 @@ bool PersistLayer::CapturePersistFiles(struct ContainerParams &ContainerParams)
         const std::filesystem::path DstFile = ContainerParams.UserDataPath / Rel; //durable home (in package)
         std::filesystem::create_directories(DstFile.parent_path(), ec);
         std::filesystem::copy_file(SrcFile, DstFile, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) LogWarn("PersistLayer::CapturePersistFiles", "Could not capture " + Rel + ": " + ec.message());
+        if (ec) { LogWarn("PersistLayer::CapturePersistFiles", "Could not capture " + Rel + ": " + ec.message()); Ok = false; }
         else    LogOut("PersistLayer::CapturePersistFiles", "Captured file " + Rel);
     }
-    return true;
+    return Ok;
 }

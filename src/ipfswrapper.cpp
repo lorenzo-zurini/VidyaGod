@@ -263,7 +263,7 @@ std::vector<std::string> ActiveUploads(int WindowMs)
     if (Rc != 0) return Result;
     try {
         for (const auto &C : nlohmann::json::parse(Js)) Result.push_back(C.get<std::string>());
-    } catch (...) {}
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::ActiveUploads", std::string("bad JSON from node: ") + E.what()); }
     return Result;
 }
 
@@ -276,7 +276,7 @@ std::vector<std::string> OrphanedRefPaths()
     if (Rc != 0) return Result;
     try {
         for (const auto &P : nlohmann::json::parse(Js)) Result.push_back(P.get<std::string>());
-    } catch (...) {}
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::OrphanedRefPaths", std::string("bad JSON from node: ") + E.what()); }
     return Result;
 }
 
@@ -294,7 +294,7 @@ std::string RepoSizeHuman()
         if (Size < 0) return std::string();
         const std::string S = HumanBytes(Size);
         return Max >= 0 ? (S + " / " + HumanBytes(Max)) : S;
-    } catch (...) { return std::string(); }
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::RepoUsage", std::string("bad JSON from node: ") + E.what()); return std::string(); }
 }
 
 long long CidSize(const std::string &Cid)
@@ -353,7 +353,8 @@ std::vector<std::string> ListenAddrs()
     if (VgListenAddrs(&J) != 0) { TakeStr(J); return {}; }
     const std::string Js = TakeStr(J);
     std::vector<std::string> Out;
-    try { for (const auto &A : nlohmann::json::parse(Js)) Out.push_back(A.get<std::string>()); } catch (...) {}
+    try { for (const auto &A : nlohmann::json::parse(Js)) Out.push_back(A.get<std::string>()); }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::ListenAddrs", std::string("bad JSON from node: ") + E.what()); }
     return Out;
 }
 
@@ -377,7 +378,7 @@ std::vector<PinEntry> Pins()
     try {
         for (const auto &C : nlohmann::json::parse(Js))
             Result.push_back({ C.get<std::string>() });
-    } catch (...) {}
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::Peers", std::string("bad JSON from node: ") + E.what()); }
     return Result;
 }
 
@@ -421,7 +422,8 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
            : kind == 3 ? FriendEvent::Presence
            : kind == 4 ? FriendEvent::Profile
                        : FriendEvent::Removed;
-    try { E.C = ContactFromJson(nlohmann::json::parse(json ? json : "{}")); } catch (...) {}
+    try { E.C = ContactFromJson(nlohmann::json::parse(json ? json : "{}")); }
+    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendEventTrampoline", std::string("bad JSON from node: ") + Ex.what()); }
     g_FriendCb(E);
 }
 
@@ -438,7 +440,8 @@ Profile GetProfile()
     char *J = nullptr;
     if (VgGetProfile(&J) != 0) { TakeStr(J); return P; }
     const std::string Js = TakeStr(J);
-    try { const auto D = nlohmann::json::parse(Js); P.Nick = D.value("nick", std::string()); P.PicCID = D.value("pic", std::string()); } catch (...) {}
+    try { const auto D = nlohmann::json::parse(Js); P.Nick = D.value("nick", std::string()); P.PicCID = D.value("pic", std::string()); }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::GetProfile", std::string("bad JSON from node: ") + E.what()); }
     return P;
 }
 
@@ -457,7 +460,8 @@ std::vector<Contact> FriendList()
     char *J = nullptr;
     if (VgFriendList(&J) != 0) { TakeStr(J); return Out; }
     const std::string Js = TakeStr(J);
-    try { for (const auto &E : nlohmann::json::parse(Js)) Out.push_back(ContactFromJson(E)); } catch (...) {}
+    try { for (const auto &E : nlohmann::json::parse(Js)) Out.push_back(ContactFromJson(E)); }
+    catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendList", std::string("bad JSON from node: ") + Ex.what()); }
     return Out;
 }
 
@@ -514,7 +518,8 @@ std::map<std::string, std::string> LanLaunchVars()
     char *J = nullptr;
     if (VgLanLaunchVars(&J) != 0) { TakeStr(J); return Out; }
     const std::string Js = TakeStr(J);
-    try { for (const auto &[K, V] : nlohmann::json::parse(Js).items()) Out[K] = V.get<std::string>(); } catch (...) {}
+    try { for (const auto &[K, V] : nlohmann::json::parse(Js).items()) Out[K] = V.get<std::string>(); }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::LanLaunchVars", std::string("bad JSON from node: ") + E.what()); }
     return Out;
 }
 
