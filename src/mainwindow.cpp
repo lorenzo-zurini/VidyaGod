@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "asyncwork.h"
 #include "appmodel.h"
 #include "downloadmanager.h"
 #include "traycontroller.h"
@@ -271,11 +272,10 @@ void MainWindow::startNodeAsync()
 {
     if (IpfsWrapper::Available()) { onNodeReady(); return; }   // already running (e.g. re-enabled)
     const std::string Repo = (AppPaths::DataRoot() / "IPFS").string();
-    std::thread([this, Repo]{
-        std::string Err;
-        const bool Ok = IpfsWrapper::StartNode(Repo, &Err);   // off-thread: repo open + swarm join can take a moment
-        QMetaObject::invokeMethod(this, [this, Ok]{ if (Ok) onNodeReady(); }, Qt::QueuedConnection);
-    }).detach();
+    auto Ok = std::make_shared<bool>(false);
+    AsyncWork::Run(this,
+        [Repo, Ok]{ std::string Err; *Ok = IpfsWrapper::StartNode(Repo, &Err); },   // off-thread: repo open + swarm join can take a moment
+        [this, Ok]{ if (*Ok) onNodeReady(); });
 }
 
 void MainWindow::onNodeReady()

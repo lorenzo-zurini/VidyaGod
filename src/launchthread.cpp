@@ -101,8 +101,9 @@ void LaunchThread::run()
     //Build the global node index here (worker thread) and point the engine at the launch node. Index is a local
     //that outlives LocalWrapper (which holds ContainerParams by reference). BuildCatalogIndex = repos + locally-added
     //packages, so a launch of an externally-added bundle resolves (same source the library lists from).
-    NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
-    Params.NodeIdx      = &Index;
+    auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));
+    Params.NodeIdx      = Index.get();
+    Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
 
     nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();

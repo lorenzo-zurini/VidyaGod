@@ -295,12 +295,15 @@ add_executable(vg_tests
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
     tests/test_fileedits.cpp
+    tests/test_registrylayer.cpp
     tests/test_depcheck.cpp
     tests/test_vgdelta.cpp
     src/manifestmodel.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp
+    src/registrylayer.cpp
+    src/persistlayer.cpp
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl

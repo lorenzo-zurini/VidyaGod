@@ -53,3 +53,46 @@ TEST(appendline_separates_unterminated_last_line)
     CHECK_EQ(ReadAll(cfg), std::string("data=\"/data/vanilla\"\ncontent=Morrowind.esm\n"));
     std::filesystem::remove_all(dir);
 }
+
+// ---- ConfigWrite (P7 fill-in: only AppendLine was covered) ----
+
+// Prefix-matched line replacement: any line starting with Key becomes Key+Value; others untouched.
+TEST(configwrite_replaces_prefixed_line)
+{
+    auto dir = TmpDir("cw"); auto cfg = dir / "settings.ini";
+    Write(cfg, "Resolution=640x480\nFullscreen=1\nVolume=8\n");
+    CHECK(FileEdits::ConfigWrite("Resolution=", "1920x1080", cfg));
+    CHECK_EQ(ReadAll(cfg), std::string("Resolution=1920x1080\nFullscreen=1\nVolume=8\n"));
+    std::filesystem::remove_all(dir);
+}
+
+// A missing file fails loudly (false) instead of silently creating garbage.
+TEST(configwrite_missing_file_fails)
+{
+    auto dir = TmpDir("cwm");
+    CHECK(!FileEdits::ConfigWrite("K=", "v", dir / "nope.ini"));
+    std::filesystem::remove_all(dir);
+}
+
+// Multiple lines sharing the prefix ALL get replaced (documented prefix semantics).
+TEST(configwrite_replaces_every_prefixed_line)
+{
+    auto dir = TmpDir("cwa"); auto cfg = dir / "multi.ini";
+    Write(cfg, "content=A\ncontent=B\nother=x\n");
+    CHECK(FileEdits::ConfigWrite("content=", "Z", cfg));
+    CHECK_EQ(ReadAll(cfg), std::string("content=Z\ncontent=Z\nother=x\n"));
+    std::filesystem::remove_all(dir);
+}
+
+// ---- FileOverwrite ----
+
+// Whole-content write, creating parents (the WC3 .w3k key-file path).
+TEST(fileoverwrite_creates_parents_and_replaces)
+{
+    auto dir = TmpDir("fo"); auto f = dir / "sub" / "deep" / "roc.w3k";
+    CHECK(FileEdits::FileOverwrite("ABCD-1234", f));
+    CHECK_EQ(ReadAll(f), std::string("ABCD-1234"));
+    CHECK(FileEdits::FileOverwrite("NEW", f));      // second write REPLACES (trunc), not appends
+    CHECK_EQ(ReadAll(f), std::string("NEW"));
+    std::filesystem::remove_all(dir);
+}

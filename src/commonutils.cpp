@@ -1,19 +1,26 @@
 #include "commonutils.h"
 
+#include <mutex>
+
 //Static callback — null by default. Set via SetLogCallback(); cleared via ClearLogCallback().
-//Access is intentionally unsynchronized: the callback is set once from the main thread before
-//the worker thread starts, and cleared after it finishes, so no concurrent mutation occurs.
-static LogCallback g_LogCallback;
+//MUTEX-GUARDED: the old "set once from the main thread before the worker starts" comment was wrong —
+//LaunchThread installs it FROM the worker while other threads are logging, which mutated a live
+//std::function under concurrent readers. Log() copies the callback under the lock, then invokes the
+//copy outside it (so a slow sink never serializes unrelated logging, and Clear during a call is safe).
+static std::mutex   g_LogCallbackMtx;
+static LogCallback  g_LogCallback;
 
 //Installs a secondary log sink. Replaces any previously installed callback.
 void SetLogCallback(LogCallback callback)
 {
+    std::lock_guard<std::mutex> G(g_LogCallbackMtx);
     g_LogCallback = std::move(callback);
 }
 
 //Removes the secondary log sink so Log() reverts to stdout-only output.
 void ClearLogCallback()
 {
+    std::lock_guard<std::mutex> G(g_LogCallbackMtx);
     g_LogCallback = nullptr;
 }
 
@@ -49,8 +56,9 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     std::cout << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
 
     //Forward to the optional UI callback with the raw (uncolored) values.
-    if (g_LogCallback)
-        g_LogCallback(level, context, message);
+    LogCallback Sink;
+    { std::lock_guard<std::mutex> G(g_LogCallbackMtx); Sink = g_LogCallback; }
+    if (Sink) Sink(level, context, message);
 }
 
 std::string HumanBytes(long long Bytes)

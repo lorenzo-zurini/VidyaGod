@@ -1,4 +1,5 @@
 #include "appmodel.h"
+#include "asyncwork.h"   // guarded detached workers (P7: replaces raw std::thread(...).detach() with `this` captures)
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "containerwrapper.h"
@@ -175,11 +176,10 @@ void AppModel::removePackage(const QString & uid)
                 std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
                 ToDehydrate.push_back(NodeId);
         if (ToDehydrate.empty()) return;   // nothing hydrated under this bundle
-        NodeIndex Idx = CatalogIndex;      // private copy for the worker (mirrors importRunner)
-        std::thread([this, Idx = std::move(Idx), ToDehydrate = std::move(ToDehydrate)]{
-            for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(Idx, NodeId);
-            QMetaObject::invokeMethod(this, [this]{ rebuildCatalog(); }, Qt::QueuedConnection);  // emits catalogChanged
-        }).detach();
+        auto Idx = std::make_shared<NodeIndex>(CatalogIndex);      // private copy for the worker (mirrors importRunner)
+        AsyncWork::Run(this,
+            [Idx, ToDehydrate = std::move(ToDehydrate)]{ for (const std::string & NodeId : ToDehydrate) PackageCatalog::DehydrateNode(*Idx, NodeId); },
+            [this]{ rebuildCatalog(); });  // emits catalogChanged
         return;   // config unchanged (manifest kept); the worker rebuilds the catalog when the content is gone
     }
 
@@ -198,30 +198,31 @@ void AppModel::removePackage(const QString & uid)
 void AppModel::syncSources()
 {
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
-    std::thread([this, Cfg]{
-        // Snapshot LIBRARY before the sync mutates it, so we can tell whether anything actually changed. On the common
-        // launch (sources already present + unchanged) SyncPackageSources is a no-op, so we must NOT rebuild the catalog:
-        // the ctor already built it, and a redundant BuildCatalogIndex here — posted to the MAIN thread while the IPFS
-        // node is simultaneously starting up — is what froze the UI for several seconds on launch. When it DID change
-        // (first run / a source CID bump), build the new index HERE on the worker thread and only swap it in on the main
-        // thread, so even that path never blocks the UI.
-        const nlohmann::ordered_json OrigLib = Cfg->value("LIBRARY", nlohmann::ordered_json::array());
-        PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
-        const bool Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
-        NodeIndex NewIndex;
-        if (Changed) NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan OFF the main thread
-        QMetaObject::invokeMethod(this, [this, Cfg, Changed, NewIndex = std::move(NewIndex)]() mutable {
-            if (Changed)
+    // Snapshot LIBRARY before the sync mutates it, so we can tell whether anything actually changed. On the common
+    // launch (sources already present + unchanged) SyncPackageSources is a no-op, so we must NOT rebuild the catalog:
+    // the ctor already built it, and a redundant BuildCatalogIndex here — posted to the MAIN thread while the IPFS
+    // node is simultaneously starting up — is what froze the UI for several seconds on launch. When it DID change
+    // (first run / a source CID bump), the worker builds the new index and the completion only swaps it in.
+    auto Changed  = std::make_shared<bool>(false);
+    auto NewIndex = std::make_shared<NodeIndex>();
+    AsyncWork::Run(this,
+        [Cfg, Changed, NewIndex]{
+            const nlohmann::ordered_json OrigLib = Cfg->value("LIBRARY", nlohmann::ordered_json::array());
+            PackageCatalog::SyncPackageSources(*Cfg);   // fetch-if-missing + index CID package sources (no-op offline once fetched)
+            *Changed = Cfg->value("LIBRARY", nlohmann::ordered_json::array()) != OrigLib;
+            if (*Changed) *NewIndex = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan OFF the main thread
+        },
+        [this, Cfg, Changed, NewIndex]{
+            if (*Changed)
             {
                 (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
                 save();
-                CatalogIndex = std::move(NewIndex);   // cheap swap on the main thread (build already done)
+                CatalogIndex = std::move(*NewIndex);   // cheap swap on the main thread (build already done)
                 emit catalogChanged();
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
-        }, Qt::QueuedConnection);
-    }).detach();
+        });
 }
 
 void AppModel::healOrphansIfAny()
@@ -229,29 +230,36 @@ void AppModel::healOrphansIfAny()
     bool Expected = false;
     if (!HealInFlight.compare_exchange_strong(Expected, true)) return;   // single-flight: a heal is already running
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
-    std::thread([this, Cfg]{
-        const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
-        // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the rest as
-        // "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
-        std::set<std::string> OrphanSet(Orphans.begin(), Orphans.end());
-        for (auto It = KnownUnhealable.begin(); It != KnownUnhealable.end(); )
-            It = OrphanSet.count(*It) ? std::next(It) : KnownUnhealable.erase(It);
-        std::vector<std::string> Fresh;
-        for (const std::string & P : Orphans) if (!KnownUnhealable.count(P)) Fresh.push_back(P);
-
-        if (!Fresh.empty())
-        {
-            LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
-            PackageCatalog::HealSourceContent(*Cfg);
-            // Whatever is STILL orphaned after the heal is content truly gone (no on-disk copy to re-point to): remember
-            // it so subsequent sweeps skip the heavy re-seed until something changes.
-            KnownUnhealable.clear();
-            for (const std::string & P : IpfsWrapper::OrphanedRefPaths()) KnownUnhealable.insert(P);
-        }
-        HealInFlight.store(false);
-        if (!Fresh.empty())
-            QMetaObject::invokeMethod(this, [this]{ emit ipfsHealthChanged(); }, Qt::QueuedConnection);
-    }).detach();
+    // NOTE: the worker must not touch members (KnownUnhealable is main-thread state) — it computes into
+    // shared locals; the completion applies them. HealInFlight is atomic and may clear from the worker.
+    auto Unhealable = std::make_shared<std::set<std::string>>(KnownUnhealable);
+    auto Healed     = std::make_shared<bool>(false);
+    AsyncWork::Run(this,
+        [Cfg, Unhealable, Healed, this]{
+            const std::vector<std::string> Orphans = IpfsWrapper::OrphanedRefPaths();
+            // Drop any previously-unhealable path that's no longer orphaned (content was restored), then treat the
+            // rest as "known gone" so we don't re-run the (heavier) heal for content that genuinely can't be found.
+            std::set<std::string> OrphanSet(Orphans.begin(), Orphans.end());
+            for (auto It = Unhealable->begin(); It != Unhealable->end(); )
+                It = OrphanSet.count(*It) ? std::next(It) : Unhealable->erase(It);
+            std::vector<std::string> Fresh;
+            for (const std::string & P : Orphans) if (!Unhealable->count(P)) Fresh.push_back(P);
+            if (!Fresh.empty())
+            {
+                LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
+                PackageCatalog::HealSourceContent(*Cfg);
+                // Whatever is STILL orphaned after the heal is content truly gone (no on-disk copy to re-point to):
+                // remember it so subsequent sweeps skip the heavy re-seed until something changes.
+                Unhealable->clear();
+                for (const std::string & P : IpfsWrapper::OrphanedRefPaths()) Unhealable->insert(P);
+                *Healed = true;
+            }
+            HealInFlight.store(false);
+        },
+        [this, Unhealable, Healed]{
+            KnownUnhealable = std::move(*Unhealable);
+            if (*Healed) emit ipfsHealthChanged();
+        });
 }
 
 // ── Package sources (IPFS folder CIDs): add fetches the dehydrated tree off-thread (requires the node online — a fetch
@@ -265,17 +273,16 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
     emit packageSourcesChanged();   // INSTANT feedback: the source appears in the list/IPFS tab now (as pending); the
                                     // off-thread fetch below re-emits when its manifests + catalog have landed.
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
-    std::thread([this, Cfg]{
-        std::string Err;
-        PackageCatalog::SyncPackageSources(*Cfg, &Err);
-        QMetaObject::invokeMethod(this, [this, Cfg, Err]{
+    auto Err = std::make_shared<std::string>();
+    AsyncWork::Run(this,
+        [Cfg, Err]{ PackageCatalog::SyncPackageSources(*Cfg, Err.get()); },
+        [this, Cfg, Err]{
             (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
             save();
             rebuildCatalog();
             emit packageSourcesChanged();
-            if (!Err.empty()) emit packageSourceFailed(QString::fromStdString(Err));
-        }, Qt::QueuedConnection);
-    }).detach();
+            if (!Err->empty()) emit packageSourceFailed(QString::fromStdString(*Err));
+        });
     return true;
 }
 

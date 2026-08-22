@@ -68,6 +68,15 @@ jobs:
       - name: C++ unit tests (ctest)
         run: ctest --test-dir build --output-on-failure
 
+      - name: Sanitizer pass (ASan+UBSan on the engine + FS test suites)
+        run: |
+          # A second small configure with the sanitizers ON, building only the two pure suites (vg_tests
+          # exercises vgdelta/registry/varsubst/manifest logic; vgfs_tests the whole overlay/masks/zip core).
+          cmake -S . -B build-asan -DVIDYAGOD_WERROR=ON -DVIDYAGOD_SANITIZE=ON
+          cmake --build build-asan --target vg_tests vgfs_tests -j"$(nproc)"
+          ./build-asan/vg_tests
+          ./build-asan/VidyaGodFS/vgfs_tests
+
       - name: clang-tidy (advisory)
         continue-on-error: true   # advisory for now — surfaces issues without gating the build
         run: |
@@ -176,6 +185,12 @@ jobs:
           cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DWINFSP_ROOT="C:/Program Files (x86)/WinFsp" -B build
           cmake --build build
+
+      - name: C++ unit tests (ctest, Windows)
+        run: |
+          export PATH=/mingw64/bin:$PATH
+          # The Windows job used to BUILD the tests and never run them — gate on them like Linux does.
+          ctest --test-dir build --output-on-failure
 
       - name: Package portable distribution (windeployqt)
         run: |

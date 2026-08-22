@@ -144,6 +144,9 @@ public:
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.
     const NodeIndex *NodeIdx = nullptr;                             //PASSED — the global cross-bundle node graph
+    std::shared_ptr<const NodeIndex> NodeIdxOwned;                  //optional keep-alive: set it alongside NodeIdx and the
+                                                                    //wrapper's ContainerParams COPY owns the index for its
+                                                                    //whole life (P7: removes the raw-pointer lifetime pact)
     std::string LaunchNodeId;                                       //PASSED — the ROLE:"launchable" node to run
 
     //System Variables — queried from Qt at runtime

@@ -136,7 +136,9 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             else
             {
                 const auto &Pool = UI["POOL"];
-                static std::mt19937 Rng(std::random_device{}());
+                //Per-call generator: the old function-local static was shared across launch threads with no
+                //lock (a data race, however benign). A pool draw is once-per-secret-per-first-launch — cold.
+                std::mt19937 Rng(std::random_device{}());
                 std::uniform_int_distribution<size_t> Dist(0, Pool.size() - 1);
                 const size_t Pick = Dist(Rng);
                 Sources[Key] = Pool[Pick].is_string() ? Pool[Pick].get<std::string>() : std::string();

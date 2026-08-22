@@ -71,13 +71,14 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
     if (!LaunchParameters.LaunchNodeId.empty())
     {
         LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
-        NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
-        if (!Index.Find(LaunchParameters.LaunchNodeId))
+        auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));   // repos + locally-added packages
+        if (!Index->Find(LaunchParameters.LaunchNodeId))
         { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog, aborting."); return 1; }
 
         nlohmann::ordered_json MANIFESTJSON = nlohmann::ordered_json::object();   // engine fills this from the node graph
         struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LaunchParameters.LaunchNodeId, std::string());
-        NewContainerParams.NodeIdx           = &Index;
+        NewContainerParams.NodeIdx           = Index.get();
+        NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
         NewContainerParams.LaunchNodeId      = LaunchParameters.LaunchNodeId;
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
