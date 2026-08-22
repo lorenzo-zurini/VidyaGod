@@ -86,11 +86,12 @@ int main(int argc, char *argv[]);
 //Returns true on failure, false on success (shell exit-code convention).
 bool InitializeGlobalConfigJSON(nlohmann::ordered_json * GlobalConfigJSON, QDir * AppDataDir);
 
-//Parses argc/argv and returns a populated LaunchParameters struct.
-//Recognized flags: --package <path>, --subgame <id>, --component <id>.
-static LaunchParameters ParseCommandLineArguments(int argc, char* argv[]);
+//Parses argc/argv and returns a populated LaunchParameters struct (defined in main.cpp).
+//`static` here was wrong once main.h grew other includers (the cli/ TUs): a static declaration with no
+//definition in THAT TU is an -Werror=unused-function. Plain external linkage — one definition in main.cpp.
+LaunchParameters ParseCommandLineArguments(int argc, char* argv[]);
 
 //Returns true if CurrentPath looks like a VidyaGod package directory
 //(i.e. FSOps::CheckPackageValid passes for it).
 //Enables automatic headless launch when the binary is run from inside a package.
-static bool IsRunningInPackageDir(const std::filesystem::path &CurrentPath);
+bool IsRunningInPackageDir(const std::filesystem::path &CurrentPath);

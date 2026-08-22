@@ -56,6 +56,7 @@ static std::string ContentRootRelative(const std::string &RawPath, const std::st
 
 bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
+    (void)MANIFESTJSON;   // legacy signature slot — the pre-cutover MANIFEST branch is gone (P5)
     if (ContainerParams.VariantID.empty())
     {
         LogWarn("ResolveExecutableDefinition", "No VariantID set — skipping.");
