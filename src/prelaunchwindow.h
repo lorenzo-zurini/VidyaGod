@@ -113,6 +113,12 @@ private:
     // ----- widgets -----
     QLabel*       CoverLabel        = nullptr;
     QPixmap       CoverPixmap;                  // full-res cover; scaled to fit CoverLabel on resize
+    // Async-cover state: ONE coverReady connection for the window's lifetime (see RebuildCover), keyed on
+    // the CID we're currently waiting for — variant switches just retarget these instead of re-connecting.
+    bool                   CoverReadyConnected = false;
+    QString                PendingCoverCid;
+    QString                PendingCoverPkg;
+    nlohmann::ordered_json PendingCoverNode;
     // Runner daisy-chain UI: a stack of per-step combos (innermost→outermost) + a target-platform hint.
     QWidget*      ChainContainer    = nullptr;  // holds the per-step rows
     QVBoxLayout*  ChainLayout       = nullptr;

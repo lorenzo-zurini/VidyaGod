@@ -1,3 +1,4 @@
+#include "asyncwork.h"
 #include "nodesections.h"
 #include "packageeditormodel.h"
 #include "covercache.h"
@@ -11,7 +12,6 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
-#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -209,72 +209,98 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                     if (LayerType == "VFSDirLayer")
                     {
                         QPushButton * Conv = new QPushButton("→ ZIP", LBox);
-                        QObject::connect(Conv, &QPushButton::clicked, this, [this, n, j](){
+                        QObject::connect(Conv, &QPushButton::clicked, this, [this, n, j, Conv](){
                             std::string Path = Model->doc()["NODES"][n]["LAYERS"][j].value("PATH", std::string());
                             std::filesystem::path SrcDir = std::filesystem::path(Model->packageDir()->path().toStdString()) / Path;
                             std::string ZipName = Path + ".zip";
                             std::filesystem::path ZipFile = std::filesystem::path(Model->packageDir()->path().toStdString()) / ZipName;
-                            RunCommand("zip", {"-0", "-r", "-X", ZipFile.string(), "."},
-                                                         QProcessEnvironment::systemEnvironment(), SrcDir.string());
-                            std::filesystem::remove_all(SrcDir);
-                            Model->doc()["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSZipLayer";
-                            Model->doc()["NODES"][n]["LAYERS"][j]["PATH"] = ZipName;
-                            Model->SaveNodes(); Model->requestReload();
+                            //Multi-GB zip authoring must not freeze the editor: heavy work off-thread, model
+                            //mutation back on the GUI thread (AsyncWork guards against teardown mid-flight).
+                            Conv->setEnabled(false); Conv->setText("zipping…");
+                            AsyncWork::Run(this,
+                                [SrcDir, ZipFile]() {
+                                    RunCommand("zip", {"-0", "-r", "-X", ZipFile.string(), "."},
+                                               QProcessEnvironment::systemEnvironment(), SrcDir.string());
+                                    std::filesystem::remove_all(SrcDir);
+                                },
+                                [this, n, j, ZipName]() {
+                                    Model->doc()["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSZipLayer";
+                                    Model->doc()["NODES"][n]["LAYERS"][j]["PATH"] = ZipName;
+                                    Model->SaveNodes(); Model->requestReload();
+                                });
                         });
                         LG->addWidget(Conv, 1, 2);
                     }
                     else if (LayerType == "VFSZipLayer")
                     {
                         QPushButton * Conv = new QPushButton("→ DIR", LBox);
-                        QObject::connect(Conv, &QPushButton::clicked, this, [this, n, j](){
+                        QObject::connect(Conv, &QPushButton::clicked, this, [this, n, j, Conv](){
                             std::string Path = Model->doc()["NODES"][n]["LAYERS"][j].value("PATH", std::string());
                             std::filesystem::path ZipFile = std::filesystem::path(Model->packageDir()->path().toStdString()) / Path;
                             std::string DirName = (Path.size() > 4 && Path.substr(Path.size() - 4) == ".zip") ? Path.substr(0, Path.size() - 4) : Path + "_dir";
                             std::filesystem::path DirPath = std::filesystem::path(Model->packageDir()->path().toStdString()) / DirName;
-                            std::filesystem::create_directories(DirPath);
-                            RunCommand("unzip", {ZipFile.string(), "-d", DirPath.string()});
-                            std::filesystem::remove(ZipFile);
-                            Model->doc()["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSDirLayer";
-                            Model->doc()["NODES"][n]["LAYERS"][j]["PATH"] = DirName;
-                            Model->SaveNodes(); Model->requestReload();
+                            Conv->setEnabled(false); Conv->setText("unzipping…");
+                            AsyncWork::Run(this,
+                                [ZipFile, DirPath]() {
+                                    std::filesystem::create_directories(DirPath);
+                                    RunCommand("unzip", {ZipFile.string(), "-d", DirPath.string()});
+                                    std::filesystem::remove(ZipFile);
+                                },
+                                [this, n, j, DirName]() {
+                                    Model->doc()["NODES"][n]["LAYERS"][j]["TYPE"] = "VFSDirLayer";
+                                    Model->doc()["NODES"][n]["LAYERS"][j]["PATH"] = DirName;
+                                    Model->SaveNodes(); Model->requestReload();
+                                });
                         });
                         LG->addWidget(Conv, 1, 2);
 
                         //If the zip is DEFLATE-compressed it cannot mount (VidyaGodFS reads entries at their
                         //backing offset and can't inflate). Offer a one-click fix that unzips + re-zips STORE.
+                        //The STORE probe scans the zip's central directory — done OFF-thread (it used to run
+                        //synchronously per layer while building this tab, stalling the editor on big packages);
+                        //the button materializes only if the probe finds DEFLATE entries.
                         {
                             std::string ZipPathStr = Layers[j].value("PATH", std::string());
                             std::filesystem::path ZipFile = std::filesystem::path(Model->packageDir()->path().toStdString()) / ZipPathStr;
-                            if (!ZipPathStr.empty() && std::filesystem::exists(ZipFile)
-                                && !ManifestModel::ZipFullyStored(ZipFile.string()))
+                            if (!ZipPathStr.empty() && std::filesystem::exists(ZipFile))
                             {
-                                QPushButton * Fix = new QPushButton("⚠ Re-store", LBox);
-                                Fix->setToolTip("This zip is DEFLATE-compressed and will not mount — re-pack it uncompressed (STORE).");
-                                QObject::connect(Fix, &QPushButton::clicked, this, [this, n, j](){
-                                    std::string Path = Model->doc()["NODES"][n]["LAYERS"][j].value("PATH", std::string());
-                                    std::filesystem::path PkgDir = std::filesystem::path(Model->packageDir()->path().toStdString());
-                                    std::filesystem::path ZipTarget = PkgDir / Path;
-                                    const QString Msg =
-                                        "“" + QString::fromStdString(Path) + "” is DEFLATE-compressed.\n\n"
-                                        "VidyaGod mounts zip layers by reading each file at its position inside the zip — it "
-                                        "cannot decompress on the fly, so a compressed zip mounts to garbage and the game "
-                                        "won't launch.\n\nRe-pack it uncompressed (STORE) now? The contents are unchanged; "
-                                        "only the on-disk packing differs (the file may get larger).";
-                                    if (QMessageBox::question(this, "Re-pack zip as STORE", Msg,
-                                            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
-                                        return;
-                                    //Unzip to a sibling temp dir, then re-zip STORE (`-0`) with files at the root (`.`).
-                                    std::filesystem::path Tmp = PkgDir / (Path + ".restore.tmp");
-                                    std::error_code Ec; std::filesystem::remove_all(Tmp, Ec);
-                                    std::filesystem::create_directories(Tmp);
-                                    RunCommand("unzip", {"-o", ZipTarget.string(), "-d", Tmp.string()});
-                                    std::filesystem::remove(ZipTarget, Ec);
-                                    RunCommand("zip", {"-0", "-r", "-X", ZipTarget.string(), "."},
-                                               QProcessEnvironment::systemEnvironment(), Tmp.string());
-                                    std::filesystem::remove_all(Tmp, Ec);
-                                    Model->SaveNodes(); Model->requestReload();   // re-runs validation → error clears
-                                });
-                                LG->addWidget(Fix, 1, 3);
+                                auto FullyStored = std::make_shared<bool>(true);
+                                AsyncWork::Run(this,
+                                    [ZipFile, FullyStored]() { *FullyStored = ManifestModel::ZipFullyStored(ZipFile.string()); },
+                                    [this, LG, LBox, n, j, FullyStored]() {
+                                        if (*FullyStored) return;
+                                        QPushButton * Fix = new QPushButton("⚠ Re-store", LBox);
+                                        Fix->setToolTip("This zip is DEFLATE-compressed and will not mount — re-pack it uncompressed (STORE).");
+                                        QObject::connect(Fix, &QPushButton::clicked, this, [this, n, j, Fix](){
+                                            std::string Path = Model->doc()["NODES"][n]["LAYERS"][j].value("PATH", std::string());
+                                            std::filesystem::path PkgDir = std::filesystem::path(Model->packageDir()->path().toStdString());
+                                            std::filesystem::path ZipTarget = PkgDir / Path;
+                                            const QString Msg =
+                                                "“" + QString::fromStdString(Path) + "” is DEFLATE-compressed.\n\n"
+                                                "VidyaGod mounts zip layers by reading each file at its position inside the zip — it "
+                                                "cannot decompress on the fly, so a compressed zip mounts to garbage and the game "
+                                                "won't launch.\n\nRe-pack it uncompressed (STORE) now? The contents are unchanged; "
+                                                "only the on-disk packing differs (the file may get larger).";
+                                            if (QMessageBox::question(this, "Re-pack zip as STORE", Msg,
+                                                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) != QMessageBox::Yes)
+                                                return;
+                                            Fix->setEnabled(false); Fix->setText("re-packing…");
+                                            //Unzip to a sibling temp dir, then re-zip STORE (`-0`) with files at the root (`.`).
+                                            AsyncWork::Run(this,
+                                                [PkgDir, Path, ZipTarget]() {
+                                                    std::filesystem::path Tmp = PkgDir / (Path + ".restore.tmp");
+                                                    std::error_code Ec; std::filesystem::remove_all(Tmp, Ec);
+                                                    std::filesystem::create_directories(Tmp);
+                                                    RunCommand("unzip", {"-o", ZipTarget.string(), "-d", Tmp.string()});
+                                                    std::filesystem::remove(ZipTarget, Ec);
+                                                    RunCommand("zip", {"-0", "-r", "-X", ZipTarget.string(), "."},
+                                                               QProcessEnvironment::systemEnvironment(), Tmp.string());
+                                                    std::filesystem::remove_all(Tmp, Ec);
+                                                },
+                                                [this]() { Model->SaveNodes(); Model->requestReload(); });   // re-runs validation → error clears
+                                        });
+                                        LG->addWidget(Fix, 1, 3);
+                                    });
                             }
                         }
                     }
@@ -688,23 +714,27 @@ bool NodeLayersSection::eventFilter(QObject * obj, QEvent * event)
             }
             else
             {
+                //Async download — the old QEventLoop::exec() here blocked (and re-entered) the GUI event loop
+                //for the whole HTTP round-trip. The reply lands via a queued signal; `this` as the connection
+                //context auto-disconnects if the section is torn down before the reply arrives.
                 if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
                 QNetworkReply * Reply = NetMgr->get(QNetworkRequest(Url));
-                QEventLoop Loop; QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit); Loop.exec();
-                if (Reply->error() == QNetworkReply::NoError)
-                {
-                    QByteArray Data = Reply->readAll();
-                    QString Ext = QFileInfo(Url.path()).suffix();
-                    if (Ext.isEmpty())
+                QObject::connect(Reply, &QNetworkReply::finished, this, [this, Reply, CoverLabel, Url, NodeIdx, LayerIdx]() {
+                    if (Reply->error() == QNetworkReply::NoError)
                     {
-                        QString CT = Reply->header(QNetworkRequest::ContentTypeHeader).toString();
-                        if (CT.contains("jpeg") || CT.contains("jpg")) Ext = "jpg";
-                        else if (CT.contains("webp")) Ext = "webp"; else Ext = "png";
+                        QByteArray Data = Reply->readAll();
+                        QString Ext = QFileInfo(Url.path()).suffix();
+                        if (Ext.isEmpty())
+                        {
+                            QString CT = Reply->header(QNetworkRequest::ContentTypeHeader).toString();
+                            if (CT.contains("jpeg") || CT.contains("jpg")) Ext = "jpg";
+                            else if (CT.contains("webp")) Ext = "webp"; else Ext = "png";
+                        }
+                        ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
                     }
-                    ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
-                }
-                else LogErr("NodeEditor", "Failed to download cover: " + Reply->errorString().toStdString());
-                Reply->deleteLater();
+                    else LogErr("NodeEditor", "Failed to download cover: " + Reply->errorString().toStdString());
+                    Reply->deleteLater();
+                });
             }
             return true;
         }
@@ -713,16 +743,18 @@ bool NodeLayersSection::eventFilter(QObject * obj, QEvent * event)
             QUrl Url(Mime->text().trimmed());
             if (Url.isValid() && (Url.scheme() == "http" || Url.scheme() == "https"))
             {
+                //Async — same rationale as the URL-drop branch above.
                 if (!NetMgr) NetMgr = new QNetworkAccessManager(this);
                 QNetworkReply * Reply = NetMgr->get(QNetworkRequest(Url));
-                QEventLoop Loop; QObject::connect(Reply, &QNetworkReply::finished, &Loop, &QEventLoop::quit); Loop.exec();
-                if (Reply->error() == QNetworkReply::NoError)
-                {
-                    QByteArray Data = Reply->readAll();
-                    QString Ext = QFileInfo(Url.path()).suffix(); if (Ext.isEmpty()) Ext = "png";
-                    ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
-                }
-                Reply->deleteLater();
+                QObject::connect(Reply, &QNetworkReply::finished, this, [this, Reply, CoverLabel, Url, NodeIdx, LayerIdx]() {
+                    if (Reply->error() == QNetworkReply::NoError)
+                    {
+                        QByteArray Data = Reply->readAll();
+                        QString Ext = QFileInfo(Url.path()).suffix(); if (Ext.isEmpty()) Ext = "png";
+                        ApplyCoverImage(CoverLabel, Data, Ext, NodeIdx, LayerIdx);
+                    }
+                    Reply->deleteLater();
+                });
             }
             return true;
         }

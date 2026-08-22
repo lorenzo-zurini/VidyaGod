@@ -262,12 +262,26 @@ void PreLaunchWindow::RebuildCover()
     QString F, Cid; CoverCache::Locate(CoverNode, F, Cid);
     if (!Cid.isEmpty())
     {
-        const nlohmann::ordered_json CoverCopy = CoverNode;
-        connect(CoverCache::instance(), &CoverCache::coverReady, this, [Cid, CoverCopy, Pkg, setFrom](QString Ready){
-            if (Ready != Cid) return;
-            const QString P = CoverCache::instance()->resolve(CoverCopy, Pkg);
-            if (!P.isEmpty()) setFrom(P);
-        });
+        //ONE coverReady connection for the window's lifetime, keyed by the member state below. The old code
+        //connected a fresh lambda on EVERY RebuildCover (each variant switch), stacking live connections to
+        //the CoverCache singleton — a slow leak plus redundant resolve work per ready cover.
+        PendingCoverCid  = Cid;
+        PendingCoverNode = CoverNode;
+        PendingCoverPkg  = Pkg;
+        if (!CoverReadyConnected)
+        {
+            CoverReadyConnected = true;
+            connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](const QString &Ready){
+                if (Ready != PendingCoverCid || PendingCoverCid.isEmpty()) return;
+                const QString P = CoverCache::instance()->resolve(PendingCoverNode, PendingCoverPkg);
+                if (!P.isEmpty())
+                {
+                    QPixmap Pix(P);
+                    if (!Pix.isNull()) { CoverPixmap = Pix; UpdateCoverScaled(); }
+                }
+                PendingCoverCid.clear();
+            });
+        }
     }
 }
 

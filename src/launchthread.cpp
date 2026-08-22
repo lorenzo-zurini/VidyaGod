@@ -47,11 +47,8 @@ void LaunchThread::run()
             if (msg.find("DEFAULTDATA layer built") != std::string::npos)
                 emit progressChanged(45);
         }
-        else if (ctx.find("MountVFS") != std::string::npos && msg.find("Mounting via") != std::string::npos)
-        {
-            emit progressChanged(55);
-            emit statusChanged("Assembling filesystem...");
-        }
+        //(A former 55% "Mounting via" stage matched a log line that no longer exists anywhere — deleted
+        //rather than re-tuned: stages must key on lines verified present in the current sources.)
         else if (ctx.find("MountVFS") != std::string::npos &&
                  (msg.find("Successfully") != std::string::npos || msg.find("mounted VFS") != std::string::npos))
         {
@@ -64,8 +61,10 @@ void LaunchThread::run()
             emit progressChanged(90);
             emit statusChanged("Runtime ready.");
         }
-        else if (ctx.find("Execute") != std::string::npos && msg.find("Executing:") != std::string::npos)
+        else if (ctx.find("Execute") != std::string::npos && msg.find("Command: ") != std::string::npos)
         {
+            //Keys on Execute's real "Command: …" line (the old "Executing:" phrase vanished in a refactor,
+            //so this 95% stage silently never fired).
             emit progressChanged(95);
             emit statusChanged("Game running...");
         }
