@@ -88,6 +88,13 @@ set(SHARED_SOURCES
     src/launchparams.h
     src/launchparams.cpp
 
+    # headless CLI mode families (P6 split of the former giant main())
+    src/cli/climodes.h
+    src/cli/cliipfs.cpp
+    src/cli/clicontent.cpp
+    src/cli/climaintain.cpp
+    src/cli/clilaunch.cpp
+
     src/varsubst.h
     src/varsubst.cpp
 
@@ -234,7 +241,7 @@ add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
     nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
-target_include_directories(vidyagod_objs PUBLIC VidyaGodFS/src)   # vgdelta.h / bytesource.h / zipscan.h
+target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
     target_compile_options(vidyagod_objs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
