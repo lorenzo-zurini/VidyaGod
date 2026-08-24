@@ -95,6 +95,12 @@ public:
     //any existing key at that location). Returns false if Src has no such key. Used for per-key
     //persistence: extract a subtree from one hive set and merge it into another.
     bool                 MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath);
+    //Recursive UNION merge of Src's subtree at FullPath into *this: source values overwrite same-named
+    //destination values and source children merge recursively — destination-ONLY keys/values are
+    //PRESERVED. (MergeKeyFrom REPLACES the destination subtree; union semantics are what registry
+    //PERSISTENCE needs: the user's saved keys win where they exist, package/base defaults show through
+    //everywhere else.) Accepts a bare root ("HKCU") to merge a whole hive.
+    bool                 UnionMergeFrom(const RegistryWrapper &Src, const std::string &FullPath);
     const RegistryValue *GetValue(const std::string &FullPath, const std::string &Name) const;
     void                 SetValue(const std::string &FullPath, const std::string &Name, const RegistryValue &V);
     bool                 DeleteValue(const std::string &FullPath, const std::string &Name);

@@ -91,3 +91,77 @@ TEST(reglayer_persistall_is_noop)
     CHECK(RegistryLayer::CapturePersistRegistry(CP));
     fs::remove_all(d);
 }
+
+#include "registrywrapper.h"
+#include <nlohmann/json.hpp>
+
+// Persisted whole-hive KEEP is UNION-merged over the composed hive: the user's saved value wins per-key,
+// but base RegEdits (e.g. an EULA FIRSTRUN seed) SHOW THROUGH where the user has no value — and the
+// old writelayer whole-file seed (which shadowed all of that) is skipped.
+TEST(reglayer_hive_store_union_merges_over_base_edits)
+{
+    auto d = RlTmp("union");
+    ContainerParams CP(d);
+    CP.PrefixGenerate  = true;
+    CP.UserDataPath    = d / "USERDATA";
+    CP.WriteLayerPath  = d / "WRITELAYER";
+    CP.DefaultDataPath = d / "DEFAULTDATA";
+    CP.DefPrefixPath   = d / "DEFPREFIX";      // empty — zero-copy prefix model
+    CP.PrefixRoot      = "pfx";
+    CP.KeepRegHives    = { "user.reg" };
+    // base RegEdit: the package seeds FIRSTRUN (the EULA-acceptance marker)
+    CP.SubComponentsArray = nlohmann::ordered_json::array();
+    CP.SubComponentsArray.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Seeded\\1.0"},
+                                     {"ARCHITECTURE","64"},{"OVERRIDE",false},{"KEYVALUES",{{"FIRSTRUN",true}}}});
+    // the persisted store: the user's own key, but NO FIRSTRUN (captured from a pre-seed session)
+    {
+        RegistryWrapper W;
+        nlohmann::ordered_json S = nlohmann::ordered_json::array();
+        S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\UserOwn"},{"ARCHITECTURE","64"},
+                     {"OVERRIDE",false},{"KEYVALUES",{{"UserPick","7"}}}});
+        W.ApplyRegEdits(S, false);
+        fs::create_directories(CP.UserDataPath / "REGISTRY");
+        W.SavePrefix(CP.UserDataPath / "REGISTRY");
+    }
+
+    CHECK(RegistryLayer::BuildDefaultData(CP));
+    const std::string Hive = ReadFileAt(CP.DefaultDataPath / "pfx" / "user.reg");
+    CHECK(Hive.find("FIRSTRUN") != std::string::npos);    // base edit SURVIVES the persisted merge
+    CHECK(Hive.find("UserPick") != std::string::npos);    // persisted user state is IN the composed hive
+
+    // and the old whole-file writelayer seed is skipped (it would shadow the composed hive)
+    CHECK(RegistryLayer::SeedPersistRegistry(CP));
+    CHECK(!fs::exists(CP.WriteLayerPath / "pfx" / "user.reg"));
+    fs::remove_all(d);
+}
+
+// Per-key precedence inside the union: where BOTH sides define the same value, the persisted one wins.
+TEST(reglayer_union_persisted_value_wins_per_key)
+{
+    auto d = RlTmp("unionwin");
+    ContainerParams CP(d);
+    CP.PrefixGenerate  = true;
+    CP.UserDataPath    = d / "USERDATA";
+    CP.WriteLayerPath  = d / "WRITELAYER";
+    CP.DefaultDataPath = d / "DEFAULTDATA";
+    CP.DefPrefixPath   = d / "DEFPREFIX";
+    CP.PrefixRoot      = "";
+    CP.KeepRegHives    = { "user.reg" };
+    CP.SubComponentsArray = nlohmann::ordered_json::array();
+    CP.SubComponentsArray.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Game"},
+                                     {"ARCHITECTURE","64"},{"OVERRIDE",false},{"KEYVALUES",{{"Lang","english"}}}});
+    {
+        RegistryWrapper W;
+        nlohmann::ordered_json S = nlohmann::ordered_json::array();
+        S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Game"},{"ARCHITECTURE","64"},
+                     {"OVERRIDE",false},{"KEYVALUES",{{"Lang","romana"}}}});
+        W.ApplyRegEdits(S, false);
+        fs::create_directories(CP.UserDataPath / "REGISTRY");
+        W.SavePrefix(CP.UserDataPath / "REGISTRY");
+    }
+    CHECK(RegistryLayer::BuildDefaultData(CP));
+    const std::string Hive = ReadFileAt(CP.DefaultDataPath / "user.reg");
+    CHECK(Hive.find("romana") != std::string::npos);              // user's choice wins
+    CHECK(Hive.find("\"english\"") == std::string::npos);         // base default overridden
+    fs::remove_all(d);
+}

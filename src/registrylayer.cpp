@@ -55,8 +55,16 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
     const std::filesystem::path RegKeyStore = ContainerParams.UserDataPath / "REGKEYS";
     const bool HavePersistKeys = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.KeepRegKeys.empty()
                                  && std::filesystem::exists(RegKeyStore);
+    //Persisted whole-hive KEEPs (user.reg/system.reg) are UNION-merged into the composed hives here —
+    //per-key, the user's saved value wins, base edits show through where the user has none. They were
+    //previously whole-FILE seeded into the writelayer, which shadowed DEFAULTDATA's hives entirely: any
+    //base RegEdit on a kept hive (e.g. an EULA-acceptance seed on HKCU) went invisible from the second
+    //session on, because EVERY session's capture re-created a store lacking it.
+    const std::filesystem::path RegHiveStore = ContainerParams.UserDataPath / "REGISTRY";
+    const bool HaveHiveStore = HavePrefix && !ContainerParams.PersistAll && !ContainerParams.KeepRegHives.empty()
+                               && std::filesystem::exists(RegHiveStore);
 
-    if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys) return true; // nothing to materialise
+    if (!HaveBaseFileEdits && !HaveBaseReg && !HavePersistKeys && !HaveHiveStore) return true; // nothing to materialise
 
     bool Ok = true;
     std::error_code Ec;
@@ -72,7 +80,7 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         Ok = false;
 
     //Base RegEdits + persisted reg-key subtrees → DEFAULTDATA hives, built from DEFPREFIX (never mutating it).
-    if (HaveBaseReg || HavePersistKeys)
+    if (HaveBaseReg || HavePersistKeys || HaveHiveStore)
     {
         //No wineserver quiesce needed: the installed artifact leaves DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
@@ -156,6 +164,18 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             //symlink abolition: archive links are chased to their in-archive target and served as REGULAR
             //files, so the driver loads without any symlink existing anywhere. No re-anchoring needed here.
         }
+        if (HaveHiveStore)
+        {
+            RegistryWrapper Durable;
+            Durable.LoadPrefix(RegHiveStore);
+            for (const std::string &Name : ContainerParams.KeepRegHives)
+            {
+                const char *Root = Name == "user.reg"   ? "HKCU"
+                                 : Name == "system.reg" ? "HKLM" : nullptr;   // userdef.reg keeps the writelayer-seed path
+                if (Root && RW.UnionMergeFrom(Durable, Root))
+                    LogOut("RegistryLayer::BuildDefaultData", "Union-merged persisted " + Name + " over the composed hive");
+            }
+        }
         const std::filesystem::path HiveOut = HiveDir(ContainerParams, ContainerParams.DefaultDataPath);
         std::filesystem::create_directories(HiveOut, Ec);
         if (!RW.SavePrefix(HiveOut))                                                // mounts at root → lands at /<PrefixRoot>
@@ -210,6 +230,10 @@ bool RegistryLayer::SeedPersistRegistry(struct ContainerParams &ContainerParams)
     {
         const std::filesystem::path SrcReg = RegStore / Name;
         if (!std::filesystem::exists(SrcReg)) continue;
+        //Already union-merged into DEFAULTDATA (BuildDefaultData)? Then a whole-file writelayer seed would
+        //SHADOW that composed hive and erase every base edit — skip; the merged copy carries the user state.
+        if (std::filesystem::exists(HiveDir(ContainerParams, ContainerParams.DefaultDataPath) / Name))
+        { LogOut("RegistryLayer::SeedPersistRegistry", Name + " union-merged into DEFAULTDATA — writelayer seed skipped"); continue; }
         const std::filesystem::path DstReg = WriteHives / Name;
         std::filesystem::copy_file(SrcReg, DstReg, std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) { LogWarn("RegistryLayer::SeedPersistRegistry", "Could not seed " + Name + ": " + ec.message()); Ok = false; }
