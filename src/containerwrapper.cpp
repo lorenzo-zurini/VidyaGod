@@ -32,6 +32,27 @@ static bool LanEnabled(const nlohmann::ordered_json &GC)
 #include <QThread>
 #include <QMetaObject>
 
+#include <chrono>
+
+namespace {
+//One launch phase, announced on entry (LogStep — drives the prelaunch progress bar) and timed on exit
+//("done in N ms" lands in the console), so every step of a launch is visible AND measurable live.
+//kLaunchSteps is the shared denominator: step 1 (catalog index) is emitted by the caller
+//(LaunchThread / the CLI), 2..12 by this file.
+constexpr int kLaunchSteps = 12;
+struct StepScope {
+    int K; std::string Label; std::chrono::steady_clock::time_point T0;
+    StepScope(int k, std::string l) : K(k), Label(std::move(l)), T0(std::chrono::steady_clock::now())
+    { LogStep(K, kLaunchSteps, Label); }
+    ~StepScope()
+    {
+        auto Ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - T0).count();
+        LogOut("LaunchStep", std::to_string(K) + "/" + std::to_string(kLaunchSteps) + " " + Label
+               + " — done in " + std::to_string(Ms) + " ms");
+    }
+};
+} // namespace
+
 //The launch-build subsystems were lifted out into their own units (LaunchResolver / VarSubst / FileEdits /
 //RegistryLayer / PersistLayer / VfsMount / LaunchSources / RunnerInstall — see their headers, all pulled in via
 //containerwrapper.h). What remains here is the thin session lifecycle that orchestrates them. The only pure helper
@@ -58,6 +79,7 @@ ContainerWrapper::ContainerWrapper(const nlohmann::ordered_json &Passed_GlobalCo
 //are already in GetVariablesMap() when subcomponent strings are substituted.
 bool ContainerWrapper::InitializeContainer()
 {
+    StepScope Step(2, "Resolving the launch (closure, runner chain, variables, persistence)");
     LogOut("ContainerWrapper::InitializeContainer", "Initializing container...");
     //Everything is a node: resolve the whole container from the global node index (InitializeFromNode populates
     //the internal COMPONENTS pool the shared iterators consume). There is no MANIFESTJSON path any more.
@@ -95,20 +117,26 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Clear any runtime left under TempPath by a previously crashed/incomplete run BEFORE mounting.
     //Stale union/zip/bind mounts and leftover RUNTIME/DEFPREFIX/staging dirs would otherwise corrupt
     //this build (or cause spurious "already mounted"/EEXIST failures).
-    VfsMount::CleanStaleRuntime(ContainerParams.TempPath);
+    {
+        StepScope Step(3, "Sweeping stale runtime state");
+        VfsMount::CleanStaleRuntime(ContainerParams.TempPath);
+    }
 
     //Verify every dependency is satisfiable (runner build cached, DEFPREFIX present, game layers local-or-fetchable),
     //then materialize any missing game-layer content from a backend (IPFS) to its expected local path. Both run
     //before the prefix layers mount — the content must exist on disk by then. Abort if anything can't be provided.
-    if (!LaunchSources::EnsureSources(this->ContainerParams))
     {
-        LogErr("ContainerWrapper::BuildContainerRuntime", "Required sources unavailable — aborting.");
-        return false;
-    }
-    if (!LaunchSources::MaterializeLayers(this->ContainerParams))
-    {
-        LogErr("ContainerWrapper::BuildContainerRuntime", "Could not materialize required layer content — aborting.");
-        return false;
+        StepScope Step(4, "Checking and materializing content sources");
+        if (!LaunchSources::EnsureSources(this->ContainerParams))
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", "Required sources unavailable — aborting.");
+            return false;
+        }
+        if (!LaunchSources::MaterializeLayers(this->ContainerParams))
+        {
+            LogErr("ContainerWrapper::BuildContainerRuntime", "Could not materialize required layer content — aborting.");
+            return false;
+        }
     }
 
     //AUTO-DETECT whether any subcomponent requires a VFS mount.
@@ -137,7 +165,10 @@ bool ContainerWrapper::BuildContainerRuntime()
     //NOT gated on PrefixGenerate — a native runner ships a build without generating a wine prefix, and gating on
     //PrefixGen was why a java runner's %RunnerMount%/__jre never got mounted (execvp → 127). MountRunnerBuild self-guards
     //on RunnerShipsBuild/UnifiedRuntime, so this is a no-op for a runnerless / unified / build-less launch.
-    if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
+    {
+        StepScope Step(5, "Mounting the runner build");
+        if (!VfsMount::MountRunnerBuild(this->ContainerParams)) return false;
+    }
 
     //Provision the Wine prefix LAYOUT probe — ONLY when the runner GENERATES a prefix (proton). Probes the mounted
     //runner's layout (new files/lib vs old dist/lib64) into launch vars so a runner node's prefix-assembly layers
@@ -146,6 +177,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //mtime so its config_info fast-path fires (zero-copy). Irrelevant to native runners (no wine prefix).
     if (PrefixGen && ContainerParams.RunnerShipsBuild && !ContainerParams.RunnerMountPath.empty())
     {
+        StepScope Step(6, "Probing the wine prefix layout");
         const std::filesystem::path RM = ContainerParams.RunnerMountPath;
         std::error_code Pec;
         const std::string Root = std::filesystem::exists(RM / "files" / "lib" / "wine", Pec) ? "files" : "dist";
@@ -166,18 +198,24 @@ bool ContainerWrapper::BuildContainerRuntime()
     //and the WRITELAYER). FileEdits apply to any runner; base RegEdits are Wine-only (handled inside).
     //OBSERVABILITY STAGE (see the overhaul plan): failures are surfaced loudly but not yet fatal — after
     //a few days of daily-use logs prove which ones occur in practice, the fatal/warn split gets decided.
-    if (!RegistryLayer::BuildDefaultData(this->ContainerParams))
-        LogWarn("ContainerWrapper::BuildContainerRuntime", "BuildDefaultData reported failures — DEFAULTDATA may be incomplete.");
+    {
+        StepScope Step(7, "Building DEFAULTDATA (base edits + composed registry)");
+        if (!RegistryLayer::BuildDefaultData(this->ContainerParams))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "BuildDefaultData reported failures — DEFAULTDATA may be incomplete.");
+    }
 
-    //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
-    //No-op when PersistAll (durable RW branch already holds the reg files).
-    if (!ContainerParams.KeepRegHives.empty() && !RegistryLayer::SeedPersistRegistry(this->ContainerParams))
-        LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted registry seed reported failures — saved settings may be missing this session.");
+    {
+        StepScope Step(8, "Seeding persisted saves (registry + files)");
+        //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
+        //No-op when PersistAll (durable RW branch already holds the reg files).
+        if (!ContainerParams.KeepRegHives.empty() && !RegistryLayer::SeedPersistRegistry(this->ContainerParams))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted registry seed reported failures — saved settings may be missing this session.");
 
-    //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
-    //No-op when PersistAll or when none are declared.
-    if (!ContainerParams.KeepFiles.empty() && !PersistLayer::SeedPersistFiles(this->ContainerParams))
-        LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted file seed reported failures — saved files may be missing this session.");
+        //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
+        //No-op when PersistAll or when none are declared.
+        if (!ContainerParams.KeepFiles.empty() && !PersistLayer::SeedPersistFiles(this->ContainerParams))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted file seed reported failures — saved files may be missing this session.");
+    }
 
     //Verify every layer's locator resolves before mounting — a missing source (e.g. a moved local file,
     //or a remote SOURCE not yet fetched) is surfaced now rather than silently mounting nothing.
@@ -188,7 +226,10 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     //Build the layer-spec (DEFPREFIX + VFS subcomponents target-rooted + PERSIST dirs as RW
     //passthrough) and mount it as a single vidyagodfs filesystem at RuntimePath.
-    if (!VfsMount::MountVFS(this->ContainerParams)) return false;
+    {
+        StepScope Step(9, "Assembling and mounting the runtime filesystem");
+        if (!VfsMount::MountVFS(this->ContainerParams)) return false;
+    }
     //Case-conflict scan: a FULL walk of the freshly-mounted FUSE tree (every file, through the FS) whose
     //result was advisory-only — pure launch latency on big games. --validate-nodes already case-checks
     //package data at rest, so the runtime walk is DEBUG-opt-in now (VG_CASE_CHECK=1).
@@ -198,14 +239,17 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
     //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
-    if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
-        LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE FileEdits reported failures.");
-    if (PrefixGen)
     {
-        if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))
-            LogWarn("ContainerWrapper::BuildContainerRuntime", "DllOverride collection reported malformed entries.");
-        if (!RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams))
-            LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE RegEdits failed to write the runtime hives.");
+        StepScope Step(10, "Applying override edits (files, DLL overrides, registry)");
+        if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
+            LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE FileEdits reported failures.");
+        if (PrefixGen)
+        {
+            if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))
+                LogWarn("ContainerWrapper::BuildContainerRuntime", "DllOverride collection reported malformed entries.");
+            if (!RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams))
+                LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE RegEdits failed to write the runtime hives.");
+        }
     }
 
     //----- SANDBOX prep: record the mounted spec(s) so the sandbox can RE-mount them inside its own namespace, ON TOP
@@ -215,6 +259,7 @@ bool ContainerWrapper::BuildContainerRuntime()
     //actually sandbox; tooling/authoring/override runs (which never sandbox) simply use the host mount as today. -----
     if (SandboxLayer::Requested(ContainerParams, SandboxDefaultOn(GlobalConfigJSON)) && SandboxLayer::Available())
     {
+        StepScope Step(11, "Preparing the sandbox");
         auto Record = [&](const std::filesystem::path &SpecPath, const std::filesystem::path &Mnt){
             if (std::filesystem::exists(SpecPath))
                 ContainerParams.SandboxMounts.emplace_back(SpecPath.string(), Mnt.string());
@@ -289,6 +334,7 @@ bool ContainerWrapper::BuildContainerRuntime()
 //does not exist in the mounted runtime.
 bool ContainerWrapper::Execute(const std::string &OverrideExe)
 {
+    LogStep(12, kLaunchSteps, "Starting the game process (wine boot + game init follow in the console)");
     const bool Override = !OverrideExe.empty();
     auto Subst = [&](std::string S){ VarSubst::StringVariableSubstitution(S, ContainerParams.GetVariablesMap()); return S; };
 

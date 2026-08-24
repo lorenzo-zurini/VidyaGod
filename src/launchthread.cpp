@@ -31,42 +31,28 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     SetLogCallback([this](LogLevel level, const std::string& ctx, const std::string& msg)
     {
-        // Forward the raw line to the console widget.
+        // Forward the raw line to the console widget — EVERY engine log line is shown, unfiltered.
         emit logLine(static_cast<int>(level), QString::fromStdString(ctx), QString::fromStdString(msg));
 
-        // ---- progress / status heuristics ----
-        if (ctx.find("InitializeContainer") != std::string::npos)
+        // ---- progress / status: the LaunchStep CONTRACT (commonutils.h LogStep) ----
+        // The engine announces every phase as context "LaunchStep", message "<k>/<n> <label>", and times it
+        // on completion ("… — done in N ms"). Progress is k/n of the bar (the last few percent are reserved
+        // for the game's own startup); status shows the label verbatim. This replaced the old fragile
+        // phrase-matching heuristics — the marker is an explicit interface, not log wording.
+        if (ctx == "LaunchStep")
         {
-            emit progressChanged(5);
-            emit statusChanged("Initializing container...");
-        }
-        else if (ctx.find("BuildDefaultData") != std::string::npos)
-        {
-            emit progressChanged(35);
-            emit statusChanged("Preparing package edits...");
-            if (msg.find("DEFAULTDATA layer built") != std::string::npos)
-                emit progressChanged(45);
-        }
-        //(A former 55% "Mounting via" stage matched a log line that no longer exists anywhere — deleted
-        //rather than re-tuned: stages must key on lines verified present in the current sources.)
-        else if (ctx.find("MountVFS") != std::string::npos &&
-                 (msg.find("Successfully") != std::string::npos || msg.find("mounted VFS") != std::string::npos))
-        {
-            emit progressChanged(75);
-            emit statusChanged("VFS mounted.");
-        }
-        else if (ctx.find("BuildContainerRuntime") != std::string::npos &&
-                 msg.find("Runtime ready") != std::string::npos)
-        {
-            emit progressChanged(90);
-            emit statusChanged("Runtime ready.");
-        }
-        else if (ctx.find("Execute") != std::string::npos && msg.find("Command: ") != std::string::npos)
-        {
-            //Keys on Execute's real "Command: …" line (the old "Executing:" phrase vanished in a refactor,
-            //so this 95% stage silently never fired).
-            emit progressChanged(95);
-            emit statusChanged("Game running...");
+            const size_t Slash = msg.find('/');
+            const size_t Space = msg.find(' ');
+            if (Slash != std::string::npos && Space != std::string::npos && Slash < Space)
+            {
+                const int K = std::atoi(msg.substr(0, Slash).c_str());
+                const int N = std::atoi(msg.substr(Slash + 1, Space - Slash - 1).c_str());
+                if (K > 0 && N > 0)
+                {
+                    emit progressChanged(std::min(97, K * 97 / N));
+                    emit statusChanged(QString::fromStdString(msg.substr(Space + 1)));
+                }
+            }
         }
         else if (ctx.find("Execute") != std::string::npos && msg.find("Process exited") != std::string::npos)
         {
@@ -101,6 +87,7 @@ void LaunchThread::run()
     //Build the global node index here (worker thread) and point the engine at the launch node. Index is a local
     //that outlives LocalWrapper (which holds ContainerParams by reference). BuildCatalogIndex = repos + locally-added
     //packages, so a launch of an externally-added bundle resolves (same source the library lists from).
+    LogStep(1, 12, "Indexing the package catalog");
     auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));
     Params.NodeIdx      = Index.get();
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling

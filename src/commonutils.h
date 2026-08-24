@@ -32,4 +32,12 @@ inline void LogSucc(const std::string& ctx, const std::string& msg) { Log(LogLev
 //QString::fromStdString.
 std::string HumanBytes(long long Bytes);
 
+//Structured launch-step marker: context "LaunchStep", message "<k>/<n> <label>". This is a CONTRACT, not
+//log phrasing: the prelaunch progress bar/status parse exactly this shape (LaunchThread), so the engine
+//announces every phase through here — never by ad-hoc log-line heuristics.
+inline void LogStep(int K, int N, const std::string &Label)
+{
+    Log(LogLevel::OUT, "LaunchStep", std::to_string(K) + "/" + std::to_string(N) + " " + Label);
+}
+
 #endif // COMMONUTILS_H
