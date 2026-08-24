@@ -124,6 +124,15 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             RW.MergeKeyFrom(Dpfx, "HKLM\\System\\Select");
             RW.MergeKeyFrom(Dpfx, "HKLM\\System\\CurrentControlSet");
             RW.MergeKeyFrom(Dpfx, "HKLM\\System\\ControlSet001\\Services\\MountMgr");
+            //MCI device registry (the FOURTH shadowing victim): winmm's MCI resolves a media file's device
+            //by extension via "MCI Extensions" (avi→AVIVideo, …) and the device's driver via "MCI32"
+            //(AVIVideo→mciavi32.dll, …). With both gone, mciSendString(open "….avi") fails with
+            //MCIERR_EXTENSION_NOT_FOUND — games show "cannot determine type by extension" instead of
+            //playing their intro videos (observed on AoE2). Both registry views: 32-bit games read Wow6432Node.
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\MCI Extensions");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI Extensions");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
             if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
             {
