@@ -17,6 +17,9 @@
 #include "ipfssettingspage.h"
 
 #include <QCheckBox>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QTreeWidget>
 
 using json = nlohmann::ordered_json;
 
@@ -49,6 +52,20 @@ private slots:
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }
     void settings_tab_constructs()  { AppModel m(&Cfg, &AppDir); SettingsTab t(m); QVERIFY(renders(&t)); }
     void ipfs_tab_constructs()      { AppModel m(&Cfg, &AppDir); IpfsModel im(m); IpfsTab t(im); QVERIFY(renders(&t)); }
+
+    // The overhauled IPFS tab: qBittorrent-style sidebar (Status + Categories filter lists), a search box, and a
+    // 7-column tree (per-row buttons replaced by the context menu).
+    void ipfs_tab_has_filter_sidebar_and_search()
+    {
+        AppModel m(&Cfg, &AppDir); IpfsModel im(m); IpfsTab t(im);
+        const auto Lists = t.findChildren<QListWidget *>();
+        QCOMPARE(Lists.size(), 2);
+        QCOMPARE(Lists[0]->count() + Lists[1]->count(), 7 + 4);   // status kinds + category kinds
+        QVERIFY(t.findChild<QLineEdit *>() != nullptr);
+        const auto Trees = t.findChildren<QTreeWidget *>();
+        QCOMPARE(Trees.size(), 1);
+        QCOMPARE(Trees[0]->columnCount(), 7);
+    }
 
     // The Settings → IPFS "Enable networking" checkbox drives the model (which starts the node + un-greys tabs).
     void ipfs_page_networking_toggle_drives_model()

@@ -3,6 +3,7 @@
 #include "packagecatalog.h"
 #include "manifestmodel.h"
 #include "downloadqueue.h"   // IpfsWrapper::CancelDownload / PrioritizeDownload
+#include "asyncwork.h"       // guarded off-thread publish
 
 #include <QTimer>
 #include <QDateTime>
@@ -29,7 +30,8 @@ static const QString CatMeta    = QStringLiteral("Meta");
 // thread during refreshes).
 static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
                                               QHash<QString, QString> * OutPackages,
-                                              QHash<QString, QString> * OutCategory)
+                                              QHash<QString, QString> * OutCategory,
+                                              QHash<QString, QString> * OutPkgDirs = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
@@ -43,6 +45,8 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             PkgName = (i < F.size()) ? F.substr(i) : F;
         }
         if (PkgName.empty()) PkgName = N.Meta.is_object() ? N.Meta.value("TITLE", N.GameKey()) : N.GameKey();
+        if (OutPkgDirs && !PkgName.empty() && !N.BundleDir.empty())
+            OutPkgDirs->insert(QString::fromStdString(PkgName), QString::fromStdString(N.BundleDir.string()));
 
         if (N.Layers.is_array())
             for (const auto & L : N.Layers)
@@ -180,7 +184,7 @@ void IpfsModel::ensureLabels(const QString & cid)
 {
     if (Cids.contains(cid) && !Cids[cid].label.isEmpty()) return;
     QHash<QString, QString> Pkgs, Cats;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats);
+    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs);
     CidState & s = Cids[cid];
     s.label    = Labels.value(cid, QStringLiteral("(unknown)"));
     s.package  = Pkgs.value(cid, QStringLiteral("Unknown / not in your library"));
@@ -190,7 +194,7 @@ void IpfsModel::ensureLabels(const QString & cid)
 void IpfsModel::rebuildLabels()
 {
     QHash<QString, QString> Pkgs, Cats;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats);
+    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs);
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
         it->label    = Labels.value(cid, it->label.isEmpty() ? QStringLiteral("(unknown)") : it->label);
@@ -201,6 +205,69 @@ void IpfsModel::rebuildLabels()
 
 void IpfsModel::cancel(const QString & cid)      { IpfsWrapper::CancelDownload(cid.toStdString()); }
 void IpfsModel::prioritize(const QString & cid)  { IpfsWrapper::PrioritizeDownload(cid.toStdString()); }
+
+QString IpfsModel::packageCid(const QString & pkg) const
+{
+    const QString Dir = PkgDirs.value(pkg);
+    if (Dir.isEmpty()) return {};
+    const std::string Key = std::filesystem::path(Dir.toStdString()).filename().string();
+    const auto & Cfg = *Model.config();
+    if (Cfg.contains("Settings") && Cfg["Settings"].is_object()
+        && Cfg["Settings"].contains("PackageCids") && Cfg["Settings"]["PackageCids"].is_object())
+        return QString::fromStdString(Cfg["Settings"]["PackageCids"].value(Key, std::string()));
+    return {};
+}
+
+// Mint (or re-mint after edits) the package-level meta-CID: the text-only folder CID of ONE package's bundle dir —
+// the shareable unit between a single file's content CID and a whole source's library CID. Persisted in
+// Settings.PackageCids so the tree can keep showing it; anyone can add it as a package source to receive the package.
+void IpfsModel::publishPackage(const QString & pkg)
+{
+    const QString Dir = PkgDirs.value(pkg);
+    if (Dir.isEmpty()) { emit packagePublished(pkg, {}, QStringLiteral("package folder unknown")); return; }
+    auto Cid = std::make_shared<std::string>();
+    auto Err = std::make_shared<std::string>();
+    AsyncWork::Run(this,
+        [Dir, Cid, Err]{ *Cid = PackageCatalog::PublishMetaCid(Dir.toStdString(), Err.get()); },
+        [this, pkg, Dir, Cid, Err]{
+            if (Cid->empty()) { emit packagePublished(pkg, {}, QString::fromStdString(*Err)); return; }
+            auto & Cfg = *Model.config();
+            Cfg["Settings"]["PackageCids"][std::filesystem::path(Dir.toStdString()).filename().string()] = *Cid;
+            Model.save();
+            emit packagePublished(pkg, QString::fromStdString(*Cid), {});
+            refresh();   // the publish pinned the package's fragment CIDs — reflect them
+        });
+}
+
+void IpfsModel::recheckHealth(const QStringList & cids)
+{
+    for (const QString & c : cids)
+        if (Cids.contains(c)) { Cids[c].providers = -2; Cids[c].missing = -1; emit cidChanged(c); }
+    gatherHealth();
+}
+
+void IpfsModel::unpinMany(const QStringList & cids)
+{
+    for (const QString & c : cids) IpfsWrapper::Unpin(c.toStdString());
+    refreshNow();
+}
+
+void IpfsModel::addSource(const QString & cid, const QString & name)
+{
+    auto & Cfg = *Model.config();
+    auto & Sources = Cfg["Settings"]["PackageSources"];
+    if (!Sources.is_array()) Sources = nlohmann::ordered_json::array();
+    for (const auto & S : Sources)
+    {
+        const std::string Have = S.is_object() ? S.value("CID", std::string())
+                               : (S.is_string() ? std::string(S) : std::string());
+        if (Have == cid.toStdString()) return;   // already configured
+    }
+    Sources.push_back({ {"NAME", name.toStdString()}, {"CID", cid.toStdString()} });
+    Model.save();
+    Model.syncSources();   // fetch + index it now (no-op per-CID once hydrated)
+    refresh();
+}
 
 void IpfsModel::markQueued(const QString & cid)
 {

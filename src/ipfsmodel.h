@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QHash>
 #include <QString>
+#include <QStringList>
 #include <QPair>
 #include <QSet>
 
@@ -63,6 +64,11 @@ public:
     double    pct(const QString & cid)  const { return Cids.value(cid).pct; }    // for DownloadManager progress
     qlonglong size(const QString & cid) const { return Cids.value(cid).size; }
 
+    // ── Package-level CIDs (first-class): the meta-CID of ONE package folder, between a file's content CID and a
+    // whole source's library meta-CID. Others add it in Settings → Sources to receive exactly that package. ──
+    QString packageDir(const QString & pkg) const { return PkgDirs.value(pkg); }
+    QString packageCid(const QString & pkg) const;   // recorded CID from Settings.PackageCids, empty if never published
+
 public slots:
     void setActive(bool on);                 // tab shown/hidden → start/stop the periodic refresh
     void refreshNow();                       // force a status/pin/health gather (clears cached health first if force)
@@ -71,6 +77,10 @@ public slots:
     void markQueued(const QString & cid);    // a download enqueued a CID (pre-show it as Queued)
     void clearQueued(const QString & cid);   // a queued CID was dropped/finished before starting
     void seedFolder(const QString & dir);    // add a folder's published content to the node (off-thread)
+    void publishPackage(const QString & pkg);       // mint/refresh the package-level meta-CID (off-thread), persist it
+    void recheckHealth(const QStringList & cids);   // drop cached health for these CIDs and re-gather
+    void unpinMany(const QStringList & cids);       // stop seeding a batch, then one refresh
+    void addSource(const QString & cid, const QString & name);   // append a package source CID + kick a sync
 
 signals:
     void cidChanged(const QString & cid);    // one CID's state changed → upsert its row
@@ -79,6 +89,7 @@ signals:
     void nodeStatusChanged();                // the status strip data changed
     void seedProgress(int done, int total);  // "Seeding N/M…" for the tab's Seed button
     void seedFinished(int seeded, int mismatched);
+    void packagePublished(const QString & pkg, const QString & cid, const QString & error);
 
 private:
     void refresh();                          // internal: kick the off-thread gather (no-op if node down / already running)
@@ -95,6 +106,7 @@ private:
     AppModel & Model;
 
     QHash<QString, CidState>                   Cids;
+    QHash<QString, QString>                    PkgDirs;           // package display name → its bundle dir (for publish)
     NodeStatus                                 Status;
     QSet<QString>                              PendingSources;    // configured source CIDs not yet fetched
     QHash<QString, QPair<qlonglong,qlonglong>> Speed;             // CID → {sampleBytes, sampleMs} for the rate calc

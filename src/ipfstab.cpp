@@ -5,6 +5,10 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QListWidgetItem>
+#include <QMenu>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -12,6 +16,7 @@
 #include <QTreeWidgetItem>
 #include <QHeaderView>
 #include <QFileDialog>
+#include <QInputDialog>
 #include <QMessageBox>
 #include <QApplication>
 #include <QClipboard>
@@ -23,6 +28,7 @@
 #include <QColor>
 #include <QFont>
 #include <QDir>
+#include <QTimer>
 
 #include <cmath>
 #include <utility>
@@ -80,6 +86,16 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
     return { QString("● %1").arg(Providers),                         QColor("#5fb55f") };
 }
 
+// Tree depth: 0 = category, 1 = package group, 2 = CID leaf.
+static int RowDepth(const QTreeWidgetItem * it)
+{
+    int d = 0;
+    while ((it = it->parent()) != nullptr) ++d;
+    return d;
+}
+
+static const QString CatAssetsName = QStringLiteral("Assets");
+
 // ===== IpfsTab =====
 
 IpfsTab::IpfsTab(IpfsModel & model, QWidget * parent)
@@ -87,10 +103,23 @@ IpfsTab::IpfsTab(IpfsModel & model, QWidget * parent)
 {
     buildUi();
 
-    connect(&Model, &IpfsModel::cidChanged,       this, [this](const QString & cid){ renderLeaf(cid); });
-    connect(&Model, &IpfsModel::cidRemoved,       this, [this](const QString & cid){ removeLeaf(cid); });
-    connect(&Model, &IpfsModel::modelReset,       this, [this]{ reconcile(); });
+    connect(&Model, &IpfsModel::cidChanged,        this, [this](const QString & cid){ renderLeaf(cid); });
+    connect(&Model, &IpfsModel::cidRemoved,        this, [this](const QString & cid){ removeLeaf(cid); });
+    connect(&Model, &IpfsModel::modelReset,        this, [this]{ reconcile(); });
     connect(&Model, &IpfsModel::nodeStatusChanged, this, [this]{ paintStatus(); });
+    connect(&Model, &IpfsModel::packagePublished,  this, [this](const QString & pkg, const QString & cid, const QString & err){
+        if (cid.isEmpty())
+        {
+            QMessageBox::warning(this, "Publish package", QString("Publishing \"%1\" failed:\n%2").arg(pkg, err));
+            return;
+        }
+        for (auto it = IpfsPinGroups.constBegin(); it != IpfsPinGroups.constEnd(); ++it)
+            if (it.key().section(QChar(0x1f), 1) == pkg) paintGroupCid(it.value(), pkg);
+        QApplication::clipboard()->setText(cid);
+        QMessageBox::information(this, "Publish package",
+            QString("Package CID for \"%1\" (copied to clipboard):\n\n%2\n\nAnyone can add it as a package source "
+                    "to receive this package.").arg(pkg, cid));
+    });
 
     paintStatus();
     reconcile();
@@ -132,10 +161,27 @@ void IpfsTab::buildUi()
     IpfsHintLabel->setStyleSheet("color:#8f98a0;font-size:9pt;");
     IpfsHintLabel->hide();
 
-    // Button row (seed + refresh).
-    QHBoxLayout * statusRow = new QHBoxLayout();
-    QPushButton * refreshBtn = new QPushButton("Refresh", this);
-    connect(refreshBtn, &QPushButton::clicked, &Model, &IpfsModel::refreshNow);   // force a fresh size/health re-stat
+    // Toolbar: search + global actions (per-row actions live in the tree's context menu).
+    QHBoxLayout * toolbar = new QHBoxLayout();
+    SearchBox = new QLineEdit(this);
+    SearchBox->setPlaceholderText("Search name / package / CID…");
+    SearchBox->setClearButtonEnabled(true);
+    connect(SearchBox, &QLineEdit::textChanged, this, [this]{ applyFilters(); updateFilterCounts(); });
+    toolbar->addWidget(SearchBox, 1);
+
+    QPushButton * addSrcBtn = new QPushButton("Add source…", this);
+    addSrcBtn->setToolTip("Add a package or library CID someone shared with you — its packages appear in the Catalog.");
+    connect(addSrcBtn, &QPushButton::clicked, this, [this]{
+        bool ok = false;
+        const QString Cid = QInputDialog::getText(this, "Add source", "Package / library CID:",
+                                                  QLineEdit::Normal, QString(), &ok).trimmed();
+        if (!ok || Cid.isEmpty()) return;
+        const QString Name = QInputDialog::getText(this, "Add source", "Name for this source:",
+                                                   QLineEdit::Normal, Cid.left(12), &ok).trimmed();
+        if (!ok) return;
+        Model.addSource(Cid, Name.isEmpty() ? Cid.left(12) : Name);
+    });
+    toolbar->addWidget(addSrcBtn);
 
     SeedBtn = new QPushButton("Seed folder…", this);
     SeedBtn->setToolTip("Add a folder's published content to the IPFS node so it seeds (e.g. your master library).");
@@ -157,33 +203,99 @@ void IpfsTab::buildUi()
                                            "recorded CID couldn't be re-seeded.").arg(mismatched).arg(mismatched == 1 ? "" : "s");
         QMessageBox::information(this, "Seed folder", Msg);
     });
-    statusRow->addStretch(1);
-    statusRow->addWidget(SeedBtn);
-    statusRow->addWidget(refreshBtn);
-    v->addLayout(statusRow);
+    toolbar->addWidget(SeedBtn);
 
-    // Unified content view (transfers + seeded), grouped category → package → CID.
-    QGroupBox * pinBox = new QGroupBox("Content", this);
-    QVBoxLayout * pl = new QVBoxLayout(pinBox);
-    IpfsPins = new QTreeWidget(pinBox);
-    IpfsPins->setColumnCount(11);   // …CID, then one column PER action button so they line up across rows
-    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID", "", "", "", ""});
+    QPushButton * refreshBtn = new QPushButton("Refresh", this);
+    connect(refreshBtn, &QPushButton::clicked, &Model, &IpfsModel::refreshNow);   // force a fresh size/health re-stat
+    toolbar->addWidget(refreshBtn);
+    v->addLayout(toolbar);
+
+    // Sidebar filters + content tree, side by side.
+    QHBoxLayout * body = new QHBoxLayout();
+    body->addWidget(buildSidebar());
+
+    IpfsPins = new QTreeWidget(this);
+    IpfsPins->setColumnCount(7);
+    IpfsPins->setHeaderLabels({"Name", "Size", "Progress", "Speed", "Status", "Health", "CID"});
     IpfsPins->header()->setSectionResizeMode(QHeaderView::Interactive);
     IpfsPins->header()->setStretchLastSection(false);
     IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    IpfsPins->setSelectionMode(QAbstractItemView::NoSelection);
+    IpfsPins->setSelectionMode(QAbstractItemView::ExtendedSelection);
     IpfsPins->setSortingEnabled(true);
     IpfsPins->sortByColumn(0, Qt::AscendingOrder);
-    pl->addWidget(IpfsPins);
-    v->addWidget(pinBox, 1);
+    IpfsPins->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(IpfsPins, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint & p){ showContextMenu(p); });
+    body->addWidget(IpfsPins, 1);
+    v->addLayout(body, 1);
 
     v->addWidget(IpfsStatusTable);
     v->addWidget(IpfsHintLabel);
+
+    CountsDebounce = new QTimer(this);
+    CountsDebounce->setSingleShot(true);
+    CountsDebounce->setInterval(300);
+    connect(CountsDebounce, &QTimer::timeout, this, [this]{ updateFilterCounts(); });
+}
+
+QWidget * IpfsTab::buildSidebar()
+{
+    QWidget * side = new QWidget(this);
+    side->setFixedWidth(200);
+    QVBoxLayout * sv = new QVBoxLayout(side);
+    sv->setContentsMargins(0,0,0,0);
+    sv->setSpacing(4);
+
+    const char * ListStyle =
+        "QListWidget{background:#20252b;border:1px solid #2c333b;border-radius:4px;font-size:9pt;}"
+        "QListWidget::item{padding:3px 6px;}"
+        "QListWidget::item:selected{background:#2f3944;color:#e6eef5;}";
+    auto sectionLabel = [side](const QString & text){
+        QLabel * l = new QLabel(text, side);
+        l->setStyleSheet("color:#8f98a0;font-size:8pt;font-weight:bold;padding-left:2px;");
+        return l;
+    };
+
+    sv->addWidget(sectionLabel("STATUS"));
+    StatusFilters = new QListWidget(side);
+    StatusFilters->setStyleSheet(ListStyle);
+    const std::pair<int, const char *> Statuses[] = {
+        { SAll,         "All"         }, { SDownloading, "Downloading" }, { SSeeding, "Seeding" },
+        { SQueued,      "Queued"      }, { SStalled,     "Stalled"     }, { SErrored, "Errored" },
+        { SPending,     "Not fetched" },
+    };
+    for (const auto & [Kind, Name] : Statuses)
+    {
+        QListWidgetItem * it = new QListWidgetItem(QString::fromLatin1(Name), StatusFilters);
+        it->setData(Qt::UserRole, Kind);
+    }
+    StatusFilters->setCurrentRow(0);
+    connect(StatusFilters, &QListWidget::currentItemChanged, this, [this](QListWidgetItem * cur, QListWidgetItem *){
+        CurrentStatus = cur ? cur->data(Qt::UserRole).toInt() : SAll;
+        applyFilters();
+    });
+    sv->addWidget(StatusFilters, 3);
+
+    sv->addWidget(sectionLabel("CATEGORIES"));
+    CategoryFilters = new QListWidget(side);
+    CategoryFilters->setStyleSheet(ListStyle);
+    for (const char * Name : { "All", "Content", "Assets", "Meta" })
+    {
+        QListWidgetItem * it = new QListWidgetItem(QString::fromLatin1(Name), CategoryFilters);
+        it->setData(Qt::UserRole, QString::fromLatin1(Name) == "All" ? QString() : QString::fromLatin1(Name));
+    }
+    CategoryFilters->setCurrentRow(0);
+    connect(CategoryFilters, &QListWidget::currentItemChanged, this, [this](QListWidgetItem * cur, QListWidgetItem *){
+        CurrentCategory = cur ? cur->data(Qt::UserRole).toString() : QString();
+        applyFilters();
+    });
+    sv->addWidget(CategoryFilters, 2);
+    sv->addStretch(1);
+    return side;
 }
 
 // Find or create a CID's leaf under its category (Content/Assets/Meta) → package group, using the model's label/
-// package/category for this CID.
+// package/category for this CID. Default expansion: categories open (Assets closed), package groups closed.
 QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
 {
     if (!IpfsPins) return nullptr;
@@ -200,7 +312,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         cat->setText(0, CatName);
         QFont cf = cat->font(0); cf.setBold(true); cf.setPointSizeF(cf.pointSizeF() + 0.5); cat->setFont(0, cf);
         cat->setFlags(cat->flags() & ~Qt::ItemIsSelectable);
-        cat->setExpanded(true);
+        cat->setExpanded(CatName != CatAssetsName);
         IpfsPinCategories.insert(CatName, cat);
     }
     const QString GroupKey = CatName + QChar(0x1f) + PkgName;
@@ -212,6 +324,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
         grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
         grp->setExpanded(false);
+        paintGroupCid(grp, PkgName);
         IpfsPinGroups.insert(GroupKey, grp);
     }
 
@@ -221,33 +334,25 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     else if (LeafName == PkgName)             LeafName = QStringLiteral("content");
     QTreeWidgetItem * child = new QTreeWidgetItem(grp);
     child->setText(0, LeafName);
+    child->setToolTip(0, QString("%1\n%2").arg(st.label, cid));
     child->setText(6, cid);
-
-    // Each action button gets its OWN column (7..10) so they align across rows. Wrap each in a thin cell for padding.
-    auto placeBtn = [this, child](int col, QPushButton * b){
-        QWidget * w = new QWidget();
-        QHBoxLayout * l = new QHBoxLayout(w); l->setContentsMargins(2,1,2,1); l->setSpacing(0);
-        l->addWidget(b);
-        IpfsPins->setItemWidget(child, col, w);
-    };
-    QPushButton * prioBtn   = new QPushButton("Prioritize");
-    QPushButton * cancelBtn = new QPushButton("Cancel");
-    QPushButton * copyBtn   = new QPushButton("Copy CID");
-    QPushButton * unpinBtn  = new QPushButton("Unpin");
-    prioBtn->setVisible(false); cancelBtn->setVisible(false);
-    connect(prioBtn,   &QPushButton::clicked, this, [this, cid]{ Model.prioritize(cid); });
-    connect(cancelBtn, &QPushButton::clicked, this, [this, cid]{ Model.cancel(cid); });
-    connect(copyBtn,   &QPushButton::clicked, this, [cid]{ QApplication::clipboard()->setText(cid); });
-    connect(unpinBtn,  &QPushButton::clicked, this, [this, cid]{ IpfsWrapper::Unpin(cid.toStdString()); Model.refreshNow(); });
-    placeBtn(7, prioBtn); placeBtn(8, cancelBtn); placeBtn(9, copyBtn); placeBtn(10, unpinBtn);
     IpfsPinChildren.insert(cid, child);
-    IpfsCancelBtns.insert(cid, cancelBtn);
-    IpfsPrioBtns.insert(cid, prioBtn);
     IpfsPins->setSortingEnabled(true);
     return child;
 }
 
-// Paint one CID's columns from the model's CidState (creating its leaf if needed).
+// The package-level meta-CID lives on the package group row (CID column) once published.
+void IpfsTab::paintGroupCid(QTreeWidgetItem * grp, const QString & pkg)
+{
+    const QString Cid = Model.packageCid(pkg);
+    grp->setText(6, Cid);
+    grp->setForeground(6, QColor("#8f98a0"));
+    grp->setToolTip(6, Cid.isEmpty() ? QString()
+        : QString("Package CID — share it; others add it as a package source to receive \"%1\".").arg(pkg));
+}
+
+// Paint one CID's columns from the model's CidState (creating its leaf if needed). A seeded pin whose backing files
+// are gone is presented as ERRORED (qBittorrent's "missing files" semantics), not as a healthy seed.
 void IpfsTab::renderLeaf(const QString & cid)
 {
     if (!Model.has(cid)) { removeLeaf(cid); return; }
@@ -261,6 +366,7 @@ void IpfsTab::renderLeaf(const QString & cid)
     leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
 
     // Progress bar value + colour code.
+    const bool MissingFiles = (st.phase == P::Seeded && st.missing == 1);
     const int Bar = (st.phase == P::Seeded) ? 100 : (st.pct >= 0 ? (int)std::lround(st.pct) : -1);
     int Role = StSeeded; QString Status; QColor Fg("#c6d4df");
     switch (st.phase)
@@ -279,9 +385,18 @@ void IpfsTab::renderLeaf(const QString & cid)
         leaf->setToolTip(4, st.error.isEmpty() ? QStringLiteral("Download failed") : st.error);
         break; }
     case P::Seeded:
-        Role = StSeeded;
-        Status = st.uploading ? QStringLiteral("⬆ Uploading") : QStringLiteral("Seeding");
-        Fg = st.uploading ? QColor("#4a90d9") : QColor("#5fb55f");
+        if (MissingFiles)
+        {
+            Role = StErrored; Status = QStringLiteral("Errored: missing files"); Fg = QColor("#c0726a");
+            leaf->setToolTip(4, QStringLiteral("The seeded content's backing file is gone from disk — "
+                                               "it can no longer be served to peers."));
+        }
+        else
+        {
+            Role = StSeeded;
+            Status = st.uploading ? QStringLiteral("⬆ Uploading") : QStringLiteral("Seeding");
+            Fg = st.uploading ? QColor("#4a90d9") : QColor("#5fb55f");
+        }
         break;
     }
     leaf->setData(2, Qt::DisplayRole, Bar);
@@ -294,18 +409,14 @@ void IpfsTab::renderLeaf(const QString & cid)
     if (st.phase == P::Pending) leaf->setText(5, QString());
     else { const auto [Txt, Col] = IpfsHealthText(st.providers, st.missing); leaf->setText(5, Txt); leaf->setForeground(5, Col); }
 
-    // Queue controls: Cancel while queued/active; Prioritize only while still queued.
-    const bool Fetching = (st.phase == P::Downloading || st.phase == P::Pinning || st.phase == P::Stalled);
-    if (QPushButton * b = IpfsCancelBtns.value(cid, nullptr)) b->setVisible(st.phase == P::Queued || Fetching);
-    if (QPushButton * b = IpfsPrioBtns.value(cid, nullptr))   b->setVisible(st.phase == P::Queued);
-
-    if (leaf->parent()) leaf->parent()->setExpanded(true);
+    leaf->setHidden(!leafMatches(cid));
+    if (CountsDebounce) CountsDebounce->start();
 }
 
 void IpfsTab::removeLeaf(const QString & cid)
 {
-    IpfsCancelBtns.remove(cid); IpfsPrioBtns.remove(cid);   // buttons die with the item widget
     if (QTreeWidgetItem * leaf = IpfsPinChildren.take(cid)) delete leaf;
+    if (CountsDebounce) CountsDebounce->start();
 }
 
 // Full rebuild from the model's CID set: upsert every known CID, drop leaves no longer in the model, refresh totals.
@@ -322,6 +433,8 @@ void IpfsTab::reconcile()
     for (auto it = Cids.constBegin(); it != Cids.constEnd(); ++it) renderLeaf(it.key());
 
     updateGroupTotals();
+    applyFilters();
+    updateFilterCounts();
 
     IpfsPins->setSortingEnabled(true);
     if (VBar) VBar->setValue(Scroll);
@@ -337,6 +450,183 @@ void IpfsTab::reconcile()
         IpfsPins->resizeColumnToContents(5);   // Health
     }
     if (qEnvironmentVariableIsSet("VIDYAGOD_IPFS_EXPAND")) IpfsPins->expandAll();
+}
+
+// ===== filtering =====
+
+int IpfsTab::effectiveStatus(const QString & cid) const
+{
+    const IpfsModel::CidState st = Model.state(cid);
+    using P = IpfsModel::CidState;
+    switch (st.phase)
+    {
+    case P::Pending:     return SPending;
+    case P::Queued:      return SQueued;
+    case P::Downloading: return SDownloading;
+    case P::Pinning:     return SDownloading;
+    case P::Stalled:     return SStalled;
+    case P::Errored:     return SErrored;
+    case P::Seeded:      return st.missing == 1 ? SErrored : SSeeding;   // missing files ⇒ errored, like qBittorrent
+    }
+    return SSeeding;
+}
+
+bool IpfsTab::leafMatches(const QString & cid) const
+{
+    if (CurrentStatus != SAll && effectiveStatus(cid) != CurrentStatus) return false;
+    const IpfsModel::CidState st = Model.state(cid);
+    if (!CurrentCategory.isEmpty())
+    {
+        const QString Cat = st.category.isEmpty() ? QStringLiteral("Content") : st.category;
+        if (Cat != CurrentCategory) return false;
+    }
+    const QString Needle = SearchBox ? SearchBox->text().trimmed() : QString();
+    if (!Needle.isEmpty()
+        && !st.label.contains(Needle, Qt::CaseInsensitive)
+        && !st.package.contains(Needle, Qt::CaseInsensitive)
+        && !cid.contains(Needle, Qt::CaseInsensitive)) return false;
+    return true;
+}
+
+// Hide non-matching leaves and any group/category left empty; auto-expand matches while a filter is active, and
+// restore the default expansion (categories open except Assets, packages closed) when the last filter is cleared.
+void IpfsTab::applyFilters()
+{
+    if (!IpfsPins) return;
+    const bool Filtered = CurrentStatus != SAll || !CurrentCategory.isEmpty()
+                          || (SearchBox && !SearchBox->text().trimmed().isEmpty());
+
+    for (auto it = IpfsPinChildren.constBegin(); it != IpfsPinChildren.constEnd(); ++it)
+        it.value()->setHidden(!leafMatches(it.key()));
+
+    for (QTreeWidgetItem * grp : IpfsPinGroups)
+    {
+        bool AnyVisible = false;
+        for (int i = 0; i < grp->childCount() && !AnyVisible; ++i) AnyVisible = !grp->child(i)->isHidden();
+        grp->setHidden(!AnyVisible);
+        if (Filtered && AnyVisible) grp->setExpanded(true);
+    }
+    for (auto it = IpfsPinCategories.constBegin(); it != IpfsPinCategories.constEnd(); ++it)
+    {
+        QTreeWidgetItem * cat = it.value();
+        bool AnyVisible = false;
+        for (int i = 0; i < cat->childCount() && !AnyVisible; ++i) AnyVisible = !cat->child(i)->isHidden();
+        cat->setHidden(!AnyVisible);
+        if (Filtered && AnyVisible) cat->setExpanded(true);
+    }
+
+    if (!Filtered && WasFiltered)
+    {
+        for (auto it = IpfsPinCategories.constBegin(); it != IpfsPinCategories.constEnd(); ++it)
+            it.value()->setExpanded(it.key() != CatAssetsName);
+        for (QTreeWidgetItem * grp : IpfsPinGroups) grp->setExpanded(false);
+    }
+    WasFiltered = Filtered;
+}
+
+void IpfsTab::updateFilterCounts()
+{
+    if (!StatusFilters || !CategoryFilters) return;
+    int ByStatus[SCount] = {};
+    QHash<QString, int> ByCat;
+    int Total = 0;
+    const QHash<QString, IpfsModel::CidState> & Cids = Model.cids();
+    for (auto it = Cids.constBegin(); it != Cids.constEnd(); ++it)
+    {
+        ++Total;
+        const int S = effectiveStatus(it.key());
+        if (S >= 0 && S < SCount) ++ByStatus[S];
+        ++ByCat[it->category.isEmpty() ? QStringLiteral("Content") : it->category];
+    }
+    static const char * StatusNames[SCount] = { "All", "Downloading", "Seeding", "Queued", "Stalled", "Errored", "Not fetched" };
+    for (int i = 0; i < StatusFilters->count(); ++i)
+    {
+        QListWidgetItem * it = StatusFilters->item(i);
+        const int Kind = it->data(Qt::UserRole).toInt();
+        const int N = (Kind == SAll) ? Total : ByStatus[Kind];
+        it->setText(QString("%1 (%2)").arg(QString::fromLatin1(StatusNames[Kind])).arg(N));
+    }
+    for (int i = 0; i < CategoryFilters->count(); ++i)
+    {
+        QListWidgetItem * it = CategoryFilters->item(i);
+        const QString Cat = it->data(Qt::UserRole).toString();
+        const int N = Cat.isEmpty() ? Total : ByCat.value(Cat, 0);
+        it->setText(QString("%1 (%2)").arg(Cat.isEmpty() ? QStringLiteral("All") : Cat).arg(N));
+    }
+}
+
+// ===== context menu =====
+
+void IpfsTab::showContextMenu(const QPoint & pos)
+{
+    if (!IpfsPins) return;
+    QTreeWidgetItem * Clicked = IpfsPins->itemAt(pos);
+
+    // The CID set the leaf actions apply to: the multi-selection, or just the clicked row if it isn't part of one.
+    QStringList Sel;
+    for (QTreeWidgetItem * s : IpfsPins->selectedItems())
+        if (RowDepth(s) == 2) Sel << s->text(6);
+    if (Clicked && RowDepth(Clicked) == 2 && !Sel.contains(Clicked->text(6)))
+    {
+        Sel = QStringList{ Clicked->text(6) };
+        IpfsPins->setCurrentItem(Clicked);
+    }
+
+    QMenu menu(this);
+    using P = IpfsModel::CidState;
+
+    if (!Sel.isEmpty())
+    {
+        bool AnyQueued = false, AnyActive = false, AnyPinned = false;
+        for (const QString & c : Sel)
+        {
+            const P st = Model.state(c);
+            AnyQueued |= (st.phase == P::Queued);
+            AnyActive |= (st.phase == P::Queued || st.phase == P::Downloading
+                          || st.phase == P::Pinning || st.phase == P::Stalled);
+            AnyPinned |= (st.phase == P::Seeded || st.phase == P::Errored);
+        }
+        const int N = Sel.size();
+        menu.addAction(N == 1 ? QStringLiteral("Copy CID") : QString("Copy %1 CIDs").arg(N), this, [Sel]{
+            QApplication::clipboard()->setText(Sel.join('\n'));
+        });
+        if (AnyQueued)
+            menu.addAction("Prioritize", this, [this, Sel]{ for (const QString & c : Sel) Model.prioritize(c); });
+        if (AnyActive)
+            menu.addAction("Cancel download", this, [this, Sel]{ for (const QString & c : Sel) Model.cancel(c); });
+        menu.addAction("Re-check health", this, [this, Sel]{ Model.recheckHealth(Sel); });
+        if (AnyPinned)
+        {
+            menu.addSeparator();
+            menu.addAction(N == 1 ? QStringLiteral("Unpin (stop seeding)…") : QString("Unpin %1 items…").arg(N),
+                           this, [this, Sel, N]{
+                if (QMessageBox::question(this, "Unpin",
+                        QString("Stop seeding %1 item%2? The content stays on disk; only the node's pin is removed.")
+                            .arg(N).arg(N == 1 ? "" : "s")) != QMessageBox::Yes) return;
+                Model.unpinMany(Sel);
+            });
+        }
+    }
+    else if (Clicked && RowDepth(Clicked) == 1)
+    {
+        const QString Pkg = Clicked->text(0);
+        const QString PkgCid = Model.packageCid(Pkg);
+        const bool CanPublish = !Model.packageDir(Pkg).isEmpty();
+        if (!PkgCid.isEmpty())
+            menu.addAction("Copy package CID", this, [PkgCid]{ QApplication::clipboard()->setText(PkgCid); });
+        if (CanPublish)
+            menu.addAction(PkgCid.isEmpty() ? QStringLiteral("Publish package CID…")
+                                            : QStringLiteral("Re-publish package CID…"),
+                           this, [this, Pkg]{ Model.publishPackage(Pkg); });
+        if (!menu.isEmpty()) menu.addSeparator();
+        menu.addAction(Clicked->isExpanded() ? "Collapse" : "Expand",
+                       this, [Clicked]{ Clicked->setExpanded(!Clicked->isExpanded()); });
+    }
+
+    if (!menu.isEmpty()) menu.addSeparator();
+    menu.addAction("Expand all",   this, [this]{ IpfsPins->expandAll(); });
+    menu.addAction("Collapse all", this, [this]{ IpfsPins->collapseAll(); });
+    menu.exec(IpfsPins->viewport()->mapToGlobal(pos));
 }
 
 void IpfsTab::updateGroupTotals()
