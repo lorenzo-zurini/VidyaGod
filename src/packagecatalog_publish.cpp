@@ -14,6 +14,7 @@
 #include <QFile>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -252,9 +253,46 @@ int SeedDirectory(const std::string &Dir,
 int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     const std::vector<std::string> Dirs = PackageSourceDirs(GlobalConfigJSON);
+    std::set<std::string> Referenced;
     for (const std::string &Dir : Dirs)
+    {
         SeedDirectory(Dir);   // additive: re-points orphaned refs to their present path, skips intact CIDs (no re-hash)
-    return static_cast<int>(Dirs.size());
+        for (const auto &[Path, Cid] : SeedTargets(Dir)) Referenced.insert(Cid);
+    }
+
+    // Config-level meta-CIDs (package sources + published package CIDs) are pinned but never appear inside node
+    // JSONs — count them as referenced so the prune below can never touch them.
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+    {
+        const auto &S = GlobalConfigJSON["Settings"];
+        if (S.contains("PackageSources") && S["PackageSources"].is_array())
+            for (const auto &Src : S["PackageSources"])
+            {
+                const std::string Cid = Src.is_object() ? Src.value("CID", std::string())
+                                      : (Src.is_string() ? Src.get<std::string>() : std::string());
+                if (!Cid.empty()) Referenced.insert(Cid);
+            }
+        if (S.contains("PackageCids") && S["PackageCids"].is_object())
+            for (const auto &[Key, Val] : S["PackageCids"].items())
+                if (Val.is_string() && !Val.get<std::string>().empty()) Referenced.insert(Val.get<std::string>());
+    }
+
+    // Prune: a pin that is UNREFERENCED by any source AND UNSERVABLE (a backing file is gone) is the leftover of a
+    // superseded publish — a deleted .meta staging mirror, a replaced delta, a re-published package. The re-point pass
+    // above can't fix it (nothing records a current path for it), so it would sit as a red "missing files" row and a
+    // broken serving promise forever; drop its reference closure + pin. Healthy unreferenced pins (e.g. a manually
+    // seeded master folder) are left alone, as is anything still referenced (surfaced, not destroyed — re-seeding the
+    // source is the fix there). Skipped entirely when no source yielded targets (a source disk that isn't mounted
+    // would make EVERYTHING look unreferenced).
+    if (Referenced.empty()) return 0;
+    int Pruned = 0;
+    for (const IpfsWrapper::PinEntry &P : IpfsWrapper::Pins())
+        if (!Referenced.count(P.Cid) && IpfsWrapper::CidMissing(P.Cid) && IpfsWrapper::DropRef(P.Cid))
+            ++Pruned;
+    if (Pruned)
+        LogSucc("PackageCatalog::HealSourceContent",
+                "pruned " + std::to_string(Pruned) + " stale pin(s) (unreferenced + backing file gone)");
+    return Pruned;
 }
 
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)

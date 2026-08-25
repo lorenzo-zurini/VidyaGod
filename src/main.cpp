@@ -208,7 +208,7 @@ int main(int argc, char *argv[])
     const bool HeadlessNeedsNode =
         LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs || !LaunchParameters.UnpinCid.empty()
         || !LaunchParameters.DropRefCid.empty()
-        || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty()
+        || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty() || LaunchParameters.HealPins
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty()
@@ -485,6 +485,12 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             //Modifier for --seed/--seed-covers: re-reference every file (default is additive — only new/orphaned).
             RuntimeParameters.SeedOverwrite = true;
+        }
+        else if (arg == "--heal")
+        {
+            //Re-point orphaned refs across all configured package sources + prune stale pins, then exit.
+            RuntimeParameters.HealPins        = true;
+            RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--fetch" && i + 2 < argc)
         {

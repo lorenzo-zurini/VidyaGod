@@ -44,6 +44,7 @@ struct LaunchParameters
     std::string SeedDir;                                                  //--seed <DIR>: add a folder's published content (LAYER/COVER SOURCE CIDs) to the IPFS node by reference, then exit
     bool SeedCoversOnly = false;                                          //--seed-covers <DIR>: like --seed but ONLY re-pins META.COVER refs (skips the big layers)
     bool SeedOverwrite = false;                                           //--overwrite: seed in OVERWRITE mode (re-reference every file; default is additive — only new/orphaned)
+    bool HealPins = false;                                                //--heal: re-point orphaned refs across all package sources + prune stale pins (unreferenced + backing gone), then exit
     std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
     std::string FetchDest;
     bool FetchDirMode = false;                                            //--fetch-dir <CID> <DEST>: recursively materialize a FOLDER CID to DEST (add-by-CID verify)

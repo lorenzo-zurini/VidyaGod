@@ -127,6 +127,16 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         return 0;
     }
 
+    //HEADLESS: heal all configured package sources (re-point orphaned refs + prune stale pins), then exit. Same pass
+    //the GUI runs on startup when it detects orphans — this is the manual/scriptable entry point.
+    if (LaunchParameters.HealPins)
+    {
+        LogOut("main.cpp", "Healing package sources: re-pointing orphaned references, pruning stale pins…");
+        const int Pruned = PackageCatalog::HealSourceContent(GlobalConfigJSON);
+        LogSucc("main.cpp", "Heal done; " + std::to_string(Pruned) + " stale pin(s) pruned.");
+        return 0;
+    }
+
     //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit. Composed from
     //the SAME primitives the GUI download pump uses — collect targets → fetch → generate DEFPREFIX — no bespoke path.
     if (!LaunchParameters.ImportRunnerId.empty())

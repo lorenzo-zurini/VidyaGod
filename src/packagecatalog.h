@@ -93,8 +93,10 @@ int SeedDirectory(const std::string &Dir,
 // (backing file moved/re-created since it was seeded) is re-pointed at its current on-disk content. This is what keeps
 // the node able to SERVE its content — an orphaned reference otherwise reads fine locally but fails the moment a peer
 // requests those blocks (surfacing as "missing files"). Additive + cheap: intact CIDs are only cidMissing-checked (no
-// re-hash); only genuine orphans are dropped + re-added. Node must be online-or-local. Call OFF the GUI thread.
-// Returns the number of source dirs processed.
+// re-hash); only genuine orphans are dropped + re-added. Then PRUNES stale pins — pins that are unreferenced by any
+// source (node JSONs + config source/package CIDs) AND unservable (backing file gone) are leftovers of superseded
+// publishes that no re-point can fix; their ref closure + pin are dropped. Healthy unreferenced pins are kept.
+// Node must be online-or-local. Call OFF the GUI thread. Returns the number of stale pins pruned.
 int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON);
 // The local files SeedDirectory would seed: {local path → recorded SOURCE CID} across a folder's node JSONs — VFS
 // content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
