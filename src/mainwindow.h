@@ -66,6 +66,9 @@ private:
     FriendsTab  * FriendsTabPtr    = nullptr;
     QTimer      * CoverRefreshTimer = nullptr;  // debounces lazy cover-ready bursts into one model notification
     QTimer      * ResumeTimer       = nullptr;  // polls for the node's network coming up, then resumes downloads once
+    bool          NetworkingOn      = false;    // mirrors the runtime networking toggle (gates node-start retries)
+    bool          NodeStartPending  = false;    // a StartNode attempt (or scheduled retry) is in flight
+    int           NodeRetryDelayMs  = 2000;     // backoff for failed node starts (doubles up to 30s)
 };
 
 #endif // MAINWINDOW_H

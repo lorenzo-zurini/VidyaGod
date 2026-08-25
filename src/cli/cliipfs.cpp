@@ -100,7 +100,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
     (void)GlobalConfigJSON; (void)AppDataDir;
     if (LaunchParameters.PrintPeerId)
     {
-        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+        for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         LogOut("main.cpp", "PeerID: " + IpfsWrapper::PeerID());
         for (const std::string &A : IpfsWrapper::ListenAddrs()) LogOut("main.cpp", "addr: " + A);
@@ -110,7 +110,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
     //HEADLESS: list the recursively-pinned (seeded) CIDs in this repo, then exit (debug: what the IPFS tab would show).
     if (LaunchParameters.PrintPinLs)
     {
-        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+        for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
         LogOut("main.cpp", "Pins: " + std::to_string(Pins.size()));
@@ -121,7 +121,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
     //HEADLESS: drop a recursive pin (stop seeding + surfacing a superseded CID), then exit.
     if (!LaunchParameters.UnpinCid.empty())
     {
-        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+        for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         const bool Ok = IpfsWrapper::Unpin(LaunchParameters.UnpinCid);
         LogOut("main.cpp", (Ok ? "Unpinned " : "Unpin failed / not pinned: ") + LaunchParameters.UnpinCid);
@@ -132,7 +132,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
     //its CURRENT path — the repair for an orphaned/stale reference the plain re-add would otherwise dedup-skip. Then exit.
     if (!LaunchParameters.DropRefCid.empty())
     {
-        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+        for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         const bool Ok = IpfsWrapper::DropRef(LaunchParameters.DropRefCid);
         LogOut("main.cpp", (Ok ? "Dropped reference closure for " : "Drop-ref failed: ") + LaunchParameters.DropRefCid);
@@ -142,7 +142,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
     //HEADLESS: print this node's shareable friend code (its peer ID), then exit.
     if (LaunchParameters.PrintFriendCode)
     {
-        for (int i = 0; i < 30 && !IpfsWrapper::DaemonRunning(); ++i)
+        for (int i = 0; i < 30 && IpfsWrapper::Available() && !IpfsWrapper::DaemonRunning(); ++i)
             std::this_thread::sleep_for(std::chrono::seconds(1));
         LogOut("main.cpp", "FriendCode: " + IpfsWrapper::FriendCode());
         std::cout << IpfsWrapper::FriendCode() << "\n";   // machine-readable on stdout

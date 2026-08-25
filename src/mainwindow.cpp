@@ -241,7 +241,8 @@ void MainWindow::startup(bool forceTray)
 
     // Defer the IPFS node start until AFTER the window is up (opening the repo + joining the swarm delays startup),
     // and only when the user has opted into networking. singleShot(0) runs it once the event loop is processing.
-    if (Model->networkingEnabled())
+    NetworkingOn = Model->networkingEnabled();   // arm the retry loop for this initial start too
+    if (NetworkingOn)
         QTimer::singleShot(0, this, [this]{ startNodeAsync(); });
 }
 
@@ -258,8 +259,12 @@ void MainWindow::setNetworkTabsEnabled(bool enabled)
 void MainWindow::applyNetworkingState(bool enabled)
 {
     setNetworkTabsEnabled(enabled);
+    NetworkingOn = enabled;
     if (enabled)
+    {
+        NodeRetryDelayMs = 2000;
         startNodeAsync();
+    }
     else
     {
         if (ResumeTimer) ResumeTimer->stop();
@@ -271,11 +276,24 @@ void MainWindow::applyNetworkingState(bool enabled)
 void MainWindow::startNodeAsync()
 {
     if (IpfsWrapper::Available()) { onNodeReady(); return; }   // already running (e.g. re-enabled)
+    if (NodeStartPending) return;                              // an attempt or scheduled retry is already in flight
+    NodeStartPending = true;
     const std::string Repo = (AppPaths::DataRoot() / "IPFS").string();
     auto Ok = std::make_shared<bool>(false);
     AsyncWork::Run(this,
         [Repo, Ok]{ std::string Err; *Ok = IpfsWrapper::StartNode(Repo, &Err); },   // off-thread: repo open + swarm join can take a moment
-        [this, Ok]{ if (*Ok) onNodeReady(); });
+        [this, Ok]{
+            NodeStartPending = false;
+            if (*Ok) { NodeRetryDelayMs = 2000; onNodeReady(); return; }
+            // A start can fail transiently — most commonly the previous instance still holds the repo's
+            // datastore lock while it finishes shutting down ("resource temporarily unavailable" on a quick
+            // app restart). Retry with backoff instead of leaving the node silently off until the next
+            // launch; a permanent holder just keeps this ticking quietly in the background.
+            if (!NetworkingOn) return;
+            QTimer::singleShot(NodeRetryDelayMs, this,
+                               [this]{ if (NetworkingOn && !IpfsWrapper::Available()) startNodeAsync(); });
+            NodeRetryDelayMs = std::min(NodeRetryDelayMs * 2, 30000);
+        });
 }
 
 void MainWindow::onNodeReady()
