@@ -292,6 +292,12 @@ long long CidSize(const std::string &Cid)
     return VgCidSize(Cid.c_str());
 }
 
+long long CidSizeLocal(const std::string &Cid)
+{
+    if (Cid.empty()) return -1;
+    return VgCidSizeLocal(Cid.c_str());
+}
+
 int ProviderCount(const std::string &Cid)
 {
     if (Cid.empty()) return -1;

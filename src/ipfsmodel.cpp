@@ -274,10 +274,14 @@ void IpfsModel::refresh()
         St.pinCount = (int)Pins.size();
         QSet<QString> Uploading;
         for (const auto & C : IpfsWrapper::ActiveUploads(90000)) Uploading.insert(QString::fromStdString(C));
+        // LOCAL-only sizes here: pins are our own seeds, so their DAG roots are local disk reads. The
+        // network-falling CidSize (bitswap+gateway, ~35s bound) must never run in this loop — a repo with
+        // hundreds of orphaned filestore references made the first refresh take HOURS, wedging the status
+        // pipeline behind RefreshInFlight and pinning the tab at "off" while the node was actually up.
         QHash<QString, long long> Sizes;
         for (const auto & P : Pins) {
             const QString C = QString::fromStdString(P.Cid);
-            if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSize(P.Cid); if (S >= 0) Sizes[C] = S; }
+            if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSizeLocal(P.Cid); if (S >= 0) Sizes[C] = S; }
         }
         std::error_code Ec;
         const auto Sp = std::filesystem::space(LibRoot, Ec);

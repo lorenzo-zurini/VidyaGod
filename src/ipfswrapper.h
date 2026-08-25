@@ -134,7 +134,8 @@ struct StatInfo {
 };
 
 // CumulativeSize of a CID via `ipfs files stat` (cheap metadata; -1 if unknown).
-long long CidSize(const std::string &Cid);
+long long CidSize(const std::string &Cid);       // may fetch over the network (bounded ~35s) — download paths only
+long long CidSizeLocal(const std::string &Cid);  // local store only, fast -1 when unreadable — status/refresh paths
 
 // True if a pinned CID's content was seeded by reference but its backing file has since been deleted (orphaned ref).
 // Local + cheap (no network); surfaced in the IPFS tab as "Errored: missing files".

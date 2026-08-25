@@ -24,7 +24,8 @@ int  VgFetchDirToPath(const char *cid, const char *dest, char **errOut); // recu
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
 int  VgPinRm(const char *cid, char **errOut);
-long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown
+long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown (may fetch: bitswap 15s + gateway 20s bounds)
+long long VgCidSizeLocal(const char *cid);     // CumulativeSize from the LOCAL store only — fast -1 when unreadable
 int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a
 int  VgPeerID(char **outId);                   // this node's libp2p peer ID
