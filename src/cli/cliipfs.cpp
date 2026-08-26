@@ -34,9 +34,13 @@ namespace fs = std::filesystem;
 //then pings the peer. Returns the ping's exit code (0 = replies received = packets crossed the tunnel). This is what
 //a real session game launch does, with `ping` standing in for the game. Rootless (CAP_NET_ADMIN via the userns).
 #ifdef __linux__
-static int RunOverlaySandboxPing()
+// RunOverlaySandbox brings up the rootless nested-sandbox overlay (a TUN with our vIP inside a bwrap netns, forwarding
+// to friends over libp2p) and runs a shell command inside it, blocking until the command exits. UserCmd empty → the
+// default 10-packet ping smoke test; otherwise UserCmd runs with VG_SELF_VIP / VG_PEER_VIP exported (the stability
+// harness: e.g. a long-running UDP game-traffic probe to the peer's vIP).
+static int RunOverlaySandbox(const std::string &UserCmd)
 {
-    // Pull our vIP + the online friends' vIPs from the friend LAN (host-less; each vIP = f(peerID)); ping the first.
+    // Pull our vIP + the online friends' vIPs from the friend LAN (host-less; each vIP = f(peerID)); target the first.
     const auto V = IpfsWrapper::LanLaunchVars();
     auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
     const std::string MyVip = Get("VIDYAGOD_SELF_VIP"), Subnet = Get("VIDYAGOD_SUBNET");
@@ -59,10 +63,11 @@ static int RunOverlaySandboxPing()
     O.TunCidr = MyVip + "/" + Mask;
     O.TunSock = Sock;
     std::string Program = "/bin/sh";
-    QStringList Args{ "-c",
-        QString::fromStdString("ip -o addr show 2>/dev/null | sed 's/^/[sandbox] /'; "
-                               "echo '[sandbox] pinging peer " + PeerVip + " over the overlay…'; "
-                               "sleep 5; ping -c 10 -W 3 " + PeerVip) };
+    const std::string Inner = UserCmd.empty()
+        ? ("ip -o addr show 2>/dev/null | sed 's/^/[sandbox] /'; "
+           "echo '[sandbox] pinging peer " + PeerVip + " over the overlay…'; sleep 5; ping -c 10 -W 3 " + PeerVip)
+        : ("export VG_SELF_VIP=" + MyVip + " VG_PEER_VIP=" + PeerVip + "; " + UserCmd);
+    QStringList Args{ "-c", QString::fromStdString(Inner) };
     SandboxLayer::Wrap(O, Program, Args);   // → Program="bwrap", Args=full bwrap argv ending in `-- /bin/sh -c …`
 
     std::vector<std::string> Argv{ Program };
@@ -87,10 +92,10 @@ static int RunOverlaySandboxPing()
 #include <unistd.h>
 #include <sys/wait.h>
 
-#else  // !__linux__ — the overlay ping test is bwrap/TUN-based (Linux-only); inert stub elsewhere.
-static int RunOverlaySandboxPing()
+#else  // !__linux__ — the overlay test is bwrap/TUN-based (Linux-only); inert stub elsewhere.
+static int RunOverlaySandbox(const std::string &)
 {
-    LogErr("main.cpp", "--overlay ping test is only available on Linux (bwrap sandbox + TUN).");
+    LogErr("main.cpp", "--overlay/--overlay-exec is only available on Linux (bwrap sandbox + TUN).");
     return -1;
 }
 #endif // __linux__
@@ -243,11 +248,11 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
             const std::string Now = "self " + Get("VIDYAGOD_SELF_VIP") + " | friends: " + (Peers.empty() ? "(none online)" : Peers);
             if (Now != LastRoster) { LogOut("main.cpp", "lan roster: " + Now); LastRoster = Now; }
             //Once at least one friend is online, bring the overlay up (nested sandbox — what a real game launch does)
-            //and ping the friend through the tunnel. Attempt once; log the outcome.
+            //and either ping the friend (smoke test) or run --overlay-exec's command through the tunnel. Attempt once.
             if (LaunchParameters.OverlayUp && !OverlayTried && !Peers.empty())
             {
                 OverlayTried = true;
-                RunOverlaySandboxPing();
+                RunOverlaySandbox(LaunchParameters.OverlayExec);   // blocks until the inner command exits
             }
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }

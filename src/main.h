@@ -77,6 +77,7 @@ struct LaunchParameters
     int FriendSecs = 30;                                               //--friend-secs <N>: how long the add/serve handlers stay online observing (default 30)
     bool LanHarness = false;                                           //--lan: warm online + print the friend-LAN roster (self + online friends' vIPs) for --friend-secs, then exit
     bool OverlayUp = false;                                             //--overlay: with --lan, bring up the sandboxed overlay TUN and ping the first online friend over the virtual LAN
+    std::string OverlayExec;                                            //--overlay-exec <cmd>: with --lan, bring up the sandboxed overlay TUN and run <cmd> (sh -c) inside it (env VG_PEER_VIP/VG_SELF_VIP set) until it exits — for the multiplayer stability harness
 };
 
 int main(int argc, char *argv[]);

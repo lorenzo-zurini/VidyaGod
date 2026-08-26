@@ -564,6 +564,13 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.OverlayUp        = true;
         }
+        else if (arg == "--overlay-exec" && i + 1 < argc)
+        {
+            //Bring up the sandboxed overlay TUN and run this command inside it until it exits (stability harness).
+            RuntimeParameters.OverlayUp        = true;
+            RuntimeParameters.OverlayExec      = argv[++i];
+            RuntimeParameters.LanHarness       = true;
+        }
         else if (arg == "--tray")            // come up hidden in the tray (the start-on-login autostart entry uses this)
         {
             RuntimeParameters.StartInTray = true;
