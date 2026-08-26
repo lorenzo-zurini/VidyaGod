@@ -228,6 +228,19 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
         if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
             LogWarn("main.cpp", "remint done but saving GlobalConfig.JSON failed — CIDs printed below are still valid");
+        // The mint's per-CID announce (provider.Provide) is async; this short-lived process must WAIT for the records
+        // to actually propagate to the DHT before exiting, or the provides are cancelled mid-flight and peers can't
+        // find us (exactly the "laptop can't fetch the meta-CID" case). Poll each collection CID until we're a
+        // provider (self) — the shareable unit others fetch. Package/content CIDs ride the same announce window +
+        // the long-lived node's reprovide afterwards.
+        for (const auto &R : Rows)
+        {
+            if (R.Level != "collection") continue;
+            LogOut("main.cpp", "announcing " + R.Name + " (" + R.Cid + ") to the DHT…");
+            for (int i = 0; i < 45 && IpfsWrapper::ProviderCount(R.Cid) < 1; ++i)
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            LogSucc("main.cpp", R.Name + ": providers=" + std::to_string(IpfsWrapper::ProviderCount(R.Cid)));
+        }
         // Machine-readable list on stdout: "<level>\t<name>\t<cid>".
         std::cout << "\n===== RE-MINTED CIDs (level\tname\tcid) =====\n";
         int Pkgs = 0, Cols = 0;
