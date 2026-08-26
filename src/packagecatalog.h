@@ -61,6 +61,9 @@ std::string PackageSourceNameForPath(const nlohmann::ordered_json &GlobalConfigJ
 // content hydration; requires the IPFS node online), then upsert its bundles into LIBRARY. Mutates config; returns the
 // number of packages indexed. On a fetch failure, sets *Error (if given) and leaves that source's dir untouched.
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);
+// True if any configured CID source hasn't materialized its LIBRARY dir yet (fetch failed / still pending) — the
+// caller schedules a re-sync so a source that couldn't be fetched on a hostile network is retried, not abandoned.
+bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
 bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);

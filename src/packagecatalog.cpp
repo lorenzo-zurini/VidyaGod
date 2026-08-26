@@ -248,6 +248,21 @@ static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, 
     Arr.push_back(std::move(Slim));
 }
 
+bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return false;
+    const auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return false;
+    std::error_code Ec;
+    for (const auto &Src : S["PackageSources"])
+    {
+        if (PackageSourceCID(Src).empty()) continue;
+        const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
+        if (!std::filesystem::is_directory(Dir, Ec) || std::filesystem::is_empty(Dir, Ec)) return true;
+    }
+    return false;
+}
+
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;

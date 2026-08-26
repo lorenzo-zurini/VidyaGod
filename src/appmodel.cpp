@@ -243,6 +243,14 @@ void AppModel::syncSources()
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
             pushSeedLevels();              // node-ready → announce our seeded content to the DHT, meta-CIDs first
+            // A source that couldn't be fetched (hostile network, provider unreachable — the node-side retries are
+            // deliberately bounded so this worker can't wedge) must not be abandoned until the next app start:
+            // re-run the sync in a minute. Sources already materialized are skipped, so the retry is cheap.
+            if (!SyncRetryPending && PackageCatalog::HasMissingSources(*Config) && IpfsWrapper::DaemonRunning())
+            {
+                SyncRetryPending = true;
+                QTimer::singleShot(60000, this, [this]{ SyncRetryPending = false; if (IpfsWrapper::DaemonRunning()) syncSources(); });
+            }
         });
 }
 
@@ -310,6 +318,18 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
 
 void AppModel::removePackageSource(int index)
 {
+    // Abort any in-flight fetch/retry of this source's CID — a removed source must not keep a sync worker busy.
+    {
+        const auto & S = (*Config)["Settings"];
+        if (S.contains("PackageSources") && S["PackageSources"].is_array()
+            && index >= 0 && index < (int)S["PackageSources"].size())
+        {
+            const auto & Src = S["PackageSources"][index];
+            const std::string Cid = Src.is_object() ? Src.value("CID", std::string())
+                                  : Src.is_string() ? Src.get<std::string>() : std::string();
+            if (!Cid.empty()) IpfsWrapper::RequestCancel(Cid);
+        }
+    }
     PackageCatalog::RemovePackageSource(*Config, index);
     save();
     rebuildCatalog();

@@ -81,6 +81,7 @@ private:
     NodeIndex                CatalogIndex;
     int                      CardPixelWidth = 185;
     QTimer *                 OrphanHealTimer = nullptr;   // periodic background orphan check (tab-independent)
+    bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch
     std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
 };
