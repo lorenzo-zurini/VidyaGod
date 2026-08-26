@@ -107,16 +107,21 @@ Constraints found:
   downloads alone.
 - (c) Accept it — downloads resume and complete; the pulse is a throughput annoyance, not a failure.
 
-**Multiplayer (the crucial one) — a real, actionable code fix:**
-The overlay datapath (`overlay.go`) tunnels raw IP packets over a **reliable, ordered libp2p STREAM**
-(`/vidyagod/overlay/1.0.0`). For real-time game traffic (UDP-native, loss-tolerant, latency-sensitive)
-this is the WRONG transport: a single reliable ordered stream converts wifi packet loss into
-head-of-line-blocking + CUBIC cwnd collapse → tunnel lag/freezes exactly like the download pulse.
-**FIX: move the overlay datapath to QUIC unreliable DATAGRAMS** (the quicreuse config already sets
-`EnableDatagrams: true`). Game packets are small (< ~1200 B path-MTU) and loss-tolerant, so datagrams
-give no retransmit, no HoL-blocking, no cwnd-collapse stall. Needs: a feasibility check on whether
-go-libp2p v0.48 exposes datagram send/recv through its Conn abstraction (it's a QUIC-specific feature,
-may need reaching the underlying `quic.Conn` or a newer go-libp2p); fall back to the stream path for
-oversized packets and non-QUIC transports. If datagrams aren't reachable, a weaker mitigation is
-per-flow streams (independent QUIC streams remove HoL-blocking, though shared connection CC still paces
-them). **This is the highest-value follow-up and directly serves "crucial for multiplayer".**
+**Multiplayer (the crucial one) — SHIPPED + FIELD-VALIDATED (2026-08-26).**
+The overlay datapath (`overlay.go`) tunneled raw IP packets over a **reliable, ordered libp2p STREAM** —
+the wrong transport for real-time game traffic (loss → HoL-blocking + CUBIC cwnd collapse → tunnel
+freezes). **DONE:** moved it to unreliable QUIC DATAGRAMS (RFC 9221). `network.Conn.As(&quic.Conn)`
+unwraps the swarm conn to the underlying `*quic.Conn` (nil for relay/TCP → automatic stream fallback);
+a per-direct-conn `ReceiveDatagram` loop (started via a notifiee + a `configure()` scan) injects inbound;
+falls back to the reliable stream for relay/TCP peers (pre-DCUtR) and oversized packets. No length
+framing (datagrams preserve boundaries). `VG_OVERLAY_FORCE_STREAM=1` A/B toggle. Test
+`TestOverlayDatagramFastPathOverQUIC` (real QUIC host pair). Committed `50ef4a6`/`e6a5d13`.
+
+**1-HOUR field test** (PC↔laptop, hostile hospital wifi, open internet, tunnel-gated, 1500 pps game
+traffic + bursts, 5.44M packets): **p50 8.2ms, p95 21.4ms, jitter 0.95ms, 2.45% loss.** Connection
+rock-stable — same direct holepunched QUIC port the whole hour, zero re-holepunches, never fell to relay.
+The only degradation was a **clockwork ~5-min congestion spike PROVEN EXTERNAL** (a concurrent
+gateway-only ping — no internet, no node — spiked to 155-300ms at the same cadence = hospital enterprise
+AP periodic off-channel scan, hits every device on the wifi). Datagrams handled each scan as a few
+dropped packets + ~15 sub-500ms freezes, recovering instantly; p50 stayed 8ms even during scans. Stream
+A/B comparison: see memory `[[project_ipfs_transfer_optimization]]`.
