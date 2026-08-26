@@ -42,6 +42,7 @@ public:
         int       providers = -2;     // -2 not queried, -1 failed, >=0 count
         int       missing   = -1;     // -1 unknown, 0 present, 1 backing file gone
         bool      uploading = false;  // a peer is pulling it right now
+        bool      announced = false;  // Seeded only: its DHT announce completed (→ "seeding") vs still "queued for seeding"
         QString   error;              // failure reason (Errored)
     };
 

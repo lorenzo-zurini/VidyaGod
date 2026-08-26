@@ -305,6 +305,17 @@ int ProviderCount(const std::string &Cid)
     return VgProviderCount(Cid.c_str(), 8000);
 }
 
+void SetSeedLevels(const std::vector<std::string> &Collections, const std::vector<std::string> &Packages)
+{
+    const nlohmann::ordered_json C = Collections, P = Packages;   // JSON arrays of CID strings
+    VgSetSeedLevels(C.dump().c_str(), P.dump().c_str());
+}
+
+bool SeedAnnounced(const std::string &Cid)
+{
+    return !Cid.empty() && VgSeedAnnounced(Cid.c_str()) == 1;
+}
+
 bool CidMissing(const std::string &Cid)
 {
     if (Cid.empty()) return false;

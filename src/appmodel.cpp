@@ -195,6 +195,26 @@ void AppModel::removePackage(const QString & uid)
 //    the worker never mutates the live GlobalConfigJSON the GUI may be reading/writing. The model outlives every view,
 //    so capturing `this` is safe. Called on node-ready (bootstrap of the default runners source) and "Sync now". ──
 
+// Give the node the 3-level meta-CIDs (collections = Settings.PackageSources[].CID, packages = Settings.PackageCids
+// values) so its seed announce goes out ordered — the shareable units first — with content being every other pinned
+// root. Called on node-ready + whenever sources/package CIDs change; idempotent on the node side.
+void AppModel::pushSeedLevels()
+{
+    std::vector<std::string> Collections, Packages;
+    const auto & S = (*Config)["Settings"];
+    if (S.contains("PackageSources") && S["PackageSources"].is_array())
+        for (const auto & Src : S["PackageSources"])
+        {
+            const std::string Cid = Src.is_object() ? Src.value("CID", std::string())
+                                  : (Src.is_string() ? Src.get<std::string>() : std::string());
+            if (!Cid.empty()) Collections.push_back(Cid);
+        }
+    if (S.contains("PackageCids") && S["PackageCids"].is_object())
+        for (const auto & [Key, Val] : S["PackageCids"].items())
+            if (Val.is_string() && !Val.get<std::string>().empty()) Packages.push_back(Val.get<std::string>());
+    IpfsWrapper::SetSeedLevels(Collections, Packages);
+}
+
 void AppModel::syncSources()
 {
     auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
@@ -222,6 +242,7 @@ void AppModel::syncSources()
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
+            pushSeedLevels();              // node-ready → announce our seeded content to the DHT, meta-CIDs first
         });
 }
 
@@ -281,6 +302,7 @@ bool AppModel::addPackageSource(const QString & cid, const QString & name)
             save();
             rebuildCatalog();
             emit packageSourcesChanged();
+            pushSeedLevels();   // a new source's collection CID should announce promptly (meta-first)
             if (!Err->empty()) emit packageSourceFailed(QString::fromStdString(*Err));
         });
     return true;

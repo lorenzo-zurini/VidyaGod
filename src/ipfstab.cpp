@@ -391,11 +391,20 @@ void IpfsTab::renderLeaf(const QString & cid)
             leaf->setToolTip(4, QStringLiteral("The seeded content's backing file is gone from disk — "
                                                "it can no longer be served to peers."));
         }
+        else if (st.uploading)
+        {
+            Role = StSeeded; Status = QStringLiteral("⬆ Uploading"); Fg = QColor("#4a90d9");
+        }
+        else if (!st.announced)
+        {
+            // Pinned + servable, but its DHT announce hasn't completed yet — peers can't discover it by CID until it does.
+            Role = StSeeded; Status = QStringLiteral("Queued for seeding"); Fg = QColor("#c9a227");
+            leaf->setToolTip(4, QStringLiteral("Pinned and ready to serve, but not yet announced to the DHT — "
+                                               "becomes discoverable (\"Seeding\") once its announce pass completes."));
+        }
         else
         {
-            Role = StSeeded;
-            Status = st.uploading ? QStringLiteral("⬆ Uploading") : QStringLiteral("Seeding");
-            Fg = st.uploading ? QColor("#4a90d9") : QColor("#5fb55f");
+            Role = StSeeded; Status = QStringLiteral("Seeding"); Fg = QColor("#5fb55f");
         }
         break;
     }

@@ -426,6 +426,7 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
         const bool MidTransfer = (s.phase == CidState::Downloading || s.phase == CidState::Pinning
                                || s.phase == CidState::Stalled || s.phase == CidState::Errored || s.phase == CidState::Queued);
         s.uploading = uploading.contains(cid);
+        s.announced = IpfsWrapper::SeedAnnounced(P.Cid);   // "seeding" once the DHT announce is done, else "queued for seeding"
         if (!MidTransfer) { s.phase = CidState::Seeded; s.pct = 100.0; s.speedBps = -1.0; }
         if (s.size < 0) ensureSize(cid);
     }

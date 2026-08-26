@@ -165,6 +165,12 @@ bool Connect(const std::string &Multiaddr);
 // walk) — call off the GUI thread and cache. -1 if no daemon / the query failed; otherwise the provider count.
 int ProviderCount(const std::string &Cid);
 
+// Seed announce (3-level schema): hand the node the level-3 collection + level-2 package meta-CIDs; it announces every
+// pinned CID to the DHT in 3 ordered passes (collections → packages → content) on start + periodically. Idempotent.
+void SetSeedLevels(const std::vector<std::string> &Collections, const std::vector<std::string> &Packages);
+// True once a pinned CID's DHT announce has completed (→ "seeding"); false while still "queued for seeding".
+bool SeedAnnounced(const std::string &Cid);
+
 // Unpins a CID (`ipfs pin rm`). Returns true on success.
 bool Unpin(const std::string &Cid);
 
