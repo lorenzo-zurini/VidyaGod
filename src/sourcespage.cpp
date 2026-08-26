@@ -80,7 +80,11 @@ void SourcesPage::rebuild()
         cidLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
         row->addWidget(cidLbl, 1);
         QPushButton * rm = new QPushButton("Remove", card);
-        connect(rm, &QPushButton::clicked, this, [this, i]{ Model.removePackageSource(i); });   // model drops + rebuilds + emits
+        // removePackageSource emits packageSourcesChanged SYNCHRONOUSLY → this page rebuilds and deletes these widgets
+        // (including this button) mid-click. Defer to the next event-loop tick so the click fully unwinds first.
+        connect(rm, &QPushButton::clicked, this, [this, i]{
+            QMetaObject::invokeMethod(this, [this, i]{ Model.removePackageSource(i); }, Qt::QueuedConnection);
+        });
         row->addWidget(rm);
         v->addWidget(card);
     }
@@ -96,12 +100,18 @@ void SourcesPage::rebuild()
     af->addRow("CID:", cidEdit);
     QPushButton * addBtn = new QPushButton("Add + fetch", add);
     af->addRow("", addBtn);
-    connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, cidEdit, addBtn]{
-        const QString Cid = cidEdit->text().trimmed();
+    connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, cidEdit]{
+        const QString Cid  = cidEdit->text().trimmed();
+        const QString Name = nameEdit->text();
         if (Cid.isEmpty()) { QMessageBox::warning(this, "Add source", "Enter an IPFS folder CID."); return; }
-        if (!Model.addPackageSource(Cid, nameEdit->text()))   // false = empty or already configured
-        { QMessageBox::warning(this, "Add source", "That source is already configured."); return; }
-        addBtn->setEnabled(false); addBtn->setText("Fetching…");   // success → page rebuilds (re-enabling) on packageSourcesChanged
+        // addPackageSource emits packageSourcesChanged SYNCHRONOUSLY, which rebuilds THIS page and deletes these
+        // widgets (including this button) WHILE this click handler is on the stack — touching addBtn afterwards was a
+        // use-after-free (SIGSEGV in setEnabled). Defer the whole add so the click unwinds first; on success the page
+        // rebuilds (fresh form = feedback), on duplicate we warn. `this` (the page) survives the rebuild.
+        QMetaObject::invokeMethod(this, [this, Cid, Name]{
+            if (!Model.addPackageSource(Cid, Name))
+                QMessageBox::warning(this, "Add source", "That source is already configured.");
+        }, Qt::QueuedConnection);
     });
     v->addWidget(add);
 
