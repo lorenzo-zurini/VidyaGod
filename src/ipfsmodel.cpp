@@ -166,6 +166,13 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
     StallTimer->start();
 }
 
+IpfsModel::~IpfsModel()
+{
+    // Detached refresh/health/size/seed workers may still be blocked in a network call; flip the guard so they skip
+    // their invokeMethod-back instead of dereferencing this destroyed object.
+    Alive->store(false);
+}
+
 void IpfsModel::setActive(bool on)
 {
     Active = on;
@@ -306,8 +313,9 @@ void IpfsModel::ensureSize(const QString & cid)
 {
     if (Cids.value(cid).size >= 0) return;
     if (!IpfsWrapper::Available()) return;   // no node → the size stat can't run (and would outlive a short-lived model)
-    std::thread([this, cid]{
+    std::thread([this, cid, A = Alive]{
         const long long S = IpfsWrapper::CidSize(cid.toStdString());
+        if (!A->load()) return;   // model destroyed while the network stat ran → don't touch `this`
         QMetaObject::invokeMethod(this, [this, cid, S]{
             if (S >= 0 && Cids.contains(cid)) { Cids[cid].size = S; emit cidChanged(cid); }
         }, Qt::QueuedConnection);
@@ -329,7 +337,7 @@ void IpfsModel::refresh()
         if (it->size >= 0) HaveSize.insert(it.key());
     const std::string LibRoot = PackageCatalog::LibraryRootDir(*Model.config());
 
-    std::thread([this, HaveSize, LibRoot]{
+    std::thread([this, HaveSize, LibRoot, A = Alive]{
         NodeStatus St;
         St.available = true;
         St.daemon    = IpfsWrapper::DaemonRunning();
@@ -354,6 +362,7 @@ void IpfsModel::refresh()
         const auto Sp = std::filesystem::space(LibRoot, Ec);
         St.diskFree = Ec ? -1 : (qlonglong)Sp.available;
 
+        if (!A->load()) return;   // model destroyed mid-refresh → don't post back to `this`
         QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading]{
             RefreshInFlight = false;
             applySnapshot(St, Pins, Sizes, Uploading);
@@ -447,32 +456,39 @@ void IpfsModel::gatherHealth()
     auto Next      = std::make_shared<std::atomic<int>>(0);
     auto Remaining = std::make_shared<std::atomic<int>>(Workers);
     for (int w = 0; w < Workers; ++w)
-        std::thread([this, Todo, Next, Remaining]{
+        std::thread([this, Todo, Next, Remaining, A = Alive]{
             for (;;) {
+                if (!A->load()) return;   // model destroyed mid-scan → stop (each ProviderCount can block for seconds)
                 const int i = Next->fetch_add(1);
                 if (i >= Todo->size()) break;
                 const QString cid = Todo->at(i);
                 const std::string C = cid.toStdString();
                 const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
                 const int N = (M == 1) ? -1 : IpfsWrapper::ProviderCount(C);
-                if (M == 1) Model.healOrphansIfAny();   // noticed a broken ref → repair now (single-flight; no-op if content truly gone)
-                QMetaObject::invokeMethod(this, [this, cid, N, M]{
+                if (!A->load()) return;
+                // Broken ref → repair (single-flight). Post to the model's thread so healOrphansIfAny touches
+                // AppModel main-thread state (KnownUnhealable) on the right thread, and only while the model is alive.
+                const bool Broken = (M == 1);
+                QMetaObject::invokeMethod(this, [this, cid, N, M, Broken]{
                     if (Cids.contains(cid)) { Cids[cid].providers = N; Cids[cid].missing = M; emit cidChanged(cid); }
+                    if (Broken) Model.healOrphansIfAny();
                 }, Qt::QueuedConnection);
             }
-            if (Remaining->fetch_sub(1) == 1)
+            if (Remaining->fetch_sub(1) == 1 && A->load())
                 QMetaObject::invokeMethod(this, [this]{ HealthInFlight = false; }, Qt::QueuedConnection);
         }).detach();
 }
 
 void IpfsModel::seedFolder(const QString & dir)
 {
-    std::thread([this, dir]{
+    std::thread([this, dir, A = Alive]{
         int Mismatched = 0;
         const int Seeded = PackageCatalog::SeedDirectory(dir.toStdString(),
-            [this](int done, int total, const std::string &){
-                QMetaObject::invokeMethod(this, [this, done, total]{ emit seedProgress(done, total); }, Qt::QueuedConnection);
+            [this, A](int done, int total, const std::string &){
+                if (A->load())
+                    QMetaObject::invokeMethod(this, [this, done, total]{ emit seedProgress(done, total); }, Qt::QueuedConnection);
             }, &Mismatched);
+        if (!A->load()) return;   // model destroyed during the (potentially long) seed → don't post back
         QMetaObject::invokeMethod(this, [this, Seeded, Mismatched]{
             emit seedFinished(Seeded, Mismatched);
             refresh();
