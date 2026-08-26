@@ -69,9 +69,11 @@ gap shows 0 B/s, then a rebroadcast re-queues more — the exact observed pulsin
   (its comment described windowing that no longer existed — ironically the actual
   fix reintroduced windowing properly).
 
-## Still open / next validation
-- Laptop was offline overnight — needs pull + build, then one real-wifi validation:
-  `VG_FETCH_RATE=1` fetch of a big CID on the laptop over the hostile network to
-  confirm the wire now saturates the actual link (expect steady ~uplink speed, no
-  0-seconds). Any residual dips on wifi would now be genuinely link-level (power
-  save / AP scan) — measurable against the same trace.
+## Real-network validation (laptop → PC, same night)
+- OLD client (continuous wantlist) vs NEW 64k server: 347 MB in 39 s, steady
+  8.4 MB/s — the server fix alone already cures transfers between our nodes.
+- NEW client (windowed) vs NEW server, `VG_FETCH_RATE=1`: **347 MB in 11.8 s,
+  28 MB/s avg, every second 17–46 MB/s, zero dead seconds, maxgap ≤ 315 ms.**
+  The remaining variance is ordinary link jitter, not protocol collapse. Both
+  machines built, `go test -race` + ctest green, all pushed (VidyaGodIPFS
+  98d6412, app e60b4ab). CLOSED.
