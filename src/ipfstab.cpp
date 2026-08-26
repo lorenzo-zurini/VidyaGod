@@ -389,7 +389,10 @@ void IpfsTab::renderLeaf(const QString & cid)
     {
     case P::Pending:     Role = StQueued;      Status = QStringLiteral("Not fetched — will sync when online"); Fg = QColor("#8f98a0"); break;
     case P::Queued:      Role = StQueued;      Status = QStringLiteral("Queued"); break;
-    case P::Downloading: Role = StDownloading; Status = QStringLiteral("Fetching…"); break;
+    // Before the first byte arrives (pct < 0) the wait is provider discovery — DHT walk, relay dial, holepunch —
+    // not a transfer; say so instead of showing a frozen "Fetching…" bar (a source sync can sit here for minutes).
+    case P::Downloading: Role = StDownloading; Status = st.pct < 0 ? QStringLiteral("Searching providers…")
+                                                                   : QStringLiteral("Fetching…"); break;
     case P::Pinning:     Role = StPinning;     Status = QStringLiteral("Pinning…"); break;
     case P::Stalled:     Role = StStalled;     Status = QStringLiteral("Stalled — waiting for peers…"); break;
     case P::Errored: {

@@ -324,6 +324,10 @@ void IpfsModel::tick()
         if (Now - it.value() < StallMs) continue;
         auto ci = Cids.find(cid);
         if (ci == Cids.end() || ci->phase != CidState::Downloading) continue;
+        // "Stalled" means a transfer went quiet MID-STREAM. Before the first byte (pct < 0) the fetch is still in
+        // provider discovery — DHT walk, relay dial, holepunch, which can legitimately take minutes on a cold start —
+        // and the row already says "Searching providers…"; flipping that to "Stalled" would cry wolf.
+        if (ci->pct < 0) continue;
         ci->phase = CidState::Stalled; ci->speedBps = -1.0;
         emit cidChanged(cid);
     }
