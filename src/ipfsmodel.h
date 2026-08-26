@@ -34,7 +34,7 @@ public:
 
     // Presentation-free per-CID state (the view maps phase → colours/status text).
     struct CidState {
-        QString label, package, category;
+        QString label, package, category, source;   // source = the LIBRARY collection (VidyaGod / VidyaGodRunners / …) it belongs to
         enum Phase : std::uint8_t { Pending, Queued, Downloading, Pinning, Stalled, Errored, Seeded } phase = Seeded;
         double    pct       = -1.0;   // 0..100 during a transfer; -1 = indeterminate
         qlonglong size      = -1;     // CumulativeSize bytes; -1 unknown

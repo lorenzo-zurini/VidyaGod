@@ -73,9 +73,10 @@ private:
     QString CurrentCategory;                    // selected category filter ("" = all)
     bool    WasFiltered     = false;            // restore default expansion when the last filter is cleared
 
-    QHash<QString, QTreeWidgetItem*> IpfsPinCategories; // category label → top-level row
-    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;     // "<category>\x1f<package>" → group row
-    QHash<QString, QTreeWidgetItem*> IpfsPinChildren;   // CID → leaf row
+    QHash<QString, QTreeWidgetItem*> IpfsPinCategories;   // category label → top-level row
+    QHash<QString, QTreeWidgetItem*> IpfsPinSourceGroups; // "Content\x1f<source>" → source row (Content only; the extra tier that splits runners/games/libraries apart)
+    QHash<QString, QTreeWidgetItem*> IpfsPinGroups;       // package group row: "<cat>\x1f<pkg>" (Assets/Meta) or "Content\x1f<source>\x1f<pkg>" (Content)
+    QHash<QString, QTreeWidgetItem*> IpfsPinChildren;     // CID → leaf row
 };
 
 #endif // IPFSTAB_H

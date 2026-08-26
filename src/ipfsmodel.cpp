@@ -28,14 +28,29 @@ static const QString CatMeta    = QStringLiteral("Meta");
 // Map every ipfs SOURCE CID in the catalog to a human label ("<package> — <component>"), its owning package name, and
 // its top-level category. Reads the ALREADY-BUILT in-memory catalog index (no disk rescan — this runs on the GUI
 // thread during refreshes).
+// The LIBRARY collection a bundle belongs to (the path component right under ".../LIBRARY/") — VidyaGod (games),
+// VidyaGodRunners, VidyaGodLibraries. "" when the path has no LIBRARY component. Used to split Content by source.
+static QString SourceOfBundle(const std::filesystem::path & BundleDir)
+{
+    bool afterLib = false;
+    for (const auto & Part : BundleDir)
+    {
+        if (afterLib) return QString::fromStdString(Part.string());
+        if (Part.string() == "LIBRARY") afterLib = true;
+    }
+    return {};
+}
+
 static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohmann::ordered_json & Config,
                                               QHash<QString, QString> * OutPackages,
                                               QHash<QString, QString> * OutCategory,
-                                              QHash<QString, QString> * OutPkgDirs = nullptr)
+                                              QHash<QString, QString> * OutPkgDirs = nullptr,
+                                              QHash<QString, QString> * OutSource = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
     {
+        const QString Src = SourceOfBundle(N.BundleDir);
         std::string PkgName;
         {
             std::string F = N.BundleDir.filename().string();
@@ -59,6 +74,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 if (OutPackages) OutPackages->insert(QString::fromStdString(Cid),
                     QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
                 if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatContent);
+                if (OutSource)   OutSource->insert(QString::fromStdString(Cid), Src.isEmpty() ? QStringLiteral("Other") : Src);
             }
 
         if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
@@ -72,6 +88,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                     Labels.insert(QString::fromStdString(Cid), QString::fromStdString(PkgName + " — cover"));
                     if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
                     if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatAssets);
+                    if (OutSource)   OutSource->insert(QString::fromStdString(Cid), Src.isEmpty() ? QStringLiteral("Other") : Src);
                 }
             }
         }
@@ -90,6 +107,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             Labels.insert(QCid, QString::fromStdString(Name + " (source)"));
             if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
             if (OutCategory) OutCategory->insert(QCid, CatMeta);
+            if (OutSource)   OutSource->insert(QCid, QString::fromStdString(Name));
         }
     return Labels;
 }
@@ -190,23 +208,25 @@ void IpfsModel::refreshNow()
 void IpfsModel::ensureLabels(const QString & cid)
 {
     if (Cids.contains(cid) && !Cids[cid].label.isEmpty()) return;
-    QHash<QString, QString> Pkgs, Cats;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs);
+    QHash<QString, QString> Pkgs, Cats, Srcs;
+    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs);
     CidState & s = Cids[cid];
     s.label    = Labels.value(cid, QStringLiteral("(unknown)"));
     s.package  = Pkgs.value(cid, QStringLiteral("Unknown / not in your library"));
     s.category = Cats.value(cid, CatContent);
+    s.source   = Srcs.value(cid);
 }
 
 void IpfsModel::rebuildLabels()
 {
-    QHash<QString, QString> Pkgs, Cats;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs);
+    QHash<QString, QString> Pkgs, Cats, Srcs;
+    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs);
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
         it->label    = Labels.value(cid, it->label.isEmpty() ? QStringLiteral("(unknown)") : it->label);
         it->package  = Pkgs.value(cid, it->package.isEmpty() ? QStringLiteral("Unknown / not in your library") : it->package);
         it->category = Cats.value(cid, it->category.isEmpty() ? CatContent : it->category);
+        it->source   = Srcs.value(cid, it->source);
     }
 }
 

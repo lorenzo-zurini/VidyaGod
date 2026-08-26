@@ -32,6 +32,7 @@
 
 #include <cmath>
 #include <utility>
+#include <functional>
 
 // ===== IPFS-tab-local rendering helpers =====
 
@@ -86,15 +87,8 @@ static std::pair<QString, QColor> IpfsHealthText(int Providers, int Missing)
     return { QString("● %1").arg(Providers),                         QColor("#5fb55f") };
 }
 
-// Tree depth: 0 = category, 1 = package group, 2 = CID leaf.
-static int RowDepth(const QTreeWidgetItem * it)
-{
-    int d = 0;
-    while ((it = it->parent()) != nullptr) ++d;
-    return d;
-}
-
-static const QString CatAssetsName = QStringLiteral("Assets");
+static const QString CatAssetsName  = QStringLiteral("Assets");
+static const QString CatContentName = QStringLiteral("Content");
 
 // ===== IpfsTab =====
 
@@ -315,11 +309,33 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         cat->setExpanded(CatName != CatAssetsName);
         IpfsPinCategories.insert(CatName, cat);
     }
-    const QString GroupKey = CatName + QChar(0x1f) + PkgName;
+    // CONTENT gets an extra SOURCE tier (Content → Source → Package → CID) so runners, games and library components
+    // don't pile into one flat list. The source is the LIBRARY collection the package lives in. Assets/Meta stay
+    // Category → Package → CID. The package group's parent is the source row (Content) or the category (Assets/Meta).
+    QTreeWidgetItem * pkgParent = cat;
+    QString GroupKey = CatName + QChar(0x1f) + PkgName;
+    if (CatName == CatContentName)
+    {
+        const QString Src = st.source.isEmpty() ? QStringLiteral("Other") : st.source;
+        const QString SrcKey = CatName + QChar(0x1f) + Src;
+        QTreeWidgetItem * srcGrp = IpfsPinSourceGroups.value(SrcKey, nullptr);
+        if (!srcGrp)
+        {
+            srcGrp = new QTreeWidgetItem(cat);
+            srcGrp->setText(0, Src);
+            QFont sf = srcGrp->font(0); sf.setBold(true); srcGrp->setFont(0, sf);
+            srcGrp->setForeground(0, QColor("#c6d4df"));
+            srcGrp->setFlags(srcGrp->flags() & ~Qt::ItemIsSelectable);
+            srcGrp->setExpanded(true);
+            IpfsPinSourceGroups.insert(SrcKey, srcGrp);
+        }
+        pkgParent = srcGrp;
+        GroupKey  = SrcKey + QChar(0x1f) + PkgName;
+    }
     QTreeWidgetItem * grp = IpfsPinGroups.value(GroupKey, nullptr);
     if (!grp)
     {
-        grp = new QTreeWidgetItem(cat);
+        grp = new QTreeWidgetItem(pkgParent);
         grp->setText(0, PkgName);
         QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
         grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
@@ -515,6 +531,13 @@ void IpfsTab::applyFilters()
         grp->setHidden(!AnyVisible);
         if (Filtered && AnyVisible) grp->setExpanded(true);
     }
+    for (QTreeWidgetItem * src : IpfsPinSourceGroups)   // Content's source tier: hide/expand based on its package groups
+    {
+        bool AnyVisible = false;
+        for (int i = 0; i < src->childCount() && !AnyVisible; ++i) AnyVisible = !src->child(i)->isHidden();
+        src->setHidden(!AnyVisible);
+        if (Filtered && AnyVisible) src->setExpanded(true);
+    }
     for (auto it = IpfsPinCategories.constBegin(); it != IpfsPinCategories.constEnd(); ++it)
     {
         QTreeWidgetItem * cat = it.value();
@@ -571,11 +594,16 @@ void IpfsTab::showContextMenu(const QPoint & pos)
     if (!IpfsPins) return;
     QTreeWidgetItem * Clicked = IpfsPins->itemAt(pos);
 
+    // Row-type by membership, not tree depth — Content nests one level deeper (Category→Source→Package→leaf) than
+    // Assets/Meta (Category→Package→leaf), so a fixed depth number no longer identifies leaves vs package groups.
+    auto isLeaf = [this](QTreeWidgetItem * it) { return it && IpfsPinChildren.value(it->text(6), nullptr) == it; };
+    auto isPkg  = [this](QTreeWidgetItem * it) { return it && IpfsPinGroups.values().contains(it); };
+
     // The CID set the leaf actions apply to: the multi-selection, or just the clicked row if it isn't part of one.
     QStringList Sel;
     for (QTreeWidgetItem * s : IpfsPins->selectedItems())
-        if (RowDepth(s) == 2) Sel << s->text(6);
-    if (Clicked && RowDepth(Clicked) == 2 && !Sel.contains(Clicked->text(6)))
+        if (isLeaf(s)) Sel << s->text(6);
+    if (Clicked && isLeaf(Clicked) && !Sel.contains(Clicked->text(6)))
     {
         Sel = QStringList{ Clicked->text(6) };
         IpfsPins->setCurrentItem(Clicked);
@@ -616,7 +644,7 @@ void IpfsTab::showContextMenu(const QPoint & pos)
             });
         }
     }
-    else if (Clicked && RowDepth(Clicked) == 1)
+    else if (isPkg(Clicked))
     {
         const QString Pkg = Clicked->text(0);
         const QString PkgCid = Model.packageCid(Pkg);
@@ -640,29 +668,41 @@ void IpfsTab::showContextMenu(const QPoint & pos)
 
 void IpfsTab::updateGroupTotals()
 {
+    // Sum item count + bytes over ALL leaf descendants of an item (handles both Category→Package→leaf and the deeper
+    // Category→Source→Package→leaf used for Content).
+    auto subtree = [](QTreeWidgetItem * root, int & items, long long & bytes) {
+        std::function<void(QTreeWidgetItem *)> walk = [&](QTreeWidgetItem * it) {
+            if (it->childCount() == 0) { ++items; bytes += it->data(1, Qt::UserRole).toLongLong(); return; }
+            for (int i = 0; i < it->childCount(); ++i) walk(it->child(i));
+        };
+        walk(root);
+    };
+    auto setTotal = [](QTreeWidgetItem * it, int items, long long bytes) {
+        it->setText(1, QString("%1 item%2 · %3").arg(items).arg(items == 1 ? "" : "s").arg(HumanBytesQ(bytes)));
+    };
+
+    // Prune + total in child→parent order so a group emptied by pruning is itself pruned this pass: packages, then
+    // source groups (Content), then categories.
     for (const QString & Key : IpfsPinGroups.keys())
     {
         QTreeWidgetItem * g = IpfsPinGroups.value(Key, nullptr);
         if (!g) continue;
-        const int n = g->childCount();
-        if (n == 0) { IpfsPinGroups.remove(Key); delete g; continue; }
-        long long GrpTotal = 0;
-        for (int i = 0; i < n; ++i) GrpTotal += g->child(i)->data(1, Qt::UserRole).toLongLong();
-        g->setText(1, QString("%1 item%2 · %3").arg(n).arg(n == 1 ? "" : "s").arg(HumanBytesQ(GrpTotal)));
+        if (g->childCount() == 0) { IpfsPinGroups.remove(Key); delete g; continue; }
+        int items = 0; long long bytes = 0; subtree(g, items, bytes); setTotal(g, items, bytes);
+    }
+    for (const QString & Key : IpfsPinSourceGroups.keys())
+    {
+        QTreeWidgetItem * s = IpfsPinSourceGroups.value(Key, nullptr);
+        if (!s) continue;
+        if (s->childCount() == 0) { IpfsPinSourceGroups.remove(Key); delete s; continue; }
+        int items = 0; long long bytes = 0; subtree(s, items, bytes); setTotal(s, items, bytes);
     }
     for (const QString & Cat : IpfsPinCategories.keys())
     {
         QTreeWidgetItem * c = IpfsPinCategories.value(Cat, nullptr);
         if (!c) continue;
         if (c->childCount() == 0) { IpfsPinCategories.remove(Cat); delete c; continue; }
-        long long CatTotal = 0; int CatItems = 0;
-        for (int i = 0; i < c->childCount(); ++i)
-        {
-            QTreeWidgetItem * g = c->child(i);
-            CatItems += g->childCount();
-            for (int j = 0; j < g->childCount(); ++j) CatTotal += g->child(j)->data(1, Qt::UserRole).toLongLong();
-        }
-        c->setText(1, QString("%1 item%2 · %3").arg(CatItems).arg(CatItems == 1 ? "" : "s").arg(HumanBytesQ(CatTotal)));
+        int items = 0; long long bytes = 0; subtree(c, items, bytes); setTotal(c, items, bytes);
     }
 }
 
