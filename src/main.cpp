@@ -301,7 +301,7 @@ static std::string DefaultRunnerSourceCID() { return "Qmc2NAQfunvfwoMwAmskMGa5xT
 // Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
 // games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
 // exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
-static std::string DefaultLibrarySourceCID() { return "QmcKipbWccxatkegfid3oHwxSNMo85hhL6Pico5PETaGDC"; }   // JSON-only libraries Meta-CID
+static std::string DefaultLibrarySourceCID() { return "QmZwgER1svvYxJHRdNakqgqnSgkz7mrUXu6JJf2jZ4dXeS"; }   // JSON-only libraries Meta-CID (re-minted 2026-08-26)
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
