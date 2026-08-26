@@ -42,8 +42,12 @@ struct QState {
 
 QState &Q()
 {
-    static QState S;
-    return S;
+    // Deliberately LEAKED: the detached dispatcher thread iterates Jobs for the process lifetime, and a function-local
+    // static would be destroyed at exit WHILE that thread is inside AnyQueued() → _Rb_tree_increment on a freed map
+    // (real SIGSEGV, caught via coredump from a headless probe exiting right after its fetches). The OS reclaims the
+    // memory at process death anyway; leaking the singleton is the standard fix for statics shared with free threads.
+    static QState * S = new QState();
+    return *S;
 }
 
 QueueStateCallback g_QueueCb;   // UI sink (queued=true on new job, false on cancel-of-queued); set once by IpfsManager
