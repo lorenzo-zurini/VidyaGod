@@ -215,6 +215,32 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         return 0;
     }
 
+    //HEADLESS: re-mint ALL CIDs of a whole library (a dir of source-collection subdirs) across the 3-level schema in
+    //one node session — content CIDs (per file), package meta-CIDs (per package, into Settings.PackageCids), collection
+    //meta-CIDs (per source, into Settings.PackageSources) — persist the config, then print the list.
+    if (!LaunchParameters.RemintLibraryDir.empty())
+    {
+        LogOut("main.cpp", "Re-minting all CIDs (3-level schema) for library: " + LaunchParameters.RemintLibraryDir);
+        std::vector<PackageCatalog::RemintEntry> Rows;
+        std::string Err;
+        if (!PackageCatalog::RemintLibrary(LaunchParameters.RemintLibraryDir, GlobalConfigJSON, Rows, &Err))
+        { LogErr("main.cpp", "remint-library failed: " + Err); return 1; }
+        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
+        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
+            LogWarn("main.cpp", "remint done but saving GlobalConfig.JSON failed — CIDs printed below are still valid");
+        // Machine-readable list on stdout: "<level>\t<name>\t<cid>".
+        std::cout << "\n===== RE-MINTED CIDs (level\tname\tcid) =====\n";
+        int Pkgs = 0, Cols = 0;
+        for (const auto &R : Rows)
+        {
+            std::cout << R.Level << "\t" << R.Name << "\t" << R.Cid << "\n";
+            (R.Level == "collection") ? ++Cols : ++Pkgs;
+        }
+        LogSucc("main.cpp", "Re-minted " + std::to_string(Pkgs) + " package + " + std::to_string(Cols)
+                + " collection meta-CID(s); content CIDs written into the node JSONs (SOURCE.CID).");
+        return 0;
+    }
+
     //HEADLESS: validate the node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...). Bare form
     //scans the WHOLE catalog; `--validate-nodes <pkg>` scopes to one package (UID / bundle dir / node id) + its
     //PARENTS closure — a fast pre-publish check that never pays the cross-package content scan (e.g. a huge

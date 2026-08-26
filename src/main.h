@@ -68,6 +68,7 @@ struct LaunchParameters
     std::string PublishToDir;                                            //--publish-to <dir>: also export a manifest-only dehydrated copy there
     std::string PublishCidDir;                                           //--publish-cid <dir>: recursively add a folder to IPFS, print its folder CID (for add-by-CID), then exit
     std::string PublishMetaSrc;                                          //--publish-meta <dir>: mint a JSON-only Meta-CID (bundle or collection) seeded in place from its *.json, print it, then exit
+    std::string RemintLibraryDir;                                        //--remint-library <dir>: re-mint ALL 3 CID levels (content/package/collection) for a whole LIBRARY of source subdirs in one session, print the list, then exit
     // ---- friends / multiplayer social layer (headless test harness) ----
     bool PrintFriendCode = false;                                        //--friend-code: print this node's shareable friend code (peer ID), then exit
     bool FriendListOnly = false;                                         //--friend-ls: print the address book (contacts + state), then exit

@@ -362,4 +362,52 @@ std::string PublishMetaCid(const std::string &SrcDir, std::string *Error)
     return Cid;
 }
 
+bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
+                   std::vector<RemintEntry> &Out, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    auto Fail = [&](const std::string &M) { if (Error) *Error = M; LogErr("PackageCatalog::RemintLibrary", M); return false; };
+    std::error_code Ec;
+    if (!fs::is_directory(LibraryRoot, Ec)) return Fail("not a directory: " + LibraryRoot);
+
+    auto &Settings = Config["Settings"];
+    if (!Settings.is_object()) Settings = nlohmann::ordered_json::object();
+
+    // Each immediate subdir of LibraryRoot that contains valid package bundles is a SOURCE COLLECTION.
+    std::vector<fs::path> Sources;
+    for (const auto &S : fs::directory_iterator(LibraryRoot, Ec))
+        if (S.is_directory()) Sources.push_back(S.path());
+    std::sort(Sources.begin(), Sources.end());
+
+    for (const auto &SrcDir : Sources)
+    {
+        const std::string SrcName = SrcDir.filename().string();
+        std::vector<fs::path> Pkgs;
+        for (const auto &P : fs::directory_iterator(SrcDir, Ec))
+            if (P.is_directory() && ScanBundleIdentity(P.path().string()).Valid) Pkgs.push_back(P.path());
+        if (Pkgs.empty()) { LogOut("PackageCatalog::RemintLibrary", "skip " + SrcName + " (no package bundles)"); continue; }
+        std::sort(Pkgs.begin(), Pkgs.end());
+
+        LogOut("PackageCatalog::RemintLibrary", "source '" + SrcName + "': " + std::to_string(Pkgs.size()) + " package(s)");
+        // Level 2 — each package's meta-CID (its EnsureSeeded also mints Level-1 content CIDs into the node JSONs).
+        for (const auto &Pkg : Pkgs)
+        {
+            std::string E;
+            const std::string PkgCid = PublishMetaCid(Pkg.string(), &E);
+            if (PkgCid.empty()) return Fail("package " + Pkg.string() + ": " + E);
+            Settings["PackageCids"][Pkg.filename().string()] = PkgCid;
+            Out.push_back({ "package", SrcName + "/" + Pkg.filename().string(), PkgCid });
+        }
+        // Level 3 — the collection meta-CID; update the matching source entry so the catalog uses the fresh CID.
+        std::string E;
+        const std::string ColCid = PublishMetaCid(SrcDir.string(), &E);
+        if (ColCid.empty()) return Fail("collection " + SrcDir.string() + ": " + E);
+        if (Settings.contains("PackageSources") && Settings["PackageSources"].is_array())
+            for (auto &Src : Settings["PackageSources"])
+                if (Src.is_object() && Src.value("NAME", std::string()) == SrcName) Src["CID"] = ColCid;
+        Out.push_back({ "collection", SrcName, ColCid });
+    }
+    return true;
+}
+
 } // namespace PackageCatalog

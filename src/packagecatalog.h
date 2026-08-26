@@ -111,6 +111,15 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
 std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
+// Re-mint every CID of a whole LIBRARY (a dir of source-collection subdirs, e.g. ~/.VidyaGod/LIBRARY) in ONE node
+// session, across the 3-level schema: content CIDs (per file, written as SOURCE.CID into the node JSONs), package
+// meta-CIDs (per package folder — recorded in Settings.PackageCids), and collection meta-CIDs (per source — updated
+// into the matching Settings.PackageSources entry). Deterministic: unchanged content re-produces the same CID. Fills
+// Out with {Level, Name, Cid} rows (Level = "package" | "collection") for listing. Returns false on the first failure.
+struct RemintEntry { std::string Level, Name, Cid; };
+bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
+                   std::vector<RemintEntry> &Out, std::string *Error = nullptr);
+
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the
 // node-native catalog source.

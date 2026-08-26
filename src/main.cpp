@@ -211,7 +211,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty() || LaunchParameters.HealPins
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
-        || !LaunchParameters.PublishMetaSrc.empty()
+        || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || LaunchParameters.LanHarness
@@ -642,6 +642,11 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.PublishCidDir  = argv[++i];
             RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--remint-library" && i + 1 < argc)
+        {
+            RuntimeParameters.RemintLibraryDir = argv[++i];
+            RuntimeParameters.RunningHeadless  = true;
         }
         else if (arg == "--publish-meta" && i + 1 < argc)
         {
