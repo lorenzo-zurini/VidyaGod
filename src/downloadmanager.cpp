@@ -12,6 +12,9 @@
 
 #include <QDialog>
 #include <QTimer>
+#include <QToolButton>
+
+#include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -105,12 +108,31 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     QVBoxLayout * DL = new QVBoxLayout(&Dlg);
     DL->addWidget(new QLabel("Choose what to download:", &Dlg));
 
-    VariantPicker * Picker = nullptr;
-    if (!Variants.empty())
+    // ── Content: the tile's download ENDPOINTS — the sinks of its variants' combined dependency DAG. Closures NEST
+    // (PARENTS = dependency), so an endpoint subsumes everything below it: MC shows ONE row ("1.21.4 (903 versions)")
+    // whose tick means the whole chain; AoE2 shows its edition tips sharing their base. Variant-level choice is
+    // deliberately NOT offered here (that's a launch-time decision) — except through the Custom expander below,
+    // where a power user can tick arbitrary variants (each implying its closure, e.g. "only up to 1.8.9").
+    // Derived ASYNC (a union closure walk) — the dialog opens instantly with a placeholder. ──
+    QGroupBox *   EpBox = new QGroupBox("Content", &Dlg);
+    QVBoxLayout * EpL   = new QVBoxLayout(EpBox);
+    QLabel *      EpPending = new QLabel("Deriving content…", EpBox);
+    EpPending->setStyleSheet("color:#8f98a0;");
+    EpL->addWidget(EpPending);
+    DL->addWidget(EpBox);
+    auto EpChecks = std::make_shared<std::map<std::string, QCheckBox*>>();   // endpoint id → checkbox
+    auto EpReady  = std::make_shared<bool>(false);                           // async fill landed
+
+    // Custom selection: full variant list (collapsed by default), none ticked — additive to the endpoints.
+    QToolButton * CustomBtn = new QToolButton(&Dlg);
+    CustomBtn->setText("Custom selection…");
+    CustomBtn->setCheckable(true);
+    CustomBtn->setArrowType(Qt::RightArrow);
+    CustomBtn->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    CustomBtn->setAutoRaise(true);
+    DL->addWidget(CustomBtn);
+    VariantPicker * CustomPicker = new VariantPicker(VariantPicker::Mode::Checkable, &Dlg);
     {
-        QGroupBox * Box = new QGroupBox(Variants.size() > 1 ? "Variants" : "Game", &Dlg);
-        QVBoxLayout * BL = new QVBoxLayout(Box);
-        Picker = new VariantPicker(VariantPicker::Mode::Checkable, Box);
         std::vector<VariantPicker::Entry> Es;
         for (const std::string & Lid : Variants)
         {
@@ -119,10 +141,15 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
             Es.push_back({ Lid, QString::fromStdString(Lbl), N && N->Recommended });
         }
-        Picker->setEntries(Es, { Variants.front() });                 // default = the representative edition only
-        BL->addWidget(Picker);
-        DL->addWidget(Box);
+        CustomPicker->setEntries(Es);                                  // nothing ticked — endpoints carry the default
     }
+    CustomPicker->setVisible(false);
+    DL->addWidget(CustomPicker);
+    connect(CustomBtn, &QToolButton::toggled, &Dlg, [CustomBtn, CustomPicker](bool On){
+        CustomBtn->setArrowType(On ? Qt::DownArrow : Qt::RightArrow);
+        CustomPicker->setVisible(On);
+    });
+
     std::map<std::string, QCheckBox*> SecChecks;                      // the package's other games — few, plain checkboxes
     if (!Secondaries.empty())
     {
@@ -137,11 +164,19 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         DL->addWidget(Box);
     }
 
-    // The launch selection (checked variants + checked secondaries) — the unit every async derivation is scoped to.
-    auto SelectedLaunchIds = [Picker, &SecChecks]() {
+    // The download selection (ticked endpoints ∪ ticked custom variants ∪ checked secondaries) — the unit every
+    // async derivation is scoped to. Until the async endpoint derivation lands, fall back to ALL variants: the
+    // all-endpoints default IS the variants' union, so semantics don't shift when the rows appear.
+    auto SelectedLaunchIds = [EpChecks, EpReady, CustomPicker, &SecChecks, Variants]() {
         std::vector<std::string> Sel;
-        if (Picker) Sel = Picker->checkedIds();
-        for (const auto & [Lid, cb] : SecChecks) if (cb->isChecked()) Sel.push_back(Lid);
+        std::set<std::string> Seen;
+        auto Add = [&](const std::string & Id){ if (Seen.insert(Id).second) Sel.push_back(Id); };
+        if (*EpReady)
+            for (const auto & [Id, cb] : *EpChecks) { if (cb->isChecked()) Add(Id); }
+        else
+            for (const std::string & Id : Variants) Add(Id);
+        for (const std::string & Id : CustomPicker->checkedIds()) Add(Id);
+        for (const auto & [Lid, cb] : SecChecks) if (cb->isChecked()) Add(Lid);
         return Sel;
     };
 
@@ -297,10 +332,36 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     };
 
     connect(Debounce, &QTimer::timeout, &Dlg, [RebuildOptionals, RecomputeSize]{ (*RebuildOptionals)(); (*RecomputeSize)(); });
-    if (Picker) connect(Picker, &VariantPicker::checkedChanged, &Dlg, [Debounce]{ Debounce->start(); });
+    connect(CustomPicker, &VariantPicker::checkedChanged, &Dlg, [Debounce]{ Debounce->start(); });
     for (const auto & [Lid, cb] : SecChecks)    connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
     for (const auto & [Rid, cb] : RunnerChecks) connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
     (*RebuildOptionals)(); (*RecomputeSize)();   // initial async fill — the dialog itself shows instantly
+
+    // Derive the endpoints off-thread and materialize their checkboxes (all ticked = the default "everything").
+    {
+        auto Found = std::make_shared<std::vector<ManifestModel::EndpointInfo>>();
+        AsyncWork::Run(&Dlg,
+            [Snap, Variants, Found]{ *Found = ManifestModel::TileEndpoints(*Snap, Variants); },
+            [Found, EpChecks, EpReady, EpBox, EpL, EpPending, Debounce]{
+                std::sort(Found->begin(), Found->end(),
+                          [](const ManifestModel::EndpointInfo & A, const ManifestModel::EndpointInfo & B){
+                              return NaturalLess(QString::fromStdString(A.Label), QString::fromStdString(B.Label)); });
+                EpPending->deleteLater();
+                for (const ManifestModel::EndpointInfo & E : *Found)
+                {
+                    QString Lbl = QString::fromStdString(E.Label);
+                    if (E.LaunchableCount > 1) Lbl += QString("   (%1 versions)").arg(E.LaunchableCount);
+                    QCheckBox * cb = new QCheckBox(Lbl, EpBox);
+                    cb->setChecked(true);
+                    (*EpChecks)[E.Id] = cb;
+                    EpL->addWidget(cb);
+                    QObject::connect(cb, &QCheckBox::toggled, EpBox, [Debounce](bool){ Debounce->start(); });
+                }
+                EpBox->setVisible(!Found->empty());
+                *EpReady = true;
+                Debounce->start();
+            });
+    }
 
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
     QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);

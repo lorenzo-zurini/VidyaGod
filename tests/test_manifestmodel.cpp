@@ -120,6 +120,47 @@ TEST(optional_nodes_lists_toggleable_ancestors)
     CHECK(!SawBase);   // required content is not an "optional" node
 }
 
+TEST(tile_endpoints_chain_collapses_to_tip)
+{
+    // A delta-chain tile (Minecraft-shaped): v1 ← v2 ← v3, all launchable. The only download endpoint is the tip,
+    // and its LaunchableCount says how many versions its closure carries.
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID", "v1"}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "v2"}, {"PARENTS", {"v1"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "v3"}, {"PARENTS", {"v2"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    const auto Eps = ManifestModel::TileEndpoints(Idx, {"v1", "v2", "v3"});
+    CHECK_EQ((int)Eps.size(), 1);
+    CHECK_EQ(Eps[0].Id, std::string("v3"));
+    CHECK_EQ(Eps[0].LaunchableCount, 3);
+}
+
+TEST(tile_endpoints_divergent_tips_and_optional_excluded)
+{
+    // Two editions sharing a base (AoE2-shaped) → two endpoints, shared base is neither. An optional sink (a mod)
+    // is NOT an endpoint (it belongs to the optional-content section), but its own ancestors still register as
+    // depended-upon (base2 must not surface as an endpoint just because only the mod needs it).
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID", "base"}});
+    Add(Idx, {{"NODE_ID", "aok"}, {"PARENTS", {"base"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "tc"},  {"PARENTS", {"base"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "base2"}});
+    Add(Idx, {{"NODE_ID", "mod"}, {"OPTIONAL", true}, {"PARENTS", {"base2"}}});
+    Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"aok", "mod"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    const auto Eps = ManifestModel::TileEndpoints(Idx, {"game", "tc"});
+    bool SawGame = false, SawTc = false;
+    for (const auto &E : Eps)
+    {
+        if (E.Id == "game") SawGame = true;
+        if (E.Id == "tc")   SawTc   = true;
+        CHECK(E.Id != "base");     // shared base is depended-upon
+        CHECK(E.Id != "mod");      // optional sink → optionals section, not an endpoint
+        CHECK(E.Id != "base2");    // the mod's private base is depended-upon (by the mod)
+    }
+    CHECK(SawGame);
+    CHECK(SawTc);
+    CHECK_EQ((int)Eps.size(), 2);
+}
+
 TEST(validate_flags_missing_parent_and_cycle)
 {
     {   // missing parent → error

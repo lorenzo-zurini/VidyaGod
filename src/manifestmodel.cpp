@@ -287,6 +287,43 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
     return Out;
 }
 
+std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds)
+{
+    // Union closure: plain DFS over PARENTS from every variant with ONE shared visited set — O(distinct nodes), not
+    // O(variants × closure). Optionals are traversed (an optional's ancestors must still register as depended-upon)
+    // but can't become endpoints; EXCLUDE gating is irrelevant here — endpoints describe what CAN be downloaded,
+    // not one launch's enabled set.
+    std::unordered_set<std::string> Visited;
+    std::vector<std::string> Stack(VariantIds.begin(), VariantIds.end());
+    std::vector<const Node*> Union;
+    while (!Stack.empty())
+    {
+        const std::string Cur = Stack.back(); Stack.pop_back();
+        if (!Visited.insert(Cur).second) continue;
+        const Node *N = Idx.Find(Cur);
+        if (!N) continue;
+        Union.push_back(N);
+        for (const std::string &Pid : N->Parents) Stack.push_back(Pid);
+    }
+    std::unordered_set<std::string> HasDependent;
+    for (const Node *N : Union)
+        for (const std::string &Pid : N->Parents) HasDependent.insert(Pid);
+
+    std::vector<EndpointInfo> Out;
+    for (const Node *N : Union)
+    {
+        if (N->Optional || HasDependent.count(N->NodeId)) continue;
+        EndpointInfo E;
+        E.Id    = N->NodeId;
+        E.Label = !N->Label.empty() ? N->Label
+                  : (N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId);
+        for (const std::string &Cid : ResolveNodeOrder(Idx, N->NodeId, {}))
+            if (const Node *C = Idx.Find(Cid); C && C->IsLaunchable()) E.LaunchableCount++;
+        Out.push_back(std::move(E));
+    }
+    return Out;
+}
+
 namespace {
 
 std::string ToLowerAscii(std::string S) { for (char &c : S) c = (char)std::tolower((unsigned char)c); return S; }

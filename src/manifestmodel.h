@@ -141,6 +141,19 @@ void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
 // ResolveNodeOrder; the picker just lists them as checkboxes.
 std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId);
 
+// The DOWNLOAD units of a tile: the SINKS of its variants' combined dependency DAG — nodes that no other node in
+// the union closure depends on (PARENTS = dependency, so closures nest and a sink's closure subsumes everything
+// below it: MC's latest version IS the whole chain, AoE2's edition tips carry their shared base once). Optional
+// nodes are excluded (they're the optional-content section's domain, not download endpoints). LaunchableCount =
+// launchable nodes in that endpoint's own closure — the "(903 versions)" UI hint. Cost: ONE shared-visited pass
+// over the distinct union nodes + one closure walk per (few) endpoints — never per variant.
+struct EndpointInfo {
+    std::string Id;
+    std::string Label;             // the node's Label, else Meta.TITLE, else the id
+    int         LaunchableCount = 0;
+};
+std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds);
+
 // Validate the whole node graph: every PARENTS id resolves + no cycles; VFS layers declare a PATH; each
 // launchable resolves a runner (platform match) + has content or is self-contained; runner nodes declare GUEST
 // platforms; a PREFIX_GENERATE runner routes content through drive_c; EXCLUDE is symmetric. Errors should block
