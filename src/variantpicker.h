@@ -12,6 +12,11 @@ class QListView;
 class QStandardItemModel;
 class QSortFilterProxyModel;
 
+// Natural version-aware label order: digit runs compare numerically ("1.9" < "1.10" < "1.10.2"), the rest
+// case-insensitively. Hand-rolled — QCollator's numeric mode is backend/locale-dependent (differed across the two
+// dev machines and is unsupported for the C locale), and variant lists must sort identically everywhere.
+bool NaturalLess(const QString & A, const QString & B);
+
 // ---------------------------------------------------------------------------
 // VariantPicker — a variant list that scales to an ARBITRARY number of entries (a game with 3 editions or 903
 // Minecraft versions alike). Model/view (virtualized — no widget per row), with:

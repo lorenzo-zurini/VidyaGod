@@ -1,6 +1,5 @@
 #include "variantpicker.h"
 
-#include <QCollator>
 #include <QLineEdit>
 #include <QListView>
 #include <QSortFilterProxyModel>
@@ -14,6 +13,33 @@ namespace {
 constexpr int kSearchThreshold = 9;    // show the filter box only when browsing alone stops being practical
 constexpr int kMaxVisibleRows  = 10;   // cap the widget's height at ~this many rows; more scrolls
 } // namespace
+
+bool NaturalLess(const QString & A, const QString & B)
+{
+    int i = 0, j = 0;
+    while (i < A.size() && j < B.size())
+    {
+        if (A[i].isDigit() && B[j].isDigit())
+        {
+            const int i0 = i, j0 = j;
+            while (i < A.size() && A[i].isDigit()) ++i;
+            while (j < B.size() && B[j].isDigit()) ++j;
+            QStringView Na = QStringView(A).mid(i0, i - i0);
+            QStringView Nb = QStringView(B).mid(j0, j - j0);
+            while (Na.size() > 1 && Na.front() == u'0') Na = Na.mid(1);   // 007 == 7
+            while (Nb.size() > 1 && Nb.front() == u'0') Nb = Nb.mid(1);
+            if (Na.size() != Nb.size()) return Na.size() < Nb.size();     // more digits = bigger number
+            if (const int C = Na.compare(Nb); C != 0) return C < 0;       // same width → lexicographic == numeric
+        }
+        else
+        {
+            const QChar La = A[i].toLower(), Lb = B[j].toLower();
+            if (La != Lb) return La < Lb;
+            ++i; ++j;
+        }
+    }
+    return (A.size() - i) < (B.size() - j);   // shared prefix → the shorter label first
+}
 
 VariantPicker::VariantPicker(Mode M, QWidget * parent)
     : QWidget(parent), PickMode(M)
@@ -54,13 +80,10 @@ VariantPicker::VariantPicker(Mode M, QWidget * parent)
 void VariantPicker::setEntries(const std::vector<Entry> & Entries, const std::vector<std::string> & Checked)
 {
     // Natural version order (1.9 < 1.10 < 1.10.2), recommended pinned first. Stable so equal keys keep author order.
-    QCollator Coll;
-    Coll.setNumericMode(true);
-    Coll.setCaseSensitivity(Qt::CaseInsensitive);
     std::vector<Entry> Sorted = Entries;
-    std::stable_sort(Sorted.begin(), Sorted.end(), [&Coll](const Entry & A, const Entry & B){
+    std::stable_sort(Sorted.begin(), Sorted.end(), [](const Entry & A, const Entry & B){
         if (A.Recommended != B.Recommended) return A.Recommended;
-        return Coll.compare(A.Label, B.Label) < 0;
+        return NaturalLess(A.Label, B.Label);
     });
 
     // NOTE: no blockSignals here — the proxy learns rows exist only from the model's insert signals (blocking them

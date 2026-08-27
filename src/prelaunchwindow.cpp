@@ -7,12 +7,12 @@
 #include "containerwrapper.h"   // StringVariableSubstitution / ContainerParams (CustomVar preview substitution)
 #include "launchresolver.h"     // ResolveChainIds / ResolveChainTail / kNativeTerminalId (runner daisy-chain UI)
 #include "jsonoperations.h"
+#include "variantpicker.h"     // NaturalLess — deterministic version-aware variant ordering
 
 #include <set>
 #include <algorithm>
 
 #include <QBrush>
-#include <QCollator>
 #include <QCompleter>
 #include <QDir>
 #include <QFile>
@@ -738,14 +738,11 @@ void PreLaunchWindow::FillVariantCombo()
                               : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
         Es.push_back({ Id, QString::fromStdString(L), N->Recommended });
     }
-    // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2) — with hundreds of variants (903 Minecraft
-    // versions) lexicographic order scatters versions and makes the combo unusable.
-    QCollator Coll;
-    Coll.setNumericMode(true);
-    Coll.setCaseSensitivity(Qt::CaseInsensitive);
-    std::stable_sort(Es.begin(), Es.end(), [&Coll](const E& Ea, const E& Eb){
+    // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2, NaturalLess) — with hundreds of variants
+    // (903 Minecraft versions) lexicographic order scatters versions and makes the combo unusable.
+    std::stable_sort(Es.begin(), Es.end(), [](const E& Ea, const E& Eb){
         if (Ea.Rec != Eb.Rec) return Ea.Rec;
-        return Coll.compare(Ea.Lbl, Eb.Lbl) < 0;
+        return NaturalLess(Ea.Lbl, Eb.Lbl);
     });
     for (const E& X : Es)
         VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl, QString::fromStdString(X.Id));
