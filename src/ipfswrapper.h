@@ -269,7 +269,9 @@ void SetLanExcluded(const std::vector<std::string> &PeerIds);
 std::string OverlayStart(std::string *Error = nullptr);
 // Nested-sandbox variant (production): configure the friend-LAN routes and listen on SockPath for the TUN fd that the
 // in-sandbox sandbox-init hands back (it creates the TUN inside the game's OWN netns). Non-blocking. True on listen ok.
-bool OverlayServe(const std::string &SockPath, std::string *Error = nullptr);
+// Bridge = in-node NAT gateway (internet + real-LAN unicast through the game's TUN); HostRelay = real-LAN
+// broadcast reflection both ways. Together with the overlay itself: the TRI-PLANE LAN, all rootless, no helpers.
+bool OverlayServe(const std::string &SockPath, bool Bridge, bool HostRelay, std::string *Error = nullptr);
 void OverlayStop();
 bool OverlayActive();
 

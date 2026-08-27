@@ -64,17 +64,18 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     dlNote->setStyleSheet("color:#8f98a0;font-size:9pt;");
     pl->addWidget(dlNote);
 
-    // Friend LAN — always on (no toggle): every game launch joins the virtual LAN of accepted friends, and a pasta
-    // user-mode NAT bridges the game to the internet + real LAN at the same time. Purely informational here.
+    // Friend LAN — always on (no toggle): every game launch joins the virtual LAN of accepted friends, and the
+    // node's own in-process gateway (gVisor NAT + broadcast reflector) bridges the game to the internet + real LAN
+    // at the same time. No external helper. Purely informational here.
     QLabel * lanHeading = new QLabel("Friend LAN (multiplayer)", this);
     lanHeading->setStyleSheet("font-weight:bold;margin-top:12px;");
     pl->addWidget(lanHeading);
 
     QLabel * lanHint = new QLabel(
         "Games launch inside a private virtual LAN shared with your accepted friends (Friends tab) — LAN "
-        "multiplayer works across the internet as if you were in one room, while the game keeps normal internet "
-        "access (bridge mode, requires the `passt` package; without it games are LAN-only while friends are "
-        "online). Always on — no setup needed.", this);
+        "multiplayer works across the internet as if you were in one room. Each game also keeps full internet and "
+        "real-LAN access, including seeing sessions on your physical network, through VidyaGod's own in-process "
+        "gateway — no external tools, no configuration. Always on.", this);
     lanHint->setWordWrap(true);
     lanHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
     pl->addWidget(lanHint);

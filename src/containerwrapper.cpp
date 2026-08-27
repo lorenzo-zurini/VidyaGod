@@ -20,42 +20,15 @@ static bool SandboxDefaultOn(const nlohmann::ordered_json &GC)
 }
 
 // The friend LAN is ALWAYS ON (no setting): whenever the node is up and the friend LAN resolves, a launch joins the
-// virtual LAN of friends — the game runs in an isolated netns with the overlay TUN, and (bridge, default) a pasta
-// user-mode NAT attached to the same netns gives it internet + real-LAN reach at the same time. Discovery broadcasts
-// stay on the overlay via the 255.255.255.255/32 route the sandbox-init pins to the TUN. Per-game escape hatches:
-// VIDYAGOD_SANDBOX_NET=host skips the LAN entirely; VIDYAGOD_LAN_BRIDGE=off keeps the netns overlay-only (no pasta).
+// TRI-PLANE virtual LAN — the game runs in an isolated netns whose only interface is the overlay TUN, and the node
+// itself is the gateway (no external helper): overlay unicast/broadcast to friends, an in-node gVisor NAT for
+// internet + real-LAN unicast (VIDYAGOD_LAN_BRIDGE), and a userspace reflector for real-LAN broadcasts both ways
+// (VIDYAGOD_LAN_HOSTRELAY). Discovery broadcasts stay on the overlay via the 255.255.255.255/32 route pinned by the
+// sandbox-init. Escape hatches: VIDYAGOD_SANDBOX_NET=host skips the LAN; VIDYAGOD_LAN_BRIDGE=off = overlay-only;
+// VIDYAGOD_LAN_HOSTRELAY=off = no real-LAN broadcast bridging.
 
 #include <QThread>
 
-#ifdef __linux__
-#include <QElapsedTimer>
-#include <QFile>
-#include <QStandardPaths>
-
-//First descendant of Root whose NET NAMESPACE differs from ours — the process bwrap placed inside the sandbox
-//(bwrap itself supervises from outside). Polled: the child appears a beat after bwrap starts. -1 if none in time.
-static qint64 FindNetnsChildPid(qint64 Root, int TimeoutMs)
-{
-    const QString SelfNs = QFile::symLinkTarget("/proc/self/ns/net");
-    QElapsedTimer T; T.start();
-    while (T.elapsed() < TimeoutMs)
-    {
-        QList<qint64> Queue{Root};
-        while (!Queue.isEmpty())
-        {
-            const qint64 P = Queue.takeFirst();
-            const QString Ns = QFile::symLinkTarget(QString("/proc/%1/ns/net").arg(P));
-            if (!Ns.isEmpty() && Ns != SelfNs) return P;
-            QFile Ch(QString("/proc/%1/task/%1/children").arg(P));
-            if (Ch.open(QIODevice::ReadOnly))
-                for (const QByteArray &Tok : Ch.readAll().split(' '))
-                    if (const qint64 C = Tok.trimmed().toLongLong(); C > 0) Queue.append(C);
-        }
-        QThread::msleep(100);
-    }
-    return -1;
-}
-#endif
 #include <QMetaObject>
 
 #include <chrono>
@@ -516,14 +489,19 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
             if (SbOpts.Net == SandboxLayer::NetMode::Isolated && !SelfVip.empty())
             {
                 const std::string Sock = (ContainerParams.TempPath / "overlay.sock").string();
+                auto GateOn = [&](const char *K){ auto It = ContainerParams.CustomVariables.find(K);
+                                                  return It == ContainerParams.CustomVariables.end() || It->second != "off"; };
+                const bool Bridge    = GateOn("VIDYAGOD_LAN_BRIDGE");     // in-node NAT: internet + real-LAN unicast
+                const bool HostRelay = GateOn("VIDYAGOD_LAN_HOSTRELAY");  // real-LAN broadcast reflector
                 std::string OErr;
-                if (IpfsWrapper::OverlayServe(Sock, &OErr))
+                if (IpfsWrapper::OverlayServe(Sock, Bridge, HostRelay, &OErr))
                 {
                     std::string Mask = "16";
                     if (auto S = Subnet.rfind('/'); S != std::string::npos) Mask = Subnet.substr(S + 1);
-                    SbOpts.TunName = "vg-lan";
-                    SbOpts.TunCidr = SelfVip + "/" + Mask;
-                    SbOpts.TunSock = Sock;
+                    SbOpts.TunName   = "vg-lan";
+                    SbOpts.TunCidr   = SelfVip + "/" + Mask;
+                    SbOpts.TunSock   = Sock;
+                    SbOpts.TunBridge = Bridge;   // sandbox-init adds the default route only when the NAT is up
                     OverlayServing = true;
                 }
                 else
@@ -558,35 +536,6 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     }
 
     RunProcess.start();
-#ifdef __linux__
-    //Friend-LAN BRIDGE (default): attach a pasta user-mode NAT to the sandbox's namespaces, so the game reaches the
-    //internet and the real LAN (outbound) THROUGH its isolated netns, alongside the overlay TUN. LAN discovery still
-    //rides the overlay — sandbox-init pins 255.255.255.255/32 to the TUN, more specific than pasta's default route.
-    //pasta needs a pid INSIDE the namespaces (bwrap's own process stays outside) → walk descendants for one whose
-    //net-ns inode differs from ours. Best-effort: no pasta / no child found ⇒ overlay-only, the game still launches.
-    {
-        auto BridgeVar = ContainerParams.CustomVariables.find("VIDYAGOD_LAN_BRIDGE");
-        const bool BridgeOn = BridgeVar == ContainerParams.CustomVariables.end() || BridgeVar->second != "off";
-        if (OverlayServing && BridgeOn)
-        {
-            const QString Pasta = QStandardPaths::findExecutable("pasta");
-            if (Pasta.isEmpty())
-                LogWarn("ContainerWrapper::Execute", "pasta (passt) not installed — friend LAN is overlay-only "
-                                                     "(no internet inside the game). Install `passt` for bridge mode.");
-            else if (RunProcess.waitForStarted(5000))
-            {
-                const qint64 SandboxPid = FindNetnsChildPid((qint64)RunProcess.processId(), 5000);
-                //`env -u LD_LIBRARY_PATH` = SystemToolEnv for a detached spawn (AppImage lib path must not leak).
-                if (SandboxPid > 0 && QProcess::startDetached("env", {"-u", "LD_LIBRARY_PATH", Pasta,
-                                                              "--config-net", "--quiet", QString::number(SandboxPid)}))
-                    LogOut("ContainerWrapper::Execute", "Friend-LAN bridge: pasta attached to sandbox pid "
-                                                        + std::to_string(SandboxPid) + " (internet + LAN + overlay)");
-                else
-                    LogWarn("ContainerWrapper::Execute", "Friend-LAN bridge: could not attach pasta — overlay-only.");
-            }
-        }
-    }
-#endif
     RunProcess.waitForFinished(-1);
 
     //Clear the pointer before reading output so KillGame() does not dereference a finished process.

@@ -45,16 +45,23 @@ static int RunOverlaySandbox(const std::string &UserCmd)
     auto Get = [&](const char *K){ auto It = V.find(K); return It == V.end() ? std::string() : It->second; };
     const std::string MyVip = Get("VIDYAGOD_SELF_VIP"), Subnet = Get("VIDYAGOD_SUBNET");
     const std::string PeerVips = Get("VIDYAGOD_PEER_VIPS");
-    const std::string PeerVip = PeerVips.substr(0, PeerVips.find(','));   // first online friend
-    if (MyVip.empty() || PeerVip.empty()) { LogErr("main.cpp", "overlay: no self/peer vIP (need an online friend)"); return -1; }
+    const std::string PeerVip = PeerVips.empty() ? std::string() : PeerVips.substr(0, PeerVips.find(','));   // first online friend
+    // A friend is needed only for the OVERLAY-plane ping smoke test. With --overlay-exec (a custom command, e.g. the
+    // tri-plane internet/DNS/real-LAN probe) we bring the sandbox up regardless — those planes don't need a peer.
+    if (MyVip.empty()) { LogErr("main.cpp", "overlay: no self vIP (LAN unavailable)"); return -1; }
+    if (UserCmd.empty() && PeerVip.empty()) { LogErr("main.cpp", "overlay: no peer vIP (need an online friend for the ping test)"); return -1; }
     if (!SandboxLayer::Available()) { LogErr("main.cpp", "overlay: sandbox unavailable (no bwrap / userns disabled)"); return -1; }
 
     std::string Mask = "16";
     if (auto s = Subnet.rfind('/'); s != std::string::npos) Mask = Subnet.substr(s + 1);
     const std::string Sock = "/tmp/vgov-lan.sock";
+    // Tri-plane gates for the CLI harness: default ON, opt out via env (VG_LAN_BRIDGE=0 / VG_LAN_HOSTRELAY=0).
+    auto EnvOn = [](const char *K){ const char *V = ::getenv(K); return !V || (std::string(V) != "0" && std::string(V) != "off"); };
+    const bool Bridge = EnvOn("VG_LAN_BRIDGE");
+    const bool HostRelay = EnvOn("VG_LAN_HOSTRELAY");
 
     std::string Err;
-    if (!IpfsWrapper::OverlayServe(Sock, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
+    if (!IpfsWrapper::OverlayServe(Sock, Bridge, HostRelay, &Err)) { LogErr("main.cpp", "overlay serve failed: " + Err); return -1; }
 
     SandboxLayer::Options O;
     O.Enabled = true;
@@ -62,6 +69,7 @@ static int RunOverlaySandbox(const std::string &UserCmd)
     O.TunName = "vg-lan";
     O.TunCidr = MyVip + "/" + Mask;
     O.TunSock = Sock;
+    O.TunBridge = Bridge;
     std::string Program = "/bin/sh";
     const std::string Inner = UserCmd.empty()
         ? ("ip -o addr show 2>/dev/null | sed 's/^/[sandbox] /'; "
@@ -249,7 +257,7 @@ int CliModes::RunIpfsModes(LaunchParameters &LaunchParameters, nlohmann::ordered
             if (Now != LastRoster) { LogOut("main.cpp", "lan roster: " + Now); LastRoster = Now; }
             //Once at least one friend is online, bring the overlay up (nested sandbox — what a real game launch does)
             //and either ping the friend (smoke test) or run --overlay-exec's command through the tunnel. Attempt once.
-            if (LaunchParameters.OverlayUp && !OverlayTried && !Peers.empty())
+            if (LaunchParameters.OverlayUp && !OverlayTried && (!Peers.empty() || !LaunchParameters.OverlayExec.empty()))
             {
                 OverlayTried = true;
                 RunOverlaySandbox(LaunchParameters.OverlayExec);   // blocks until the inner command exits

@@ -35,6 +35,7 @@ struct Options {
     std::vector<Mount>       Mounts;          // vidyagodfs specs re-mounted inside the sandbox (game never sees the host mount)
     std::string              WorkDir;         // the game's CWD (under a mountpoint) — init chdir's here after mounting
     std::string              TunName, TunCidr, TunSock;   // overlay TUN (Isolated + a session); empty = none
+    bool                     TunBridge = false;           // in-node NAT is up → sandbox-init adds a default route via the TUN
 };
 
 // Whether this launch should be sandboxed. An explicit VIDYAGOD_SANDBOX custom variable (on/off/true/1/…) always wins;

@@ -82,7 +82,8 @@ void VgLanSetExcluded(const char *csv);
 // inside a bubblewrap userns netns). The production path is VgOverlayServe: the TUN lives in the game's OWN sandbox
 // netns (the host stack is never touched); VgOverlayStart is a host-netns debug/CLI path.
 int  VgOverlayStart(char **outName, char **errOut);
-int  VgOverlayServe(const char *sockPath, char **errOut); // nested: listen for the sandbox's TUN fd
+// bridge≠0 → in-node NAT gateway (internet + real-LAN unicast); hostRelay≠0 → real-LAN broadcast reflector.
+int  VgOverlayServe(const char *sockPath, int bridge, int hostRelay, char **errOut); // nested: listen for the sandbox's TUN fd
 void VgOverlayStop(void);
 int  VgOverlayActive(void);   // 1 if forwarding on an attached TUN, else 0
 

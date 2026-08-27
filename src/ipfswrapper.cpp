@@ -573,10 +573,10 @@ std::string OverlayStart(std::string *Error)
     return N;
 }
 
-bool OverlayServe(const std::string &SockPath, std::string *Error)
+bool OverlayServe(const std::string &SockPath, bool Bridge, bool HostRelay, std::string *Error)
 {
     char *Err = nullptr;
-    const int Rc = VgOverlayServe(SockPath.c_str(), &Err);
+    const int Rc = VgOverlayServe(SockPath.c_str(), Bridge ? 1 : 0, HostRelay ? 1 : 0, &Err);
     const std::string E = TakeStr(Err);
     if (Rc != 0) { if (Error) *Error = E.empty() ? "overlay serve failed" : E; return false; }
     return true;

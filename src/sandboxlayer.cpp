@@ -103,7 +103,8 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
     for (const Mount &M : Opts.Mounts)
         A << "--mount" << QString::fromStdString(M.SpecPath) << QString::fromStdString(M.Mountpoint);
     if (!Opts.TunName.empty() && !Opts.TunSock.empty())
-        A << "--tun" << QString::fromStdString(Opts.TunName) << QString::fromStdString(Opts.TunCidr) << QString::fromStdString(Opts.TunSock);
+        A << "--tun" << QString::fromStdString(Opts.TunName) << QString::fromStdString(Opts.TunCidr)
+          << QString::fromStdString(Opts.TunSock) << (Opts.TunBridge ? "bridge" : "nobridge");
     if (!Opts.WorkDir.empty())
         A << "--chdir" << QString::fromStdString(Opts.WorkDir);
     A << "--" << OrigProgram << OrigArgs;

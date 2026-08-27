@@ -103,7 +103,7 @@ bool SendFd(int sock, int fd)
 // Create + address the overlay TUN inside this (sandbox) net namespace and hand its fd to the parent forwarder over
 // sockPath. name<=15 chars; cidr e.g. "10.66.42.2/24". Returns true on success (best-effort — a failure leaves the
 // game running without the overlay rather than blocking the launch).
-bool BringUpTun(const std::string &name, const std::string &cidr, const std::string &sockPath)
+bool BringUpTun(const std::string &name, const std::string &cidr, const std::string &sockPath, bool bridge)
 {
     int tun = open("/dev/net/tun", O_RDWR);
     if (tun < 0) { Warn("open /dev/net/tun failed"); return false; }
@@ -116,17 +116,19 @@ bool BringUpTun(const std::string &name, const std::string &cidr, const std::str
     // ALSO raise loopback: a freshly unshared netns has lo DOWN, and Windows games under wine lean on 127.0.0.1
     // constantly (self-IP via hostname, DirectPlay internals, winsock probes) — with lo down they see their own IP
     // as 0.0.0.0 and fail binds with "invalid argument" (observed: Age of Mythology multiplayer).
-    // The global-broadcast route PINS LAN discovery to the overlay: dplay-era games announce to 255.255.255.255,
-    // and once bridge mode adds a default route (pasta) those packets would otherwise exit toward the internet NIC
-    // and friends would never see them. A /32 is more specific than any default route, so discovery always rides
-    // vg-lan while normal traffic uses the bridge. (Also needed in pure isolated mode — without any route,
-    // sendto(255.255.255.255) is ENETUNREACH.)
-    // MTU 1280: every game packet must fit ONE QUIC datagram (path limit ~1350 on typical MTUs) — at 1400 a large
-    // packet silently switched to the reliable-stream path mid-session, splitting the flow across two transports.
-    const std::string ipcmd = "ip link set dev lo up; "
-                              "ip link set dev " + name + " mtu 1280; ip addr add " + cidr + " dev " + name
-                              + "; ip link set dev " + name + " up"
-                              + "; ip route add 255.255.255.255/32 dev " + name;
+    // MTU 1280: every game packet must fit ONE QUIC datagram — at 1400 a large packet silently split onto the stream.
+    std::string ipcmd = "ip link set dev lo up; "
+                        "ip link set dev " + name + " mtu 1280; ip addr add " + cidr + " dev " + name
+                        + "; ip link set dev " + name + " up";
+    // BRIDGE (tri-plane): a gateway-less on-link default route sends every non-LAN packet up the TUN, where the
+    // in-node gVisor NAT (natgateway.go) forwards it as a real host socket — internet + real-LAN unicast, no helper.
+    // The 255.255.255.255/32 pin keeps LAN discovery broadcasts on the overlay plane (more specific than default);
+    // rp_filter=0 because reflector-injected packets carry real-LAN source IPs whose return route is this same TUN
+    // (strict reverse-path filtering would drop them). Without bridge, only the discovery route exists (pure vLAN).
+    if (bridge)
+        ipcmd += "; ip route add default dev " + name
+               + "; sysctl -w net.ipv4.conf.all.rp_filter=0 net.ipv4.conf.default.rp_filter=0 >/dev/null 2>&1";
+    ipcmd += "; ip route add 255.255.255.255/32 dev " + name;
     if (std::system(ipcmd.c_str()) != 0) Warn("ip configuration returned non-zero (continuing)");
 
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -156,11 +158,12 @@ bool IsSandboxInit(int argc, char **argv)
     return false;
 }
 
-// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock>]  --  <program> [args…]
+// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock> <bridge|nobridge>]  --  <program> [args…]
 int RunSandboxInit(int argc, char **argv)
 {
     std::vector<std::pair<std::string, std::string>> mounts;
     std::string tunName, tunCidr, tunSock, chdirTo;
+    bool tunBridge = false;
     std::vector<std::string> cmd;
 
     int i = 1;
@@ -169,7 +172,8 @@ int RunSandboxInit(int argc, char **argv)
         const std::string a = argv[i];
         if (a == "--sandbox-init") continue;
         if (a == "--mount" && i + 2 < argc) { mounts.emplace_back(argv[i + 1], argv[i + 2]); i += 2; }
-        else if (a == "--tun" && i + 3 < argc) { tunName = argv[i + 1]; tunCidr = argv[i + 2]; tunSock = argv[i + 3]; i += 3; }
+        else if (a == "--tun" && i + 4 < argc) { tunName = argv[i + 1]; tunCidr = argv[i + 2]; tunSock = argv[i + 3];
+                                                 tunBridge = std::string(argv[i + 4]) == "bridge"; i += 4; }
         else if (a == "--chdir" && i + 1 < argc) { chdirTo = argv[i + 1]; i += 1; }
         else if (a == "--") { ++i; break; }
     }
@@ -181,7 +185,7 @@ int RunSandboxInit(int argc, char **argv)
         if (!MountOne(helper, spec, mnt)) { Warn(("mount failed: " + mnt).c_str()); return 1; }
 
     if (!tunName.empty() && !tunSock.empty())
-        BringUpTun(tunName, tunCidr, tunSock);   // best-effort: the game still launches if the overlay can't come up
+        BringUpTun(tunName, tunCidr, tunSock, tunBridge);   // best-effort: the game still launches if the overlay can't come up
 
     // chdir into the game's working directory (lives under a mount we just created, so it couldn't be set earlier).
     if (!chdirTo.empty() && chdir(chdirTo.c_str()) != 0)
