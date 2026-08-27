@@ -116,9 +116,15 @@ bool BringUpTun(const std::string &name, const std::string &cidr, const std::str
     // ALSO raise loopback: a freshly unshared netns has lo DOWN, and Windows games under wine lean on 127.0.0.1
     // constantly (self-IP via hostname, DirectPlay internals, winsock probes) — with lo down they see their own IP
     // as 0.0.0.0 and fail binds with "invalid argument" (observed: Age of Mythology multiplayer).
+    // The global-broadcast route PINS LAN discovery to the overlay: dplay-era games announce to 255.255.255.255,
+    // and once bridge mode adds a default route (pasta) those packets would otherwise exit toward the internet NIC
+    // and friends would never see them. A /32 is more specific than any default route, so discovery always rides
+    // vg-lan while normal traffic uses the bridge. (Also needed in pure isolated mode — without any route,
+    // sendto(255.255.255.255) is ENETUNREACH.)
     const std::string ipcmd = "ip link set dev lo up; "
                               "ip link set dev " + name + " mtu 1400; ip addr add " + cidr + " dev " + name
-                              + "; ip link set dev " + name + " up";
+                              + "; ip link set dev " + name + " up"
+                              + "; ip route add 255.255.255.255/32 dev " + name;
     if (std::system(ipcmd.c_str()) != 0) Warn("ip configuration returned non-zero (continuing)");
 
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
