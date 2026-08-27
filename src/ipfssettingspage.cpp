@@ -63,5 +63,28 @@ IpfsSettingsPage::IpfsSettingsPage(AppModel & model, QWidget * parent)
     dlNote->setWordWrap(true);
     dlNote->setStyleSheet("color:#8f98a0;font-size:9pt;");
     pl->addWidget(dlNote);
+
+    // Friend LAN — Settings.LanEnabled (default OFF). When on, every game launch joins the virtual LAN of accepted
+    // friends: the launch runs in an ISOLATED network namespace with the overlay TUN as its only interface, so
+    // LAN-multiplayer games discover friends' games as if on one physical LAN. The host network stack is untouched.
+    QLabel * lanHeading = new QLabel("Friend LAN (multiplayer)", this);
+    lanHeading->setStyleSheet("font-weight:bold;margin-top:12px;");
+    pl->addWidget(lanHeading);
+
+    QCheckBox * lanCb = new QCheckBox("Join the virtual LAN of friends when launching games", this);
+    lanCb->setChecked((*Model.config())["Settings"].value("LanEnabled", false));
+    connect(lanCb, &QCheckBox::toggled, this, [this](bool on){
+        (*Model.config())["Settings"]["LanEnabled"] = on;
+        Model.save();
+    });
+    pl->addWidget(lanCb);
+
+    QLabel * lanHint = new QLabel(
+        "Games launch inside a private virtual LAN shared with your accepted friends (Friends tab) — LAN "
+        "multiplayer works across the internet as if you were in one room. While enabled, launched games can "
+        "reach ONLY that virtual LAN (no direct internet); turn it off for online-service games.", this);
+    lanHint->setWordWrap(true);
+    lanHint->setStyleSheet("color:#8f98a0;font-size:9pt;margin-left:22px;");
+    pl->addWidget(lanHint);
     pl->addStretch(1);
 }
