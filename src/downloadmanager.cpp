@@ -120,7 +120,8 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     EpPending->setStyleSheet("color:#8f98a0;");
     EpL->addWidget(EpPending);
     DL->addWidget(EpBox);
-    auto EpChecks = std::make_shared<std::map<std::string, QCheckBox*>>();   // endpoint id → checkbox
+    // One row may carry SEVERAL variant ids (the "Everything else" fold) — ticked = download all their closures.
+    auto EpChecks = std::make_shared<std::vector<std::pair<QCheckBox*, std::vector<std::string>>>>();
     auto EpReady  = std::make_shared<bool>(false);                           // async fill landed
 
     // Custom selection: full variant list (collapsed by default), none ticked — additive to the endpoints.
@@ -172,7 +173,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         std::set<std::string> Seen;
         auto Add = [&](const std::string & Id){ if (Seen.insert(Id).second) Sel.push_back(Id); };
         if (*EpReady)
-            for (const auto & [Id, cb] : *EpChecks) { if (cb->isChecked()) Add(Id); }
+            for (const auto & [cb, Ids] : *EpChecks) { if (cb->isChecked()) for (const std::string & Id : Ids) Add(Id); }
         else
             for (const std::string & Id : Variants) Add(Id);
         for (const std::string & Id : CustomPicker->checkedIds()) Add(Id);
@@ -343,17 +344,16 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         AsyncWork::Run(&Dlg,
             [Snap, Variants, Found]{ *Found = ManifestModel::TileEndpoints(*Snap, Variants); },
             [Found, EpChecks, EpReady, EpBox, EpL, EpPending, Debounce]{
-                std::sort(Found->begin(), Found->end(),
-                          [](const ManifestModel::EndpointInfo & A, const ManifestModel::EndpointInfo & B){
-                              return NaturalLess(QString::fromStdString(A.Label), QString::fromStdString(B.Label)); });
+                // Keep TileEndpoints' order: greedy picks best-first, the "Everything else" fold last.
                 EpPending->deleteLater();
                 for (const ManifestModel::EndpointInfo & E : *Found)
                 {
                     QString Lbl = QString::fromStdString(E.Label);
-                    if (E.LaunchableCount > 1) Lbl += QString("   (%1 versions)").arg(E.LaunchableCount);
+                    if (E.LaunchableCount > 1)  Lbl += QString("   (%1 versions)").arg(E.LaunchableCount);
+                    else if (E.Ids.size() > 1)  Lbl += QString("   (%1 items)").arg(E.Ids.size());
                     QCheckBox * cb = new QCheckBox(Lbl, EpBox);
                     cb->setChecked(true);
-                    (*EpChecks)[E.Id] = cb;
+                    EpChecks->push_back({ cb, E.Ids });
                     EpL->addWidget(cb);
                     QObject::connect(cb, &QCheckBox::toggled, EpBox, [Debounce](bool){ Debounce->start(); });
                 }

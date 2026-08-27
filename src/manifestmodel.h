@@ -141,15 +141,20 @@ void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
 // ResolveNodeOrder; the picker just lists them as checkboxes.
 std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId);
 
-// The DOWNLOAD units of a tile: the SINKS of its variants' combined dependency DAG — nodes that no other node in
-// the union closure depends on (PARENTS = dependency, so closures nest and a sink's closure subsumes everything
-// below it: MC's latest version IS the whole chain, AoE2's edition tips carry their shared base once). Optional
-// nodes are excluded (they're the optional-content section's domain, not download endpoints). LaunchableCount =
-// launchable nodes in that endpoint's own closure — the "(903 versions)" UI hint. Cost: ONE shared-visited pass
-// over the distinct union nodes + one closure walk per (few) endpoints — never per variant.
+// The DOWNLOAD units of a tile, derived from its CONTENT structure (not raw graph sinks — every launchable variant
+// is typically a graph sink, e.g. MC's content-free per-version "_game" wrappers hanging off the delta chain).
+// Ticking a row means downloading the closures of its Ids; the rows together always cover the tile's whole required
+// content (all ticked = "everything"). Rows come from a GREEDY SET-COVER over the content bitsets: each pick is the
+// variant covering the most still-uncovered content — so nesting collapses (a delta chain is one pick) and genuine
+// branches (divergent editions, forked snapshot chains) each get a row. Real graphs also carry many small unique-
+// content leaves (per-era natives bundles, wrapper scripts) whose "owning" variants would make meaningless rows —
+// picks beyond the first few are folded into a single "Everything else" row. Content reached only through Optional
+// nodes never surfaces here (that's the optional-content section's domain). LaunchableCount = how many of the
+// tile's variants the row's first pick DOMINATES (content ⊆ its content) — the "(270 versions)" hint; 0 on the
+// folded row. Cost: one shared-visited union walk + bitset closure algebra — never per-variant walks.
 struct EndpointInfo {
-    std::string Id;
-    std::string Label;             // the node's Label, else Meta.TITLE, else the id
+    std::vector<std::string> Ids;  // the variant(s) this row downloads (closure union); 1 for real picks, many when folded
+    std::string Label;             // first pick's Label (else Meta.TITLE, else id), or "Everything else"
     int         LaunchableCount = 0;
 };
 std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds);

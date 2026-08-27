@@ -7,7 +7,9 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <fstream>
+#include <functional>
 #include <algorithm>
+#include <bit>
 #include <regex>
 #include <cctype>
 #include <zip.h>   // node-graph validation reads content zips to case-check CONTENTPATH against real files
@@ -289,10 +291,15 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
 
 std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<std::string> &VariantIds)
 {
-    // Union closure: plain DFS over PARENTS from every variant with ONE shared visited set — O(distinct nodes), not
-    // O(variants × closure). Optionals are traversed (an optional's ancestors must still register as depended-upon)
-    // but can't become endpoints; EXCLUDE gating is irrelevant here — endpoints describe what CAN be downloaded,
-    // not one launch's enabled set.
+    // Endpoints are computed over the CONTENT-CARRYING subgraph, not raw graph sinks. Lesson learned the hard way:
+    // every launchable variant is typically a graph sink (MC's per-version "..._game" wrapper holds only
+    // DeclareExec/CustomVar and hangs OFF the delta chain — nothing depends on it), so "sinks of the node DAG"
+    // yielded 903 endpoints. What actually nests is the CONTENT: a content-sink is a content node no other content
+    // node (transitively) depends on, and the endpoint shown to the user is the VARIANT with the smallest closure
+    // covering that sink — "the version that owns the tip". Variants covering no sink are dominated (their content
+    // ⊆ an endpoint's) and remain reachable via the dialog's Custom list.
+
+    // 1. Union closure over all variants: one shared-visited DFS — O(distinct nodes), never per-variant.
     std::unordered_set<std::string> Visited;
     std::vector<std::string> Stack(VariantIds.begin(), VariantIds.end());
     std::vector<const Node*> Union;
@@ -305,21 +312,137 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
         Union.push_back(N);
         for (const std::string &Pid : N->Parents) Stack.push_back(Pid);
     }
-    std::unordered_set<std::string> HasDependent;
-    for (const Node *N : Union)
-        for (const std::string &Pid : N->Parents) HasDependent.insert(Pid);
+    const int Nn = (int)Union.size();
+    std::unordered_map<std::string, int> IxOf;
+    for (int i = 0; i < Nn; ++i) IxOf[Union[i]->NodeId] = i;
 
-    std::vector<EndpointInfo> Out;
-    for (const Node *N : Union)
+    auto CarriesContent = [](const Node *N) {
+        if (N->IsRunner() || !N->Layers.is_array()) return false;
+        for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) return true;
+        return false;
+    };
+
+    // 2. Per-node closure BITSETS, memoized bottom-up (closure(n) = self ∪ closure(parents)) — cheap: Nn ≤ a few
+    //    thousand, so Nn²/64 words total. Everything below is bit arithmetic on these.
+    const int Words = (Nn + 63) / 64;
+    std::vector<std::vector<uint64_t>> Clo(Nn);
+    std::function<const std::vector<uint64_t>&(int)> CloOf = [&](int I) -> const std::vector<uint64_t>& {
+        if (!Clo[I].empty()) return Clo[I];
+        std::vector<uint64_t> B(Words, 0);
+        B[I >> 6] |= (uint64_t)1 << (I & 63);
+        for (const std::string &Pid : Union[I]->Parents)
+            if (auto It = IxOf.find(Pid); It != IxOf.end())
+            {
+                const std::vector<uint64_t> &P = CloOf(It->second);
+                for (int W = 0; W < Words; ++W) B[W] |= P[W];
+            }
+        Clo[I] = std::move(B);
+        return Clo[I];
+    };
+    for (int i = 0; i < Nn; ++i) CloOf(i);
+
+    std::vector<uint64_t> ContentMask(Words, 0);
+    for (int i = 0; i < Nn; ++i)
+        if (CarriesContent(Union[i])) ContentMask[i >> 6] |= (uint64_t)1 << (i & 63);
+
+    // 3. The REQUIRED region: reachable without descending into Optional nodes — an optional add-on's private
+    //    content must not surface endpoints (it belongs to the optional-content section).
+    std::vector<uint64_t> Required(Words, 0);
     {
-        if (N->Optional || HasDependent.count(N->NodeId)) continue;
+        const std::unordered_set<std::string> VarSet(VariantIds.begin(), VariantIds.end());
+        std::unordered_set<std::string> Seen;
+        std::vector<std::string> St(VariantIds.begin(), VariantIds.end());
+        while (!St.empty())
+        {
+            const std::string Cur = St.back(); St.pop_back();
+            if (!Seen.insert(Cur).second) continue;
+            auto It = IxOf.find(Cur);
+            if (It == IxOf.end()) continue;
+            const Node *N = Union[It->second];
+            if (N->Optional && !VarSet.count(Cur)) continue;           // don't descend into optionals
+            Required[It->second >> 6] |= (uint64_t)1 << (It->second & 63);
+            for (const std::string &Pid : N->Parents) St.push_back(Pid);
+        }
+    }
+
+    // 4. GREEDY SET-COVER over the required content: repeatedly pick the variant covering the most still-uncovered
+    //    content bits. Nesting collapses to one pick; genuine branches each get one; small unique-content leaves
+    //    (natives bundles, wrapper scripts) trail at the end with tiny gains. Deterministic tie-break: larger total
+    //    content, then node id.
+    auto Popcount = [](const std::vector<uint64_t> &B) {
+        int C = 0; for (uint64_t W : B) C += (int)std::popcount(W); return C; };
+    std::vector<int> VarIx; VarIx.reserve(VariantIds.size());
+    for (const std::string &V : VariantIds)
+        if (auto It = IxOf.find(V); It != IxOf.end()) VarIx.push_back(It->second);
+
+    std::vector<uint64_t> Uncovered(Words);
+    for (int W = 0; W < Words; ++W) Uncovered[W] = Required[W] & ContentMask[W];
+    std::vector<int> Picks;
+    std::vector<int> PickGains;
+    std::unordered_set<int> Picked;
+    for (;;)
+    {
+        int Best = -1, BestGain = 0, BestTotal = 0;
+        for (int V : VarIx)
+        {
+            if (Picked.count(V)) continue;
+            int Gain = 0, Total = 0;
+            for (int W = 0; W < Words; ++W)
+            {
+                Gain  += (int)std::popcount(Clo[V][W] & Uncovered[W]);
+                Total += (int)std::popcount(Clo[V][W] & ContentMask[W]);
+            }
+            if (Gain > BestGain
+                || (Gain == BestGain && Gain > 0
+                    && (Total > BestTotal || (Total == BestTotal && Best >= 0 && Union[V]->NodeId < Union[Best]->NodeId))))
+            { Best = V; BestGain = Gain; BestTotal = Total; }
+        }
+        if (Best < 0 || BestGain == 0) break;
+        Picks.push_back(Best); PickGains.push_back(BestGain); Picked.insert(Best);
+        for (int W = 0; W < Words; ++W) Uncovered[W] &= ~Clo[Best][W];
+    }
+    // Contentless tile (nothing to download by closure) → degrade to the variants themselves so the dialog isn't empty.
+    if (Picks.empty())
+    {
+        Picks = VarIx;
+        PickGains.assign(Picks.size(), 1);
+    }
+
+    // 5. Rows: a pick stands alone only when it contributed a MEANINGFUL share of the content (≥5% of the total —
+    //    real branches like MC's forked snapshot chains, AoE2's editions); the long tail of small unique-content
+    //    owners (per-era natives bundles, wrapper scripts — 11 of them in the real MC graph) folds into one
+    //    "Everything else" row. Always at least one named row; capped so the dialog stays a short honest list.
+    int TotalContent = 0;
+    for (int W = 0; W < Words; ++W) TotalContent += (int)std::popcount(Required[W] & ContentMask[W]);
+    constexpr size_t MaxNamedRows = 6;
+    size_t Named = 0;
+    while (Named < Picks.size() && Named < MaxNamedRows
+           && (Named == 0 || (long long)PickGains[Named] * 20 >= TotalContent))
+        ++Named;
+    if (Named + 1 == Picks.size()) ++Named;   // never fold a single leftover — its own row is shorter than the fold
+    std::vector<EndpointInfo> Out;
+    for (size_t K = 0; K < Named; ++K)
+    {
+        const Node *N = Union[Picks[K]];
         EndpointInfo E;
-        E.Id    = N->NodeId;
+        E.Ids   = { N->NodeId };
         E.Label = !N->Label.empty() ? N->Label
                   : (N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId);
-        for (const std::string &Cid : ResolveNodeOrder(Idx, N->NodeId, {}))
-            if (const Node *C = Idx.Find(Cid); C && C->IsLaunchable()) E.LaunchableCount++;
+        for (int V : VarIx)
+        {
+            bool Sub = true;
+            for (int W = 0; W < Words && Sub; ++W)
+                if ((Clo[V][W] & ContentMask[W]) & ~(Clo[Picks[K]][W] & ContentMask[W])) Sub = false;
+            if (Sub) E.LaunchableCount++;
+        }
         Out.push_back(std::move(E));
+    }
+    if (Named < Picks.size())
+    {
+        EndpointInfo Rest;
+        Rest.Label = "Everything else";
+        for (size_t K = Named; K < Picks.size(); ++K) Rest.Ids.push_back(Union[Picks[K]]->NodeId);
+        Out.push_back(std::move(Rest));
     }
     return Out;
 }

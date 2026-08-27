@@ -122,40 +122,52 @@ TEST(optional_nodes_lists_toggleable_ancestors)
 
 TEST(tile_endpoints_chain_collapses_to_tip)
 {
-    // A delta-chain tile (Minecraft-shaped): v1 ← v2 ← v3, all launchable. The only download endpoint is the tip,
-    // and its LaunchableCount says how many versions its closure carries.
+    // Minecraft-shaped: a CONTENT delta chain c1 ← c2 ← c3, with a content-FREE launchable wrapper per version
+    // hanging off it (g1..g3). Every wrapper is a raw graph sink — the naive sink rule showed 903 "endpoints" —
+    // but content-wise the chain nests, so the tile collapses to ONE endpoint: the variant owning the chain tip,
+    // dominating all 3 versions.
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "v1"}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
-    Add(Idx, {{"NODE_ID", "v2"}, {"PARENTS", {"v1"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
-    Add(Idx, {{"NODE_ID", "v3"}, {"PARENTS", {"v2"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
-    const auto Eps = ManifestModel::TileEndpoints(Idx, {"v1", "v2", "v3"});
+    Add(Idx, {{"NODE_ID", "c1"}, {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "a.zip"}, {"TARGET", "t"}}}}});
+    Add(Idx, {{"NODE_ID", "c2"}, {"PARENTS", {"c1"}}, {"LAYERS", {{{"TYPE", "VFSDeltaLayer"}, {"PATH", "b.vgdelta"}, {"TARGET", "t"}}}}});
+    Add(Idx, {{"NODE_ID", "c3"}, {"PARENTS", {"c2"}}, {"LAYERS", {{{"TYPE", "VFSDeltaLayer"}, {"PATH", "c.vgdelta"}, {"TARGET", "t"}}}}});
+    Add(Idx, {{"NODE_ID", "g1"}, {"PARENTS", {"c1"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "g2"}, {"PARENTS", {"c2"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "g3"}, {"PARENTS", {"c3"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    const auto Eps = ManifestModel::TileEndpoints(Idx, {"g1", "g2", "g3"});
     CHECK_EQ((int)Eps.size(), 1);
-    CHECK_EQ(Eps[0].Id, std::string("v3"));
-    CHECK_EQ(Eps[0].LaunchableCount, 3);
+    CHECK_EQ((int)Eps[0].Ids.size(), 1);
+    CHECK_EQ(Eps[0].Ids[0], std::string("g3"));      // the variant covering the whole content chain
+    CHECK_EQ(Eps[0].LaunchableCount, 3);             // dominates all 3 versions (their content nests under it)
 }
 
 TEST(tile_endpoints_divergent_tips_and_optional_excluded)
 {
-    // Two editions sharing a base (AoE2-shaped) → two endpoints, shared base is neither. An optional sink (a mod)
-    // is NOT an endpoint (it belongs to the optional-content section), but its own ancestors still register as
-    // depended-upon (base2 must not surface as an endpoint just because only the mod needs it).
+    // AoE2-shaped: two editions with OWN content sharing a content base → two endpoints (base surfaces in neither).
+    // An optional mod's private content (base2) must not surface an endpoint — optional subtrees belong to the
+    // optional-content section.
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID", "base"}});
-    Add(Idx, {{"NODE_ID", "aok"}, {"PARENTS", {"base"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
-    Add(Idx, {{"NODE_ID", "tc"},  {"PARENTS", {"base"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
-    Add(Idx, {{"NODE_ID", "base2"}});
-    Add(Idx, {{"NODE_ID", "mod"}, {"OPTIONAL", true}, {"PARENTS", {"base2"}}});
+    Add(Idx, {{"NODE_ID", "base"}, {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "base.zip"}, {"TARGET", "t"}}}}});
+    Add(Idx, {{"NODE_ID", "aok"}, {"PARENTS", {"base"}}, {"LAYERS", {
+        {{"TYPE", "VFSZipLayer"}, {"PATH", "aok.zip"}, {"TARGET", "t"}},
+        {{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "tc"},  {"PARENTS", {"base"}}, {"LAYERS", {
+        {{"TYPE", "VFSZipLayer"}, {"PATH", "tc.zip"}, {"TARGET", "t"}},
+        {{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
+    Add(Idx, {{"NODE_ID", "base2"}, {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "modbase.zip"}, {"TARGET", "t"}}}}});
+    Add(Idx, {{"NODE_ID", "mod"}, {"OPTIONAL", true}, {"PARENTS", {"base2"}},
+              {"LAYERS", {{{"TYPE", "VFSZipLayer"}, {"PATH", "mod.zip"}, {"TARGET", "t"}}}}});
     Add(Idx, {{"NODE_ID", "game"}, {"PARENTS", {"aok", "mod"}}, {"LAYERS", {{{"TYPE", "DeclareExec"}, {"CONTENTPATH", "x"}}}}});
     const auto Eps = ManifestModel::TileEndpoints(Idx, {"game", "tc"});
     bool SawGame = false, SawTc = false;
     for (const auto &E : Eps)
-    {
-        if (E.Id == "game") SawGame = true;
-        if (E.Id == "tc")   SawTc   = true;
-        CHECK(E.Id != "base");     // shared base is depended-upon
-        CHECK(E.Id != "mod");      // optional sink → optionals section, not an endpoint
-        CHECK(E.Id != "base2");    // the mod's private base is depended-upon (by the mod)
-    }
+        for (const std::string &Id : E.Ids)
+        {
+            if (Id == "game") SawGame = true;        // covers the aok content tip
+            if (Id == "tc")   SawTc   = true;        // covers the tc content tip
+            CHECK(Id != "base");                     // shared base is depended-upon content
+            CHECK(Id != "mod");                      // optional subtree → optionals section
+            CHECK(Id != "base2");                    // reachable only through the optional mod
+        }
     CHECK(SawGame);
     CHECK(SawTc);
     CHECK_EQ((int)Eps.size(), 2);
