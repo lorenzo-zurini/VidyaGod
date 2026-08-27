@@ -31,6 +31,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdio>    // fflush — hard-exit path in closeEvent
+#include <cstdlib>   // _Exit
+
 // ═════════════════════════════════════════════════════════════════════════════
 // MainWindow — composition root (creates the model + tabs, wires the cross-controller signals).
 // ═════════════════════════════════════════════════════════════════════════════
@@ -210,7 +213,14 @@ void MainWindow::closeEvent(QCloseEvent * e)
     }
     if (Tray) Tray->rememberHidden(false);   // exiting from a visible window → relaunch visible
     QMainWindow::closeEvent(e);
-    QApplication::quit();                     // quitOnLastWindowClosed is off when a tray is active
+    // Quit = DIE NOW. The graceful path — Qt widget-tree teardown, static destructors, then atexit(VgStop) closing
+    // libp2p/DHT/leveldb — takes seconds and can hang outright, leaving a zombie that trips the single-instance
+    // flock on relaunch. Every subsystem is DESIGNED to survive hard death: config was saved above, leveldb
+    // WAL-replays on next open, download partials resume from their fsync'd .part bitmaps, and vidyagodfs mounts
+    // auto-unmount via --watch-pid. The instance lock is kernel-released the moment the process dies (POSIX flock /
+    // Win32 mutex). So skip ALL teardown: flush stdio and exit on the spot.
+    std::fflush(nullptr);
+    std::_Exit(0);
 }
 
 void MainWindow::changeEvent(QEvent * e)
