@@ -71,6 +71,10 @@ void VgSetFriendCb(VgFriendCb cb);
 // The launch vars {VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SUBNET, PEER_VIPS, PEER_NAMES} for a
 // sandboxed game launch that joins the LAN. -1 if the LAN is unavailable.
 int  VgLanLaunchVars(char **outJson);
+// Per-friend LAN link state for the UI: [{peer,nick,vip,online,link:"direct"|"relayed"|"connecting"|"down",rttMs}].
+int  VgLanPeers(char **outJson);
+// Replace the GLOBAL LAN roster's excluded set (comma-separated peer ids). Applies immediately, mid-game included.
+void VgLanSetExcluded(const char *csv);
 
 // ---- overlay tunnel (see VidyaGodIPFS/overlay.go) ----
 // Bring up a TUN configured from the friend LAN (lanConfig) and forward IP packets between friends over libp2p —

@@ -17,6 +17,7 @@
 #include <QGroupBox>
 #include <QSpinBox>
 #include <QTreeWidget>
+#include <QTimer>
 #include <QPixmap>
 
 #include <set>
@@ -93,6 +94,11 @@ private:
     // Re-evaluates every var row's UI.WHEN condition against the current control values and shows/hides the row.
     // Wired to each control's change signal so dependent options appear/disappear live.
     void EvaluateVarConditions();
+    // Builds the "Virtual LAN" panel under the cover (friends with per-member ticks + live link badges) and starts
+    // its 2s poll; RefreshLanPanel reconciles rows against IpfsWrapper::LanPeers(). Ticks edit the GLOBAL roster
+    // (Settings.LanExcludedPeers) and apply immediately via SetLanExcluded — mid-game included.
+    void BuildLanPanel(QVBoxLayout * LeftCol);
+    void RefreshLanPanel();
     // (Re)fills the variant combo from GroupNodeIds: recommended first, then natural version order (1.9 < 1.10);
     // beyond a dozen entries the combo turns editable with a contains-matching completer (type "1.20" to jump) —
     // so a tile with 903 variants is as navigable as one with 3.
@@ -146,6 +152,13 @@ private:
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;
     QPushButton*  CloseButton       = nullptr;
+
+    // Virtual LAN panel (under the cover): per-friend tick + live link badge, 2s poll while the window lives.
+    QGroupBox*    LanGroup          = nullptr;
+    QVBoxLayout*  LanRows           = nullptr;
+    QLabel*       LanStatus         = nullptr;   // "Your vIP: 10.66.x.y" / "LAN offline"
+    QTimer*       LanTimer          = nullptr;
+    std::map<std::string, std::pair<QCheckBox*, QLabel*>> LanRowByPeer;   // peer id → (tick, badge)
 };
 
 #endif // PRELAUNCHWINDOW_H

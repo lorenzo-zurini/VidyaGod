@@ -121,8 +121,10 @@ bool BringUpTun(const std::string &name, const std::string &cidr, const std::str
     // and friends would never see them. A /32 is more specific than any default route, so discovery always rides
     // vg-lan while normal traffic uses the bridge. (Also needed in pure isolated mode — without any route,
     // sendto(255.255.255.255) is ENETUNREACH.)
+    // MTU 1280: every game packet must fit ONE QUIC datagram (path limit ~1350 on typical MTUs) — at 1400 a large
+    // packet silently switched to the reliable-stream path mid-session, splitting the flow across two transports.
     const std::string ipcmd = "ip link set dev lo up; "
-                              "ip link set dev " + name + " mtu 1400; ip addr add " + cidr + " dev " + name
+                              "ip link set dev " + name + " mtu 1280; ip addr add " + cidr + " dev " + name
                               + "; ip link set dev " + name + " up"
                               + "; ip route add 255.255.255.255/32 dev " + name;
     if (std::system(ipcmd.c_str()) != 0) Warn("ip configuration returned non-zero (continuing)");

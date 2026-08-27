@@ -243,6 +243,7 @@ void AppModel::syncSources()
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
             pushSeedLevels();              // node-ready → announce our seeded content to the DHT, meta-CIDs first
+            pushLanRoster();               // node-ready → apply the persisted Virtual-LAN roster (excluded members)
             // A source that couldn't be fetched (hostile network, provider unreachable — the node-side retries are
             // deliberately bounded so this worker can't wedge) must not be abandoned until the next app start:
             // re-run the sync in a minute. Sources already materialized are skipped, so the retry is cheap.
@@ -252,6 +253,18 @@ void AppModel::syncSources()
                 QTimer::singleShot(60000, this, [this]{ SyncRetryPending = false; if (IpfsWrapper::DaemonRunning()) syncSources(); });
             }
         });
+}
+
+// Push Settings.LanExcludedPeers (the GLOBAL Virtual-LAN roster's un-ticked members) into the node. Called at
+// node-ready; the launch window's ticks call IpfsWrapper::SetLanExcluded directly on change.
+void AppModel::pushLanRoster()
+{
+    std::vector<std::string> Ex;
+    const auto & S = (*Config)["Settings"];
+    if (S.contains("LanExcludedPeers") && S["LanExcludedPeers"].is_array())
+        for (const auto & P : S["LanExcludedPeers"])
+            if (P.is_string()) Ex.push_back(P.get<std::string>());
+    IpfsWrapper::SetLanExcluded(Ex);
 }
 
 void AppModel::healOrphansIfAny()

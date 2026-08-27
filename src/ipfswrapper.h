@@ -247,6 +247,20 @@ void SetFriendCallback(FriendCallback Callback);
 // players find each other over the overlay. Empty if the LAN is unavailable.
 std::map<std::string, std::string> LanLaunchVars();
 
+// One friend's virtual-LAN link, as maintained by the node's always-on heartbeat loop (overlaylink.go).
+struct LanPeer {
+    std::string Peer;    // peer id
+    std::string Nick;
+    std::string Vip;     // 10.66.x.y (pure function of the peer id)
+    bool        Online = false;
+    std::string Link;    // "direct" | "relayed" | "connecting" | "down"
+    long long   RttMs = -1;
+};
+// Live per-friend LAN link state (empty when the node/maintainer is down). Poll-friendly (~2s).
+std::vector<LanPeer> LanPeers();
+// Replace the GLOBAL LAN roster's excluded set (the launch window's un-ticked members). Immediate, mid-game too.
+void SetLanExcluded(const std::vector<std::string> &PeerIds);
+
 // ----- overlay tunnel (VidyaGodIPFS/overlay.go) -----
 // Bring up the friend-LAN: a TUN configured from lanConfig() (each friend's vIP = f(peerID)) forwarding IP packets
 // between friends over libp2p, broadcast/multicast fanned out so LAN games discover each other. Returns the TUN name,

@@ -54,6 +54,7 @@ public:
     // ── Async source / runner ops (do the IPFS work off-thread, then rebuild + emit on the GUI thread) ──
     void syncSources();                                // re-index CID package sources, fetching any not-yet-present one
     void pushSeedLevels();                             // hand the node the 3-level meta-CIDs so it announces seeded content ordered
+    void pushLanRoster();                              // apply Settings.LanExcludedPeers to the node's Virtual-LAN
     // On-demand serve-reliability heal: if the node holds any ORPHANED no-copy reference (backing file moved/re-created,
     // so it reads locally but fails when a PEER requests it), re-point it to the content's current on-disk location.
     // Cheap-first (a filestore path scan; skips the heavy re-seed entirely when nothing is orphaned), off-thread,

@@ -529,6 +529,37 @@ std::map<std::string, std::string> LanLaunchVars()
     return Out;
 }
 
+std::vector<LanPeer> LanPeers()
+{
+    std::vector<LanPeer> Out;
+    char *J = nullptr;
+    if (VgLanPeers(&J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        for (const auto &E : nlohmann::json::parse(Js))
+        {
+            LanPeer P;
+            P.Peer   = E.value("peer", std::string());
+            P.Nick   = E.value("nick", std::string());
+            P.Vip    = E.value("vip", std::string());
+            P.Online = E.value("online", false);
+            P.Link   = E.value("link", std::string("down"));
+            P.RttMs  = E.value("rttMs", -1LL);
+            Out.push_back(std::move(P));
+        }
+    }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::LanPeers", std::string("bad JSON from node: ") + E.what()); }
+    return Out;
+}
+
+void SetLanExcluded(const std::vector<std::string> &PeerIds)
+{
+    std::string Csv;
+    for (const std::string &P : PeerIds) { if (!Csv.empty()) Csv += ","; Csv += P; }
+    VgLanSetExcluded(Csv.c_str());
+}
+
 // ----- overlay tunnel -----
 
 std::string OverlayStart(std::string *Error)
