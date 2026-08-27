@@ -38,6 +38,32 @@ int main(int argc, char **argv)
         if (!Index.Find(g)) { std::cerr << "node not found: " << g << "\n"; return 1; }
 
     PreLaunchWindow W(&Cfg, &Index, Group);
+    // Geometry probe: the cover must own the lion's share of the left column (regression: it went comically tiny).
+    W.resize(1100, 750);
+    W.show();
+    for (int i = 0; i < 5; ++i) QApplication::processEvents();
+    if (QLabel * Cov = W.findChild<QLabel*>("CoverLabel"))
+        std::cout << "[geometry] window=" << W.width() << "x" << W.height()
+                  << " cover=" << Cov->width() << "x" << Cov->height() << "\n";
+    // Simulate a POPULATED LAN panel (offscreen has no node → it stays hidden otherwise), then run refresh-like
+    // relayout cycles and watch for a cover-size ratchet (the "comically tiny cover" regression).
+    for (QGroupBox * G : W.findChildren<QGroupBox*>())
+        if (G->title() == "Virtual LAN")
+        {
+            G->setVisible(true);
+            if (auto * GL = qobject_cast<QVBoxLayout*>(G->layout()))
+            {
+                GL->addWidget(new QCheckBox("Friend A   ● direct · 34 ms", G));
+                GL->addWidget(new QCheckBox("Friend B   ● relayed", G));
+            }
+        }
+    for (int Cycle = 0; Cycle < 6; ++Cycle)
+    {
+        for (int i = 0; i < 5; ++i) QApplication::processEvents();
+        if (QLabel * Cov = W.findChild<QLabel*>("CoverLabel"))
+            std::cout << "[geometry] cycle " << Cycle << " cover=" << Cov->width() << "x" << Cov->height()
+                  << " pixmap=" << Cov->pixmap().width() << "x" << Cov->pixmap().height() << "\n";
+    }
     W.resize(900, 700);
     W.show();
     QApplication::processEvents();

@@ -54,8 +54,12 @@ public:
     void ReloadAndRebuild();
 
 protected:
-    //Rescale the (right-hand) cover to fit its column on every resize, keeping aspect ratio + vertical centering.
+    //Rescale the cover to fit its column on every resize, keeping aspect ratio + vertical centering.
     void resizeEvent(QResizeEvent* Event) override;
+    //The cover label's OWN resize drives the rescale: the dialog's resizeEvent fires BEFORE the (deferred) child
+    //layout pass, so with the label nested in the left column its rect is stale there — the pixmap froze at the
+    //construction-time 9×14 rect ("comically tiny cover"). Filtering the label's Resize scales at the right moment.
+    bool eventFilter(QObject* Obj, QEvent* Event) override;
 
 private slots:
     void onLaunchClicked();

@@ -66,6 +66,8 @@ PreLaunchWindow::PreLaunchWindow(
     LeftCol->setSpacing(4);
     RootLayout->addWidget(LeftWidget, 1);
     CoverLabel = new QLabel(LeftWidget);
+    CoverLabel->setObjectName("CoverLabel");
+    CoverLabel->installEventFilter(this);   // rescale on the LABEL's own resize (see eventFilter)
     CoverLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     CoverLabel->setMinimumWidth(200);
     CoverLabel->setAlignment(Qt::AlignCenter);
@@ -299,6 +301,13 @@ void PreLaunchWindow::resizeEvent(QResizeEvent* Event)
 {
     QDialog::resizeEvent(Event);
     UpdateCoverScaled();
+}
+
+bool PreLaunchWindow::eventFilter(QObject* Obj, QEvent* Event)
+{
+    if (Obj == CoverLabel && Event->type() == QEvent::Resize)
+        UpdateCoverScaled();
+    return QDialog::eventFilter(Obj, Event);
 }
 
 std::string PreLaunchWindow::ChainStepInput(int Step) const
