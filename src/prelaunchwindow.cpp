@@ -743,9 +743,9 @@ void PreLaunchWindow::FillVariantCombo()
     QCollator Coll;
     Coll.setNumericMode(true);
     Coll.setCaseSensitivity(Qt::CaseInsensitive);
-    std::stable_sort(Es.begin(), Es.end(), [&Coll](const E& A, const E& B){
-        if (A.Rec != B.Rec) return A.Rec;
-        return Coll.compare(A.Lbl, B.Lbl) < 0;
+    std::stable_sort(Es.begin(), Es.end(), [&Coll](const E& Ea, const E& Eb){
+        if (Ea.Rec != Eb.Rec) return Ea.Rec;
+        return Coll.compare(Ea.Lbl, Eb.Lbl) < 0;
     });
     for (const E& X : Es)
         VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl, QString::fromStdString(X.Id));
