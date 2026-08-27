@@ -113,7 +113,11 @@ bool BringUpTun(const std::string &name, const std::string &cidr, const std::str
     if (ioctl(tun, TUNSETIFF, &ifr) < 0) { Warn("TUNSETIFF failed"); close(tun); return false; }
 
     // Address it (CAP_NET_ADMIN holds in the sandbox userns). The /24 route is installed by the addr.
-    const std::string ipcmd = "ip link set dev " + name + " mtu 1400; ip addr add " + cidr + " dev " + name
+    // ALSO raise loopback: a freshly unshared netns has lo DOWN, and Windows games under wine lean on 127.0.0.1
+    // constantly (self-IP via hostname, DirectPlay internals, winsock probes) — with lo down they see their own IP
+    // as 0.0.0.0 and fail binds with "invalid argument" (observed: Age of Mythology multiplayer).
+    const std::string ipcmd = "ip link set dev lo up; "
+                              "ip link set dev " + name + " mtu 1400; ip addr add " + cidr + " dev " + name
                               + "; ip link set dev " + name + " up";
     if (std::system(ipcmd.c_str()) != 0) Warn("ip configuration returned non-zero (continuing)");
 
