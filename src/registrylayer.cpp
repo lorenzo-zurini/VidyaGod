@@ -141,6 +141,13 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI Extensions");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
+            //DirectPlay service providers (the FIFTH shadowing victim): wine.inf registers the 4 classic SPs
+            //(TCP/IP, IPX, modem, serial) under HKLM\...\DirectPlay\Service Providers, and a DirectPlay game's
+            //multiplayer menu is a live enumeration of that key — with it shadowed out the connection-type list
+            //is simply EMPTY (observed on AoE2; the friend-LAN work exposed it). Static wine-registered table;
+            //both views — the 1999-era games that use DirectPlay are exactly the 32-bit ones reading Wow6432Node.
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\DirectPlay");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\DirectPlay");
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
             if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
             {
