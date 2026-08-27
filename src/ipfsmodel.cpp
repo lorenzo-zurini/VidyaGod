@@ -143,7 +143,11 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
             const QPair<qlonglong,qlonglong> Sample = Speed.value(cid, qMakePair((qlonglong)0, Now));
             const qlonglong Dt = Now - Sample.second;
             if (Dt >= 500) {
-                s.speedBps = Dt > 0 ? double(Bytes - Sample.first) * 1000.0 / double(Dt) : 0.0;
+                const double Inst = Dt > 0 ? double(Bytes - Sample.first) * 1000.0 / double(Dt) : 0.0;
+                // EMA over the raw ~500ms samples (~2-3s time constant): wifi airtime jitter makes the instantaneous
+                // rate swing ±50% second-to-second even on a healthy transfer, and a raw readout reads as "jumping".
+                // Smooth the DISPLAYED speed only — progress/stall logic still runs on raw samples.
+                s.speedBps = s.speedBps < 0 ? Inst : 0.7 * s.speedBps + 0.3 * Inst;
                 Speed.insert(cid, qMakePair(Bytes, Now));
             }
         }
