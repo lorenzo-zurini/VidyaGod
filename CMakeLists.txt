@@ -188,6 +188,9 @@ set(SHARED_SOURCES
     src/downloadmanager.h
     src/downloadmanager.cpp
 
+    src/variantpicker.h
+    src/variantpicker.cpp
+
     src/ipfsmodel.h
     src/ipfsmodel.cpp
 
@@ -347,6 +350,7 @@ add_gui_test(test_authoringsession)
 add_gui_test(test_deltatree)
 add_gui_test(test_friends)
 add_gui_test(test_sandbox)
+add_gui_test(test_variantpicker)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
 set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1")

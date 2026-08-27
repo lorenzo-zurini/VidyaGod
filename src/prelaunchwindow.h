@@ -93,6 +93,10 @@ private:
     // Re-evaluates every var row's UI.WHEN condition against the current control values and shows/hides the row.
     // Wired to each control's change signal so dependent options appear/disappear live.
     void EvaluateVarConditions();
+    // (Re)fills the variant combo from GroupNodeIds: recommended first, then natural version order (1.9 < 1.10);
+    // beyond a dozen entries the combo turns editable with a contains-matching completer (type "1.20" to jump) —
+    // so a tile with 903 variants is as navigable as one with 3.
+    void FillVariantCombo();
     // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
     void RebuildModuleTree();
     void PropagateModuleItem(QTreeWidgetItem* Item);

@@ -213,11 +213,14 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
         for (const auto &E : N.Exclude) if (Kept.count(E)) return true;    // this node excludes a kept one
         return ExcludedByKept.count(N.NodeId) != 0;                        // a kept node excludes this one
     };
+    // Index-based head instead of erase(begin()): popping a vector's front shifts every element, turning a deep
+    // chain's walk quadratic (a 900-deep delta chain = ~400k string moves per resolve).
     std::vector<std::string> Frontier = { LaunchNodeId };
+    size_t FrontierHead = 0;
     Keep(LaunchNodeId, Idx.Find(LaunchNodeId));
-    while (!Frontier.empty())
+    while (FrontierHead < Frontier.size())
     {
-        const std::string Cur = Frontier.front(); Frontier.erase(Frontier.begin());
+        const std::string Cur = Frontier[FrontierHead++];
         const Node *N = Idx.Find(Cur);
         if (!N) continue;
         //Consider EXPLICITLY-toggled-on parents before the rest, so an explicit choice is kept before any

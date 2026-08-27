@@ -12,6 +12,8 @@
 #include <algorithm>
 
 #include <QBrush>
+#include <QCollator>
+#include <QCompleter>
 #include <QDir>
 #include <QFile>
 #include <QPixmap>
@@ -84,15 +86,7 @@ PreLaunchWindow::PreLaunchWindow(
     VariantCombo = new QComboBox(ControlWidget);
     PickerForm->addRow("Variant:", VariantCombo);
     VariantLabel = PickerForm->labelForField(VariantCombo);
-    for (const std::string& Id : this->GroupNodeIds)
-    {
-        const Node* N = Index ? Index->Find(Id) : nullptr;
-        if (!N) continue;
-        std::string Lbl = !N->Label.empty() ? N->Label
-                          : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
-        if (N->Recommended) Lbl = "⭐ " + Lbl;
-        VariantCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
-    }
+    FillVariantCombo();
     {
         int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
         if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
@@ -724,17 +718,51 @@ void PreLaunchWindow::ReloadAndRebuild()
     for (const std::string& Id : GroupNodeIds) if (Index && Index->Find(Id)) Live.push_back(Id);
     GroupNodeIds = Live;
     QSignalBlocker B(VariantCombo);
-    VariantCombo->clear();
-    for (const std::string& Id : GroupNodeIds)
-    {
-        const Node* N = Index->Find(Id);
-        std::string Lbl = !N->Label.empty() ? N->Label : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
-        if (N->Recommended) Lbl = "⭐ " + Lbl;
-        VariantCombo->addItem(QString::fromStdString(Lbl), QString::fromStdString(Id));
-    }
+    FillVariantCombo();
     int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId));
     VariantCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
     onVariantChanged();
+}
+
+void PreLaunchWindow::FillVariantCombo()
+{
+    QSignalBlocker B(VariantCombo);
+    VariantCombo->clear();
+    struct E { std::string Id; QString Lbl; bool Rec; };
+    std::vector<E> Es;
+    for (const std::string& Id : GroupNodeIds)
+    {
+        const Node* N = Index ? Index->Find(Id) : nullptr;
+        if (!N) continue;
+        const std::string L = !N->Label.empty() ? N->Label
+                              : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
+        Es.push_back({ Id, QString::fromStdString(L), N->Recommended });
+    }
+    // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2) — with hundreds of variants (903 Minecraft
+    // versions) lexicographic order scatters versions and makes the combo unusable.
+    QCollator Coll;
+    Coll.setNumericMode(true);
+    Coll.setCaseSensitivity(Qt::CaseInsensitive);
+    std::stable_sort(Es.begin(), Es.end(), [&Coll](const E& A, const E& B){
+        if (A.Rec != B.Rec) return A.Rec;
+        return Coll.compare(A.Lbl, B.Lbl) < 0;
+    });
+    for (const E& X : Es)
+        VariantCombo->addItem((X.Rec ? QStringLiteral("⭐ ") : QString()) + X.Lbl, QString::fromStdString(X.Id));
+    // Type-to-find once the list is big: an editable combo with a contains-matching completer over its own model
+    // (the popup list view is virtualized by Qt, so the item count itself is a non-issue).
+    const bool Big = VariantCombo->count() > 12;
+    VariantCombo->setEditable(Big);
+    if (Big)
+    {
+        VariantCombo->setInsertPolicy(QComboBox::NoInsert);
+        if (QCompleter* C = VariantCombo->completer())
+        {
+            C->setCompletionMode(QCompleter::PopupCompletion);
+            C->setFilterMode(Qt::MatchContains);
+            C->setCaseSensitivity(Qt::CaseInsensitive);
+        }
+    }
 }
 
 void PreLaunchWindow::persistGlobalConfig()

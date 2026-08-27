@@ -7,8 +7,11 @@
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "commonutils.h"
+#include "variantpicker.h"     // virtualized, searchable variant list — scales to any variant count
+#include "asyncwork.h"         // AsyncWork::Run — closure walks off the GUI thread, guarded by the dialog's lifetime
 
 #include <QDialog>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
@@ -23,6 +26,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -81,69 +85,72 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     const QString Key = card->GameKey;
     if (Key.isEmpty() || DownloadingUids.contains(Key)) return;       // already in flight
 
-    // ── Pre-download picker (per PACKAGE): the base game's editions + the package's other games (the Catalog
-    // overlay "secondaries") as optionals + optional content. Each secondary contributes its recommended edition. ──
-    const std::vector<std::string> Variants = card->GroupNodeIds;     // the base game's launchable nodes
+    // ── Pre-download picker (per PACKAGE) — designed for an ARBITRARY variant count (a 903-version Minecraft tile
+    // as readily as a 3-edition game). Two rules keep it instant: (1) the variant list is a virtualized model/view
+    // (VariantPicker) with search — no widget per row; (2) NOTHING on the open path walks a node closure on the GUI
+    // thread — optional content and selection size are derived ASYNCHRONOUSLY from the CURRENT SELECTION only
+    // (checked variants), debounced, against one immutable index snapshot. Default selection = the recommended
+    // edition, not every variant. ──
+    const std::vector<std::string> Variants = card->GroupNodeIds;     // the base game's launchable nodes (RECOMMENDED first)
     std::vector<std::pair<std::string, QString>> Secondaries;         // (recommended-edition launch id, title)
     for (LibraryGameCard * sc : card->Secondaries)
         if (sc && !sc->RepNodeId.empty()) Secondaries.push_back({ sc->RepNodeId, sc->GameTitle });
 
-    std::vector<std::string> AllLaunch = Variants;                    // every selectable launch node (base + secondaries)
-    for (const auto & [Lid, T] : Secondaries) AllLaunch.push_back(Lid);
-
-    std::vector<const Node*> Opts; std::set<std::string> OptSeen;     // union of OPTIONAL content across all of them
-    for (const std::string & Lid : AllLaunch)
-        for (const Node * O : ManifestModel::OptionalNodes(Model.catalogIndex(), Lid))
-            if (OptSeen.insert(O->NodeId).second) Opts.push_back(O);
+    auto Snap  = std::make_shared<const NodeIndex>(Model.catalogIndex());   // immutable view for every async walk
+    auto Alive = std::make_shared<std::atomic<bool>>(true);                 // false once the dialog closes
 
     QDialog Dlg(DialogParent);
     Dlg.setWindowTitle("Download — " + card->GameTitle);
-    Dlg.setMinimumWidth(420);
+    Dlg.setMinimumWidth(460);
     QVBoxLayout * DL = new QVBoxLayout(&Dlg);
     DL->addWidget(new QLabel("Choose what to download:", &Dlg));
 
-    std::map<std::string, QCheckBox*> GameChecks;                     // launch id → checkbox (base editions + secondaries)
+    VariantPicker * Picker = nullptr;
+    if (!Variants.empty())
     {
         QGroupBox * Box = new QGroupBox(Variants.size() > 1 ? "Variants" : "Game", &Dlg);
         QVBoxLayout * BL = new QVBoxLayout(Box);
+        Picker = new VariantPicker(VariantPicker::Mode::Checkable, Box);
+        std::vector<VariantPicker::Entry> Es;
         for (const std::string & Lid : Variants)
         {
-            const Node * N = Model.catalogIndex().Find(Lid);
+            const Node * N = Snap->Find(Lid);
             std::string Lbl = (N && !N->Label.empty()) ? N->Label
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
-            const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid).size();
-            QCheckBox * cb = new QCheckBox(QString::fromStdString(Lbl) + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
-            cb->setChecked(true);
-            GameChecks[Lid] = cb; BL->addWidget(cb);
+            Es.push_back({ Lid, QString::fromStdString(Lbl), N && N->Recommended });
         }
+        Picker->setEntries(Es, { Variants.front() });                 // default = the representative edition only
+        BL->addWidget(Picker);
         DL->addWidget(Box);
     }
-    if (!Secondaries.empty())                                         // the package's other games — optional, off by default
+    std::map<std::string, QCheckBox*> SecChecks;                      // the package's other games — few, plain checkboxes
+    if (!Secondaries.empty())
     {
         QGroupBox * Box = new QGroupBox("Other games in this package", &Dlg);
         QVBoxLayout * BL = new QVBoxLayout(Box);
         for (const auto & [Lid, Title] : Secondaries)
         {
-            const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid).size();
-            QCheckBox * cb = new QCheckBox(Title + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
+            QCheckBox * cb = new QCheckBox(Title, Box);
             cb->setChecked(false);
-            GameChecks[Lid] = cb; BL->addWidget(cb);
+            SecChecks[Lid] = cb; BL->addWidget(cb);
         }
         DL->addWidget(Box);
     }
-    std::map<std::string, QCheckBox*> OptChecks;
-    if (!Opts.empty())
-    {
-        QGroupBox * Box = new QGroupBox("Optional content", &Dlg);
-        QVBoxLayout * BL = new QVBoxLayout(Box);
-        for (const Node * O : Opts)
-        {
-            QCheckBox * cb = new QCheckBox(QString::fromStdString(O->Label.empty() ? O->NodeId : O->Label), Box);
-            cb->setChecked(O->Default);
-            OptChecks[O->NodeId] = cb; BL->addWidget(cb);
-        }
-        DL->addWidget(Box);
-    }
+
+    // The launch selection (checked variants + checked secondaries) — the unit every async derivation is scoped to.
+    auto SelectedLaunchIds = [Picker, &SecChecks]() {
+        std::vector<std::string> Sel;
+        if (Picker) Sel = Picker->checkedIds();
+        for (const auto & [Lid, cb] : SecChecks) if (cb->isChecked()) Sel.push_back(Lid);
+        return Sel;
+    };
+
+    // ── Optional content: rebuilt async from the SELECTION's closures; per-id choices are sticky across rebuilds. ──
+    QGroupBox *   OptBox = new QGroupBox("Optional content", &Dlg);
+    QVBoxLayout * OptL   = new QVBoxLayout(OptBox);
+    OptBox->setVisible(false);
+    DL->addWidget(OptBox);
+    auto OptStates = std::make_shared<std::map<std::string, bool>>(); // node id → chosen (seeded by DEFAULT on first sight)
     // ── Available Runners: the package's EMBEDDED runner(s), plus a compatible GLOBAL runner only when none is
     //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. ──
     std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox
@@ -191,53 +198,109 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             }
         }
     }
-    // ── Disk-space display: free space at the library + the (async-gathered) size of the current selection ──
-    QLabel * SizeLabel = new QLabel(&Dlg);
+    // ── Disk-space display: free space at the library + the (async-derived) size of the current selection ──
+    QLabel * SizeLabel = new QLabel("Free space: …", &Dlg);
+    SizeLabel->setStyleSheet("color:#8f98a0;");
     DL->addWidget(SizeLabel);
     std::error_code DiskEc;
     const auto DiskSp = std::filesystem::space(PackageCatalog::LibraryRootDir(*Model.config()), DiskEc);
     const long long FreeBytes = DiskEc ? -1 : (long long)DiskSp.available;
 
     auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
-    auto Alive     = std::make_shared<std::atomic<bool>>(true);             // false once the dialog closes
-    auto Recompute = [this, GameChecks, OptChecks, RunnerChecks, AllLaunch, SizeCache, SizeLabel, FreeBytes]() {
-        std::map<std::string, bool> Tg; for (const auto & [Id, Cb] : OptChecks) Tg[Id] = Cb->isChecked();
-        std::set<std::string> Sel;
-        for (const std::string & Lid : AllLaunch)
-            if (GameChecks.at(Lid)->isChecked())
-                for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, Tg)) Sel.insert(C);
-        for (const auto & [Rid, Cb] : RunnerChecks)
-            if (Cb->isChecked())
-                for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid)) Sel.insert(C);
-        long long Sum = 0; bool AllKnown = true;
-        for (const std::string & C : Sel) { auto It = SizeCache->find(C); if (It != SizeCache->end() && It->second >= 0) Sum += It->second; else AllKnown = false; }
-        SizeLabel->setText(QString("Free space: %1      Download: %2%3")
-            .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytesQ(FreeBytes))
-            .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
-        SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;" : "color:#8f98a0;");
+    auto Queried   = std::make_shared<std::set<std::string>>();              // CIDs already handed to the size prober
+
+    // A toggle anywhere (variant / secondary / optional / runner) restarts this; on fire, the optionals section and
+    // the size line are re-derived for the CURRENT selection. Both derivations walk closures — so both run off the
+    // GUI thread via AsyncWork against Snap, and only ever for what is actually checked.
+    QTimer * Debounce = new QTimer(&Dlg);
+    Debounce->setSingleShot(true);
+    Debounce->setInterval(200);
+
+    auto RecomputeSize    = std::make_shared<std::function<void()>>();
+    auto RebuildOptionals = std::make_shared<std::function<void()>>();
+
+    *RecomputeSize = [this, &Dlg, &RunnerChecks, Snap, SelectedLaunchIds, OptStates, SizeCache, Queried,
+                      SizeLabel, FreeBytes, Alive, Debounce]() {
+        const std::vector<std::string> SelL = SelectedLaunchIds();
+        std::vector<std::string> SelR;
+        for (const auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) SelR.push_back(Rid);
+        auto Tg  = std::make_shared<std::map<std::string, bool>>(*OptStates);
+        auto Out = std::make_shared<std::set<std::string>>();
+        AsyncWork::Run(&Dlg,
+            [Snap, SelL, SelR, Tg, Out]{
+                for (const std::string & Lid : SelL)
+                    for (const auto & C : PackageCatalog::NodeContentCids(*Snap, Lid, *Tg)) Out->insert(C);
+                for (const std::string & Rid : SelR)
+                    for (const auto & C : PackageCatalog::NodeContentCids(*Snap, Rid)) Out->insert(C);
+            },
+            [this, Out, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce]{
+                long long Sum = 0; bool AllKnown = true;
+                std::vector<std::string> Unknown;
+                for (const std::string & C : *Out)
+                {
+                    auto It = SizeCache->find(C);
+                    if (It != SizeCache->end() && It->second >= 0) Sum += It->second;
+                    else { AllKnown = false; if (Queried->insert(C).second) Unknown.push_back(C); }
+                }
+                SizeLabel->setText(QString("Free space: %1      Download: %2%3")
+                    .arg(FreeBytes < 0 ? QStringLiteral("?") : HumanBytesQ(FreeBytes))
+                    .arg(HumanBytesQ(Sum)).arg(AllKnown ? "" : " (estimating…)"));
+                SizeLabel->setStyleSheet((FreeBytes >= 0 && Sum > FreeBytes) ? "color:#c0726a; font-weight:bold;"
+                                                                             : "color:#8f98a0;");
+                if (Unknown.empty()) return;
+                // Probe the new CIDs' sizes in the background; each result lands in the cache and nudges the
+                // debounce, so the label refreshes shortly after data arrives. Alive-guarded — the dialog may close.
+                std::thread([this, Unknown, SizeCache, Alive, Debounce]{
+                    for (const std::string & C : Unknown)
+                    {
+                        if (!Alive->load()) return;
+                        const long long S = IpfsWrapper::CidSize(C);
+                        QMetaObject::invokeMethod(this, [SizeCache, C, S, Alive, Debounce]{
+                            if (!Alive->load()) return;          // dialog closed — its widgets are gone
+                            (*SizeCache)[C] = S;
+                            Debounce->start();
+                        }, Qt::QueuedConnection);
+                    }
+                }).detach();
+            });
     };
-    for (const auto & [Id, Cb] : GameChecks)   connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
-    for (const auto & [Id, Cb] : OptChecks)    connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
-    for (const auto & [Id, Cb] : RunnerChecks) connect(Cb, &QCheckBox::toggled, &Dlg, [Recompute](bool){ Recompute(); });
-    Recompute();
-    {   // gather each CID's size in the background (it's a remote `files stat` on the downloader) and update as they land
-        std::map<std::string, bool> AllOn; for (const auto & [Id, Cb] : OptChecks) AllOn[Id] = true;
-        std::set<std::string> All;
-        for (const std::string & Lid : AllLaunch)
-            for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Lid, AllOn)) All.insert(C);
-        for (const auto & [Rid, Cb] : RunnerChecks)
-            for (const auto & C : PackageCatalog::NodeContentCids(Model.catalogIndex(), Rid)) All.insert(C);
-        std::thread([this, ToQuery = std::vector<std::string>(All.begin(), All.end()), SizeCache, Alive, Recompute]{
-            for (const std::string & C : ToQuery) {
-                if (!Alive->load()) return;
-                const long long S = IpfsWrapper::CidSize(C);
-                QMetaObject::invokeMethod(this, [SizeCache, C, S, Alive, Recompute]{
-                    if (!Alive->load()) return;                  // dialog closed — its widgets are gone, don't touch them
-                    (*SizeCache)[C] = S; Recompute();
-                }, Qt::QueuedConnection);
-            }
-        }).detach();
-    }
+
+    *RebuildOptionals = [&Dlg, Snap, SelectedLaunchIds, OptStates, OptBox, OptL, Debounce]() {
+        struct OptEntry { std::string Id; std::string Label; bool Default; };
+        const std::vector<std::string> SelL = SelectedLaunchIds();
+        auto Found = std::make_shared<std::vector<OptEntry>>();
+        AsyncWork::Run(&Dlg,
+            [Snap, SelL, Found]{
+                std::set<std::string> Seen;
+                for (const std::string & Lid : SelL)
+                    for (const Node * O : ManifestModel::OptionalNodes(*Snap, Lid))
+                        if (Seen.insert(O->NodeId).second)
+                            Found->push_back({ O->NodeId, O->Label.empty() ? O->NodeId : O->Label, O->Default });
+            },
+            [Found, OptStates, OptBox, OptL, Debounce]{
+                QLayoutItem * It;
+                while ((It = OptL->takeAt(0)) != nullptr) { if (QWidget * W = It->widget()) W->deleteLater(); delete It; }
+                for (const OptEntry & E : *Found)
+                {
+                    if (!OptStates->count(E.Id)) (*OptStates)[E.Id] = E.Default;   // first sight → seed with DEFAULT
+                    QCheckBox * cb = new QCheckBox(QString::fromStdString(E.Label), OptBox);
+                    cb->setChecked((*OptStates)[E.Id]);
+                    const std::string Id = E.Id;
+                    QObject::connect(cb, &QCheckBox::toggled, OptBox, [Id, OptStates, Debounce](bool On){
+                        (*OptStates)[Id] = On;
+                        Debounce->start();               // an optional changes the selection's CID set → re-derive size
+                    });
+                    OptL->addWidget(cb);
+                }
+                OptBox->setVisible(!Found->empty());
+            });
+    };
+
+    connect(Debounce, &QTimer::timeout, &Dlg, [RebuildOptionals, RecomputeSize]{ (*RebuildOptionals)(); (*RecomputeSize)(); });
+    if (Picker) connect(Picker, &VariantPicker::checkedChanged, &Dlg, [Debounce]{ Debounce->start(); });
+    for (const auto & [Lid, cb] : SecChecks)    connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
+    for (const auto & [Rid, cb] : RunnerChecks) connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
+    (*RebuildOptionals)(); (*RecomputeSize)();   // initial async fill — the dialog itself shows instantly
 
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
     QPushButton * CancelBtn = new QPushButton("Cancel", &Dlg);
@@ -246,18 +309,15 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     connect(CancelBtn, &QPushButton::clicked, &Dlg, &QDialog::reject);
     connect(GoBtn,     &QPushButton::clicked, &Dlg, &QDialog::accept);
     const int Res = Dlg.exec();
-    Alive->store(false);                                         // stop the async size updater from touching dialog widgets
+    Alive->store(false);                                         // stop the async workers from touching dialog widgets
     if (Res != QDialog::Accepted) return;
 
-    std::vector<std::string> LaunchIds;                              // selected games (base editions + secondaries)
-    for (const std::string & Lid : AllLaunch) if (GameChecks[Lid]->isChecked()) LaunchIds.push_back(Lid);
+    const std::vector<std::string> LaunchIds = SelectedLaunchIds();  // checked variants + checked secondaries
     std::vector<std::string> RunnerIds;                              // selected runners to download + install
     for (auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) RunnerIds.push_back(Rid);
     if (LaunchIds.empty() && RunnerIds.empty()) return;              // nothing picked
-    std::map<std::string, bool> Toggles;                             // optional-content selection
-    for (auto & [Id, cb] : OptChecks) Toggles[Id] = cb->isChecked();
 
-    beginDownload(Key, LaunchIds, RunnerIds, Toggles);
+    beginDownload(Key, LaunchIds, RunnerIds, *OptStates);            // OptStates = the sticky optional-content choices
 }
 
 // Kick off (or resume) a download for an already-decided selection — the non-interactive core shared by the dialog
