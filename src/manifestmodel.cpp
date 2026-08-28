@@ -1243,11 +1243,32 @@ bool PackageHasContent(const nlohmann::ordered_json &Manifest)
 // structure); the base is never touched.
 // ---------------------------------------------------------------------------
 
+// ALL entries of a zip including explicit directory entries (trailing '/' kept). ZipEntriesCached drops dirs —
+// correct for content checks, but the case rewrite must canonicalize dir entries too: a renamed file leaves its
+// old-case parent dir entry behind as an EMPTY husk ("maps/" next to "MAPS/…"), and wine's case-insensitive
+// lookup can resolve into the husk (Halo CE: "missing bitmaps" — maps/ empty, everything under MAPS/).
+static const std::vector<std::string> &ZipAllEntriesRaw(const std::string &Path,
+        std::unordered_map<std::string, std::vector<std::string>> &Cache)
+{
+    auto It = Cache.find(Path);
+    if (It != Cache.end()) return It->second;
+    std::vector<std::string> Out;
+    int Err = 0;
+    if (zip_t *Za = zip_open(Path.c_str(), ZIP_RDONLY, &Err))
+    {
+        const zip_int64_t N = zip_get_num_entries(Za, 0);
+        for (zip_uint64_t i = 0; i < (zip_uint64_t)N; ++i)
+            if (const char *Name = zip_get_name(Za, i, ZIP_FL_ENC_RAW)) Out.emplace_back(Name);
+        zip_close(Za);
+    }
+    return Cache.emplace(Path, std::move(Out)).first->second;
+}
+
 // Component-wise canonicalization across every launchable closure → per-zip {oldEntry -> newEntry}.
 static std::map<std::string, std::map<std::string, std::string>>
 ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
 {
-    std::unordered_map<std::string, std::vector<std::string>> ZipCache;
+    std::unordered_map<std::string, std::vector<std::string>> AllCache;
     std::map<std::string, std::map<std::string, std::string>> Renames;   // zipPath -> (old -> new)
 
     for (const auto &[LId, LN] : Idx.Nodes)
@@ -1270,8 +1291,14 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
                 const std::string Target  = L.value("TARGET", std::string());
                 const std::string ZipPath = Local.string();
 
-                for (const std::string &Entry : ZipEntriesCached(ZipPath, ZipCache))
+                for (std::string Entry : ZipAllEntriesRaw(ZipPath, AllCache))
                 {
+                    // Explicit directory entries flow through the SAME component canonicalization (their
+                    // trailing '/' stripped for the walk, restored on the rename target) — that is what
+                    // retargets a stale-case dir husk onto its canonical spelling instead of leaving it behind.
+                    const bool IsDir = !Entry.empty() && Entry.back() == '/';
+                    if (IsDir) Entry.pop_back();
+                    if (Entry.empty()) continue;
                     const std::string Full = JoinTarget(Target, Entry);
                     std::vector<std::string> Comp = SplitPath(Full);
                     std::string Prefix, NewFull;
@@ -1296,6 +1323,7 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
                         if (NewFull.rfind(Pfx, 0) != 0) continue;   // defensive: Target case must be stable
                         NewEntry = NewFull.substr(Pfx.size());
                     }
+                    if (IsDir) { Entry += '/'; NewEntry += '/'; }   // match the zip's dir-entry spelling
                     auto &M = Renames[ZipPath];
                     auto Ex = M.find(Entry);
                     if (Ex != M.end() && Ex->second != NewEntry)
@@ -1334,7 +1362,10 @@ static bool ApplyZipRenames(const std::string &ZipPath, const std::map<std::stri
         if (!Nm.empty() && Nm.back() == '/')   // explicit directory entry
         {
             std::string D = NewNm; if (!D.empty() && D.back() == '/') D.pop_back();
-            if (zip_dir_add(Dst, D.c_str(), ZIP_FL_ENC_UTF_8) < 0) Ok = false;
+            // Canonicalization can map several case-variant dir entries onto ONE spelling — the collapse is the
+            // point (the husk merges into the real dir), so "already exists" is success, not failure.
+            if (zip_dir_add(Dst, D.c_str(), ZIP_FL_ENC_UTF_8) < 0
+                && zip_error_code_zip(zip_get_error(Dst)) != ZIP_ER_EXISTS) Ok = false;
             continue;
         }
         zip_source_t *S = zip_source_zip_file(Dst, Src, (zip_uint64_t)i, 0, 0, -1, nullptr);
