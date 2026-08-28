@@ -115,6 +115,15 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             Dpfx.LoadPrefix(DpfxIt->second);                                        // default_pfx hives at its root
             RW.MergeKeyFrom(Dpfx, "HKLM\\System");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software");
+            //EXCEPT AeDebug: default_pfx registers winedbg as the JIT debugger with Auto=1, so any unhandled
+            //exception AUTO-ATTACHES a debugger to the game. That is a developer convenience, not game runtime
+            //behavior — and it is fatal to protector-wrapped exes (SafeDisc-era cracks throw SEH on purpose and
+            //self-terminate when a debugger appears): Halo Custom Edition died silently within a second of launch
+            //(NtGetContextThread flood = the attach) the moment the wholesale merge above made this key visible,
+            //while the pre-merge shadowed prefix ran it fine. Cut it from both views — crashes then follow the
+            //normal unhandled path, matching the sealed-sandbox model (there is no interactive debugger to serve).
+            RW.DeleteKey("HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
+            RW.DeleteKey("HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
             if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
             {
