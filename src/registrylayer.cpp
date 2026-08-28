@@ -96,62 +96,29 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
                 if (RW.MergeKeyFrom(Durable, RegPath))
                     LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
         }
-        //ACM DriverCache carry-over (targeted): for a node-declared zero-copy prefix there is no DEFPREFIX, so the base
-        //loaded above is EMPTY and the saved system.reg (base RegEdits only) SHADOWS default_pfx's full system.reg. That's
-        //deliberate — games run on wine's own defaults (a full default_pfx overlay regressed some). EXCEPT wine's msacm32
-        //validates its ACM codec cache from HKLM\...\AudioCompressionManager\DriverCache; with it gone it REBUILDS the
-        //cache by opening each codec at game time, and a codec's winmm import re-enters a game's native DxWnd winmm proxy
-        //mid-DllMain → msacm32 init fails ("cannot load original winmm.dll" for CD-audio games). So carry over ONLY that
-        //subtree from default_pfx (both the win64 view and the Wow6432Node/32-bit view the game actually reads) — nothing
-        //else — so msacm32 trusts the cache and never opens a codec at game time.
+        //HKLM overlay from default_pfx. For a node-declared zero-copy prefix there is no DEFPREFIX, so the base loaded
+        //above is EMPTY and the saved system.reg (base RegEdits only) SHADOWS default_pfx's full HKLM. wine.inf writes
+        //~thousands of static, machine-independent tables that games read at startup — the COM class registry
+        //(Software\Classes → CoCreateInstance of builtin dsound/quartz/shell classes), the ACM codec DriverCache, MCI
+        //Extensions/MCI32 (intro-video device resolution), DirectPlay Service Providers (the multiplayer connect list),
+        //the DirectX version stamp (dsetup.dll's DirectXSetupGetVersion → MechWarrior 4's "DirectX error"), the service
+        //table (RpcSs/MountMgr/…), and every future one. Rather than cherry-pick each broken title's key (this was
+        //seven separate carve-outs and growing), overlay the WHOLE HKLM\System + HKLM\Software.
+        //
+        //HISTORY: this used to be minimal-with-carve-outs because a full overlay was once blamed for regressing NFS
+        //Underground 2 (exit-5 / c0000005 during volume enumeration). Re-tested 2026-08-28 on the real GPU: the whole
+        //System+Software overlay renders NFS U2 fine. That crash was actually fixed by the mountmgr symlink repair +
+        //MountMgr service registry (ff3a4dd) and the .update-timestamp "disable" freeze below (stops wineboot re-running
+        //wine.inf mid-launch) — NOT by keeping the registry minimal. The device-state caution (Enum\*/Class\*) outlived
+        //the bug it worked around. Both registry views come along for free (32-bit games read Wow6432Node).
         if (auto It = ContainerParams.CustomVariables.find("DefaultPfxDir");
             It != ContainerParams.CustomVariables.end() && !It->second.empty()
             && std::filesystem::exists(std::filesystem::path(It->second)))
         {
             RegistryWrapper Dpfx;
             Dpfx.LoadPrefix(It->second);                                            // default_pfx hives at its root
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\AudioCompressionManager");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\AudioCompressionManager");
-            //COM class registry. Software\Classes is where wine registers every in-process COM server it ships
-            //(HKCR is just a view of it) — dsound, xaudio2, quartz, the shell, … Shadowing left the composed
-            //prefix with ONE such key against the template's ~15k, so every CoCreateInstance of a builtin class
-            //returned REGDB_E_CLASSNOTREG (0x80040154). That is the `err:ole:com_get_class_object … not
-            //registered` line present in EVERY game's log here, and it is fatal where a game depends on it:
-            //Silent Hill 2 EE's DirectSoundCreate8 fails and the game then spins forever without drawing a frame
-            //(GPU device created, 0% GPU, black window), Scarface reports "No DirectSound Found on this machine".
-            //Merged wholesale: it is a static, machine-independent table that a real prefix always has.
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Classes");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Classes");
-            //HKLM\System carry-over (targeted, like the ACM one): the shadowing above also drops System\Select +
-            //System\CurrentControlSet (the ControlSet link) and ControlSet001\Services\* — the SERVICE TABLE wine.inf
-            //registers. Carry the WHOLE Services subtree: it is static, machine-independent service DEFINITIONS
-            //(RpcSs, MountMgr, plugplay, winebus, …), NOT device state, so it is safe to merge wholesale — unlike the
-            //rest of System (Enum\*/Class\* device instances from the proton build machine, which regressed NFS U2).
-            //Two victims found the hard way, both under here: MountMgr (\\.\MountPointManager → volume enumeration →
-            //NFS U2 c0000005) and now RpcSs — the RPC/COM subsystem service. Without RpcSs wine cannot start the
-            //rpcss server ("err:ole:start_rpcss Failed to open RpcSs service", RPC error 1722), so out-of-process COM
-            //activation fails: MechWarrior 4 (Vengeance/Black Knight/Mercenaries) throws a DirectX/shell error and
-            //exits code 1, while a game that needs no OOP-COM (AoE2) is unaffected. Merging the whole subtree fixes
-            //these AND every future service a game needs, instead of one MergeKeyFrom per broken title.
-            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\Select");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\CurrentControlSet");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\ControlSet001\\Services");
-            //MCI device registry (the FOURTH shadowing victim): winmm's MCI resolves a media file's device
-            //by extension via "MCI Extensions" (avi→AVIVideo, …) and the device's driver via "MCI32"
-            //(AVIVideo→mciavi32.dll, …). With both gone, mciSendString(open "….avi") fails with
-            //MCIERR_EXTENSION_NOT_FOUND — games show "cannot determine type by extension" instead of
-            //playing their intro videos (observed on AoE2). Both registry views: 32-bit games read Wow6432Node.
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\MCI Extensions");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI Extensions");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\MCI32");
-            //DirectPlay service providers (the FIFTH shadowing victim): wine.inf registers the 4 classic SPs
-            //(TCP/IP, IPX, modem, serial) under HKLM\...\DirectPlay\Service Providers, and a DirectPlay game's
-            //multiplayer menu is a live enumeration of that key — with it shadowed out the connection-type list
-            //is simply EMPTY (observed on AoE2; the friend-LAN work exposed it). Static wine-registered table;
-            //both views — the 1999-era games that use DirectPlay are exactly the 32-bit ones reading Wow6432Node.
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Microsoft\\DirectPlay");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Microsoft\\DirectPlay");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\System");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\Software");
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
             if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
             {
