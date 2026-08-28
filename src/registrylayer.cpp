@@ -124,6 +124,24 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             //normal unhandled path, matching the sealed-sandbox model (there is no interactive debugger to serve).
             RW.DeleteKey("HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
             RW.DeleteKey("HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
+            //PLUS Drivers32: wine.inf registers the VfW/ACM codec table ONLY into system.ini ([drivers32]), but
+            //wine's 32-bit msvfw32 resolves ICOpen through the REGISTRY Drivers32 key — which default_pfx leaves
+            //EMPTY (real Windows setup mirrors the ini into the registry; wine never does). Result: every VfW AVI
+            //fails "you do not have the correct video codec" (MW4 Mercenaries' wflag.avi is CRAM = Microsoft
+            //Video 1 = wine's own builtin msvidc32). Seed wine's canonical table — static builtin driver names,
+            //machine-independent, stable for decades — into both views.
+            for (const char *View : { "HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Drivers32",
+                                      "HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Drivers32" })
+                for (const auto &[Name, Dll] : std::initializer_list<std::pair<const char *, const char *>>{
+                         { "msacm.imaadpcm", "imaadp32.acm" }, { "msacm.msadpcm", "msadp32.acm" },
+                         { "msacm.msg711", "msg711.acm" },     { "msacm.l3acm", "l3codeca.acm" },
+                         { "msacm.msgsm610", "msgsm32.acm" },
+                         { "vidc.mrle", "msrle32.dll" }, { "vidc.msvc", "msvidc32.dll" },
+                         { "vidc.cvid", "iccvid.dll" },  { "vidc.IV50", "ir50_32.dll" } })
+                {
+                    RegistryValue V; V.Type = RegType::Sz; V.Str = Dll; V.Dirty = true;
+                    RW.SetValue(View, Name, V);
+                }
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
             if (const char *Extra = std::getenv("VG_REG_MERGE_EXTRA"))
             {
@@ -132,6 +150,15 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
                     if (!Key.empty())
                         LogOut("RegistryLayer::BuildDefaultData", "VG_REG_MERGE_EXTRA " + Key + " -> "
                                + (RW.MergeKeyFrom(Dpfx, Key) ? "merged" : "MISS"));
+            }
+            //DEBUG aid: subtrees to DELETE after the merge, ';'-separated (bisecting overlay-induced regressions)
+            if (const char *Skip = std::getenv("VG_REG_MERGE_SKIP"))
+            {
+                std::stringstream Ss(Skip);
+                for (std::string Key; std::getline(Ss, Key, ';');)
+                    if (!Key.empty())
+                        LogOut("RegistryLayer::BuildDefaultData", "VG_REG_MERGE_SKIP " + Key + " -> "
+                               + (RW.DeleteKey(Key) ? "deleted" : "MISS"));
             }
         }
         if (HaveBaseReg)

@@ -29,8 +29,9 @@ using namespace PackageCatalog;
 //Resolves every CustomVar (TYPE:"CustomVar") in the closure into ONE GLOBAL NAMESPACE (ContainerParams.CustomVariables,
 //keyed by the bare token "KEY"). ABSOLUTE SCOPE: a var's final value is visible to every reference — including inside
 //another var's DEFAULT — regardless of declaration order. Hierarchy is respected: the LATER (most-specific) declaration
-//of a key wins (closure order: parents before children, the launchable last; then the active runner components). Bare
-//keys are one shared knob, so a game seeding a runner's knob (re-declaring its KEY) is the feature.
+//of a key wins (closure order: the active runner components first as least-specific defaults, then parents before
+//children, the launchable last). Bare keys are one shared knob, so a game seeding a runner's knob (re-declaring
+//its KEY) is the feature.
 //
 //Done in two phases (see body): (1) collect each key's winning RAW source by priority; (2) fixpoint-substitute all
 //sources against the built-in tokens + every other var until stable, so forward references and post-override values
@@ -74,8 +75,9 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     //use-site concern (%KEY:format%). -----
     LogOut("ResolveCustomVariables", "Resolving CustomVar subcomponents (absolute scope)...");
 
-    //Phase 1 — the winning declaration per key (last in the combined closure order: the game Recipe, then the active
-    //runner components). A reference cycle is harmless (Phase 2 leaves the residual %token%).
+    //Phase 1 — the winning declaration per key (last in the combined closure order: the active runner components
+    //FIRST as least-specific defaults, then the game Recipe — parents before children, the launchable last).
+    //A reference cycle is harmless (Phase 2 leaves the residual %token%).
     std::vector<std::string> KeyOrder;                              // first-seen order, for deterministic logging
     std::map<std::string, nlohmann::ordered_json> Winning;          // key -> its winning CustomVar declaration
     auto Collect = [&](const nlohmann::ordered_json &S)
@@ -86,16 +88,12 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         if (!Winning.count(Key)) KeyOrder.push_back(Key);
         Winning[Key] = S;                                          // later declaration overwrites (hierarchy)
     };
-    for (const std::string &CompID : ContainerParams.Recipe)
-    {
-        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
-        if (Idx == -1) continue;
-        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
-        if (Comp.contains("SUBCOMPONENTS") && Comp["SUBCOMPONENTS"].is_array())
-            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
-    }
     //Runner knobs share the same global namespace (a runner exposes %KEY% in its ENV/ARGS; a game can seed them).
     //Scope to the active runner variant (RunnerRecipe) so an inactive multi-version component's knob can't win.
+    //Collected FIRST: the runner's declaration is the least-specific default of the whole composition, so a
+    //game-side declaration of the same key must overwrite it ("a game can seed them" — e.g. a runner declares
+    //PROTON_DXVK_D3D8=0 as the safe global default and a D3D8 game's package flips it to 1). Collecting the
+    //runner last silently made runner defaults unoverridable by packages.
     if (!ContainerParams.RunnerComponents.empty())
     {
         std::set<std::string> RunnerWant(ContainerParams.RunnerRecipe.begin(), ContainerParams.RunnerRecipe.end());
@@ -105,6 +103,14 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
             for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
         }
+    }
+    for (const std::string &CompID : ContainerParams.Recipe)
+    {
+        int Idx = FindComponentIndex(MANIFESTJSON, CompID);
+        if (Idx == -1) continue;
+        const auto &Comp = MANIFESTJSON["COMPONENTS"][Idx];
+        if (Comp.contains("SUBCOMPONENTS") && Comp["SUBCOMPONENTS"].is_array())
+            for (const auto &S : Comp["SUBCOMPONENTS"]) Collect(S);
     }
 
     //Each key's RAW source value: priority CLI > USERSETTINGS > winning DEFAULT; a secret+POOL var falls back to a
