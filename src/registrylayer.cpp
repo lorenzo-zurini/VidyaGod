@@ -123,15 +123,19 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Classes");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software\\Wow6432Node\\Classes");
             //HKLM\System carry-over (targeted, like the ACM one): the shadowing above also drops System\Select +
-            //System\CurrentControlSet (the ControlSet link) and ControlSet001\Services\*. Without Services\MountMgr
-            //wine never starts mountmgr.sys, so \\.\MountPointManager doesn't exist and a game's volume enumeration
-            //gets NULLs (NFS U2's drive scan then InitializeCriticalSection(NULL+0x28) → c0000005 at launch).
-            //Deliberately NOT the whole System hive — the template's full System (Enum\*, Class\*, device state from
-            //the proton BUILD machine) regressed the same launch when merged wholesale; these three are the verified
-            //minimum (bisected on a working prefix).
+            //System\CurrentControlSet (the ControlSet link) and ControlSet001\Services\* — the SERVICE TABLE wine.inf
+            //registers. Carry the WHOLE Services subtree: it is static, machine-independent service DEFINITIONS
+            //(RpcSs, MountMgr, plugplay, winebus, …), NOT device state, so it is safe to merge wholesale — unlike the
+            //rest of System (Enum\*/Class\* device instances from the proton build machine, which regressed NFS U2).
+            //Two victims found the hard way, both under here: MountMgr (\\.\MountPointManager → volume enumeration →
+            //NFS U2 c0000005) and now RpcSs — the RPC/COM subsystem service. Without RpcSs wine cannot start the
+            //rpcss server ("err:ole:start_rpcss Failed to open RpcSs service", RPC error 1722), so out-of-process COM
+            //activation fails: MechWarrior 4 (Vengeance/Black Knight/Mercenaries) throws a DirectX/shell error and
+            //exits code 1, while a game that needs no OOP-COM (AoE2) is unaffected. Merging the whole subtree fixes
+            //these AND every future service a game needs, instead of one MergeKeyFrom per broken title.
             RW.MergeKeyFrom(Dpfx, "HKLM\\System\\Select");
             RW.MergeKeyFrom(Dpfx, "HKLM\\System\\CurrentControlSet");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\ControlSet001\\Services\\MountMgr");
+            RW.MergeKeyFrom(Dpfx, "HKLM\\System\\ControlSet001\\Services");
             //MCI device registry (the FOURTH shadowing victim): winmm's MCI resolves a media file's device
             //by extension via "MCI Extensions" (avi→AVIVideo, …) and the device's driver via "MCI32"
             //(AVIVideo→mciavi32.dll, …). With both gone, mciSendString(open "….avi") fails with
