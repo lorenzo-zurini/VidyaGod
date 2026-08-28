@@ -86,37 +86,33 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
         RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>
-        if (HaveBaseReg)
-            RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
-        if (HavePersistKeys)
-        {
-            RegistryWrapper Durable;
-            Durable.LoadPrefix(RegKeyStore);
-            for (const std::string &RegPath : ContainerParams.KeepRegKeys)
-                if (RW.MergeKeyFrom(Durable, RegPath))
-                    LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
-        }
-        //HKLM overlay from default_pfx. For a node-declared zero-copy prefix there is no DEFPREFIX, so the base loaded
-        //above is EMPTY and the saved system.reg (base RegEdits only) SHADOWS default_pfx's full HKLM. wine.inf writes
-        //~thousands of static, machine-independent tables that games read at startup — the COM class registry
-        //(Software\Classes → CoCreateInstance of builtin dsound/quartz/shell classes), the ACM codec DriverCache, MCI
-        //Extensions/MCI32 (intro-video device resolution), DirectPlay Service Providers (the multiplayer connect list),
-        //the DirectX version stamp (dsetup.dll's DirectXSetupGetVersion → MechWarrior 4's "DirectX error"), the service
-        //table (RpcSs/MountMgr/…), and every future one. Rather than cherry-pick each broken title's key (this was
-        //seven separate carve-outs and growing), overlay the WHOLE HKLM\System + HKLM\Software.
+        //HKLM overlay from default_pfx — the BASE, merged BEFORE RegEdits. For a node-declared zero-copy prefix there
+        //is no DEFPREFIX, so the hives loaded above are EMPTY and a minimal saved system.reg SHADOWS default_pfx's full
+        //HKLM. wine.inf writes ~thousands of static, machine-independent tables that games read at startup — the COM
+        //class registry (Software\Classes), the ACM codec DriverCache, MCI Extensions/MCI32, DirectPlay Service
+        //Providers, the DirectX version stamp (dsetup.dll → MechWarrior 4's "DirectX error"), the service table
+        //(RpcSs/MountMgr/…). Rather than cherry-pick each broken title's key (this was seven separate carve-outs and
+        //growing), overlay the WHOLE HKLM\System + HKLM\Software.
+        //
+        //ORDER IS LOAD-BEARING: MergeKeyFrom REPLACES the destination subtree. When this overlay ran AFTER
+        //ApplyRegEdits it wiped every package-authored install key under HKLM\Software — MechWarrior 3 "video
+        //component was not installed", MechWarrior 4 "improperly installed", Wipeout "has not been installed
+        //correctly" (each game's own installer keys, written by its package's RegEdits, gone). Base-first restores
+        //the intended layering: wine.inf tables underneath, package RegEdits on top, persisted user keys above both.
         //
         //HISTORY: this used to be minimal-with-carve-outs because a full overlay was once blamed for regressing NFS
         //Underground 2 (exit-5 / c0000005 during volume enumeration). Re-tested 2026-08-28 on the real GPU: the whole
         //System+Software overlay renders NFS U2 fine. That crash was actually fixed by the mountmgr symlink repair +
-        //MountMgr service registry (ff3a4dd) and the .update-timestamp "disable" freeze below (stops wineboot re-running
-        //wine.inf mid-launch) — NOT by keeping the registry minimal. The device-state caution (Enum\*/Class\*) outlived
-        //the bug it worked around. Both registry views come along for free (32-bit games read Wow6432Node).
-        if (auto It = ContainerParams.CustomVariables.find("DefaultPfxDir");
-            It != ContainerParams.CustomVariables.end() && !It->second.empty()
-            && std::filesystem::exists(std::filesystem::path(It->second)))
+        //MountMgr service registry (ff3a4dd) and the .update-timestamp "disable" freeze below (stops wineboot
+        //re-running wine.inf mid-launch) — NOT by keeping the registry minimal. The device-state caution
+        //(Enum\*/Class\*) outlived the bug it worked around. Both views come along free (32-bit reads Wow6432Node).
+        const auto DpfxIt = ContainerParams.CustomVariables.find("DefaultPfxDir");
+        const bool HaveDpfx = DpfxIt != ContainerParams.CustomVariables.end() && !DpfxIt->second.empty()
+                              && std::filesystem::exists(std::filesystem::path(DpfxIt->second));
+        if (HaveDpfx)
         {
             RegistryWrapper Dpfx;
-            Dpfx.LoadPrefix(It->second);                                            // default_pfx hives at its root
+            Dpfx.LoadPrefix(DpfxIt->second);                                        // default_pfx hives at its root
             RW.MergeKeyFrom(Dpfx, "HKLM\\System");
             RW.MergeKeyFrom(Dpfx, "HKLM\\Software");
             //DEBUG aid: extra default_pfx subtrees to merge, ';'-separated (bisecting registry-dependent crashes)
@@ -128,6 +124,19 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
                         LogOut("RegistryLayer::BuildDefaultData", "VG_REG_MERGE_EXTRA " + Key + " -> "
                                + (RW.MergeKeyFrom(Dpfx, Key) ? "merged" : "MISS"));
             }
+        }
+        if (HaveBaseReg)
+            RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
+        if (HavePersistKeys)
+        {
+            RegistryWrapper Durable;
+            Durable.LoadPrefix(RegKeyStore);
+            for (const std::string &RegPath : ContainerParams.KeepRegKeys)
+                if (RW.MergeKeyFrom(Durable, RegPath))
+                    LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
+        }
+        if (HaveDpfx)
+        {
             //Freeze wine's implicit prefix update: the template's .update-timestamp carries the ORIGINAL proton
             //build's wine.inf mtime, which never matches the delta-chain mount's mtimes → wineboot decides the
             //prefix is stale and re-runs its update ON EVERY COLD LAUNCH, racing the game (services like mountmgr
