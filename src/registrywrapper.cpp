@@ -608,17 +608,29 @@ ordered_json RegistryWrapper::ValueToManifestString(const RegistryValue &V)
 }
 
 //Re-applies WoW64 registry redirection that the manifest REGPATH dropped. On a 64-bit prefix, a 32-bit app's
-//HKLM/HKCU \Software access is redirected by Windows/wine under a "Wow6432Node" key (inserted right after the
+//HKLM\Software access is redirected by Windows/wine under a "Wow6432Node" key (inserted right after the
 //"Software" segment). The manifest stores the natural, Wow6432Node-free REGPATH plus ARCHITECTURE; for a 32-bit
 //RegEdit we must re-insert Wow6432Node so the key lands exactly where the 32-bit app reads it. (No-op for 64-bit
-//edits, non-Software paths, or a path that already contains the node.) Without this, e.g. WipeoutXL's install-dir
-//keys were written to the 64-bit view and the game never found them.
+//edits, non-redirected paths, or a path that already contains the node.) Without this, e.g. WipeoutXL's
+//install-dir keys were written to the 64-bit view and the game never found them.
+//
+//ONLY HKLM\Software IS REDIRECTED (plus the narrow HKCU\Software\Classes COM view). HKCU\Software itself is
+//NOT WoW-redirected on Windows or wine — a 32-bit game reads the PLAIN HKCU path. Redirecting it (the old
+//behavior) made every 32-bit HKCU RegEdit invisible: WC3's "Preferred Game Version" landed in
+//HKCU\Software\Wow6432Node\Blizzard… which the game never reads (the RoC tile launched TFT), and AoM's
+//FIRSTRUN EULA seed had to be worked around by authoring it as ARCHITECTURE 64.
 static std::string ArchRedirectRegPath(const std::string &RegPath, const std::string &Architecture)
 {
     if (Architecture != "32") return RegPath;
     std::vector<std::string> Segs; std::string Cur;
     for (char C : RegPath) { if (C == '\\') { Segs.push_back(Cur); Cur.clear(); } else Cur.push_back(C); }
     Segs.push_back(Cur);
+    if (Segs.empty()) return RegPath;
+
+    //Only HKLM redirects here. (HKCU\Software\Classes technically redirects too, but under Classes — a different
+    //insertion point — and no package authors 32-bit HKCU Classes edits; treating all of HKCU as shared is the
+    //faithful default.)
+    if (!CIEqual(Segs[0], "HKLM") && !CIEqual(Segs[0], "HKEY_LOCAL_MACHINE")) return RegPath;
 
     std::vector<std::string> Out; bool Inserted = false;
     for (size_t i = 0; i < Segs.size(); ++i)
