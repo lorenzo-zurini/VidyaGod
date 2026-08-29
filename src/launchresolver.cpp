@@ -212,22 +212,39 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     //regression) put wine builtins ON TOP, shadowing every syswow64/system32 native override (DirectPlay broke; any
     //game-supplied system DLL was masked). FileEdit/RegEdit are order-independent (separate DEFAULTDATA/registry passes) so
     //they stay appended.
+    //The non-VFS layers come from the runner's WHOLE CLOSURE, not just the runner node: a runner may pin library
+    //nodes that carry DllOverride/RegEdit/FileEdit (e.g. a media stack that installs native DirectShow filters and
+    //switches winegstreamer off). Previously only the runner NODE's own FileEdit/RegEdit were routed and
+    //DllOverride was dropped entirely, so such a library silently did nothing when pinned by a runner — the runner
+    //chain was strictly less capable than the content chain. VFS stays split by design: the runner node's own VFS
+    //layers are prefix ASSEMBLY (below), while its PARENTS' VFS layers build the runner tree itself and are mounted
+    //separately at RunnerMount — a runner-side layer therefore cannot target the game prefix, which is why
+    //prefix-content libraries still belong on the game.
     if (const Node *RN = Idx.Find(CP.RunnerID); RN && RN->Layers.is_array())
     {
         nlohmann::ordered_json PrefixVfs = nlohmann::ordered_json::array();   // base system → front (low priority)
-        nlohmann::ordered_json Edits     = nlohmann::ordered_json::array();   // order-independent → back
         for (const auto &L : RN->Layers)
-        {
-            const std::string T = L.value("TYPE", std::string());
-            if (ManifestModel::IsVfsLayer(T))          PrefixVfs.push_back(L);
-            else if (T == "FileEdit" || T == "RegEdit") Edits.push_back(L);
-        }
+            if (ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))) PrefixVfs.push_back(L);
         if (!PrefixVfs.empty())
         {
             for (auto &L : CP.SubComponentsArray) PrefixVfs.push_back(std::move(L));   // game/library content ON TOP
             CP.SubComponentsArray = std::move(PrefixVfs);
         }
-        for (auto &L : Edits) CP.SubComponentsArray.push_back(std::move(L));
+    }
+    //Order-independent edits from every active runner component (scoped to RunnerRecipe so an inactive
+    //multi-version component can't contribute), appended last — separate DEFAULTDATA/registry/override passes.
+    {
+        const std::set<std::string> RunnerWant(CP.RunnerRecipe.begin(), CP.RunnerRecipe.end());
+        for (const auto &Comp : CP.RunnerComponents)
+        {
+            if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
+            if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
+            for (const auto &L : Comp["SUBCOMPONENTS"])
+            {
+                const std::string T = L.value("TYPE", std::string());
+                if (T == "FileEdit" || T == "RegEdit" || T == "DllOverride") CP.SubComponentsArray.push_back(L);
+            }
+        }
     }
     DerivePersistence(ComponentPool, CP);
     LogSucc("InitializeFromNode", "Resolved node '" + LaunchId + "' (runner " + CP.RunnerName + ", "

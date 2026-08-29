@@ -87,6 +87,37 @@ private slots:
         QVERIFY(pool.contains("COMPONENTS") && !pool["COMPONENTS"].empty());
     }
 
+    // A library pinned by the RUNNER contributes its order-independent layers to the game runtime, exactly as a
+    // library pinned by the GAME does — the runner chain is equivalent to the content chain in capability for
+    // DllOverride/RegEdit/FileEdit. (It is NOT equivalent for VFS: a runner parent's VFS builds the runner tree.)
+    void runner_closure_contributes_overrides_and_edits()
+    {
+        NodeIndex idx;
+        idx.Nodes["mediastack"] = contentNode("mediastack", json::array({
+            json{{"TYPE", "DllOverride"}, {"DLLOVERRIDE", "winegstreamer="}},
+            json{{"TYPE", "RegEdit"}, {"REGPATH", "HKLM\\Software\\Lav"}},
+            json{{"TYPE", "VFSZipLayer"}, {"PATH", "codecs.zip"}, {"TARGET", "files/lib/gstreamer-1.0"}} }));
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"mediastack"});
+        idx.Nodes["game"] = launchNode("game", "win32", {});
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+
+        int overrides = 0, regedits = 0, prefixVfs = 0;
+        for (const auto & L : cp.SubComponentsArray)
+        {
+            const std::string T = L.value("TYPE", std::string());
+            if (T == "DllOverride" && L.value("DLLOVERRIDE", std::string()) == "winegstreamer=") ++overrides;
+            else if (T == "RegEdit" && L.value("REGPATH", std::string()) == "HKLM\\Software\\Lav") ++regedits;
+            else if (T == "VFSZipLayer" && L.value("PATH", std::string()) == "codecs.zip") ++prefixVfs;
+        }
+        QCOMPARE(overrides, 1);    // reaches WINEDLLOVERRIDES (FileEdits::ProcessDLLOverrides reads this array)
+        QCOMPARE(regedits, 1);     // applied to the game prefix
+        QCOMPARE(prefixVfs, 0);    // runner-tree build layer stays in the runner mount, not the prefix
+    }
+
     // No qualifying runner (guest platform mismatch) → no runner picked.
     void initialize_from_node_no_matching_runner()
     {
