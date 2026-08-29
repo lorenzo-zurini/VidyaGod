@@ -129,6 +129,43 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
 
     //HEADLESS: heal all configured package sources (re-point orphaned refs + prune stale pins), then exit. Same pass
     //the GUI runs on startup when it detects orphans — this is the manual/scriptable entry point.
+    //HEADLESS: merge-upgrade a package source to a new collection CID. Editing the CID in Settings does nothing on
+    //its own (SyncPackageSources only fetches when the source dir is MISSING), and remove+re-add destroys every
+    //hydrated content file, so this is the only correct way to move an existing install to a new mint.
+    if (!LaunchParameters.UpgradeSourceName.empty())
+    {
+        std::string Err;
+        const PackageCatalog::SourceUpgradePlan Plan = PackageCatalog::PlanSourceUpgrade(
+            GlobalConfigJSON, LaunchParameters.UpgradeSourceName, LaunchParameters.UpgradeSourceCid, &Err);
+        if (!Plan.Valid) { LogErr("main.cpp", "upgrade-source failed: " + Err); return 1; }
+
+        auto Gb = [](long long B) { char T[32]; std::snprintf(T, sizeof T, "%.2f GB", (double)B / 1e9); return std::string(T); };
+        LogOut("main.cpp", "Upgrade '" + Plan.Name + "': " + (Plan.OldCid.empty() ? "(none)" : Plan.OldCid) + " → " + Plan.NewCid);
+        LogOut("main.cpp", "  packages ......... " + std::to_string(Plan.OldPackages) + " → " + std::to_string(Plan.NewPackages)
+                           + " (" + std::to_string(Plan.SharedPackages) + " shared)");
+        LogOut("main.cpp", "  manifests ........ +" + std::to_string(Plan.JsonAdded.size())
+                           + " ~" + std::to_string(Plan.JsonChanged.size()) + " -" + std::to_string(Plan.JsonRemoved.size()));
+        LogOut("main.cpp", "  content kept ..... " + std::to_string(Plan.ContentKeep.size()) + " file(s), " + Gb(Plan.KeptBytes)
+                           + " (NOT re-downloaded)");
+        LogOut("main.cpp", "  content moved .... " + std::to_string(Plan.ContentMove.size()) + " file(s)");
+        LogOut("main.cpp", "  content new ...... " + std::to_string(Plan.ContentNew.size()) + " CID(s) to hydrate on demand");
+        LogOut("main.cpp", "  deprecated ....... " + std::to_string(Plan.ContentDeprecate.size()) + " file(s), " + Gb(Plan.DeprecatedBytes)
+                           + " → " + Plan.DeprecatedDir);
+        if (Plan.SharedPackages == 0 && Plan.OldPackages > 0)
+            LogWarn("main.cpp", "the new tree shares NO packages with the current source — this looks like a different "
+                                "collection, not an upgrade (use --force to apply anyway)");
+        if (LaunchParameters.UpgradeSourceDryRun) { LogSucc("main.cpp", "dry run — nothing changed."); return 0; }
+
+        if (!PackageCatalog::ApplySourceUpgrade(GlobalConfigJSON, Plan, LaunchParameters.ForceOp, &Err))
+        { LogErr("main.cpp", "upgrade-source failed: " + Err); return 1; }
+        PackageCatalog::SyncPackageSources(GlobalConfigJSON);
+        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
+        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
+        { LogErr("main.cpp", "upgrade applied but saving GlobalConfig.JSON failed"); return 1; }
+        LogSucc("main.cpp", "Upgraded '" + Plan.Name + "' to " + Plan.NewCid);
+        return 0;
+    }
+
     if (LaunchParameters.HealPins)
     {
         // The explicit ops command is the COMPREHENSIVE one — it is meant to be the only thing anyone has to run,

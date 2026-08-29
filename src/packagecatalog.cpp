@@ -341,6 +341,233 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
     return true;
 }
 
+namespace {
+// Manifest files, relative to a source dir → their bytes. The manifest tree is what a collection CID actually
+// addresses (Meta-CIDs are text-only), so this is the unit the upgrade diff compares.
+std::map<std::string, std::string> ManifestTree(const std::string &Dir)
+{
+    namespace fs = std::filesystem;
+    std::map<std::string, std::string> Tree;
+    std::error_code Ec;
+    if (!fs::is_directory(Dir, Ec)) return Tree;
+    for (fs::recursive_directory_iterator It(Dir, fs::directory_options::skip_permission_denied, Ec), End;
+         It != End; It.increment(Ec))
+    {
+        if (Ec) { Ec.clear(); continue; }
+        if (!It->is_regular_file(Ec) || It->path().extension() != ".json") continue;
+        std::ifstream F(It->path(), std::ios::binary);
+        if (!F) continue;
+        Tree[fs::relative(It->path(), Dir, Ec).generic_string()] =
+            std::string(std::istreambuf_iterator<char>(F), std::istreambuf_iterator<char>());
+    }
+    return Tree;
+}
+// The top-level package folder of a manifest path ("[749][v1.0] Age of Empires II/aoe2_tc.json" → the bracketed
+// folder). Comparing these across the two trees is the lineage evidence: a genuine upgrade shares most of them.
+std::string TopFolder(const std::string &RelPath)
+{
+    const auto Slash = RelPath.find('/');
+    return Slash == std::string::npos ? std::string() : RelPath.substr(0, Slash);
+}
+long long FileSize(const std::string &P)
+{
+    std::error_code Ec;
+    const auto S = std::filesystem::file_size(P, Ec);
+    return Ec ? 0LL : (long long)S;
+}
+}   // namespace
+
+SourceUpgradePlan PlanSourceUpgrade(const nlohmann::ordered_json &GlobalConfigJSON,
+                                    const std::string &SourceName, const std::string &NewCid, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    SourceUpgradePlan P;
+    auto Fail = [&](const std::string &M) { if (Error) *Error = M; LogErr("PackageCatalog::PlanSourceUpgrade", M); return P; };
+    if (NewCid.empty()) return Fail("empty CID");
+
+    const nlohmann::ordered_json *Src = nullptr;
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object()
+        && GlobalConfigJSON["Settings"].contains("PackageSources"))
+        for (const auto &S : GlobalConfigJSON["Settings"]["PackageSources"])
+            if (PackageSourceName(S) == SourceName) { Src = &S; break; }
+    if (!Src) return Fail("no package source named '" + SourceName + "'");
+
+    P.Name   = SourceName;
+    P.OldCid = PackageSourceCID(*Src);
+    P.NewCid = NewCid;
+    P.Dir    = PackageSourceDir(GlobalConfigJSON, *Src);
+    if (P.OldCid == NewCid) return Fail("source '" + SourceName + "' is already at " + NewCid);
+
+    const std::string Root = LibraryDir(GlobalConfigJSON);
+    P.StagingDir    = Root + "/." + SourceName + ".upgrade";
+    P.DeprecatedDir = Root + "/.deprecated/" + SourceName + "/" + (P.OldCid.empty() ? "unknown" : P.OldCid);
+
+    // Fetch the NEW manifest tree to staging — never over the live dir, so a failed or partial fetch cannot leave a
+    // half-upgraded source behind. (fetchDirOnce RemoveAll()s its destination, which is safe here and would be
+    // catastrophic on the live dir: it holds the hydrated content.)
+    std::error_code Ec;
+    fs::remove_all(P.StagingDir, Ec);
+    std::string FErr;
+    if (IpfsWrapper::FetchDirToPath(NewCid, P.StagingDir, &FErr).empty())
+        return Fail("could not fetch " + NewCid + ": " + FErr);
+
+    const std::map<std::string, std::string> OldTree = ManifestTree(P.Dir);
+    const std::map<std::string, std::string> NewTree = ManifestTree(P.StagingDir);
+    if (NewTree.empty()) return Fail("fetched tree for " + NewCid + " contains no node files");
+
+    std::set<std::string> OldPkgs, NewPkgs;
+    for (const auto &[Rel, _] : OldTree) if (!TopFolder(Rel).empty()) OldPkgs.insert(TopFolder(Rel));
+    for (const auto &[Rel, _] : NewTree) if (!TopFolder(Rel).empty()) NewPkgs.insert(TopFolder(Rel));
+    P.OldPackages = (int)OldPkgs.size();
+    P.NewPackages = (int)NewPkgs.size();
+    for (const std::string &N : NewPkgs) if (OldPkgs.count(N)) ++P.SharedPackages;
+
+    for (const auto &[Rel, Bytes] : NewTree)
+    {
+        const auto It = OldTree.find(Rel);
+        if (It == OldTree.end())      P.JsonAdded.push_back(Rel);
+        else if (It->second != Bytes) P.JsonChanged.push_back(Rel);
+    }
+    for (const auto &[Rel, _] : OldTree)
+        if (!NewTree.count(Rel)) P.JsonRemoved.push_back(Rel);
+
+    // Content diff. The OLD view is existing-only (what we actually hold); the NEW view must be the RECORDED view,
+    // because the staged tree is manifests-only and every content file is absent by construction.
+    const std::map<std::string, std::string> OldHave = ManifestTargets(P.Dir, false, true);
+    const std::map<std::string, std::string> NewWant = ManifestTargets(P.StagingDir, false, false);
+
+    std::map<std::string, std::string> HaveByCid;                       // CID → a local path holding those bytes
+    for (const auto &[Path, Cid] : OldHave) HaveByCid.emplace(Cid, Path);
+
+    std::set<std::string> StillReferenced;
+    for (const auto &[StagedPath, Cid] : NewWant)
+    {
+        StillReferenced.insert(Cid);
+        // Translate the staged path back into where the file will live under the real source dir.
+        const std::string Rel  = fs::relative(StagedPath, P.StagingDir, Ec).generic_string();
+        const std::string Dest = P.Dir + "/" + Rel;
+        const auto Held = HaveByCid.find(Cid);
+        if (Held == HaveByCid.end())          { P.ContentNew.push_back(Cid); continue; }   // hydrate on demand
+        if (Held->second == Dest)             { P.ContentKeep[Dest] = Cid; P.KeptBytes += FileSize(Dest); continue; }
+        // Same bytes, different location — a renamed package or a moved layer. Moving beats re-downloading.
+        P.ContentMove[Cid] = { Held->second, Dest };
+        P.KeptBytes += FileSize(Held->second);
+    }
+    for (const auto &[Path, Cid] : OldHave)
+        if (!StillReferenced.count(Cid))
+        { P.ContentDeprecate[Path] = Cid; P.DeprecatedBytes += FileSize(Path); }
+
+    P.Valid = true;
+    return P;
+}
+
+bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUpgradePlan &P,
+                        bool Force, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    auto Fail = [&](const std::string &M) { if (Error) *Error = M; LogErr("PackageCatalog::ApplySourceUpgrade", M); return false; };
+    if (!P.Valid) return Fail("invalid plan");
+
+    // A CID carries no ancestry, so a typo'd or unrelated collection looks exactly like a legitimate upgrade — except
+    // that it shares no packages. Applying it would deprecate the ENTIRE library in one step.
+    if (P.SharedPackages == 0 && P.OldPackages > 0 && !Force)
+        return Fail("'" + P.NewCid + "' shares no packages with the current '" + P.Name + "' ("
+                    + std::to_string(P.OldPackages) + " packages) — this looks like a DIFFERENT collection, not an "
+                    "upgrade. Re-run with force to apply anyway.");
+
+    std::error_code Ec;
+
+    // 1. Demote the old version. Its manifests are COPIED (not moved) so the old collection CID keeps resolving; the
+    //    content the new tree no longer wants is MOVED, since keeping two copies of gigabytes is not a kindness.
+    if (!P.JsonRemoved.empty() || !P.ContentDeprecate.empty() || !P.JsonChanged.empty())
+    {
+        fs::create_directories(P.DeprecatedDir, Ec);
+        for (const auto &[Rel, _] : ManifestTree(P.Dir))
+        {
+            const fs::path Dest = fs::path(P.DeprecatedDir) / Rel;
+            fs::create_directories(Dest.parent_path(), Ec);
+            fs::copy_file(fs::path(P.Dir) / Rel, Dest, fs::copy_options::overwrite_existing, Ec);
+        }
+        for (const auto &[Path, Cid] : P.ContentDeprecate)
+        {
+            const std::string Rel = fs::relative(Path, P.Dir, Ec).generic_string();
+            const fs::path Dest = fs::path(P.DeprecatedDir) / Rel;
+            fs::create_directories(Dest.parent_path(), Ec);
+            fs::rename(Path, Dest, Ec);
+            if (Ec) { Ec.clear(); continue; }
+            // The reference still points at the OLD path, which no longer exists. Re-pointing needs the closure
+            // dropped first — a plain re-add dedup-skips and would leave us advertising an unreadable block.
+            IpfsWrapper::DropRef(Cid);
+            std::string AddErr;
+            if (IpfsWrapper::AddNoCopy(Dest.string(), &AddErr).empty())
+                LogWarn("PackageCatalog::ApplySourceUpgrade", "deprecated content not re-seeded: " + Dest.string() + " (" + AddErr + ")");
+        }
+        // Re-point the OLD collection meta-CID at the preserved copy so peers still on it keep being served.
+        if (!P.OldCid.empty())
+        {
+            IpfsWrapper::DropRef(P.OldCid);
+            std::string AddErr;
+            const std::string Got = IpfsWrapper::AddNoCopyMeta(P.DeprecatedDir, &AddErr);
+            if (Got != P.OldCid)
+                LogWarn("PackageCatalog::ApplySourceUpgrade",
+                        "deprecated copy of '" + P.Name + "' re-seeded as " + (Got.empty() ? "nothing" : Got)
+                        + ", expected " + P.OldCid + " — peers on the old CID may not be served");
+        }
+    }
+
+    // 2. Relocate content that merely moved. BEFORE any deletion, or a renamed package's content is lost.
+    for (const auto &[Cid, FromTo] : P.ContentMove)
+    {
+        fs::create_directories(fs::path(FromTo.second).parent_path(), Ec);
+        fs::rename(FromTo.first, FromTo.second, Ec);
+        if (Ec) { Ec.clear(); LogWarn("PackageCatalog::ApplySourceUpgrade", "could not move " + FromTo.first); continue; }
+        IpfsWrapper::DropRef(Cid);
+        std::string AddErr;
+        IpfsWrapper::AddNoCopy(FromTo.second, &AddErr);
+    }
+
+    // 3. Swap the manifests: drop the ones the new tree no longer has, then copy the new tree over. Only *.json is
+    //    touched — hydrated content, USERDATA, RUNTIME and anything else the user owns is left exactly as it is.
+    for (const std::string &Rel : P.JsonRemoved) fs::remove(fs::path(P.Dir) / Rel, Ec);
+    for (const auto &[Rel, _] : ManifestTree(P.StagingDir))
+    {
+        const fs::path Dest = fs::path(P.Dir) / Rel;
+        fs::create_directories(Dest.parent_path(), Ec);
+        fs::copy_file(fs::path(P.StagingDir) / Rel, Dest, fs::copy_options::overwrite_existing, Ec);
+        if (Ec) { Ec.clear(); return Fail("could not write manifest " + Dest.string()); }
+    }
+
+    // 4. The staged fetch pinned NewCid with references into the STAGING dir, which is about to be deleted. Re-point
+    //    it at the live dir — drop first, or the re-add dedup-skips and the refs keep aiming at the removed staging.
+    IpfsWrapper::DropRef(P.NewCid);
+    std::string AddErr;
+    const std::string Got = IpfsWrapper::AddNoCopyMeta(P.Dir, &AddErr);
+    if (Got != P.NewCid)
+        LogWarn("PackageCatalog::ApplySourceUpgrade",
+                "re-seeded '" + P.Name + "' as " + (Got.empty() ? "nothing" : Got) + ", expected " + P.NewCid
+                + " — the source dir holds files the published tree does not");
+    fs::remove_all(P.StagingDir, Ec);
+
+    // 5. Point config at the new CID, and drop LIBRARY rows for packages that no longer exist so the catalog matches.
+    auto &Sources = GlobalConfigJSON["Settings"]["PackageSources"];
+    for (auto &S : Sources)
+        if (PackageSourceName(S) == P.Name) { if (S.is_object()) S["CID"] = P.NewCid; else S = nlohmann::ordered_json{{"NAME", P.Name}, {"CID", P.NewCid}}; }
+    if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+    {
+        auto &Lib = GlobalConfigJSON["LIBRARY"];
+        for (auto It = Lib.begin(); It != Lib.end(); )
+        {
+            const std::string Pth = It->is_object() ? It->value("PATH", std::string()) : std::string();
+            const bool Under = !Pth.empty() && PathUnder(P.Dir, Pth);
+            It = (Under && !fs::is_directory(Pth, Ec)) ? Lib.erase(It) : std::next(It);
+        }
+    }
+
+    LogSucc("PackageCatalog::ApplySourceUpgrade",
+            "'" + P.Name + "' " + (P.OldCid.empty() ? "(none)" : P.OldCid) + " → " + P.NewCid);
+    return true;
+}
+
 std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConfigJSON,
                                         const nlohmann::ordered_json &Source)
 {

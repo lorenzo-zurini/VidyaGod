@@ -165,6 +165,11 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 
 std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly)
 {
+    return ManifestTargets(Dir, CoversOnly, true);
+}
+
+std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool CoversOnly, bool ExistingOnly)
+{
     namespace fs = std::filesystem;
     // Every CID-referenced local file (path → recorded SOURCE CID) across a folder's node JSONs, de-duped by path so a
     // file referenced by several nodes is seeded once. Pure (no IPFS) — the reference source of what SeedDirectory adds.
@@ -190,7 +195,9 @@ std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool Cove
             const std::string Cid = S.value("CID", std::string());
             if (Cid.empty()) return;
             const fs::path Local = Bundle / Path;
-            if (fs::exists(Local, Ec)) ToSeed[Local.string()] = Cid;
+            // ExistingOnly is what SEEDING wants (you cannot reference bytes you do not have). An UPGRADE diff wants
+            // the recorded targets regardless: the staged new tree is manifests-only, so every content file is absent.
+            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.string()] = Cid;
         };
 
         if (!CoversOnly && J.contains("LAYERS") && J["LAYERS"].is_array())

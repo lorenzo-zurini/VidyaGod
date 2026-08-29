@@ -71,6 +71,42 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
 // Remove source [index]: drop its config entry, delete its LIBRARY/<name> dir, and drop LIBRARY entries under it.
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
 
+// ----- upgrading a source to a new collection CID -----
+// Editing a source's CID in config does NOTHING on its own: SyncPackageSources fetches only when the source's
+// LIBRARY/<NAME> dir is missing or empty, so an existing install keeps serving the OLD manifests forever. And the
+// blunt alternative — remove + re-add — makes fetchDirOnce RemoveAll() the destination, destroying every hydrated
+// content file in the source (gigabytes) plus anything else living there. Upgrading is therefore a MERGE:
+// manifests are replaced, content whose CID did not change is KEPT, and the previous version is demoted rather
+// than destroyed (so peers still on the old CID keep being served, and a rollback stays possible).
+struct SourceUpgradePlan
+{
+    std::string Name, OldCid, NewCid, Dir, StagingDir, DeprecatedDir;
+    std::vector<std::string> JsonAdded, JsonChanged, JsonRemoved;      // manifest paths, relative to the source dir
+    std::map<std::string, std::string> ContentKeep;                    // path → CID, already correct: NOT re-downloaded
+    std::map<std::string, std::pair<std::string, std::string>> ContentMove;  // CID → {from, to}, same bytes, new home
+    std::map<std::string, std::string> ContentDeprecate;               // path → CID no longer referenced by the new tree
+    std::vector<std::string> ContentNew;                               // CIDs the new tree adds (hydrate on demand)
+    long long KeptBytes = 0, DeprecatedBytes = 0;
+    int OldPackages = 0, NewPackages = 0, SharedPackages = 0;          // lineage evidence
+    bool Valid = false;
+};
+
+// Fetch NewCid's manifest tree into a STAGING dir beside the source and diff it against what is on disk. Nothing is
+// modified. A failed/partial fetch therefore leaves the live source completely untouched. *Error is set and Valid
+// stays false on failure. SharedPackages==0 with a non-empty old tree means the new CID is a DIFFERENT collection,
+// not a newer version of this one — ApplySourceUpgrade refuses that unless Force.
+SourceUpgradePlan PlanSourceUpgrade(const nlohmann::ordered_json &GlobalConfigJSON,
+                                    const std::string &SourceName, const std::string &NewCid,
+                                    std::string *Error = nullptr);
+
+// Apply a plan: demote the old version into LIBRARY/.deprecated/<NAME>/<oldCID>/ (a copy of its manifests plus any
+// content the new tree no longer references, with refs re-pointed so the OLD CIDs keep serving from their new
+// home), then write the new manifests, relocate content that merely moved, and set the source's CID. Mutates
+// GlobalConfigJSON; the caller saves + re-syncs. Returns false (with *Error) without touching the live source if
+// the lineage check fails and !Force.
+bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUpgradePlan &Plan,
+                        bool Force = false, std::string *Error = nullptr);
+
 // True if BundleDir is a locally-added package — its path is OUTSIDE every configured package-source dir (used to badge
 // such tiles in the library).
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);
@@ -137,6 +173,10 @@ std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConf
 // content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
 // Pure (no IPFS node). Only includes files that exist on disk. Exposed for reuse + testing the cover-location handling.
 std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly = false);
+// As SeedTargets, but ExistingOnly=false returns every RECORDED {path → CID} even when the file is absent. Seeding
+// needs the existing-only view; the upgrade diff needs the recorded view, since a freshly fetched manifest tree has
+// no content files at all and would otherwise look like it references nothing.
+std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool CoversOnly = false, bool ExistingOnly = true);
 // Recursively copy a bundle/collection's node JSON (*.json only — no content zips, cover images, or runtime dirs) into
 // DestDir, preserving the relative tree. Returns count copied. This is what makes a published Meta-CID text-only.
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);

@@ -212,6 +212,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
+        || !LaunchParameters.UpgradeSourceName.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || LaunchParameters.LanHarness
@@ -485,6 +486,21 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             //Modifier for --seed/--seed-covers: re-reference every file (default is additive — only new/orphaned).
             RuntimeParameters.SeedOverwrite = true;
+        }
+        else if (arg == "--upgrade-source" && i + 2 < argc)
+        {
+            //Merge-upgrade a package source to a new collection CID: keeps hydrated content, demotes the old version.
+            RuntimeParameters.UpgradeSourceName = argv[++i];
+            RuntimeParameters.UpgradeSourceCid  = argv[++i];
+            RuntimeParameters.RunningHeadless   = true;
+        }
+        else if (arg == "--dry-run")
+        {
+            RuntimeParameters.UpgradeSourceDryRun = true;
+        }
+        else if (arg == "--force")
+        {
+            RuntimeParameters.ForceOp = true;
         }
         else if (arg == "--heal")
         {
