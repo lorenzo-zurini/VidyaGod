@@ -103,6 +103,12 @@ print("changed pixels:", int((np.abs(a - b) > 16).sum()) if a.shape == b.shape e
 PY
   ;;
 teardown)
+  # Kill orphaned X windows FIRST: killing the processes leaves dead dialogs on screen, and a later
+  # `xdotool search --name ...` then reports a "crash" that already happened runs ago, or clicks a dead dialog.
+  for w in $(xdotool search --name "Error" 2>/dev/null) $(xdotool search --name "Configuration Utility" 2>/dev/null) \
+           $(xdotool search --name "encountered" 2>/dev/null) $(xdotool search --name "OfficeWatson" 2>/dev/null); do
+    xdotool windowkill "$w" 2>/dev/null
+  done
   for p in $(pgrep -f "VidyaGod --nod"); do kill -9 "$p" 2>/dev/null; done
   for p in $(ps -eo pid,comm | grep -iE "wineserver|winedevice|services\.exe|svchost|plugplay|explorer\.exe|rpcss|tabtip|xalia|steam\.exe|\.exe$" | awk '{print $1}'); do
     kill -9 "$p" 2>/dev/null
