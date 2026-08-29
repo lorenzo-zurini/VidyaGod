@@ -137,7 +137,10 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
                          { "msacm.msg711", "msg711.acm" },     { "msacm.l3acm", "l3codeca.acm" },
                          { "msacm.msgsm610", "msgsm32.acm" },
                          { "vidc.mrle", "msrle32.dll" }, { "vidc.msvc", "msvidc32.dll" },
-                         { "vidc.cvid", "iccvid.dll" },  { "vidc.IV50", "ir50_32.dll" } })
+                         { "vidc.cvid", "iccvid.dll" } })
+                //NOTE: builtins ONLY. Indeo (vidc.iv32/iv41/iv50) is deliberately absent — wine ships no Indeo
+                //decoder, so registering it here would leave a DANGLING driver name that ICOpen fails to load.
+                //Indeo is a package dependency: dxwnd_indeo ships Intel's ir50_32.dll AND registers the entries.
                 {
                     RegistryValue V; V.Type = RegType::Sz; V.Str = Dll; V.Dirty = true;
                     RW.SetValue(View, Name, V);
