@@ -341,6 +341,29 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
     return true;
 }
 
+std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConfigJSON,
+                                        const nlohmann::ordered_json &Source)
+{
+    std::set<std::string> Cids;
+    const std::string Cid = Source.is_object() ? Source.value("CID", std::string())
+                          : (Source.is_string() ? Source.get<std::string>() : std::string());
+    if (!Cid.empty()) Cids.insert(Cid);                                  // the collection meta-CID itself
+    const std::string Dir = PackageSourceDir(GlobalConfigJSON, Source);
+    if (!Dir.empty())
+        for (const auto &[Path, C] : SeedTargets(Dir)) Cids.insert(C);   // every SOURCE.CID under it
+
+    // Package meta-CIDs live only in config (they never appear inside a node JSON), keyed by package dir/UID.
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
+    {
+        const auto &S = GlobalConfigJSON["Settings"];
+        if (S.contains("PackageCids") && S["PackageCids"].is_object())
+            for (const auto &[Key, Val] : S["PackageCids"].items())
+                if (Val.is_string() && !Val.get<std::string>().empty() && !Dir.empty() && PathUnder(Dir, Key))
+                    Cids.insert(Val.get<std::string>());
+    }
+    return Cids;
+}
+
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
@@ -350,6 +373,27 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
     if (Index < 0 || Index >= (int)Arr.size()) return;
 
     const std::string Dir = PackageSourceDir(GlobalConfigJSON, Arr[Index]);
+
+    //Un-seed BEFORE deleting the directory. A removed source's pins otherwise outlive it in the IPFS table, and the
+    //moment the dir below is deleted every one of its no-copy references points at a gone file — so we keep
+    //ADVERTISING blocks we can no longer read, and any peer that asks for them HANGS instead of failing over to
+    //another provider. (Order matters: SeedTargets can only enumerate what is still on disk.) Only CIDs unique to
+    //this source go — anything a surviving source still references is kept, since content is shared across sources.
+    {
+        std::set<std::string> Mine = SourceContentCids(GlobalConfigJSON, Arr[Index]);
+        for (int i = 0; i < (int)Arr.size(); ++i)
+        {
+            if (i == Index) continue;
+            for (const std::string &C : SourceContentCids(GlobalConfigJSON, Arr[i])) Mine.erase(C);
+        }
+        int Dropped = 0;
+        for (const std::string &C : Mine) if (IpfsWrapper::DropRef(C)) ++Dropped;
+        if (Dropped)
+            LogSucc("PackageCatalog::RemovePackageSource",
+                    "un-seeded " + std::to_string(Dropped) + "/" + std::to_string(Mine.size())
+                    + " CID(s) of the removed source");
+    }
+
     //Drop LIBRARY entries under this source's dir, then delete the fetched dir.
     if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
     {

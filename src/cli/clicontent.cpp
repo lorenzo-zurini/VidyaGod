@@ -131,10 +131,35 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
     //the GUI runs on startup when it detects orphans — this is the manual/scriptable entry point.
     if (LaunchParameters.HealPins)
     {
-        LogOut("main.cpp", "Healing package sources: re-pointing orphaned references, pruning stale pins…");
-        const int Pruned = PackageCatalog::HealSourceContent(GlobalConfigJSON);
-        LogSucc("main.cpp", "Heal done; " + std::to_string(Pruned) + " stale pin(s) pruned.");
-        return 0;
+        // The explicit ops command is the COMPREHENSIVE one — it is meant to be the only thing anyone has to run,
+        // so it verifies as well as repairs: re-point orphans, READ BACK every referenced CID (catching stale refs
+        // whose file exists but whose bytes changed — invisible to a stat-only check and the reason peers hang),
+        // repair those via drop-ref + re-add, and drop pins nothing references. The 90s background pass in AppModel
+        // deliberately stays on the cheap stat-only path; this one reads the whole library.
+        LogOut("main.cpp", "Healing package sources (deep: verifying every referenced CID by reading it back)…");
+        const PackageCatalog::HealReport R =
+            PackageCatalog::HealSourceContent(GlobalConfigJSON, PackageCatalog::HealOptions{ true, true });
+
+        LogOut("main.cpp", "  verified servable ......... " + std::to_string(R.Verified));
+        LogOut("main.cpp", "  orphaned refs re-pointed .. " + std::to_string(R.Repointed));
+        LogOut("main.cpp", "  stale refs repaired ....... " + std::to_string(R.StaleRepaired));
+        LogOut("main.cpp", "  stale pins pruned ......... " + std::to_string(R.PrunedUnservable));
+        LogOut("main.cpp", "  unreferenced pins dropped . " + std::to_string(R.PrunedUnreferenced));
+
+        // LOUD: these two are content problems no automatic repair may paper over — each one means some peer cannot
+        // fetch something this node claims to publish. Non-zero exit so a script/CI cannot mistake it for success.
+        for (const std::string &D : R.Drift)
+            LogErr("main.cpp", "CONTENT DRIFT — published CID does not match the file: " + D);
+        for (const std::string &U : R.Unrepaired)
+            LogErr("main.cpp", "UNREPAIRABLE — content is gone or unreadable: " + U);
+        if (!R.Drift.empty())
+            LogErr("main.cpp", std::to_string(R.Drift.size()) + " node file(s) publish a CID nobody can fetch. "
+                   "Repoint each SOURCE.CID to the actual content shown above, re-seed that package, then "
+                   "--remint-library (this changes the collection CID, so it is deliberately NOT automatic).");
+        if (R.Ok()) { LogSucc("main.cpp", "Heal done — every referenced CID is servable."); return 0; }
+        LogErr("main.cpp", "Heal finished with " + std::to_string(R.Drift.size() + R.Unrepaired.size())
+               + " UNRESOLVED problem(s) — see above.");
+        return 2;
     }
 
     //HEADLESS: import a runner NODE (fetch its IPFS build + generate its DEFPREFIX artifact) then exit. Composed from

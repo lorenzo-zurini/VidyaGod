@@ -27,6 +27,8 @@ int  VgPinRm(const char *cid, char **errOut);
 long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown (may fetch: bitswap 15s + gateway 20s bounds)
 long long VgCidSizeLocal(const char *cid);     // CumulativeSize from the LOCAL store only — fast -1 when unreadable
 int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
+char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back cleanly, else first read error (caller frees).
+                                               // Catches what VgCidMissing cannot: backing file present but bytes changed.
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a
 int  VgPeerID(char **outId);                   // this node's libp2p peer ID
 int  VgListenAddrs(char **outJson);            // JSON array of dialable /p2p/ multiaddrs (for peering/diagnostics)
@@ -42,6 +44,8 @@ int  VgSeedAnnounced(const char *cid);                // 1 if the pinned CID's D
 void VgBandwidthRates(double *inBps, double *outBps); // global down/up throughput (bytes/sec); 0 when offline
 int  VgActiveUploads(int windowMs, char **outJson);   // JSON array of pinned CIDs served to a peer within windowMs
 int  VgOrphanedRefPaths(char **outJson);              // JSON array of distinct filestore backing paths that are gone (orphans to heal)
+int  VgUnservableRefs(char **outJson);                // JSON [{cid,path,status,err}] for every filestore entry whose bytes FAIL to verify
+                                                      // (status 12 = contents changed, 11 = file gone) — refs we advertise but cannot serve
 
 void VgRequestCancel(const char *cid);
 void VgClearCancel(const char *cid);

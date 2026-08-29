@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <utility>
 #include <functional>
 #include <filesystem>
@@ -92,15 +93,46 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
                   int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false);
-// Self-heal every registered package source: additively re-seed each source dir so any ORPHANED no-copy reference
-// (backing file moved/re-created since it was seeded) is re-pointed at its current on-disk content. This is what keeps
-// the node able to SERVE its content — an orphaned reference otherwise reads fine locally but fails the moment a peer
-// requests those blocks (surfacing as "missing files"). Additive + cheap: intact CIDs are only cidMissing-checked (no
-// re-hash); only genuine orphans are dropped + re-added. Then PRUNES stale pins — pins that are unreferenced by any
-// source (node JSONs + config source/package CIDs) AND unservable (backing file gone) are leftovers of superseded
-// publishes that no re-point can fix; their ref closure + pin are dropped. Healthy unreferenced pins are kept.
-// Node must be online-or-local. Call OFF the GUI thread. Returns the number of stale pins pruned.
-int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON);
+// What one heal pass did, and — more importantly — what it could NOT fix. Anything left in Drift/Unrepaired is a
+// content problem a machine must not silently "fix": both change what this node publishes, so they are reported
+// loudly and left for a human. Ok() is the one thing callers should branch on.
+struct HealReport
+{
+    int Repointed          = 0;   // orphaned refs re-pointed at their current on-disk path (cheap pass)
+    int StaleRepaired      = 0;   // refs whose BYTES disagreed, drop-ref'd + re-added successfully (deep pass)
+    int PrunedUnservable   = 0;   // unreferenced pins whose backing is gone
+    int PrunedUnreferenced = 0;   // healthy pins nothing references (only when PruneUnreferenced)
+    int Verified           = 0;   // CIDs read back and confirmed servable (deep pass)
+    std::vector<std::string> Drift;       // recorded SOURCE.CID != actual content — needs a re-mint, NOT a silent rewrite
+    std::vector<std::string> Unrepaired;  // still unservable after drop-ref + re-add — genuine data loss
+    bool Ok() const { return Drift.empty() && Unrepaired.empty(); }
+};
+
+struct HealOptions
+{
+    // Read every referenced CID back out of the blockstore (IpfsWrapper::VerifyCid) instead of only stat-ing its
+    // backing path. This is the ONLY way to catch a reference whose file exists but whose bytes changed — the class
+    // that makes peers hang — and the only way to catch a recorded CID that never matched its content. I/O-bound:
+    // it reads the whole library, so it belongs on an explicit `--heal`, never on the background timer.
+    bool Deep = false;
+    // Also drop pins that are healthy but referenced by nothing (superseded collection/package meta-CIDs — what the
+    // IPFS tab shows as "unknown"). Off by default because a deliberately hand-seeded folder looks identical.
+    bool PruneUnreferenced = false;
+};
+
+// Self-heal every registered package source. Always: additively re-seed each source dir so any ORPHANED no-copy
+// reference (backing file moved/re-created since it was seeded) is re-pointed at its current on-disk content — an
+// orphaned reference otherwise reads fine locally but fails the moment a peer requests those blocks. Then prune pins
+// that are unreferenced AND unservable (leftovers of superseded publishes that no re-point can fix).
+// With Deep: additionally READ every referenced CID back; a ref that fails is drop-ref'd and re-added (the plain
+// re-add alone dedup-skips and silently changes nothing), and a re-add that yields a DIFFERENT CID is reported as
+// Drift rather than rewritten. Node must be online-or-local. Call OFF the GUI thread.
+HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, const HealOptions &Options = {});
+
+// Every CID a source directory contributes: its collection CID, its packages' meta-CIDs, and every SOURCE.CID inside
+// its node JSONs. Used to unpin a source's content when it is REMOVED — otherwise its pins outlive it in the IPFS
+// table and, once the fetched dir is deleted, become unservable references that hang any peer that asks.
+std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Source);
 // The local files SeedDirectory would seed: {local path → recorded SOURCE CID} across a folder's node JSONs — VFS
 // content LAYERS (unless CoversOnly) + cover art (the DeclareLibraryItem layer's COVER, and legacy top-level META.COVER).
 // Pure (no IPFS node). Only includes files that exist on disk. Exposed for reuse + testing the cover-location handling.

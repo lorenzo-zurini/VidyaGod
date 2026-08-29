@@ -250,14 +250,78 @@ int SeedDirectory(const std::string &Dir,
     return Seeded;
 }
 
-int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON)
+HealReport HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON, const HealOptions &Options)
 {
+    HealReport R;
     const std::vector<std::string> Dirs = PackageSourceDirs(GlobalConfigJSON);
     std::set<std::string> Referenced;
+    std::map<std::string, std::string> AllTargets;   // path → recorded CID, across every source
     for (const std::string &Dir : Dirs)
     {
-        SeedDirectory(Dir);   // additive: re-points orphaned refs to their present path, skips intact CIDs (no re-hash)
-        for (const auto &[Path, Cid] : SeedTargets(Dir)) Referenced.insert(Cid);
+        R.Repointed += SeedDirectory(Dir);   // additive: re-points orphaned refs, skips intact CIDs (no re-hash)
+        for (const auto &[Path, Cid] : SeedTargets(Dir)) { Referenced.insert(Cid); AllTargets[Path] = Cid; }
+    }
+
+    // DEEP: the cheap pass above only stats backing paths, so it cannot see a reference whose file still exists but
+    // whose BYTES no longer match — the failure that makes a requesting peer hang forever (we advertise a block we
+    // cannot deliver). Read every referenced CID back through the same blockstore path bitswap serves from.
+    if (Options.Deep)
+    {
+        // Scan the WHOLE filestore index, not just the CIDs the manifests record: a stale entry can survive under a
+        // CID nothing references any more (a superseded delta, a re-published package), and we keep advertising it.
+        // Starting from the recorded CIDs would never reach it, yet it is exactly what hangs a requesting peer.
+        LogOut("PackageCatalog::HealSourceContent", "deep verify: reading every filestore reference back…");
+        const std::vector<IpfsWrapper::UnservableRef> Bad = IpfsWrapper::UnservableRefs();
+        R.Verified = (int)AllTargets.size();
+
+        // Group by backing file: one file's many bad leaves need exactly one drop+re-add, not one per leaf.
+        std::map<std::string, std::vector<std::string>> ByPath;   // path → offending CIDs
+        for (const IpfsWrapper::UnservableRef &U : Bad)
+        {
+            LogWarn("PackageCatalog::HealSourceContent",
+                    "unservable ref " + U.Cid + " (status " + std::to_string(U.Status) + ") backed by "
+                    + U.Path + (U.Err.empty() ? "" : " — " + U.Err));
+            ByPath[U.Path].push_back(U.Cid);
+        }
+
+        for (const auto &[Path, Cids] : ByPath)
+        {
+            std::error_code Ec;
+            if (Path.empty() || !std::filesystem::exists(Path, Ec))
+            {
+                // Backing gone and nothing on disk to re-point at: dropping the closure is the whole repair — it
+                // stops us advertising a block we can never deliver.
+                for (const std::string &C : Cids) IpfsWrapper::DropRef(C);
+                ++R.PrunedUnservable;
+                continue;
+            }
+            // The file IS there but its bytes no longer match. A plain re-add dedup-skips (the CID is already
+            // indexed and boxo will not re-reference it), so the closure MUST be dropped first — this is precisely
+            // the step that makes "--seed --overwrite" appear to succeed while changing nothing.
+            for (const std::string &C : Cids) IpfsWrapper::DropRef(C);
+            const auto It = AllTargets.find(Path);
+            std::string AddErr;
+            const std::string Got = IpfsWrapper::AddNoCopy(Path, &AddErr);
+            if (Got.empty())                { R.Unrepaired.push_back(Path + ": re-add failed: " + AddErr); continue; }
+            if (It == AllTargets.end())     { ++R.StaleRepaired; continue; }   // not manifest-referenced: dropping was the fix
+            if (Got != It->second)
+            {
+                // The file's real content hashes to something else, so the node JSON has been publishing a CID
+                // nobody can ever fetch. Rewriting it here would silently change what this node publishes and
+                // invalidate the collection CID, so surface it for a human instead.
+                R.Drift.push_back(Path + ": recorded " + It->second + " but content is " + Got);
+                continue;
+            }
+            const std::string Again = IpfsWrapper::VerifyCid(It->second);
+            if (Again.empty()) ++R.StaleRepaired;
+            else               R.Unrepaired.push_back(Path + " (" + It->second + "): still unservable: " + Again);
+        }
+
+        // Recorded CIDs the index has no entry for at all (never seeded under that CID) never surface above, since
+        // there is nothing to verify — catch them here so a cold peer's "download hangs forever" becomes visible.
+        for (const auto &[Path, Cid] : AllTargets)
+            if (!IpfsWrapper::HasLocal(Cid))
+                R.Drift.push_back(Path + ": recorded " + Cid + " is not held locally at all (never seeded)");
     }
 
     // Config-level meta-CIDs (package sources + published package CIDs) are pinned but never appear inside node
@@ -284,15 +348,35 @@ int HealSourceContent(const nlohmann::ordered_json &GlobalConfigJSON)
     // seeded master folder) are left alone, as is anything still referenced (surfaced, not destroyed — re-seeding the
     // source is the fix there). Skipped entirely when no source yielded targets (a source disk that isn't mounted
     // would make EVERYTHING look unreferenced).
-    if (Referenced.empty()) return 0;
-    int Pruned = 0;
+    // Guard on the SCANNED TARGETS, not on Referenced: main.cpp force-seeds the built-in library/runner source CIDs
+    // into the config on every launch, so Referenced is never empty even when zero source directories exist on disk.
+    // Using it here would let the prune run with no knowledge of what is referenced and delete live content — which
+    // is exactly what happened the first time this was tested.
+    if (AllTargets.empty()) { LogWarn("PackageCatalog::HealSourceContent",
+                                      "no source directory yielded any referenced content — skipping prune"); return R; }
     for (const IpfsWrapper::PinEntry &P : IpfsWrapper::Pins())
-        if (!Referenced.count(P.Cid) && IpfsWrapper::CidMissing(P.Cid) && IpfsWrapper::DropRef(P.Cid))
-            ++Pruned;
-    if (Pruned)
+    {
+        if (Referenced.count(P.Cid)) continue;
+        if (IpfsWrapper::CidMissing(P.Cid))
+        {
+            if (IpfsWrapper::DropRef(P.Cid)) ++R.PrunedUnservable;
+        }
+        else if (Options.PruneUnreferenced)
+        {
+            // Healthy, but nothing points at it: a superseded collection/package meta-CID (the IPFS tab's
+            // "unknown" rows). Named in the log because this is the one prune that can throw away a hand-seeded
+            // folder — which is why it is opt-in rather than part of the background pass.
+            LogWarn("PackageCatalog::HealSourceContent", "dropping unreferenced pin " + P.Cid);
+            if (IpfsWrapper::Unpin(P.Cid)) ++R.PrunedUnreferenced;
+        }
+    }
+    if (R.PrunedUnservable)
         LogSucc("PackageCatalog::HealSourceContent",
-                "pruned " + std::to_string(Pruned) + " stale pin(s) (unreferenced + backing file gone)");
-    return Pruned;
+                "pruned " + std::to_string(R.PrunedUnservable) + " stale pin(s) (unreferenced + backing file gone)");
+    if (R.PrunedUnreferenced)
+        LogSucc("PackageCatalog::HealSourceContent",
+                "dropped " + std::to_string(R.PrunedUnreferenced) + " unreferenced pin(s)");
+    return R;
 }
 
 int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)

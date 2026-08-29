@@ -115,6 +115,13 @@ std::vector<std::string> ActiveUploads(int WindowMs);
 // Cheap probe (one filestore scan) the app polls to trigger the on-demand orphan heal. Empty when offline.
 std::vector<std::string> OrphanedRefPaths();
 
+// One record per filestore entry whose bytes no longer verify against its backing range. Unlike OrphanedRefPaths
+// (which only stats paths) this READS the data, so it also catches an entry whose file still exists but changed —
+// and unlike VerifyCid it enumerates the WHOLE index, so it finds stale entries no manifest references any more.
+// Those are the references that make a requesting peer hang: we advertise the block, then fail to deliver it.
+struct UnservableRef { std::string Cid, Path, Err; int Status = 0; };   // Status 12 = contents changed, 11 = file gone
+std::vector<UnservableRef> UnservableRefs();
+
 // Human-readable local repo usage — "RepoSize / StorageMax" (e.g. "5.0 GB / 10 GB"), or just the size, "" if
 // unknown.
 std::string RepoSizeHuman();
@@ -148,6 +155,13 @@ bool HasLocal(const std::string &Cid);
 // Deletes a CID's closure (filestore references + plain blocks) and unpins it, so a subsequent AddNoCopy re-creates
 // fresh references against a new backing file (the node's filestore otherwise skips re-adding a block it already has).
 bool DropRef(const std::string &Cid);
+
+// Reads every block of a CID out of the local blockstore — the same path bitswap serves from — and returns "" when
+// the whole DAG is servable, else the first read error. CidMissing only stats the backing PATH, so it passes a
+// reference whose file exists but whose BYTES changed; that ref then makes every requesting peer HANG (we advertise
+// a block we cannot deliver) instead of failing over. This is the only check that catches it. I/O-bound: it reads
+// the referenced bytes, so use it in an explicit deep pass, never on a background timer.
+std::string VerifyCid(const std::string &Cid);
 
 // Purges a CID's locally-CACHED (bitswap) blocks — the partial data left by a cancelled/aborted download — and
 // compacts to reclaim the disk. Offline (never fetches); only touches plain cached blocks, not filestore references.

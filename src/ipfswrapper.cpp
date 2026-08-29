@@ -256,6 +256,21 @@ std::vector<std::string> ActiveUploads(int WindowMs)
     return Result;
 }
 
+std::vector<UnservableRef> UnservableRefs()
+{
+    std::vector<UnservableRef> Result;
+    char *J = nullptr;
+    const int Rc = VgUnservableRefs(&J);
+    const std::string Js = TakeStr(J);
+    if (Rc != 0) return Result;
+    try {
+        for (const auto &E : nlohmann::json::parse(Js))
+            Result.push_back({ E.value("cid", std::string()), E.value("path", std::string()),
+                               E.value("err", std::string()), E.value("status", 0) });
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::UnservableRefs", std::string("bad JSON from node: ") + E.what()); }
+    return Result;
+}
+
 std::vector<std::string> OrphanedRefPaths()
 {
     std::vector<std::string> Result;
@@ -320,6 +335,12 @@ bool CidMissing(const std::string &Cid)
 {
     if (Cid.empty()) return false;
     return VgCidMissing(Cid.c_str()) == 1;
+}
+
+std::string VerifyCid(const std::string &Cid)
+{
+    if (Cid.empty()) return "empty cid";
+    return TakeStr(VgVerifyCid(Cid.c_str()));
 }
 
 bool HasLocal(const std::string &Cid)
