@@ -45,6 +45,13 @@ case "${1:?usage: see header}" in
 launch)
   NODE="${2:?node id}"; LOG="${3:-$TMP.launch.log}"
   setsid nohup "$ROOT/build/VidyaGod" --node "$NODE" >"$LOG" 2>&1 </dev/null &
+  # A launch dies INSTANTLY if the GUI (or any other instance) holds the single-instance lock, and the only trace
+  # is one line in the log — so the game "just never appears" and you hunt the wrong thing. Surface it here.
+  sleep 2
+  if grep -q "Another instance of VidyaGod is already running" "$LOG" 2>/dev/null; then
+    echo "LAUNCH ABORTED: another VidyaGod instance holds the lock (stop the GUI first)" >&2
+    exit 1
+  fi
   echo "launched $NODE -> $LOG"
   ;;
 wait)
