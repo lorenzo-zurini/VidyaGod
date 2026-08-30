@@ -8,9 +8,11 @@
 #include <atomic>
 #include <set>
 #include <string>
+#include <memory>
 
 #include "nlohmann/json.hpp"
 #include "manifestmodel.h"   // NodeIndex
+#include "packagecatalog.h"  // SourceUpgradePlan (pending source-CID upgrade)
 
 class QDir;
 class QTimer;
@@ -65,6 +67,12 @@ public:
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
     void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
+    // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
+    // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
+    // and deprecated) before any content is relocated. Just rewriting the CID would be a silent no-op — the sync
+    // only fetches when the source dir is missing — and remove+re-add deletes every hydrated file in the source.
+    void planSourceUpgrade(const QString & name, const QString & cid);   // async → sourceUpgradePlanned / packageSourceFailed
+    void applySourceUpgrade(bool force);                                 // async → applies the plan from the last planSourceUpgrade
 
 signals:
     void catalogChanged();          // CatalogIndex rebuilt — Library/Catalog/Packages/IPFS refresh
@@ -75,8 +83,13 @@ signals:
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
     void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health
+    // A source upgrade was planned and nothing has changed yet: `summary` describes it for confirmation, and
+    // `unrelated` is true when the new tree shares NO packages with the current one (needs an explicit force).
+    void sourceUpgradePlanned(QString summary, bool unrelated);
 
 private:
+    // The plan from the last planSourceUpgrade(), awaiting the user's confirmation in applySourceUpgrade().
+    std::shared_ptr<PackageCatalog::SourceUpgradePlan> PendingUpgrade;
     nlohmann::ordered_json * Config;
     QDir *                   AppDataDir;
     NodeIndex                CatalogIndex;

@@ -349,6 +349,79 @@ void AppModel::removePackageSource(int index)
     emit packageSourcesChanged();
 }
 
+void AppModel::planSourceUpgrade(const QString & name, const QString & cid)
+{
+    // Planning FETCHES the new manifest tree (to a staging dir) and diffs it — network + disk, so off the GUI thread.
+    // It mutates nothing, so a plain copy of the config is enough and a failure leaves the live source untouched.
+    auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Plan = std::make_shared<PackageCatalog::SourceUpgradePlan>();
+    auto Err  = std::make_shared<std::string>();
+    const std::string Name = name.toStdString(), Cid = cid.toStdString();
+    AsyncWork::Run(this,
+        [Cfg, Plan, Err, Name, Cid]{ *Plan = PackageCatalog::PlanSourceUpgrade(*Cfg, Name, Cid, Err.get()); },
+        [this, Plan, Err]{
+            if (!Plan->Valid)
+            {
+                emit packageSourceFailed(QString::fromStdString(
+                    Err->empty() ? std::string("could not plan the upgrade") : *Err));
+                return;
+            }
+            PendingUpgrade = Plan;
+            auto Gb = [](long long B) { return QString::number(double(B) / 1e9, 'f', 2) + " GB"; };
+            const bool Unrelated = Plan->SharedPackages == 0 && Plan->OldPackages > 0;
+            QString S = QString("%1\n    %2\n→ %3\n\n"
+                                "Packages: %4 → %5 (%6 shared)\n"
+                                "Manifests: +%7 changed %8 removed %9\n\n"
+                                "Kept (not re-downloaded): %10 file(s), %11\n"
+                                "Moved (renamed, not re-downloaded): %12 file(s)\n"
+                                "To download on demand: %13 item(s)\n"
+                                "Deprecated (kept + still seeded): %14 file(s), %15")
+                .arg(QString::fromStdString(Plan->Name),
+                     QString::fromStdString(Plan->OldCid.empty() ? "(none)" : Plan->OldCid),
+                     QString::fromStdString(Plan->NewCid))
+                .arg(Plan->OldPackages).arg(Plan->NewPackages).arg(Plan->SharedPackages)
+                .arg(Plan->JsonAdded.size()).arg(Plan->JsonChanged.size()).arg(Plan->JsonRemoved.size())
+                .arg(Plan->ContentKeep.size()).arg(Gb(Plan->KeptBytes))
+                .arg(Plan->ContentMove.size())
+                .arg(Plan->ContentNew.size())
+                .arg(Plan->ContentDeprecate.size()).arg(Gb(Plan->DeprecatedBytes));
+            emit sourceUpgradePlanned(S, Unrelated);
+        });
+}
+
+void AppModel::applySourceUpgrade(bool force)
+{
+    if (!PendingUpgrade || !PendingUpgrade->Valid) { emit packageSourceFailed("No planned upgrade to apply."); return; }
+    // Applying moves files and re-seeds — off-thread. Work on a copy, then swap the two keys the upgrade owns.
+    auto Cfg   = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Plan  = PendingUpgrade;
+    auto Err   = std::make_shared<std::string>();
+    auto Ok    = std::make_shared<bool>(false);
+    auto Index = std::make_shared<NodeIndex>();
+    AsyncWork::Run(this,
+        [Cfg, Plan, Err, Ok, Index, force]{
+            *Ok = PackageCatalog::ApplySourceUpgrade(*Cfg, *Plan, force, Err.get());
+            if (!*Ok) return;
+            PackageCatalog::SyncPackageSources(*Cfg);
+            *Index = PackageCatalog::BuildCatalogIndex(*Cfg);   // heavy scan stays off the main thread
+        },
+        [this, Cfg, Err, Ok, Index]{
+            PendingUpgrade.reset();
+            if (!*Ok)
+            {
+                emit packageSourceFailed(QString::fromStdString(
+                    Err->empty() ? std::string("the upgrade could not be applied") : *Err));
+                return;
+            }
+            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+            (*Config)["Settings"]["PackageSources"] = (*Cfg)["Settings"]["PackageSources"];
+            save();
+            CatalogIndex = std::move(*Index);
+            emit catalogChanged();
+            emit packageSourcesChanged();
+        });
+}
+
 void AppModel::importRunner(const QString & runnerNodeId)
 {
     // A runner install is NOT special — it is a download whose targets are the runner's build layers. Hand it to the

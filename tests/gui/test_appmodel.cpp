@@ -34,6 +34,30 @@ private slots:
         QCOMPARE(spy.count(), 1);
     }
 
+    // Upgrading an unknown source must fail through packageSourceFailed and leave no pending plan — so a later
+    // applySourceUpgrade cannot act on a stale/rejected plan. Also pins the two-phase contract: planning alone
+    // NEVER mutates the config (the CID must still be the old one after a plan attempt).
+    void plan_source_upgrade_rejects_unknown_source_and_leaves_config_alone()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json{{"PackageSources", json::array({ json{{"NAME","Real"},{"CID","QmOld"}} })}}}};
+        AppModel m(&cfg, &appDir);
+
+        QSignalSpy failed(&m, &AppModel::packageSourceFailed);
+        QSignalSpy planned(&m, &AppModel::sourceUpgradePlanned);
+        m.planSourceUpgrade("Nope", "QmWhatever");
+        QVERIFY(failed.wait(5000));
+        QCOMPARE(planned.count(), 0);
+        QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmOld"));
+
+        // No plan was stored, so applying must refuse rather than fall through to a half-configured upgrade.
+        QSignalSpy failed2(&m, &AppModel::packageSourceFailed);
+        m.applySourceUpgrade(false);
+        QCOMPARE(failed2.count(), 1);
+        QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmOld"));
+    }
+
     void remove_local_package_drops_reference_keeps_user_files()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
