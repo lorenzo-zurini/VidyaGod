@@ -457,6 +457,18 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
     for (const QString & cid : Cids.keys())
         if (!Desired.contains(cid)) { Cids.remove(cid); emit cidRemoved(cid); }
 
+    // A peer asked for these and we could not deliver them. Strongest possible evidence: not a heuristic about
+    // sizes, but an actual failed serve. Applied before the pin upsert so it cannot be overwritten by it.
+    for (const IpfsWrapper::ServeFailure & F : IpfsWrapper::ServeFailures())
+    {
+        const QString cid = QString::fromStdString(F.Cid);
+        if (!Cids.contains(cid)) continue;   // a leaf block, not one of the CIDs we display
+        CidState & s = Cids[cid];
+        s.phase = CidState::Errored;
+        s.error = QObject::tr("a peer requested this and the bytes did not match — re-seed or re-check");
+        emit cidChanged(cid);
+    }
+
     // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending.
     for (const auto & P : pins) {
         const QString cid = QString::fromStdString(P.Cid);

@@ -30,6 +30,7 @@ int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing fi
 int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's CID with NO side effects (nothing seeded/pinned)
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)
+int  VgServeFailures(char **outJson); // JSON [{cid,err,when}] of blocks a PEER asked for that we could not deliver (drains)
 char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back cleanly, else first read error (caller frees).
                                                // Catches what VgCidMissing cannot: backing file present but bytes changed.
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a

@@ -167,6 +167,14 @@ bool DropRef(const std::string &Cid);
 // A same-size edit still slips through; only VerifyCid's byte read catches that.
 std::string CidServeStatus(const std::string &Cid);
 
+// Blocks a PEER requested that we could not deliver, since the last call (the list drains). This is the
+// uploader-side corruption signal BitTorrent does not have: there only the downloader hashes a piece, so a
+// seeder with rotted data serves garbage forever and merely gets banned. Every block here is content-addressed
+// and verified on read, so a failed serve is proof — at the exact moment it matters — that we advertised
+// something we cannot produce.
+struct ServeFailure { std::string Cid, Err; long long When = 0; };
+std::vector<ServeFailure> ServeFailures();
+
 std::string VerifyCid(const std::string &Cid);
 
 // The UnixFS FILE size (payload bytes) a CID represents, from the local store; -1 when unknown. Reads only the

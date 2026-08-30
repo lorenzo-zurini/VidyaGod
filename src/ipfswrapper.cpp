@@ -359,6 +359,20 @@ std::string CidServeStatus(const std::string &Cid)
     return TakeStr(VgCidServeStatus(Cid.c_str()));
 }
 
+std::vector<ServeFailure> ServeFailures()
+{
+    std::vector<ServeFailure> Result;
+    char *J = nullptr;
+    const int Rc = VgServeFailures(&J);
+    const std::string Js = TakeStr(J);
+    if (Rc != 0) return Result;
+    try {
+        for (const auto &E : nlohmann::json::parse(Js))
+            Result.push_back({ E.value("cid", std::string()), E.value("err", std::string()), E.value("when", 0LL) });
+    } catch (const std::exception &E) { LogWarn("IpfsWrapper::ServeFailures", std::string("bad JSON: ") + E.what()); }
+    return Result;
+}
+
 std::string VerifyCid(const std::string &Cid)
 {
     if (Cid.empty()) return "empty cid";
