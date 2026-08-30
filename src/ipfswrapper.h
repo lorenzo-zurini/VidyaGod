@@ -161,6 +161,12 @@ bool DropRef(const std::string &Cid);
 // reference whose file exists but whose BYTES changed; that ref then makes every requesting peer HANG (we advertise
 // a block we cannot deliver) instead of failing over. This is the only check that catches it. I/O-bound: it reads
 // the referenced bytes, so use it in an explicit deep pass, never on a background timer.
+// "" when this CID looks DELIVERABLE — every backing file present and still the size its references cover —
+// else the reason. Cheap (stat only, no content read), so it can run on every status refresh. This is what
+// "Seeding" should be claiming: a pin alone proves nothing about whether we can hand a peer the bytes.
+// A same-size edit still slips through; only VerifyCid's byte read catches that.
+std::string CidServeStatus(const std::string &Cid);
+
 std::string VerifyCid(const std::string &Cid);
 
 // The UnixFS FILE size (payload bytes) a CID represents, from the local store; -1 when unknown. Reads only the

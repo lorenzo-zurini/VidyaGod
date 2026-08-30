@@ -250,12 +250,19 @@ int SeedDirectory(const std::string &Dir,
             std::error_code Sc;
             const auto OnDisk   = (long long)fs::file_size(Path, Sc);
             const long long Was = IpfsWrapper::CidFileSizeLocal(Cid);
-            if (!Sc && Was >= 0 && OnDisk != Was)
+            // ONLY a file that SHRANK is broken. A file that GREW still has every published byte where the
+            // references expect it, so the recorded CID stays fully deliverable (verified: appending 4 KiB leaves
+            // it servable). Treating "grew" as stale would drop a WORKING reference and re-add under a different
+            // CID — actively breaking delivery of the CID peers are asking for, in the name of repairing it.
+            if (!Sc && Was >= 0 && OnDisk < Was)
             {
                 Stale = true;
-                LogWarn("PackageCatalog::SeedDirectory", "content changed since publish (" + std::to_string(Was)
+                LogWarn("PackageCatalog::SeedDirectory", "backing file truncated (" + std::to_string(Was)
                         + " → " + std::to_string(OnDisk) + " bytes): " + Path);
             }
+            else if (!Sc && Was >= 0 && OnDisk > Was)
+                LogOut("PackageCatalog::SeedDirectory", "file has grown since publish (" + std::to_string(Was)
+                       + " → " + std::to_string(OnDisk) + " bytes) — published bytes still intact: " + Path);
             else if (Verify && !IpfsWrapper::VerifyCid(Cid).empty())
             {
                 Stale = true;   // bytes disagree at the same size — only a real read finds this

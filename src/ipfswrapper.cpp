@@ -353,6 +353,12 @@ long long CidFileSizeLocal(const std::string &Cid)
     return VgCidFileSizeLocal(Cid.c_str());
 }
 
+std::string CidServeStatus(const std::string &Cid)
+{
+    if (Cid.empty()) return "empty cid";
+    return TakeStr(VgCidServeStatus(Cid.c_str()));
+}
+
 std::string VerifyCid(const std::string &Cid)
 {
     if (Cid.empty()) return "empty cid";

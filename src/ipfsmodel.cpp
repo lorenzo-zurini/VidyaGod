@@ -465,7 +465,16 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
                                || s.phase == CidState::Stalled || s.phase == CidState::Errored || s.phase == CidState::Queued);
         s.uploading = uploading.contains(cid);
         s.announced = IpfsWrapper::SeedAnnounced(P.Cid);   // "seeding" once the DHT announce is done, else "queued for seeding"
-        if (!MidTransfer) { s.phase = CidState::Seeded; s.pct = 100.0; s.speedBps = -1.0; }
+        if (!MidTransfer)
+        {
+            // "Seeding" has to MEAN we can hand a peer the bytes. A pin on its own proves nothing: it survives the
+            // backing file being deleted, truncated or rebuilt, which is how a stale reference used to sit here
+            // showing green while every request for it hung. Demote to Errored the moment a condition fails, and
+            // say WHICH — the reason is the difference between "re-seed it" and "the content is gone".
+            const std::string Why = IpfsWrapper::CidServeStatus(P.Cid);
+            if (Why.empty()) { s.phase = CidState::Seeded; s.pct = 100.0; s.speedBps = -1.0; s.error.clear(); }
+            else             { s.phase = CidState::Errored; s.error = QString::fromStdString(Why); s.speedBps = -1.0; }
+        }
         if (s.size < 0) ensureSize(cid);
     }
     for (const QString & cid : PendingSources) {
