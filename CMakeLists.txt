@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Always emit compile_commands.json (and symlink it at the repo root via the rule below). Without it clangd has no
+# flags for this project and reports phantom errors on every file — "QObject file not found", "no member named
+# 'json' in namespace nlohmann" — which is pure noise that also hides REAL diagnostics.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
+
 project(VidyaGod)
 
 set(CMAKE_CXX_STANDARD 23)
