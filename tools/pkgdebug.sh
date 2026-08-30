@@ -26,8 +26,36 @@ export WINEPREFIX="$PFX/pfx"
 export SteamGameId="$name"
 export PROTON_LOG=1
 export PROTON_LOG_DIR="$PFX"
+# A package's LIBRARY PARENTS are part of the reproduction. Omitting them makes the simulated install unfaithful
+# and produces false conclusions: Wipeout XL's config dialog renders BLACK without dgVoodoo and fine with it, so a
+# prefix missing dgVoodoo "reproduces" a bug that VidyaGod does not actually have. Pass them via VG_DLLOVERRIDES
+# (and drop any DLLs the library places next to the exe into drive_c/game yourself).
+[ -n "${VG_DLLOVERRIDES:-}" ] && export WINEDLLOVERRIDES="$VG_DLLOVERRIDES"
+
+# Kill EVERYTHING from a previous run: the game, proton's wrapper, the wine service processes, and any X windows
+# they left behind. Leftovers are not cosmetic — a stale window keeps answering xdotool searches, so the next run
+# locks onto a DEAD window and every click and keystroke goes nowhere while the log stays silent. (Also: a hung
+# game attracts kwin_killer_helper, which then sits there too.) Never pkill -f a pattern that appears in this
+# script's own command line; match by PID.
+teardown() {
+  local pids
+  pids=$(ps -eo pid,args | grep -iE "pkgdebug\.sh run|steam\.exe|wineserver|winedevice|services\.exe|explorer\.exe|plugplay|rpcss|kwin_killer_helper|\.exe" \
+         | grep -viE "grep|/usr/bin/bash -c" | awk '{print $1}')
+  for p in $pids; do kill -9 "$p" 2>/dev/null; done
+  sleep 2
+  # Stale X windows outlive their process; kill them or the next run targets a corpse.
+  if [ -n "${1:-}" ]; then
+    for w in $(xdotool search --name "$1" 2>/dev/null); do xdotool windowkill "$w" 2>/dev/null; done
+  fi
+  sleep 1
+}
 
 case "${1:?usage: see header}" in
+kill|teardown)
+  teardown "${3:-Wipeout}"
+  left=$(ps -eo args | grep -iE "net-woxl|wolobby|wineserver|winedevice" | grep -vcE "grep|pkgdebug" || true)
+  echo "remaining: ${left:-0}"
+  ;;
 setup)
   shift 2
   rm -rf "$PFX"; mkdir -p "$PFX/pfx/drive_c/game"
@@ -50,6 +78,7 @@ run)
   # refusing to start. Cost a debugging round; always hand proton a full path.
   case "$exe" in /*) ;; *) exe="$PFX/pfx/drive_c/game/$exe" ;; esac
   [ -f "$exe" ] || { echo "no such exe: $exe" >&2; exit 1; }
+  teardown "${VG_WINDOW_HINT:-}"     # never inherit a previous run's processes or its stale windows
   echo "running $exe in $PFX"
   "$PROTON/proton" run "$exe" "$@"
   ;;
