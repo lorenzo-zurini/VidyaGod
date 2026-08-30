@@ -16,12 +16,16 @@
 #include "gamepicker.h"
 #include "ipfssettingspage.h"
 #include "sourcespage.h"
+#include "a11ynames.h"
 
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTreeWidget>
 #include <QPushButton>
+#include <QAbstractButton>
+#include <QComboBox>
+#include <QAbstractSpinBox>
 #include <QSignalSpy>
 
 using json = nlohmann::ordered_json;
@@ -50,6 +54,37 @@ class TabsTest : public QObject
     json          Cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
 
 private slots:
+    // COVERAGE GUARD: every interactive control we build must be addressable by name, or the programmatic
+    // driving (tools/a11ydrive.py) and the widget tests silently lose reach over it. A11yNames derives the name
+    // from what the widget already shows the user, so this passes for free — until someone adds a control with
+    // no text, no form label and no placeholder, which is exactly when a human should pick a name by hand.
+    void every_interactive_control_is_named()
+    {
+        AppModel m(&Cfg, &AppDir);
+        SettingsTab settings(m); LibraryTab library(m); CatalogTab catalog(m);
+        QStringList Anonymous;
+        for (QWidget * root : { static_cast<QWidget *>(&settings), static_cast<QWidget *>(&library),
+                                static_cast<QWidget *>(&catalog) })
+        {
+            root->resize(900, 650); root->show();
+            QApplication::processEvents();
+            A11yNames::ApplyToTree(root);   // the app installs this as an event filter; apply directly in tests
+            for (QWidget * w : root->findChildren<QWidget *>())
+            {
+                const bool Interactive = qobject_cast<QAbstractButton *>(w) || qobject_cast<QLineEdit *>(w)
+                                      || qobject_cast<QComboBox *>(w) || qobject_cast<QAbstractSpinBox *>(w);
+                if (!Interactive || !w->isVisible()) continue;
+                if (w->accessibleName().isEmpty() && w->objectName().isEmpty())
+                    Anonymous << QString("%1 in %2").arg(w->metaObject()->className(), root->metaObject()->className());
+            }
+            for (QObject * c : root->findChildren<QObject *>()) c->blockSignals(true);
+            root->blockSignals(true);
+        }
+        if (!Anonymous.isEmpty())
+            qWarning("unnamed interactive controls:\n  %s", qPrintable(Anonymous.join("\n  ")));
+        QCOMPARE(Anonymous.size(), 0);
+    }
+
     // Every Sources control is addressable BY objectName, so tests (and AT-SPI clients) drive it by name rather
     // than by screen coordinates. Modal flows go to the live-app harness instead — see tools/guidrive.sh.
     void sources_page_upgrade_button_is_addressable_and_wired()

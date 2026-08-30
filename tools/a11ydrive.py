@@ -10,6 +10,9 @@ answer — QInputDialog::exec() will not yield to a QTimer under the offscreen p
   tools/a11ydrive.py settext <name> <text> [--pid N] set an editable field's text
   tools/a11ydrive.py wait  <name> [--secs 20]        block until a control/dialog with that name exists
   tools/a11ydrive.py text  <name>                    print a control's text (read a dialog's message back)
+  tools/a11ydrive.py state <name>                    checked/enabled/visible/focused for a control
+  tools/a11ydrive.py check <name> [on|off]           set a checkbox (no-op if already in that state)
+  tools/a11ydrive.py select <name> <value>           pick a combo-box / list entry by its visible text
 
 <name> is matched case-insensitively as a SUBSTRING, so "Upgrade" finds "Upgrade…".
 
@@ -182,6 +185,43 @@ def main():
         node.queryEditableText().setTextContents(opts.args[1])
         print(f"set [{node.getRoleName()}] {node.name!r} = {opts.args[1]!r}")
         return 0
+    if opts.verb == "state":
+        st = [str(x) for x in node.getState().getStates()]
+        import pyatspi as _p
+        flags = {n: getattr(_p, "STATE_" + n.upper(), None) for n in
+                 ("checked", "enabled", "sensitive", "visible", "showing", "focused", "selected")}
+        have = node.getState()
+        print("[%s] %r" % (node.getRoleName(), node.name))
+        for n, f in flags.items():
+            if f is not None:
+                print("   %-10s %s" % (n, have.contains(f)))
+        return 0
+
+    if opts.verb == "check":
+        import pyatspi as _p
+        want = (opts.args[1].lower() in ("on", "true", "1", "yes")) if len(opts.args) > 1 else True
+        is_on = node.getState().contains(_p.STATE_CHECKED)
+        if is_on == want:
+            print(f"already {'checked' if want else 'unchecked'}: {node.name!r}")
+            return 0
+        # A checkbox's action toggles; there is no "set to X", so only act when the state actually differs.
+        print(f"{do_click(node)} → {node.name!r} now {'checked' if want else 'unchecked'}")
+        return 0
+
+    if opts.verb == "select":
+        # Combo boxes and lists: pick the CHILD whose visible text matches, rather than sending arrow keys and
+        # hoping. Falls back to the parent's Selection interface for list-style widgets.
+        target = opts.args[1].lower()
+        for child in _iter(node):
+            try:
+                if child.name and child.name.lower() == target and child is not node:
+                    print(f"{do_click(child)} → {child.name!r}")
+                    return 0
+            except Exception:
+                pass
+        print(f"no entry {opts.args[1]!r} inside {node.name!r}", file=sys.stderr)
+        return 1
+
     if opts.verb == "text":
         try:
             t = node.queryText()

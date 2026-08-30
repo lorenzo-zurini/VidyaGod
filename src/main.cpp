@@ -12,6 +12,7 @@
 #include "ipfswrapper.h"
 #include "sandboxlayer.h"
 #include "depcheck.h"
+#include "a11ynames.h"   // auto-name every control for AT-SPI + findChild
 
 #include <QComboBox>
 #include <QAbstractScrollArea>
@@ -246,6 +247,10 @@ int main(int argc, char *argv[])
 
     //Block accidental hover-scroll from mutating combo boxes app-wide (see WheelGuard).
     Application.installEventFilter(new WheelGuard(&Application));
+
+    //Make every control addressable by name — to assistive technology (AT-SPI) and to the widget tests. Installed
+    //BEFORE the main window so each widget is named as it is polished, including ones built later at runtime.
+    A11yNames::Install(&Application);
 
     //Surface any missing dependencies now that we can show a dialog — with concrete install steps.
     //Non-blocking to the app: the user dismisses it and the library still opens (launching games fails

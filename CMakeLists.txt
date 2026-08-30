@@ -222,6 +222,8 @@ set(SHARED_SOURCES
 
     src/sourcespage.h
     src/sourcespage.cpp
+    src/a11ynames.h
+    src/a11ynames.cpp
 
     src/ipfssettingspage.h
     src/ipfssettingspage.cpp
