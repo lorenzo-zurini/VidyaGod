@@ -51,6 +51,16 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     for (std::size_t i = 0; i < PageFactories.size(); ++i) Stack->addWidget(new QWidget(Stack));   // placeholders
 
     connect(CategoryList, &QListWidget::currentRowChanged, this, [this](int row){ showPage(row); });
+    // Qt treats SELECTION and CURRENT ITEM as different things, and assistive tech (AT-SPI — screen readers, and
+    // the tools/a11ydrive.py harness) drives SELECTION. Listening only to currentRowChanged meant such a client
+    // could highlight "Sources" while the panel kept showing General: visibly selected, functionally inert.
+    // Mirror selection onto the current row so both paths land on the same page.
+    connect(CategoryList, &QListWidget::itemSelectionChanged, this, [this]{
+        const QList<QListWidgetItem *> Sel = CategoryList->selectedItems();
+        if (Sel.isEmpty()) return;
+        const int Row = CategoryList->row(Sel.first());
+        if (Row >= 0 && Row != CategoryList->currentRow()) CategoryList->setCurrentRow(Row);
+    });
     CategoryList->setCurrentRow(0);   // builds + shows the first page only
 }
 

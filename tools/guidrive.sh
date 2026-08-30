@@ -20,6 +20,9 @@
 # Env: VG_DISPLAY (default :1), VG_DATADIR (default a fresh dir under TMPDIR), VG_SETTLE (default 1.0).
 #
 # HARD-WON NOTES:
+#   * PREFER tools/a11ydrive.py FOR THE LIVE APP. It drives widgets BY NAME over AT-SPI — works on native
+#     Wayland, no coordinates, no case-mangling, and it CAN answer modal dialogs. This script is now only for
+#     what accessibility cannot express: window activation/raising, screenshots, and raw input.
 #   * PREFER tests/gui/ FOR WIRING. A Qt Test that does findChild<QPushButton*>("upgrade_Src") + QTest::mouseClick
 #     is deterministic, needs no compositor, and runs in ctest. Only come here for things that need a REAL app:
 #     MODAL dialogs, the IPFS node, drag/drop, or "does it actually look right".
