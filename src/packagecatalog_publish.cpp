@@ -215,7 +215,8 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
 
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress,
-                  int *Mismatched, bool CoversOnly, bool Overwrite)
+                  int *Mismatched, bool CoversOnly, bool Overwrite, bool Verify,
+                  std::vector<SeedFailure> *Failures)
 {
     namespace fs = std::filesystem;
     if (Mismatched) *Mismatched = 0;
@@ -234,7 +235,35 @@ int SeedDirectory(const std::string &Dir,
     {
         const bool Has     = IpfsWrapper::HasLocal(Cid);
         const bool Orphan  = Has && IpfsWrapper::CidMissing(Cid);
-        if (Has && !Orphan && !Overwrite) { ++Skipped; ++Seeded; }   // already seeded + intact → leave it (counts as seeded)
+
+        // SELF-CHECK BEFORE SKIPPING. HasLocal + CidMissing only answer "do we hold it?" and "is the backing file
+        // GONE?" — neither reads a byte, so a file whose CONTENTS changed answered has=true, orphan=false and was
+        // skipped AND counted as seeded. That is exactly how "Seeded 5/5" was reported over unservable content,
+        // and how 933 bad references accumulated unnoticed until a full sweep went looking.
+        //
+        // The free half of the check: compare the file on disk against the payload size the CID represents (root
+        // block only). A rebuilt zip or re-authored delta almost never lands on the identical byte count. It is a
+        // filter, not a proof — a same-size edit still needs Verify's byte read — but it costs one stat.
+        bool Stale = false;
+        if (Has && !Orphan)
+        {
+            std::error_code Sc;
+            const auto OnDisk   = (long long)fs::file_size(Path, Sc);
+            const long long Was = IpfsWrapper::CidFileSizeLocal(Cid);
+            if (!Sc && Was >= 0 && OnDisk != Was)
+            {
+                Stale = true;
+                LogWarn("PackageCatalog::SeedDirectory", "content changed since publish (" + std::to_string(Was)
+                        + " → " + std::to_string(OnDisk) + " bytes): " + Path);
+            }
+            else if (Verify && !IpfsWrapper::VerifyCid(Cid).empty())
+            {
+                Stale = true;   // bytes disagree at the same size — only a real read finds this
+                LogWarn("PackageCatalog::SeedDirectory", "unservable reference (bytes changed): " + Path);
+            }
+        }
+
+        if (Has && !Orphan && !Stale && !Overwrite) { ++Skipped; ++Seeded; }   // genuinely intact → leave it
         else
         {
             if (Orphan)                                              // observability: the self-heal case (backing moved/re-created)
@@ -242,8 +271,13 @@ int SeedDirectory(const std::string &Dir,
             if (Has) IpfsWrapper::DropRef(Cid);                       // clear the stale/old reference so the re-add isn't deduped
             std::string Err;
             const std::string Got = IpfsWrapper::AddNoCopy(Path, &Err);
+            // A re-add that yields the SAME CID is a genuine self-heal: the reference was stale, the bytes are the
+            // ones we published, and we can serve it again. A DIFFERENT CID is NOT a heal — the file no longer is
+            // what we published, and silently accepting it would republish under a new CID while quietly orphaning
+            // the one peers are asking for. That is an error for a human, never an automatic fix.
             if (Got == Cid)            ++Seeded;
             else if (Mismatched) { ++*Mismatched;
+                if (Failures) Failures->push_back({ Path, Cid, Got });
                 LogWarn("PackageCatalog::SeedDirectory", "CID mismatch (file changed since publish?) for " + Path
                         + (Got.empty() ? (" — add failed: " + Err) : (" — got " + Got + ", expected " + Cid)));
             }

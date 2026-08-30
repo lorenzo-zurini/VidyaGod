@@ -347,6 +347,12 @@ std::string ComputeCid(const std::string &Path, std::string *Error)
     return CidS;
 }
 
+long long CidFileSizeLocal(const std::string &Cid)
+{
+    if (Cid.empty()) return -1;
+    return VgCidFileSizeLocal(Cid.c_str());
+}
+
 std::string VerifyCid(const std::string &Cid)
 {
     if (Cid.empty()) return "empty cid";

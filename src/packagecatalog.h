@@ -126,9 +126,14 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 // Modes: ADDITIVE (Overwrite=false, default) re-references only NEW or ORPHANED (backing-file-gone) content, skipping
 // CIDs already held with an intact file; OVERWRITE (Overwrite=true) re-references every file. Orphans are re-pointed
 // in BOTH modes.
+// One file that could not be seeded as published: its content no longer hashes to the recorded CID. Surfaced so
+// the UI can show it as an ERROR instead of it living only in a log line — a stale reference is otherwise
+// invisible until a peer requests it and hangs.
+struct SeedFailure { std::string Path, RecordedCid, ActualCid; };
 int SeedDirectory(const std::string &Dir,
                   const std::function<void(int, int, const std::string &)> &Progress = {},
-                  int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false);
+                  int *Mismatched = nullptr, bool CoversOnly = false, bool Overwrite = false,
+                  bool Verify = false, std::vector<SeedFailure> *Failures = nullptr);
 // What one heal pass did, and — more importantly — what it could NOT fix. Anything left in Drift/Unrepaired is a
 // content problem a machine must not silently "fix": both change what this node publishes, so they are reported
 // loudly and left for a human. Ok() is the one thing callers should branch on.

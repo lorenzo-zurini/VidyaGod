@@ -290,6 +290,18 @@ void AppModel::healOrphansIfAny()
             {
                 LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
                 PackageCatalog::HealSourceContent(*Cfg);
+                // The cheap per-file self-check (size gate) runs inside SeedDirectory during the heal; collect
+                // anything it could NOT fix so the UI can surface it rather than leaving it in a log line.
+                for (const std::string &Dir : PackageCatalog::PackageSourceDirs(*Cfg))
+                {
+                    std::vector<PackageCatalog::SeedFailure> Bad;
+                    PackageCatalog::SeedDirectory(Dir, {}, nullptr, false, false, false, &Bad);
+                    for (const auto &F : Bad)
+                        QMetaObject::invokeMethod(this, [this, F]{
+                            emit contentUnservable(QString::fromStdString(F.RecordedCid),
+                                QString::fromStdString("content no longer matches the published CID (" + F.Path + ")"));
+                        }, Qt::QueuedConnection);
+                }
                 // Whatever is STILL orphaned after the heal is content truly gone (no on-disk copy to re-point to):
                 // remember it so subsequent sweeps skip the heavy re-seed until something changes.
                 Unhealable->clear();

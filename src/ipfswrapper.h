@@ -163,6 +163,12 @@ bool DropRef(const std::string &Cid);
 // the referenced bytes, so use it in an explicit deep pass, never on a background timer.
 std::string VerifyCid(const std::string &Cid);
 
+// The UnixFS FILE size (payload bytes) a CID represents, from the local store; -1 when unknown. Reads only the
+// root block, so it is cheap enough to run before every seed. This is the FREE half of "is the file on disk still
+// the file we published?": a rebuilt zip or re-authored delta almost never lands on the identical byte count.
+// It is a filter, not a proof — a same-size edit still needs VerifyCid's byte read.
+long long CidFileSizeLocal(const std::string &Cid);
+
 // What a file's CID WOULD be, WITHOUT seeding it — nothing enters the blockstore, filestore or pinset. Same
 // importer settings as AddNoCopy, so it answers "do these bytes still match the CID we published?" (content drift)
 // without the side effects of adding. Works with no node started. "" on failure, with *Error set.

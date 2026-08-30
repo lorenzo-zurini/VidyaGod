@@ -179,6 +179,16 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         refresh();   // a finished fetch likely added a pin
     });
 
+    // Unservable content found by the seed-time self-check: show it as an ERROR row. Before this a stale
+    // reference was invisible here — the tab showed it as happily Seeded while every peer request for it hung.
+    connect(&model, &AppModel::contentUnservable, this, [this](const QString & cid, const QString & reason){
+        if (!Cids.contains(cid)) return;
+        CidState & s = Cids[cid];
+        s.phase = CidState::Errored;
+        s.error = reason;
+        emit cidChanged(cid);
+    });
+
     RefreshTimer = new QTimer(this);
     connect(RefreshTimer, &QTimer::timeout, this, [this]{ refresh(); });
 

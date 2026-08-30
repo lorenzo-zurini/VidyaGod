@@ -86,6 +86,10 @@ signals:
     // A source upgrade was planned and nothing has changed yet: `summary` describes it for confirmation, and
     // `unrelated` is true when the new tree shares NO packages with the current one (needs an explicit force).
     void sourceUpgradePlanned(QString summary, bool unrelated);
+    // Content that can no longer be served as published (the file's bytes no longer hash to its recorded CID).
+    // Emitted by the background self-check so the IPFS tab can show it as an ERROR — such a reference is
+    // otherwise completely invisible until a peer requests it and hangs.
+    void contentUnservable(QString cid, QString reason);
 
 private:
     // The plan from the last planSourceUpgrade(), awaiting the user's confirmation in applySourceUpgrade().
