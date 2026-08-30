@@ -312,7 +312,7 @@ static std::string DefaultRunnerSourceCID() { return "Qma9m3HcQ1iUzFUDxf71NZJh5o
 // Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
 // games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
 // exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
-static std::string DefaultLibrarySourceCID() { return "QmYKvYTUveb2huGgJBGQfvBk3c39zFoK2saZaHjixGDz5M"; }   // JSON-only libraries Meta-CID (re-minted 2026-08-29, MediaStack_MS)
+static std::string DefaultLibrarySourceCID() { return "QmaewHAkgRNF4Erk3uWuQ1ZKgsoB91KcybDx827dBCQKgn"; }   // JSON-only libraries Meta-CID (re-minted 2026-08-30, dgVoodoo FPSLimit default 200)
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
