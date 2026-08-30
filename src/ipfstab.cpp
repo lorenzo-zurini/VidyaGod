@@ -197,6 +197,20 @@ void IpfsTab::buildUi()
                                            "recorded CID couldn't be re-seeded.").arg(mismatched).arg(mismatched == 1 ? "" : "s");
         QMessageBox::information(this, "Seed folder", Msg);
     });
+    // Force-recheck feedback. A full read of several GB is not instant, so the status strip carries progress and
+    // the result is reported explicitly — a silent recheck is indistinguishable from one that never ran.
+    // Progress needs no dedicated widget: each CID's row updates the moment it is verified (forceRecheck emits
+    // cidChanged per item), so the tree itself is the progress bar. Only the summary needs stating.
+    connect(&Model, &IpfsModel::recheckFinished, this, [this](int checked, int failed){
+        Model.refreshNow();
+        QMessageBox::information(this, "Force recheck",
+            failed == 0
+                ? QString("Verified %1 item%2 — every block reads back correctly and can be served.")
+                      .arg(checked).arg(checked == 1 ? "" : "s")
+                : QString("%1 of %2 item%3 FAILED verification and cannot be served as published.\n\n"
+                          "Their rows now show the reason. Re-download them, or re-seed from a good copy.")
+                      .arg(failed).arg(checked).arg(checked == 1 ? "" : "s"));
+    });
     toolbar->addWidget(SeedBtn);
 
     QPushButton * refreshBtn = new QPushButton("Refresh", this);
@@ -635,6 +649,27 @@ void IpfsTab::showContextMenu(const QPoint & pos)
         if (AnyActive)
             menu.addAction("Cancel download", this, [this, Sel]{ for (const QString & c : Sel) Model.cancel(c); });
         menu.addAction("Re-check health", this, [this, Sel]{ Model.recheckHealth(Sel); });
+        // FORCE RECHECK — distinct from "Re-check health" above, which only stats the backing file and counts
+        // providers and therefore calls same-size corruption perfectly healthy. This reads every block back, the
+        // only way to know we can actually deliver the bytes. It costs a full read, hence the confirmation.
+        if (AnyPinned)
+            menu.addAction(N == 1 ? QStringLiteral("Force recheck (read all bytes)…")
+                                  : QString("Force recheck %1 items (read all bytes)…").arg(N),
+                           this, [this, Sel, N]{
+                qlonglong Bytes = 0;
+                for (const QString & c : Sel) { const auto St = Model.state(c); if (St.size > 0) Bytes += St.size; }
+                // Scale the unit: a sub-megabyte selection rendered as "~0 MB to read", which reads like a bug.
+                QString Size;
+                if (Bytes >= 1073741824LL) Size = QString(" (~%1 GB to read)").arg(double(Bytes) / 1073741824.0, 0, 'f', 1);
+                else if (Bytes >= 1048576LL) Size = QString(" (~%1 MB to read)").arg(Bytes / 1048576);
+                else if (Bytes > 0)          Size = QString(" (~%1 KB to read)").arg(Bytes / 1024);
+                if (QMessageBox::question(this, "Force recheck",
+                        QString("Re-read %1 item%2 from disk and verify every block against its CID%3?\n\n"
+                                "This is the only check that catches content edited in place at the same size. "
+                                "Nothing is modified.").arg(N).arg(N == 1 ? "" : "s").arg(Size))
+                    != QMessageBox::Yes) return;
+                Model.forceRecheck(Sel);
+            });
         if (AnyPinned)
         {
             menu.addSeparator();

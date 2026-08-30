@@ -280,6 +280,41 @@ void IpfsModel::publishPackage(const QString & pkg)
         });
 }
 
+void IpfsModel::forceRecheck(const QStringList & cids)
+{
+    if (RecheckInFlight || cids.isEmpty()) return;
+    RecheckInFlight = true;
+    auto Todo = std::make_shared<QStringList>(cids);
+    std::thread([this, Todo, A = Alive]{
+        int Failed = 0, Done = 0;
+        for (const QString & cid : *Todo)
+        {
+            if (!A->load()) return;                       // model destroyed mid-read (these are long) → stop
+            const std::string Why = IpfsWrapper::VerifyCid(cid.toStdString());
+            ++Done;
+            const int D = Done, T = (int)Todo->size();
+            if (!Why.empty()) ++Failed;
+            QMetaObject::invokeMethod(this, [this, cid, Why, D, T]{
+                if (Cids.contains(cid))
+                {
+                    CidState & s = Cids[cid];
+                    // Trust the read over any cached optimism: this is the strongest evidence we have.
+                    if (Why.empty()) { s.phase = CidState::Seeded; s.error.clear(); }
+                    else             { s.phase = CidState::Errored; s.error = QString::fromStdString(Why); }
+                    emit cidChanged(cid);
+                }
+                emit recheckProgress(D, T);
+            }, Qt::QueuedConnection);
+        }
+        const int F = Failed, C = (int)Todo->size();
+        if (!A->load()) return;
+        QMetaObject::invokeMethod(this, [this, F, C]{
+            RecheckInFlight = false;
+            emit recheckFinished(C, F);
+        }, Qt::QueuedConnection);
+    }).detach();
+}
+
 void IpfsModel::recheckHealth(const QStringList & cids)
 {
     for (const QString & c : cids)

@@ -81,6 +81,12 @@ public slots:
     void seedFolder(const QString & dir);    // add a folder's published content to the node (off-thread)
     void publishPackage(const QString & pkg);       // mint/refresh the package-level meta-CID (off-thread), persist it
     void recheckHealth(const QStringList & cids);   // drop cached health for these CIDs and re-gather
+    // FORCE RECHECK — the qBittorrent equivalent, and a genuinely different operation from recheckHealth():
+    // that one only stats the backing file and counts providers, so it calls same-size corruption perfectly
+    // healthy (it would have passed all 933 bad references in the real library). This READS every block back
+    // through the path bitswap serves from, which is the only way to prove we can deliver the bytes. Costs a
+    // full read of the selected content, so it is explicit and never automatic. Off-thread; single-flight.
+    void forceRecheck(const QStringList & cids);
     void unpinMany(const QStringList & cids);       // stop seeding a batch, then one refresh
     void addSource(const QString & cid, const QString & name);   // append a package source CID + kick a sync
 
@@ -92,6 +98,8 @@ signals:
     void seedProgress(int done, int total);  // "Seeding N/M…" for the tab's Seed button
     void seedFinished(int seeded, int mismatched);
     void packagePublished(const QString & pkg, const QString & cid, const QString & error);
+    void recheckProgress(int done, int total);
+    void recheckFinished(int checked, int failed);
 
 private:
     void refresh();                          // internal: kick the off-thread gather (no-op if node down / already running)
@@ -119,6 +127,7 @@ private:
     bool     Active         = false;
     bool     RefreshInFlight = false;
     bool     HealthInFlight  = false;
+    bool     RecheckInFlight = false;   // force-recheck reads whole files — never run two at once
 
     // Lifetime guard for the detached refresh/health/size/seed worker threads: they capture a COPY of this shared_ptr
     // and must check it (before touching `this` via QMetaObject::invokeMethod) because a worker can still be blocked in
