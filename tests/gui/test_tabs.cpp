@@ -15,11 +15,14 @@
 #include "ipfsmodel.h"
 #include "gamepicker.h"
 #include "ipfssettingspage.h"
+#include "sourcespage.h"
 
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QTreeWidget>
+#include <QPushButton>
+#include <QSignalSpy>
 
 using json = nlohmann::ordered_json;
 
@@ -47,6 +50,33 @@ class TabsTest : public QObject
     json          Cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
 
 private slots:
+    // Every Sources control is addressable BY objectName, so tests (and AT-SPI clients) drive it by name rather
+    // than by screen coordinates. Modal flows go to the live-app harness instead — see tools/guidrive.sh.
+    void sources_page_upgrade_button_is_addressable_and_wired()
+    {
+        json cfg = json{{"Settings", json{{"PackageSources", json::array({ json{{"NAME","Src"},{"CID","QmOld"}} })}}},
+                        {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &AppDir);
+        SourcesPage page(m);
+        // NOT renders(): that helper blockSignals() the whole subtree on the way out, which would silence the very
+        // clicked() we are about to exercise. Show it normally instead.
+        page.resize(900, 650); page.show();
+        QApplication::processEvents();
+
+        auto * up = page.findChild<QPushButton *>("upgrade_Src");
+        QVERIFY2(up, "per-source Upgrade button must be addressable by objectName");
+        QVERIFY(page.findChild<QPushButton *>("remove_Src"));
+        QVERIFY(page.findChild<QPushButton *>("addSourceBtn"));
+
+        // NOT driven further here: the CID prompt is a MODAL QInputDialog, and under the offscreen platform its
+        // exec() will not yield to a timer, so answering it from the same thread deadlocks the test. Modal flows
+        // belong to the live-app harness (tools/guidrive.sh); what this test pins is that every control is
+        // addressable BY NAME, which is what makes the click itself a one-liner instead of screen coordinates.
+        QVERIFY(up->isEnabled());
+        QVERIFY(!up->toolTip().isEmpty());
+        QCOMPARE(cfg["Settings"]["PackageSources"][0].value("CID", std::string()), std::string("QmOld"));
+    }
+
     void library_tab_constructs()   { AppModel m(&Cfg, &AppDir); LibraryTab  t(m); QVERIFY(renders(&t)); }
     void catalog_tab_constructs()   { AppModel m(&Cfg, &AppDir); CatalogTab  t(m); QVERIFY(renders(&t)); }
     void packages_view_constructs() { AppModel m(&Cfg, &AppDir); PackagesView t(m); QVERIFY(renders(&t)); }

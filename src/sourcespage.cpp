@@ -103,6 +103,9 @@ void SourcesPage::rebuild()
         // dir is missing), and remove + re-add deletes every hydrated file in the source. This routes through the
         // merge upgrade, which keeps unchanged content and demotes the old version instead of destroying it.
         QPushButton * up = new QPushButton("Upgrade…", card);
+        // objectName so tests (and any AT-SPI/accessibility client) can address this button DIRECTLY by name
+        // instead of clicking screen coordinates — see tools/guidrive.sh and tests/gui/test_tabs.cpp.
+        up->setObjectName(QString("upgrade_%1").arg(QString::fromStdString(Name)));
         up->setToolTip("Move this source to a newer collection CID from the same publisher.\n"
                        "Unchanged content is kept (not re-downloaded) and the old version stays seeded.");
         connect(up, &QPushButton::clicked, this, [this, Name]{
@@ -120,6 +123,7 @@ void SourcesPage::rebuild()
         row->addWidget(up);
 
         QPushButton * rm = new QPushButton("Remove", card);
+        rm->setObjectName(QString("remove_%1").arg(QString::fromStdString(Name)));
         // removePackageSource emits packageSourcesChanged SYNCHRONOUSLY → this page rebuilds and deletes these widgets
         // (including this button) mid-click. Defer to the next event-loop tick so the click fully unwinds first.
         connect(rm, &QPushButton::clicked, this, [this, i]{
@@ -139,6 +143,7 @@ void SourcesPage::rebuild()
     af->addRow("Name:", nameEdit);
     af->addRow("CID:", cidEdit);
     QPushButton * addBtn = new QPushButton("Add + fetch", add);
+    addBtn->setObjectName("addSourceBtn"); nameEdit->setObjectName("addSourceName"); cidEdit->setObjectName("addSourceCid");
     af->addRow("", addBtn);
     connect(addBtn, &QPushButton::clicked, this, [this, nameEdit, cidEdit]{
         const QString Cid  = cidEdit->text().trimmed();
