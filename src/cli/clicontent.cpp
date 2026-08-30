@@ -205,7 +205,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
             PackageCatalog::HealSourceContent(GlobalConfigJSON, PackageCatalog::HealOptions{ true, true });
 
         LogOut("main.cpp", "  verified servable ......... " + std::to_string(R.Verified));
-        LogOut("main.cpp", "  orphaned refs re-pointed .. " + std::to_string(R.Repointed));
+        LogOut("main.cpp", "  files re-seeded (cheap pass) " + std::to_string(R.Repointed));
         LogOut("main.cpp", "  stale refs repaired ....... " + std::to_string(R.StaleRepaired));
         LogOut("main.cpp", "  stale pins pruned ......... " + std::to_string(R.PrunedUnservable));
         LogOut("main.cpp", "  unreferenced pins dropped . " + std::to_string(R.PrunedUnreferenced));

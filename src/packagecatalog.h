@@ -134,7 +134,7 @@ int SeedDirectory(const std::string &Dir,
 // loudly and left for a human. Ok() is the one thing callers should branch on.
 struct HealReport
 {
-    int Repointed          = 0;   // orphaned refs re-pointed at their current on-disk path (cheap pass)
+    int Repointed          = 0;   // files the cheap additive pass (re)seeded — NOT a count of orphans found
     int StaleRepaired      = 0;   // refs whose BYTES disagreed, drop-ref'd + re-added successfully (deep pass)
     int PrunedUnservable   = 0;   // unreferenced pins whose backing is gone
     int PrunedUnreferenced = 0;   // healthy pins nothing references (only when PruneUnreferenced)
