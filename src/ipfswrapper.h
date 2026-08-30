@@ -163,6 +163,11 @@ bool DropRef(const std::string &Cid);
 // the referenced bytes, so use it in an explicit deep pass, never on a background timer.
 std::string VerifyCid(const std::string &Cid);
 
+// What a file's CID WOULD be, WITHOUT seeding it — nothing enters the blockstore, filestore or pinset. Same
+// importer settings as AddNoCopy, so it answers "do these bytes still match the CID we published?" (content drift)
+// without the side effects of adding. Works with no node started. "" on failure, with *Error set.
+std::string ComputeCid(const std::string &Path, std::string *Error = nullptr);
+
 // Purges a CID's locally-CACHED (bitswap) blocks — the partial data left by a cancelled/aborted download — and
 // compacts to reclaim the disk. Offline (never fetches); only touches plain cached blocks, not filestore references.
 bool DropCached(const std::string &Cid);

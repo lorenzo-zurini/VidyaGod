@@ -53,7 +53,10 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
     }
 
     //Print: timestamp  [LABEL] context message  (reset clears the color at EOL)
-    std::cout << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
+    //LOGS GO TO STDERR. stdout is reserved for machine-readable output (`--cid` prints "<cid>\t<path>", the
+    //remint prints its CID table), so those verbs stay pipeable — mixing the two made `--cid … | cut` return
+    //timestamps instead of a CID.
+    std::cerr << timebuf << " " << color << "[" << label << "] " << context << " " << message << reset << std::endl;
 
     //Forward to the optional UI callback with the raw (uncolored) values.
     LogCallback Sink;

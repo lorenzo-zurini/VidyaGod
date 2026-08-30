@@ -129,6 +129,33 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
 
     //HEADLESS: heal all configured package sources (re-point orphaned refs + prune stale pins), then exit. Same pass
     //the GUI runs on startup when it detects orphans — this is the manual/scriptable entry point.
+    //HEADLESS: what a file's CID WOULD be. No node, nothing seeded — the direct answer to "do these bytes still
+    //match the CID we published?", which is the CONTENT DRIFT class that made four packages unfetchable. Prints
+    //"<cid>\t<path>"; exits non-zero if any file could not be hashed.
+    if (!LaunchParameters.CidPaths.empty())
+    {
+        int Bad = 0;
+        for (const std::string &P : LaunchParameters.CidPaths)
+        {
+            std::string Err;
+            const std::string Cid = IpfsWrapper::ComputeCid(P, &Err);
+            if (Cid.empty()) { LogErr("main.cpp", "could not hash " + P + ": " + Err); ++Bad; continue; }
+            std::cout << Cid << "\t" << P << "\n";
+        }
+        return Bad ? 1 : 0;
+    }
+
+    //HEADLESS: can we actually SERVE this CID? Reads the whole DAG back through the same blockstore path bitswap
+    //uses, so it catches a reference whose backing file exists but whose bytes changed — the failure that makes a
+    //requesting peer hang rather than fail over. Exits non-zero when it is unservable.
+    if (!LaunchParameters.VerifyCidArg.empty())
+    {
+        const std::string Err = IpfsWrapper::VerifyCid(LaunchParameters.VerifyCidArg);
+        if (Err.empty()) { LogSucc("main.cpp", "servable: " + LaunchParameters.VerifyCidArg); return 0; }
+        LogErr("main.cpp", "UNSERVABLE " + LaunchParameters.VerifyCidArg + " — " + Err);
+        return 2;
+    }
+
     //HEADLESS: merge-upgrade a package source to a new collection CID. Editing the CID in Settings does nothing on
     //its own (SyncPackageSources only fetches when the source dir is MISSING), and remove+re-add destroys every
     //hydrated content file, so this is the only correct way to move an existing install to a new mint.

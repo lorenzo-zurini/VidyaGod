@@ -27,6 +27,7 @@ int  VgPinRm(const char *cid, char **errOut);
 long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown (may fetch: bitswap 15s + gateway 20s bounds)
 long long VgCidSizeLocal(const char *cid);     // CumulativeSize from the LOCAL store only — fast -1 when unreadable
 int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
+int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's CID with NO side effects (nothing seeded/pinned)
 char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back cleanly, else first read error (caller frees).
                                                // Catches what VgCidMissing cannot: backing file present but bytes changed.
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a

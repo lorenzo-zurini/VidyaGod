@@ -166,8 +166,13 @@ int main(int argc, char *argv[])
     //--bypass-single-instance-lock: proceed even if the lock is held (e.g. a headless --resolve-only/--validate-nodes
     //check while the GUI is open). Skips the guard — so the stale-mount sweep below can no longer assume a leftover
     //mount is from a crashed run, not a live sibling; use it only for read-only/CLI runs you know are safe.
+    //--cid is a PURE hash of files named on the command line: it starts no node, reads no data dir and mutates
+    //nothing, so making it fight the running GUI for the lock would be pointless friction on the one command you
+    //most want to run WHILE the GUI is up ("do these bytes still match what we published?"). It bypasses implicitly.
     bool BypassInstanceLock = false;
-    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--bypass-single-instance-lock") BypassInstanceLock = true;
+    for (int i = 1; i < argc; ++i)
+        if (std::string(argv[i]) == "--bypass-single-instance-lock" || std::string(argv[i]) == "--cid")
+            BypassInstanceLock = true;
 
     bool InstanceLockHeld = Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
     if (!InstanceLockHeld && BypassInstanceLock)
@@ -212,7 +217,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
-        || !LaunchParameters.UpgradeSourceName.empty()
+        || !LaunchParameters.UpgradeSourceName.empty() || !LaunchParameters.VerifyCidArg.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || LaunchParameters.LanHarness
@@ -501,6 +506,19 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--force")
         {
             RuntimeParameters.ForceOp = true;
+        }
+        else if (arg == "--cid" && i + 1 < argc)
+        {
+            //Takes a LIST: `--cid a.zip b.zip c.zip` (and is repeatable). Greedy up to the next --flag, because
+            //hashing one file at a time is exactly the case you never have. Pure hash: no node, nothing seeded.
+            while (i + 1 < argc && std::string(argv[i + 1]).rfind("--", 0) != 0)
+                RuntimeParameters.CidPaths.push_back(argv[++i]);
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--verify-cid" && i + 1 < argc)
+        {
+            RuntimeParameters.VerifyCidArg    = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--heal")
         {

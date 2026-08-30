@@ -47,6 +47,8 @@ struct LaunchParameters
     std::string UpgradeSourceName, UpgradeSourceCid;                      //--upgrade-source <NAME> <CID>: merge-upgrade a source to a new collection CID
     bool UpgradeSourceDryRun = false;                                     //--dry-run: print the upgrade plan and exit, changing nothing
     bool ForceOp = false;                                                 //--force: apply an upgrade whose new tree shares no packages with the old
+    std::vector<std::string> CidPaths;                                    //--cid <file>…: print each file's CID (no seeding, no node)
+    std::string VerifyCidArg;                                             //--verify-cid <cid>: read it back out of the blockstore
     bool HealPins = false;                                                //--heal: re-point orphaned refs across all package sources + prune stale pins (unreferenced + backing gone), then exit
     std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
     std::string FetchDest;

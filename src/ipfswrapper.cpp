@@ -337,6 +337,16 @@ bool CidMissing(const std::string &Cid)
     return VgCidMissing(Cid.c_str()) == 1;
 }
 
+std::string ComputeCid(const std::string &Path, std::string *Error)
+{
+    if (Path.empty()) { if (Error) *Error = "empty path"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgComputeCid(Path.c_str(), &Cid, &Err);
+    const std::string CidS = TakeStr(Cid), ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("could not hash " + Path) : ErrS; return std::string(); }
+    return CidS;
+}
+
 std::string VerifyCid(const std::string &Cid)
 {
     if (Cid.empty()) return "empty cid";
