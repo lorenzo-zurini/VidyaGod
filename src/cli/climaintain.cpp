@@ -27,6 +27,8 @@ namespace fs = std::filesystem;
 int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)
 {
     (void)GlobalConfigJSON; (void)AppDataDir;
+    if (LaunchParameters.AuditPackages)
+        return CliModes::RunAuditPackages(GlobalConfigJSON, LaunchParameters.ValidateScope);
     if (LaunchParameters.ValidateNodes)
     {
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages

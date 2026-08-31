@@ -458,6 +458,16 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.ResolveOnly    = true;
             RuntimeParameters.RunningHeadless = true;
         }
+        else if (arg == "--audit-packages")
+        {
+            //The LOUD counterpart to --validate-nodes: that one is static and has been clean for ages, while real
+            //packages were quietly broken at resolve/apply time (Worms 4 logged an error on every launch for
+            //months and only looked like a wrong aspect ratio).
+            RuntimeParameters.AuditPackages   = true;
+            RuntimeParameters.RunningHeadless = true;
+            //Optional scope (same matching as --validate-nodes) — a full sweep is minutes, so make it iterable.
+            if (i + 1 < argc && argv[i + 1][0] != '-') RuntimeParameters.ValidateScope = argv[++i];
+        }
         else if (arg == "--validate-nodes")
         {
             RuntimeParameters.ValidateNodes   = true;

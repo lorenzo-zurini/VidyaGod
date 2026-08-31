@@ -98,6 +98,7 @@ set(SHARED_SOURCES
     src/cli/cliipfs.cpp
     src/cli/clicontent.cpp
     src/cli/climaintain.cpp
+    src/cli/cliaudit.cpp
     src/cli/clilaunch.cpp
 
     src/varsubst.h
