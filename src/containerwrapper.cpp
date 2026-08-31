@@ -446,10 +446,21 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
                 RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
     }
 
-    // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix.
+    // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix. MERGED with any value already in
+    // the environment rather than replacing it: this line silently clobbered an operator's debugging override
+    // (WINEDLLOVERRIDES="d3d11,dxgi=b" to force wined3d on a GPU whose Vulkan is too old for DXVK) and cost an
+    // hour of "why does my env var do nothing" during the 2026-09-01 laptop triage. External entries go FIRST so
+    // a human's override beats the package's.
     if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
     {
-        RunProcessEnvironment.insert("WINEDLLOVERRIDES", QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; })));
+        QString Composed = QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; }));
+        const QString External = qEnvironmentVariable("WINEDLLOVERRIDES");
+        if (!External.isEmpty())
+        {
+            LogOut("ContainerWrapper::Execute", "WINEDLLOVERRIDES from the environment merged ahead of the package's: " + External.toStdString());
+            Composed = External + (Composed.isEmpty() ? QString() : ";" + Composed);
+        }
+        RunProcessEnvironment.insert("WINEDLLOVERRIDES", Composed);
     }
 
     //If the configured working directory doesn't exist in the mounted runtime, fall back
