@@ -8,6 +8,7 @@
 #include <string>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <unistd.h>
 
 using nlohmann::ordered_json;
@@ -367,4 +368,46 @@ TEST(normalize_target_path_parity_with_fs)
     // Parent-only: windows separators normalize before the trim.
     CHECK_EQ(ManifestModel::NormalizeTargetPath("a\\b\\c\\"), std::string("a/b/c"));
     CHECK_EQ(ManifestModel::NormalizeTargetPath("\\pfx\\drive_c"), std::string("pfx/drive_c"));
+}
+
+// The cross-layer case-collision lint was memoized (LayerEntriesPrepared) after perf showed it was 87% of a
+// 49-second --validate-nodes: every launchable re-lowered and re-joined every entry of every SHARED layer. A lint
+// that gets fast by never firing is worse than a slow one, so this pins the detection itself: two dir layers on
+// one node, colliding only in case, must produce the error — and the same content seen through TWO launchables
+// (the sharing the cache exists for) must still dedupe to one report, not zero.
+TEST(validate_flags_cross_layer_case_collision_after_memoization)
+{
+    namespace fs = std::filesystem;
+    fs::path Dir = fs::temp_directory_path() / ("vgtest_case_" + std::to_string(::getpid()));
+    fs::remove_all(Dir);
+    fs::create_directories(Dir / "base" / "MAPS");
+    fs::create_directories(Dir / "patch" / "maps");
+    { std::ofstream F(Dir / "base" / "MAPS" / "level.dat");  F << "a"; }
+    { std::ofstream F(Dir / "patch" / "maps" / "LEVEL.dat"); F << "b"; }
+
+    NodeIndex Idx;
+    auto AddAt = [&](const ordered_json &J) {
+        Node N;
+        if (ManifestModel::ParseNode(J, "f.json", Dir.string(), N)) Idx.Nodes[N.NodeId] = N;
+    };
+    AddAt({{"NODE_ID", "shared"}, {"LAYERS", {
+        {{"TYPE", "VFSDirLayer"}, {"PATH", "base"}},
+        {{"TYPE", "VFSDirLayer"}, {"PATH", "patch"}} }}});
+    AddAt({{"NODE_ID", "gameA"}, {"PARENTS", {"shared"}}, {"LAYERS", {
+        {{"TYPE", "DeclareLibraryItem"}, {"UID", "cA"}, {"TITLE", "A"}},
+        {{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "base/MAPS/level.dat"}} }}});
+    AddAt({{"NODE_ID", "gameB"}, {"PARENTS", {"shared"}}, {"LAYERS", {
+        {{"TYPE", "DeclareLibraryItem"}, {"UID", "cB"}, {"TITLE", "B"}},
+        {{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "base/MAPS/level.dat"}} }}});
+
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+
+    int CaseReports = 0;
+    for (const std::string &E : Errors)
+        if (E.find("case conflict across layers") != std::string::npos) ++CaseReports;
+    CHECK(CaseReports >= 1);                       // the lint still FIRES through the prepared-entry cache
+    CHECK_EQ(CaseReports, 1);                      // and the shared content dedupes across launchables, not per-launchable spam
+
+    fs::remove_all(Dir);
 }

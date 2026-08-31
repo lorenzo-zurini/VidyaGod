@@ -6,6 +6,8 @@
 #include <map>
 #include <unordered_set>
 #include <unordered_map>
+#include <string_view>
+#include <deque>
 #include <fstream>
 #include <functional>
 #include <algorithm>
@@ -527,6 +529,37 @@ void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
     }
 }
 
+// One layer's contribution to the merged content view, fully prepared for the case lint: the joined
+// content-root-relative path plus its lowered form. Cached per (local path, TARGET) because this is where
+// --validate-nodes actually spent its time: 903 Minecraft variants share a handful of layer files, and the lint
+// re-ran JoinTarget + ToLowerAscii over every entry of every shared layer once PER LAUNCHABLE — 87% of a 49-second
+// validate by perf, all of it recomputing strings that never change within a run. Dir layers additionally re-walked
+// the filesystem per launchable; the walk is now taken once too.
+struct PreparedEntry { std::string Exact, Lower; };
+const std::vector<PreparedEntry> &LayerEntriesPrepared(const std::string &LocalPath, bool IsDir, const std::string &Target,
+        std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
+        std::unordered_map<std::string, std::vector<PreparedEntry>> &PrepCache)
+{
+    const std::string Key = LocalPath + '\x1f' + Target;
+    auto It = PrepCache.find(Key);
+    if (It != PrepCache.end()) return It->second;
+    std::vector<PreparedEntry> Out;
+    auto Add = [&](std::string Rel) {
+        std::string Exact = JoinTarget(Target, std::move(Rel));
+        std::string Lower = ToLowerAscii(Exact);
+        Out.push_back({std::move(Exact), std::move(Lower)});
+    };
+    std::error_code Ec;
+    if (IsDir)
+        for (auto W = std::filesystem::recursive_directory_iterator(LocalPath, Ec);
+             !Ec && W != std::filesystem::recursive_directory_iterator(); W.increment(Ec))
+        { if (W->is_regular_file(Ec)) Add(std::filesystem::relative(W->path(), LocalPath, Ec).generic_string()); }
+    else
+        for (const std::string &Entry : ZipEntriesCached(LocalPath, ZipCache))
+            Add(Entry);
+    return PrepCache.emplace(Key, std::move(Out)).first->second;
+}
+
 // Path components of a slash path.
 std::vector<std::string> SplitPath(const std::string &S)
 {
@@ -543,17 +576,19 @@ std::vector<std::string> SplitPath(const std::string &S)
 // difference collapses to one report; GlobalSeen dedups the same collision across launchables that share the content.
 void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
         std::unordered_map<std::string, std::vector<std::string>> &ZipCache,
+        std::unordered_map<std::string, std::vector<PreparedEntry>> &PrepCache,
         std::vector<std::string> &Out, std::unordered_set<std::string> &GlobalSeen)
 {
-    std::unordered_map<std::string, std::pair<std::string, std::string>> Seen;  // lowercased path -> (exact path, layer label)
+    // Values POINT INTO PrepCache / the per-node label — safe because the cache only ever grows within one
+    // validate run and a vector's heap buffer doesn't move when the cache map rehashes.
+    std::unordered_map<std::string_view, std::pair<std::string_view, const std::string *>> Seen;  // lowered -> (exact, label)
     std::unordered_set<std::string> LocalReported;                             // collapse repeats within this launchable
 
-    auto Consider = [&](const std::string &F, const std::string &Lbl)
+    auto Consider = [&](const PreparedEntry &E, const std::string &Lbl)
     {
-        const std::string Lw = ToLowerAscii(F);
-        auto It = Seen.find(Lw);
-        if (It == Seen.end()) { Seen.emplace(Lw, std::make_pair(F, Lbl)); return; }
-        const std::string Prev = It->second.first, PrevLbl = It->second.second;
+        auto It = Seen.find(std::string_view(E.Lower));
+        if (It == Seen.end()) { Seen.emplace(std::string_view(E.Lower), std::make_pair(std::string_view(E.Exact), &Lbl)); return; }
+        const std::string Prev(It->second.first), PrevLbl = *It->second.second, F = E.Exact;
         if (Prev == F || PrevLbl == Lbl) return;                     // same case, or same layer → not a cross-layer case collision
         const std::vector<std::string> A = SplitPath(Prev), B = SplitPath(F);
         size_t i = 0; while (i < A.size() && i < B.size() && A[i] == B[i]) ++i;
@@ -566,6 +601,7 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
                       + A[i] + "' (" + PrevLbl + ") vs '" + B[i] + "' (" + Lbl + ") — collide in the merged view");
     };
 
+    std::deque<std::string> Labels;                              // stable storage — Seen holds pointers into it
     for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
     {
         const Node *N = Idx.Find(Id);
@@ -578,15 +614,11 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
             if (Local == N->BundleDir) continue;
             std::error_code Ec;
             if (!std::filesystem::exists(Local, Ec)) continue;
-            const std::string Lbl = N->NodeId + " (" + Local.filename().string() + ")";
-            const std::string Target = L.value("TARGET", std::string());
-            if (std::filesystem::is_directory(Local, Ec))
-                for (auto It2 = std::filesystem::recursive_directory_iterator(Local, Ec);
-                     !Ec && It2 != std::filesystem::recursive_directory_iterator(); It2.increment(Ec))
-                { if (It2->is_regular_file(Ec)) Consider(JoinTarget(Target, std::filesystem::relative(It2->path(), Local, Ec).generic_string()), Lbl); }
-            else
-                for (const std::string &Entry : ZipEntriesCached(Local.string(), ZipCache))
-                    Consider(JoinTarget(Target, Entry), Lbl);
+            const std::string &Lbl = Labels.emplace_back(N->NodeId + " (" + Local.filename().string() + ")");
+            const bool IsDir = std::filesystem::is_directory(Local, Ec);
+            for (const PreparedEntry &E : LayerEntriesPrepared(Local.string(), IsDir,
+                                                               L.value("TARGET", std::string()), ZipCache, PrepCache))
+                Consider(E, Lbl);
         }
     }
 }
@@ -598,6 +630,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
 {
     const std::string Machine = MachinePlatform();
     std::unordered_map<std::string, std::vector<std::string>> ZipCache;   // local zip path -> its file entries (shared content read once)
+    std::unordered_map<std::string, std::vector<PreparedEntry>> PrepCache; // (layer path, TARGET) -> prepared case-lint entries (see LayerEntriesPrepared)
     std::unordered_set<std::string> CrossLayerSeen;             // dedup cross-layer case collisions across launchables
 
     //Does any runner node serve this guest platform on this machine? (used for launchable runner-resolution.)
@@ -754,7 +787,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
 
             //Cross-layer case collisions in the merged content view (two layers' paths differing only in case) are
             //ERRORS: both files exist on the case-sensitive mount and a lookup can hit the wrong one → crashes.
-            FindCrossLayerCaseCollisions(Idx, N, ZipCache, Errors, CrossLayerSeen);
+            FindCrossLayerCaseCollisions(Idx, N, ZipCache, PrepCache, Errors, CrossLayerSeen);
         }
         else if (N.IsRunner())
         {

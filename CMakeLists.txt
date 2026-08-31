@@ -7,6 +7,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "" FORCE)
 
 project(VidyaGod)
 
+# An EMPTY build type means gcc gets NO -O flag at all, and that is exactly what both dev machines were running:
+# the entire app at -O0, silently, for months. Measured cost on the real catalog (2862 nodes): a launch resolve
+# 1400ms -> 190ms, --validate-nodes 49.6s -> 14.8s just from turning the optimizer on. CI always passes an explicit
+# -DCMAKE_BUILD_TYPE=Release so releases were never affected — which is precisely why nobody noticed locally.
+# RelWithDebInfo (-O2 -g) keeps perf/gdb usable; ask for Debug explicitly when you want -O0.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type (empty would mean -O0)" FORCE)
+    message(STATUS "VidyaGod: CMAKE_BUILD_TYPE was empty -> defaulting to RelWithDebInfo")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
