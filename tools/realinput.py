@@ -219,6 +219,24 @@ def run_one(d, cmd, args):
         time.sleep(0.1)
         for c in reversed(codes):
             d.emit(EV_KEY, c, 0); d.syn(); time.sleep(0.05)
+    elif cmd == "hold":
+        # Games read key STATE, not keypress events: a tap is invisible to a racing game's throttle.
+        codes = [keycode(a) for a in args[:-1]]
+        secs = float(args[-1])
+        for c in codes:
+            d.emit(EV_KEY, c, 1)
+        d.syn()
+        # Autorepeat is what a real held key produces; some engines poll, others count repeats.
+        end = time.time() + secs
+        while time.time() < end:
+            time.sleep(0.05)
+            for c in codes:
+                d.emit(EV_KEY, c, 2)   # value 2 = autorepeat
+            d.syn()
+        for c in codes:
+            d.emit(EV_KEY, c, 0)
+        d.syn()
+        time.sleep(0.05)
     elif cmd == "sleep":
         time.sleep(float(args[0]))
     else:
