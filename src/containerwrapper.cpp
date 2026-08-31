@@ -449,8 +449,10 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix. MERGED with any value already in
     // the environment rather than replacing it: this line silently clobbered an operator's debugging override
     // (WINEDLLOVERRIDES="d3d11,dxgi=b" to force wined3d on a GPU whose Vulkan is too old for DXVK) and cost an
-    // hour of "why does my env var do nothing" during the 2026-09-01 laptop triage. External entries go FIRST so
-    // a human's override beats the package's.
+    // hour of "why does my env var do nothing" during the 2026-09-01 laptop triage. External entries go LAST —
+    // measured empirically in the same triage: with a dll named in both lists, wine honored the LATER entry
+    // (external-first left the package's d3d11=n winning while dxgi flipped) — so last place is what makes a
+    // human's override beat the package's.
     if (ContainerParams.PrefixGenerate && !ContainerParams.DLLOverrides.empty())
     {
         QString Composed = QString::fromStdString(std::accumulate(ContainerParams.DLLOverrides.begin(), ContainerParams.DLLOverrides.end(), std::string{}, [](const std::string &a, const std::string &b){ return a.empty() ? b : a + ";" + b; }));
@@ -458,7 +460,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
         if (!External.isEmpty())
         {
             LogOut("ContainerWrapper::Execute", "WINEDLLOVERRIDES from the environment merged ahead of the package's: " + External.toStdString());
-            Composed = External + (Composed.isEmpty() ? QString() : ";" + Composed);
+            Composed = (Composed.isEmpty() ? QString() : Composed + ";") + External;
         }
         RunProcessEnvironment.insert("WINEDLLOVERRIDES", Composed);
     }
