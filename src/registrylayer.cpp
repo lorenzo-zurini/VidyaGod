@@ -165,7 +165,11 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             }
         }
         if (HaveBaseReg)
-            RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false);
+            //A malformed RegEdit means a registry setting the package declared never gets written; the game
+            //then behaves as if the package had not said it. Non-fatal, but it must not pass in silence.
+            if (!RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/false))
+                LogErr("RegistryLayer::BuildDefaultData",
+                       "One or more BASE RegEdits were malformed and NOT applied (see above).");
         if (HavePersistKeys)
         {
             RegistryWrapper Durable;
@@ -228,7 +232,9 @@ bool RegistryLayer::ApplyOverrideRegEdits(struct ContainerParams &ContainerParam
     const std::filesystem::path Hives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
     RegistryWrapper RW;
     RW.LoadPrefix(Hives);
-    RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/true);
+    if (!RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/true))
+        LogErr("RegistryLayer::ApplyOverrideRegEdits",
+               "One or more OVERRIDE RegEdits were malformed and NOT applied (see above).");
     if (!RW.SavePrefix(Hives))
     {
         LogErr("RegistryLayer::ApplyOverrideRegEdits", "Failed to write runtime hives.");

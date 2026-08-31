@@ -657,20 +657,37 @@ bool RegistryWrapper::ApplyRegEdit(const ordered_json &Sub)
     if (Sub.contains("KEYVALUES") && Sub["KEYVALUES"].is_object())
         for (auto &[K, Val] : Sub["KEYVALUES"].items())
             SetValue(RegPath, K, ManifestStringToValue(Val));
+    //null KEYVALUES is the documented key-only form. Anything else present-but-not-an-object (a string, an
+    //array) is malformed authoring that would otherwise be dropped in complete silence — the key gets created
+    //and every value the author wrote is quietly discarded.
+    else if (Sub.contains("KEYVALUES") && !Sub["KEYVALUES"].is_null())
+    {
+        LogWarn("RegistryWrapper::ApplyRegEdit",
+                "KEYVALUES for '" + RegPath + "' is not an object (it is "
+                + std::string(Sub["KEYVALUES"].type_name()) + ") — the key was created but NO values were written.");
+        return false;
+    }
     return true;
 }
 
 bool RegistryWrapper::ApplyRegEdits(const ordered_json &SubComponentsArray, bool WantOverride)
 {
     if (!SubComponentsArray.is_array()) return true;
+    size_t Applied = 0, Failed = 0;
     for (const auto &Sub : SubComponentsArray)
     {
         if (!Sub.is_object()) continue;
         if (Sub.value("TYPE", std::string()) != "RegEdit") continue;
         if (Sub.value("OVERRIDE", false) != WantOverride) continue;
-        ApplyRegEdit(Sub);
+        //The result was DISCARDED here: a malformed RegEdit logged one line, was skipped, and the caller was
+        //told everything succeeded. A registry setting the package declared then simply never existed.
+        if (ApplyRegEdit(Sub)) ++Applied; else ++Failed;
     }
-    return true;
+    if (Applied || Failed)
+        LogOut("RegistryWrapper::ApplyRegEdits",
+               std::string(WantOverride ? "OVERRIDE" : "BASE") + " RegEdits: " + std::to_string(Applied)
+               + " applied" + (Failed ? (", " + std::to_string(Failed) + " FAILED") : std::string()));
+    return Failed == 0;
 }
 
 // ============================================================================
