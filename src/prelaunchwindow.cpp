@@ -1070,6 +1070,23 @@ void PreLaunchWindow::onLaunchClicked()
     connect(LaunchWorker, &LaunchThread::statusChanged,   this, &PreLaunchWindow::onStatusChanged,   Qt::QueuedConnection);
     connect(LaunchWorker, &LaunchThread::progressChanged, this, &PreLaunchWindow::onProgressChanged, Qt::QueuedConnection);
     connect(LaunchWorker, &LaunchThread::launchFinished,  this, &PreLaunchWindow::onLaunchFinished,  Qt::QueuedConnection);
+    //The launch's WARN/ERR tally. Deliberately intrusive when non-zero: the console already carried these lines
+    //and nobody read them, which is exactly how a per-launch error survived for months looking like a cosmetic
+    //glitch. A clean run says so quietly; a dirty one turns the status bar red and stays on screen.
+    connect(LaunchWorker, &LaunchThread::diagnosticsReady, this, [this](int Errors, int Warnings){
+        if (Errors == 0 && Warnings == 0)
+        {
+            StatusLabel->setStyleSheet(QString());
+            StatusLabel->setText(StatusLabel->text() + "  ·  0 warnings");
+            return;
+        }
+        StatusLabel->setStyleSheet("color:#e06c75;font-weight:bold;");
+        StatusLabel->setText(QString("⚠ %1 error(s), %2 warning(s) during this launch — see the log")
+                                 .arg(Errors).arg(Warnings));
+        //Keep the window up even when "close after launch" is set: closing it would throw away the only place
+        //the detail is visible.
+        if (Errors > 0) CloseAfterLaunchCheck->setChecked(false);
+    }, Qt::QueuedConnection);
     LaunchWorker->start();
 }
 

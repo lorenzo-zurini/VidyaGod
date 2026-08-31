@@ -50,6 +50,9 @@ signals:
     void progressChanged(int value);
     // Emitted once when the full lifecycle has completed (success or failure).
     void launchFinished(bool success, QString errorMsg);
+    // The launch's WARN/ERR tally, emitted for EVERY launch (0/0 included). The UI surfaces a non-zero count
+    // prominently: a game that "works" while logging errors is how a bug hides for months.
+    void diagnosticsReady(int errors, int warnings);
 
 protected:
     void run() override;

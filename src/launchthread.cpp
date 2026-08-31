@@ -64,6 +64,11 @@ void LaunchThread::run()
         }
     });
 
+    //Start counting every WARN/ERR this launch produces. A launch prints hundreds of lines, so a warning in the
+    //middle is invisible — Worms 4 Mayhem logged one on EVERY launch for months and the only visible symptom was
+    //a wrong aspect ratio. The verdict is reported LOUDLY at the end, whatever the outcome.
+    Diagnostics::Begin();
+
     if (this->LaunchNodeId.empty())
     {
         ClearLogCallback();
@@ -164,6 +169,15 @@ void LaunchThread::run()
     LocalWrapper->Execute();
 
     IpfsWrapper::ClearPlaying();
+
+    //THE VERDICT. Printed for every launch, clean or not — "0 warnings" is information too, and a summary that
+    //only appears on failure trains you to ignore its absence. When something did go wrong this is deliberately
+    //hard to miss: a banner, the distinct messages (deduplicated — one authoring bug can emit the same line for
+    //900 files), and a statement that the game may have misbehaved because of it.
+    {
+        const Diagnostics::Report R = Diagnostics::ReportVerdict("Launch of '" + this->LaunchNodeId + "'");
+        emit diagnosticsReady(static_cast<int>(R.Errors), static_cast<int>(R.Warnings));
+    }
 
     // Capture the run outcome BEFORE the wrapper is destroyed, so we can report a failed launch.
     const bool Crashed   = LocalWrapper->LastCrashed;

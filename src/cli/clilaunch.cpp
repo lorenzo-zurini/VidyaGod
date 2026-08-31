@@ -75,6 +75,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         if (!Index->Find(LaunchParameters.LaunchNodeId))
         { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog, aborting."); return 1; }
 
+        Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
         nlohmann::ordered_json MANIFESTJSON = nlohmann::ordered_json::object();   // engine fills this from the node graph
         struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LaunchParameters.LaunchNodeId, std::string());
         NewContainerParams.NodeIdx           = Index.get();
@@ -99,7 +100,10 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         else if (!LaunchParameters.RunnerID.empty()) NewContainerParams.RunnerChainIds = { LaunchParameters.RunnerID };
         class ContainerWrapper NewContainerWrapper = ContainerWrapper(GlobalConfigJSON, MANIFESTJSON, NewContainerParams);
         if (!LaunchResolver::ResolveExecutableDefinition(MANIFESTJSON, NewContainerWrapper.ContainerParams))
-        { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting."); return 1; }
+        { LogErr("main.cpp", "ResolveExecutableDefinition failed, aborting.");
+          //A failed launch is exactly when the verdict matters most; returning early without one means the runs
+          //that went wrong are the runs that say nothing.
+          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
         if (LaunchParameters.ResolveOnly)
         {
             //Dump the resolved params (no mount, no game) for golden-compare / hang-free verification.
@@ -109,6 +113,9 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
             std::ofstream OF(Out);
             OF << DumpResolution(NewContainerWrapper.ContainerParams).dump(2) << std::endl;
             LogSucc("main.cpp", "Resolved '" + LaunchParameters.LaunchNodeId + "' -> " + Out.string());
+            //Every exit reports. --resolve-only is the cheap way to ask "is this package healthy?", so it is
+            //precisely where a quiet resolve warning should be surfaced rather than scrolled past.
+            Diagnostics::ReportVerdict("Resolve of '" + LaunchParameters.LaunchNodeId + "'");
             return 0;
         }
         //Persist any secret seeded from its POOL this launch, so the value is stable from here on (the GUI does the
@@ -130,10 +137,14 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         //a misleading clean exit (code 0) for a launch that never actually ran.
         if (!NewContainerWrapper.BuildContainerRuntime())
         { LogErr("main.cpp", "Failed to build the container runtime for '" + LaunchParameters.LaunchNodeId
-                 + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup(); return 1; }
+                 + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup();
+          Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
         NewContainerWrapper.Execute();
         if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");
+        //Same verdict the GUI prints. The CLI is what tooling and debugging actually use, so leaving it untallied
+        //would have meant the one path we test with was the one path that could still hide a quiet error.
+        Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'");
         return NewContainerWrapper.LastCrashed ? 1 : NewContainerWrapper.LastExitCode;
     }
 

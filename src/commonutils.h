@@ -2,6 +2,7 @@
 #define COMMONUTILS_H
 
 #include <string>
+#include <vector>
 #include <iostream>
 #include <ctime>
 #include <functional>
@@ -19,6 +20,38 @@ void Log(LogLevel level, const std::string& context, const std::string& message)
 using LogCallback = std::function<void(LogLevel, const std::string&, const std::string&)>;
 void SetLogCallback(LogCallback callback);
 void ClearLogCallback();
+
+// ---------------------------------------------------------------------------
+// Diagnostics tally — every WARN/ERR that passes through Log(), counted.
+//
+// WHY: a launch prints hundreds of lines, so a single warning in the middle is invisible. Worms 4 Mayhem logged
+// "Could not open file for reading" on EVERY launch for months; the only visible symptom was a wrong aspect
+// ratio, and nobody read the log. Counting inside Log() itself means no code path can opt out and no callback
+// arrangement can hide it — the tally is taken before the sink is even consulted.
+//
+// Usage: Diagnostics::Begin() at the start of an operation, Diagnostics::Take() at the end; if it is non-empty,
+// say so LOUDLY. LaunchThread does exactly this around a game launch.
+// ---------------------------------------------------------------------------
+namespace Diagnostics
+{
+    struct Entry { LogLevel Level; std::string Context, Message; };
+    struct Report
+    {
+        size_t Warnings = 0, Errors = 0;
+        std::vector<Entry> Entries;                    // deduplicated, capped
+        bool Empty() const { return Warnings == 0 && Errors == 0; }
+    };
+    //Called by Log() for every line; not for direct use.
+    void   Note(LogLevel Level, const std::string &Context, const std::string &Message);
+    void   Begin();          // start (or restart) collecting on this process
+    Report Take();           // snapshot + stop collecting
+    Report Peek();           // snapshot without stopping
+    bool   Collecting();
+    //Take the report and print the VERDICT for `What`, loudly when it is non-empty. Shared by every launch path
+    //so the GUI and the CLI say the same thing — the CLI is what tooling and debugging use, and it had no tally
+    //at all until this existed. Returns the report so the caller can also surface it in a UI.
+    Report ReportVerdict(const std::string &What);
+}
 
 //Convenience wrappers so callers don't have to specify the enum each time.
 //All four delegate directly to Log() with no extra overhead.
