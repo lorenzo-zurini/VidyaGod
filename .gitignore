@@ -58,3 +58,6 @@ Cache2/
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# vglobby build output (the shipped copy lives in the package zip)
+tools/vglobby/build/

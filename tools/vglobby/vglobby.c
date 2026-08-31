@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <tlhelp32.h>
 
 static void Fail(const char *Msg, HRESULT Hr)
 {
@@ -71,6 +72,49 @@ static void RegisterApplication(const char *AppName, const char *GuidText,
     RegSetValueExA(Key, "CurrentDirectory", 0, REG_SZ, (const BYTE *)Dir, (DWORD)strlen(Dir) + 1);
     RegSetValueExA(Key, "CommandLine", 0, REG_SZ, (const BYTE *)"", 1);
     RegCloseKey(Key);
+}
+
+/* Is a process with this exe name running? */
+static int GameIsRunning(const char *ExeFile)
+{
+    HANDLE          Snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32  Pe;
+    int             Found = 0;
+
+    if (Snap == INVALID_HANDLE_VALUE)
+        return 0;
+    Pe.dwSize = sizeof(Pe);
+    if (Process32First(Snap, &Pe))
+        do {
+            if (_stricmp(Pe.szExeFile, ExeFile) == 0) { Found = 1; break; }
+        } while (Process32Next(Snap, &Pe));
+    CloseHandle(Snap);
+    return Found;
+}
+
+/* Block until the game exits.
+ *
+ * This matters for a launcher like VidyaGod: RunApplication starts the game as OUR child, so if we returned
+ * straight away the launcher would see its process tree end and tear the prefix down while the game was still
+ * starting. DirectPlay hands back an "application id" which is the process id on implementations that bother,
+ * so try that first -- and fall back to watching for the executable by name, because the id is not guaranteed
+ * and a wrong PID must not silently degrade into "exit immediately". */
+static void WaitForGame(DWORD AppId, const char *ExeFile)
+{
+    HANDLE Proc = AppId ? OpenProcess(SYNCHRONIZE, FALSE, AppId) : NULL;
+    int    i;
+
+    if (Proc)
+    {
+        WaitForSingleObject(Proc, INFINITE);
+        CloseHandle(Proc);
+        return;
+    }
+    /* Give the game time to appear before concluding it has already finished. */
+    for (i = 0; i < 120 && !GameIsRunning(ExeFile); i++)
+        Sleep(500);
+    while (GameIsRunning(ExeFile))
+        Sleep(500);
 }
 
 static int ParseGuid(const char *Text, GUID *Out)
@@ -178,8 +222,9 @@ int main(int argc, char **argv)
     if (!Dll)
         Fail("cannot load dplayx.dll", 0);
     /* Resolved by name rather than linked, so no DirectX import library is needed to build this. */
+    /* via void*: the direct FARPROC->typed cast trips -Wcast-function-type, and this is the usual idiom. */
     pLobbyCreate = (HRESULT (WINAPI *)(LPGUID, LPDIRECTPLAYLOBBYA *, IUnknown *, LPVOID, DWORD))
-                   GetProcAddress(Dll, "DirectPlayLobbyCreateA");
+                   (void *)GetProcAddress(Dll, "DirectPlayLobbyCreateA");
     if (!pLobbyCreate)
         Fail("dplayx.dll has no DirectPlayLobbyCreateA", 0);
 
@@ -252,16 +297,7 @@ int main(int argc, char **argv)
            AppName, Hosting ? "hosting" : "joining", Player, (unsigned long)AppId);
 
     if (Wait)
-    {
-        /* Lobby-launched children die with the lobby only if it exits first on some providers; holding here
-         * keeps this process around as the lobby owner for the life of the game. */
-        HANDLE Proc = OpenProcess(SYNCHRONIZE, FALSE, AppId);
-        if (Proc)
-        {
-            WaitForSingleObject(Proc, INFINITE);
-            CloseHandle(Proc);
-        }
-    }
+        WaitForGame(AppId, ExeFile);
 
     free(Addr);
     IDirectPlayLobby_Release(Lobby2);

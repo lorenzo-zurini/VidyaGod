@@ -115,14 +115,32 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     }
     else ContainerParams.WorkDirPathComplete = ContainerParams.ProgramPath;   // self-contained runner (no CONTENTPATH)
     LogOut("ResolveExecutableDefinition", "WorkDirPathComplete: " + ContainerParams.WorkDirPathComplete.string());
+    // EXEARGS — arguments for the CONTENT executable (the runner's own ARGS are separate). Two forms:
+    //   ARRAY  (preferred): one element per argument. Nothing is split, so an argument may contain spaces —
+    //          required as soon as a %variable% carries a session or player name, or a DirectPlay application
+    //          name like "Wipeout XL/2097".
+    //   STRING (legacy):    split on spaces. Kept for existing packages; unusable for anything with a space.
+    // In both forms an argument that substitutes to EMPTY is dropped rather than passed as an empty argv slot,
+    // so an unset CustomVar contributes nothing (e.g. an optional "--join %ADDR%" pair collapses away).
     ContainerParams.ExeArgs.clear();
     auto &ExeArgsVal = Resolved["EXEARGS"];
-    if (!ExeArgsVal.is_null() && ExeArgsVal.is_string() && !std::string(ExeArgsVal).empty())
+    if (ExeArgsVal.is_array())
+    {
+        for (const auto &Element : ExeArgsVal)
+        {
+            if (!Element.is_string()) continue;
+            std::string Arg = std::string(Element);
+            VarSubst::StringVariableSubstitution(Arg, ExecVars);
+            if (!Arg.empty()) ContainerParams.ExeArgs.push_back(Arg);
+        }
+    }
+    else if (!ExeArgsVal.is_null() && ExeArgsVal.is_string() && !std::string(ExeArgsVal).empty())
     {
         std::string Args = std::string(ExeArgsVal);
         VarSubst::StringVariableSubstitution(Args, ExecVars);
         std::istringstream iss(Args);
-        for (std::string tok; std::getline(iss, tok, ' ');) ContainerParams.ExeArgs.push_back(tok);
+        for (std::string tok; std::getline(iss, tok, ' ');)
+            if (!tok.empty()) ContainerParams.ExeArgs.push_back(tok);
     }
     return true;
 }
