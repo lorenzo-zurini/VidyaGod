@@ -955,6 +955,15 @@ const std::vector<std::string> &MetaEditableFields()
 std::string NormalizeTargetPath(std::string P)
 {
     for (char &c : P) if (c == '\\') c = '/';
+    //Collapse repeated separators. A TARGET is authored by concatenation — "%PrefixRoot%/drive_c/..." — and
+    //%PrefixRoot% is EMPTY for wine-at-root and "pfx" for proton, so composing it routinely yields "//". Left
+    //alone, "pfx//drive_c/x" and "pfx/drive_c/x" are two DIFFERENT mount targets naming the same directory, and
+    //a layer silently lands somewhere nothing reads.
+    std::string Out;
+    Out.reserve(P.size());
+    for (char c : P)
+        if (!(c == '/' && !Out.empty() && Out.back() == '/')) Out.push_back(c);
+    P.swap(Out);
     while (!P.empty() && P.front() == '/') P.erase(P.begin());
     while (!P.empty() && P.back()  == '/') P.pop_back();
     return P;
