@@ -111,6 +111,14 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
         std::string T = Sub[Key];
         VarSubst::StringVariableSubstitution(T, Vars);
+        //A token that survived substitution becomes a LITERAL DIRECTORY NAME in the mount plan: the layer mounts at
+        //"%Foo%/whatever", the game sees none of those files, and the mount itself succeeds — the quietest failure
+        //this subsystem can produce. VarSubst names the variable; this says what it cost.
+        if (T.find('%') != std::string::npos)
+            LogErr("VfsMount::BuildLayerSpec", "Layer " + Sub.value("TYPE", std::string("?")) + " '"
+                                                   + Sub.value("PATH", std::string("?")) + "': " + Key + " still contains a "
+                                                   "%token% after substitution (\"" + T + "\") — it will mount at that "
+                                                   "LITERAL path and its files will be invisible to the game.");
         T = NormalizeTargetPath(T);                                         // win separators + slash trim
         if (T.empty()) return Base;
         return Base.empty() ? T : (Base + "/" + T);
@@ -186,6 +194,31 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         std::filesystem::create_directories(Src);
         Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
     }
+
+    //The mount plan IS the game's filesystem, and its ORDER IS PRIORITY — yet until now it was assembled and handed
+    //to the FUSE helper without ever being stated. Print it: index, type, rw, target, source, and whether the source
+    //actually exists. A layer whose source is gone mounts EMPTY and succeeds, so the game just quietly misses those
+    //files; that is the same silence class as the FileEdit that never applied.
+    LogOut("VfsMount::BuildLayerSpec", "Mount plan for " + ContainerParams.RuntimePath.string() + " — "
+                                           + std::to_string(Layers.size()) + " layer(s), listed LOWEST priority first"
+                                           + (ContainerParams.ReadOnlyVFS ? ", read-only (no writelayer)"
+                                                                          : ", writelayer " + Spec.value("writelayer", std::string())));
+    size_t MissingSources = 0;
+    for (size_t i = 0; i < Layers.size(); ++i)
+    {
+        const auto &L      = Layers[i];
+        const std::string S = L.value("source", std::string());
+        const bool Exists   = !S.empty() && std::filesystem::exists(S);
+        if (!Exists) ++MissingSources;
+        LogOut("VfsMount::BuildLayerSpec", "  [" + std::to_string(i) + "] " + L.value("type", std::string("?"))
+                                               + (L.value("rw", false) ? " rw " : " ro ") + "target='"
+                                               + L.value("target", std::string()) + "' source=" + (S.empty() ? "(none)" : S)
+                                               + (Exists ? "" : "   <-- SOURCE DOES NOT EXIST"));
+    }
+    if (MissingSources)
+        LogErr("VfsMount::BuildLayerSpec", std::to_string(MissingSources) + " of " + std::to_string(Layers.size())
+                                               + " layer source(s) do not exist on disk — those layers will mount EMPTY "
+                                                 "and the mount will still succeed. Expect missing files in the game.");
 
     Spec["layers"] = Layers;
     return Spec;

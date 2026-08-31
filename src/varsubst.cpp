@@ -90,7 +90,13 @@ bool VarSubst::StringVariableSubstitution(
         //Unmatched opening '%' — stop substitution, preserve remainder.
         if (end == std::string::npos)
         {
-            LogWarn("StringVariableSubstitution", "Unmatched '%' at position " + std::to_string(start) + ". Aborting further substitution.");
+            std::string Msg = "Unmatched '%' at position ";
+            Msg += std::to_string(start);
+            Msg += " in \"";
+            Msg += SourceString;
+            Msg += "\" — everything from there on is left unsubstituted, so any later %TOKEN% also reaches the "
+                   "consumer raw.";
+            LogWarn("StringVariableSubstitution", Msg);
             result += SourceString.substr(pos);
             break;
         }
@@ -118,7 +124,16 @@ bool VarSubst::StringVariableSubstitution(
         else
         {
             //Leave the whole token in place so the caller can diagnose the missing variable.
-            LogWarn("StringVariableSubstitution", "Variable not found in map. Leaving unchanged.");
+            //NAME the token and quote the string: the launch-verdict tally dedupes by context+message, so a
+            //message that said only "Variable not found in map" collapsed EVERY unresolved variable in a launch
+            //into one indistinguishable line — you learned that something broke but never what or where.
+            std::string Msg = "Undefined variable %";
+            Msg += token;
+            Msg += "% in \"";
+            Msg += SourceString;
+            Msg += "\" — left unsubstituted (the literal token reaches the consumer: a path, an argument or a "
+                   "config value).";
+            LogWarn("StringVariableSubstitution", Msg);
             result += "%" + token + "%";
         }
 
