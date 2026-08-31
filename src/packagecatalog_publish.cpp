@@ -44,6 +44,11 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 "IPFS node not online yet — CIDs will be computed but content seeds to peers only once it connects.");
 
     int Seeded = 0, Walked = 0, Covers = 0;
+    //Publishing is the one operation whose mistakes travel: a fragment skipped here is missing from the CID every
+    //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
+    //that node". So both quiet skips below are counted and reported.
+    int Unparseable = 0;
+    std::vector<std::string> Unfetchable;
 
     //Walk every *.json fragment directly (no assemble/decompose round-trip — preserves each subcomponent's exact
     //file placement). Content-address VFS layers AND cover assets in place; re-save only mutated fragments.
@@ -52,7 +57,15 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         if (!Entry.is_regular_file() || Entry.path().extension() != ".json") continue;
         QFile FragFile(QString::fromStdString(Entry.path().string()));
         nlohmann::ordered_json Frag;
-        if (JSONOps::LoadJSON(&FragFile, &Frag)) continue;                       // LoadJSON returns true on FAILURE
+        if (JSONOps::LoadJSON(&FragFile, &Frag))                                 // LoadJSON returns true on FAILURE
+        {
+            //A fragment that will not parse was skipped in silence, so a package with one corrupt node published
+            //cleanly, minus that node — and the resulting CID looked healthy to everyone who fetched it.
+            LogErr("PackageCatalog::PublishPackage", "SKIPPING unparseable fragment " + Entry.path().filename().string()
+                       + " — its nodes and layers will be ABSENT from the published package.");
+            ++Unparseable;
+            continue;
+        }
 
         bool Mutated = false;
 
@@ -70,7 +83,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 
                 std::error_code Rc;
                 if (!Cid.empty()) continue;                                      // already has an ipfs CID — idempotent
-                if (!std::filesystem::exists(Local, Rc)) continue;               // no local content to seed
+                if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
+                { Unfetchable.push_back(Local.string()); continue; }
                 std::string Err;
                 const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
                 if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
@@ -131,7 +145,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 LayerLocator(S, Pkg, Local, Cid);
                 std::error_code Rc;
                 if (!Cid.empty()) continue;                                      // already addressed — idempotent
-                if (!std::filesystem::exists(Local, Rc)) continue;               // no local content to seed
+                if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
+                { Unfetchable.push_back(Local.string()); continue; }
                 std::string Err;
                 const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
                 if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
@@ -151,6 +166,17 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     }
     LogSucc("PackageCatalog::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
             + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded)");
+
+    //A layer with neither a CID nor local content is published as a reference to bytes that exist NOWHERE: the
+    //package resolves, the download reports nothing to fetch, and the game is missing files on the first machine
+    //that is not this one. Name every one — this is the last moment before it becomes someone else's problem.
+    for (const std::string &P : Unfetchable)
+        LogErr("PackageCatalog::PublishPackage", "layer '" + P + "' has no CID and no local file — it will be "
+                                                 "published as an UNFETCHABLE reference.");
+    if (Unparseable || !Unfetchable.empty())
+        LogErr("PackageCatalog::PublishPackage", "PUBLISHED WITH GAPS: " + std::to_string(Unparseable)
+                   + " unparseable fragment(s), " + std::to_string(Unfetchable.size()) + " unfetchable layer(s) in "
+                   + PackageDir + ". The CID will look healthy and the content will not be there.");
 
     //Export the dehydrated manifest, if requested — a clean manifest-only copy (no image bytes; covers travel as CIDs).
     if (!DehydratedDestDir.empty())

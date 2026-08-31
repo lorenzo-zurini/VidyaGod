@@ -11,6 +11,7 @@
 #include "runnerinstall.h"
 #include "ipfswrapper.h"
 #include "apppaths.h"
+#include "commonutils.h"
 
 #include <fstream>
 #include <string>
@@ -356,6 +357,81 @@ private slots:
         const auto covers = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/true);
         QCOMPARE((int)covers.size(), 1);                                                       // covers-only skips layers
         QCOMPARE(covers.at((bundle + "/cover.png").toStdString()), std::string("QmCoverCID"));
+    }
+
+    // ---- PublishPackage: the one operation whose mistakes travel ----
+    //
+    // A publish that skips something still returns true and still mints a CID. Every peer then fetches a package
+    // that looks healthy and is not, and the gap surfaces days later as "this game is missing files" on a machine
+    // that is not the author's. Both quiet skips below are now reported; these pin that they are.
+
+    void publish_reports_an_unparseable_fragment_instead_of_dropping_it()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/game";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/good.json", json{{"NODE_ID", "g"}, {"LAYERS", json::array()}});
+        writeFile(bundle + "/broken.json", "{ \"NODE_ID\": \"b\", oops not json");
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool Named = false, Summarised = false;
+        for (const auto &E : Errors)
+        {
+            if (E.find("broken.json") != std::string::npos) Named = true;
+            if (E.find("PUBLISHED WITH GAPS") != std::string::npos) Summarised = true;
+        }
+        QVERIFY2(Named, "the fragment that would not parse must be named — it is absent from the published package");
+        QVERIFY2(Summarised, "and the publish must end saying the CID will look healthy while content is missing");
+    }
+
+    // A layer with neither a CID nor a local file is published as a reference to bytes that exist nowhere: the
+    // download reports nothing to fetch and the game is simply missing files on every machine but this one.
+    void publish_reports_a_layer_that_is_neither_addressed_nor_present()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/game";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
+            {"LAYERS", json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "never_existed.zip"}} })}});
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool Found = false;
+        for (const auto &E : Errors)
+            if (E.find("UNFETCHABLE") != std::string::npos && E.find("never_existed.zip") != std::string::npos)
+                Found = true;
+        QVERIFY2(Found, "an unaddressed, absent layer must be named before it is published");
+    }
+
+    // The counterpart that keeps the noise meaningful: a package with nothing wrong must publish silently.
+    void a_healthy_publish_reports_no_gaps()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/game";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
+            {"LAYERS", json::array({
+                json{{"TYPE", "VFSZipLayer"}, {"PATH", "already.zip"},
+                     {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmAlreadyAddressed"}}}} })}});
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        for (const auto &E : Errors)
+            QVERIFY2(E.find("PUBLISHED WITH GAPS") == std::string::npos,
+                     "an already-addressed layer is the idempotent case and must not be reported as a gap");
     }
 };
 
