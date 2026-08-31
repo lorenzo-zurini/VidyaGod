@@ -369,8 +369,6 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
     //    content bits. Nesting collapses to one pick; genuine branches each get one; small unique-content leaves
     //    (natives bundles, wrapper scripts) trail at the end with tiny gains. Deterministic tie-break: larger total
     //    content, then node id.
-    auto Popcount = [](const std::vector<uint64_t> &B) {
-        int C = 0; for (uint64_t W : B) C += (int)std::popcount(W); return C; };
     std::vector<int> VarIx; VarIx.reserve(VariantIds.size());
     for (const std::string &V : VariantIds)
         if (auto It = IxOf.find(V); It != IxOf.end()) VarIx.push_back(It->second);

@@ -79,37 +79,37 @@ public:
 
     //Loading. LoadPrefix loads whichever of the three files exist directly under PrefixPath; a
     //missing file yields an empty hive (not an error). Returns false only on a parse failure.
-    bool LoadHiveFile(const std::filesystem::path &File, HiveRoot Root);
-    bool LoadPrefix(const std::filesystem::path &PrefixPath);
+    [[nodiscard]] bool LoadHiveFile(const std::filesystem::path &File, HiveRoot Root);
+    [[nodiscard]] bool LoadPrefix(const std::filesystem::path &PrefixPath);
 
     //Saving — emits the WINE REGISTRY Version 2 format.
-    bool SaveHiveFile(const std::filesystem::path &File, HiveRoot Root) const;
-    bool SavePrefix(const std::filesystem::path &PrefixPath) const;
+    [[nodiscard]] bool SaveHiveFile(const std::filesystem::path &File, HiveRoot Root) const;
+    [[nodiscard]] bool SavePrefix(const std::filesystem::path &PrefixPath) const;
 
     //Path-addressed access. FullPath uses the HK* abbreviations (e.g. "HKLM\\Software\\Foo");
     //the root prefix selects the hive and is stripped to the in-hive relative path.
     RegistryKey *        GetKey(const std::string &FullPath);
     RegistryKey *        EnsureKey(const std::string &FullPath);
-    bool                 DeleteKey(const std::string &FullPath);
+    [[nodiscard]] bool                 DeleteKey(const std::string &FullPath);
     //Deep-copies the key subtree at FullPath from Src into this wrapper (creating the path, replacing
     //any existing key at that location). Returns false if Src has no such key. Used for per-key
     //persistence: extract a subtree from one hive set and merge it into another.
-    bool                 MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath);
+    [[nodiscard]] bool                 MergeKeyFrom(const RegistryWrapper &Src, const std::string &FullPath);
     //Recursive UNION merge of Src's subtree at FullPath into *this: source values overwrite same-named
     //destination values and source children merge recursively — destination-ONLY keys/values are
     //PRESERVED. (MergeKeyFrom REPLACES the destination subtree; union semantics are what registry
     //PERSISTENCE needs: the user's saved keys win where they exist, package/base defaults show through
     //everywhere else.) Accepts a bare root ("HKCU") to merge a whole hive.
-    bool                 UnionMergeFrom(const RegistryWrapper &Src, const std::string &FullPath);
+    [[nodiscard]] bool                 UnionMergeFrom(const RegistryWrapper &Src, const std::string &FullPath);
     const RegistryValue *GetValue(const std::string &FullPath, const std::string &Name) const;
     void                 SetValue(const std::string &FullPath, const std::string &Name, const RegistryValue &V);
-    bool                 DeleteValue(const std::string &FullPath, const std::string &Name);
+    [[nodiscard]] bool                 DeleteValue(const std::string &FullPath, const std::string &Name);
 
     //Manifest RegEdit application (runtime). ApplyRegEdit applies one {REGPATH,ARCHITECTURE,KEYVALUES}
     //subcomponent; absent/empty KEYVALUES means key-only creation. ApplyRegEdits walks a
     //SubComponentsArray and applies every RegEdit whose OVERRIDE flag equals WantOverride.
-    bool ApplyRegEdit(const nlohmann::ordered_json &Sub);
-    bool ApplyRegEdits(const nlohmann::ordered_json &SubComponentsArray, bool WantOverride);
+    [[nodiscard]] bool ApplyRegEdit(const nlohmann::ordered_json &Sub);
+    [[nodiscard]] bool ApplyRegEdits(const nlohmann::ordered_json &SubComponentsArray, bool WantOverride);
 
     //Editor diff. Emits the add/replace deltas of *this relative to Baseline as a manifest RegEdit
     //subcomponent array (filtered by the system-key ignore list). Deletions are ignored.

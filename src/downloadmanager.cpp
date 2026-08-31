@@ -425,7 +425,13 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         for (const std::string & Lid : LaunchIds)
         {
             if (!PackageCatalog::CollectContentTargets(Snapshot, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
-            PackageCatalog::CollectRunnerChainTargets(Snapshot, Lid, ConfigSnap, Targets, &Err);   // best-effort runtime
+            //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
+            //best-effort meant the download finished green and the game then would not launch, with nothing
+            //anywhere connecting the two. Still non-fatal; now at least it is on the record.
+            if (!PackageCatalog::CollectRunnerChainTargets(Snapshot, Lid, ConfigSnap, Targets, &Err))
+                LogWarn("DownloadManager::beginDownload", "could not resolve the runner chain for '" + Lid
+                            + "' — its runtime is NOT in this batch, so the download will complete but the game "
+                              "will not be launchable" + (Err.empty() ? "" : " (" + Err + ")"));
         }
         if (Ok)
             for (const std::string & Rid : RunnerIds)

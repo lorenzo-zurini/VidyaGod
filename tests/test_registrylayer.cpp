@@ -119,9 +119,9 @@ TEST(reglayer_hive_store_union_merges_over_base_edits)
         nlohmann::ordered_json S = nlohmann::ordered_json::array();
         S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\UserOwn"},{"ARCHITECTURE","64"},
                      {"OVERRIDE",false},{"KEYVALUES",{{"UserPick","7"}}}});
-        W.ApplyRegEdits(S, false);
+        CHECK(W.ApplyRegEdits(S, false));
         fs::create_directories(CP.UserDataPath / "REGISTRY");
-        W.SavePrefix(CP.UserDataPath / "REGISTRY");
+        CHECK(W.SavePrefix(CP.UserDataPath / "REGISTRY"));
     }
 
     CHECK(RegistryLayer::BuildDefaultData(CP));
@@ -155,9 +155,9 @@ TEST(reglayer_union_persisted_value_wins_per_key)
         nlohmann::ordered_json S = nlohmann::ordered_json::array();
         S.push_back({{"TYPE","RegEdit"},{"REGPATH","HKCU\\Software\\Game"},{"ARCHITECTURE","64"},
                      {"OVERRIDE",false},{"KEYVALUES",{{"Lang","romana"}}}});
-        W.ApplyRegEdits(S, false);
+        CHECK(W.ApplyRegEdits(S, false));
         fs::create_directories(CP.UserDataPath / "REGISTRY");
-        W.SavePrefix(CP.UserDataPath / "REGISTRY");
+        CHECK(W.SavePrefix(CP.UserDataPath / "REGISTRY"));
     }
     CHECK(RegistryLayer::BuildDefaultData(CP));
     const std::string Hive = ReadFileAt(CP.DefaultDataPath / "user.reg");

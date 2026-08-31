@@ -85,7 +85,11 @@ bool AuthoringSession::BuildRuntime(const std::vector<std::string> &Chain)
             ? Wrapper->ContainerParams.RuntimePath
             : Wrapper->ContainerParams.RuntimePath / Wrapper->ContainerParams.PrefixRoot;
         Baseline = RegistryWrapper{};
-        Baseline.LoadPrefix(Hives);
+        //An empty baseline is not a small error: the diff at End() then reports EVERY key already in the prefix
+        //as something the author just created, and the resulting node ships thousands of bogus RegEdits.
+        if (!Baseline.LoadPrefix(Hives))
+            LogErr("AuthoringSession::BuildRuntime", "could not snapshot the baseline registry at " + Hives.string()
+                       + " — the registry diff for this session will treat the ENTIRE existing prefix as new edits.");
         HasBaseline = true;
     }
     LogSucc("AuthoringSession::BuildRuntime", "Authoring runtime live for '" + TargetId + "' at "
@@ -112,7 +116,10 @@ nlohmann::ordered_json AuthoringSession::CaptureRegistryDelta() const
         ? Wrapper->ContainerParams.RuntimePath
         : Wrapper->ContainerParams.RuntimePath / Wrapper->ContainerParams.PrefixRoot;
     RegistryWrapper Now;
-    Now.LoadPrefix(Hives);
+    //The mirror image: an empty "now" diffs to nothing, so the author's registry work vanishes without a word.
+    if (!Now.LoadPrefix(Hives))
+        LogErr("AuthoringSession::RegistryDelta", "could not read the session registry at " + Hives.string()
+                   + " — the diff will be EMPTY and any registry changes made while authoring are lost.");
     return Now.DiffToRegEdits(Baseline);
 }
 

@@ -84,7 +84,7 @@ GuestTarget ComposeGuestTarget(struct ContainerParams &CP);
 
 //Native node-graph init — populates ContainerParams + the component pool (ComponentPool, out) DIRECTLY from the
 //node graph (ContainerParams.NodeIdx / .LaunchNodeId): runner pick, recipe, paths, custom vars, persistence.
-bool InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
+[[nodiscard]] bool InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON);
 
 //Picks the best ROLE:"runner" node for a launch node (GUEST ∋ launch host, HOST==machine, executable available),
 //priority: explicit RunnerID pin > USERSETTINGS PREFERRED_RUNNER > first qualifying (node-id order). nullptr if none.
@@ -96,7 +96,7 @@ bool DerivePaths(struct ContainerParams &ContainerParams, const nlohmann::ordere
 
 //Reads the launch node's EXEC (CONTENTPATH/EXEARGS/WORKDIR) into the exec fields. After BuildSubComponentsArray
 //and before BuildContainerRuntime.
-bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
+[[nodiscard]] bool ResolveExecutableDefinition(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams);
 
 //Resolves every CustomVar subcomponent in the Recipe (priority: CLI override > USERSETTINGS > DEFAULT). Must run
 //before BuildSubComponentsArray so custom %KEY% tokens are available for substitution.

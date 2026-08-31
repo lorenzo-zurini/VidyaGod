@@ -26,9 +26,9 @@ void Write(const std::filesystem::path & p, const std::string & s) { std::ofstre
 TEST(appendline_creates_and_appends_in_order)
 {
     auto dir = TmpDir("order"); auto cfg = dir / "openmw.cfg";
-    FileEdits::AppendLine("content=Morrowind.esm", cfg);
-    FileEdits::AppendLine("content=Tribunal.esm", cfg);
-    FileEdits::AppendLine("content=BetterClothes.esp", cfg);
+    CHECK(FileEdits::AppendLine("content=Morrowind.esm", cfg));
+    CHECK(FileEdits::AppendLine("content=Tribunal.esm", cfg));
+    CHECK(FileEdits::AppendLine("content=BetterClothes.esp", cfg));
     CHECK_EQ(ReadAll(cfg), std::string("content=Morrowind.esm\ncontent=Tribunal.esm\ncontent=BetterClothes.esp\n"));
     std::filesystem::remove_all(dir);
 }
@@ -37,9 +37,9 @@ TEST(appendline_creates_and_appends_in_order)
 TEST(appendline_is_idempotent)
 {
     auto dir = TmpDir("idem"); auto cfg = dir / "f.cfg";
-    FileEdits::AppendLine("content=A", cfg);
-    FileEdits::AppendLine("content=B", cfg);
-    FileEdits::AppendLine("content=A", cfg);   // dup of line 1 → skipped
+    CHECK(FileEdits::AppendLine("content=A", cfg));
+    CHECK(FileEdits::AppendLine("content=B", cfg));
+    CHECK(FileEdits::AppendLine("content=A", cfg));  // dup of line 1 → skipped
     CHECK_EQ(ReadAll(cfg), std::string("content=A\ncontent=B\n"));
     std::filesystem::remove_all(dir);
 }
@@ -49,7 +49,7 @@ TEST(appendline_separates_unterminated_last_line)
 {
     auto dir = TmpDir("nl"); auto cfg = dir / "f.cfg";
     Write(cfg, "data=\"/data/vanilla\"");          // no trailing newline
-    FileEdits::AppendLine("content=Morrowind.esm", cfg);
+    CHECK(FileEdits::AppendLine("content=Morrowind.esm", cfg));
     CHECK_EQ(ReadAll(cfg), std::string("data=\"/data/vanilla\"\ncontent=Morrowind.esm\n"));
     std::filesystem::remove_all(dir);
 }

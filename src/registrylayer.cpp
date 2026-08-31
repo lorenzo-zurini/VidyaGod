@@ -85,7 +85,9 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         //No wineserver quiesce needed: the installed artifact leaves DEFPREFIX quiescent,
         //and we only READ its hives here — the edited copies are written into DEFAULTDATA.
         RegistryWrapper RW;
-        RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));    // hives at <artifact>/<PrefixRoot>
+        //Expected to find nothing for a node-declared zero-copy prefix (there is no DEFPREFIX), so a false return
+        //here is normal — the default_pfx overlay below is what fills HKLM in that case.
+        (void)RW.LoadPrefix(HiveDir(ContainerParams, ContainerParams.DefPrefixPath));  // hives at <artifact>/<PrefixRoot>
         //HKLM overlay from default_pfx — the BASE, merged BEFORE RegEdits. For a node-declared zero-copy prefix there
         //is no DEFPREFIX, so the hives loaded above are EMPTY and a minimal saved system.reg SHADOWS default_pfx's full
         //HKLM. wine.inf writes ~thousands of static, machine-independent tables that games read at startup — the COM
@@ -112,9 +114,20 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         if (HaveDpfx)
         {
             RegistryWrapper Dpfx;
-            Dpfx.LoadPrefix(DpfxIt->second);                                        // default_pfx hives at its root
-            RW.MergeKeyFrom(Dpfx, "HKLM\\System");
-            RW.MergeKeyFrom(Dpfx, "HKLM\\Software");
+            //Every failure below silently empties the wine.inf base this whole comment block exists to preserve,
+            //and the symptom is never "the registry overlay failed" — it is MechWarrior 3 saying "video component
+            //was not installed" or Wipeout saying "has not been installed correctly", one bug report at a time.
+            if (!Dpfx.LoadPrefix(DpfxIt->second))                                    // default_pfx hives at its root
+            {
+                LogErr("RegistryLayer::BuildDefaultData", "could not load default_pfx hives from " + DpfxIt->second
+                           + " — the HKLM\\System + HKLM\\Software base will be EMPTY. Expect games to report "
+                             "themselves as not installed, and missing codec/DirectPlay/COM tables.");
+                Ok = false;
+            }
+            if (!RW.MergeKeyFrom(Dpfx, "HKLM\\System"))
+            { LogErr("RegistryLayer::BuildDefaultData", "HKLM\\System overlay from default_pfx FAILED."); Ok = false; }
+            if (!RW.MergeKeyFrom(Dpfx, "HKLM\\Software"))
+            { LogErr("RegistryLayer::BuildDefaultData", "HKLM\\Software overlay from default_pfx FAILED."); Ok = false; }
             //EXCEPT AeDebug: default_pfx registers winedbg as the JIT debugger with Auto=1, so any unhandled
             //exception AUTO-ATTACHES a debugger to the game. That is a developer convenience, not game runtime
             //behavior — and it is fatal to protector-wrapped exes (SafeDisc-era cracks throw SEH on purpose and
@@ -122,8 +135,9 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
             //(NtGetContextThread flood = the attach) the moment the wholesale merge above made this key visible,
             //while the pre-merge shadowed prefix ran it fine. Cut it from both views — crashes then follow the
             //normal unhandled path, matching the sealed-sandbox model (there is no interactive debugger to serve).
-            RW.DeleteKey("HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
-            RW.DeleteKey("HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
+            //Absent in either view is the desired end state, so a false return needs no report.
+            (void)RW.DeleteKey("HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
+            (void)RW.DeleteKey("HKLM\\Software\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\AeDebug");
             //PLUS Drivers32: wine.inf registers the VfW/ACM codec table ONLY into system.ini ([drivers32]), but
             //wine's 32-bit msvfw32 resolves ICOpen through the REGISTRY Drivers32 key — which default_pfx leaves
             //EMPTY (real Windows setup mirrors the ini into the registry; wine never does). Result: every VfW AVI
@@ -173,7 +187,12 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         if (HavePersistKeys)
         {
             RegistryWrapper Durable;
-            Durable.LoadPrefix(RegKeyStore);
+            //Nothing to load before the first session that persists anything, so only an EXISTING store failing to
+            //load is a fault — and its cost is silent: every persisted key is simply not seeded and the user's
+            //settings appear to reset themselves each launch.
+            if (!Durable.LoadPrefix(RegKeyStore) && std::filesystem::exists(RegKeyStore))
+                LogErr("RegistryLayer::BuildDefaultData", "could not load the persisted reg-key store " + RegKeyStore.string()
+                           + " — persisted registry keys will NOT be seeded and will look reset to the user.");
             for (const std::string &RegPath : ContainerParams.KeepRegKeys)
                 if (RW.MergeKeyFrom(Durable, RegPath))
                     LogOut("RegistryLayer::BuildDefaultData", "Seeded persisted key " + RegPath);
@@ -197,7 +216,9 @@ bool RegistryLayer::BuildDefaultData(struct ContainerParams &ContainerParams)
         if (HaveHiveStore)
         {
             RegistryWrapper Durable;
-            Durable.LoadPrefix(RegHiveStore);
+            if (!Durable.LoadPrefix(RegHiveStore) && std::filesystem::exists(RegHiveStore))
+                LogErr("RegistryLayer::BuildDefaultData", "could not load the persisted hive store " + RegHiveStore.string()
+                           + " — persisted registry hives will NOT be seeded and will look reset to the user.");
             for (const std::string &Name : ContainerParams.KeepRegHives)
             {
                 const char *Root = Name == "user.reg"   ? "HKCU"
@@ -231,7 +252,14 @@ bool RegistryLayer::ApplyOverrideRegEdits(struct ContainerParams &ContainerParam
 
     const std::filesystem::path Hives = HiveDir(ContainerParams, ContainerParams.RuntimePath);
     RegistryWrapper RW;
-    RW.LoadPrefix(Hives);
+    //The runtime is mounted by now, so this must succeed. If it does not, the edits below are applied to an EMPTY
+    //in-memory registry and then saved back over the runtime hives — not a missing edit but a wiped registry.
+    if (!RW.LoadPrefix(Hives))
+    {
+        LogErr("RegistryLayer::ApplyOverrideRegEdits", "could not load the MOUNTED runtime hives at " + Hives.string()
+                   + " — OVERRIDE RegEdits would be written onto an empty registry, wiping it. Refusing.");
+        return false;
+    }
     if (!RW.ApplyRegEdits(ContainerParams.SubComponentsArray, /*WantOverride=*/true))
         LogErr("RegistryLayer::ApplyOverrideRegEdits",
                "One or more OVERRIDE RegEdits were malformed and NOT applied (see above).");
@@ -306,10 +334,16 @@ bool RegistryLayer::CapturePersistRegKeys(struct ContainerParams &ContainerParam
     const std::filesystem::path Store = ContainerParams.UserDataPath / "REGKEYS";
 
     RegistryWrapper Session;
-    Session.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath));
+    //Teardown is the last chance to save what the user changed. A failure here loses the session's registry
+    //writes outright, and the only symptom is that the setting they just changed is gone next launch.
+    if (!Session.LoadPrefix(HiveDir(ContainerParams, ContainerParams.RuntimePath)))
+        LogErr("RegistryLayer::CapturePersistRegKeys", "could not read the session hives at teardown — the registry "
+                   "changes made during this session are NOT being persisted.");
 
     RegistryWrapper Durable;
-    if (std::filesystem::exists(Store)) Durable.LoadPrefix(Store); // accumulate across sessions
+    if (std::filesystem::exists(Store) && !Durable.LoadPrefix(Store))   // accumulate across sessions
+        LogErr("RegistryLayer::CapturePersistRegKeys", "could not load the durable store " + Store.string()
+                   + " — earlier sessions' persisted keys may be overwritten by this session's capture.");
 
     int Captured = 0;
     for (const std::string &RegPath : ContainerParams.KeepRegKeys)

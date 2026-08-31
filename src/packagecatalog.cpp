@@ -1030,7 +1030,12 @@ bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId, const st
     if (!CollectContentTargets(Idx, LaunchNodeId, Toggles, Targets, Error)) return false;
     // Full-closure: also pool the resolved runner chain's build so the game is immediately launchable (identity = the
     // node's Declare* layers; a game hydrate pulls the whole runtime, no separate "install the runner" step).
-    if (GlobalConfigJSON) CollectRunnerChainTargets(Idx, LaunchNodeId, *GlobalConfigJSON, Targets, Error);
+    //Discarding this told the caller the hydrate SUCCEEDED with the runner build silently absent from the batch:
+    //the package downloads, reports done, and then cannot launch — and the download UI has nothing left to say.
+    if (GlobalConfigJSON && !CollectRunnerChainTargets(Idx, LaunchNodeId, *GlobalConfigJSON, Targets, Error))
+        LogErr("PackageCatalog::HydrateNode", "could not resolve the runner chain for '" + LaunchNodeId
+                   + "' — its runtime will NOT be fetched, so the package will download but not launch"
+                   + (Error && !Error->empty() ? " (" + *Error + ")" : ""));
     if (!IpfsWrapper::FetchTargetsConcurrent(Targets, Error))
     { LogErr("PackageCatalog::HydrateNode", "hydrate failed for '" + LaunchNodeId + "'"); return false; }
     LogSucc("PackageCatalog::HydrateNode", "Hydrated node '" + LaunchNodeId + "' (" + std::to_string(Targets.size()) + " file(s)).");

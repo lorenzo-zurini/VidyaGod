@@ -376,7 +376,7 @@ private slots:
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
             if (L == LogLevel::ERR) Errors.push_back(M); });
-        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
         bool Named = false, Summarised = false;
@@ -402,7 +402,7 @@ private slots:
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
             if (L == LogLevel::ERR) Errors.push_back(M); });
-        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
         bool Found = false;
@@ -426,7 +426,7 @@ private slots:
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
             if (L == LogLevel::ERR) Errors.push_back(M); });
-        PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
         for (const auto &E : Errors)

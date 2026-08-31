@@ -273,12 +273,18 @@ void PackageEditorModel::AnalyzeNodeRegistry(const std::string & NodeId)
     Comparator.Cleanup();
     Comparator.BuildContainerRuntime();
 
+    //Either half failing produces a diff that is confidently wrong rather than absent: an unreadable baseline
+    //makes every pre-existing key look newly authored, an unreadable "after" makes real changes disappear.
     RegistryWrapper Baseline;
-    Baseline.LoadPrefix(Comparator.ContainerParams.RuntimePath);
+    if (!Baseline.LoadPrefix(Comparator.ContainerParams.RuntimePath))
+        LogErr("PackageEditorModel::AnalyzeNodeRegistry", "could not read the baseline registry — the delta below "
+                   "will treat the entire existing prefix as new edits.");
     Comparator.Cleanup();
 
     RegistryWrapper After;
-    After.LoadPrefix(SessionTemp / "WRITELAYER");
+    if (!After.LoadPrefix(SessionTemp / "WRITELAYER"))
+        LogErr("PackageEditorModel::AnalyzeNodeRegistry", "could not read the session's WRITELAYER registry — the "
+                   "delta below will be EMPTY even if the registry did change.");
 
     nlohmann::ordered_json Delta = After.DiffToRegEdits(Baseline);
     LogOut("PackageEditorModel::AnalyzeNodeRegistry", "Delta: " + std::to_string(Delta.size()) + " RegEdit layer(s).");

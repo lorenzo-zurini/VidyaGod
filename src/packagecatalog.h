@@ -67,7 +67,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
-bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
+[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
 // Remove source [index]: drop its config entry, delete its LIBRARY/<name> dir, and drop LIBRARY entries under it.
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
 
@@ -104,7 +104,7 @@ SourceUpgradePlan PlanSourceUpgrade(const nlohmann::ordered_json &GlobalConfigJS
 // home), then write the new manifests, relocate content that merely moved, and set the source's CID. Mutates
 // GlobalConfigJSON; the caller saves + re-syncs. Returns false (with *Error) without touching the live source if
 // the lineage check fails and !Force.
-bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUpgradePlan &Plan,
+[[nodiscard]] bool ApplySourceUpgrade(nlohmann::ordered_json &GlobalConfigJSON, const SourceUpgradePlan &Plan,
                         bool Force = false, std::string *Error = nullptr);
 
 // True if BundleDir is a locally-added package — its path is OUTSIDE every configured package-source dir (used to badge
@@ -114,7 +114,7 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 // ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
-bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
+[[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
 
 // Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
 // (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it
@@ -197,7 +197,7 @@ std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullp
 // into the matching Settings.PackageSources entry). Deterministic: unchanged content re-produces the same CID. Fills
 // Out with {Level, Name, Cid} rows (Level = "package" | "collection") for listing. Returns false on the first failure.
 struct RemintEntry { std::string Level, Name, Cid; };
-bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
+[[nodiscard]] bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
                    std::vector<RemintEntry> &Out, std::string *Error = nullptr);
 
 // ----- node-graph catalog (everything-is-a-node) -----
@@ -261,21 +261,21 @@ std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &L
 // Lets a caller pool a game's content with its runners' build layers into ONE concurrent download batch. Returns
 // false (with *Error) if a required layer is locally missing AND has no IPFS source. Also seeds an already-present
 // cover by reference (best-effort) so a downloader serves it too.
-bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+[[nodiscard]] bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                            const std::map<std::string, bool> &Toggles,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Gather (without fetching) the build download targets of the launchable's RESOLVED runner CHAIN, appending to Out —
 // so a full-closure hydrate pulls the game's runtime (JRE / Proton build) alongside its content. The game's own PARENTS
 // closure (library content nodes) is already covered by CollectContentTargets; this adds only the runner (which the
 // closure walk skips). Best-effort — an unresolvable chain is not fatal.
-bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
+[[nodiscard]] bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                const nlohmann::ordered_json &GlobalConfigJSON,
                                std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);
 // Fetch (IPFS) every missing VFS layer in a launchable node's content closure + its cover, in place at each node's
 // bundle PATH, concurrently (bounded by MaxConcurrentDownloads). Worker-thread (blocks). False (with *Error) on a
 // failed required fetch. (= CollectContentTargets + IpfsWrapper::FetchTargetsConcurrent.) When GlobalConfigJSON is
 // given, ALSO pools the resolved runner chain's build (CollectRunnerChainTargets) so the game is immediately playable.
-bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
+[[nodiscard]] bool HydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId,
                  const std::map<std::string, bool> &Toggles = {}, std::string *Error = nullptr,
                  const nlohmann::ordered_json *GlobalConfigJSON = nullptr);
 

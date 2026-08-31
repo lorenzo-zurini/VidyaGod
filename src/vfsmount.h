@@ -19,18 +19,18 @@ nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
 
 //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, polling mountinfo for readiness. Registers
 //RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
-bool MountVFS(struct ContainerParams &ContainerParams);
+[[nodiscard]] bool MountVFS(struct ContainerParams &ContainerParams);
 
 //Writes Spec to SpecPath, spawns vidyagodfs onto Mountpoint, polls until live. The low-level mount primitive
 //shared by MountVFS, the runner mount, and runner install.
-bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
+[[nodiscard]] bool SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
                      const std::filesystem::path &SpecPath, long long *OutPid = nullptr);
 
 //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath. No-op when the runner ships no build.
-bool MountRunnerBuild(struct ContainerParams &ContainerParams);
+[[nodiscard]] bool MountRunnerBuild(struct ContainerParams &ContainerParams);
 
 //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths differ only in case.
-bool CheckCaseConflicts(const std::filesystem::path &DirectoryPath);
+[[nodiscard]] bool CheckCaseConflicts(const std::filesystem::path &DirectoryPath);
 
 //Every current mountpoint at or beneath Prefix (from /proc/self/mountinfo), deepest-first (children before parents).
 std::vector<std::string> MountpointsUnder(const std::filesystem::path &Prefix);
@@ -43,7 +43,7 @@ void CleanStaleRuntime(const std::filesystem::path &TempPath);
 //UnmountDurable: up to `Retries` polite `fusermount3 -u` attempts 200ms apart (gives a lingering
 //wineserver time to release), falling back to a lazy `-uz` detach. Returns true iff the polite unmount
 //succeeded — false means the mount was only lazily detached and a TEMP wipe would be unsafe.
-bool UnmountDurable(const std::string &Mount, int Retries = 5);
+[[nodiscard]] bool UnmountDurable(const std::string &Mount, int Retries = 5);
 //UnmountLazy: fire-and-forget `-uz` — for ephemeral mounts whose backing store lives under TEMP.
 void UnmountLazy(const std::string &Mount);
 }

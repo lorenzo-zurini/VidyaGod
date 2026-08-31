@@ -56,7 +56,7 @@ static int RunOverlaySandbox(const std::string &UserCmd)
     if (auto s = Subnet.rfind('/'); s != std::string::npos) Mask = Subnet.substr(s + 1);
     const std::string Sock = "/tmp/vgov-lan.sock";
     // Tri-plane gates for the CLI harness: default ON, opt out via env (VG_LAN_BRIDGE=0 / VG_LAN_HOSTRELAY=0).
-    auto EnvOn = [](const char *K){ const char *V = ::getenv(K); return !V || (std::string(V) != "0" && std::string(V) != "off"); };
+    auto EnvOn = [](const char *K){ const char *Val = ::getenv(K); return !Val || (std::string(Val) != "0" && std::string(Val) != "off"); };
     const bool Bridge = EnvOn("VG_LAN_BRIDGE");
     const bool HostRelay = EnvOn("VG_LAN_HOSTRELAY");
 

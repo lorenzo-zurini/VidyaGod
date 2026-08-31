@@ -234,8 +234,9 @@ bool ContainerWrapper::BuildContainerRuntime()
     //Case-conflict scan: a FULL walk of the freshly-mounted FUSE tree (every file, through the FS) whose
     //result was advisory-only — pure launch latency on big games. --validate-nodes already case-checks
     //package data at rest, so the runtime walk is DEBUG-opt-in now (VG_CASE_CHECK=1).
+    //Advisory by design (it warns via its own dialog/log); the launch continues either way.
     if (const char *CC = std::getenv("VG_CASE_CHECK"); CC && *CC == '1')
-        VfsMount::CheckCaseConflicts(ContainerParams.RuntimePath);
+        (void)VfsMount::CheckCaseConflicts(ContainerParams.RuntimePath);
 
     //Post-mount: OVERRIDE edits operate on the mounted runtime (COW directly to WRITELAYER) — they win
     //unconditionally, over both the package content AND the user's persisted state. OVERRIDE FileEdits apply
