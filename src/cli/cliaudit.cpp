@@ -5,6 +5,7 @@
 #include "packagecatalog.h"
 #include "launchresolver.h"
 #include "launchparams.h"
+#include "varsubst.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -196,6 +197,28 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
             if (HasLiveToken(CP.ExePathRelative.string()))
                 Findings.push_back({Id, Pkg, "unresolved-token-in-contentpath",
                                     "CONTENTPATH resolved to '" + CP.ExePathRelative.string() + "'.", true});
+
+            //A layer TARGET is substituted at mount time, and a token that survives becomes a LITERAL directory
+            //name: the layer mounts at "%Foo%/game", every file in it is invisible to the game, and the mount
+            //still succeeds. This mirrors BuildLayerSpec's resolution WITHOUT its create_directories side effects,
+            //so auditing 961 packages does not litter the library with runtime dirs.
+            const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
+            for (const auto &Sub : CP.SubComponentsArray)
+            {
+                if (!ManifestModel::IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+                for (const char *Key : {"TARGET", "BASE_TARGET"})
+                {
+                    if (!Sub.contains(Key) || !Sub[Key].is_string()) continue;
+                    std::string T = Sub[Key];
+                    VarSubst::StringVariableSubstitution(T, Vars);
+                    if (!HasLiveToken(T)) continue;
+                    Findings.push_back({Id, Pkg, "unresolved-token-in-layer-target",
+                                        std::string(Key) + " of " + Sub.value("TYPE", std::string("?")) + " '"
+                                            + Sub.value("PATH", std::string("?")) + "' resolves to '" + T
+                                            + "' — it would mount at that literal path and its files would be "
+                                              "invisible to the game.", true});
+                }
+            }
         }
     }
     ClearLogCallback();
