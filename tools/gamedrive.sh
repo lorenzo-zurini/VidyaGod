@@ -21,6 +21,15 @@
 #   * LAUNCH DETACHED. `setsid nohup … &` — a plain background job dies with the tool call that started it.
 #   * NEVER bare `pkill -f <pattern>` when the pattern also appears in your own command line: the shell matches
 #     ITSELF and dies mid-script. Use a bracket class ("MW4Merc[s]") or kill by PID from `ps -eo pid,comm`.
+#   * XDOTOOL INPUT DOES NOT REACH GAMES ON THIS (Wayland) SESSION — USE tools/realinput.py INSTEAD.
+#     XTEST events go to Xwayland but KWin never routes them to the client, so clicks and keys vanish silently.
+#     This is indistinguishable from a hung game: Wipeout XL's config dialog was blamed on a dgVoodoo rendering
+#     bug for two sessions when it was actually rendering fine and simply waiting for input that never arrived.
+#     realinput.py creates a kernel uinput device, so events enter through libinput and are indistinguishable
+#     from a real mouse/keyboard. Verify with xev before ever concluding "the game ignores input".
+#   * THE TARGET WINDOW MUST BE THE COMPOSITOR'S ACTIVE WINDOW (use `raise`, and match the caption EXACTLY —
+#     "Wipeout XL" is a prefix of "Wipeout XL DirectPlay Launcher"). Otherwise the keystroke lands elsewhere and
+#     a test reports a false pass.
 #   * CLICK WINDOW-RELATIVE. Under XWayland a game's X-side position (xdotool getwindowgeometry) does NOT match
 #     where the compositor shows it — absolute warps land nowhere. `xdotool mousemove --window <id> x y` is right.
 #   * WARP THEN WAIT THEN CLICK. Games poll input; a warp+click in the same instant clicks the OLD position.

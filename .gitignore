@@ -54,3 +54,7 @@ compile_commands.json
 
 *_qmlcache.qrc
 Cache2/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc

@@ -38,10 +38,21 @@ export PROTON_LOG_DIR="$PFX"
 # game attracts kwin_killer_helper, which then sits there too.) Never pkill -f a pattern that appears in this
 # script's own command line; match by PID.
 teardown() {
-  local pids
+  # NEVER kill ourselves or our ancestors: "pkgdebug.sh run" matches the very process running this teardown, so an
+  # unguarded match makes `run` kill itself the moment it starts ("Killed", then nothing launches).
+  local self_chain p pids
+  self_chain=" $$ $PPID "
+  p=$PPID
+  while [ -n "$p" ] && [ "$p" != "1" ] && [ "$p" != "0" ]; do
+    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    [ -n "$p" ] && self_chain="$self_chain $p "
+  done
   pids=$(ps -eo pid,args | grep -iE "pkgdebug\.sh run|steam\.exe|wineserver|winedevice|services\.exe|explorer\.exe|plugplay|rpcss|kwin_killer_helper|\.exe" \
          | grep -viE "grep|/usr/bin/bash -c" | awk '{print $1}')
-  for p in $pids; do kill -9 "$p" 2>/dev/null; done
+  for p in $pids; do
+    case "$self_chain" in *" $p "*) continue ;; esac
+    kill -9 "$p" 2>/dev/null
+  done
   sleep 2
   # Stale X windows outlive their process; kill them or the next run targets a corpse.
   if [ -n "${1:-}" ]; then
