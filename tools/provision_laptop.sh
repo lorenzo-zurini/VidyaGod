@@ -37,7 +37,18 @@ echo "== fetching + checking out $COMMIT"
 git fetch --all --prune 2>&1 | tail -3
 git checkout "$COMMIT" 2>&1 | tail -3 || { echo "!! checkout failed"; exit 1; }
 git submodule update --init --recursive 2>&1 | tail -3
-echo "== now at: $(git log --oneline -1)"
+# A submodule that fails to reach its pinned commit leaves the OLD source in place and the build then succeeds
+# against it -- a binary whose C++ and Go halves disagree. For the join flow that is invisible: the C++ sends a
+# presence field the stale node never parses. Refuse rather than ship a half-updated build.
+WANT="$(git ls-tree HEAD VidyaGodIPFS | awk '{print $3}')"
+HAVE="$(git -C VidyaGodIPFS rev-parse HEAD 2>/dev/null)"
+if [ -z "$WANT" ] || [ "$WANT" != "$HAVE" ]; then
+    echo "!! SUBMODULE MISMATCH: VidyaGodIPFS is at ${HAVE:-<none>}, this commit pins $WANT"
+    echo "!! The pinned commit is probably unpushed. Push VidyaGodIPFS, then re-run."
+    echo "!! Refusing to build: the Go node would be older than the C++ that talks to it."
+    exit 1
+fi
+echo "== now at: $(git log --oneline -1)  submodule: $(git -C VidyaGodIPFS log --oneline -1)"
 
 echo "== building"
 cmake -S . -B build >/dev/null 2>&1
