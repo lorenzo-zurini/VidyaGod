@@ -66,6 +66,7 @@ private slots:
     void onKillClicked();
     void onVariantChanged();
     void onLogLine(int level, QString context, QString message);
+    void flushConsole();
     void onStatusChanged(QString status);
     void onProgressChanged(int value);
     void onLaunchFinished(bool success, QString errorMsg);
@@ -162,6 +163,8 @@ private:
     QTreeWidget*  ModuleTree            = nullptr;
     std::map<std::string, std::set<std::string>> ModuleExcludes; // node -> mutually-exclusive nodes (symmetric)
     QTextEdit*    ConsoleEdit       = nullptr;
+    QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
+    QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst
     QPushButton*  KillButton        = nullptr;
     QPushButton*  LaunchButton      = nullptr;
     QPushButton*  CloseButton       = nullptr;

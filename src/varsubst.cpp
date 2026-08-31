@@ -67,8 +67,15 @@ bool VarSubst::StringVariableSubstitution(
     std::string &SourceString,
     const std::map<std::string, std::string>& VariablesMap)
 {
-    LogOut("StringVariableSubstitution", "Starting substitution.");
-    LogOut("StringVariableSubstitution", "Original string: \"" + SourceString + "\"");
+    //Trace-gated: this function narrates EVERY %token% it touches, and one launch resolve calls it enough to
+    //produce 79% of the resolve's 2036 log lines (measured) — each a string build + a GUI console append. The
+    //warnings below (undefined variable, unmatched '%') stay unconditional; they are the instrumentation.
+    const bool Trace = VerboseLogging();
+    if (Trace)
+    {
+        LogOut("StringVariableSubstitution", "Starting substitution.");
+        LogOut("StringVariableSubstitution", "Original string: \"" + SourceString + "\"");
+    }
 
     std::string result;
     bool replaced = false;
@@ -111,13 +118,13 @@ bool VarSubst::StringVariableSubstitution(
         if (const auto colon = token.find(':'); colon != std::string::npos)
         { key = token.substr(0, colon); format = token.substr(colon + 1); }
 
-        LogOut("StringVariableSubstitution", "Found variable: %" + token + "%");
+        if (Trace) LogOut("StringVariableSubstitution", "Found variable: %" + token + "%");
 
         auto it = VariablesMap.find(key);
         if (it != VariablesMap.end())
         {
             const std::string rendered = format.empty() ? it->second : RenderValue(it->second, format);
-            LogOut("StringVariableSubstitution", "Replacing with: \"" + rendered + "\"");
+            if (Trace) LogOut("StringVariableSubstitution", "Replacing with: \"" + rendered + "\"");
             result += rendered;
             replaced = true;
         }
@@ -140,8 +147,11 @@ bool VarSubst::StringVariableSubstitution(
         pos = end + 1;
     }
 
-    LogOut("StringVariableSubstitution", "Final string: \"" + result + "\"");
-    LogOut("StringVariableSubstitution", std::string("Substitution performed: ") + (replaced ? "YES" : "NO"));
+    if (Trace)
+    {
+        LogOut("StringVariableSubstitution", "Final string: \"" + result + "\"");
+        LogOut("StringVariableSubstitution", std::string("Substitution performed: ") + (replaced ? "YES" : "NO"));
+    }
 
     SourceString = std::move(result);
     return replaced;

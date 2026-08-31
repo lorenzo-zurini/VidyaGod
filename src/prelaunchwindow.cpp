@@ -173,6 +173,13 @@ PreLaunchWindow::PreLaunchWindow(
     MonoFont.setPointSize(9);
     ConsoleEdit->setFont(MonoFont);
     ConsoleEdit->setStyleSheet("QTextEdit { background-color: #1a1a1a; color: #e0e0e0; }");
+    //Unbounded before: a long session accumulated every line ever logged, and each append relaid the whole
+    //document. 5000 blocks is ~20 resolves' worth of context — plenty to scroll back through a failure.
+    ConsoleEdit->document()->setMaximumBlockCount(5000);
+    ConsoleFlushTimer = new QTimer(this);
+    ConsoleFlushTimer->setSingleShot(true);
+    ConsoleFlushTimer->setInterval(60);
+    connect(ConsoleFlushTimer, &QTimer::timeout, this, &PreLaunchWindow::flushConsole);
     VSplitter->addWidget(ConsoleEdit);
     VSplitter->setStretchFactor(0, 1);
     VSplitter->setStretchFactor(1, 2);
@@ -1097,6 +1104,10 @@ void PreLaunchWindow::onKillClicked()
 
 void PreLaunchWindow::onLogLine(int level, QString context, QString message)
 {
+    // BUFFER, don't append: every append() is an HTML parse + document edit + relayout + scrollbar poke, and a
+    // single resolve emits hundreds of lines (it was 2036 before the trace gate) delivered as queued events. Doing
+    // the widget work per line froze the UI for the duration of a resolve on the laptop; batching turns a burst
+    // into one document edit per timer tick with identical visible output.
     QString color;
     switch (static_cast<LogLevel>(level))
     {
@@ -1106,7 +1117,17 @@ void PreLaunchWindow::onLogLine(int level, QString context, QString message)
         default:             color = "";        break;
     }
     QString Text = context.toHtmlEscaped() + " " + message.toHtmlEscaped();
-    ConsoleEdit->append(color.isEmpty() ? Text : QString("<span style=\"color:%1\">%2</span>").arg(color, Text));
+    ConsolePending.append(color.isEmpty() ? Text : QString("<span style=\"color:%1\">%2</span>").arg(color, Text));
+    if (!ConsoleFlushTimer->isActive()) ConsoleFlushTimer->start();
+}
+
+void PreLaunchWindow::flushConsole()
+{
+    if (ConsolePending.isEmpty()) return;
+    // One append per batch: join with <br> so the whole burst is a single document edit. The block-count cap on
+    // the document (set at construction) bounds memory and relayout cost for pathological runs.
+    ConsoleEdit->append(ConsolePending.join(QStringLiteral("<br>")));
+    ConsolePending.clear();
     QScrollBar* SB = ConsoleEdit->verticalScrollBar();
     SB->setValue(SB->maximum());
 }

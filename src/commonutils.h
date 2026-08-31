@@ -15,6 +15,14 @@ enum class LogLevel { OUT = 1, SUCC = 2, WARN = 3, ERR = 4 };
 //context is the calling function/class name; message is the human-readable detail.
 void Log(LogLevel level, const std::string& context, const std::string& message);
 
+//Per-token/per-item TRACE gate, read once from VG_VERBOSE=1. Guards the message CONSTRUCTION, not just the sink:
+//a single launch resolve emitted 2036 log lines, 79% of them the substitution engine narrating every %token% —
+//each one a string build + a queued Qt signal + a rich-text console append on the GUI. Callers on measured-hot
+//paths wrap their happy-path OUT chatter in `if (VerboseLogging())`. WARN/ERR are NEVER gated (the whole
+//instrumentation program rests on failures staying loud), and neither are once-per-operation summaries — this is
+//only for lines that repeat per token / per file / per subcomponent.
+bool VerboseLogging();
+
 //Optional secondary sink for Log() output. When set, every Log() call also invokes
 //this callback with the same level/context/message so UI components can display live logs.
 using LogCallback = std::function<void(LogLevel, const std::string&, const std::string&)>;

@@ -53,18 +53,21 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string
     {
+        //Trace-gated: ResolveOne runs once per key per FIXPOINT ITERATION, so these lines repeat until the
+        //var set converges (240 of one resolve's 2036 log lines, measured). The final resolved table below is
+        //printed once per launch regardless — that is the line a human actually reads.
         if (ContainerParams.VariableOverrides.count(Key))
         {
-            LogOut("ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
+            if (VerboseLogging()) LogOut("ResolveCustomVariables", "CLI override: " + Key + " = " + ContainerParams.VariableOverrides.at(Key));
             return ContainerParams.VariableOverrides.at(Key);
         }
         if (SavedVars.contains(Key))
         {
             std::string Val = SavedVars[Key];
-            LogOut("ResolveCustomVariables", "User setting: " + Key + " = " + Val);
+            if (VerboseLogging()) LogOut("ResolveCustomVariables", "User setting: " + Key + " = " + Val);
             return Val;
         }
-        LogOut("ResolveCustomVariables", "Default: " + Key + " = " + DefaultValue);
+        if (VerboseLogging()) LogOut("ResolveCustomVariables", "Default: " + Key + " = " + DefaultValue);
         return DefaultValue;
     };
 
@@ -241,7 +244,8 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             std::string SubJSON = Subs[j].dump();
             VarSubst::StringVariableSubstitution(SubJSON, FrozenVars);
             ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(SubJSON));
-            LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
+            if (VerboseLogging())   // per-subcomponent trace — 81 lines per resolve, gated like the rest
+                LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
         }
     }
     LogOut("BuildSubComponentsArray", "Completed SubComponentsArray.");

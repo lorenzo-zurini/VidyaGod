@@ -1,5 +1,7 @@
 #include "commonutils.h"
 
+#include <cstdlib>
+
 #include <mutex>
 #include <set>
 
@@ -12,6 +14,12 @@ static std::mutex   g_LogCallbackMtx;
 static LogCallback  g_LogCallback;
 
 //Installs a secondary log sink. Replaces any previously installed callback.
+bool VerboseLogging()
+{
+    static const bool On = []{ const char *V = std::getenv("VG_VERBOSE"); return V && *V == '1'; }();
+    return On;
+}
+
 void SetLogCallback(LogCallback callback)
 {
     std::lock_guard<std::mutex> G(g_LogCallbackMtx);

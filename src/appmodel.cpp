@@ -289,9 +289,11 @@ void AppModel::healOrphansIfAny()
             if (!Fresh.empty())
             {
                 LogOut("AppModel::healOrphansIfAny", std::to_string(Fresh.size()) + " orphaned reference(s) detected — re-pointing");
-                PackageCatalog::HealSourceContent(*Cfg);
-                // The cheap per-file self-check (size gate) runs inside SeedDirectory during the heal; collect
-                // anything it could NOT fix so the UI can surface it rather than leaving it in a log line.
+                // The loop below IS the heal: an additive SeedDirectory per source dir re-points orphaned refs and
+                // collects what it could not fix. This used to ALSO call HealSourceContent first, whose cheap pass
+                // is the very same per-dir SeedDirectory — so every heal swept all 1150 referenced files TWICE
+                // (each sweep a cidMissing walk through the Go node's leveldb + sha256), and the report the extra
+                // call produced was discarded. Startup profiling found the node burning steady CPU on exactly this.
                 for (const std::string &Dir : PackageCatalog::PackageSourceDirs(*Cfg))
                 {
                     std::vector<PackageCatalog::SeedFailure> Bad;
