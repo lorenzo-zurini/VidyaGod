@@ -145,6 +145,37 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
                         + std::to_string(Findings.size()) + " finding(s)");
     }
 
+    //DUPLICATE VARIANT LABELS — two launchables on one tile with the same LABEL render as two identical rows in
+    //the launch window's variant combo, indistinguishable to the user. Found live: an obsolete Wipeout XL lobby
+    //node (WOLOBBY.EXE, superseded by vglobby) kept its "Multiplayer (TCP/IP)" label next to the real one, so
+    //which multiplayer you got depended on which identical entry you happened to click.
+    for (const auto &Group : PackageCatalog::PresentableGroups(Index))
+    {
+        std::map<std::string, std::vector<const Node *>> ByLabel;
+        for (const Node *N : Group)
+        {
+            if (!Scope.empty())
+            {
+                const std::string Dir = std::filesystem::path(N->BundleDir).filename().string();
+                if (N->NodeId != Scope && N->Uid != Scope && Dir != Scope && Dir.find(Scope) == std::string::npos) continue;
+            }
+            const std::string L = !N->Label.empty() ? N->Label
+                                  : (N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId);
+            ByLabel[L].push_back(N);
+        }
+        for (const auto &[Label, Ns] : ByLabel)
+        {
+            if (Ns.size() < 2) continue;
+            std::string Ids;
+            for (const Node *N : Ns) { if (!Ids.empty()) Ids += ", "; Ids += N->NodeId; }
+            Findings.push_back({Ns.front()->NodeId, std::filesystem::path(Ns.front()->BundleDir).filename().string(),
+                                "duplicate-variant-label",
+                                "label '" + Label + "' is carried by " + std::to_string(Ns.size())
+                                    + " launchables on one tile (" + Ids + ") — they render as identical, "
+                                      "indistinguishable rows in the variant picker.", true});
+        }
+    }
+
     //Capture what the engine says while resolving, instead of letting it scroll past. This is the whole point:
     //these lines were always being printed and never being read.
     std::vector<std::pair<LogLevel, std::string>> Captured;
