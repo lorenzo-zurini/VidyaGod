@@ -27,8 +27,9 @@ cd "$REPO" || { echo "!! no repo at $REPO"; exit 1; }
 
 echo "== host: $(hostname)  cores: $(nproc)"
 
-# The GUI holds a single-instance lock on the IPFS node; the config edit below needs it free.
-pkill -f 'build/VidyaGod' 2>/dev/null && sleep 2
+# NOTE: no pkill here. Earlier versions killed 'build/VidyaGod' — which missed a GUI launched via the ~/VidyaGod
+# symlink (different cmdline) AND risked killing the user's live session or a running game sandbox (same binary).
+# The build doesn't need the lock; only the upgrade step does, and it now tells you when the lock is the problem.
 
 echo "== stashing any local work (never reset away)"
 git stash push -u -m "provision_laptop $(date -Iseconds)" 2>&1 | tail -2
@@ -77,6 +78,17 @@ if [ -z "$SRC_NAME" ]; then
 fi
 echo "== games source is named '$SRC_NAME'"
 
+CUR_CID="$(python3 - "$SRC_NAME" <<'PY2'
+import json, os, sys
+c = json.load(open(os.path.expanduser("~/.VidyaGod/GlobalConfig.JSON")))
+for s in c.get("Settings", {}).get("PackageSources", []):
+    if s.get("NAME") == sys.argv[1]: print(s.get("CID", "")); break
+PY2
+)"
+if [ "$CUR_CID" = "$GAMES_CID" ]; then
+    echo "== already at $GAMES_CID — skipping the upgrade (no lock needed, no network needed)"
+else
+
 # --upgrade-source merge-upgrades in place: already-hydrated content is KEPT and the old version is demoted
 # rather than deleted, so this is not a re-download of the whole library.
 #
@@ -85,10 +97,12 @@ echo "== games source is named '$SRC_NAME'"
 # while the upgrade had actually failed on a wrong source name.
 if ! timeout 1800 ./build/VidyaGod --upgrade-source "$SRC_NAME" "$GAMES_CID" > /tmp/vg_upgrade.log 2>&1; then
     echo "!! UPGRADE FAILED:"; grep -aiE "ERR |deadline" /tmp/vg_upgrade.log | tail -5
+    echo "!! If it says 'Another instance': close VidyaGod on THIS machine first (single-instance lock)."
     echo "!! If this timed out fetching: the OTHER machine must be RUNNING VidyaGod to seed the CID."
     exit 1
 fi
 grep -aiE "Upgrade |content kept|content new|deprecated|SUC .*[Uu]pgrad" /tmp/vg_upgrade.log | tail -8
+fi
 
 echo "== resulting sources:"
 python3 - <<'PY'
