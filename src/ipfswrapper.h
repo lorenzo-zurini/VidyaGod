@@ -242,8 +242,28 @@ struct Contact {
     std::string State;          // "pending" | "incoming" | "accepted" | "blocked"
     bool        Online   = false;
     long long   LastSeen = 0;   // unix-ms, 0 = never
+    // What they are playing, from presence. LAUNCH FACTS only — we never know their in-game state. PlayOpen is
+    // ADVISORY: it is shown as a badge and must not gate the Join affordance, since the user sets it by hand and
+    // will usually forget. Empty PlayNode = not playing.
+    std::string PlayNode;
+    std::string PlayLabel;
+    std::string PlayIdent;      // "v1:<uid>@<hash>"; an unknown prefix means UNKNOWN, never "mismatched"
+    long long   PlaySince = 0;  // unix-ms
+    bool        PlayOpen  = false;
 };
 struct Profile { std::string Nick; std::string PicCID; };
+// What THIS node is playing (mirror of the Go playState).
+struct PlayState {
+    std::string NodeId, Label, Ident;
+    long long   Since = 0;
+    bool        Open  = false;
+};
+// A stranger met in a shared game. NOT a contact: acting on one sends an ordinary mutual-consent friend request,
+// which is what keeps suggestions from ever becoming reachability.
+struct FriendSuggestion {
+    std::string Peer, Nick, Via, Game;
+    long long   At = 0;
+};
 
 // This node's shareable friend code (its libp2p peer ID), "" if offline.
 std::string FriendCode();
@@ -252,6 +272,19 @@ Profile GetProfile();
 bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string *Error = nullptr);
 // Every contact (any state), unordered.
 std::vector<Contact> FriendList();
+
+// ----- presence: what we are playing, and who may see it -----
+// All of these succeed with the node offline (the state is local, only the broadcast is skipped), because the
+// launch path calls SetPlaying/ClearPlaying unconditionally.
+bool SetPlaying(const std::string &NodeId, const std::string &Label, const std::string &Ident);
+void ClearPlaying();
+PlayState GetPlaying();
+void SetOpenToJoin(bool On);     // advisory badge only — never gates Join
+bool Invisible();                // hide what we are playing from every friend
+void SetInvisible(bool On);
+// Strangers co-present in a game we are in, offered by a mutual friend.
+std::vector<FriendSuggestion> FriendSuggestions();
+void DismissSuggestion(const std::string &PeerID);
 // Send a friend request to a peer ID (records it as pending + notifies them with our profile).
 bool FriendAdd(const std::string &PeerID, const std::string &Note = std::string(), std::string *Error = nullptr);
 // Accept an incoming request (marks accepted + notifies the peer with our profile).
@@ -268,8 +301,10 @@ int FriendPing(const std::string &PeerID);
 // Inbound friend event (mirrors friend.go evFriend*). Delivered on a node thread; the FriendsManager marshals it
 // to the GUI thread as Qt signals.
 struct FriendEvent {
-    enum Kind { Request, Accept, Decline, Presence, Profile, Removed } Kind;
+    enum Kind { Request, Accept, Decline, Presence, Profile, Removed, Suggest } Kind;
     Contact C;   // the affected contact; for Removed only PeerID is populated
+    // Suggest only: who told us, and the game we share with them. C.PeerID/C.Nick carry the suggested stranger.
+    std::string Via, Game;
 };
 using FriendCallback = std::function<void(const FriendEvent &)>;
 void SetFriendCallback(FriendCallback Callback);
@@ -357,6 +392,11 @@ signals:
     void friendPresence(QString peer, bool online);                // a friend's reachability changed
     void friendProfile(QString peer, QString nick, QString pic);   // a friend updated their nickname/picture
     void friendRemoved(QString peer);                              // local removal (echoed for UI symmetry)
+    // A friend's play state changed. Emitted ALONGSIDE friendPresence (never instead of it), so existing
+    // consumers are untouched. Empty nodeId = they stopped playing. open is advisory only.
+    void friendPlaying(QString peer, QString nodeId, QString label, QString ident, qlonglong since, bool open);
+    // A stranger co-present in a game we are in. NOT a contact — acting on it sends an ordinary friend request.
+    void friendSuggestion(QString peer, QString nick, QString via, QString game);
 
 private:
     explicit FriendsManager(QObject * parent = nullptr);

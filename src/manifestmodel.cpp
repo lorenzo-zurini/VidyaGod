@@ -812,8 +812,15 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //  • the prefix-layout probe vars — set by ContainerWrapper once the runner build is mounted and its layout
         //    (files/ vs dist/, lib vs lib64, system.reg mtime) is probed; the node-declared proton prefix layers
         //    reference them (see ContainerWrapper::BuildContainerRuntime).
+        //  • the VIDYAGOD_* session tokens — injected per launch from the friend LAN / presence layer
+        //    (ContainerParams::SessionVars), so they are equally unknowable statically. Without them every
+        //    package that legitimately references one is reported as an undefined-variable typo.
         std::set<std::string> B = { "REL", "DefaultPfxDir", "WineFontsDir", "WineLibDir",
-                                    "WineSys32Dir", "WineSysWow64Dir", "SysRegMtime" };
+                                    "WineSys32Dir", "WineSysWow64Dir", "SysRegMtime",
+                                    "VIDYAGOD_SANDBOX", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
+                                    "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS",
+                                    "VIDYAGOD_PEER_NAMES", "VIDYAGOD_JOIN_ADDRESS",
+                                    "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);
         return B;

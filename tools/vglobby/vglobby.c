@@ -23,8 +23,12 @@
  *
  * Usage:
  *   vglobby.exe --app NAME --guid {GUID} --exe FILE.EXE [--dir DIR]
- *               --player NAME [--session NAME] [--host | --join [ADDRESS]]
+ *               --player NAME [--session NAME]
+ *               [--address=ADDRESS | --host | --join [ADDRESS]]
  *               [--sp tcpip|ipx|serial|modem] [--port N] [--max N] [--wait]
+ *
+ * Hosting is the default; supplying a non-empty address is what selects joining. Prefer --address=VALUE from a
+ * launcher: it is one token, so an empty value collapses to "host" instead of leaving a dangling flag.
  *
  * --dir defaults to the directory vglobby.exe itself lives in, which is normally the game directory.
  */
@@ -143,7 +147,7 @@ int main(int argc, char **argv)
     const char *AppName  = NULL, *GuidText = NULL, *ExeFile = NULL, *Dir = NULL;
     const char *Player   = NULL, *Session  = NULL, *JoinAddr = NULL;
     const char *SpName   = "tcpip";
-    int         Hosting  = -1, Wait = 0, i;
+    int         Hosting  = 1, Wait = 0, i;   /* host unless an address says otherwise */
     DWORD       MaxPlayers = 0, Port = 0;
 
     HRESULT                     Hr;
@@ -164,7 +168,18 @@ int main(int argc, char **argv)
     {
         const char *a = argv[i];
         #define NEXT() (i + 1 < argc ? argv[++i] : NULL)
-        if      (!strcmp(a, "--app"))     AppName  = NEXT();
+        /* --address=VALUE is the form a launcher should generate: it is ONE token, so when the value substitutes
+         * to empty the whole argument is dropped and we fall back to hosting. A "--address VALUE" pair cannot do
+         * that -- the flag would survive alone and swallow the next argument as its value. An empty value is
+         * explicitly allowed and means "no address", i.e. host. */
+        if (!strncmp(a, "--address=", 10))
+        {
+            JoinAddr = a + 10;
+            if (*JoinAddr) Hosting = 0;
+            continue;
+        }
+        if      (!strcmp(a, "--address")) { JoinAddr = NEXT(); if (JoinAddr && *JoinAddr) Hosting = 0; }
+        else if (!strcmp(a, "--app"))     AppName  = NEXT();
         else if (!strcmp(a, "--guid"))    GuidText = NEXT();
         else if (!strcmp(a, "--exe"))     ExeFile  = NEXT();
         else if (!strcmp(a, "--dir"))     Dir      = NEXT();
@@ -190,11 +205,11 @@ int main(int argc, char **argv)
         #undef NEXT
     }
 
-    if (!AppName || !GuidText || !ExeFile || !Player || Hosting < 0)
+    if (!AppName || !GuidText || !ExeFile || !Player)
     {
         fprintf(stderr,
             "usage: vglobby --app NAME --guid {GUID} --exe FILE.EXE [--dir DIR]\n"
-            "               --player NAME [--session NAME] (--host | --join [ADDRESS])\n"
+            "               --player NAME [--session NAME] [--address=ADDR | --host | --join [ADDR]]\n"
             "               [--sp tcpip|ipx|serial|modem] [--port N] [--max N] [--wait]\n");
         return 2;
     }

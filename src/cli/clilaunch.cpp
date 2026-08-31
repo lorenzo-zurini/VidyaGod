@@ -82,6 +82,16 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         NewContainerParams.LaunchNodeId      = LaunchParameters.LaunchNodeId;
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
+        //Same engine-injected session facts as the GUI path (see LaunchThread::run), so `--node` behaves
+        //identically — which also makes `--node X --var VIDYAGOD_JOIN_ADDRESS=<vip>` a working headless join.
+        NewContainerParams.SessionVars = IpfsWrapper::LanLaunchVars();
+        if (NewContainerParams.SessionVars["VIDYAGOD_SELF_NAME"].empty())
+        {
+            const std::string Nick = IpfsWrapper::GetProfile().Nick;
+            NewContainerParams.SessionVars["VIDYAGOD_SELF_NAME"] = Nick.empty() ? std::string("Player") : Nick;
+        }
+        if (!NewContainerParams.SessionVars.count("VIDYAGOD_JOIN_ADDRESS"))
+            NewContainerParams.SessionVars["VIDYAGOD_JOIN_ADDRESS"] = std::string();
         NewContainerParams.VariantID         = "default";
         NewContainerParams.RunnerID          = LaunchParameters.RunnerID;
         //Runner daisy-chain: the explicit --runner chain wins; else the single RunnerID as a 1-step pin (else auto).

@@ -466,6 +466,11 @@ static Contact ContactFromJson(const nlohmann::json &J)
     C.State    = J.value("state", std::string());
     C.Online   = J.value("online", false);
     C.LastSeen = J.value("seen",  (long long)0);
+    C.PlayNode  = J.value("play",   std::string());
+    C.PlayLabel = J.value("plabel", std::string());
+    C.PlayIdent = J.value("pident", std::string());
+    C.PlaySince = J.value("psince", (long long)0);
+    C.PlayOpen  = J.value("popen",  false);
     return C;
 }
 
@@ -479,13 +484,25 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
 {
     if (!g_FriendCb) return;
     FriendEvent E;
+    // Match kind 5 EXPLICITLY. This chain used to end `: FriendEvent::Removed`, so every kind above 4 — including
+    // the suggestion events added later — would have arrived as a contact REMOVAL and quietly deleted contacts.
     E.Kind = kind == 0 ? FriendEvent::Request
            : kind == 1 ? FriendEvent::Accept
            : kind == 2 ? FriendEvent::Decline
            : kind == 3 ? FriendEvent::Presence
            : kind == 4 ? FriendEvent::Profile
-                       : FriendEvent::Removed;
-    try { E.C = ContactFromJson(nlohmann::json::parse(json ? json : "{}")); }
+           : kind == 5 ? FriendEvent::Removed
+                       : FriendEvent::Suggest;
+    try
+    {
+        const nlohmann::json J = nlohmann::json::parse(json ? json : "{}");
+        E.C = ContactFromJson(J);
+        if (E.Kind == FriendEvent::Suggest)
+        {
+            E.Via  = J.value("via",  std::string());
+            E.Game = J.value("game", std::string());
+        }
+    }
     catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendEventTrampoline", std::string("bad JSON from node: ") + Ex.what()); }
     g_FriendCb(E);
 }
@@ -507,6 +524,67 @@ Profile GetProfile()
     catch (const std::exception &E) { LogWarn("IpfsWrapper::GetProfile", std::string("bad JSON from node: ") + E.what()); }
     return P;
 }
+
+// ----- presence: what we are playing, and who may see it -----
+
+bool SetPlaying(const std::string &NodeId, const std::string &Label, const std::string &Ident)
+{
+    char *Err = nullptr;
+    const int Rc = VgSetPlaying(NodeId.c_str(), Label.c_str(), Ident.c_str(), &Err);
+    const std::string E = TakeStr(Err);
+    if (Rc != 0 && !E.empty()) LogWarn("IpfsWrapper::SetPlaying", E);
+    return Rc == 0;
+}
+
+void ClearPlaying() { VgClearPlaying(); }
+
+PlayState GetPlaying()
+{
+    PlayState P;
+    char *J = nullptr;
+    if (VgGetPlaying(&J) != 0) { TakeStr(J); return P; }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        const auto D = nlohmann::json::parse(Js);
+        P.NodeId = D.value("node",  std::string());
+        P.Label  = D.value("label", std::string());
+        P.Ident  = D.value("ident", std::string());
+        P.Since  = D.value("since", (long long)0);
+        P.Open   = D.value("open",  false);
+    }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::GetPlaying", std::string("bad JSON from node: ") + E.what()); }
+    return P;
+}
+
+void SetOpenToJoin(bool On) { VgSetOpenToJoin(On ? 1 : 0); }
+bool Invisible()            { return VgInvisible() == 1; }
+void SetInvisible(bool On)  { VgSetInvisible(On ? 1 : 0); }
+
+std::vector<FriendSuggestion> FriendSuggestions()
+{
+    std::vector<FriendSuggestion> Out;
+    char *J = nullptr;
+    if (VgFriendSuggestions(&J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        for (const auto &E : nlohmann::json::parse(Js))
+        {
+            FriendSuggestion S;
+            S.Peer = E.value("peer", std::string());
+            S.Nick = E.value("nick", std::string());
+            S.Via  = E.value("via",  std::string());
+            S.Game = E.value("game", std::string());
+            S.At   = E.value("at",   (long long)0);
+            Out.push_back(std::move(S));
+        }
+    }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::FriendSuggestions", std::string("bad JSON from node: ") + E.what()); }
+    return Out;
+}
+
+void DismissSuggestion(const std::string &PeerID) { VgDismissSuggestion(PeerID.c_str()); }
 
 bool SetProfile(const std::string &Nick, const std::string &PicCID, std::string *Error)
 {
@@ -730,8 +808,29 @@ FriendsManager::FriendsManager(QObject * parent) : QObject(parent)
             QMetaObject::invokeMethod(this, [this, Peer]{ emit friendDeclined(Peer); }, Qt::QueuedConnection);
             break;
         case IpfsWrapper::FriendEvent::Presence:
+        {
+            //Emit BOTH: friendPresence keeps every existing consumer working unchanged, friendPlaying carries the
+            //play block for the new UI.
+            const QString PlayNode  = QString::fromStdString(E.C.PlayNode);
+            const QString PlayLabel = QString::fromStdString(E.C.PlayLabel);
+            const QString PlayIdent = QString::fromStdString(E.C.PlayIdent);
+            const qlonglong Since   = E.C.PlaySince;
+            const bool Open         = E.C.PlayOpen;
             QMetaObject::invokeMethod(this, [this, Peer, On]{ emit friendPresence(Peer, On); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(this, [this, Peer, PlayNode, PlayLabel, PlayIdent, Since, Open]{
+                emit friendPlaying(Peer, PlayNode, PlayLabel, PlayIdent, Since, Open);
+            }, Qt::QueuedConnection);
             break;
+        }
+        case IpfsWrapper::FriendEvent::Suggest:
+        {
+            const QString Via  = QString::fromStdString(E.Via);
+            const QString Game = QString::fromStdString(E.Game);
+            QMetaObject::invokeMethod(this, [this, Peer, Nick, Via, Game]{
+                emit friendSuggestion(Peer, Nick, Via, Game);
+            }, Qt::QueuedConnection);
+            break;
+        }
         case IpfsWrapper::FriendEvent::Profile:
             QMetaObject::invokeMethod(this, [this, Peer, Nick, Pic]{ emit friendProfile(Peer, Nick, Pic); }, Qt::QueuedConnection);
             break;

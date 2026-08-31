@@ -155,6 +155,22 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()));
     }
 
+    //Engine-injected session facts (friend LAN, SELF_NAME, JOIN_ADDRESS) enter here, as if they were declared with
+    //that value as their DEFAULT — so ResolveOne gives them the documented precedence for free (a --var/picker
+    //override or a persisted USERSETTING still wins). A node that DECLARES one of these keys keeps full control:
+    //the guard below leaves its own entry alone.
+    //
+    //They must be seeded at THIS point, not merged into CustomVariables later: only keys in KeyOrder reach the
+    //Phase-2 fixpoint, and the fixpoint is what makes a %token% usable in EXEARGS and in another CustomVar's
+    //DEFAULT. Injecting after the resolve (as the LAN merge in ContainerWrapper does) is too late for both — the
+    //token would survive into argv as a literal.
+    for (const auto &[Key, Value] : ContainerParams.SessionVars)
+    {
+        if (Sources.count(Key)) continue;                          // a package declaration wins
+        KeyOrder.push_back(Key);
+        Sources[Key] = ResolveOne(Key, Value);
+    }
+
     //Phase 2 — fixpoint. Seed raw, then substitute every source against (built-ins + all vars) until a full pass
     //changes nothing. A snapshot per pass (Jacobi iteration) makes resolution order-independent; the cap bounds
     //reference cycles (which terminate with their %token% left literal).

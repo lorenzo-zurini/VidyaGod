@@ -57,14 +57,27 @@ void VgSetTransferCb(VgTransferCb cb);
 
 // ---- friends / multiplayer social layer (see VidyaGodIPFS/social.go + friend.go) ----
 // Inbound friend event: kind mirrors friend.go's evFriend* (0=request 1=accept 2=decline 3=presence 4=profile
-// 5=removed); json is the affected contact ({peer,nick,pic,state,online,seen}). Invoked on a node goroutine — the
-// C++ side marshals to the GUI thread.
+// 5=removed, 6=suggest); json is the affected contact ({peer,nick,pic,state,online,seen,play,...}), or for kind 6
+// a suggestion ({peer,nick,via,game}). Invoked on a node goroutine — the C++ side marshals to the GUI thread.
 typedef void (*VgFriendCb)(int kind, const char *json);
 
 int  VgFriendCode(char **outId);                       // this node's shareable friend code (= its peer ID)
 int  VgSetProfile(const char *nick, const char *picCid, char **errOut);
 int  VgGetProfile(char **outJson);                     // {"nick":..,"pic":..}
-int  VgFriendList(char **outJson);                     // JSON array of contacts
+int  VgFriendList(char **outJson);                     // JSON array of contacts (incl. play/plabel/pident/psince/popen)
+
+// Presence: what we are playing, and who may see it. These are LAUNCH FACTS — we never claim to know in-game state.
+// All succeed with the node offline (state is local, the broadcast is skipped), because the launch path is
+// unconditional. "Open to join" is advisory: it is shown as a badge and never gates the Join affordance.
+int  VgSetPlaying(const char *nodeId, const char *label, const char *ident, char **errOut);
+int  VgClearPlaying(void);
+int  VgGetPlaying(char **outJson);                     // {"node","label","ident","since","open"}
+int  VgSetOpenToJoin(int on);
+int  VgSetInvisible(int on);                           // hide the play block from everyone
+int  VgInvisible(void);                                // 1 hidden / 0 visible / -1 no node
+// Strangers met in a shared game (event kind 6). NOT contacts: adding one sends an ordinary friend request.
+int  VgFriendSuggestions(char **outJson);              // [{peer,nick,via,game,at}]
+void VgDismissSuggestion(const char *peerID);
 int  VgFriendAdd(const char *peerID, const char *note, char **errOut);   // send a friend request
 int  VgFriendAccept(const char *peerID, char **errOut);
 int  VgFriendDecline(const char *peerID, char **errOut);
@@ -76,8 +89,9 @@ void VgSetFriendCb(VgFriendCb cb);
 // ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----
 // There is NO session/host. Friends share one implicit virtual LAN (10.66.0.0/16); each peer's vIP is a pure function
 // of its peer ID, so membership + routing come from the accepted-friends set with zero coordination.
-// The launch vars {VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SUBNET, PEER_VIPS, PEER_NAMES} for a
-// sandboxed game launch that joins the LAN. -1 if the LAN is unavailable.
+// The launch vars {VIDYAGOD_SANDBOX, VIDYAGOD_SANDBOX_NET=isolated, SELF_VIP, SELF_NAME, SUBNET, PEER_VIPS,
+// PEER_NAMES} for a sandboxed game launch that joins the LAN. PEER_VIPS/PEER_NAMES are positionally parallel and
+// ordered by peer id (deterministic across calls). -1 if the LAN is unavailable.
 int  VgLanLaunchVars(char **outJson);
 // Per-friend LAN link state for the UI: [{peer,nick,vip,online,link:"direct"|"relayed"|"connecting"|"down",rttMs}].
 int  VgLanPeers(char **outJson);
