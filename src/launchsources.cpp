@@ -15,6 +15,8 @@ using namespace ManifestModel;
 //readiness warning. Iteration 1 verifies every VFS layer's resolved source exists.
 //TODO(sharing): also verify the resolved runner + its RUNTIME + cross-package component references, and
 //distinguish a fully-bundled (portable) chain from one needing external/global packages.
+static bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub);
+
 std::vector<std::string> LaunchSources::VerifyDependencies(const struct ContainerParams &ContainerParams)
 {
     std::vector<std::string> Missing;
@@ -22,6 +24,12 @@ std::vector<std::string> LaunchSources::VerifyDependencies(const struct Containe
     {
         const std::string Type = Sub.value("TYPE", std::string());
         if (!IsVfsLayer(Type)) continue;
+        //Runtime-sourced layers (PATH carries a %variable%, e.g. a prefix-assembly mount from "%DefaultPfxDir%")
+        //resolve to live mount paths at BuildLayerSpec time — there is no package file to find. The other passes
+        //already skip them via this predicate; this one didn't, so EVERY wine launch reported 3 phantom
+        //"content unavailable" ERRORS into the diagnostics verdict — false alarms that train ignoring the one
+        //summary built to be un-ignorable.
+        if (IsRuntimeSourcedLayer(Sub)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;

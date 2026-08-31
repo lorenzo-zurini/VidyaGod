@@ -21,7 +21,10 @@ bool FSOps::CheckPackageValid(QDir * PackageDir)
     ManifestModel::ScanBundleNodes(PackageDir->path().toStdString(), Idx);
     if (Idx.Nodes.empty())
     {
-        LogErr("FSOperations", "Selected directory has no node files (NODE_ID).");
+        //A probe result, not a failure: both callers (the startup in-package check, the import recursion) treat
+        //"not a bundle" as the normal negative. As an ERR it fired on EVERY app start and was the one permanent
+        //red line in an otherwise clean log — exactly the noise that teaches people to skim past ERR.
+        LogOut("FSOperations", "Not a package bundle (no NODE_ID node files here).");
         return false;
     }
 
