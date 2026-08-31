@@ -50,7 +50,9 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
     // derived content — e.g. proton's config_info marker whose paths are "%RunnerMount%/files/..." / "%TempPath%".
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
 
+    const std::string PassName = OverridePass ? "OVERRIDE" : "BASE";
     bool Ok = true;
+    size_t Attempted = 0, Failed = 0;
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (Sub.value("TYPE", std::string()) != "FileEdit") continue;
@@ -59,13 +61,23 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         std::string Mode  = Sub.value("MODE",  std::string());
         std::string File  = Sub.value("FILE",  std::string());
         std::string Value = Sub.value("VALUE", std::string());
+        const std::string Key = Sub.value("KEY", std::string());
         VarSubst::StringVariableSubstitution(File,  Vars);
         VarSubst::StringVariableSubstitution(Value, Vars);
         std::filesystem::path FilePath = BasePath / File;
+        ++Attempted;
+
+        //An ABSOLUTE FILE silently escapes this pass: BasePath / File discards BasePath entirely when File is
+        //absolute, so the edit lands somewhere the pass does not own (usually a path that does not exist yet).
+        //Worms 4 shipped exactly this and printed one line nobody read.
+        if (std::filesystem::path(File).is_absolute())
+            LogWarn("FileEdits::ProcessFileEdits",
+                    "FILE '" + File + "' is ABSOLUTE — it discards the " + PassName + " pass base ('"
+                    + BasePath.string() + "'). Author it relative to the pass base instead.");
 
         bool EditOk = true;
         if (Mode == "ConfigWrite")
-            EditOk = FileEdits::ConfigWrite(Sub.value("KEY", std::string()), Value, FilePath);
+            EditOk = FileEdits::ConfigWrite(Key, Value, FilePath);
         else if (Mode == "Overwrite")
             EditOk = FileEdits::FileOverwrite(Value, FilePath);
         else if (Mode == "AppendLine")
@@ -75,8 +87,28 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
             LogWarn("FileEdits::ProcessFileEdits", "Unknown MODE: '" + Mode + "' — skipping.");
             EditOk = false;
         }
-        if (!EditOk) Ok = false;
+        if (!EditOk)
+        {
+            ++Failed;
+            Ok = false;
+            //Name the edit, not just the symptom. "Could not open file for reading" on its own gives no clue
+            //WHICH package setting was lost.
+            LogErr("FileEdits::ProcessFileEdits",
+                   PassName + " FileEdit FAILED — mode=" + (Mode.empty() ? "(none)" : Mode)
+                   + (Key.empty() ? std::string() : (" key='" + Key + "'"))
+                   + " file='" + FilePath.string() + "'");
+            //The single most common cause, and the one that is invisible without being told: a ConfigWrite reads
+            //the file before rewriting it, and zip-supplied content only exists once the runtime is mounted.
+            if (Mode == "ConfigWrite" && !OverridePass)
+                LogErr("FileEdits::ProcessFileEdits",
+                       "   ^ ConfigWrite in the BASE pass runs BEFORE the content is mounted, so the file does not "
+                       "exist yet. Add \"OVERRIDE\": true to this FileEdit.");
+        }
     }
+    if (Attempted > 0)
+        LogOut("FileEdits::ProcessFileEdits",
+               PassName + " pass: " + std::to_string(Attempted - Failed) + "/" + std::to_string(Attempted)
+               + " edit(s) applied" + (Failed ? (", " + std::to_string(Failed) + " FAILED") : std::string()));
     return Ok;
 }
 
@@ -112,12 +144,14 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
         return false;
     }
 
+    size_t Matched = 0;
     for (auto& currentLine : lines)
     {
         //Match by prefix: if the line starts with Key, replace the whole line with Key+Value.
         if (currentLine.length() >= Key.length() && currentLine.compare(0, Key.length(), Key) == 0)
         {
             currentLine = Key + Value;
+            ++Matched;
             outFile << currentLine << '\n';
         }
         else
@@ -127,6 +161,14 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
     }
 
     outFile.close();
+    //A KEY that matches NOTHING rewrites the file unchanged and reports success — a typo in the key, or a config
+    //whose format changed, then silently does nothing at all. This is the same class of failure as the base-pass
+    //ConfigWrite: the edit "worked", the setting never applied. Say so.
+    if (Matched == 0)
+        LogWarn("FileEdits::ConfigWrite",
+                "key '" + Key + "' matched NO line in " + FilePath.string()
+                + " — the file was rewritten unchanged and this setting had no effect. Check the key spelling "
+                  "(it is matched as a literal line PREFIX, including any spaces around '=').");
     return true;
 }
 

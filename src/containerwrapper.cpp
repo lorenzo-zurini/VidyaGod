@@ -242,14 +242,20 @@ bool ContainerWrapper::BuildContainerRuntime()
     //to any runner; DLL overrides and OVERRIDE RegEdits are Wine-only. Base edits already live in DEFAULTDATA.
     {
         StepScope Step(10, "Applying override edits (files, DLL overrides, registry)");
+        //These are ERRORS, not warnings. A failed edit means a package setting the author declared was NOT applied,
+        //so the game runs misconfigured while everything looks fine — precisely the failure that hid for months.
+        //They are non-fatal (the game may still be playable) but they must be loud, and they feed the launch verdict.
         if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
-            LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE FileEdits reported failures.");
+            LogErr("ContainerWrapper::BuildContainerRuntime",
+                   "OVERRIDE FileEdits FAILED — package settings above were not applied; the game is misconfigured.");
         if (PrefixGen)
         {
             if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))
-                LogWarn("ContainerWrapper::BuildContainerRuntime", "DllOverride collection reported malformed entries.");
+                LogErr("ContainerWrapper::BuildContainerRuntime",
+                       "DllOverride collection contained malformed entries — a DLL override was NOT applied.");
             if (!RegistryLayer::ApplyOverrideRegEdits(this->ContainerParams))
-                LogWarn("ContainerWrapper::BuildContainerRuntime", "OVERRIDE RegEdits failed to write the runtime hives.");
+                LogErr("ContainerWrapper::BuildContainerRuntime",
+                       "OVERRIDE RegEdits FAILED to write the runtime hives — registry settings were not applied.");
         }
     }
 
