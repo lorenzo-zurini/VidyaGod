@@ -61,6 +61,79 @@ class LaunchResolverTest : public QObject
 {
     Q_OBJECT
 private slots:
+    // ---- engine-injected session vars (friend LAN / presence) ----
+    // These are the reason SessionVars exists at all: the LAN vars used to be merged AFTER this resolve and after
+    // EXEARGS substitution, so %VIDYAGOD_*% survived into argv as a literal. And because only DECLARED keys reach
+    // the fixpoint, an undeclared key handed in as an override was silently dropped.
+    void session_vars_reach_exeargs_and_custom_var_defaults()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"});
+        Node g = launchNode("game", "win32", {});
+        g.Layers = json::array({ json{{"TYPE", "CustomVar"}, {"KEY", "join"}, {"DEFAULT", "%VIDYAGOD_JOIN_ADDRESS%"}} });
+        g.Exec = json{{"CONTENTPATH", "game.exe"},
+                      {"EXEARGS", json::array({"--player", "%VIDYAGOD_SELF_NAME%", "--address=%join%"})}};
+        idx.Nodes["game"] = g;
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        cp.SessionVars = { {"VIDYAGOD_JOIN_ADDRESS", "10.66.1.2"}, {"VIDYAGOD_SELF_NAME", "Lorenzo"} };
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+
+        const std::vector<std::string> Want{"--player", "Lorenzo", "--address=10.66.1.2"};
+        QCOMPARE(cp.ExeArgs, Want);
+    }
+
+    // Hosting: the address substitutes to empty. The single-token form collapses to "--address=", which the game
+    // side reads as "no address"; a "--flag value" PAIR could not express this — the flag would survive alone and
+    // swallow the next argument.
+    void empty_session_var_collapses_to_hosting()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"});
+        Node g = launchNode("game", "win32", {});
+        g.Exec = json{{"CONTENTPATH", "game.exe"},
+                      {"EXEARGS", json::array({"--address=%VIDYAGOD_JOIN_ADDRESS%", "%VIDYAGOD_JOIN_ADDRESS%", "--wait"})}};
+        idx.Nodes["game"] = g;
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        cp.SessionVars = { {"VIDYAGOD_JOIN_ADDRESS", ""} };
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QVERIFY(LaunchResolver::ResolveExecutableDefinition(json::object(), cp));
+
+        // The bare token drops entirely; the single-token form survives with an empty value.
+        const std::vector<std::string> Want{"--address=", "--wait"};
+        QCOMPARE(cp.ExeArgs, Want);
+    }
+
+    // Precedence: a session var is the LOWEST source. An explicit --var/picker override beats it, and a node that
+    // declares the key with its own DEFAULT keeps control of it.
+    void session_vars_are_lowest_priority()
+    {
+        NodeIndex idx;
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"});
+        Node g = launchNode("game", "win32", {});
+        g.Layers = json::array({ json{{"TYPE", "CustomVar"}, {"KEY", "VIDYAGOD_SELF_NAME"}, {"DEFAULT", "PackageChoice"}} });
+        idx.Nodes["game"] = g;
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        cp.SessionVars       = { {"VIDYAGOD_SELF_NAME", "FromLan"}, {"VIDYAGOD_JOIN_ADDRESS", "10.66.9.9"} };
+        cp.VariableOverrides = { {"VIDYAGOD_JOIN_ADDRESS", "1.2.3.4"} };
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+
+        QCOMPARE(cp.CustomVariables["VIDYAGOD_JOIN_ADDRESS"], std::string("1.2.3.4"));      // override wins
+        QCOMPARE(cp.CustomVariables["VIDYAGOD_SELF_NAME"],    std::string("PackageChoice")); // declaration wins
+    }
+
     // InitializeFromNode resolves the whole container from the node graph: runner pick, recipe, content-root.
     void initialize_from_node_resolves_runner_and_recipe()
     {

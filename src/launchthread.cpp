@@ -10,42 +10,6 @@
 #include <algorithm>
 #include <filesystem>
 
-namespace {
-
-//The human string friends see in "playing …": the game's title plus this variant's own label, so two multiplayer
-//entries of the same game are distinguishable. Falls back to the node id rather than showing nothing.
-std::string PlayLabelFor(const NodeIndex &Idx, const std::string &NodeId)
-{
-    const Node *N = Idx.Find(NodeId);
-    if (!N) return NodeId;
-    std::string Title;
-    if (N->Meta.is_object() && N->Meta.contains("TITLE") && N->Meta["TITLE"].is_string())
-        Title = N->Meta["TITLE"].get<std::string>();
-    if (Title.empty()) Title = NodeId;
-    return N->Label.empty() ? Title : Title + " — " + N->Label;
-}
-
-//A stable content identity for the version compare, used ONLY to warn. Built from the launch closure's source
-//CIDs, hashed so it stays short on the wire.
-//
-//Two deliberate choices. Toggles are empty, not the user's module states, so an optional HD-texture pack does not
-//read as a different build. And it carries a "v1:" recipe prefix: an ident whose prefix we do not recognise must
-//be treated as UNKNOWN (no warning), never as mismatched — otherwise the day this recipe changes, every peer in
-//the world looks wrong to everyone.
-std::string PlayIdentFor(const NodeIndex &Idx, const std::string &NodeId, const std::string &PackageUID)
-{
-    std::vector<std::string> Cids = PackageCatalog::NodeContentCids(Idx, NodeId, {});
-    if (Cids.empty()) return "v1:" + PackageUID + "@" + NodeId;
-    std::sort(Cids.begin(), Cids.end());
-    unsigned long long Hash = 1469598103934665603ULL;              // FNV-1a
-    for (const std::string &C : Cids)
-        for (unsigned char Ch : C) { Hash ^= Ch; Hash *= 1099511628211ULL; }
-    char Buf[17];
-    std::snprintf(Buf, sizeof(Buf), "%016llx", Hash);
-    return "v1:" + PackageUID + "@" + std::string(Buf);
-}
-
-} // namespace
 
 // ============================================================================
 // LaunchThread
@@ -194,8 +158,8 @@ void LaunchThread::run()
     //covers a crash and a user kill without any extra bookkeeping; and announcing only immediately before it means
     //the two early-return failure paths above never announce a game that never started.
     IpfsWrapper::SetPlaying(this->LaunchNodeId,
-                            PlayLabelFor(*Index, this->LaunchNodeId),
-                            PlayIdentFor(*Index, this->LaunchNodeId, LocalWrapper->ContainerParams.PackageUID));
+                            PackageCatalog::PlayLabel(*Index, this->LaunchNodeId),
+                            PackageCatalog::PlayIdent(*Index, this->LaunchNodeId));
 
     LocalWrapper->Execute();
 

@@ -727,8 +727,44 @@ void PreLaunchWindow::BuildLanPanel(QVBoxLayout * LeftCol)
     LanRows = new QVBoxLayout();
     LanRows->setSpacing(2);
     GL->addLayout(LanRows);
+
+    // --- Join target (this launch only) ---
+    auto * JoinRow = new QHBoxLayout();
+    JoinRow->addWidget(new QLabel("Join:", LanGroup));
+    JoinCombo = new QComboBox(LanGroup);
+    JoinRow->addWidget(JoinCombo, 1);
+    GL->addLayout(JoinRow);
+    JoinAddress = new QLineEdit(LanGroup);
+    JoinAddress->setPlaceholderText("address or host:port");
+    JoinAddress->setVisible(false);
+    GL->addWidget(JoinAddress);
+    JoinWarn = new QLabel(LanGroup);
+    JoinWarn->setStyleSheet("color:#d8a657;font-size:9pt;");
+    JoinWarn->setWordWrap(true);
+    JoinWarn->setVisible(false);
+    GL->addWidget(JoinWarn);
+    connect(JoinCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int Idx){
+        const QString Data = JoinCombo->itemData(Idx).toString();
+        const bool Manual = (Data == "@manual");
+        JoinAddress->setVisible(Manual || Idx != 0);
+        if (Manual) { JoinAddress->clear(); JoinAddress->setFocus(); }
+        else if (Idx == 0) JoinAddress->clear();
+        else JoinAddress->setText(Data);
+    });
+    //An address outside 10.66/16 is a real server rather than a friend, and only escapes the sandbox netns through
+    //the in-node NAT gateway — which a package can disable (VIDYAGOD_LAN_BRIDGE=off). Say so rather than letting
+    //the connection quietly time out.
+    JoinAddress->setToolTip("A friend's vIP (10.66.x.y) or any server address.\n"
+                            "Addresses outside the friend LAN need the package's LAN bridge left on.");
     LanGroup->setVisible(false);                 // shown once the first poll finds friends / a LAN
     LeftCol->addWidget(LanGroup);
+
+    if (!PackageUID.empty())
+    {
+        const auto Saved = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID);
+        if (Saved.contains("LAST_JOIN_ADDRESS") && Saved["LAST_JOIN_ADDRESS"].is_string())
+            JoinAddress->setText(QString::fromStdString(Saved["LAST_JOIN_ADDRESS"].get<std::string>()));
+    }
 
     LanTimer = new QTimer(this);
     LanTimer->setInterval(2000);
@@ -819,6 +855,83 @@ void PreLaunchWindow::RefreshLanPanel()
         else ++It;
     }
     LanGroup->setVisible(!Peers.empty());
+
+    // --- Join combo ---
+    // This runs every 2s, so it must NOT blindly rebuild: that would fight the user, dropping their selection and
+    // closing the popup mid-click. Rebuild only when the peer set actually changed, never while the popup is open,
+    // and always restore what was selected.
+    //LanPeers reports the LINK (vIP, direct/relayed, RTT); what each friend is PLAYING lives on the contact, so
+    //join the two here rather than duplicating presence into the LAN snapshot.
+    std::map<std::string, IpfsWrapper::Contact> ByPeer;
+    for (const auto & C : IpfsWrapper::FriendList()) ByPeer[C.PeerID] = C;
+    std::string Signature;
+    for (const auto & P : Peers)
+    {
+        const auto & C = ByPeer[P.Peer];
+        Signature += P.Peer + "\x1f" + P.Nick + "\x1f" + P.Vip + "\x1f" + C.PlayNode +
+                     (C.PlayOpen ? "1" : "0") + "\x1e";
+    }
+    if (Signature != JoinSignature && !JoinCombo->view()->isVisible())
+    {
+        JoinSignature = Signature;
+        const QString Keep = JoinCombo->currentData().toString();
+        const QString Typed = JoinAddress->text();
+        QSignalBlocker B(JoinCombo);
+        JoinCombo->clear();
+        JoinCombo->addItem("Host / solo (no join address)", QString());
+        for (const auto & P : Peers)
+        {
+            const auto & C = ByPeer[P.Peer];
+            QString Text = QString::fromStdString(P.Nick.empty() ? P.Peer.substr(0, 8) : P.Nick);
+            if (!C.PlayNode.empty())
+            {
+                Text += " — playing " + QString::fromStdString(C.PlayLabel.empty() ? C.PlayNode : C.PlayLabel);
+                if (C.PlayOpen) Text += " · open";
+            }
+            //A friend in a DIFFERENT game is shown, not hidden: they may be about to switch, and silently omitting
+            //them looks like a bug.
+            JoinCombo->addItem(Text, QString::fromStdString(P.Vip));
+        }
+        JoinCombo->addItem("Other address…", QStringLiteral("@manual"));
+        int Restore = JoinCombo->findData(Keep);
+        JoinCombo->setCurrentIndex(Restore >= 0 ? Restore : 0);
+        JoinAddress->setText(Typed);
+        JoinAddress->setVisible(JoinCombo->currentIndex() != 0);
+    }
+}
+
+void PreLaunchWindow::PresetJoin(const QString & TargetAddress, const QString & FriendPeerId,
+                                 const std::string & SelectNodeId, const QString & Warning)
+{
+    //ORDER IS LOAD-BEARING. Setting the variant fires onVariantChanged, which rebuilds the runner chain, the module
+    //tree and the CustomVar pickers — destroying and recreating widgets. Do it FIRST; anything set before is lost.
+    //(FillVariantCombo re-sorts by recommended-then-natural-order, so the friend's node is rarely index 0.)
+    if (!SelectNodeId.empty())
+        for (int I = 0; I < VariantCombo->count(); ++I)
+            if (VariantCombo->itemData(I).toString().toStdString() == SelectNodeId)
+            { VariantCombo->setCurrentIndex(I); break; }
+
+    //The join controls live in the LAN panel, which onVariantChanged does NOT touch — so they are set second and
+    //survive.
+    RefreshLanPanel();                                   // make sure the friend has a row before we select them
+    int Idx = TargetAddress.isEmpty() ? 0 : JoinCombo->findData(TargetAddress);
+    if (Idx < 0)                                         // not in the combo (excluded from the roster, or offline)
+    {
+        JoinCombo->addItem(FriendPeerId.isEmpty() ? TargetAddress
+                                                  : FriendPeerId.left(8) + "… (" + TargetAddress + ")",
+                           TargetAddress);
+        Idx = JoinCombo->count() - 1;
+    }
+    JoinCombo->setCurrentIndex(Idx);
+    JoinAddress->setText(TargetAddress);
+    JoinAddress->setVisible(!TargetAddress.isEmpty());
+
+    if (!Warning.isEmpty())
+    {
+        JoinWarn->setText(Warning);
+        JoinWarn->setProperty("sticky", true);
+        JoinWarn->setVisible(true);
+    }
 }
 
 void PreLaunchWindow::onVariantChanged()
@@ -914,8 +1027,20 @@ void PreLaunchWindow::onLaunchClicked()
           PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "RUNNER_CHAIN", ChainJson); }
         if (RememberCheck->isChecked())
             PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "SKIP_LAUNCH_DIALOG", true);
+        //Remember only the TYPED address, under its own key — never as a variable. Restored into the field with the
+        //combo back at "Host / solo", so the skip-dialog path (which auto-launches) can't silently re-join a stale
+        //address from days ago.
+        if (JoinCombo->currentIndex() != 0 && !JoinAddress->text().trimmed().isEmpty())
+            PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "LAST_JOIN_ADDRESS",
+                                                  JoinAddress->text().trimmed().toStdString());
         persistGlobalConfig();
     }
+
+    //AFTER the persistence block, deliberately. MergePackageVariables above writes PickerVars into
+    //USERSETTINGS.VARIABLES; injecting the join address before it would make it STICKY, and every later solo launch
+    //of this package would silently become a join. This is a per-launch override and nothing else.
+    if (JoinCombo->currentIndex() != 0 && !JoinAddress->text().trimmed().isEmpty())
+        PickerVars["VIDYAGOD_JOIN_ADDRESS"] = JoinAddress->text().trimmed().toStdString();
 
     // Disable controls + show progress.
     ChainContainer->setEnabled(false); VariantCombo->setEnabled(false); CustomVarGroup->setEnabled(false);

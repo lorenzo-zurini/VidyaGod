@@ -4,10 +4,13 @@
 #include <QWidget>
 
 class AppModel;
+class QCheckBox;
+class QGroupBox;
 class QLabel;
 class QLineEdit;
 class QTableWidget;
 class QPushButton;
+class QVBoxLayout;
 
 // ---------------------------------------------------------------------------
 // FriendsTab — the "Friends" tab: the user-facing front of the DHT multiplayer social layer. Shows your shareable
@@ -28,8 +31,11 @@ public slots:
 private:
     void buildUi();
     void refresh();            // repaint the code + nickname + contacts table from the backend
+    void refreshSuggestions(); // the "players you met" list
     void addFriendClicked();
     void setNickClicked();
+    // Open the pre-launch window on the friend's game with their address filled in. Warn-only if we don't have it.
+    void joinClicked(const QString & Peer);
 
     AppModel &     Model;
     QLabel *       CodeValue   = nullptr;
@@ -38,6 +44,10 @@ private:
     QLineEdit *    AddEdit     = nullptr;
     QLabel *       StatusHint  = nullptr;
     QTableWidget * Table       = nullptr;
+    QCheckBox *    InvisibleBox = nullptr;   // hide what I'm playing from every friend
+    QCheckBox *    OpenBox      = nullptr;   // advisory "open to join" badge; purely manual
+    QGroupBox *    MetBox       = nullptr;   // "Players you met" — hidden when empty
+    QVBoxLayout *  MetLayout    = nullptr;
     bool           NickEdited  = false;   // don't clobber the field the user is typing in on a refresh
 };
 

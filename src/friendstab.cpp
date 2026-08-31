@@ -1,6 +1,8 @@
 #include "friendstab.h"
 #include "appmodel.h"
 #include "ipfswrapper.h"
+#include "packagecatalog.h"   // PlayIdent/GroupNodeIds — the SHARED identity recipe
+#include "prelaunchwindow.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -13,6 +15,8 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QMessageBox>
+#include <QCheckBox>
+#include <QSignalBlocker>
 
 // See friendstab.h. The tab talks to the backend only through IpfsWrapper's Friends free functions (mutations) and
 // the FriendsManager signals (live updates) — every inbound friend event just triggers a full refresh(), which is
@@ -32,6 +36,8 @@ FriendsTab::FriendsTab(AppModel & model, QWidget * parent)
     connect(FM, &FriendsManager::friendPresence, this, [this]{ refresh(); });
     connect(FM, &FriendsManager::friendProfile,  this, [this]{ refresh(); });
     connect(FM, &FriendsManager::friendRemoved,  this, [this]{ refresh(); });
+    connect(FM, &FriendsManager::friendPlaying,  this, [this]{ refresh(); });
+    connect(FM, &FriendsManager::friendSuggestion, this, [this]{ refresh(); });
 
     // Networking coming up/down changes whether we have a friend code + can act.
     connect(&Model, &AppModel::networkingChanged, this, [this]{ refresh(); });
@@ -73,6 +79,15 @@ void FriendsTab::buildUi()
     NickRow->addWidget(SaveNick);
     IdLayout->addLayout(NickRow);
 
+    // Visibility. "Open to join" is deliberately MANUAL and advisory — it is shown to friends as a badge and never
+    // gates their Join button, because a flag the user has to remember to set would otherwise hide a live game.
+    InvisibleBox = new QCheckBox("Appear invisible (hide what I'm playing)", IdBox);
+    connect(InvisibleBox, &QCheckBox::toggled, this, [](bool On){ IpfsWrapper::SetInvisible(On); });
+    IdLayout->addWidget(InvisibleBox);
+    OpenBox = new QCheckBox("Open to join (tells friends they're welcome)", IdBox);
+    connect(OpenBox, &QCheckBox::toggled, this, [](bool On){ IpfsWrapper::SetOpenToJoin(On); });
+    IdLayout->addWidget(OpenBox);
+
     Root->addWidget(IdBox);
 
     // --- Add a friend ---
@@ -95,18 +110,26 @@ void FriendsTab::buildUi()
 
     // --- Contacts ---
     Table = new QTableWidget(this);
-    Table->setColumnCount(5);
-    Table->setHorizontalHeaderLabels({"Nickname", "Code", "Status", "Presence", ""});
+    Table->setColumnCount(6);
+    Table->setHorizontalHeaderLabels({"Nickname", "Code", "Status", "Presence", "Playing", ""});
     Table->horizontalHeader()->setStretchLastSection(false);
     Table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    Table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    Table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    Table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    Table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    for (int Col = 1; Col <= 3; ++Col)
+        Table->horizontalHeader()->setSectionResizeMode(Col, QHeaderView::ResizeToContents);
+    Table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    Table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     Table->verticalHeader()->setVisible(false);
     Table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     Table->setSelectionMode(QAbstractItemView::NoSelection);
     Root->addWidget(Table, 1);
+
+    // --- Players you met ---
+    // Strangers a mutual friend told us about because we were in the SAME game. They are not contacts and have no
+    // route to us; "Add friend" sends an ordinary mutual-consent request, exactly as pasting their code would.
+    MetBox = new QGroupBox("Players you met", this);
+    MetLayout = new QVBoxLayout(MetBox);
+    MetBox->setVisible(false);
+    Root->addWidget(MetBox);
 }
 
 void FriendsTab::setActive(bool on)
@@ -150,6 +173,13 @@ void FriendsTab::refresh()
     if (!NickEdited)
         NickEdit->setText(QString::fromStdString(IpfsWrapper::GetProfile().Nick));
 
+    // Read the toggles back without re-firing their handlers (a live presence event refreshes us at any moment).
+    {
+        QSignalBlocker B1(InvisibleBox), B2(OpenBox);
+        InvisibleBox->setChecked(IpfsWrapper::Invisible());
+        OpenBox->setChecked(IpfsWrapper::GetPlaying().Open);
+    }
+
     const std::vector<IpfsWrapper::Contact> Contacts = IpfsWrapper::FriendList();
     Table->setRowCount(static_cast<int>(Contacts.size()));
     int Row = 0;
@@ -169,11 +199,30 @@ void FriendsTab::refresh()
         Table->setItem(Row, 2, new QTableWidgetItem(State));
         Table->setItem(Row, 3, new QTableWidgetItem(C.Online ? "● online" : "offline"));
 
+        // What they launched. The open flag is decoration only, and is shown ONLY while they are actually playing
+        // so a toggle left on after quitting never advertises an empty game.
+        QString Playing = C.PlayNode.empty() ? QString()
+                        : QString::fromStdString(C.PlayLabel.empty() ? C.PlayNode : C.PlayLabel);
+        if (!C.PlayNode.empty() && C.PlayOpen) Playing += "  · open to join";
+        auto * PlayItem = new QTableWidgetItem(Playing);
+        if (!C.PlayNode.empty())
+            PlayItem->setToolTip(QString::fromStdString(C.PlayNode) +
+                                 (C.PlayIdent.empty() ? QString() : "\n" + QString::fromStdString(C.PlayIdent)));
+        Table->setItem(Row, 4, PlayItem);
+
         // Per-row actions.
         auto * Actions = new QWidget(Table);
         auto * AL = new QHBoxLayout(Actions);
         AL->setContentsMargins(2, 2, 2, 2);
         AL->setSpacing(4);
+        // Join is offered whenever they are in a game — deliberately NOT gated on their "open to join" flag, which
+        // is manual and usually forgotten; gating on it would hide most joinable games.
+        if (C.State == "accepted" && !C.PlayNode.empty())
+        {
+            auto * Join = new QPushButton("Join", Actions);
+            connect(Join, &QPushButton::clicked, this, [this, Peer]{ joinClicked(Peer); });
+            AL->addWidget(Join);
+        }
         if (C.State == "incoming")
         {
             auto * Accept = new QPushButton("Accept", Actions);
@@ -190,7 +239,92 @@ void FriendsTab::refresh()
             AL->addWidget(Remove);
         }
         AL->addStretch();
-        Table->setCellWidget(Row, 4, Actions);
+        Table->setCellWidget(Row, 5, Actions);
         ++Row;
     }
+
+    refreshSuggestions();
+}
+
+void FriendsTab::refreshSuggestions()
+{
+    while (QLayoutItem * Item = MetLayout->takeAt(0))
+    {
+        if (Item->widget()) Item->widget()->deleteLater();
+        delete Item;
+    }
+    const std::vector<IpfsWrapper::FriendSuggestion> Met = IpfsWrapper::FriendSuggestions();
+    MetBox->setVisible(!Met.empty());
+    for (const auto & S : Met)
+    {
+        const QString Peer = QString::fromStdString(S.Peer);
+        auto * RowW = new QWidget(MetBox);
+        auto * RL = new QHBoxLayout(RowW);
+        RL->setContentsMargins(2, 2, 2, 2);
+        const QString Who = S.Nick.empty() ? (Peer.left(8) + "…" + Peer.right(4)) : QString::fromStdString(S.Nick);
+        auto * Text = new QLabel(Who + "  —  met in " + QString::fromStdString(S.Game), RowW);
+        Text->setToolTip("Suggested by " + QString::fromStdString(S.Via) + "\n" + Peer);
+        RL->addWidget(Text, 1);
+        auto * Add = new QPushButton("Add friend", RowW);
+        connect(Add, &QPushButton::clicked, this, [this, Peer]{
+            IpfsWrapper::FriendAdd(Peer.toStdString());     // an ordinary mutual-consent request
+            IpfsWrapper::DismissSuggestion(Peer.toStdString());
+            refresh();
+        });
+        RL->addWidget(Add);
+        auto * Dismiss = new QPushButton("Dismiss", RowW);
+        connect(Dismiss, &QPushButton::clicked, this, [this, Peer]{
+            IpfsWrapper::DismissSuggestion(Peer.toStdString());
+            refreshSuggestions();
+        });
+        RL->addWidget(Dismiss);
+        MetLayout->addWidget(RowW);
+    }
+}
+
+void FriendsTab::joinClicked(const QString & Peer)
+{
+    IpfsWrapper::Contact Target;
+    for (const auto & C : IpfsWrapper::FriendList())
+        if (C.PeerID == Peer.toStdString()) Target = C;
+    if (Target.PlayNode.empty()) return;
+
+    const QString Label = QString::fromStdString(Target.PlayLabel.empty() ? Target.PlayNode : Target.PlayLabel);
+
+    // We may simply not have their game. There is nothing to open, so warn and stop — never block, never fetch.
+    const Node * N = Model.catalogIndex().Find(Target.PlayNode);
+    if (!N)
+    {
+        QMessageBox::information(this, "Can't join yet",
+            QString::fromStdString(Target.Nick.empty() ? "Your friend" : Target.Nick) +
+            " is playing “" + Label + "”, which isn't in your library.\n\n"
+            "Add it (node id: " + QString::fromStdString(Target.PlayNode) + ") and the Join button will work.");
+        return;
+    }
+
+    // Their vIP is what the game must be pointed at. It comes from the LAN link table rather than being recomputed.
+    QString Vip;
+    for (const auto & P : IpfsWrapper::LanPeers())
+        if (P.Peer == Target.PeerID) Vip = QString::fromStdString(P.Vip);
+    if (Vip.isEmpty())
+    {
+        QMessageBox::information(this, "Can't join yet",
+            "That friend isn't on your virtual LAN right now, so there is no address to join.\n\n"
+            "Check they are online and not un-ticked in the launch window's Virtual LAN panel.");
+        return;
+    }
+
+    // Version mismatch is a WARNING, never a block — different builds are often interoperable, and an ident whose
+    // recipe prefix we don't recognise means UNKNOWN rather than wrong.
+    QString Warning;
+    const std::string Mine = PackageCatalog::PlayIdent(Model.catalogIndex(), Target.PlayNode);
+    if (!Target.PlayIdent.empty() && !Mine.empty() &&
+        Target.PlayIdent.rfind("v1:", 0) == 0 && Mine.rfind("v1:", 0) == 0 && Target.PlayIdent != Mine)
+        Warning = "Your copy of this game differs from theirs — it may or may not connect.";
+
+    auto * Dlg = new PreLaunchWindow(Model.config(), &Model.catalogIndex(),
+                                     PackageCatalog::GroupNodeIds(Model.catalogIndex(), Target.PlayNode), nullptr);
+    Dlg->setAttribute(Qt::WA_DeleteOnClose);
+    Dlg->PresetJoin(Vip, Peer, Target.PlayNode, Warning);
+    Dlg->show();
 }

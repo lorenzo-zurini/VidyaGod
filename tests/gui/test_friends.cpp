@@ -90,6 +90,69 @@ private slots:
         QCOMPARE(Removed.first().at(0).toString(), QStringLiteral("12D3KooWPal"));
     }
 
+    void friendsmanager_marshals_play_state()
+    {
+        // A presence event must emit BOTH signals: friendPresence (every existing consumer) and friendPlaying.
+        FriendsManager *FM = FriendsManager::instance();
+        QSignalSpy Presence(FM, &FriendsManager::friendPresence);
+        QSignalSpy Playing(FM, &FriendsManager::friendPlaying);
+
+        IpfsNodeFriendCb(3, R"({"peer":"12D3KooWPal","online":true,"play":"wipeout_xl_mp",
+                                "plabel":"Wipeout XL — Multiplayer","pident":"v1:17260@abc","psince":1234,
+                                "popen":true})");
+        QVERIFY(Playing.wait(1000));
+        QCOMPARE(Playing.first().at(0).toString(), QStringLiteral("12D3KooWPal"));
+        QCOMPARE(Playing.first().at(1).toString(), QStringLiteral("wipeout_xl_mp"));
+        QCOMPARE(Playing.first().at(2).toString(), QStringLiteral("Wipeout XL — Multiplayer"));
+        QCOMPARE(Playing.first().at(3).toString(), QStringLiteral("v1:17260@abc"));
+        QCOMPARE(Playing.first().at(4).toLongLong(), 1234LL);
+        QCOMPARE(Playing.first().at(5).toBool(), true);
+        QCOMPARE(Presence.count(), 1);   // the old signal still fires, unchanged
+    }
+
+    void friendsmanager_suggestion_is_not_a_removal()
+    {
+        // Regression: the kind→enum ternary chain used to end `: Removed`, so ANY kind above 4 arrived as a contact
+        // removal. A suggestion silently deleting contacts is about as bad as this bridge can fail.
+        FriendsManager *FM = FriendsManager::instance();
+        QSignalSpy Suggest(FM, &FriendsManager::friendSuggestion);
+        QSignalSpy Removed(FM, &FriendsManager::friendRemoved);
+
+        IpfsNodeFriendCb(6, R"({"peer":"12D3KooWCarol","nick":"carol","via":"12D3KooWBob","game":"aoe2_base_game"})");
+        QVERIFY(Suggest.wait(1000));
+        QCOMPARE(Suggest.first().at(0).toString(), QStringLiteral("12D3KooWCarol"));
+        QCOMPARE(Suggest.first().at(1).toString(), QStringLiteral("carol"));
+        QCOMPARE(Suggest.first().at(2).toString(), QStringLiteral("12D3KooWBob"));
+        QCOMPARE(Suggest.first().at(3).toString(), QStringLiteral("aoe2_base_game"));
+        QCOMPARE(Removed.count(), 0);
+    }
+
+    void playing_roundtrip_and_invisibility_persist()
+    {
+        // These must all work with the node OFFLINE: the launch path calls SetPlaying/ClearPlaying unconditionally.
+        QTemporaryDir Dir;
+        std::string Err;
+        const std::string Repo = (Dir.path() + "/ipfs").toStdString();
+        QVERIFY(IpfsWrapper::StartNode(Repo, &Err));
+
+        QVERIFY(IpfsWrapper::SetPlaying("wipeout_xl_mp", "Wipeout XL", "v1:17260@abc"));
+        QCOMPARE(IpfsWrapper::GetPlaying().NodeId, std::string("wipeout_xl_mp"));
+        IpfsWrapper::SetOpenToJoin(true);
+        QVERIFY(IpfsWrapper::GetPlaying().Open);
+        IpfsWrapper::ClearPlaying();
+        QVERIFY(IpfsWrapper::GetPlaying().NodeId.empty());
+
+        IpfsWrapper::SetInvisible(true);
+        QVERIFY(IpfsWrapper::Invisible());
+        IpfsWrapper::StopNode();
+        QVERIFY(IpfsWrapper::StartNode(Repo, &Err));
+        // Invisibility is persisted (being silently re-exposed by a restart is the wrong failure); the play state
+        // is transient (a crash must not leave you permanently "in a game").
+        QVERIFY(IpfsWrapper::Invisible());
+        QVERIFY(IpfsWrapper::GetPlaying().NodeId.empty());
+        IpfsWrapper::StopNode();
+    }
+
     void lan_launchvars_offline_safety()
     {
         // Offline node (no friends / no social routing): the host-less friend LAN yields no launch vars — the launch
