@@ -62,9 +62,33 @@ echo "== running the test suite"
 ctest --test-dir build 2>&1 | tail -3
 
 echo "== pointing the games source at $GAMES_CID"
+# The source NAME is per-machine (this PC calls it "VidyaGod", the laptop "VidyaGod Games"), so discover it from
+# the config rather than assuming — an assumed name just fails with "no package source named ...".
+SRC_NAME="$(python3 - <<'PY'
+import json, os
+c = json.load(open(os.path.expanduser("~/.VidyaGod/GlobalConfig.JSON")))
+names = [s.get("NAME","") for s in c.get("Settings", {}).get("PackageSources", [])]
+games = [n for n in names if n not in ("VidyaGodLibraries", "VidyaGodRunners")]
+print(games[0] if len(games) == 1 else "")
+PY
+)"
+if [ -z "$SRC_NAME" ]; then
+    echo "!! could not identify the games source by elimination — set it by hand"; exit 1
+fi
+echo "== games source is named '$SRC_NAME'"
+
 # --upgrade-source merge-upgrades in place: already-hydrated content is KEPT and the old version is demoted
 # rather than deleted, so this is not a re-download of the whole library.
-timeout 900 ./build/VidyaGod --upgrade-source VidyaGod "$GAMES_CID" 2>&1 | grep -aiE "upgrade|source|error|SUC" | tail -12
+#
+# NOT piped into grep: a pipeline reports the EXIT STATUS OF THE LAST COMMAND, so `... | grep` returns grep's
+# status and a failed upgrade reads as success. That is exactly how the first run of this script reported OK
+# while the upgrade had actually failed on a wrong source name.
+if ! timeout 1800 ./build/VidyaGod --upgrade-source "$SRC_NAME" "$GAMES_CID" > /tmp/vg_upgrade.log 2>&1; then
+    echo "!! UPGRADE FAILED:"; grep -aiE "ERR |deadline" /tmp/vg_upgrade.log | tail -5
+    echo "!! If this timed out fetching: the OTHER machine must be RUNNING VidyaGod to seed the CID."
+    exit 1
+fi
+grep -aiE "Upgrade |content kept|content new|deprecated|SUC .*[Uu]pgrad" /tmp/vg_upgrade.log | tail -8
 
 echo "== resulting sources:"
 python3 - <<'PY'
