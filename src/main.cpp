@@ -219,6 +219,7 @@ int main(int argc, char *argv[])
         LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs || !LaunchParameters.UnpinCid.empty()
         || !LaunchParameters.DropRefCid.empty()
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty() || LaunchParameters.HealPins
+        || LaunchParameters.NetTest
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
@@ -537,6 +538,13 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--verify-cid" && i + 1 < argc)
         {
             RuntimeParameters.VerifyCidArg    = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--net-test")
+        {
+            //Run the network/firewall diagnostic sweep headless and print one row per check. Exit 1 when any
+            //check FAILS, so scripts (and the provision harness) can gate on it.
+            RuntimeParameters.NetTest        = true;
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--heal")

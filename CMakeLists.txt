@@ -227,6 +227,7 @@ set(SHARED_SOURCES
 
     src/settingstab.h
     src/settingstab.cpp
+    src/networkpage.cpp
 
     src/runnerspage.h
     src/runnerspage.cpp

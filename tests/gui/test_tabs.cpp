@@ -11,6 +11,7 @@
 #include "catalogtab.h"
 #include "packagesview.h"
 #include "settingstab.h"
+#include "networkpage.h"
 #include "ipfstab.h"
 #include "ipfsmodel.h"
 #include "gamepicker.h"
@@ -23,6 +24,7 @@
 #include <QListWidget>
 #include <QTreeWidget>
 #include <QPushButton>
+#include <QLabel>
 #include <QAbstractButton>
 #include <QComboBox>
 #include <QAbstractSpinBox>
@@ -175,6 +177,26 @@ private slots:
         // The settings nav is a list/stacked layout; just cycle any child stacked widget if present.
         for (QObject * c : tab.findChildren<QObject *>()) c->blockSignals(true);
         QVERIFY(true);   // reached here without crashing
+    }
+    // The Network page (Settings -> Network): constructs, and pressing Run against an OFFLINE node must land in
+    // the "node is offline" message rather than hanging or crashing — the worker path and the offline gate are
+    // exactly the parts a wiring test can pin without a network.
+    void network_page_offline_run()
+    {
+        AppModel m(&Cfg, &AppDir);
+        NetworkPage page(m);
+        page.resize(800, 600); page.show(); QApplication::processEvents();
+        QPushButton * Run = page.findChild<QPushButton *>("RunNetworkTestButton");
+        QVERIFY(Run);
+        Run->click();
+        // The sweep runs on a worker; with the node offline it returns almost immediately. Pump until the
+        // button re-enables (bounded), then check the offline message reached the label.
+        for (int i = 0; i < 200 && !Run->isEnabled(); ++i) { QTest::qWait(25); }
+        QVERIFY2(Run->isEnabled(), "the Run button must re-enable after the sweep");
+        QLabel * Status = nullptr;
+        for (QLabel * L : page.findChildren<QLabel *>())
+            if (L->text().contains("offline")) Status = L;
+        QVERIFY2(Status, "an offline node must be reported as such, not rendered as an empty result");
     }
 };
 

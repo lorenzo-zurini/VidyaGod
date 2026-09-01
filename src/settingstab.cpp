@@ -6,6 +6,7 @@
 #include "runnerspage.h"
 #include "sourcespage.h"
 #include "ipfssettingspage.h"
+#include "networkpage.h"
 #include "pathspage.h"
 
 #include <QListWidget>
@@ -29,6 +30,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
     CategoryList->addItem("Runners");
     CategoryList->addItem("Sources");
     CategoryList->addItem("IPFS");
+    CategoryList->addItem("Network");
     CategoryList->addItem("Storage & Paths");
     outer->addWidget(CategoryList);
 
@@ -45,6 +47,7 @@ SettingsTab::SettingsTab(AppModel &model, QWidget *parent)
         [this]{ return static_cast<QWidget *>(new RunnersPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new SourcesPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new IpfsSettingsPage(Model, Stack)); },
+        [this]{ return static_cast<QWidget *>(new NetworkPage(Model, Stack)); },
         [this]{ return static_cast<QWidget *>(new PathsPage(Model, Stack)); },
     };
     Pages.assign(PageFactories.size(), nullptr);

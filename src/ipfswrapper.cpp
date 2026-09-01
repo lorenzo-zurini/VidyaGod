@@ -688,6 +688,28 @@ std::vector<LanPeer> LanPeers()
     return Out;
 }
 
+std::vector<NetCheck> NetworkTest(bool *NodeOffline)
+{
+    std::vector<NetCheck> Out;
+    if (NodeOffline) *NodeOffline = false;
+    char *J = nullptr;
+    if (VgNetworkTest(&J) != 0)
+    {
+        TakeStr(J);
+        if (NodeOffline) *NodeOffline = true;
+        return Out;
+    }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        for (const auto &E : nlohmann::json::parse(Js))
+            Out.push_back({E.value("name", std::string()), E.value("status", std::string("fail")),
+                           E.value("detail", std::string())});
+    }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::NetworkTest", std::string("bad JSON from node: ") + E.what()); }
+    return Out;
+}
+
 void SetLanExcluded(const std::vector<std::string> &PeerIds)
 {
     std::string Csv;

@@ -332,6 +332,13 @@ struct LanPeer {
 };
 // Live per-friend LAN link state (empty when the node/maintainer is down). Poll-friendly (~2s).
 std::vector<LanPeer> LanPeers();
+
+// One row of the Settings→Network firewall diagnostic. Status is "ok"/"warn"/"fail"; Detail is the sentence a
+// user acts on ("outbound UDP looks BLOCKED ...").
+struct NetCheck { std::string Name, Status, Detail; };
+// Runs the node's full network sweep (BLOCKS up to ~15s — call from a worker). Empty + *NodeOffline=true when
+// the node is not online (there is nothing meaningful to probe without a host).
+std::vector<NetCheck> NetworkTest(bool *NodeOffline = nullptr);
 // Replace the GLOBAL LAN roster's excluded set (the launch window's un-ticked members). Immediate, mid-game too.
 void SetLanExcluded(const std::vector<std::string> &PeerIds);
 

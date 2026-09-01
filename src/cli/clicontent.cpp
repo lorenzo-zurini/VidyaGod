@@ -193,6 +193,26 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         return 0;
     }
 
+    if (LaunchParameters.NetTest)
+    {
+        // Same sweep as Settings -> Network, headless. One row per check; exit 1 on any FAIL so scripts and the
+        // provision harness can gate on "the network is not the problem".
+        bool Offline = false;
+        const std::vector<IpfsWrapper::NetCheck> Checks = IpfsWrapper::NetworkTest(&Offline);
+        if (Offline) { LogErr("net-test", "node is offline — nothing to probe"); return 1; }
+        int Fails = 0;
+        for (const auto &C : Checks)
+        {
+            const std::string Line = "[" + C.Status + "]  " + C.Name + " — " + C.Detail;
+            if (C.Status == "fail") { ++Fails; LogErr("net-test", Line); }
+            else if (C.Status == "warn") LogWarn("net-test", Line);
+            else LogSucc("net-test", Line);
+        }
+        LogOut("net-test", Fails ? std::to_string(Fails) + " check(s) FAILED — the rows above say what to unblock."
+                                 : "all checks passed — the network is not your problem.");
+        return Fails ? 1 : 0;
+    }
+
     if (LaunchParameters.HealPins)
     {
         // The explicit ops command is the COMPREHENSIVE one — it is meant to be the only thing anyone has to run,

@@ -95,6 +95,9 @@ void VgSetFriendCb(VgFriendCb cb);
 int  VgLanLaunchVars(char **outJson);
 // Per-friend LAN link state for the UI: [{peer,nick,vip,online,link:"direct"|"relayed"|"connecting"|"down",rttMs}].
 int  VgLanPeers(char **outJson);
+// Full network/firewall diagnostic sweep (~15s, concurrent, read-only): [{"name","status","detail"}...].
+// -1 when the node is offline.
+int  VgNetworkTest(char **outJson);
 // Replace the GLOBAL LAN roster's excluded set (comma-separated peer ids). Applies immediately, mid-game included.
 void VgLanSetExcluded(const char *csv);
 

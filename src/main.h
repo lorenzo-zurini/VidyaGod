@@ -50,6 +50,7 @@ struct LaunchParameters
     bool ForceOp = false;                                                 //--force: apply an upgrade whose new tree shares no packages with the old
     std::vector<std::string> CidPaths;                                    //--cid <file>…: print each file's CID (no seeding, no node)
     std::string VerifyCidArg;                                             //--verify-cid <cid>: read it back out of the blockstore
+    bool NetTest = false;                                                 //--net-test: run the network/firewall diagnostic sweep, print rows, exit non-zero on any FAIL
     bool HealPins = false;                                                //--heal: re-point orphaned refs across all package sources + prune stale pins (unreferenced + backing gone), then exit
     std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
     std::string FetchDest;
