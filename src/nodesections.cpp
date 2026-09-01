@@ -197,6 +197,8 @@ NodeLayersSection::NodeLayersSection(PackageEditorModel * model, int nodeIndex, 
                     BuildDllOverrideRows(LBox, LG, n, j, LPath);
                 else if (LayerType == "FileEdit")
                     BuildFileEditRows(LBox, LG, n, j, LPath);
+                else if (LayerType == "BinaryPatch")
+                    BuildBinaryPatchRows(LBox, LG, n, j, LPath);
                 else if (LayerType == "Persist")
                     BuildPersistRows(LBox, LG, n, j, LPath);
                 else if (LayerType == "DeclareExec" || LayerType == "DeclareLibraryItem" || LayerType == "DeclareRunner")
@@ -436,6 +438,29 @@ for (const QString &Field : Fields)
     QObject::connect(FE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
     LG->addWidget(FE, ferow, 1); ferow++;
 }
+}
+
+void NodeLayersSection::BuildBinaryPatchRows(QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath)
+{
+    auto &Layers = Model->doc()["NODES"][n]["LAYERS"];
+    std::string Mode = Layers[j].value("MODE", std::string("Replace"));
+    // Site (ANCHOR or OFFSET) + guard (EXPECT) are common; the payload field is per-mode.
+    // Replace→REPLACE, Poke→VALUE, Cave→PAYLOAD (+CAVE). APPLY toggles on-disk vs in-memory.
+    QStringList Fields{"MODE", "FILE", "APPLY", "ANCHOR", "OFFSET", "EXPECT"};
+    if (Mode == "Cave")      Fields << "PAYLOAD" << "CAVE";
+    else if (Mode == "Poke") Fields << "VALUE";
+    else                     Fields << "REPLACE";
+    int brow = 1;
+    for (const QString &Field : Fields)
+    {
+        LG->addWidget(new QLabel(Field + ":"), brow, 0);
+        QLineEdit * BE = new QLineEdit(LBox);
+        BE->setProperty("JSONPath", LPath + "/" + Field);
+        if (Layers[j].contains(Field.toStdString()) && Layers[j][Field.toStdString()].is_string())
+            BE->setText(QString::fromStdString(std::string(Layers[j][Field.toStdString()])));
+        QObject::connect(BE, &QLineEdit::editingFinished, this, &NodeSection::onFieldEdited);
+        LG->addWidget(BE, brow, 1); brow++;
+    }
 }
 
 void NodeLayersSection::BuildPersistRows(QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath)

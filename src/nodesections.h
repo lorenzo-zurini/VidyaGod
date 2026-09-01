@@ -41,6 +41,7 @@ private:
     void BuildRegEditRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
     void BuildDllOverrideRows(QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
     void BuildFileEditRows  (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
+    void BuildBinaryPatchRows(QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
     void BuildPersistRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);
     void BuildDeclareRows   (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LayerType, const QString & LPath);
     void BuildCustomVarRows (QGroupBox * LBox, QGridLayout * LG, int n, int j, const QString & LPath);

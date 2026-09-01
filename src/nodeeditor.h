@@ -30,6 +30,7 @@ private slots:
     void AddRegEdit();
     void AddDllOverride();
     void AddFileEdit();
+    void AddBinaryPatch();
     void AddCustomVar();
     void AddPersist();
     void AddDeclareExec();          // make this node launchable (PLATFORM + CONTENTPATH/…)

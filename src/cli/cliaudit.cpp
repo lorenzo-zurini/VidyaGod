@@ -81,6 +81,37 @@ void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Ou
             if (Mode.empty())
                 Out.push_back({N.NodeId, Pkg, "fileedit-no-mode", "FileEdit has no MODE — it is skipped entirely.", true});
         }
+        if (Type == "BinaryPatch")
+        {
+            const std::string Mode = L.value("MODE", std::string());
+            const std::string File = L.value("FILE", std::string());
+            //An UNGUARDED patch (no EXPECT) writes wherever it lands with no check the bytes are what the author
+            //thinks — a wrong/rebuilt binary is silently corrupted. Content-addressing freezes the base, but the
+            //guard is the cheap insurance that catches a mispointed FILE or a stale offset. Required for all modes.
+            if (!L.contains("EXPECT"))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-no-expect",
+                               "BinaryPatch on '" + File + "' has no EXPECT guard — it will overwrite whatever is at "
+                               "the site with no verification. Add EXPECT (the original bytes).", true});
+            //FILE joins onto the runtime mount root; an absolute path escapes it (same trap as FileEdit).
+            if (File.rfind("%RuntimePath%", 0) == 0 || (!File.empty() && File[0] == '/'))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-absolute-file",
+                               "FILE '" + File + "' is absolute; author it relative to the mount root.", true});
+            if (Mode != "Replace" && Mode != "Cave" && Mode != "Poke")
+                Out.push_back({N.NodeId, Pkg, "binarypatch-bad-mode",
+                               "BinaryPatch MODE '" + Mode + "' is not Replace/Cave/Poke — the patch is skipped.", true});
+            if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-no-site",
+                               "BinaryPatch has neither ANCHOR nor OFFSET — nowhere to patch.", true});
+            if (Mode == "Replace" && !L.contains("REPLACE"))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-replace-no-bytes",
+                               "Replace has no REPLACE bytes.", true});
+            if (Mode == "Poke" && !L.contains("VALUE"))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-poke-no-value",
+                               "Poke has no VALUE.", true});
+            if (Mode == "Cave" && !L.contains("PAYLOAD"))
+                Out.push_back({N.NodeId, Pkg, "binarypatch-cave-no-payload",
+                               "Cave has no PAYLOAD (the cave body).", true});
+        }
         //A content layer whose local file is missing is a package that cannot launch (and, with no SOURCE, cannot
         //even be fetched). ValidateNodeGraph covers PATH existence; here we only flag the un-fetchable case.
         if ((Type == "VFSZipLayer" || Type == "VFSDeltaLayer") && !L.contains("SOURCE"))

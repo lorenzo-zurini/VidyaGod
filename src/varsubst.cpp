@@ -56,6 +56,31 @@ std::string VarSubst::RenderValue(const std::string &Value, const std::string &F
     if (Format == "upper") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::toupper); return O; }
     if (Format == "lower") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::tolower); return O; }
 
+    //Scalar-to-hex-bytes for BinaryPatch: a decimal value becomes a run of hex byte-pairs in the requested width
+    //and endianness (u8 / u16le / u16be / u32le / u32be). The output is a bare hex string ("0a000000"), so it drops
+    //straight into a Poke VALUE or inside a Replace/Cave hex payload. Little-endian reverses the byte order.
+    if (Format == "u8" || Format == "u16le" || Format == "u16be" || Format == "u32le" || Format == "u32be")
+    {
+        const int Width = (Format == "u8") ? 1 : (Format[1] == '1') ? 2 : 4;
+        const bool Big  = Format.size() >= 2 && Format.back() == 'e' && Format[Format.size() - 2] == 'b';
+        try {
+            const uint64_t n = std::stoull(Value);
+            if (Width < 8 && (n >> (8 * Width)) != 0)
+                LogWarn("RenderValue", "value '" + Value + "' does not fit in " + Format + " — high bits truncated.");
+            std::ostringstream oss;
+            oss << std::hex << std::setfill('0');
+            for (int i = 0; i < Width; ++i)
+            {
+                const int shift = Big ? (Width - 1 - i) : i;   // LE: byte i is bits [8i,8i+8); BE: reversed
+                oss << std::setw(2) << ((n >> (8 * shift)) & 0xFF);
+            }
+            return oss.str();
+        } catch (...) {
+            LogWarn("RenderValue", "Could not parse " + Format + " value: '" + Value + "', leaving unchanged.");
+            return Value;
+        }
+    }
+
     LogWarn("RenderValue", "Unknown render format ':" + Format + "' — leaving value unchanged.");
     return Value;
 }

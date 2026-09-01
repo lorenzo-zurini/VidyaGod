@@ -133,6 +133,9 @@ set(SHARED_SOURCES
     src/fileedits.h
     src/fileedits.cpp
 
+    src/binarypatch.h
+    src/binarypatch.cpp
+
     src/registrylayer.h
     src/registrylayer.cpp
 
@@ -318,6 +321,7 @@ add_executable(vg_tests
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
     tests/test_fileedits.cpp
+    tests/test_binarypatch.cpp
     tests/test_registrylayer.cpp
     tests/test_depcheck.cpp
     tests/test_vgdelta.cpp
@@ -325,6 +329,7 @@ add_executable(vg_tests
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp
+    src/binarypatch.cpp
     src/registrylayer.cpp
     src/persistlayer.cpp
     src/commonutils.cpp

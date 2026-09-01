@@ -727,6 +727,31 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                     }
                 }
 
+        //BinaryPatch structural lint: a malformed patch does nothing (or worse, patches blindly). Mirror the
+        //audit's checks here so the editor/validate flags them before launch.
+        if (N.Layers.is_array())
+            for (const auto &L : N.Layers)
+            {
+                if (!L.is_object() || L.value("TYPE", std::string()) != "BinaryPatch") continue;
+                const std::string M = L.value("MODE", std::string());
+                if (M != "Replace" && M != "Cave" && M != "Poke")
+                    Errors.push_back(Tag + ": BinaryPatch MODE '" + M + "' is not Replace/Cave/Poke.");
+                if (!L.contains("ANCHOR") && !L.contains("OFFSET"))
+                    Errors.push_back(Tag + ": BinaryPatch has neither ANCHOR nor OFFSET (no site to patch).");
+                if (!L.contains("EXPECT"))
+                    Warnings.push_back(Tag + ": BinaryPatch has no EXPECT guard — it will patch without verifying "
+                        "the original bytes (a mispointed FILE or stale offset corrupts silently).");
+                if (M == "Replace" && !L.contains("REPLACE"))
+                    Errors.push_back(Tag + ": Replace BinaryPatch has no REPLACE bytes.");
+                if (M == "Poke" && !L.contains("VALUE"))
+                    Errors.push_back(Tag + ": Poke BinaryPatch has no VALUE.");
+                if (M == "Cave" && !L.contains("PAYLOAD"))
+                    Errors.push_back(Tag + ": Cave BinaryPatch has no PAYLOAD.");
+                if (const std::string F = L.value("FILE", std::string());
+                    F.rfind("%RuntimePath%", 0) == 0 || (!F.empty() && F[0] == '/'))
+                    Errors.push_back(Tag + ": BinaryPatch FILE '" + F + "' is absolute; author it relative to the mount root.");
+            }
+
         //EXCLUDE symmetry.
         for (const std::string &E : N.Exclude)
         {

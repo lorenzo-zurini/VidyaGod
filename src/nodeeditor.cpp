@@ -67,6 +67,7 @@ NodeEditor::NodeEditor(PackageEditorModel * model, int nodeArrayIndex, QWidget *
         LayerMenu->addAction("RegEdit",       this, &NodeEditor::AddRegEdit);
         LayerMenu->addAction("DllOverride",   this, &NodeEditor::AddDllOverride);
         LayerMenu->addAction("FileEdit",      this, &NodeEditor::AddFileEdit);
+        LayerMenu->addAction("BinaryPatch",   this, &NodeEditor::AddBinaryPatch);
         LayerMenu->addSeparator();
         LayerMenu->addAction("Persist",       this, &NodeEditor::AddPersist);
         LayerMenu->addAction("CustomVar",     this, &NodeEditor::AddCustomVar);
@@ -201,6 +202,7 @@ void NodeEditor::AddVFSFileLayer()
 void NodeEditor::AddRegEdit()      { appendLayer(json::object({ {"TYPE", "RegEdit"}, {"REGPATH", ""}, {"ARCHITECTURE", "32"}, {"KEYVALUES", json::object()} })); }
 void NodeEditor::AddDllOverride()  { appendLayer(json::object({ {"TYPE", "DllOverride"}, {"DLLOVERRIDE", ""} })); }
 void NodeEditor::AddFileEdit()     { appendLayer(json::object({ {"TYPE", "FileEdit"}, {"MODE", "ConfigWrite"}, {"FILE", ""}, {"KEY", ""}, {"VALUE", ""} })); }
+void NodeEditor::AddBinaryPatch()  { appendLayer(json::object({ {"TYPE", "BinaryPatch"}, {"MODE", "Replace"}, {"FILE", ""}, {"OFFSET", ""}, {"EXPECT", ""}, {"REPLACE", ""} })); }
 void NodeEditor::AddCustomVar()    { appendLayer(json::object({ {"TYPE", "CustomVar"}, {"KEY", ""}, {"DEFAULT", ""} })); }   // a binding by default; tick "User option" to add a UI facet
 void NodeEditor::AddPersist()      { appendLayer(json::object({ {"TYPE", "Persist"}, {"KEEP", ""} })); }
 void NodeEditor::AddDeclareExec()        { appendLayer(json::object({ {"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", ""} })); }

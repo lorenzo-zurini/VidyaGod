@@ -14,6 +14,7 @@
 #include "varsubst.h"        // VarSubst — the %token% / custom-var encoding engine (moved out of this class)
 #include "launchresolver.h"  // LaunchResolver — param/recipe/runner/exec/persistence resolution (moved out)
 #include "fileedits.h"       // FileEdits — FileEdit/DllOverride application (moved out of this class)
+#include "binarypatch.h"     // BinaryPatch — the executable-patch edit layer (Replace/Cave/Poke)
 #include "registrylayer.h"   // RegistryLayer — Wine prefix/registry/DEFAULTDATA + reg-persistence (moved out)
 #include "persistlayer.h"    // PersistLayer — PersistFile seed/capture (moved out of this class)
 #include "vfsmount.h"        // VfsMount — vidyagodfs layer-spec build + mount/unmount (moved out)

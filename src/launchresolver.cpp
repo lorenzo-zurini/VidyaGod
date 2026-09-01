@@ -242,7 +242,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
             for (const auto &L : Comp["SUBCOMPONENTS"])
             {
                 const std::string T = L.value("TYPE", std::string());
-                if (T == "FileEdit" || T == "RegEdit" || T == "DllOverride") CP.SubComponentsArray.push_back(L);
+                if (T == "FileEdit" || T == "RegEdit" || T == "DllOverride" || T == "BinaryPatch") CP.SubComponentsArray.push_back(L);
             }
         }
     }

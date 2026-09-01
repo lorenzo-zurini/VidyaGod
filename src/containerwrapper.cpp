@@ -263,6 +263,12 @@ bool ContainerWrapper::BuildContainerRuntime()
         if (!FileEdits::ProcessFileEdits(this->ContainerParams, /*OverridePass=*/true))
             LogErr("ContainerWrapper::BuildContainerRuntime",
                    "OVERRIDE FileEdits FAILED — package settings above were not applied; the game is misconfigured.");
+        //BinaryPatch (APPLY:prefix) COWs the game exe in the writelayer — the pristine content zip is untouched.
+        //Same loud-but-non-fatal contract: an errored patch means the game runs unmodified (no No-CD, crash fix
+        //not applied, etc.) while everything else looks fine.
+        if (!BinaryPatch::ProcessBinaryPatches(this->ContainerParams))
+            LogErr("ContainerWrapper::BuildContainerRuntime",
+                   "BinaryPatch FAILED — an executable patch above was not applied; the game may not run as intended.");
         if (PrefixGen)
         {
             if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))
