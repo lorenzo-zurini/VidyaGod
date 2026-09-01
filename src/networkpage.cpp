@@ -50,7 +50,7 @@ NetworkPage::NetworkPage(AppModel &model, QWidget *parent)
 void NetworkPage::runTest()
 {
     RunButton->setEnabled(false);
-    StatusLabel->setText("Testing… (takes up to ~15 seconds)");
+    StatusLabel->setText("Testing… (takes up to ~30 seconds)");
     ResultTree->clear();
 
     auto Checks  = std::make_shared<std::vector<IpfsWrapper::NetCheck>>();
