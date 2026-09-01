@@ -168,6 +168,15 @@ std::string VarSubst::RenderValue(const std::string &Value, const std::string &F
     if (Format == "upper") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::toupper); return O; }
     if (Format == "lower") { std::string O = Value; std::transform(O.begin(), O.end(), O.begin(), ::tolower); return O; }
 
+    //String-to-hex-bytes for BinaryPatch: emit the value's ASCII bytes as hex (ascii) or ASCII + a NUL terminator
+    //(asciiz). Lets a Poke/Replace write a C string into a binary (a host address, a session name, a CD key).
+    if (Format == "ascii" || Format == "asciiz")
+    {
+        std::string s;
+        for (unsigned char c : Value) { const char *d = "0123456789abcdef"; s += d[c >> 4]; s += d[c & 0xF]; }
+        if (Format == "asciiz") s += "00";
+        return s;
+    }
     //Scalar-to-hex-bytes for BinaryPatch: a decimal value becomes a run of hex byte-pairs in the requested width
     //and endianness (u8 / u16le / u16be / u32le / u32be). The output is a bare hex string ("0a000000"), so it drops
     //straight into a Poke VALUE or inside a Replace/Cave hex payload. Little-endian reverses the byte order.

@@ -37,6 +37,7 @@ bool ConditionParses(const std::string &Expr);
 //  upper / lower : ASCII case fold
 //  u8 / u16le / u16be / u32le / u32be : decimal → hex byte-pairs of that width/endianness ("10"→u32le→"0a000000")
 //                                       — BinaryPatch Poke VALUE / bytes inside a Replace or Cave payload
+//  ascii / asciiz : the value's ASCII bytes as hex, asciiz appends a NUL — write a C string into a binary (Poke)
 //  "" or unknown format → the value unchanged
 std::string RenderValue(const std::string &Value, const std::string &Format);
 }

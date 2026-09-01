@@ -87,6 +87,14 @@ TEST(render_case_and_winpath)
     CHECK_EQ(RenderValue("MixedCase", "lower"),   std::string("mixedcase"));
 }
 
+TEST(render_ascii_and_asciiz)
+{
+    CHECK_EQ(RenderValue("10.66.1.2", "ascii"),  std::string("31302e36362e312e32"));
+    CHECK_EQ(RenderValue("10.66.1.2", "asciiz"), std::string("31302e36362e312e3200"));
+    CHECK_EQ(RenderValue("", "asciiz"),          std::string("00"));   // empty → just the NUL
+    CHECK_EQ(RenderValue("AB", "ascii"),         std::string("4142"));
+}
+
 TEST(render_empty_or_unknown_format_unchanged)
 {
     CHECK_EQ(RenderValue("hello", ""),            std::string("hello"));
