@@ -42,6 +42,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <tlhelp32.h>
 
 /* stderr of a GUI-subsystem exe under wine reaches nobody; the log file is the only observable trace.
@@ -485,6 +486,70 @@ static int DriveLauncher(DWORD Pid, const char *Res, const char *Snd, DWORD Time
     return Clicked;
 }
 
+/* ---- APPLY:"memory" binary patching -------------------------------------------------------------------------
+ * The opt-in in-memory path: patch the game's loaded image after CREATE_SUSPENDED, before it runs a single
+ * instruction, so the ON-DISK file stays pristine (for anti-tamper that checksums the file). Only reachable from
+ * --run (the single-player direct spawn) -- the one path where vglobby holds a handle to the child.
+ *
+ * Each --mem-patch is "MODE:VA:EXPECT:BYTES" (hex). Replace/Poke only (a byte overwrite at a VA); Cave-in-memory
+ * is intentionally NOT supported here (it needs a reachable rel32 cave and has no consumer -- author it APPLY:
+ * "prefix"). The exes we target load at their fixed ImageBase (no ASLR), so a VA is a live address directly. */
+static int HexNibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static int HexToBytes(const char *Hex, unsigned char *Out, int Max)
+{
+    int n = 0;
+    while (Hex[0] && Hex[1] && n < Max)
+    {
+        int hi = HexNibble(Hex[0]), lo = HexNibble(Hex[1]);
+        if (hi < 0 || lo < 0) return -1;
+        Out[n++] = (unsigned char)((hi << 4) | lo);
+        Hex += 2;
+    }
+    return (Hex[0] == 0) ? n : -1;   /* -1 on a stray odd nibble */
+}
+
+/* Apply one "MODE:VA:EXPECT:BYTES" spec to the suspended process Proc. Returns 1 on applied/skipped, 0 on error. */
+static int ApplyMemPatch(HANDLE Proc, const char *Spec)
+{
+    char        Mode[16] = {0}, VaHex[24] = {0}, ExpHex[128] = {0}, ByHex[512] = {0};
+    unsigned char Exp[64], By[256], Cur[64];
+    void         *Addr;
+    SIZE_T        got = 0, wrote = 0;
+    int           nExp, nBy;
+    DWORD         va, old;
+
+    if (sscanf(Spec, "%15[^:]:%23[^:]:%127[^:]:%511s", Mode, VaHex, ExpHex, ByHex) < 2)
+    { DbgLog("mem-patch: malformed spec '%s'", Spec); return 0; }
+    va   = (DWORD)strtoul(VaHex, NULL, 16);
+    Addr = (void *)(uintptr_t)va;
+    nExp = ExpHex[0] ? HexToBytes(ExpHex, Exp, sizeof(Exp)) : 0;
+    nBy  = ByHex[0]  ? HexToBytes(ByHex,  By,  sizeof(By))  : 0;
+    if (nExp < 0 || nBy <= 0) { DbgLog("mem-patch: bad hex in '%s'", Spec); return 0; }
+
+    /* Guard: verify the ORIGINAL bytes are what the author expects (a wrong/rebased image fails loud). */
+    if (nExp)
+    {
+        if (!ReadProcessMemory(Proc, Addr, Cur, (SIZE_T)nExp, &got) || (int)got != nExp)
+        { DbgLog("mem-patch: cannot read %d bytes at 0x%lx", nExp, (unsigned long)va); return 0; }
+        if (memcmp(Cur, Exp, (size_t)nExp) != 0)
+        { DbgLog("mem-patch: EXPECT mismatch at 0x%lx", (unsigned long)va); return 0; }
+    }
+    if (!VirtualProtectEx(Proc, Addr, (SIZE_T)nBy, PAGE_EXECUTE_READWRITE, &old))
+    { DbgLog("mem-patch: VirtualProtectEx failed at 0x%lx", (unsigned long)va); return 0; }
+    if (!WriteProcessMemory(Proc, Addr, By, (SIZE_T)nBy, &wrote) || (int)wrote != nBy)
+    { DbgLog("mem-patch: write failed at 0x%lx", (unsigned long)va); return 0; }
+    VirtualProtectEx(Proc, Addr, (SIZE_T)nBy, old, &old);
+    FlushInstructionCache(Proc, Addr, (SIZE_T)nBy);
+    DbgLog("mem-patch: %s %d byte(s) at 0x%lx", Mode, nBy, (unsigned long)va);
+    return 1;
+}
+
 static int ParseGuid(const char *Text, GUID *Out)
 {
     unsigned long D1;
@@ -514,6 +579,8 @@ int main(int argc, char **argv)
     const char *Res = NULL, *Snd = NULL;
     int         Hosting  = 1, Wait = 0, RunDirect = 0, i;   /* host unless an address says otherwise */
     DWORD       MaxPlayers = 0, Port = 0;
+    const char *MemPatch[32];                                /* APPLY:"memory" specs (Replace/Poke), --run only */
+    int         NMemPatch = 0;
 
     HRESULT                     Hr;
     HMODULE                     Dll;
@@ -556,6 +623,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--host"))    Hosting  = 1;
         else if (!strcmp(a, "--wait"))    Wait     = 1;
         else if (!strcmp(a, "--run"))     RunDirect = 1;   /* plain spawn, no DirectPlay -- the single-player path */
+        else if (!strcmp(a, "--mem-patch")) { const char *p = NEXT(); if (p && NMemPatch < 32) MemPatch[NMemPatch++] = p; }
         else if (!strcmp(a, "--res"))     Res      = NEXT();
         else if (!strcmp(a, "--snd"))     Snd      = NEXT();
         else if (!strcmp(a, "--join"))
@@ -595,9 +663,21 @@ int main(int argc, char **argv)
         ZeroMemory(&Si, sizeof(Si)); Si.cb = sizeof(Si);
         ZeroMemory(&Pi, sizeof(Pi));
         snprintf(Cmd, sizeof(Cmd), "%s", ExeFile);
-        if (!CreateProcessA(NULL, Cmd, NULL, NULL, FALSE, 0, NULL, Dir, &Si, &Pi))
-            Fail("CreateProcess failed for --run", (HRESULT)GetLastError());
+        /* CREATE_SUSPENDED only when there are in-memory patches to apply before the first instruction; otherwise
+         * a plain spawn (identical to before). */
+        {
+            DWORD Flags = NMemPatch ? CREATE_SUSPENDED : 0;
+            if (!CreateProcessA(NULL, Cmd, NULL, NULL, FALSE, Flags, NULL, Dir, &Si, &Pi))
+                Fail("CreateProcess failed for --run", (HRESULT)GetLastError());
+        }
         printf("vglobby: spawned %s (pid %lu)\n", ExeFile, (unsigned long)Pi.dwProcessId);
+        if (NMemPatch)
+        {
+            int k, ok = 0;
+            for (k = 0; k < NMemPatch; k++) ok += ApplyMemPatch(Pi.hProcess, MemPatch[k]);
+            DbgLog("mem-patch: applied %d/%d before resume", ok, NMemPatch);
+            ResumeThread(Pi.hThread);
+        }
         DriveLauncher(Pi.dwProcessId, Res, Snd, 30000);
         if (Wait)
             WaitForSingleObject(Pi.hProcess, INFINITE);

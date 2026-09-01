@@ -142,6 +142,32 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
         for (std::string tok; std::getline(iss, tok, ' ');)
             if (!tok.empty()) ContainerParams.ExeArgs.push_back(tok);
     }
+
+    // APPLY:"memory" BinaryPatch layers are applied to the LIVE process by vglobby (the only launch path holding a
+    // child handle), so they ride in as extra `--mem-patch MODE:VA:EXPECT:BYTES` args. Only meaningful when this
+    // exec IS vglobby; a non-vglobby exec would choke on the flag, so gate on the content path. Replace/Poke only
+    // (Cave in RAM has no consumer); OFFSET must be a VA (a live address) — an anchor/file-offset cannot resolve
+    // without the mapped image here, so those are skipped with a warning.
+    if (std::string(Resolved.value("CONTENTPATH", std::string())).find("vglobby") != std::string::npos)
+    {
+        for (const auto &Sub : ContainerParams.SubComponentsArray)
+        {
+            if (Sub.value("TYPE", std::string()) != "BinaryPatch") continue;
+            if (Sub.value("APPLY", std::string("prefix")) != "memory") continue;
+            const std::string Mode = Sub.value("MODE", std::string());
+            const std::string Off  = Sub.value("OFFSET", std::string());
+            const std::string Exp  = Sub.value("EXPECT", std::string());
+            std::string Bytes = Sub.value(Mode == "Poke" ? "VALUE" : "REPLACE", std::string());
+            VarSubst::StringVariableSubstitution(Bytes, ExecVars);
+            if (Mode != "Replace" && Mode != "Poke")
+            { LogWarn("ResolveExecutableDefinition", "APPLY:memory supports only Replace/Poke — skipping " + Mode); continue; }
+            if (Off.rfind("0x", 0) != 0 && Off.rfind("0X", 0) != 0)
+            { LogWarn("ResolveExecutableDefinition", "APPLY:memory needs a VA OFFSET (0x...) — skipping '" + Off + "'"); continue; }
+            if (Bytes.empty()) continue;
+            ContainerParams.ExeArgs.push_back("--mem-patch");
+            ContainerParams.ExeArgs.push_back(Mode + ":" + Off + ":" + Exp + ":" + Bytes);
+        }
+    }
     return true;
 }
 
