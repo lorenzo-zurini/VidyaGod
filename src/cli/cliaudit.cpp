@@ -60,6 +60,10 @@ void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Ou
     {
         if (!L.is_object()) continue;
         const std::string Type = L.value("TYPE", std::string());
+        //A malformed WHEN fail-opens (silently always-applies) — a conditional layer/var that never gates. Flag it.
+        if (L.contains("WHEN") && L["WHEN"].is_string() && !VarSubst::ConditionParses(std::string(L["WHEN"])))
+            Out.push_back({N.NodeId, Pkg, "malformed-when",
+                           "WHEN \"" + std::string(L["WHEN"]) + "\" does not parse — the layer would always apply.", true});
         if (Type == "FileEdit")
         {
             const std::string Mode = L.value("MODE", std::string());

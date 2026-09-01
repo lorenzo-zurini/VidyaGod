@@ -120,10 +120,17 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     //one-time pool seed only when nothing is persisted. Sources are unsubstituted; cross-references resolve in Phase 2.
     std::map<std::string, std::string> Sources;
     std::set<std::string> Secret;                                  // keys whose value must not be logged
+    std::map<std::string, std::string> WhenCond;                   // key -> its WHEN condition (gates value to "")
     for (const std::string &Key : KeyOrder)
     {
         const nlohmann::ordered_json &CV = Winning[Key];
         const nlohmann::ordered_json UI = (CV.contains("UI") && CV["UI"].is_object()) ? CV["UI"] : nlohmann::ordered_json::object();
+        //A WHEN condition (top-level; UI.WHEN accepted as a UI-era alias) gates the VALUE: when it does not hold, the
+        //var resolves to "" so its %token% references vanish (and a single-token EXEARGS arg drops). The condition may
+        //reference other vars, so it is evaluated inside the Phase-2 fixpoint against the settling map.
+        std::string When = CV.value("WHEN", std::string());
+        if (When.empty() && UI.contains("WHEN") && UI["WHEN"].is_string()) When = UI["WHEN"];
+        if (!When.empty()) WhenCond[Key] = When;
         const bool Pooled = UI.value("CONTROL", std::string()) == "secret"
                             && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty();
         if (Pooled) Secret.insert(Key);
@@ -185,8 +192,11 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         const std::map<std::string, std::string> Map = ContainerParams.GetVariablesMap();
         for (const std::string &Key : KeyOrder)
         {
-            std::string Val = Sources[Key];
-            VarSubst::StringVariableSubstitution(Val, Map);
+            std::string Val;
+            const auto Wit = WhenCond.find(Key);
+            if (Wit != WhenCond.end() && !VarSubst::EvaluateCondition(Wit->second, Map))
+                Val.clear();                                       // WHEN false → gated off (empty)
+            else { Val = Sources[Key]; VarSubst::StringVariableSubstitution(Val, Map); }
             if (Val != ContainerParams.CustomVariables[Key]) { ContainerParams.CustomVariables[Key] = Val; Changed = true; }
         }
         if (!Changed) break;
@@ -239,6 +249,15 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
                 std::string T = Subs[j].value("TYPE", std::string());
                 if (T == "CustomVar" || T == "Persist"
                     || T == "DeclareExec" || T == "DeclareLibraryItem" || T == "DeclareRunner") continue;
+                //A WHEN condition gates whether the layer is applied at all: false → the layer is inert (not mounted,
+                //not edited). Evaluated against the resolved var map — the data-driven "this only applies when that".
+                if (Subs[j].contains("WHEN") && Subs[j]["WHEN"].is_string()
+                    && !VarSubst::EvaluateCondition(Subs[j]["WHEN"], FrozenVars))
+                {
+                    if (VerboseLogging())
+                        LogOut("BuildSubComponentsArray", "Skipped " + T + " (WHEN false: " + std::string(Subs[j]["WHEN"]) + ")");
+                    continue;
+                }
             }
             //Serialize to string, substitute %VAR% tokens, then re-parse.
             std::string SubJSON = Subs[j].dump();

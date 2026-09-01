@@ -2,10 +2,122 @@
 #include "commonutils.h"   // Log*
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <vector>
+
+// ---- WHEN condition evaluator -------------------------------------------------------------------------------
+namespace
+{
+// A token is either an operator (kind==Op, Text = "("/")"/"!"/"&&"/"||"/"=="/"!=") or a resolved value
+// (kind==Val, Text = the operand's concrete string). Operands are resolved HERE (during tokenizing), so a value
+// that happens to contain "&&"/"==" can never be re-interpreted as an operator.
+struct CondTok { enum Kind : uint8_t { Op, Val } Kind; std::string Text; };
+
+bool TokenizeCond(const std::string &E, const std::map<std::string, std::string> &Vars, std::vector<CondTok> &Out)
+{
+    size_t i = 0, n = E.size();
+    auto isOperandStop = [](char c) {
+        return std::isspace(static_cast<unsigned char>(c)) || c == '(' || c == ')' || c == '!' ||
+               c == '&' || c == '|' || c == '=' || c == '"' || c == '\'';
+    };
+    while (i < n)
+    {
+        const char c = E[i];
+        if (std::isspace(static_cast<unsigned char>(c))) { ++i; continue; }
+        if (c == '(' || c == ')')                 { Out.push_back({CondTok::Op, std::string(1, c)}); ++i; continue; }
+        if (c == '&' && i + 1 < n && E[i + 1] == '&') { Out.push_back({CondTok::Op, "&&"}); i += 2; continue; }
+        if (c == '|' && i + 1 < n && E[i + 1] == '|') { Out.push_back({CondTok::Op, "||"}); i += 2; continue; }
+        if (c == '=' && i + 1 < n && E[i + 1] == '=') { Out.push_back({CondTok::Op, "=="}); i += 2; continue; }
+        if (c == '!' && i + 1 < n && E[i + 1] == '=') { Out.push_back({CondTok::Op, "!="}); i += 2; continue; }
+        if (c == '!')                             { Out.push_back({CondTok::Op, "!"}); ++i; continue; }
+        if (c == '&' || c == '|' || c == '=')     return false;   // a lone &/|/= is malformed
+        if (c == '"' || c == '\'')                                // quoted literal
+        {
+            const char q = c; size_t j = i + 1;
+            while (j < n && E[j] != q) ++j;
+            if (j >= n) return false;                             // unterminated quote
+            Out.push_back({CondTok::Val, E.substr(i + 1, j - i - 1)});
+            i = j + 1; continue;
+        }
+        if (c == '%')                                            // %KEY% → its value
+        {
+            size_t j = E.find('%', i + 1);
+            if (j == std::string::npos) return false;
+            const std::string Key = E.substr(i + 1, j - i - 1);
+            const auto It = Vars.find(Key);
+            Out.push_back({CondTok::Val, It != Vars.end() ? It->second : std::string()});
+            i = j + 1; continue;
+        }
+        size_t j = i;                                            // bare word literal
+        while (j < n && !isOperandStop(E[j])) ++j;
+        Out.push_back({CondTok::Val, E.substr(i, j - i)});
+        i = j;
+    }
+    return true;
+}
+
+// Recursive-descent over the token stream.  or := and ('||' and)* ; and := unary ('&&' unary)* ;
+// unary := '!' unary | primary ; primary := '(' or ')' | Val (('=='|'!=') Val)?
+struct CondParser
+{
+    const std::vector<CondTok> &T; size_t P = 0; bool Ok = true;
+    explicit CondParser(const std::vector<CondTok> &t) : T(t) {}
+    bool atOp(const char *s) const { return P < T.size() && T[P].Kind == CondTok::Op && T[P].Text == s; }
+    static bool truthy(const std::string &v) { return !v.empty() && v != "0" && v != "false" && v != "no"; }
+
+    bool parseOr()  { bool v = parseAnd(); while (atOp("||")) { ++P; bool r = parseAnd(); v = v || r; } return v; }
+    bool parseAnd() { bool v = parseUnary(); while (atOp("&&")) { ++P; bool r = parseUnary(); v = v && r; } return v; }
+    bool parseUnary() { if (atOp("!")) { ++P; return !parseUnary(); } return parsePrimary(); }
+    bool parsePrimary()
+    {
+        if (atOp("(")) { ++P; bool v = parseOr(); if (atOp(")")) ++P; else Ok = false; return v; }
+        if (P >= T.size() || T[P].Kind != CondTok::Val) { Ok = false; return true; }
+        const std::string Lhs = T[P++].Text;
+        if (atOp("==") || atOp("!=")) {
+            const bool Eq = T[P].Text == "==";
+            ++P;
+            if (P >= T.size() || T[P].Kind != CondTok::Val) { Ok = false; return true; }
+            const std::string Rhs = T[P++].Text;
+            return Eq ? (Lhs == Rhs) : (Lhs != Rhs);
+        }
+        return truthy(Lhs);
+    }
+};
+}  // namespace
+
+bool VarSubst::EvaluateCondition(const std::string &Expr, const std::map<std::string, std::string> &VariablesMap)
+{
+    // An empty condition is "always" — the field is optional and its absence must not gate anything off.
+    bool Blank = true;
+    for (char c : Expr) if (!std::isspace(static_cast<unsigned char>(c))) { Blank = false; break; }
+    if (Blank) return true;
+
+    std::vector<CondTok> Toks;
+    if (!TokenizeCond(Expr, VariablesMap, Toks) || Toks.empty())
+    { LogWarn("EvaluateCondition", "Unparseable WHEN condition \"" + Expr + "\" — treating as always-true."); return true; }
+
+    CondParser Parser(Toks);
+    const bool Result = Parser.parseOr();
+    if (!Parser.Ok || Parser.P != Toks.size())
+    { LogWarn("EvaluateCondition", "Malformed WHEN condition \"" + Expr + "\" — treating as always-true."); return true; }
+    return Result;
+}
+
+bool VarSubst::ConditionParses(const std::string &Expr)
+{
+    bool Blank = true;
+    for (char c : Expr) if (!std::isspace(static_cast<unsigned char>(c))) { Blank = false; break; }
+    if (Blank) return true;
+    std::vector<CondTok> Toks;
+    if (!TokenizeCond(Expr, {}, Toks) || Toks.empty()) return false;
+    CondParser Parser(Toks);
+    (void)Parser.parseOr();
+    return Parser.Ok && Parser.P == Toks.size();
+}
 
 //Renders a raw value into a consumer-specific form, requested at the point of use as %KEY:format%.
 //See the header for the format table. "" / unknown format returns the value unchanged.

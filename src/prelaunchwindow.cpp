@@ -552,32 +552,53 @@ static std::map<std::string, std::string> CollectVarValues(QObject* Group)
     return M;
 }
 
-// Minimal UI.WHEN evaluator: "%KEY% == value" / "%KEY% != value" (RHS may be quoted). Empty/unparseable → visible.
-static bool EvalVarWhen(const std::string& When, const std::map<std::string, std::string>& Vals)
+// Which var KEYs are ACTIVE (their WHEN holds) given the current control values. A gated-off var contributes an
+// empty value, so a chain (NETMODE gates ADDR gates X) is resolved to a fixpoint — mirrors the resolver exactly,
+// via the same VarSubst::EvaluateCondition. Rows without a CVWhen are always active.
+static std::set<std::string> ActiveVarKeys(QObject* Group)
 {
-    if (When.empty()) return true;
-    std::string Op = "==";
-    size_t Pos = When.find("==");
-    if (Pos == std::string::npos) { Pos = When.find("!="); Op = "!="; }
-    if (Pos == std::string::npos) return true;
-    auto Trim = [](std::string S){ const auto a = S.find_first_not_of(" \t"); if (a == std::string::npos) return std::string();
-                                   const auto b = S.find_last_not_of(" \t"); return S.substr(a, b - a + 1); };
-    std::string Lhs = Trim(When.substr(0, Pos)), Rhs = Trim(When.substr(Pos + 2));
-    if (Lhs.size() >= 2 && Lhs.front() == '%' && Lhs.back() == '%') Lhs = Lhs.substr(1, Lhs.size() - 2);
-    if (Rhs.size() >= 2 && (Rhs.front() == '"' || Rhs.front() == '\'') && Rhs.back() == Rhs.front()) Rhs = Rhs.substr(1, Rhs.size() - 2);
-    const auto It = Vals.find(Lhs);
-    const std::string Cur = It != Vals.end() ? It->second : std::string();
-    return Op == "==" ? (Cur == Rhs) : (Cur != Rhs);
+    // Map each row's WHEN to the KEY of the control it wraps.
+    std::map<std::string, std::string> KeyWhen;
+    for (QWidget* Row : Group->findChildren<QWidget*>())
+    {
+        const QVariant W = Row->property("CVWhen");
+        if (!W.isValid()) continue;
+        for (QWidget* Child : Row->findChildren<QWidget*>())
+        {
+            const QString K = Child->property("CVKey").toString();
+            if (!K.isEmpty()) { KeyWhen[K.toStdString()] = W.toString().toStdString(); break; }
+        }
+    }
+    std::map<std::string, std::string> Vals = CollectVarValues(Group);
+    std::set<std::string> Active;
+    for (const auto& [K, V] : Vals) Active.insert(K);
+    for (int Pass = 0; Pass < 8; ++Pass)   // fixpoint: a gated-off var reads as empty for the next round
+    {
+        bool Changed = false;
+        std::map<std::string, std::string> Eff = Vals;
+        for (const auto& K : Vals) if (!Active.count(K.first)) Eff[K.first] = "";
+        for (const auto& [K, When] : KeyWhen)
+        {
+            const bool On = VarSubst::EvaluateCondition(When, Eff);
+            if (!On && Active.count(K)) { Active.erase(K); Changed = true; }
+            else if (On && !Active.count(K)) { Active.insert(K); Changed = true; }
+        }
+        if (!Changed) break;
+    }
+    return Active;
 }
 
 void PreLaunchWindow::EvaluateVarConditions()
 {
-    const auto Vals = CollectVarValues(CustomVarGroup);
+    const std::set<std::string> Active = ActiveVarKeys(CustomVarGroup);
     for (QWidget* Row : CustomVarGroup->findChildren<QWidget*>())
     {
         const QVariant W = Row->property("CVWhen");
         if (!W.isValid()) continue;                                             // only var-row wrappers carry CVWhen
-        Row->setVisible(EvalVarWhen(W.toString().toStdString(), Vals));
+        std::string Key;
+        for (QWidget* Child : Row->findChildren<QWidget*>())
+        { const QString K = Child->property("CVKey").toString(); if (!K.isEmpty()) { Key = K.toStdString(); break; } }
+        Row->setVisible(Key.empty() || Active.count(Key) > 0);
     }
 }
 
@@ -668,6 +689,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 Spin->setRange(UI.value("MIN", -1e12), UI.value("MAX", 1e12));
                 double DV = 0.0; try { DV = std::stod(Initial); } catch (...) { DV = Spin->minimum(); }
                 Spin->setValue(DV);
+                connect(Spin, &QDoubleSpinBox::valueChanged, this, [this](double){ EvaluateVarConditions(); });
                 Field = Spin;
             }
             else if (Control == "secret")
@@ -695,6 +717,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
                 if (UI.contains("PATTERN") && UI["PATTERN"].is_string())
                     Edit->setValidator(new QRegularExpressionValidator(
                         QRegularExpression(QString::fromStdString(std::string(UI["PATTERN"]))), Edit));
+                connect(Edit, &QLineEdit::textChanged, this, [this](const QString&){ EvaluateVarConditions(); });
                 Field = Edit;
             }
 
@@ -708,7 +731,10 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             QHBoxLayout* RL = new QHBoxLayout(Row); RL->setContentsMargins(0, 0, 0, 0); RL->setSpacing(8);
             QLabel* Lbl = new QLabel(Label + ":", Row); Lbl->setMinimumWidth(140);
             RL->addWidget(Lbl); RL->addWidget(Field, 1);
-            const std::string When = UI.value("WHEN", std::string());
+            //WHEN gates this row's visibility (and, in the resolver, its value). Top-level preferred; UI.WHEN is a
+            //UI-era alias.
+            std::string When = CV.value("WHEN", std::string());
+            if (When.empty()) When = UI.value("WHEN", std::string());
             if (!When.empty()) { Row->setProperty("CVWhen", QString::fromStdString(When)); AnyCond = true; }
 
             std::string Title = UI.value("GROUP", std::string("Options"));
@@ -1016,8 +1042,10 @@ void PreLaunchWindow::onLaunchClicked()
     const std::vector<std::string>& SelectedChain = CurrentChain;
 
     // Collect the editable CustomVar control values (bare KEY -> value), secrets included: persisting a secret's
-    // first pool draw is what makes it stable across launches. Hidden (WHEN=false) rows are still collected —
-    // harmless, they just aren't shown.
+    // first pool draw is what makes it stable across launches. Hidden (WHEN=false) rows are still collected and
+    // persisted (so a value typed in one mode is remembered when you switch back) — but they cannot leak into the
+    // launch: the resolver re-evaluates each var's WHEN against the resolved map and gates a false one to "",
+    // OVERRIDING even this picker value. So a stale join address can never reach a host-mode launch's args.
     std::map<std::string, std::string> PickerVars = CollectVarValues(CustomVarGroup);
 
     // Persist prefs (keyed by the bundle UID, so the engine's GetPackageUserSettings sees them).

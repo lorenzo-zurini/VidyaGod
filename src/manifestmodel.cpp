@@ -1,5 +1,6 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
+#include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
 #include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
 
 #include <set>
@@ -854,6 +855,16 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (!HasVariant) Warnings.push_back(Tag + ": DeclareLibraryItem tile has no launchable variant (no DeclareExec node parents it)");
         }
     }
+
+    //----- WHEN lint: a malformed condition fail-opens (silently always-applies), so catch it statically. -----
+    //(Undefined %KEY% refs inside a WHEN are already caught by the reference scan below, which dumps every layer.)
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.Layers.is_array())
+            for (const auto &L : N.Layers)
+                if (L.is_object() && L.contains("WHEN") && L["WHEN"].is_string()
+                    && !VarSubst::ConditionParses(std::string(L["WHEN"])))
+                    Errors.push_back("node '" + Id + "': malformed WHEN condition \"" + std::string(L["WHEN"])
+                                     + "\" — it would silently always-apply. Grammar: %KEY% == value, && || ! ( ).");
 
     //----- CustomVar lint: undefined %KEY% references (typos) + orphan UI options (dead knobs) -----
     //The built-in tokens always available at substitution time. Derived from ContainerParams::GetVariablesMap() (the

@@ -239,10 +239,14 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         {
             if (!Comp.is_object() || !Comp.contains("SUBCOMPONENTS") || !Comp["SUBCOMPONENTS"].is_array()) continue;
             if (!RunnerWant.empty() && !RunnerWant.count(Comp.value("COMPONENTID", std::string()))) continue;
+            const std::map<std::string, std::string> RunnerVars = CP.GetVariablesMap();
             for (const auto &L : Comp["SUBCOMPONENTS"])
             {
                 const std::string T = L.value("TYPE", std::string());
-                if (T == "FileEdit" || T == "RegEdit" || T == "DllOverride" || T == "BinaryPatch") CP.SubComponentsArray.push_back(L);
+                if (T != "FileEdit" && T != "RegEdit" && T != "DllOverride" && T != "BinaryPatch") continue;
+                if (L.contains("WHEN") && L["WHEN"].is_string()
+                    && !VarSubst::EvaluateCondition(L["WHEN"], RunnerVars)) continue;   // WHEN false → inert
+                CP.SubComponentsArray.push_back(L);
             }
         }
     }

@@ -93,6 +93,59 @@ TEST(render_empty_or_unknown_format_unchanged)
     CHECK_EQ(RenderValue("x", "unknownformat"),   std::string("x"));
 }
 
+// ---- WHEN condition evaluator ----
+using VarSubst::EvaluateCondition;
+
+TEST(cond_equality_and_inequality)
+{
+    std::map<std::string, std::string> m{{"NETMODE", "host"}};
+    CHECK(EvaluateCondition("%NETMODE% == host", m));
+    CHECK(!EvaluateCondition("%NETMODE% == join", m));
+    CHECK(EvaluateCondition("%NETMODE% != join", m));
+    CHECK(!EvaluateCondition("%NETMODE% != host", m));
+    CHECK(EvaluateCondition("%NETMODE% == \"host\"", m));   // quoted RHS
+}
+
+TEST(cond_truthy_operand)
+{
+    std::map<std::string, std::string> m{{"A", "1"}, {"B", "0"}, {"C", ""}, {"D", "false"}};
+    CHECK(EvaluateCondition("%A%", m));
+    CHECK(!EvaluateCondition("%B%", m));
+    CHECK(!EvaluateCondition("%C%", m));
+    CHECK(!EvaluateCondition("%D%", m));
+    CHECK(EvaluateCondition("%MISSING% == \"\"", m));       // undefined key → empty string
+}
+
+TEST(cond_boolean_ops_and_precedence)
+{
+    std::map<std::string, std::string> m{{"MODE", "join"}, {"ADV", "1"}};
+    CHECK(EvaluateCondition("%MODE% == join && %ADV%", m));
+    CHECK(!EvaluateCondition("%MODE% == host && %ADV%", m));
+    CHECK(EvaluateCondition("%MODE% == host || %MODE% == join", m));
+    CHECK(EvaluateCondition("!(%MODE% == host)", m));
+    CHECK(!EvaluateCondition("!(%MODE% == join)", m));
+    // precedence: ! > && > ||  →  "host||join&&adv" is host || (join && adv) = true
+    CHECK(EvaluateCondition("%MODE% == host || %MODE% == join && %ADV%", m));
+}
+
+TEST(cond_injection_safe)
+{
+    // A value containing operator characters must be compared as data, never parsed as operators.
+    std::map<std::string, std::string> m{{"X", "a && b"}, {"Y", "a && b"}};
+    CHECK(EvaluateCondition("%X% == %Y%", m));
+    std::map<std::string, std::string> m2{{"X", "1 || 1"}};
+    CHECK(!EvaluateCondition("%X% == host", m2));           // "1 || 1" != host, not evaluated as OR
+}
+
+TEST(cond_blank_and_garbage_fail_open)
+{
+    std::map<std::string, std::string> m;
+    CHECK(EvaluateCondition("", m));                        // empty → always true
+    CHECK(EvaluateCondition("   ", m));
+    CHECK(EvaluateCondition("== ==", m));                   // garbage → fail-open true
+    CHECK(EvaluateCondition("%A% ==", m));                  // dangling → fail-open true
+}
+
 TEST(subst_applies_use_site_format)
 {
     // The big win: one raw value, rendered differently per consumer via %KEY:format%.
