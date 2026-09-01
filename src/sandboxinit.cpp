@@ -158,11 +158,152 @@ bool IsSandboxInit(int argc, char **argv)
     return false;
 }
 
-// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock> <bridge|nobridge>]  --  <program> [args…]
+// ---------------------------------------------------------------------------------------------------------------
+// WINDOW CLOAK — keep a game's ugly startup window off the screen from the X SIDE.
+//
+// Why X and not win32: some launchers (Wipeout XL's NET-WOXL) create their window VISIBLE and then spend
+// seconds doing network I/O without pumping messages. In that state every win32-side remedy loses: synchronous
+// SetWindowPos/ShowWindow BLOCK on the busy thread, and SWP_ASYNCWINDOWPOS/ShowWindowAsync just queue behind
+// the very work that keeps the window on screen. X window properties are SERVER-side — the owning thread's
+// cooperation is irrelevant — so a tiny xcb watcher in the sandbox (where DISPLAY already points at the host
+// X/XWayland) can hide the window for exactly its ugly phase.
+//
+// HOW it hides matters: an xcb_unmap_window looked perfect but wine notices the withdraw and the launcher then
+// IGNORES the driver's posted Play click (SP soft-locked invisibly, driver "re-pressed" forever). Setting
+// _NET_WM_WINDOW_OPACITY=0 instead leaves the window mapped, focused and fully clickable in win32 terms — the
+// compositor just draws it at alpha 0.
+//
+// Spec: "<caption>|<maxwidth>". Windows whose WM_NAME equals <caption> and whose width is <= <maxwidth> get
+// opacity 0 on sight. The first matching-caption window WIDER than <maxwidth> is the game itself: the watcher
+// exits and never touches anything again. On timeout it restores opacity — an invisible interactive window
+// must never be left for a human to not-find. The watcher dies with the sandbox (its pid namespace).
+// ---------------------------------------------------------------------------------------------------------------
+#include <xcb/xcb.h>
+
+static bool CloakNameMatches(xcb_connection_t *c, xcb_window_t w, const std::string &caption)
+{
+    // WM_NAME (STRING) is what wine sets from the win32 caption; check _NET_WM_NAME (UTF8) too for safety.
+    for (xcb_atom_t prop : {static_cast<xcb_atom_t>(XCB_ATOM_WM_NAME), static_cast<xcb_atom_t>(0)})
+    {
+        xcb_get_property_cookie_t ck;
+        if (prop == 0)
+        {
+            xcb_intern_atom_reply_t *a =
+                xcb_intern_atom_reply(c, xcb_intern_atom(c, 1, 12, "_NET_WM_NAME"), nullptr);
+            if (!a) continue;
+            ck = xcb_get_property(c, 0, w, a->atom, XCB_GET_PROPERTY_TYPE_ANY, 0, 64);
+            free(a);
+        }
+        else
+            ck = xcb_get_property(c, 0, w, prop, XCB_GET_PROPERTY_TYPE_ANY, 0, 64);
+        xcb_get_property_reply_t *r = xcb_get_property_reply(c, ck, nullptr);
+        if (!r) continue;
+        const std::string name(static_cast<char *>(xcb_get_property_value(r)),
+                               static_cast<size_t>(xcb_get_property_value_length(r)));
+        free(r);
+        if (name == caption) return true;
+    }
+    return false;
+}
+
+static void RunCloakWatcher(const std::string &caption, int maxWidth)
+{
+    xcb_connection_t *c = xcb_connect(nullptr, nullptr);
+    if (!c || xcb_connection_has_error(c)) { fprintf(stderr, "[cloak] no X connection\n"); return; }
+    xcb_intern_atom_reply_t *clientList =
+        xcb_intern_atom_reply(c, xcb_intern_atom(c, 1, 16, "_NET_CLIENT_LIST"), nullptr);
+    xcb_intern_atom_reply_t *opacityAtom =
+        xcb_intern_atom_reply(c, xcb_intern_atom(c, 0, 22, "_NET_WM_WINDOW_OPACITY"), nullptr);
+    xcb_screen_t *screen = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
+    fprintf(stderr, "[cloak] watching for '%s' (<=%dpx) on the X side\n", caption.c_str(), maxWidth);
+
+    xcb_window_t lastHidden = 0;
+    for (int tick = 0; tick < 1800; ++tick)   // 90s at 50ms
+    {
+        // Managed toplevels via EWMH _NET_CLIENT_LIST (KWin reparents toplevels, so root's direct children are
+        // frames — the caption lives on the CLIENT window this list holds).
+        if (clientList)
+        {
+            xcb_get_property_reply_t *lr = xcb_get_property_reply(
+                c, xcb_get_property(c, 0, screen->root, clientList->atom, XCB_ATOM_WINDOW, 0, 256), nullptr);
+            if (lr)
+            {
+                const int n = xcb_get_property_value_length(lr) / 4;
+                const xcb_window_t *wins = static_cast<xcb_window_t *>(xcb_get_property_value(lr));
+                for (int i = 0; i < n; ++i)
+                {
+                    if (!CloakNameMatches(c, wins[i], caption)) continue;
+                    xcb_get_geometry_reply_t *g =
+                        xcb_get_geometry_reply(c, xcb_get_geometry(c, wins[i]), nullptr);
+                    if (!g) continue;
+                    const int width = g->width;
+                    free(g);
+                    if (width > maxWidth)
+                    {
+                        // The game may REUSE the launcher's X window (Wipeout2 does) — merely exiting would
+                        // leave it playing at alpha 0 forever. Strip the property from both candidates and
+                        // ask the WM to activate the game: an unfocused game window never mode-switches.
+                        if (opacityAtom)
+                        {
+                            xcb_delete_property(c, wins[i], opacityAtom->atom);
+                            if (lastHidden && lastHidden != wins[i])
+                                xcb_delete_property(c, lastHidden, opacityAtom->atom);
+                        }
+                        xcb_intern_atom_reply_t *activate =
+                            xcb_intern_atom_reply(c, xcb_intern_atom(c, 0, 18, "_NET_ACTIVE_WINDOW"), nullptr);
+                        if (activate)
+                        {
+                            xcb_client_message_event_t ev = {};
+                            ev.response_type  = XCB_CLIENT_MESSAGE;
+                            ev.format         = 32;
+                            ev.window         = wins[i];
+                            ev.type           = activate->atom;
+                            ev.data.data32[0] = 1;   // source: application
+                            xcb_send_event(c, 0, screen->root,
+                                           XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT |
+                                           XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY,
+                                           reinterpret_cast<const char *>(&ev));
+                            free(activate);
+                        }
+                        xcb_flush(c);
+                        fprintf(stderr, "[cloak] game window appeared (%dpx) — cloak off\n", width);
+                        free(lr); free(clientList); free(opacityAtom); xcb_disconnect(c);
+                        return;
+                    }
+                    if (opacityAtom)
+                    {
+                        const uint32_t zero = 0;
+                        xcb_change_property(c, XCB_PROP_MODE_REPLACE, wins[i], opacityAtom->atom,
+                                            XCB_ATOM_CARDINAL, 32, 1, &zero);
+                        xcb_flush(c);
+                        lastHidden = wins[i];
+                    }
+                }
+                free(lr);
+            }
+        }
+        usleep(50 * 1000);
+    }
+    // Timeout is the softlock guard's moment: if the launcher never advanced (a driver bug, a game quirk),
+    // an invisible interactive window would be UNFINDABLE for the human. Make it visible again and bow out.
+    if (lastHidden && opacityAtom)
+    {
+        xcb_delete_property(c, lastHidden, opacityAtom->atom);
+        xcb_flush(c);
+        fprintf(stderr, "[cloak] gave up after 90s -- restored the hidden window so a human can use it\n");
+    }
+    else
+        fprintf(stderr, "[cloak] gave up after 90s\n");
+    free(clientList);
+    free(opacityAtom);
+    xcb_disconnect(c);
+}
+
+// Grammar:  --sandbox-init  [--mount <spec> <mnt>]…  [--tun <name> <cidr> <sock> <bridge|nobridge>]  [--cloak <caption>|<maxwidth>]  --  <program> [args…]
 int RunSandboxInit(int argc, char **argv)
 {
     std::vector<std::pair<std::string, std::string>> mounts;
-    std::string tunName, tunCidr, tunSock, chdirTo;
+    std::string tunName, tunCidr, tunSock, chdirTo, cloakSpec;
     bool tunBridge = false;
     std::vector<std::string> cmd;
 
@@ -175,6 +316,7 @@ int RunSandboxInit(int argc, char **argv)
         else if (a == "--tun" && i + 4 < argc) { tunName = argv[i + 1]; tunCidr = argv[i + 2]; tunSock = argv[i + 3];
                                                  tunBridge = std::string(argv[i + 4]) == "bridge"; i += 4; }
         else if (a == "--chdir" && i + 1 < argc) { chdirTo = argv[i + 1]; i += 1; }
+        else if (a == "--cloak" && i + 1 < argc) { cloakSpec = argv[i + 1]; i += 1; }
         else if (a == "--") { ++i; break; }
     }
     for (; i < argc; ++i) cmd.emplace_back(argv[i]);
@@ -190,6 +332,20 @@ int RunSandboxInit(int argc, char **argv)
     // chdir into the game's working directory (lives under a mount we just created, so it couldn't be set earlier).
     if (!chdirTo.empty() && chdir(chdirTo.c_str()) != 0)
         Warn("chdir to the work dir failed (continuing)");
+
+    // Window cloak: fork the X-side watcher BEFORE becoming the game. The child lives in this pid namespace,
+    // so bwrap's teardown reaps it with everything else; no leak is possible.
+    if (!cloakSpec.empty())
+    {
+        const size_t bar = cloakSpec.rfind('|');
+        const std::string caption = bar == std::string::npos ? cloakSpec : cloakSpec.substr(0, bar);
+        const int maxW = bar == std::string::npos ? 800 : atoi(cloakSpec.c_str() + bar + 1);
+        if (fork() == 0)
+        {
+            RunCloakWatcher(caption, maxW > 0 ? maxW : 800);
+            _exit(0);
+        }
+    }
 
     // Become the game.
     std::vector<char *> cargv;

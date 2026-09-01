@@ -107,6 +107,8 @@ void Wrap(const Options &Opts, std::string &Program, QStringList &Arguments)
           << QString::fromStdString(Opts.TunSock) << (Opts.TunBridge ? "bridge" : "nobridge");
     if (!Opts.WorkDir.empty())
         A << "--chdir" << QString::fromStdString(Opts.WorkDir);
+    if (!Opts.Cloak.empty())
+        A << "--cloak" << QString::fromStdString(Opts.Cloak);
     A << "--" << OrigProgram << OrigArgs;
 
     Program   = "bwrap";

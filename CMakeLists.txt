@@ -43,6 +43,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
 pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generation/verification (shared with vidyagodfs)
+pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)         # sandbox-init's X-side window cloak (VIDYAGOD_CLOAK)
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
@@ -267,7 +268,7 @@ add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
 # per-target recompiles of vgdelta.cpp with divergent flags.
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD PkgConfig::XCB vgfs_core)
 target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)

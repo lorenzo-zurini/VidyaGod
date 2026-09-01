@@ -39,12 +39,31 @@
 #include <dplay.h>
 #include <dplobby.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <tlhelp32.h>
 
+/* stderr of a GUI-subsystem exe under wine reaches nobody; the log file is the only observable trace.
+ * Z: is wine's root-of-host mapping, so this lands in the host's /tmp (bound into the sandbox). */
+static void DbgLog(const char *Fmt, ...)
+{
+    static FILE *F;
+    va_list Ap;
+    if (!F)
+        F = fopen("Z:\\tmp\\vglobby_dbg.log", "a");
+    if (!F)
+        return;
+    va_start(Ap, Fmt);
+    vfprintf(F, Fmt, Ap);
+    va_end(Ap);
+    fputc('\n', F);
+    fflush(F);
+}
+
 static void Fail(const char *Msg, HRESULT Hr)
 {
+    DbgLog("FAIL: %s (hr=0x%08lx)", Msg, (unsigned long)Hr);
     if (Hr)
         fprintf(stderr, "vglobby: %s (hr=0x%08lx)\n", Msg, (unsigned long)Hr);
     else
@@ -202,6 +221,270 @@ static void RequireSession(HMODULE Dll, const GUID *AppGuid, LPVOID Addr, DWORD 
     fprintf(stderr, "vglobby: session found at %s -- joining\n", JoinAddr);
 }
 
+/* --- launcher-dialog driver ------------------------------------------------------------------------------ */
+/*
+ * Both WOXL exes open a code-built launcher window ("Wipeout XL": Device / Resolution / Sound, a Play Game
+ * button) on EVERY start -- the binaries import RegQueryValueExA but no RegSetValueExA, so the choices are
+ * never persisted anywhere and no registry seeding can suppress the window. The only way to skip it is to
+ * DRIVE it: find the window the instant it appears, hide it before it can paint, apply the requested combo
+ * values, and press Play programmatically. The game's own fullscreen window carries the SAME caption, so the
+ * launcher is identified by its "Play Game" child button, never by caption alone.
+ */
+/* WM_GETTEXT is a SENT message: plain GetWindowTextA on a foreign window BLOCKS until that window's thread
+ * pumps -- and the launcher's thread spends seconds loading between pumps, which silently froze the whole
+ * driver while the dialog sat on screen. Timeout + abort-if-hung keeps the watcher lively no matter what the
+ * game thread is doing. */
+static int SafeText(HWND w, char *Buf, int Cch)
+{
+    DWORD_PTR R = 0;
+    Buf[0] = 0;
+    if (!SendMessageTimeoutA(w, WM_GETTEXT, (WPARAM)Cch, (LPARAM)Buf, SMTO_ABORTIFHUNG, 100, &R))
+        return 0;
+    Buf[Cch - 1] = 0;
+    return 1;
+}
+
+static int HasWordCi(const char *Hay, const char *Needle)
+{
+    size_t i, n = strlen(Needle), h = strlen(Hay);
+    for (i = 0; n && i + n <= h; i++)
+        if (!_strnicmp(Hay + i, Needle, n))
+            return 1;
+    return 0;
+}
+
+struct LauncherKids
+{
+    HWND Play;
+    HWND Btn[8];
+    HWND Combo[8];
+    int  NBtn, NCombo;
+};
+
+/* Controls are classified by CLASS + STYLE + GEOMETRY, with text as a bonus. "Button" class covers groupboxes,
+ * checkboxes and radios too -- the SP launcher's leftmost "Button" is the GROUPBOX around the combos, and the
+ * driver once pressed IT for 30 straight seconds. Only push-button styles qualify. Text (SafeText, bounded
+ * WM_GETTEXT) is tried first: a pumping dialog (SP) answers and "Play"/"OK"/"Start" wins outright; the busy
+ * NET-WOXL launcher times out and falls back to the leftmost qualifying push button. */
+static BOOL CALLBACK CollectKids(HWND w, LPARAM p)
+{
+    struct LauncherKids *K = (struct LauncherKids *)p;
+    char Cls[64] = {0};
+
+    GetClassNameA(w, Cls, sizeof(Cls));
+    if (!lstrcmpiA(Cls, "Button") && K->NBtn < 8)
+    {
+        const LONG Type = GetWindowLongA(w, GWL_STYLE) & BS_TYPEMASK;
+        if (Type == BS_PUSHBUTTON || Type == BS_DEFPUSHBUTTON || Type == BS_OWNERDRAW)
+            K->Btn[K->NBtn++] = w;
+    }
+    else if (!lstrcmpiA(Cls, "ComboBox") && K->NCombo < 8)
+        K->Combo[K->NCombo++] = w;
+    return TRUE;
+}
+
+static void PickPlay(struct LauncherKids *K)
+{
+    int  i;
+    RECT Best, R;
+    char Txt[64];
+
+    K->Play = NULL;
+    for (i = 0; i < K->NBtn; i++)
+        if (SafeText(K->Btn[i], Txt, sizeof(Txt)) &&
+            (HasWordCi(Txt, "play") || HasWordCi(Txt, "start") || !lstrcmpiA(Txt, "ok")))
+        {
+            K->Play = K->Btn[i];
+            return;
+        }
+    for (i = 0; i < K->NBtn; i++)
+    {
+        GetWindowRect(K->Btn[i], &R);
+        if (!K->Play || R.left < Best.left)
+        {
+            K->Play = K->Btn[i];
+            Best    = R;
+        }
+    }
+}
+
+struct LauncherFind
+{
+    DWORD Pid;                 /* 0 = any process */
+    HWND  Win;
+    struct LauncherKids Kids;
+};
+
+static int DbgEnum = 0;   /* dump the first few enumerations wholesale */
+
+static BOOL CALLBACK FindLauncher(HWND w, LPARAM p)
+{
+    struct LauncherFind *F = (struct LauncherFind *)p;
+    struct LauncherKids  K;
+    char  Txt[64] = {0};
+    RECT  R;
+    DWORD Pid = 0;
+    LONG  Style;
+
+    GetWindowThreadProcessId(w, &Pid);
+    if (F->Pid && Pid != F->Pid)
+        return TRUE;
+    /* GetWindowText on ANOTHER process's window reads the cached server-side title -- it does NOT send
+     * WM_GETTEXT, so it cannot block on the game's busy thread. (The SendMessageTimeout variant used briefly
+     * here COULD NOT read the title while the launcher loaded -- which is exactly when it sits on screen.) */
+    GetWindowTextA(w, Txt, sizeof(Txt));
+    if (DbgEnum > 0)
+    {
+        RECT DR; LONG DS = GetWindowLongA(w, GWL_STYLE);
+        GetWindowRect(w, &DR);
+        DbgLog("  enum hwnd=%p pid=%lu txt='%s' style=%08lx w=%ld vis=%d", (void *)w, (unsigned long)Pid,
+               Txt, (unsigned long)DS, (long)(DR.right - DR.left), IsWindowVisible(w));
+    }
+    if (lstrcmpiA(Txt, "Wipeout XL") != 0)
+        return TRUE;
+    /* Both the launcher AND the game window are caption-less WS_POPUPs with this title (the title bar the
+     * desktop shows is the window manager's decoration, not a win32 style — checking WS_CAPTION here rejected
+     * the launcher on every tick). Size alone cannot fully discriminate either (the game's win32 window is the
+     * render resolution). The DRIVER is therefore stateful: it only touches caption-matched popups BEFORE it
+     * has pressed Play, and stands down permanently the moment its tracked window dies. */
+    Style = GetWindowLongA(w, GWL_STYLE);
+    (void)Style;
+    GetWindowRect(w, &R);
+    if ((R.right - R.left) > 800)
+        return TRUE;
+    F->Win = w;
+    ZeroMemory(&K, sizeof(K));
+    EnumChildWindows(w, CollectKids, (LPARAM)&K);
+    PickPlay(&K);
+    F->Kids = K;               /* Play may still be NULL — the shell precedes its controls */
+    return FALSE;
+}
+
+static int ComboYCompare(HWND a, HWND b)
+{
+    RECT Ra, Rb;
+    GetWindowRect(a, &Ra);
+    GetWindowRect(b, &Rb);
+    return Ra.top - Rb.top;
+}
+
+/* Watch for the launcher for up to TimeoutMs, and when it appears: hide, configure, press Play. Res/Snd select
+ * combo entries by PREFIX (CB_SELECTSTRING semantics), so "640" matches "640x480". Returns 1 once driven. */
+static int DriveLauncher(DWORD Pid, const char *Res, const char *Snd, DWORD TimeoutMs)
+{
+    DWORD Start = GetTickCount(), Waited = 0, PlaySeen = 0, ClickedAt = 0, LastTickLog = 0;
+    int   Clicked = 0, ClickedCombos = 0;
+    HWND  ClickedWin = NULL;
+
+    DbgLog("driver enter (pid=%lu)", (unsigned long)Pid);
+    /* Waited is WALL time: each iteration can cost far more than the Sleep below (SendMessageTimeout pays its
+     * timeout per busy window), and counting iterations made the 30s budget mean nearly an hour. */
+    while ((Waited = GetTickCount() - Start) < TimeoutMs)
+    {
+        struct LauncherFind F;
+        int j, k;
+        ZeroMemory(&F, sizeof(F));
+        F.Pid = (Waited < 3000) ? Pid : 0;
+        DbgEnum = 0;
+        EnumWindows(FindLauncher, (LPARAM)&F);
+        if (Waited - LastTickLog >= 2000 || !LastTickLog)
+        {
+            LastTickLog = Waited ? Waited : 1;
+            DbgLog("tick t=%lu win=%p play=%p combos=%d", (unsigned long)Waited,
+                   (void *)F.Win, (void *)F.Kids.Play, F.Kids.NCombo);
+        }
+
+        if (!Clicked && F.Win)
+        {
+            /* NO win32-side hiding here. An earlier version yanked the window offscreen+hidden every tick --
+             * but Wipeout2 REUSES the dialog's window as the game window, so whichever async yanks were still
+             * queued at click time hit the GAME, leaving it a tiny black rectangle on the desktop (and made
+             * every run different: the bug was a race with the queue). Hiding is the X-side cloak's job now;
+             * it needs no cooperation from this window's thread and never touches win32 state. */
+            if (!PlaySeen)
+                PlaySeen = Waited ? Waited : 1;
+
+            /* NET-WOXL's launcher draws its whole UI ITSELF -- EnumChildWindows finds nothing, there is no
+             * button to press. Enter is its confirm key (the dialog auto-continues on a timer, so it has a
+             * default action): post the keystroke and it fires the instant the dialog starts pumping. The
+             * SP launcher (Wipeout2.exe) has REAL controls and takes the combo+command route below. */
+            if (!F.Kids.Play && F.Kids.NCombo == 0 && Waited - PlaySeen >= 2000)
+            {
+                PostMessageA(F.Win, WM_KEYDOWN, VK_RETURN, 0x001C0001);
+                PostMessageA(F.Win, WM_KEYUP,   VK_RETURN, 0xC01C0001);
+                Clicked    = 1;
+                ClickedAt  = Waited;
+                ClickedWin = F.Win;
+                DbgLog("posted Enter (no controls found) at t=%lums", (unsigned long)Waited);
+            }
+            else if (F.Kids.Play && F.Kids.NCombo >= 2)
+            {
+                if (Waited - PlaySeen >= 300)
+                {
+                    DWORD_PTR Sel;
+                    for (j = 1; j < F.Kids.NCombo; j++)
+                        for (k = j; k > 0 && ComboYCompare(F.Kids.Combo[k - 1], F.Kids.Combo[k]) > 0; k--)
+                        {
+                            HWND T = F.Kids.Combo[k];
+                            F.Kids.Combo[k] = F.Kids.Combo[k - 1];
+                            F.Kids.Combo[k - 1] = T;
+                        }
+                    if (Res && *Res)
+                        if (!SendMessageTimeoutA(F.Kids.Combo[0], CB_SELECTSTRING, (WPARAM)-1, (LPARAM)Res,
+                                                 SMTO_ABORTIFHUNG, 500, &Sel) || (LRESULT)Sel == CB_ERR)
+                            DbgLog("resolution '%s' not applied", Res);
+                    if (Snd && *Snd)
+                        if (!SendMessageTimeoutA(F.Kids.Combo[1], CB_SELECTSTRING, (WPARAM)-1, (LPARAM)Snd,
+                                                 SMTO_ABORTIFHUNG, 500, &Sel) || (LRESULT)Sel == CB_ERR)
+                            DbgLog("sound '%s' not applied", Snd);
+                    /* BM_CLICK, POSTED: the button synthesizes a real press when its thread pumps. A posted
+                     * WM_COMMAND was ignored here -- the geometric pick's control can report dialog id 0, and
+                     * the game's handler drops id-0 commands (SP soft-locked exactly that way once). */
+                    PostMessageA(F.Kids.Play, BM_CLICK, 0, 0);
+                    Clicked       = 1;
+                    ClickedAt     = Waited;
+                    ClickedWin    = F.Win;
+                    ClickedCombos = F.Kids.NCombo;
+                    DbgLog("pressed Play at t=%lums (combos=%d)", (unsigned long)Waited, F.Kids.NCombo);
+                }
+            }
+        }
+        else if (Clicked)
+        {
+            /* After the click we take our hands off every window (the next caption-matched popup is the GAME).
+             * Success = the DIALOG is gone, and caption alone cannot tell: Wipeout2 reuses the very same win32
+             * window for the game (controls destroyed, no new handle), while NET-WOXL destroys its window.
+             * So: handle gone, handle changed, or the controls we clicked through have vanished. */
+            if (!IsWindow(ClickedWin) || F.Win != ClickedWin ||
+                (ClickedCombos > 0 && F.Kids.NCombo == 0))
+            {
+                DbgLog("launcher gone after click -- driven");
+                return 1;
+            }
+            if (Waited - ClickedAt >= 1500)
+            {
+                if (F.Kids.Play)
+                {
+                    PostMessageA(F.Kids.Play, BM_CLICK, 0, 0);
+                    if (GetDlgCtrlID(F.Kids.Play))
+                        PostMessageA(F.Win, WM_COMMAND,
+                                     MAKEWPARAM(GetDlgCtrlID(F.Kids.Play), BN_CLICKED), (LPARAM)F.Kids.Play);
+                }
+                else
+                {
+                    PostMessageA(F.Win, WM_KEYDOWN, VK_RETURN, 0x001C0001);
+                    PostMessageA(F.Win, WM_KEYUP,   VK_RETURN, 0xC01C0001);
+                }
+                ClickedAt = Waited;
+                DbgLog("re-pressed at t=%lums", (unsigned long)Waited);
+            }
+        }
+        Sleep(15);
+    }
+    DbgLog("driver timeout after %lums (clicked=%d)", (unsigned long)TimeoutMs, Clicked);
+    return Clicked;
+}
+
 static int ParseGuid(const char *Text, GUID *Out)
 {
     unsigned long D1;
@@ -228,7 +511,8 @@ int main(int argc, char **argv)
     const char *AppName  = NULL, *GuidText = NULL, *ExeFile = NULL, *Dir = NULL;
     const char *Player   = NULL, *Session  = NULL, *JoinAddr = NULL;
     const char *SpName   = "tcpip";
-    int         Hosting  = 1, Wait = 0, i;   /* host unless an address says otherwise */
+    const char *Res = NULL, *Snd = NULL;
+    int         Hosting  = 1, Wait = 0, RunDirect = 0, i;   /* host unless an address says otherwise */
     DWORD       MaxPlayers = 0, Port = 0;
 
     HRESULT                     Hr;
@@ -271,6 +555,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--port"))    Port     = (DWORD)atoi(NEXT() ? argv[i] : "0");
         else if (!strcmp(a, "--host"))    Hosting  = 1;
         else if (!strcmp(a, "--wait"))    Wait     = 1;
+        else if (!strcmp(a, "--run"))     RunDirect = 1;   /* plain spawn, no DirectPlay -- the single-player path */
+        else if (!strcmp(a, "--res"))     Res      = NEXT();
+        else if (!strcmp(a, "--snd"))     Snd      = NEXT();
         else if (!strcmp(a, "--join"))
         {
             Hosting = 0;
@@ -286,14 +573,39 @@ int main(int argc, char **argv)
         #undef NEXT
     }
 
-    if (!AppName || !GuidText || !ExeFile || !Player)
+    if (RunDirect ? !ExeFile : (!AppName || !GuidText || !ExeFile || !Player))
     {
         fprintf(stderr,
             "usage: vglobby --app NAME --guid {GUID} --exe FILE.EXE [--dir DIR]\n"
             "               --player NAME [--session NAME] [--address=ADDR | --host | --join [ADDR]]\n"
-            "               [--sp tcpip|ipx|serial|modem] [--port N] [--max N] [--wait]\n");
+            "               [--sp tcpip|ipx|serial|modem] [--port N] [--max N] [--wait]\n"
+            "               [--run] [--res 640x480] [--snd Stereo]\n"
+            "  --run spawns FILE.EXE directly (no DirectPlay) -- the single-player path.\n"
+            "  --res/--snd preselect the launcher dialog combos; the dialog itself is always\n"
+            "  hidden and auto-confirmed, so the game boots straight in.\n");
         return 2;
     }
+    if (RunDirect)
+    {
+        /* Single player through the same launcher: spawn the exe, kill its config dialog, wait it out. */
+        STARTUPINFOA        Si;
+        PROCESS_INFORMATION Pi;
+        char                Cmd[MAX_PATH + 2];
+
+        ZeroMemory(&Si, sizeof(Si)); Si.cb = sizeof(Si);
+        ZeroMemory(&Pi, sizeof(Pi));
+        snprintf(Cmd, sizeof(Cmd), "%s", ExeFile);
+        if (!CreateProcessA(NULL, Cmd, NULL, NULL, FALSE, 0, NULL, Dir, &Si, &Pi))
+            Fail("CreateProcess failed for --run", (HRESULT)GetLastError());
+        printf("vglobby: spawned %s (pid %lu)\n", ExeFile, (unsigned long)Pi.dwProcessId);
+        DriveLauncher(Pi.dwProcessId, Res, Snd, 30000);
+        if (Wait)
+            WaitForSingleObject(Pi.hProcess, INFINITE);
+        CloseHandle(Pi.hThread);
+        CloseHandle(Pi.hProcess);
+        return 0;
+    }
+
     if (!ParseGuid(GuidText, &AppGuid))
         Fail("--guid is not a GUID", 0);
 
@@ -394,6 +706,11 @@ int main(int argc, char **argv)
 
     printf("vglobby: launched '%s' (%s) as %s, appid %lu\n",
            AppName, Hosting ? "hosting" : "joining", Player, (unsigned long)AppId);
+
+    /* The lobby-launched game opens the same config dialog; kill it here too. AppId is the pid on
+     * implementations that bother (wine's does) -- 0 falls back to matching any process. */
+    DbgLog("lobby path: appid=%lu res=%s snd=%s", (unsigned long)AppId, Res ? Res : "-", Snd ? Snd : "-");
+    DriveLauncher(AppId, Res, Snd, 30000);
 
     if (Wait)
         WaitForGame(AppId, ExeFile);

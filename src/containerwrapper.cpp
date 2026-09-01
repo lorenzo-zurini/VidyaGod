@@ -542,6 +542,13 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
                     LogWarn("ContainerWrapper::Execute", "overlay serve failed (launching without the virtual LAN): " + OErr);
             }
 
+            //Window cloak (X-side): a package that knows its game shows an ugly, unkillable-from-win32 startup
+            //window declares VIDYAGOD_CLOAK = "<caption>|<maxwidth>"; sandbox-init forks an xcb watcher that
+            //holds any matching small window unmapped until the real (wider) game window appears.
+            if (auto It = ContainerParams.CustomVariables.find("VIDYAGOD_CLOAK");
+                It != ContainerParams.CustomVariables.end() && !It->second.empty())
+                SbOpts.Cloak = It->second;
+
             SandboxLayer::Wrap(SbOpts, Program, Arguments);
 #ifdef _WIN32
             LogOut("ContainerWrapper::Execute", "Sandbox: Sandboxie box (host FS + registry virtualization; VidyaGod writelayer/saves granted pass-through)");
