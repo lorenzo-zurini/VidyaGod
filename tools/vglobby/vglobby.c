@@ -121,6 +121,87 @@ static void WaitForGame(DWORD AppId, const char *ExeFile)
         Sleep(500);
 }
 
+/* --- join pre-check ------------------------------------------------------------------------------------- */
+
+/* EnumSessions callback: records that at least one session answered. */
+static BOOL FAR PASCAL CountSession(LPCDPSESSIONDESC2 Desc, LPDWORD Timeout, DWORD Flags, LPVOID Ctx)
+{
+    (void)Desc; (void)Timeout;
+    if (Flags & DPESC_TIMEDOUT)
+        return FALSE;
+    *(int *)Ctx = 1;
+    return FALSE;   /* one is enough */
+}
+
+/* Verify the host's session actually EXISTS before handing the game a JOINSESSION connection.
+ *
+ * Field lesson (2026-09-01, the first real two-machine test): when the joiner was launched while the host was
+ * still walking its menus, NET-WOXL took the DPLCONNECTION, found no session behind the address, and died with
+ * an invisible NULL-deref ~40 seconds in -- no window, no message, nothing in any log. The failure belongs to
+ * the LAUNCHER: enumerate first, wait for the host to become ready (people are slow; menus are slow), and if
+ * nothing ever answers, say so in a way a human sees. MessageBox, not stderr: under wine a GUI-subsystem exe's
+ * stderr reaches nobody. */
+static void RequireSession(HMODULE Dll, const GUID *AppGuid, LPVOID Addr, DWORD AddrSize, const char *JoinAddr)
+{
+    HRESULT (WINAPI *pCreate)(LPGUID, LPDIRECTPLAY *, IUnknown *);
+    LPDIRECTPLAY   Dp1 = NULL;
+    LPDIRECTPLAY4A Dp  = NULL;
+    DPSESSIONDESC2 Want;
+    HRESULT        Hr;
+    int            Try, Found = 0;
+    char           Msg[512];
+
+    pCreate = (HRESULT (WINAPI *)(LPGUID, LPDIRECTPLAY *, IUnknown *))
+              (void *)GetProcAddress(Dll, "DirectPlayCreate");
+    if (!pCreate)
+        return;                                   /* can't pre-check -- fall through to the old behavior */
+    Hr = pCreate(NULL, &Dp1, NULL);
+    if (FAILED(Hr) || !Dp1)
+        return;
+    Hr = IDirectPlay_QueryInterface(Dp1, &IID_IDirectPlay4A, (void **)&Dp);
+    IDirectPlay_Release(Dp1);
+    if (FAILED(Hr) || !Dp)
+        return;
+    Hr = IDirectPlayX_InitializeConnection(Dp, Addr, 0);
+    if (FAILED(Hr))
+    {
+        IDirectPlayX_Release(Dp);
+        return;
+    }
+
+    ZeroMemory(&Want, sizeof(Want));
+    Want.dwSize          = sizeof(Want);
+    Want.guidApplication = *AppGuid;
+
+    /* ~90s window: 30 tries x 3s enumeration timeout. Prints per try so a captured log shows the wait. */
+    for (Try = 0; Try < 30 && !Found; Try++)
+    {
+        Hr = IDirectPlayX_EnumSessions(Dp, &Want, 3000, CountSession, &Found, DPENUMSESSIONS_AVAILABLE);
+        if (FAILED(Hr) && Hr != DPERR_TIMEOUT && Hr != DPERR_NOSESSIONS && Hr != DPERR_USERCANCEL)
+            fprintf(stderr, "vglobby: EnumSessions failed (hr=0x%08lx), retrying\n", (unsigned long)Hr);
+        if (!Found)
+        {
+            fprintf(stderr, "vglobby: no session at %s yet (try %d/30) -- is the host in its multiplayer lobby?\n",
+                    JoinAddr, Try + 1);
+            Sleep(1000);
+        }
+    }
+    IDirectPlayX_Release(Dp);
+
+    if (!Found)
+    {
+        snprintf(Msg, sizeof(Msg),
+                 "No game session found at %s after 90 seconds.\n\n"
+                 "The HOST must be inside the game's MULTIPLAYER LOBBY screen\n"
+                 "(past race customization) before you join.\n\n"
+                 "Start or ready the host, then launch Join again.",
+                 JoinAddr);
+        MessageBoxA(NULL, Msg, "vglobby -- host not ready", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+        Fail("no session found at the join address -- host not ready", 0);
+    }
+    fprintf(stderr, "vglobby: session found at %s -- joining\n", JoinAddr);
+}
+
 static int ParseGuid(const char *Text, GUID *Out)
 {
     unsigned long D1;
@@ -303,6 +384,9 @@ int main(int argc, char **argv)
     Conn.guidSP         = SpGuid;
     Conn.lpAddress      = Addr;
     Conn.dwAddressSize  = AddrSize;
+
+    if (!Hosting)
+        RequireSession(Dll, &AppGuid, Addr, AddrSize, JoinAddr ? JoinAddr : "?");
 
     Hr = IDirectPlayLobby_RunApplication(Lobby, 0, &AppId, &Conn, NULL);
     if (FAILED(Hr))

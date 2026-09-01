@@ -20,7 +20,7 @@ std::filesystem::path SelfExe()
     return std::filesystem::path(std::wstring(buf, n));
 }
 
-bool AcquireSingleInstanceLock(const std::string &Key)
+bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder)
 {
     // A session-local named mutex derived from Key (hashed to a bounded, name-safe token). The "Local\"
     // namespace scopes it to the user's session — matching the POSIX per-lock-file semantics. If the
@@ -29,7 +29,11 @@ bool AcquireSingleInstanceLock(const std::string &Key)
     std::wstring name = L"Local\\VidyaGod-" + std::to_wstring(std::hash<std::string>{}(Key));
     HANDLE h = ::CreateMutexW(nullptr, TRUE, name.c_str());
     if (h == nullptr) return false;
-    if (::GetLastError() == ERROR_ALREADY_EXISTS) return false;   // another instance already holds it
+    if (::GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        if (Holder) *Holder = "";   // named-mutex holders aren't queryable; the POSIX build names the pid
+        return false;               // another instance already holds it
+    }
     return true;   // handle leaked on purpose
 }
 

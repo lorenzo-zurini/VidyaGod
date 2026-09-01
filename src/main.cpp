@@ -175,18 +175,22 @@ int main(int argc, char *argv[])
         if (std::string(argv[i]) == "--bypass-single-instance-lock" || std::string(argv[i]) == "--cid")
             BypassInstanceLock = true;
 
-    bool InstanceLockHeld = Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString());
+    std::string LockHolder;
+    bool InstanceLockHeld = Platform::AcquireSingleInstanceLock((AppDataDir.absolutePath() + "/vidyagod.lock").toStdString(), &LockHolder);
     if (!InstanceLockHeld && BypassInstanceLock)
         LogWarn("main.cpp", "Single-instance lock held, but --bypass-single-instance-lock given — proceeding without the lock.");
     else if (!InstanceLockHeld)
     {
-        LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting.");
+        LogErr("main.cpp", "Another instance of VidyaGod is already running — aborting."
+                               + (LockHolder.empty() ? std::string() : " Held by " + LockHolder));
         if (!LaunchParameters.RunningHeadless)
         {
             QApplication ErrApp(argc, argv);
             QMessageBox::warning(nullptr, "VidyaGod is already running",
-                                 "Another instance of VidyaGod is already running.\n\n"
-                                 "Only one instance can run at a time.");
+                                 QString("Another instance of VidyaGod is already running.\n\n"
+                                         "Only one instance can run at a time.")
+                                     + (LockHolder.empty() ? QString()
+                                                           : QString("\n\nHeld by %1").arg(QString::fromStdString(LockHolder))));
         }
         return 1;
     }

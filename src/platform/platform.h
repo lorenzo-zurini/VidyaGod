@@ -28,7 +28,11 @@ std::filesystem::path SelfExe();
 //   POSIX:   open(Key) + flock(LOCK_EX|LOCK_NB); the fd is leaked, so the kernel releases the lock
 //            automatically on exit OR crash (no stale lock survives a crashed instance).
 //   Windows: a named mutex derived from Key; ERROR_ALREADY_EXISTS ⇒ another instance holds it.
-bool AcquireSingleInstanceLock(const std::string &Key);
+// On failure, *Holder (when non-null) receives a human-readable description of who holds the lock
+// ("pid 30614: ./build/VidyaGod --node wipeout_xl_mp"), or "" when it cannot be determined. This exists because a
+// held lock with no name attached cost an hour of blind process-hunting during the 2026-09-01 overnight session —
+// "another instance is running" while every pgrep pattern missed the actual holder.
+bool AcquireSingleInstanceLock(const std::string &Key, std::string *Holder = nullptr);
 
 } // namespace Platform
 
