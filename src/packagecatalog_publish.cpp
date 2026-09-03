@@ -43,12 +43,31 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         LogWarn("PackageCatalog::PublishPackage",
                 "IPFS node not online yet — CIDs will be computed but content seeds to peers only once it connects.");
 
-    int Seeded = 0, Walked = 0, Covers = 0;
+    int Seeded = 0, Walked = 0, Covers = 0, Repaired = 0;
     //Publishing is the one operation whose mistakes travel: a fragment skipped here is missing from the CID every
     //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
     //that node". So both quiet skips below are counted and reported.
     int Unparseable = 0;
     std::vector<std::string> Unfetchable;
+
+    //A recorded CID is taken on FAITH by the mint (skipped as idempotent), the deliverability check (stat-only), and
+    //every peer that fetches it — nothing re-hashes the bytes until bitswap serves them. So a backing file rebuilt in
+    //place (same or larger size — a smaller one os.Stat catches) rides through every re-mint as a stale, un-servable
+    //reference: "published clean", green in the UI, then a peer's download hangs on "data in file did not match".
+    //NeedsSeed closes that: for a layer that already carries a CID, VgVerifyCid reads its whole DAG back through the
+    //filestore (the one path that actually compares bytes to hash) and, on any mismatch, re-seeds from the real bytes
+    //so the published CID is ALWAYS servable. Cost: reading the content at mint — deliberate, mint is rare.
+    auto NeedsSeed = [&](const std::string &Cid, const std::filesystem::path &Local) -> bool {
+        if (Cid.empty()) return true;                                   // never seeded → seed it
+        std::error_code Rc;
+        if (!std::filesystem::exists(Local, Rc)) return false;          // CID-only ref, no local bytes to verify — leave as-is
+        const std::string Verr = IpfsWrapper::VerifyCid(Cid);
+        if (Verr.empty()) return false;                                 // verified: the CID still serves its bytes → keep
+        LogWarn("PackageCatalog::PublishPackage", "content drift: '" + Local.filename().string() + "' recorded CID "
+                + Cid + " no longer serves its bytes (" + Verr + ") — re-seeding from the file");
+        ++Repaired;
+        return true;                                                    // stale → fall through and re-seed
+    };
 
     //Walk every *.json fragment directly (no assemble/decompose round-trip — preserves each subcomponent's exact
     //file placement). Content-address VFS layers AND cover assets in place; re-save only mutated fragments.
@@ -82,7 +101,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 LayerLocator(S, Pkg, Local, Cid);
 
                 std::error_code Rc;
-                if (!Cid.empty()) continue;                                      // already has an ipfs CID — idempotent
+                if (!NeedsSeed(Cid, Local)) continue;                            // has a CID that still verifies — idempotent
                 if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
                 { Unfetchable.push_back(Local.string()); continue; }
                 std::string Err;
@@ -109,9 +128,9 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             if (Cover.is_string()) File = Cover.get<std::string>();
             else if (Cover.is_object())
             {
-                if (Cover.contains("SOURCE") && Cover["SOURCE"].is_object()
-                    && !Cover["SOURCE"].value("CID", std::string()).empty()) return;   // already addressed
+                const std::string CoverCid = Cover["SOURCE"].is_object() ? Cover["SOURCE"].value("CID", std::string()) : std::string();
                 File = Cover.value("PATH", std::string());
+                if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File)) return;   // has a CID that still verifies its bytes — keep
             }
             else return;
             if (File.empty()) return;
@@ -144,7 +163,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(S, Pkg, Local, Cid);
                 std::error_code Rc;
-                if (!Cid.empty()) continue;                                      // already addressed — idempotent
+                if (!NeedsSeed(Cid, Local)) continue;                            // has a CID that still verifies — idempotent
                 if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
                 { Unfetchable.push_back(Local.string()); continue; }
                 std::string Err;
@@ -165,7 +184,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             return Fail("could not write annotated manifest fragment: " + Entry.path().string());
     }
     LogSucc("PackageCatalog::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
-            + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded)");
+            + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded"
+            + (Repaired ? ", " + std::to_string(Repaired) + " re-seeded after DRIFT" : "") + ")");
 
     //A layer with neither a CID nor local content is published as a reference to bytes that exist NOWHERE: the
     //package resolves, the download reports nothing to fetch, and the game is missing files on the first machine
