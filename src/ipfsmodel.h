@@ -106,7 +106,9 @@ private:
     void applySnapshot(const NodeStatus & status,
                        const std::vector<IpfsWrapper::PinEntry> & pins,
                        const QHash<QString, long long> & sizes,
-                       const QSet<QString> & uploading);   // merge pins/status/sources → Cids + Status, emit signals
+                       const QSet<QString> & uploading,
+                       const QHash<QString, QString> & verdicts);   // + deliverability verdicts computed off-thread this round
+                                                                    // merge pins/status/sources → Cids + Status, emit signals
     void gatherHealth();                     // off-thread provider-count / missing pass for leaves lacking it
     void ensureSize(const QString & cid);    // async-fill one CID's byte size if unknown
     void ensureLabels(const QString & cid);  // fill one CID's label/package/category from the catalog if missing
@@ -119,6 +121,9 @@ private:
     QHash<QString, QString>                    PkgDirs;           // package display name → its bundle dir (for publish)
     NodeStatus                                 Status;
     QSet<QString>                              PendingSources;    // configured source CIDs not yet fetched
+    QHash<QString, QString>                    SeedVerdict;       // cid → deliverability reason ("" = servable); ABSENT = needs (re)verify.
+                                                                  // Computed OFF-THREAD (startup + new pins), invalidated by an actual
+                                                                  // serve failure. Replaces the per-5s UI-thread filestore DAG-walk that froze the app.
     QHash<QString, QPair<qlonglong,qlonglong>> Speed;             // CID → {sampleBytes, sampleMs} for the rate calc
     QHash<QString, qlonglong>                  LastProgress;      // CID → ms of last forward progress (stall detection)
 

@@ -216,6 +216,7 @@ void IpfsModel::setActive(bool on)
 void IpfsModel::refreshNow()
 {
     for (auto it = Cids.begin(); it != Cids.end(); ++it) { it->providers = -2; it->size = -1; }
+    SeedVerdict.clear();   // explicit user refresh = re-verify deliverability from scratch (off-thread)
     refresh();
 }
 
@@ -408,9 +409,13 @@ void IpfsModel::refresh()
     QSet<QString> HaveSize;
     for (auto it = Cids.constBegin(); it != Cids.constEnd(); ++it)
         if (it->size >= 0) HaveSize.insert(it.key());
+    // Pins whose deliverability verdict we already hold — skip the (expensive) filestore walk for these. Snapshotted
+    // on the UI thread (SeedVerdict is only ever touched here + in applySnapshot, both UI-thread) and copied in.
+    QSet<QString> Verified;
+    for (auto it = SeedVerdict.constBegin(); it != SeedVerdict.constEnd(); ++it) Verified.insert(it.key());
     const std::string LibRoot = PackageCatalog::LibraryRootDir(*Model.config());
 
-    std::thread([this, HaveSize, LibRoot, A = Alive]{
+    std::thread([this, HaveSize, Verified, LibRoot, A = Alive]{
         NodeStatus St;
         St.available = true;
         St.daemon    = IpfsWrapper::DaemonRunning();
@@ -431,14 +436,22 @@ void IpfsModel::refresh()
             const QString C = QString::fromStdString(P.Cid);
             if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSizeLocal(P.Cid); if (S >= 0) Sizes[C] = S; }
         }
+        // Deliverability: walk ONLY pins we have not verified yet (startup → all once; steady state → none; a serve
+        // failure invalidates entries so they re-verify here). This is the per-pin filestore DAG-walk that used to run
+        // for EVERY pin on the UI thread every 5s and froze the app — now off-thread and only when actually needed.
+        QHash<QString, QString> Verdicts;
+        for (const auto & P : Pins) {
+            const QString C = QString::fromStdString(P.Cid);
+            if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
+        }
         std::error_code Ec;
         const auto Sp = std::filesystem::space(LibRoot, Ec);
         St.diskFree = Ec ? -1 : (qlonglong)Sp.available;
 
         if (!A->load()) return;   // model destroyed mid-refresh → don't post back to `this`
-        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading]{
+        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading, Verdicts]{
             RefreshInFlight = false;
-            applySnapshot(St, Pins, Sizes, Uploading);
+            applySnapshot(St, Pins, Sizes, Uploading, Verdicts);
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -446,8 +459,13 @@ void IpfsModel::refresh()
 void IpfsModel::applySnapshot(const NodeStatus & status,
                               const std::vector<IpfsWrapper::PinEntry> & pins,
                               const QHash<QString, long long> & sizes,
-                              const QSet<QString> & uploading)
+                              const QSet<QString> & uploading,
+                              const QHash<QString, QString> & verdicts)
 {
+    // Fold in the deliverability verdicts computed off-thread this round (startup / newly-seen pins / post-failure
+    // re-verify). From here on every displayed pin's servable/errored state is read from this cache — no UI-thread walk.
+    for (auto it = verdicts.constBegin(); it != verdicts.constEnd(); ++it) SeedVerdict[it.key()] = it.value();
+
     // Merge freshly-gathered sizes into whatever we know.
     for (auto it = sizes.constBegin(); it != sizes.constEnd(); ++it)
         if (Cids.contains(it.key())) Cids[it.key()].size = it.value();
@@ -490,19 +508,26 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
 
     // Drop entries no longer desired.
     for (const QString & cid : Cids.keys())
-        if (!Desired.contains(cid)) { Cids.remove(cid); emit cidRemoved(cid); }
+        if (!Desired.contains(cid)) { Cids.remove(cid); SeedVerdict.remove(cid); emit cidRemoved(cid); }
 
     // A peer asked for these and we could not deliver them. Strongest possible evidence: not a heuristic about
-    // sizes, but an actual failed serve. Applied before the pin upsert so it cannot be overwritten by it.
+    // sizes, but an actual failed serve. This is the ON-DEMAND trigger: a failure invalidates the cached verdict so
+    // the pin re-verifies (off-thread) next refresh — the reactive replacement for the old walk-everything-every-5s.
+    // Applied before the pin upsert so it cannot be overwritten by it.
+    bool AnyLeafFail = false;
     for (const IpfsWrapper::ServeFailure & F : IpfsWrapper::ServeFailures())
     {
         const QString cid = QString::fromStdString(F.Cid);
-        if (!Cids.contains(cid)) continue;   // a leaf block, not one of the CIDs we display
+        if (!Cids.contains(cid)) { AnyLeafFail = true; continue; }   // a leaf block, not a displayed CID
         CidState & s = Cids[cid];
         s.phase = CidState::Errored;
         s.error = QObject::tr("a peer requested this and the bytes did not match — re-seed or re-check");
+        SeedVerdict.remove(cid);             // force a re-verify next refresh to later confirm-or-clear the error
         emit cidChanged(cid);
     }
+    // A failed LEAF could belong to any pin (leaves aren't displayed rows), so drop every verdict: the next refresh
+    // re-verifies all pins off-thread and pins the actually-broken one. Rare (only on genuine rot) → no freeze.
+    if (AnyLeafFail) SeedVerdict.clear();
 
     // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending.
     for (const auto & P : pins) {
@@ -518,9 +543,11 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
             // backing file being deleted, truncated or rebuilt, which is how a stale reference used to sit here
             // showing green while every request for it hung. Demote to Errored the moment a condition fails, and
             // say WHICH — the reason is the difference between "re-seed it" and "the content is gone".
-            const std::string Why = IpfsWrapper::CidServeStatus(P.Cid);
-            if (Why.empty()) { s.phase = CidState::Seeded; s.pct = 100.0; s.speedBps = -1.0; s.error.clear(); }
-            else             { s.phase = CidState::Errored; s.error = QString::fromStdString(Why); s.speedBps = -1.0; }
+            // Read the verdict computed OFF-THREAD (SeedVerdict). Absent only for a pin seen for the very first time
+            // with its walk still in flight → treat as Seeded for this one tick; it gets a real verdict next refresh.
+            const QString Why = SeedVerdict.value(cid, QString());
+            if (Why.isEmpty()) { s.phase = CidState::Seeded; s.pct = 100.0; s.speedBps = -1.0; s.error.clear(); }
+            else               { s.phase = CidState::Errored; s.error = Why; s.speedBps = -1.0; }
         }
         if (s.size < 0) ensureSize(cid);
     }
