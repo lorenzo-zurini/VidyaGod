@@ -92,7 +92,9 @@ def udp_srv():
 threading.Thread(target=tcp_srv,daemon=True).start(); threading.Thread(target=udp_srv,daemon=True).start()
 time.sleep(900)
 LAPPY
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'python3 $LAPRUN-host.py' --friend-add $PCID --friend-nick Laptop --friend-serve --friend-secs 900 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
+# Friend-serve WITHOUT the overlay: routes are derived from ACCEPTED friends at overlay-attach time, so the
+# LAN responder must start AFTER the friendship exists (phase 3) — starting it here would bake in empty routes.
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --friend-add $PCID --friend-nick Laptop --friend-serve --friend-secs 400 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
 echo "warming laptop into the DHT (90s)…"
 sleep 90
 # PC: friend-add with up to 3 attempts (cold-start FindPeer may need the announce to settle)
@@ -107,10 +109,14 @@ if [ "$ACCEPTED" = "1" ]; then pass "friend handshake accepted (attempt $ATT, $(
 # nickname + presence propagation (the address book the user sees)
 timeout 60 "${ENVPC[@]}" "$BIN" --friend-ls --data-dir "$RUN/pc-data" --log "$RUN/pc-ls.log" >/dev/null 2>&1
 grep -qaE "accepted.*$LAPID.*nick='Laptop'" "$RUN/pc-ls.log" && pass "nickname propagated (sees 'Laptop')" || fail "nickname not propagated (friend-ls)"
-SSH "grep -qaE \"accepted.*$PCID\" $LAPRUN-node.log" 15 && pass "laptop side accepted too" || fail "laptop never recorded the friendship"
+SSH "grep -qaE \"(auto-accepted.*$PCID|$PCID -> accepted)\" $LAPRUN-node.log" 15 && pass "laptop side accepted too" || fail "laptop never recorded the friendship"
 
 # ---------- phase 3: virtual LAN game battery ----------
 say "phase 3: virtual LAN (broadcast discovery, lobby TCP, throughput, bidirectional pings)"
+# NOW start the laptop's LAN game-host responder — the friendship exists, so its overlay routes include the PC.
+killlap; sleep 2
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'python3 $LAPRUN-host.py' --friend-nick Laptop --friend-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-lan.log >/dev/null 2>&1 & echo lan-host up" 20
+sleep 20   # node up + TUN attached (peers already known — no full DHT re-warm needed)
 cat > "$RUN/pc-battery.py" <<PCPY
 import socket, subprocess, sys, time
 LAPVIP="$LAPVIP"
@@ -156,7 +162,7 @@ grep -qa 'TCP-ECHO-OK' "$RUN/pc-lan.log" && pass "TCP lobby echo" || fail "TCP l
 grep -qa 'THROUGHPUT-OK' "$RUN/pc-lan.log" && pass "bulk throughput ($(grep -aoE 'THROUGHPUT-OK [0-9.]+ MB/s' "$RUN/pc-lan.log" | head -1 | cut -d' ' -f2-))" || fail "bulk throughput"
 # Reverse-direction proof: the laptop's host log counts the broadcasts it RECEIVED and replied to — its
 # inbound datapath — while the echo/throughput replies prove its outbound. Both directions are covered.
-UDPRX=$(SSH "grep -acE 'UDP-RX' $LAPRUN-node.log || true" 15)
+UDPRX=$(SSH "grep -acE 'UDP-RX' $LAPRUN-lan.log || true" 15)
 [ "${UDPRX:-0}" -ge 3 ] && pass "laptop-inbound datapath (received UDP-RX×$UDPRX + replied)" || fail "laptop-inbound datapath (UDP-RX=${UDPRX:-0})"
 
 # ---------- phase 4: link recovery ----------
@@ -182,7 +188,7 @@ SSH "cd $REPO_LAP && rm -rf $LAPRUN/cat && $ENVLAP timeout 150 ./build/VidyaGod 
 CATN=$(tr -dc 0-9 < "$RUN/catcount.txt"); CATN=${CATN:-0}
 [ "$CATN" -ge 100 ] && pass "catalog meta-CID fetched ($CATN files)" || fail "catalog fetch ($CATN files)"
 # pick one CONTENT CID from the catalog and fetch + re-hash it (the download-a-game flow, byte-verified)
-CCID=$(SSH "grep -rhoE '\"SOURCE.CID\": *\"[A-Za-z0-9]+\"' '$LAPRUN/cat' 2>/dev/null | grep -oE '[A-Za-z0-9]{40,}' | head -1" 20)
+CCID=$(SSH "grep -rhoE '\"CID\": *\"bafkrei[a-z2-7]+\"' '$LAPRUN/cat' 2>/dev/null | grep -oE 'bafkrei[a-z2-7]+' | head -1" 20)
 if [ -z "$CCID" ]; then fail "no content CID found in catalog"; else
   echo "content CID: $CCID"
   SSH "cd $REPO_LAP && $ENVLAP timeout 240 ./build/VidyaGod --fetch $CCID $LAPRUN/content.bin --data-dir $LAPRUN/fdata --log $LAPRUN-cfetch.log >/dev/null 2>&1; ls -la $LAPRUN/content.bin 2>/dev/null | awk '{print \$5}'" 260 > "$RUN/csize.txt"
@@ -196,6 +202,7 @@ fi
 # ---------- teardown + verdict ----------
 say "teardown"
 killpc; killlap
+SSH "cd /tmp && tar cz vg-e2e-$TS*.log vg-e2e-$TS-host.py 2>/dev/null || true" 30 > "$RUN/laptop-logs.tgz" 2>/dev/null
 SSH "rm -rf $LAPRUN $LAPRUN-host.py ${LAPRUN}.id.log $LAPRUN-node.log $LAPRUN-rec.log $LAPRUN-rec2.log $LAPRUN-fetch.log $LAPRUN-cfetch.log 2>/dev/null; true" 20
 
 say "VERDICT"
