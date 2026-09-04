@@ -246,7 +246,9 @@ if [ -z "$CCID" ]; then fail "no content CID found in catalog"; else
   [ "$CSZ" -gt 0 ] && pass "content layer fetched ($CSZ bytes)" || fail "content fetch produced nothing"
   RECID=$(SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --cid $LAPRUN/content.bin --log $LAPRUN-cid.log 2>/dev/null | grep -aoE '[A-Za-z0-9]{40,}' | tail -1" 70)
   [ "$RECID" = "$CCID" ] && pass "fetched bytes re-hash to the same CID (integrity)" || fail "re-hash mismatch (got '$RECID')"
-  SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --pin-ls --data-dir $LAPRUN/fdata --log $LAPRUN-pinls.log 2>/dev/null | grep -qa '$CCID'" 70 && pass "fetched content is pinned (will re-seed)" || fail "fetched content not pinned"
+  # The pin list prints via the logger (stderr → the --log file), NOT stdout: grep the log (round-4's --log
+  # addition silently starved the old stdout grep — caught by the field run, 2026-09-04).
+  SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --pin-ls --data-dir $LAPRUN/fdata --log $LAPRUN-pinls.log >/dev/null 2>&1; grep -qa \"pin: $CCID\" $LAPRUN-pinls.log" 70 && pass "fetched content is pinned (will re-seed)" || fail "fetched content not pinned"
 fi
 
 # ---------- phase 6: service health (both machines) ----------
@@ -299,7 +301,7 @@ fi
 say "teardown"
 killpc; killlap
 SSH "cd /tmp && tar cz vg-e2e-$TS*.log vg-e2e-$TS-host.py 2>/dev/null || true" 30 > "$RUN/laptop-logs.tgz" 2>/dev/null
-SSH "rm -rf $LAPRUN $LAPRUN-host.py ${LAPRUN}.id.log $LAPRUN-node.log $LAPRUN-rec.log $LAPRUN-rec2.log $LAPRUN-fetch.log $LAPRUN-cfetch.log 2>/dev/null; true" 20
+SSH "rm -rf $LAPRUN ${LAPRUN}*.log ${LAPRUN}-host.py 2>/dev/null; true" 20
 
 say "VERDICT"
 for R in "${RESULTS[@]}"; do echo "  $R"; done
