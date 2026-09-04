@@ -12,8 +12,21 @@
 #                          reconnects and traffic resumes
 #   phase 5  IPFS          catalog fetch (games meta-CID, ~2000 JSONs), a CONTENT layer fetch chosen from
 #                          the catalog, byte-verify by re-hash (--cid), pin present after fetch (--pin-ls)
+#   phase 6  HEALTH        the VgHealth service report on BOTH machines (tools/health_probe.py drives
+#                          libvgipfs.so directly): a live node must report ZERO "down" services
 #
-# Invoked automatically at the end of tools/provision_laptop.sh (VG_SKIP_E2E=1 to skip). Runs ~10-13 min.
+# ── STANDING RULE (user, 2026-09-04): EVERY new user-facing feature EXTENDS this battery with checks for its
+#    flow, in the same change that ships the feature. A flow that isn't gated here can silently break later —
+#    which is exactly what this file exists to prevent. Add a phase (or checks in an existing one), honor the
+#    trap notes below, and run at least the new phase standalone as acceptance before pushing.
+#
+# Harness traps (each bit us once — do not reintroduce):
+#   * overlay routes are derived from ACCEPTED friends at TUN-attach time → befriend FIRST, then start --lan nodes
+#   * pgrep/pkill self-match: use the [d] bracket idiom; never put a plain binary-name pattern in the command text
+#   * --log captures fd 2 only → overlay-exec payloads need `exec 1>&2` or their output is lost
+#   * catalog JSONs use nested "CID": keys; Qm CIDs may be DIRECTORY metas → pick bafkrei leaves for --fetch tests
+#
+# Invoked automatically at the end of tools/provision_laptop.sh (VG_SKIP_E2E=1 to skip). Runs ~11-14 min.
 # THIS CODEBASE'S FAILURE MODE IS SILENCE: every phase prints a loud PASS/FAIL and the script exits non-zero
 # if anything failed. Full per-node logs (--log, both machines) are archived under the run dir it prints.
 set -u
@@ -197,6 +210,28 @@ if [ -z "$CCID" ]; then fail "no content CID found in catalog"; else
   RECID=$(SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --cid $LAPRUN/content.bin 2>/dev/null | grep -aoE '[A-Za-z0-9]{40,}' | tail -1" 70)
   [ "$RECID" = "$CCID" ] && pass "fetched bytes re-hash to the same CID (integrity)" || fail "re-hash mismatch (got '$RECID')"
   SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --pin-ls --data-dir $LAPRUN/fdata 2>&1 | grep -qa '$CCID'" 70 && pass "fetched content is pinned (will re-seed)" || fail "fetched content not pinned"
+fi
+
+# ---------- phase 6: service health (both machines) ----------
+say "phase 6: service health — a live node must report ZERO down services"
+PROBE="$REPO_PC/tools/health_probe.py"
+timeout 60 "${ENVPC[@]}" python3 "$PROBE" "$REPO_PC/build/libvgipfs.so" "$RUN/pc-health-repo" 15 > "$RUN/pc-health.txt" 2>&1
+PCROWS=$(grep -cE '^(ok|warn|down|off) ' "$RUN/pc-health.txt" || true)
+PCDOWN=$(grep -cE '^down ' "$RUN/pc-health.txt" || true)
+if [ "${PCROWS:-0}" -ge 10 ] && [ "${PCDOWN:-0}" -eq 0 ]; then
+  pass "PC service health ($PCROWS services, 0 down)"
+else
+  fail "PC service health (rows=$PCROWS down=$PCDOWN — see pc-health.txt)"
+  grep -E '^down ' "$RUN/pc-health.txt" | head -5
+fi
+SSH "cd $REPO_LAP && $ENVLAP timeout 55 python3 tools/health_probe.py build/libvgipfs.so $LAPRUN/health-repo 15 2>&1" 70 > "$RUN/lap-health.txt"
+LROWS=$(grep -cE '^(ok|warn|down|off) ' "$RUN/lap-health.txt" || true)
+LDOWN=$(grep -cE '^down ' "$RUN/lap-health.txt" || true)
+if [ "${LROWS:-0}" -ge 10 ] && [ "${LDOWN:-0}" -eq 0 ]; then
+  pass "laptop service health ($LROWS services, 0 down)"
+else
+  fail "laptop service health (rows=$LROWS down=$LDOWN — see lap-health.txt)"
+  grep -E '^down ' "$RUN/lap-health.txt" | head -5
 fi
 
 # ---------- teardown + verdict ----------
