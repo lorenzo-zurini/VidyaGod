@@ -10,6 +10,9 @@
 #include "gamepicker.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
+#include "vgipfsapi.h"     // VgSetLogVerbose — the --log flag flips the Go node's verbose trace
+#include <cstdio>          // std::freopen / std::setvbuf for --log stderr redirect
+#include <cstdlib>         // ::setenv
 #include "sandboxlayer.h"
 #include "depcheck.h"
 #include "a11ynames.h"   // auto-name every control for AT-SPI + findChild
@@ -79,6 +82,23 @@ int main(int argc, char *argv[])
     //Parse command line arguments and initialize RuntimeParameters struct.
     //Must happen before QApplication so headless runs never touch the display.
     LaunchParameters LaunchParameters = ParseCommandLineArguments(argc, argv);
+
+    //--log <file>: capture the ENTIRE run for a field-debug session. freopen reuses fd 2, so BOTH the C++ side
+    //(std::cerr) and the embedded Go node (os.Stderr) land in one file; unbuffered so the last lines survive a
+    //hard crash. VG_VERBOSE turns on the C++ OUT-chatter (read once, so set it before any VerboseLogging() call),
+    //and VgSetLogVerbose flips the Go node's vlog trace (it reads an atomic, so it works even though the .so's
+    //package init already ran). Done here — the earliest point after arg parsing — so nothing is missed.
+    if (!LaunchParameters.LogFilePath.empty())
+    {
+        if (std::freopen(LaunchParameters.LogFilePath.c_str(), "w", stderr) != nullptr)
+        {
+            std::setvbuf(stderr, nullptr, _IONBF, 0);   // crash-safe: every line hits disk immediately
+            ::setenv("VG_VERBOSE", "1", 1);
+            VgSetLogVerbose(1);
+            LogOut("main.cpp", "Verbose logging → " + LaunchParameters.LogFilePath + " (this run)");
+        }
+    }
+
     LogOut("main.cpp", "Running VidyaGod in " + LaunchParameters.CurrentPath.string());
     LogOut("main.cpp", "Headless PackagePath: " + LaunchParameters.HeadlessPackagePath.string());
 
@@ -639,6 +659,12 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--data-dir" && i + 1 < argc)
         {
             RuntimeParameters.DataDir          = argv[++i];
+        }
+        else if ((arg == "--log" || arg == "-log") && i + 1 < argc)
+        {
+            //Redirect ALL process stderr (C++ std::cerr + the Go node's os.Stderr — same fd 2) to this file, and
+            //turn verbose logging on. Applied EARLY in main() so it captures the whole run.
+            RuntimeParameters.LogFilePath      = argv[++i];
         }
         else if (arg == "--package-dir" && i + 1 < argc)
         {

@@ -61,6 +61,7 @@ struct LaunchParameters
     std::string DropRefCid;                                               //--drop-ref <cid>: delete a CID's filestore-reference closure + unpin (so a later add re-references it at a new path) then exit — orphan/stale-ref repair
     std::string ConnectAddr;                                              //--connect <MULTIADDR>: dial this peer before fetching (direct peering / controlled benchmark)
     std::string DataDir;                                                  //--data-dir <PATH>: override the app data dir (testing: second instance with its own repo + lock)
+    std::string LogFilePath;                                              //--log <PATH>: redirect ALL process stderr (C++ std::cerr + the Go node) to this file, unbuffered, and enable verbose logging on both sides
     std::string PackageDirOverride;                                       //--package-dir <PATH>: override the launch package/bundle path
     std::string RuntimeDirOverride;                                       //--runtime-dir <PATH>: override the container runtime (FUSE mount) path
     std::string UserDataDirOverride;                                      //--userdata-dir <PATH>: override the save/persist (USERDATA) path

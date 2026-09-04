@@ -12,6 +12,7 @@ extern "C" {
 // Mirrors IpfsWrapper::TransferEvent. Invoked on the calling (worker) thread; the C++ side marshals to the GUI.
 typedef void (*VgTransferCb)(const char *cid, int kind, double percent, int ok, const char *err);
 
+void VgSetLogVerbose(int on);   // flip the node's verbose diagnostic log (vglog.go) on/off at runtime
 int  VgStart(const char *repoPath, char **errOut);   // open/create the private repo; idempotent
 void VgStop(void);
 int  VgStarted(void);   // 1 if the node repo is open
