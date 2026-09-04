@@ -526,8 +526,22 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
         emit cidChanged(cid);
     }
     // A failed LEAF could belong to any pin (leaves aren't displayed rows), so drop every verdict: the next refresh
-    // re-verifies all pins off-thread and pins the actually-broken one. Rare (only on genuine rot) → no freeze.
-    if (AnyLeafFail) SeedVerdict.clear();
+    // re-verifies all pins off-thread and pins the actually-broken one. RATE-LIMITED to one full re-verify per
+    // 5 minutes: a peer retrying one rotten leaf drains as a fresh failure on every refresh, and unthrottled that
+    // meant re-walking the entire library's filestore every 5 seconds forever (adversarial M5).
+    //A failure landing INSIDE the window must be deferred, not forgotten: ServeFailures() DRAINS the node's
+    //log, so suppressing the sweep without remembering it would leave a rotten pin green forever if the peer
+    //gives up (adversarial round-2). The pending flag fires the sweep when the window reopens.
+    static qint64 LastLeafSweepMs = 0;
+    static bool   PendingLeafSweep = false;
+    if (AnyLeafFail) PendingLeafSweep = true;
+    const qint64 NowMs = QDateTime::currentMSecsSinceEpoch();
+    if (PendingLeafSweep && NowMs - LastLeafSweepMs > qint64(5) * 60 * 1000)
+    {
+        LastLeafSweepMs = NowMs;
+        PendingLeafSweep = false;
+        SeedVerdict.clear();
+    }
 
     // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending.
     for (const auto & P : pins) {

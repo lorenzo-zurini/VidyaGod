@@ -50,7 +50,7 @@ jobs:
         run: |
           # Storage + fetch mechanics + CID parity, no network (the tests force VIDYAGOD_IPFS_OFFLINE).
           cd VidyaGodIPFS
-          go test ./...
+          go test -race ./...   # -race is mandatory: a torn-string race shipped past a green non-race suite (2026-09-04)
 
       - name: Build VidyaGod
         run: |

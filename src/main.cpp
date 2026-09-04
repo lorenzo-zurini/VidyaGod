@@ -11,8 +11,13 @@
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
 #include "vgipfsapi.h"     // VgSetLogVerbose — the --log flag flips the Go node's verbose trace
-#include <cstdio>          // std::freopen / std::setvbuf for --log stderr redirect
-#include <cstdlib>         // ::setenv
+#include <cstdio>          // std::setvbuf for --log stderr (redirect itself is open+dup2)
+#include <cstdlib>         // ::setenv / _putenv_s
+#include <fcntl.h>         // --log: open flags (portable header; O_* on POSIX, _O_* on Windows)
+#ifdef _WIN32
+#include <io.h>            // --log: _open/_dup2/_close
+#include <sys/stat.h>      //   … _S_IREAD/_S_IWRITE
+#endif
 #include "sandboxlayer.h"
 #include "depcheck.h"
 #include "a11ynames.h"   // auto-name every control for AT-SPI + findChild
@@ -90,12 +95,41 @@ int main(int argc, char *argv[])
     //package init already ran). Done here — the earliest point after arg parsing — so nothing is missed.
     if (!LaunchParameters.LogFilePath.empty())
     {
-        if (std::freopen(LaunchParameters.LogFilePath.c_str(), "w", stderr) != nullptr)
+        //open+dup2, NOT freopen: freopen CLOSES the stream before attempting the open, so a bad path (typo'd
+        //--log target — the flag exists for ad-hoc field debugging) would free fd 2, the next opened file would
+        //inherit it, and every stderr write from then on would corrupt that file. dup2 either succeeds atomically
+        //or leaves fd 2 exactly as it was. Windows spellings via the #ifdef (adversarial round-3: the POSIX names
+        //don't compile under MinGW and would have broken the Windows port silently while its CI job is red).
+#ifdef _WIN32
+        const int LogFd = ::_open(LaunchParameters.LogFilePath.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+        const bool Redirected = LogFd >= 0 && ::_dup2(LogFd, 2) == 0;
+#else
+        const int LogFd = ::open(LaunchParameters.LogFilePath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        const bool Redirected = LogFd >= 0 && ::dup2(LogFd, 2) == 2;
+#endif
+        if (Redirected)
         {
-            std::setvbuf(stderr, nullptr, _IONBF, 0);   // crash-safe: every line hits disk immediately
+            //If stderr started CLOSED (daemonized launch), open() itself returned fd 2 — closing it would free
+            //the stderr we just installed and re-arm the exact bug this replaced (adversarial round-2).
+#ifdef _WIN32
+            if (LogFd != 2) ::_close(LogFd);
+            ::_putenv_s("VG_VERBOSE", "1");
+#else
+            if (LogFd != 2) ::close(LogFd);
             ::setenv("VG_VERBOSE", "1", 1);
+#endif
+            std::setvbuf(stderr, nullptr, _IONBF, 0);   // crash-safe: every line hits disk immediately
             VgSetLogVerbose(1);
             LogOut("main.cpp", "Verbose logging → " + LaunchParameters.LogFilePath + " (this run)");
+        }
+        else
+        {
+#ifdef _WIN32
+            if (LogFd >= 0) ::_close(LogFd);
+#else
+            if (LogFd >= 0) ::close(LogFd);
+#endif
+            LogErr("main.cpp", "--log: cannot open " + LaunchParameters.LogFilePath + " — continuing without file logging");
         }
     }
 

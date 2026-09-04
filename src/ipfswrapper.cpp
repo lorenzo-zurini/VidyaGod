@@ -479,8 +479,14 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
 {
     if (!g_FriendCb) return;
     FriendEvent E;
-    // Match kind 5 EXPLICITLY. This chain used to end `: FriendEvent::Removed`, so every kind above 4 — including
-    // the suggestion events added later — would have arrived as a contact REMOVAL and quietly deleted contacts.
+    //UNKNOWN kinds are DROPPED, never defaulted. The catch-all used to be `: Removed`, so the first event kind a
+    //newer Go build adds would arrive as a contact REMOVAL and quietly delete contacts — a documented historical
+    //bug this mapping re-armed once already (adversarial M4). Kind 5 is matched explicitly; anything else logs.
+    if (kind < 0 || kind > 5)
+    {
+        LogWarn("IpfsWrapper::FriendEventTrampoline", "unknown friend event kind " + std::to_string(kind) + " — dropped");
+        return;
+    }
     E.Kind = kind == 0 ? FriendEvent::Request
            : kind == 1 ? FriendEvent::Accept
            : kind == 2 ? FriendEvent::Decline

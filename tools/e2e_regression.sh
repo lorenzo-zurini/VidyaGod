@@ -111,7 +111,7 @@ time.sleep(900)
 LAPPY
 # Friend-serve WITHOUT the overlay: routes are derived from ACCEPTED friends at overlay-attach time, so the
 # LAN responder must start AFTER the friendship exists (phase 3) — starting it here would bake in empty routes.
-SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --friend-add $PCID --friend-nick Laptop --friend-serve --friend-secs 400 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
+SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --friend-add $PCID --friend-nick Laptop --friend-serve --friend-secs 600 --data-dir $LAPRUN/data --log $LAPRUN-node.log >/dev/null 2>&1 & echo started" 20
 echo "warming laptop into the DHT (90s)…"
 sleep 90
 # PC: friend-add with up to 3 attempts (cold-start FindPeer may need the announce to settle)
@@ -177,6 +177,16 @@ BC=$(grep -aoE 'BCAST-RESULT [0-9]+' "$RUN/pc-lan.log" | grep -oE '[0-9]+$'); BC
 [ "$BC" -ge 3 ] && pass "UDP broadcast discovery ($BC/5 host replies)" || fail "UDP broadcast discovery ($BC/5)"
 grep -qa 'TCP-ECHO-OK' "$RUN/pc-lan.log" && pass "TCP lobby echo" || fail "TCP lobby echo"
 grep -qa 'THROUGHPUT-OK' "$RUN/pc-lan.log" && pass "bulk throughput ($(grep -aoE 'THROUGHPUT-OK [0-9.]+ MB/s' "$RUN/pc-lan.log" | head -1 | cut -d' ' -f2-))" || fail "bulk throughput"
+# Trust-gate positive half (adversarial H4a): if a direct QUIC conn ever existed this run, heartbeat pongs MUST
+# have proven it — a gate stuck-untrusted (or pongs never flowing) would otherwise pass every delivery check on
+# the stream fallback and the datagram fast path could rot unnoticed. No QUIC punch = honest pass (path lottery).
+if grep -qa 'directQUIC=true' "$RUN/pc-lan.log"; then
+  grep -qa 'datagram path PROVEN' "$RUN/pc-lan.log" \
+    && pass "datagram path proven (direct QUIC existed and ponged)" \
+    || fail "direct QUIC conn existed but NEVER proved — pongs not flowing or trust gate stuck"
+else
+  pass "no direct QUIC punch this run — stream fallback carried the LAN (per-punch lottery)"
+fi
 # Reverse-direction proof: the laptop's host log counts the broadcasts it RECEIVED and replied to — its
 # inbound datapath — while the echo/throughput replies prove its outbound. Both directions are covered.
 UDPRX=$(SSH "grep -acE 'UDP-RX' $LAPRUN-lan.log || true" 15)
@@ -195,7 +205,12 @@ sleep 25                       # outage window
 SSH "cd $REPO_LAP && $ENVLAP nohup ./build/VidyaGod --lan --overlay-exec 'sleep 240' --friend-nick Laptop --friend-secs 300 --data-dir $LAPRUN/data --log $LAPRUN-rec2.log >/dev/null 2>&1 & echo restarted" 20
 for i in $(seq 1 30); do sleep 6; grep -qa 'REC-END' "$RUN/pc-rec.log" 2>/dev/null && break; done
 grep -qaE '\[lan\] Laptop: .*→ down' "$RUN/pc-rec.log" && pass "outage detected (link → down)" || fail "outage never detected"
-grep -qaE 'dial Laptop ok' "$RUN/pc-rec.log" && pass "reconnect dial succeeded" || fail "no successful reconnect dial"
+# Scope the reconnect assertions to AFTER the last '→ down': a routine pre-outage upgrade dial logs the same
+# 'dial Laptop ok' line, which made this check pass with reconnection entirely broken (adversarial H4b).
+DOWNLN=$(grep -an '→ down' "$RUN/pc-rec.log" | tail -1 | cut -d: -f1); DOWNLN=${DOWNLN:-1}
+tail -n "+$DOWNLN" "$RUN/pc-rec.log" > "$RUN/pc-rec-after.log"
+grep -qaE 'dial Laptop ok' "$RUN/pc-rec-after.log" && pass "reconnect dial succeeded (post-outage)" || fail "no successful reconnect dial AFTER the outage"
+grep -qaE '→ (relayed|direct)' "$RUN/pc-rec-after.log" && pass "link re-established (post-outage state)" || fail "link never left down after the restart"
 RECRX=$(grep -aoE '[0-9]+ received' "$RUN/pc-rec.log" | tail -1 | cut -d' ' -f1); RECRX=${RECRX:-0}
 [ "$RECRX" -ge 60 ] && pass "traffic resumed after restart ($RECRX/90 replies incl. outage)" || fail "traffic did not resume ($RECRX/90)"
 
@@ -203,7 +218,25 @@ RECRX=$(grep -aoE '[0-9]+ received' "$RUN/pc-rec.log" | tail -1 | cut -d' ' -f1)
 say "phase 5: IPFS (catalog fetch → content fetch → byte verify → pin present)"
 SSH "cd $REPO_LAP && rm -rf $LAPRUN/cat && $ENVLAP timeout 150 ./build/VidyaGod --fetch-dir $GAMES_CID $LAPRUN/cat --data-dir $LAPRUN/fdata --log $LAPRUN-fetch.log >/dev/null 2>&1; find $LAPRUN/cat -type f | wc -l" 170 > "$RUN/catcount.txt"
 CATN=$(tr -dc 0-9 < "$RUN/catcount.txt"); CATN=${CATN:-0}
-[ "$CATN" -ge 100 ] && pass "catalog meta-CID fetched ($CATN files)" || fail "catalog fetch ($CATN files)"
+[ "$CATN" -ge 2000 ] && pass "catalog meta-CID fetched ($CATN files)" || fail "catalog fetch incomplete ($CATN files, want >=2000)"
+# Build-under-test seeding (adversarial H4d): the catalog/content fetches above can be served by ANY ambient
+# seeder (production node, a pinning service) — so also seed a FRESH random file from THIS build on the PC and
+# fetch it on the laptop: only the build under test can serve it.
+head -c 262144 /dev/urandom > "$RUN/seedfile.bin"
+killpc; sleep 2   # phase-4's PC node may still hold a repo lock; the probe gets its OWN fresh repo regardless
+timeout 170 "${ENVPC[@]}" python3 "$REPO_PC/tools/seed_probe.py" "$REPO_PC/build/libvgipfs.so" "$RUN/seed-repo" "$RUN/seedfile.bin" 150 > "$RUN/seed.out" 2>&1 &
+SEEDPID=$!
+sleep 25   # VgStart + the probe's 8s warm + margin for a cold goOnline (adversarial round-2: 12s was wishful)
+FRESHCID=$(grep -aoE 'CID=[A-Za-z0-9]+' "$RUN/seed.out" | head -1 | cut -d= -f2)
+if [ -z "$FRESHCID" ]; then fail "fresh-seed: PC could not seed the test file (see seed.out)"; else
+  SSH "cd $REPO_LAP && $ENVLAP timeout 120 ./build/VidyaGod --fetch $FRESHCID $LAPRUN/fresh.bin --data-dir $LAPRUN/fdata --log $LAPRUN-freshfetch.log >/dev/null 2>&1; md5sum $LAPRUN/fresh.bin 2>/dev/null | cut -d' ' -f1" 140 > "$RUN/freshmd5.txt"
+  WANTMD5=$(md5sum "$RUN/seedfile.bin" | cut -d' ' -f1)
+  GOTMD5=$(tr -dc 'a-f0-9' < "$RUN/freshmd5.txt")
+  [ -n "$GOTMD5" ] && [ "$GOTMD5" = "$WANTMD5" ] \
+    && pass "fresh seed→fetch roundtrip (build-under-test served $FRESHCID)" \
+    || fail "fresh seed→fetch roundtrip (md5 want=$WANTMD5 got='$GOTMD5')"
+fi
+kill "$SEEDPID" 2>/dev/null; wait "$SEEDPID" 2>/dev/null   # roundtrip verdict is in — reclaim the serve window
 # pick one CONTENT CID from the catalog and fetch + re-hash it (the download-a-game flow, byte-verified)
 CCID=$(SSH "grep -rhoE '\"CID\": *\"bafkrei[a-z2-7]+\"' '$LAPRUN/cat' 2>/dev/null | grep -oE 'bafkrei[a-z2-7]+' | head -1" 20)
 if [ -z "$CCID" ]; then fail "no content CID found in catalog"; else
@@ -211,9 +244,9 @@ if [ -z "$CCID" ]; then fail "no content CID found in catalog"; else
   SSH "cd $REPO_LAP && $ENVLAP timeout 240 ./build/VidyaGod --fetch $CCID $LAPRUN/content.bin --data-dir $LAPRUN/fdata --log $LAPRUN-cfetch.log >/dev/null 2>&1; ls -la $LAPRUN/content.bin 2>/dev/null | awk '{print \$5}'" 260 > "$RUN/csize.txt"
   CSZ=$(tr -dc 0-9 < "$RUN/csize.txt"); CSZ=${CSZ:-0}
   [ "$CSZ" -gt 0 ] && pass "content layer fetched ($CSZ bytes)" || fail "content fetch produced nothing"
-  RECID=$(SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --cid $LAPRUN/content.bin 2>/dev/null | grep -aoE '[A-Za-z0-9]{40,}' | tail -1" 70)
+  RECID=$(SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --cid $LAPRUN/content.bin --log $LAPRUN-cid.log 2>/dev/null | grep -aoE '[A-Za-z0-9]{40,}' | tail -1" 70)
   [ "$RECID" = "$CCID" ] && pass "fetched bytes re-hash to the same CID (integrity)" || fail "re-hash mismatch (got '$RECID')"
-  SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --pin-ls --data-dir $LAPRUN/fdata 2>&1 | grep -qa '$CCID'" 70 && pass "fetched content is pinned (will re-seed)" || fail "fetched content not pinned"
+  SSH "cd $REPO_LAP && timeout 60 ./build/VidyaGod --pin-ls --data-dir $LAPRUN/fdata --log $LAPRUN-pinls.log 2>/dev/null | grep -qa '$CCID'" 70 && pass "fetched content is pinned (will re-seed)" || fail "fetched content not pinned"
 fi
 
 # ---------- phase 6: service health (both machines) ----------
@@ -222,20 +255,44 @@ PROBE="$REPO_PC/tools/health_probe.py"
 timeout 60 "${ENVPC[@]}" python3 "$PROBE" "$REPO_PC/build/libvgipfs.so" "$RUN/pc-health-repo" 15 > "$RUN/pc-health.txt" 2>&1
 PCROWS=$(grep -cE '^(ok|warn|down|off) ' "$RUN/pc-health.txt" || true)
 PCDOWN=$(grep -cE '^down ' "$RUN/pc-health.txt" || true)
-if [ "${PCROWS:-0}" -ge 10 ] && [ "${PCDOWN:-0}" -eq 0 ]; then
-  pass "PC service health ($PCROWS services, 0 down)"
+PCCORE=1
+for SVC in Network DHT "Transfers"; do grep -qaE "^ok +$SVC" "$RUN/pc-health.txt" || PCCORE=0; done
+if [ "${PCROWS:-0}" -ge 10 ] && [ "${PCDOWN:-0}" -eq 0 ] && [ "$PCCORE" = "1" ]; then
+  pass "PC service health ($PCROWS services, 0 down, core ok)"
 else
-  fail "PC service health (rows=$PCROWS down=$PCDOWN — see pc-health.txt)"
-  grep -E '^down ' "$RUN/pc-health.txt" | head -5
+  fail "PC service health (rows=$PCROWS down=$PCDOWN coreOk=$PCCORE — see pc-health.txt)"
+  grep -E '^(down|warn) ' "$RUN/pc-health.txt" | head -5
 fi
 SSH "cd $REPO_LAP && $ENVLAP timeout 55 python3 tools/health_probe.py build/libvgipfs.so $LAPRUN/health-repo 15 2>&1" 70 > "$RUN/lap-health.txt"
 LROWS=$(grep -cE '^(ok|warn|down|off) ' "$RUN/lap-health.txt" || true)
 LDOWN=$(grep -cE '^down ' "$RUN/lap-health.txt" || true)
-if [ "${LROWS:-0}" -ge 10 ] && [ "${LDOWN:-0}" -eq 0 ]; then
-  pass "laptop service health ($LROWS services, 0 down)"
+LCORE=1
+for SVC in Network DHT "Transfers"; do grep -qaE "^ok +$SVC" "$RUN/lap-health.txt" || LCORE=0; done
+if [ "${LROWS:-0}" -ge 10 ] && [ "${LDOWN:-0}" -eq 0 ] && [ "$LCORE" = "1" ]; then
+  pass "laptop service health ($LROWS services, 0 down, core ok)"
 else
-  fail "laptop service health (rows=$LROWS down=$LDOWN — see lap-health.txt)"
-  grep -E '^down ' "$RUN/lap-health.txt" | head -5
+  fail "laptop service health (rows=$LROWS down=$LDOWN coreOk=$LCORE — see lap-health.txt)"
+  grep -E '^(down|warn) ' "$RUN/lap-health.txt" | head -5
+fi
+
+# ---------- phase 7: no recovered panics anywhere ----------
+say "phase 7: recovered-panic sweep (a recovered panic during the battery is a failing bug)"
+# Sweep EVERY file a build-under-test node wrote stderr into: the *.log captures AND the probe outputs
+# (seed.out, pc-health.txt, lap-health.txt) — three nodes escaped the .log-only sweep (adversarial round-3).
+if grep -qa 'PANIC recovered' "$RUN"/*.log "$RUN"/seed.out "$RUN"/pc-health.txt "$RUN"/lap-health.txt 2>/dev/null; then
+  fail "recovered panic(s) in PC-side logs: $(grep -ha 'PANIC recovered' "$RUN"/*.log "$RUN"/seed.out "$RUN"/pc-health.txt 2>/dev/null | head -2)"
+else
+  pass "no recovered panics (PC, all phases + probes)"
+fi
+# SSH failure must NOT read as "no panics" (grep-no-match and ssh-dead share exit 1 — adversarial round-3):
+# demand a sentinel proving the remote grep actually ran.
+LAPPANIC=$(SSH "grep -ha 'PANIC recovered' /tmp/vg-e2e-$TS*.log 2>/dev/null | head -3; echo __SWEEP_RAN__" 25)
+if ! printf '%s' "$LAPPANIC" | grep -qa '__SWEEP_RAN__'; then
+  fail "laptop panic sweep DID NOT RUN (ssh failure) — cannot claim clean"
+elif printf '%s' "$LAPPANIC" | grep -qa 'PANIC recovered'; then
+  fail "recovered panic(s) in laptop logs: $(printf '%s' "$LAPPANIC" | grep -a 'PANIC recovered' | head -1)"
+else
+  pass "no recovered panics (laptop, all phases)"
 fi
 
 # ---------- teardown + verdict ----------
