@@ -15,10 +15,14 @@
 #   phase 6  HEALTH        the VgHealth service report on BOTH machines (tools/health_probe.py drives
 #                          libvgipfs.so directly): a live node must report ZERO "down" services
 #
-# ── STANDING RULE (user, 2026-09-04): EVERY new user-facing feature EXTENDS this battery with checks for its
-#    flow, in the same change that ships the feature. A flow that isn't gated here can silently break later —
-#    which is exactly what this file exists to prevent. Add a phase (or checks in an existing one), honor the
-#    trap notes below, and run at least the new phase standalone as acceptance before pushing.
+# ── STANDING RULE (user, 2026-09-04): EVERY change tests EVERY flow it adds — not just user flows — in the
+#    same change that ships it. Cross-machine/user behavior lands HERE as a phase; internal mechanisms get Go
+#    unit/two-host tests (mutation-verified); C++ wiring gets Qt Test; GUI flows get AT-SPI (tools/a11ydrive.py)
+#    + shot.sh; game behavior gets the gamedrive/realinput harnesses. NOTHING is exempt: if no harness can
+#    observe a behavior, BUILDING one is part of the feature's cost (precedents: tools/health_probe.py drives
+#    libvgipfs.so via ctypes; /proc/mem runtime differentials; uinput synthetic input). Run at least the new
+#    checks standalone as acceptance before pushing. A flow that isn't gated somewhere can silently break later
+#    — which is exactly what this file exists to prevent.
 #
 # Harness traps (each bit us once — do not reintroduce):
 #   * overlay routes are derived from ACCEPTED friends at TUN-attach time → befriend FIRST, then start --lan nodes
