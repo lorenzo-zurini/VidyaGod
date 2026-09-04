@@ -886,7 +886,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                                     "WineSys32Dir", "WineSysWow64Dir", "SysRegMtime",
                                     "VIDYAGOD_SANDBOX", "VIDYAGOD_SANDBOX_NET", "VIDYAGOD_SELF_VIP",
                                     "VIDYAGOD_SELF_NAME", "VIDYAGOD_SUBNET", "VIDYAGOD_PEER_VIPS",
-                                    "VIDYAGOD_PEER_NAMES", "VIDYAGOD_JOIN_ADDRESS",
+                                    "VIDYAGOD_PEER_NAMES",
                                     "VIDYAGOD_LAN_BRIDGE", "VIDYAGOD_LAN_HOSTRELAY" };
         for (const auto &[K, V] : ContainerParams(std::filesystem::path(), std::string(), std::string()).GetVariablesMap())
             B.insert(K);

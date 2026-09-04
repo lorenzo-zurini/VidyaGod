@@ -905,35 +905,6 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId)
     return Removed;
 }
 
-std::string PlayIdent(const NodeIndex &Idx, const std::string &LaunchNodeId)
-{
-    const Node *N = Idx.Find(LaunchNodeId);
-    std::string Uid = N ? N->Uid : std::string();
-    if (Uid.empty()) Uid = LaunchNodeId;
-    //Toggles are deliberately EMPTY, not the user's module states: an optional HD-texture pack is not a different
-    //build, and treating it as one would warn about every second peer.
-    std::vector<std::string> Cids = NodeContentCids(Idx, LaunchNodeId, {});
-    if (Cids.empty()) return "v1:" + Uid + "@" + LaunchNodeId;   // fully local package, nothing content-addressed
-    std::sort(Cids.begin(), Cids.end());
-    unsigned long long Hash = 1469598103934665603ULL;            // FNV-1a over the sorted CID set
-    for (const std::string &C : Cids)
-        for (unsigned char Ch : C) { Hash ^= Ch; Hash *= 1099511628211ULL; }
-    char Buf[17];
-    std::snprintf(Buf, sizeof(Buf), "%016llx", Hash);
-    return "v1:" + Uid + "@" + std::string(Buf);
-}
-
-std::string PlayLabel(const NodeIndex &Idx, const std::string &LaunchNodeId)
-{
-    const Node *N = Idx.Find(LaunchNodeId);
-    if (!N) return LaunchNodeId;
-    std::string Title;
-    if (N->Meta.is_object() && N->Meta.contains("TITLE") && N->Meta["TITLE"].is_string())
-        Title = N->Meta["TITLE"].get<std::string>();
-    if (Title.empty()) Title = LaunchNodeId;
-    return N->Label.empty() ? Title : Title + " — " + N->Label;
-}
-
 std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &LaunchNodeId)
 {
     std::vector<std::string> Ids{LaunchNodeId};     // first ⇒ preselected in the variant picker

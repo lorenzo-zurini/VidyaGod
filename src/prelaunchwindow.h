@@ -105,13 +105,6 @@ private:
     void BuildLanPanel(QVBoxLayout * LeftCol);
     void RefreshLanPanel();
 
-public:
-    // Pre-fill this window as a JOIN of a friend (or a typed address) and preselect the variant they are running.
-    // Call after construction, before show(). Order matters inside: selecting the variant rebuilds the CustomVar
-    // widgets, so the join controls are set afterwards.
-    void PresetJoin(const QString & TargetAddress, const QString & FriendPeerId,
-                    const std::string & SelectNodeId, const QString & Warning);
-
 private:
     // (Re)fills the variant combo from GroupNodeIds: recommended first, then natural version order (1.9 < 1.10);
     // beyond a dozen entries the combo turns editable with a contains-matching completer (type "1.20" to jump) —
@@ -175,13 +168,6 @@ private:
     QLabel*       LanStatus         = nullptr;   // "Your vIP: 10.66.x.y" / "LAN offline"
     QTimer*       LanTimer          = nullptr;
     std::map<std::string, std::pair<QCheckBox*, QLabel*>> LanRowByPeer;   // peer id → (tick, badge)
-
-    // Join target: who (or what address) this launch should connect to. Feeds VIDYAGOD_JOIN_ADDRESS for THIS launch
-    // only — deliberately not the global-roster pattern the per-friend ticks above use.
-    QComboBox*    JoinCombo         = nullptr;   // "Host / solo" · friends · "Other address…"
-    QLineEdit*    JoinAddress       = nullptr;
-    QLabel*       JoinWarn          = nullptr;   // version mismatch / bridge warning; hidden when empty
-    std::string   JoinSignature;                 // the peer tuple the combo was last built from
 };
 
 #endif // PRELAUNCHWINDOW_H

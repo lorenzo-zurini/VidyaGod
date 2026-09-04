@@ -66,18 +66,6 @@ int  VgSetProfile(const char *nick, const char *picCid, char **errOut);
 int  VgGetProfile(char **outJson);                     // {"nick":..,"pic":..}
 int  VgFriendList(char **outJson);                     // JSON array of contacts (incl. play/plabel/pident/psince/popen)
 
-// Presence: what we are playing, and who may see it. These are LAUNCH FACTS — we never claim to know in-game state.
-// All succeed with the node offline (state is local, the broadcast is skipped), because the launch path is
-// unconditional. "Open to join" is advisory: it is shown as a badge and never gates the Join affordance.
-int  VgSetPlaying(const char *nodeId, const char *label, const char *ident, char **errOut);
-int  VgClearPlaying(void);
-int  VgGetPlaying(char **outJson);                     // {"node","label","ident","since","open"}
-int  VgSetOpenToJoin(int on);
-int  VgSetInvisible(int on);                           // hide the play block from everyone
-int  VgInvisible(void);                                // 1 hidden / 0 visible / -1 no node
-// Strangers met in a shared game (event kind 6). NOT contacts: adding one sends an ordinary friend request.
-int  VgFriendSuggestions(char **outJson);              // [{peer,nick,via,game,at}]
-void VgDismissSuggestion(const char *peerID);
 int  VgFriendAdd(const char *peerID, const char *note, char **errOut);   // send a friend request
 int  VgFriendAccept(const char *peerID, char **errOut);
 int  VgFriendDecline(const char *peerID, char **errOut);

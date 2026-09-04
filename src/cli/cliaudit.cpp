@@ -233,8 +233,8 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         //passes %ScreenWidth% to the game resolves to something real).
         CP.ScreenWidth   = "1920";
         CP.ScreenHeight  = "1080";
-        //The same engine-injected session facts a real launch gets, so join-address authoring resolves here too.
-        CP.SessionVars   = { {"VIDYAGOD_SELF_NAME", "Player"}, {"VIDYAGOD_JOIN_ADDRESS", std::string()} };
+        //The same engine-injected session facts a real launch gets, so a package's use of them resolves here too.
+        CP.SessionVars   = { {"VIDYAGOD_SELF_NAME", "Player"} };
 
         nlohmann::ordered_json Pool = nlohmann::ordered_json::object();
         Captured.clear();

@@ -247,14 +247,7 @@ int DehydrateNode(const NodeIndex &Idx, const std::string &LaunchNodeId);
 std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                          const std::map<std::string, bool> &Toggles = {});
 
-// ---- presence identity + grouping (shared by the launch path and the Friends tab) ----
-// A stable content identity for a launchable, used ONLY to WARN that two peers are running different builds.
-// Both sides must compute it identically, which is why it lives here rather than at either call site.
-// Carries a "v1:" recipe prefix: an ident whose prefix you do not recognise is UNKNOWN, never "mismatched" —
-// otherwise the day this recipe changes, every peer in the world looks wrong to everyone.
-std::string PlayIdent(const NodeIndex &Idx, const std::string &LaunchNodeId);
-// The human string friends see: the game's title plus this variant's own label.
-std::string PlayLabel(const NodeIndex &Idx, const std::string &LaunchNodeId);
+// ---- grouping ----
 // Every launchable sharing this node's game (its pre-launch "tile group"), with NodeId first so it is preselected.
 std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &LaunchNodeId);
 // Gather (without fetching) every missing content-layer + cover target for a launchable's closure, appending to Out.

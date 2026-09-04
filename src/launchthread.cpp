@@ -4,7 +4,7 @@
 #include "packagecatalog.h"
 #include "commonutils.h"
 
-#include "ipfswrapper.h"     // SetPlaying/ClearPlaying + LanLaunchVars — presence and the session vars
+#include "ipfswrapper.h"     // LanLaunchVars + GetProfile — the virtual-LAN session vars
 #include <QApplication>
 #include <QMessageBox>
 #include <algorithm>
@@ -83,8 +83,9 @@ void LaunchThread::run()
     struct ContainerParams Params(NoPath, std::string(), std::string());
     Params.VariableOverrides = this->VariableOverrides;
     Params.ModuleStates      = this->ModuleStates;
-    //Engine-injected session facts. Lowest priority (see ContainerParams::SessionVars) and seeded early enough to
-    //reach EXEARGS / other CustomVar DEFAULTs. LanLaunchVars is empty when the node is down, so SELF_NAME needs a
+    //Engine-injected session facts: the virtual-LAN vars (SELF_VIP / PEER_VIPS / PEER_NAMES / SUBNET / SANDBOX)
+    //plus the player's own display name. Lowest priority (see ContainerParams::SessionVars) and seeded early enough
+    //to reach EXEARGS / other CustomVar DEFAULTs. LanLaunchVars is empty when the node is down, so SELF_NAME needs a
     //local fallback too — a package writes it into a game config verbatim and must never get an empty name.
     Params.SessionVars = IpfsWrapper::LanLaunchVars();
     if (!Params.SessionVars.count("VIDYAGOD_SELF_NAME") || Params.SessionVars["VIDYAGOD_SELF_NAME"].empty())
@@ -92,10 +93,6 @@ void LaunchThread::run()
         const std::string Nick = IpfsWrapper::GetProfile().Nick;
         Params.SessionVars["VIDYAGOD_SELF_NAME"] = Nick.empty() ? std::string("Player") : Nick;
     }
-    //Always define the join key, even when hosting: a package can then reference %VIDYAGOD_JOIN_ADDRESS% and get an
-    //empty string (whose argument the EXEARGS empty-arg rule drops) instead of a surviving literal token.
-    if (!Params.SessionVars.count("VIDYAGOD_JOIN_ADDRESS"))
-        Params.SessionVars["VIDYAGOD_JOIN_ADDRESS"] = std::string();
     //The chosen runner chain is set BEFORE construction so the resolver honours it. Screen geometry was captured on
     //the main thread (see onLaunchClicked) — the engine uses these instead of querying QGuiApplication here.
     Params.RunnerID  = this->RunnerID;
@@ -157,18 +154,7 @@ void LaunchThread::run()
     // -----------------------------------------------------------------
     // Step 3: Execute game (blocks until process exits or is killed).
     // -----------------------------------------------------------------
-    //Tell the node what we are playing, so friends' presence shows it. Bracketed HERE rather than inside Execute
-    //because Execute is also driven with an OverrideExe for tooling/installers and by the authoring session —
-    //those are not "playing a game". Execute blocks until the process ends, so its return IS the exit, which
-    //covers a crash and a user kill without any extra bookkeeping; and announcing only immediately before it means
-    //the two early-return failure paths above never announce a game that never started.
-    IpfsWrapper::SetPlaying(this->LaunchNodeId,
-                            PackageCatalog::PlayLabel(*Index, this->LaunchNodeId),
-                            PackageCatalog::PlayIdent(*Index, this->LaunchNodeId));
-
     LocalWrapper->Execute();
-
-    IpfsWrapper::ClearPlaying();
 
     //THE VERDICT. Printed for every launch, clean or not — "0 warnings" is information too, and a summary that
     //only appears on failure trains you to ignore its absence. When something did go wrong this is deliberately

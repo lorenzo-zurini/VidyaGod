@@ -165,7 +165,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         else Sources[Key] = ResolveOne(Key, CV.value("DEFAULT", std::string()));
     }
 
-    //Engine-injected session facts (friend LAN, SELF_NAME, JOIN_ADDRESS) enter here, as if they were declared with
+    //Engine-injected session facts (friend LAN vIPs + SELF_NAME) enter here, as if they were declared with
     //that value as their DEFAULT — so ResolveOne gives them the documented precedence for free (a --var/picker
     //override or a persisted USERSETTING still wins). A node that DECLARES one of these keys keeps full control:
     //the guard below leaves its own entry alone.
