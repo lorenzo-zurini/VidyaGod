@@ -638,6 +638,22 @@ std::vector<NetCheck> NetworkTest(bool *NodeOffline)
     return Out;
 }
 
+std::vector<NetCheck> ServiceHealth()
+{
+    std::vector<NetCheck> Out;
+    char *J = nullptr;
+    if (VgHealth(&J) != 0) { TakeStr(J); return Out; }
+    const std::string Js = TakeStr(J);
+    try
+    {
+        for (const auto &E : nlohmann::json::parse(Js))
+            Out.push_back({E.value("name", std::string()), E.value("status", std::string("down")),
+                           E.value("detail", std::string())});
+    }
+    catch (const std::exception &E) { LogWarn("IpfsWrapper::ServiceHealth", std::string("bad JSON from node: ") + E.what()); }
+    return Out;
+}
+
 void SetLanExcluded(const std::vector<std::string> &PeerIds)
 {
     std::string Csv;

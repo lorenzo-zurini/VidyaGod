@@ -305,6 +305,9 @@ struct NetCheck { std::string Name, Status, Detail; };
 // Runs the node's full network sweep (BLOCKS up to ~15s — call from a worker). Empty + *NodeOffline=true when
 // the node is not online (there is nothing meaningful to probe without a host).
 std::vector<NetCheck> NetworkTest(bool *NodeOffline = nullptr);
+// Live health of every Go service (health.go): passive introspection, cheap enough to poll every few seconds.
+// Status: "ok" | "warn" | "down" | "off" (off = intentionally idle, e.g. game-time services with no game up).
+std::vector<NetCheck> ServiceHealth();
 // Replace the GLOBAL LAN roster's excluded set (the launch window's un-ticked members). Immediate, mid-game too.
 void SetLanExcluded(const std::vector<std::string> &PeerIds);
 

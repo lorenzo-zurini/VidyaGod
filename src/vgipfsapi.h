@@ -13,6 +13,7 @@ extern "C" {
 typedef void (*VgTransferCb)(const char *cid, int kind, double percent, int ok, const char *err);
 
 void VgSetLogVerbose(int on);   // flip the node's verbose diagnostic log (vglog.go) on/off at runtime
+int  VgHealth(char **outJson);  // live service health: [{name,status,detail}], status ok|warn|down|off (cheap; pollable)
 int  VgStart(const char *repoPath, char **errOut);   // open/create the private repo; idempotent
 void VgStop(void);
 int  VgStarted(void);   // 1 if the node repo is open

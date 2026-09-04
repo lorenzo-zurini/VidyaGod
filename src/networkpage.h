@@ -8,22 +8,34 @@ class QPushButton;
 class QTreeWidget;
 class QLabel;
 
-// Settings → Network: the "is my firewall the problem?" panel. One button runs the node's full diagnostic
-// sweep (HTTPS/DoH, peer+transport breakdown, inbound reachability, mDNS multicast, DHT, friend links) on a
-// worker and renders one ✓/⚠/✗ row per subsystem. Every network feature here fails SOFT in normal use — a
-// blocked UDP port just looks like "slow", a filtered 5353 like "can't see my friend on the couch" — so this
-// page exists to turn those silences into sentences.
+// Settings → Network: the "is my firewall the problem?" panel, in two halves.
+//  LIVE SERVICE HEALTH (top): a passive introspection of every Go service (node, host, reachability, DHT,
+//  bitswap, deliverability, announce, mDNS, friends, LAN links, overlay, tri-plane, DoH) polled every few
+//  seconds while the page is visible — a service that silently died shows up here as ✗ within seconds.
+//  NETWORK TEST (bottom): the on-demand ACTIVE sweep that probes the outside world (up to ~15s) — firewall/
+//  NAT/multicast truths that passive introspection cannot know. Every network feature fails SOFT in normal
+//  use — a blocked UDP port just looks like "slow" — so this page exists to turn those silences into sentences.
+class QTimer;
 class NetworkPage : public QWidget
 {
     Q_OBJECT
 public:
     explicit NetworkPage(AppModel &model, QWidget *parent = nullptr);
 
+protected:
+    void showEvent(QShowEvent *e) override;   // start/stop the health poll with visibility —
+    void hideEvent(QHideEvent *e) override;   // no background polling while the page is hidden
+
 private slots:
     void runTest();
+    void refreshHealth();
 
 private:
     AppModel     &Model;
+    QTreeWidget  *HealthTree   = nullptr;
+    QLabel       *HealthStatus = nullptr;
+    QTimer       *HealthTimer  = nullptr;
+    bool          HealthBusy   = false;   // one poll in flight at a time
     QPushButton  *RunButton   = nullptr;
     QTreeWidget  *ResultTree  = nullptr;
     QLabel       *StatusLabel = nullptr;
