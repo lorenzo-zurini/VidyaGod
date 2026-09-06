@@ -119,7 +119,11 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
 bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, const std::filesystem::path &FilePath)
 {
     LogOut("FileEdits::ConfigWrite", "FilePath: " + FilePath.string() + " Key: " + Key + " Value: " + Value);
-    std::ifstream inFile(FilePath);
+    // Binary I/O throughout (read AND the write below): on Windows a text-mode stream translates '\n' to CRLF on
+    // write, so the SAME edit produced different bytes than on Linux — breaking cross-platform determinism (and
+    // content hashes) and failing the round-trip tests. Binary writes '\n' verbatim (LF) on every platform and
+    // preserves any existing '\r' in a line, matching the Linux behavior packages are authored against.
+    std::ifstream inFile(FilePath, std::ios::binary);
     if (!inFile.is_open())
     {
         LogErr("FileEdits::ConfigWrite", "Could not open file for reading: " + FilePath.string());
@@ -137,7 +141,7 @@ bool FileEdits::ConfigWrite(const std::string &Key, const std::string &Value, co
 
     inFile.close();
 
-    std::ofstream outFile(FilePath, std::ios::trunc);
+    std::ofstream outFile(FilePath, std::ios::binary | std::ios::trunc);
     if (!outFile.is_open())
     {
         LogErr("FileEdits::ConfigWrite", "Could not open file for writing: " + FilePath.string());
@@ -180,7 +184,7 @@ bool FileEdits::FileOverwrite(const std::string &Value, const std::filesystem::p
     std::error_code ec;
     std::filesystem::create_directories(FilePath.parent_path(), ec);
     if (ec) { LogErr("FileEdits::FileOverwrite", "Could not create parent dirs: " + ec.message()); return false; }
-    std::ofstream Out(FilePath, std::ios::out | std::ios::trunc);
+    std::ofstream Out(FilePath, std::ios::binary | std::ios::out | std::ios::trunc);   // binary: verbatim bytes, no CRLF translation on Windows
     if (!Out) { LogErr("FileEdits::FileOverwrite", "Could not open for writing: " + FilePath.string()); return false; }
     Out << Value;
     return true;
@@ -207,7 +211,7 @@ bool FileEdits::AppendLine(const std::string &Value, const std::filesystem::path
         }
     }
 
-    std::ofstream Out(FilePath, std::ios::app);
+    std::ofstream Out(FilePath, std::ios::binary | std::ios::app);   // binary: '\n' stays LF on Windows too (matches the binary read above)
     if (!Out) { LogErr("FileEdits::AppendLine", "Could not open for append: " + FilePath.string()); return false; }
     if (!Content.empty() && Content.back() != '\n') Out << '\n';        // don't fuse onto an unterminated last line
     Out << Value << '\n';

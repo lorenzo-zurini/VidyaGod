@@ -243,7 +243,10 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             const fs::path Local = Bundle / Path;
             // ExistingOnly is what SEEDING wants (you cannot reference bytes you do not have). An UPGRADE diff wants
             // the recorded targets regardless: the staged new tree is manifests-only, so every content file is absent.
-            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.string()] = Cid;
+            // generic_string() (forward slashes) NOT string() (native): on Windows string() yields backslash keys,
+            // so the same package produced a different seed map than on Linux — breaking cross-platform path lookups
+            // (and de-dup) while the tests looked keys up with '/'. Windows file APIs accept '/', so this stays valid.
+            if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
         };
 
         if (!CoversOnly && J.contains("LAYERS") && J["LAYERS"].is_array())

@@ -74,9 +74,13 @@ GeneralPage::GeneralPage(AppModel & model, QWidget * parent)
     {
         loginCb->setEnabled(false);
         loginCb->setChecked(false);
+#ifdef _WIN32
+        loginHint = "Not available on Windows yet — login autostart is not implemented for this platform.";
+#else
         loginHint = AppPaths::GetMode() == AppPaths::Mode::Portable
             ? "Not available in portable mode — a login entry can't point at a portable, movable install."
             : "Not available when VidyaGod is launched with custom paths.";
+#endif
     }
     else
     {

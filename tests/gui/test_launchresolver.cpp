@@ -11,6 +11,11 @@
 using json = nlohmann::ordered_json;
 
 namespace {
+// The machine platform the chain resolver bridges TO. Hardcoding "linux64" made every chain test assume a Linux
+// host: on Windows MachinePlatform()=="win64", so a runner declared host "linux64" never reaches the machine, the
+// chain resolves EMPTY, and the tests' ids[0] indexed out of bounds (a SEGFAULT under the Windows/MinGW CI). Use
+// the real machine platform so these tests exercise the same win32->machine bridge on every OS.
+const std::string kMachine = ManifestModel::MachinePlatform();
 Node contentNode(const std::string & id, const json & layers = json::array())
 {
     Node n; n.NodeId = id; n.Layers = layers; n.BundleDir = "/tmp/vg_bundle"; return n;
@@ -364,8 +369,8 @@ private slots:
     void chain_win32_single_bridge_plus_native_terminal()
     {
         NodeIndex idx;
-        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");   // explicit native passthrough
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, kMachine);
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");   // explicit native passthrough
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
@@ -379,7 +384,7 @@ private slots:
     void chain_synthesizes_native_terminal_when_unauthored()
     {
         NodeIndex idx;
-        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, "linux64");
+        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, kMachine);
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle");
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
@@ -393,8 +398,8 @@ private slots:
     {
         NodeIndex idx;
         idx.Nodes["snes9x"]    = chainRunner("snes9x", {"snes"}, "win32");
-        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, kMachine);
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "snes", {});
         ContainerParams cp("/tmp/vg_bundle");
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
@@ -408,8 +413,8 @@ private slots:
     void chain_native_content_is_terminal_only()
     {
         NodeIndex idx;
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
-        Node launch = launchNode("game", "linux64", {});
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
+        Node launch = launchNode("game", kMachine, {});
         ContainerParams cp("/tmp/vg_bundle");
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
         QCOMPARE((int)ids.size(), 1);
@@ -420,10 +425,10 @@ private slots:
     void chain_bridge_prefers_recommended()
     {
         NodeIndex idx;
-        idx.Nodes["aaa_proton"] = chainRunner("aaa_proton", {"win32"}, "linux64");
-        Node rec = chainRunner("zzz_proton", {"win32"}, "linux64"); rec.Recommended = true;
+        idx.Nodes["aaa_proton"] = chainRunner("aaa_proton", {"win32"}, kMachine);
+        Node rec = chainRunner("zzz_proton", {"win32"}, kMachine); rec.Recommended = true;
         idx.Nodes["zzz_proton"] = rec;
-        idx.Nodes["nativerun"]  = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        idx.Nodes["nativerun"]  = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle");
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
@@ -434,9 +439,9 @@ private slots:
     void chain_honours_persisted_pin()
     {
         NodeIndex idx;
-        idx.Nodes["protonA"]   = chainRunner("protonA", {"win32"}, "linux64");
-        idx.Nodes["protonB"]   = chainRunner("protonB", {"win32"}, "linux64");
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        idx.Nodes["protonA"]   = chainRunner("protonA", {"win32"}, kMachine);
+        idx.Nodes["protonB"]   = chainRunner("protonB", {"win32"}, kMachine);
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
         const json cfg = json{{"LIBRARY", json::array({ json{{"PACKAGEUID", "pkg"},
@@ -451,7 +456,7 @@ private slots:
     void chain_unreachable_platform_is_empty()
     {
         NodeIndex idx;
-        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, "linux64");
+        idx.Nodes["proton"] = chainRunner("proton", {"win32"}, kMachine);
         Node launch = launchNode("game", "ps2", {});
         ContainerParams cp("/tmp/vg_bundle");
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, json{{"Settings", json::object()}});
@@ -462,8 +467,8 @@ private slots:
     void chain_resolves_links_with_native_terminal()
     {
         NodeIndex idx;
-        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, "linux64");
-        idx.Nodes["nativerun"] = chainRunner("nativerun", {"linux64"}, "linux64", "");
+        idx.Nodes["proton"]    = chainRunner("proton", {"win32"}, kMachine);
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle");
         auto links = LaunchResolver::ResolveRunnerChain(idx, launch, cp, json{{"Settings", json::object()}});

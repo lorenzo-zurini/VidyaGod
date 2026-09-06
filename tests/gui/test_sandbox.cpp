@@ -45,6 +45,9 @@ private slots:
 
     void wrap_nests_userns_readonly_root_and_sandbox_init()
     {
+#ifdef _WIN32
+        QSKIP("bwrap argv is the Linux backend; Windows sandboxing is the separate Sandboxie backend (sandboxlayer_win.cpp)");
+#endif
         SandboxLayer::Options O = SandboxLayer::FromParams(params({{"VIDYAGOD_SANDBOX", "on"}}));
         O.Mounts.push_back({"/tmp/spec.json", "/tmp/mnt"});
         O.WorkDir = "/tmp/mnt/game";
@@ -76,6 +79,9 @@ private slots:
 
     void isolated_unshares_net_and_keeps_net_admin()
     {
+#ifdef _WIN32
+        QSKIP("bwrap --unshare-net is the Linux backend; Windows sandboxing is the separate Sandboxie backend");
+#endif
         SandboxLayer::Options O = SandboxLayer::FromParams(
             params({{"VIDYAGOD_SANDBOX", "on"}, {"VIDYAGOD_SANDBOX_NET", "isolated"}}));
         O.TunName = "vg-abcdef"; O.TunCidr = "10.66.7.2/24"; O.TunSock = "/tmp/t.sock";

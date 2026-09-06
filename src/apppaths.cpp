@@ -33,7 +33,18 @@ std::filesystem::path DataRoot()
 void SetMode(Mode M)  { ModeRef() = M; }
 Mode GetMode()        { return ModeRef(); }
 bool DaemonSupported()    { return ModeRef() != Mode::InPackage; }
-bool AutostartSupported() { return ModeRef() == Mode::Normal; }
+// Autostart is the XDG .desktop login mechanism (src/autostart.cpp). It has NO Windows implementation yet — writing
+// to GenericConfigLocation/autostart on Windows produces a file the OS never runs, so the toggle would fabricate a
+// login entry that silently does nothing. Report unsupported on Windows until a registry Run-key backend exists, so
+// the UI honestly disables the control rather than confirming a lie. (Registry-Run Windows autostart = follow-up.)
+bool AutostartSupported()
+{
+#ifdef _WIN32
+    return false;
+#else
+    return ModeRef() == Mode::Normal;
+#endif
+}
 
 void SetPackagePathOverride(const std::string & Path)  { PkgOverrideRef()      = std::filesystem::path(Path); }
 void SetRuntimePathOverride(const std::string & Path)  { RuntimeOverrideRef()  = std::filesystem::path(Path); }

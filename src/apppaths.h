@@ -34,7 +34,7 @@ void SetMode(Mode M);
 Mode GetMode();
 
 bool DaemonSupported();      // tray / stay-resident — allowed unless In-package.
-bool AutostartSupported();   // start-on-login (XDG autostart) — allowed only in Normal mode.
+bool AutostartSupported();   // start-on-login (XDG autostart) — Normal mode only, and always false on Windows (no registry-Run backend yet).
 
 // Optional per-launch path overrides (CLI: --package-dir / --runtime-dir / --userdata-dir; in-package sets all three
 // = the package dir). Empty = derive normally (the default). Read by the launch engine: PackagePath in
