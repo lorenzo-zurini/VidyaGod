@@ -129,7 +129,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
         //var resolves to "" so its %token% references vanish (and a single-token EXEARGS arg drops). The condition may
         //reference other vars, so it is evaluated inside the Phase-2 fixpoint against the settling map.
         std::string When = CV.value("WHEN", std::string());
-        if (When.empty() && UI.contains("WHEN") && UI["WHEN"].is_string()) When = UI["WHEN"];
+        if (When.empty() && UI.contains("WHEN") && UI["WHEN"].is_string()) When = UI["WHEN"].get<std::string>();
         if (!When.empty()) WhenCond[Key] = When;
         const bool Pooled = UI.value("CONTROL", std::string()) == "secret"
                             && UI.contains("POOL") && UI["POOL"].is_array() && !UI["POOL"].empty();
@@ -143,7 +143,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
             //and we hand the draw back for the caller to persist.
             std::string Saved;
             if (SavedVars.contains(Key) && SavedVars[Key].is_string())
-                Saved = SavedVars[Key];
+                Saved = SavedVars[Key].get<std::string>();
             if (!Saved.empty())
             {
                 LogOut("ResolveCustomVariables", "User setting: " + Key + " = [secret]");

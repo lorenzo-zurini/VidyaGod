@@ -19,6 +19,8 @@ endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The g++ >= 12 floor (std::atomic<std::shared_ptr>) is enforced in VidyaGodFS/CMakeLists.txt, beside overlay.h
+# which actually needs it — the add_subdirectory(VidyaGodFS) below inherits it, and a standalone FS build gets it too.
 
 # ---- Build hardening (applied to the VidyaGod target below) ----
 # Warnings are always on; -Werror is opt-in (CI sets VIDYAGOD_WERROR=ON so local dev isn't blocked).
@@ -28,11 +30,22 @@ option(VIDYAGOD_WERROR   "Treat C++ warnings as errors (CI)" OFF)
 option(VIDYAGOD_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 # -Wshadow=local (not full -Wshadow): high signal (local shadows local/param) without the noisy
 # ctor-param-named-like-member idiom. GCC flag (the project builds with g++).
-# array-bounds/stringop-overflow stay WARNINGS (not errors): newer GCC (observed on 16) fires known
-# false positives through std::shared_ptr's inplace control block + nlohmann at -O2, anchored in
-# system headers where -isystem can't suppress them.
+# array-bounds/stringop-overflow/maybe-uninitialized stay WARNINGS (not errors). These are GCC's speculative,
+# optimizer-driven diagnostics — GCC fires all three as false positives through system headers where -isystem
+# can't suppress them (the analysis runs post-inline and gets attributed to our TU). Only the -Werror is dropped
+# for these three specific names; every other warning (including the reliable definite-use -Wuninitialized, which
+# is a SEPARATE diagnostic from the here-demoted speculative -Wmaybe-uninitialized) still fails the build:
+#   * array-bounds/stringop-overflow: std::shared_ptr's inplace control block + nlohmann at -O2 (seen on gcc-16)
+#   * maybe-uninitialized: nlohmann's iter_impl.hpp (.items()) and std::function/<regex> internals, fired by
+#     gcc-12 — and MORE of them appear only under the ASan/UBSan sanitizer codegen, across many unrelated TUs
+#     and in the VidyaGodFS subtree, so per-TU scoping is untenable whack-a-mole.
+# The reliable -Wuninitialized (DEFINITE uses) stays an error under -Wall. Honest caveat: demoting the
+# speculative -Wmaybe- leaves PATH-DEPENDENT uninitialized reads with no hard gate, and nothing here catches
+# them at runtime either (that needs MemorySanitizer, which is clang-only — we build gcc, and ASan/UBSan do NOT
+# flag uninitialized reads). Accepted as the lesser evil vs. an unsuppressable flood of system-header false
+# positives; revisit with a valgrind-memcheck job if a real one ever slips through.
 set(VG_WARNINGS -Wall -Wextra -Wshadow=local -Wnon-virtual-dtor
-    -Wno-error=array-bounds -Wno-error=stringop-overflow)
+    -Wno-error=array-bounds -Wno-error=stringop-overflow -Wno-error=maybe-uninitialized)
 
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
@@ -43,7 +56,11 @@ find_package(nlohmann_json REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBZIP REQUIRED IMPORTED_TARGET libzip)   # node-graph validation reads content zips to case-check CONTENTPATH
 pkg_check_modules(LIBZSTD REQUIRED IMPORTED_TARGET libzstd) # .vgdelta generation/verification (shared with vidyagodfs)
-pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)         # sandbox-init's X-side window cloak (VIDYAGOD_CLOAK)
+# XCB is Linux-only: it backs sandbox-init's X-side window cloak (src/sandboxinit.cpp, itself #ifdef __linux__).
+# There is no xcb on Windows/MinGW, so requiring it unconditionally broke the Windows configure — guard it.
+if(NOT WIN32)
+    pkg_check_modules(XCB REQUIRED IMPORTED_TARGET xcb)     # sandbox-init's X-side window cloak (VIDYAGOD_CLOAK)
+endif()
 
 # Translation files
 set(TS_FILES VidyaGod_en_US.ts)
@@ -269,9 +286,13 @@ add_library(vidyagod_objs OBJECT ${SHARED_SOURCES})
 # vgfs_core (from the VidyaGodFS submodule below) supplies the shared .vgdelta format and the zipscan
 # ZIP64 central-directory walker — ONE compilation of each, linked everywhere, instead of the old
 # per-target recompiles of vgdelta.cpp with divergent flags.
+# PkgConfig::XCB exists only on Linux (guarded above); it must not be referenced on Windows.
+if(NOT WIN32)
+    set(VG_XCB_LIB PkgConfig::XCB)
+endif()
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD PkgConfig::XCB vgfs_core)
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD ${VG_XCB_LIB} vgfs_core)
 target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)

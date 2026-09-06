@@ -13,6 +13,14 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
 
+    # 22.04's default g++ is gcc-11, whose libstdc++ has no std::atomic<std::shared_ptr<>> specialization
+    # (added in gcc-12) — VidyaGodFS/src/overlay.h needs it for the lock-free deletion-mask sets. We install
+    # gcc-12 and build with it, but stay on 22.04 (glibc 2.35) so the AppImage keeps its portability floor.
+    # CC/CXX are honoured by CMake at configure time and by cgo when it builds libvgipfs.so.
+    env:
+      CC: gcc-12
+      CXX: g++-12
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -28,10 +36,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y cmake g++ build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
+          sudo apt install -y cmake g++ g++-12 gcc-12 build-essential qt6-base-dev qt6-tools-dev qt6-l10n-tools \
             libqt6opengl6-dev libglu1-mesa-dev freeglut3-dev mesa-common-dev fuse3 libfuse3-dev tree \
-            libxkbcommon-dev nlohmann-json3-dev wget pkg-config \
+            libxkbcommon-dev nlohmann-json3-dev wget pkg-config patchelf \
             zlib1g-dev libbz2-dev liblzma-dev libzstd-dev
+          # patchelf: required by linuxdeployqt (it aborts silently without it); pre-installed on the runner
+          # image today, but pinned here so the AppImage packaging step never depends on the image contents.
 
       - name: Build libzip from source (22.04's libzip is too old for zip_source_zip_file)
         run: |
@@ -97,8 +107,13 @@ jobs:
           # LD_LIBRARY_PATH) AND beside the binary in usr/bin (the $ORIGIN rpath + linuxdeployqt bundling).
           cp build/libvgipfs.so AppDir/usr/lib/
           cp build/libvgipfs.so AppDir/usr/bin/
+          mkdir -p AppDir/usr/share/applications
+          # Desktop + icon go in BOTH the AppDir root (where appimagetool picks them up to integrate into the
+          # final .AppImage) and the canonical FHS locations (standard AppDir layout / desktop integration).
           cp resources/org.vidyagod.VidyaGod.desktop AppDir/
+          cp resources/org.vidyagod.VidyaGod.desktop AppDir/usr/share/applications/
           cp resources/org.vidyagod.VidyaGod.png AppDir/
+          cp resources/org.vidyagod.VidyaGod.png AppDir/usr/share/icons/hicolor/256x256/apps/
           cp resources/AppRun AppDir/
           chmod +x AppDir/AppRun
 
@@ -121,8 +136,15 @@ jobs:
       - name: Bundle main app with linuxdeployqt
         run: |
           export PATH=/usr/lib/qt6/bin:$PATH
+          # Ubuntu's /usr/bin/qmake is a qtchooser stub that errors without a default ("could not find a Qt
+          # installation of ''"); linuxdeployqt needs a real qmake to locate Qt6 — point it at qmake6.
+          sudo ln -sf "$(command -v qmake6)" /usr/local/bin/qmake
           export LD_LIBRARY_PATH="$PWD/build:$PWD/AppDir/usr/lib:$LD_LIBRARY_PATH"
-          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/org.vidyagod.VidyaGod.desktop -appimage
+          # Pass the BINARY, not the .desktop: the linuxdeployqt continuous build silently exits 1 on the
+          # desktop-file form with Qt6 (reproduced in a clean 22.04 + qt6-base-dev container). The binary form
+          # bundles Qt6 + the xcb platform plugin correctly; the final -appimage step (appimagetool) then picks
+          # up the desktop file + icon from the AppDir root to integrate them into the .AppImage.
+          ./linuxdeployqt-continuous-x86_64.AppImage AppDir/usr/bin/VidyaGod -appimage
 
       - name: Upload AppImage
         uses: actions/upload-artifact@v4

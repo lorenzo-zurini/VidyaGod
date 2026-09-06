@@ -109,7 +109,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
     auto ResolveTargetKey = [&](const std::string &Base, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
         if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
-        std::string T = Sub[Key];
+        std::string T = Sub[Key].get<std::string>();
         VarSubst::StringVariableSubstitution(T, Vars);
         //A token that survived substitution becomes a LITERAL DIRECTORY NAME in the mount plan: the layer mounts at
         //"%Foo%/whatever", the game sees none of those files, and the mount itself succeeds — the quietest failure
@@ -132,7 +132,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     auto ResolveSource = [&](const nlohmann::ordered_json &Sub, const std::filesystem::path &PkgPath) -> std::string {
         nlohmann::ordered_json S = Sub;
         auto SubP = [&](nlohmann::ordered_json &J){ if (J.contains("PATH") && J["PATH"].is_string()) {
-            std::string P = J["PATH"]; VarSubst::StringVariableSubstitution(P, Vars); J["PATH"] = P; } };
+            std::string P = J["PATH"].get<std::string>(); VarSubst::StringVariableSubstitution(P, Vars); J["PATH"] = P; } };
         SubP(S);
         if (S.contains("SOURCE") && S["SOURCE"].is_object()) SubP(S["SOURCE"]);
         return ResolveLayerSource(S, PkgPath);
