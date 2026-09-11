@@ -72,6 +72,24 @@ else()
     set(VG_PLATFORM_SRC src/platform/platform_posix.cpp)
 endif()
 
+# Dear ImGui + imnodes — the blueprint canvas for the package editor. Vendored (same copies as AutoStudyCD20,
+# where this stack is already proven). AUTOMOC off: third-party C++ with no Qt in it.
+add_library(vg_imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/misc/cpp/imgui_stdlib.cpp
+    third_party/imgui/backends/imgui_impl_opengl3.cpp
+    third_party/imnodes/imnodes.cpp)
+set_target_properties(vg_imgui PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF POSITION_INDEPENDENT_CODE ON)
+target_include_directories(vg_imgui PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/imgui
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/misc/cpp
+    ${CMAKE_SOURCE_DIR}/third_party/imnodes)
+target_link_libraries(vg_imgui PUBLIC Qt6::OpenGL)
+
 # Everything except the entry point (main.cpp) + translations. Compiled once into an OBJECT library so both the
 # VidyaGod executable and the GUI test exe reuse the same objects.
 set(SHARED_SOURCES
@@ -94,17 +112,9 @@ set(SHARED_SOURCES
     src/packageeditormodel.h
     src/packageeditormodel.cpp
 
-    src/nodegraphview.h
-    src/nodegraphview.cpp
 
-    src/nodeeditor.h
-    src/nodeeditor.cpp
 
-    src/nodesection.h
-    src/nodesection.cpp
 
-    src/nodesections.h
-    src/nodesections.cpp
 
     src/validationpanel.h
     src/validationpanel.cpp
@@ -176,6 +186,18 @@ set(SHARED_SOURCES
 
     src/manifestmodel.h
     src/manifestmodel.cpp
+
+    src/nodelower.h
+    src/nodelower.cpp
+
+    src/pkggraph.h
+    src/pkggraph.cpp
+    src/pkgcanvas.h
+    src/pkgcanvas.cpp
+    src/pkgactions.h
+    src/pkgactions.cpp
+    src/pkgcanvaspanel.h
+    src/pkgcanvaspanel.cpp
 
     src/packagecatalog.h
     src/packagecatalog.cpp
@@ -292,7 +314,7 @@ if(NOT WIN32)
 endif()
 target_link_libraries(vidyagod_objs PUBLIC
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
-    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD ${VG_XCB_LIB} vgfs_core)
+    nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD ${VG_XCB_LIB} vgfs_core vg_imgui)
 target_include_directories(vidyagod_objs PUBLIC src VidyaGodFS/src)   # src: the cli/ TUs include engine headers bare
 target_compile_options(vidyagod_objs PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
@@ -339,6 +361,7 @@ enable_testing()
 add_executable(vg_tests
     tests/main.cpp
     tests/test_manifestmodel.cpp
+    tests/test_nodelower.cpp
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
     tests/test_fileedits.cpp
@@ -347,6 +370,7 @@ add_executable(vg_tests
     tests/test_depcheck.cpp
     tests/test_vgdelta.cpp
     src/manifestmodel.cpp
+    src/nodelower.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp
     src/fileedits.cpp
@@ -357,7 +381,7 @@ add_executable(vg_tests
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
     src/launchparams.cpp)   # ContainerParams::GetVariablesMap — validator's built-in %variable% source of truth
-target_include_directories(vg_tests PRIVATE src VidyaGodFS/src)
+target_include_directories(vg_tests PRIVATE src tests VidyaGodFS/src)
 target_link_libraries(vg_tests PRIVATE nlohmann_json::nlohmann_json PkgConfig::LIBZIP PkgConfig::LIBZSTD vgfs_core)
 target_compile_options(vg_tests PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
 if(VIDYAGOD_SANITIZE)
@@ -376,14 +400,15 @@ function(add_gui_test name)
         vidyagod_objs
         Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets Qt6::Test
         nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-    target_include_directories(${name} PRIVATE src)
+    target_include_directories(${name} PRIVATE src tests)   # tests/ for nodefixture.h
     target_compile_options(${name} PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
     set_target_properties(${name} PROPERTIES BUILD_RPATH "$ORIGIN")
     add_test(NAME ${name} COMMAND ${name})
     set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endfunction()
 
-add_gui_test(test_packageeditor_gui)
+add_gui_test(test_pkgcanvas)
+add_gui_test(test_pkgactions)
 add_gui_test(test_packageeditormodel)
 add_gui_test(test_tray)
 add_gui_test(test_networking)
@@ -420,6 +445,6 @@ target_link_libraries(vg_screenshots PRIVATE
     vidyagod_objs
     Qt6::Widgets Qt6::Network Qt6::OpenGL Qt6::OpenGLWidgets
     nlohmann_json::nlohmann_json PkgConfig::LIBZIP vgipfs)
-target_include_directories(vg_screenshots PRIVATE src)
+target_include_directories(vg_screenshots PRIVATE src tests)
 target_compile_options(vg_screenshots PRIVATE ${VG_WARNINGS})
 set_target_properties(vg_screenshots PROPERTIES BUILD_RPATH "$ORIGIN")

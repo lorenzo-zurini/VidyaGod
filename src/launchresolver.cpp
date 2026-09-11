@@ -135,11 +135,36 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.RunnerLayers      = Boundary.Layers;
     CP.RunnerShipsBuild  = Boundary.ShipsBuild;
 
-    //The boundary runner's platform keep-set: its OWN LAYERS' Persist entries (where THIS runner's user-state lives,
-    //with prefix-correct paths — e.g. proton's "pfx/drive_c/users/steamuser" + "HKCU"). Folded into DerivePersistence
-    //before the game's, so every launch persists the standard save/config locations with no per-game work. Runner-node
-    //LAYERS are otherwise ignored (the build comes from PARENTS), but Persist is a policy declaration, not a VFS layer.
-    CP.RunnerPersistLayers = (RunnerNode && RunnerNode->Layers.is_array()) ? RunnerNode->Layers : nlohmann::ordered_json::array();
+    //The runner platform keep-set: the Persist entries anywhere in the runner CHAIN's closures (where a
+    //runner's user-state lives, with prefix-correct paths — e.g. proton's "pfx/drive_c/users" + "HKCU").
+    //Folded into DerivePersistence before the game's, so every launch persists the standard save/config
+    //locations with no per-game work.
+    //
+    //CLOSURE, not the runner node's own layers — and EVERY runner in the chain, not just the boundary.
+    //
+    //This was the THIRD read of "the runner node's own LAYERS", and the one the flat cutover missed while
+    //generalising the other two (the prefix-assembly VFS walk and the order-independent edit fold). Pre-flat
+    //the keep-set sat on the runner node itself; now it is its own Persist node in the runner's PARENTS — so
+    //the old read returned the lone DeclareRunner layer and the keep-set reached NOTHING. Every game silently
+    //lost its saves and its HKCU at exit, while DerivePersistence printed a green summary and
+    //--audit-packages reported 960/960 clean, because nothing else resolves a runner closure for persistence.
+    //
+    //A node is one layer of one TYPE, so a DeclareExec node can never also carry a Persist: there is no
+    //"the runner node's own keep-set" case left to fall back to.
+    nlohmann::ordered_json RunnerKeep = nlohmann::ordered_json::array();
+    for (const RunnerLink &Lnk : CP.RunnerChain)
+    {
+        //Every link that IS a node. Not filtered on NativeNamespace(): that asks whether the runner gives the
+        //content its own root, which has nothing to do with whether it has user-state to keep — and with a
+        //chain of runners that declare no CONTENT_ROOT it skipped all but one of them.
+        if (!Idx.Find(Lnk.NodeId)) continue;
+        ManifestModel::ForEachClosureNode(Idx, Lnk.NodeId, CP.ModuleStates, [&](const Node &N) {
+            if (!N.Layers.is_array()) return;
+            for (const auto &L : N.Layers)
+                if (L.is_object() && L.value("TYPE", std::string()) == "Persist") RunnerKeep.push_back(L);
+        });
+    }
+    CP.RunnerPersistLayers = std::move(RunnerKeep);
 
     if (RunnerNode)
     {
@@ -200,10 +225,15 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     BuildSubComponentsArray(ComponentPool, CP);
     //A prefix-generating runner contributes prefix-ASSEMBLY layers to the RUNTIME closure: default_pfx/DLL VFSDirLayers
     //(sourced from "%RunnerMount%/..." — the enabler substitutes the runtime path), config_info/version/marker FileEdits,
-    //and wineboot RegEdits. They live on the runner NODE (its content comes from PARENTS, so its own LAYERS are otherwise
-    //ignored), so route the VFS/FileEdit/RegEdit ones into SubComponentsArray here (their %RunnerMount%/%TempPath% resolve
+    //and wineboot RegEdits. Route the VFS ones into SubComponentsArray here (their %RunnerMount%/%TempPath% resolve
     //downstream, at mount/edit time). The generic BuildLayerSpec loop + BuildDefaultData then assemble the prefix with NO
     //special-case branch. Persist/CustomVar stay handled by RunnerPersistLayers / the resolver.
+    //
+    //WHICH layers are assembly is decided by the layer, not by which node it sits on: a RUNTIME-SOURCED layer
+    //(%variable% PATH) resolves against the live runner mount, so it assembles the prefix; a layer with real
+    //on-disk content IS the runner build and is mounted separately at RunnerMount. That used to be implicit —
+    //assembly layers happened to sit on the same node as DeclareRunner, so "the runner node's own LAYERS" picked
+    //them out. One node per layer makes node membership meaningless, so the real property is tested directly.
     //
     //LAYER PRIORITY (vidyagodfs: later layer = higher priority): the wine prefix (default_pfx + system32/syswow64 builtin
     //DLLs) is the BASE SYSTEM — it must sit BENEATH the game/library content so a package's native override DLLs win over
@@ -220,11 +250,21 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     //layers are prefix ASSEMBLY (below), while its PARENTS' VFS layers build the runner tree itself and are mounted
     //separately at RunnerMount — a runner-side layer therefore cannot target the game prefix, which is why
     //prefix-content libraries still belong on the game.
-    if (const Node *RN = Idx.Find(CP.RunnerID); RN && RN->Layers.is_array())
     {
+        //Taken from the closure NODES, deliberately un-absolutized: a runtime-sourced PATH substitutes to an
+        //ABSOLUTE runtime path downstream and is used as-is, so prepending a bundle dir (which the resolved
+        //RunnerComponents subcomponents carry) would corrupt it into <bundle>/<abs path>.
         nlohmann::ordered_json PrefixVfs = nlohmann::ordered_json::array();   // base system → front (low priority)
-        for (const auto &L : RN->Layers)
-            if (ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))) PrefixVfs.push_back(L);
+        // Gate with the USER's toggles — the same map that produced RunnerRecipe just above, so the two walks
+        // see the same closure by construction. Reconstructing a toggle map by first walking with {} could only
+        // ever move a node OFF: the default-gated walk never visits an off-by-default node, so a node the user
+        // switched ON got no entry and was gated off again, silently dropping its prefix-assembly layers.
+        ManifestModel::ForEachClosureNode(Idx, CP.RunnerID, CP.ModuleStates, [&](const Node &N) {
+            if (!N.Layers.is_array()) return;
+            for (const auto &L : N.Layers)
+                if (ManifestModel::IsVfsLayer(L.value("TYPE", std::string()))
+                    && ManifestModel::IsRuntimeSourcedLayer(L)) PrefixVfs.push_back(L);
+        });
         if (!PrefixVfs.empty())
         {
             for (auto &L : CP.SubComponentsArray) PrefixVfs.push_back(std::move(L));   // game/library content ON TOP

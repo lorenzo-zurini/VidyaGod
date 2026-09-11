@@ -119,7 +119,7 @@ public:
     std::vector<std::string> KeepRegKeys;                           //KEEP registry-subtree targets (HKCU\Software\..) — partial-hive merge seed/capture (Wine-only)
     std::vector<std::string> KeepRegHives;                          //KEEP registry-hive targets — whole .reg filenames to persist (user/system/userdef.reg), copied whole (Wine-only)
     std::vector<std::string> DropPaths;                             //DROP path targets — runtime-root-relative paths shadowed by an ephemeral RW layer (writes discarded)
-    nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — the boundary runner node's own LAYERS (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's
+    nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — every Persist layer in the runner CHAIN's closures (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's. NOT the boundary node's own layers: a node is one layer of one TYPE, so a DeclareExec node cannot also carry a Persist
 
     //Custom variables (from CustomVar subcomponents):
     std::map<std::string, std::string> CustomVariables;             //AUTO-RESOLVED: KEY → value; priority: CLI override > GlobalConfig > DEFAULT

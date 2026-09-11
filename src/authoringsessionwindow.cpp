@@ -26,14 +26,20 @@ static QHBoxLayout * checkRow(DeltaTree * Tree, QWidget * parent)
     return Row;
 }
 
-AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & TargetNodeId, QWidget * parent)
-    : QWidget(parent, Qt::Window)
+AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & TargetNodeId,
+                                               CaptureMode Mode, QWidget * parent)
+    : QWidget(parent, Qt::Window), Mode(Mode)
 {
     setAttribute(Qt::WA_DeleteOnClose);
-    setWindowTitle(QString::fromStdString("Capture Setup — " + TargetNodeId));
+    const char * Verb = Mode == CaptureMode::Files    ? "Browse files"
+                      : Mode == CaptureMode::Registry ? "Edit registry"
+                                                      : "Capture setup";
+    //The title says where in the chain this is anchored: the runtime is built UP TO this node, and whatever is
+    //captured becomes a new node parented here.
+    setWindowTitle(QString("%1 at '%2'").arg(Verb).arg(QString::fromStdString(TargetNodeId)));
     resize(860, 700);
 
-    Model = new AuthoringSessionModel(Editor, TargetNodeId, this);
+    Model = new AuthoringSessionModel(Editor, TargetNodeId, Mode, this);
 
     auto * Root = new QVBoxLayout(this);
 
@@ -61,14 +67,14 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     ToolRow->addWidget(RefreshBtn);
     Root->addLayout(ToolRow);
 
-    // ── Shared: which node captures land on ──
-    auto * TargetRow = new QHBoxLayout();
-    TargetRow->addWidget(new QLabel("Capture into node:", this));
-    TargetCombo = new QComboBox(this);
-    for (const QString & Id : Model->bundleNodeIds()) TargetCombo->addItem(Id);
-    TargetCombo->setCurrentText(Model->targetNode());
-    TargetRow->addWidget(TargetCombo); TargetRow->addStretch();
-    Root->addLayout(TargetRow);
+    // A capture CREATES a node parented at the anchor — there is no target to pick any more. Say where it will
+    // land instead, because "captured into thin air" is the thing an author needs to not wonder about.
+    auto * AnchorLabel = new QLabel(
+        QString("Captures become NEW nodes parented at <b>%1</b> — they apply exactly where this session is anchored.")
+            .arg(QString::fromStdString(TargetNodeId)), this);
+    AnchorLabel->setWordWrap(true);
+    AnchorLabel->setStyleSheet("color:#7ec699;font-size:9pt;");
+    Root->addWidget(AnchorLabel);
 
     auto * Tabs = new QTabWidget(this);
     Root->addWidget(Tabs, 1);
@@ -111,6 +117,24 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     RLay->addWidget(CaptureRegBtn);
     const int RegTabIdx = Tabs->addTab(RegTab, "Registry");
 
+    // The mode decides what this session IS. Files/Registry open one tool on one tab so the window says exactly
+    // one thing; Setup keeps both, because an installer writes both and you want to see the two deltas together.
+    if (Mode == CaptureMode::Files)
+    {
+        Tabs->removeTab(RegTabIdx);
+        RunExeBtn->setVisible(false); RegBtn->setVisible(false);
+        RunnerCombo->setVisible(false);
+        InfoLabel->setText("Add or change files in the window that opens; then check what you added and capture it.");
+    }
+    else if (Mode == CaptureMode::Registry)
+    {
+        Tabs->setCurrentIndex(RegTabIdx);
+        Tabs->removeTab(0);
+        RunExeBtn->setVisible(false); BrowseBtn->setVisible(false);
+        RunnerCombo->setVisible(false);
+        InfoLabel->setText("Make your changes in regedit; then Scan, check the keys you want, and capture them.");
+    }
+
     auto * EndRow = new QHBoxLayout();
     EndRow->addStretch();
     EndBtn = new QPushButton("End session (unmount + wipe)", this);
@@ -132,14 +156,19 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         const QStringList Sel = Tree->checkedRoots();
         if (Sel.isEmpty()) { QMessageBox::information(this, "Capture files", "Check at least one changed file/folder to capture."); return; }
         if (DestNameEdit->text().trimmed().isEmpty()) { QMessageBox::warning(this, "Capture files", "Give the captured directory a name."); return; }
-        Model->captureFiles(Sel, TargetCombo->currentText(), DestNameEdit->text().trimmed(), TargetEdit->text().trimmed());
+        Model->captureFiles(Sel, DestNameEdit->text().trimmed(), TargetEdit->text().trimmed());
     });
     connect(CaptureRegBtn, &QPushButton::clicked, this, [this]{
         const QStringList Sel = RegTree->checkedEntries();
         if (Sel.isEmpty()) { QMessageBox::information(this, "Capture registry", "Check at least one changed key to capture."); return; }
-        Model->captureSelectedRegistry(Sel, TargetCombo->currentText());
+        Model->captureSelectedRegistry(Sel);
     });
     connect(EndBtn, &QPushButton::clicked, this, [this]{ close(); });
+    const QString AnchorId = QString::fromStdString(TargetNodeId);
+    connect(Model, &AuthoringSessionModel::nodeCreated, this, [this, AnchorId](const QString & Id) {
+        StatusLabel->setText(QString("Created node '%1' - it is on the canvas, parented at '%2'.")
+                                 .arg(Id).arg(AnchorId));
+    });
 
     // ── model → UI ──
     connect(Model, &AuthoringSessionModel::busyChanged, this, [this](bool Busy, const QString & What){
@@ -148,6 +177,13 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         RunnerCombo->setEnabled(!Busy);
         if (Busy && !What.isEmpty()) StatusLabel->setText(What);
         else if (!Busy)             StatusLabel->setText("Session live.");
+    });
+    // In a single-purpose mode the tool IS the session: open it as soon as the runtime is live, rather than
+    // making the author find the button that is the only thing they came here to press.
+    connect(Model, &AuthoringSessionModel::sessionReady, this, [this](QString, QString, bool IsWine) {
+        if (!IsWine) return;
+        if (this->Mode == CaptureMode::Files)         Model->runGuest("explorer.exe");
+        else if (this->Mode == CaptureMode::Registry) Model->runGuest("regedit.exe");
     });
     connect(Model, &AuthoringSessionModel::sessionReady, this, [this, Tabs, RegTabIdx](const QString & Rt, const QString & Cr, bool Wine){
         ContentRootStr = Cr;

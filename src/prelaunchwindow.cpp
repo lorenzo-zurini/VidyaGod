@@ -193,9 +193,10 @@ PreLaunchWindow::PreLaunchWindow(
     BtnLayout->addWidget(PackageEditorButton);
     connect(PackageEditorButton, &QPushButton::clicked, this, [this]()
     {
-        PackageEditor* Editor = new PackageEditor(this->GlobalConfigJSON, this, QString::fromStdString(this->BundleDir));
-        connect(Editor, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
-        Editor->show();
+        bool Created = false;
+        PackageEditor* Editor = PackageEditor::OpenFor(this->GlobalConfigJSON, this,
+                                                       QString::fromStdString(this->BundleDir), &Created);
+        if (Editor && Created) connect(Editor, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
     });
     BtnLayout->addStretch();
 
@@ -658,9 +659,21 @@ void PreLaunchWindow::RebuildCustomVarPickers()
             if (Control == "enum" && UI.contains("CHOICES") && UI["CHOICES"].is_array())
             {
                 QComboBox* Combo = new QComboBox(CustomVarGroup);
+                //A choice is either {LABEL, VALUE} or the bare-string shorthand, where the string is both.
+                //`Opt.value(...)` on a string THROWS, and this runs inside a dialog with no catch above it,
+                //so the shorthand — the obvious thing to write — took the whole app down for every game whose
+                //closure pulled that shared CustomVar in.
                 for (const auto& Opt : UI["CHOICES"])
-                    Combo->addItem(QString::fromStdString(Opt.value("LABEL", std::string())),
-                                   QString::fromStdString(Opt.value("VALUE", std::string())));
+                {
+                    if (Opt.is_string())
+                    {
+                        const QString S = QString::fromStdString(Opt.get<std::string>());
+                        Combo->addItem(S, S);
+                    }
+                    else if (Opt.is_object())
+                        Combo->addItem(QString::fromStdString(Opt.value("LABEL", std::string())),
+                                       QString::fromStdString(Opt.value("VALUE", std::string())));
+                }
                 for (int k = 0; k < Combo->count(); k++)
                     if (Combo->itemData(k).toString().toStdString() == Initial) { Combo->setCurrentIndex(k); break; }
                 connect(Combo, &QComboBox::currentIndexChanged, this, [this](int){ EvaluateVarConditions(); });

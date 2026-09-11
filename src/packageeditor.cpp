@@ -1,21 +1,22 @@
 #include "packageeditor.h"
 #include "packageeditormodel.h"
 #include "manifestmodel.h"   // the state/signal hub
-#include "nodeeditor.h"           // per-node tab widget
-#include "jsonraweditor.h"        // raw-JSON tab widget
+#include "pkgcanvaspanel.h"       // the blueprint canvas (the editing surface)
+#include "pkgactions.h"           // performs the node actions the canvas asks for
+#include "jsonraweditor.h"        // raw-JSON view
 #include "validationpanel.h"      // docked validation panel
 #include "packagecatalog.h"       // PackageCatalog::PublishPackage (the Publish button)
-// NodeGraphView comes via packageeditor.h.
+#include "commonutils.h"
 
 #include <QGuiApplication>
 #include <QScreen>
 #include <QFileDialog>
+#include <QDir>
 #include <QMessageBox>
 #include <filesystem>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSplitter>
-#include <QTabWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
@@ -31,12 +32,17 @@ using json = nlohmann::ordered_json;
 // Construction / teardown
 // ============================================================================
 
-PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
+PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget * parent, const QString &PreselectedPath)
     : QDialog(parent)
 {
     // The state/signal hub: owns the working document, node I/O, validation, and the authoring runs. Created first
     // so the toolbar/Publish lambdas below can reach it; it parents its modal dialogs on this editor.
     Model = new PackageEditorModel(GlobalConfigJSON, this, this);
+    //Registered HERE, not in OpenFor, so every construction path counts - the canvas's single Dear ImGui
+    //context is a process-wide resource and a second editor cannot render regardless of who built it.
+    if (!Live) Live = this;
+    else LogErr("PackageEditor", "A second package editor was constructed; its canvas cannot render. "
+                                   "Open the editor through PackageEditor::OpenFor().");
     // A first-class top-level window: a parented QDialog gets _NET_WM_WINDOW_TYPE_DIALOG (no taskbar entry, rides the
     // parent's minimize/tray). Qt::Window makes it a normal window — its own taskbar button + ordinary minimize.
     setWindowFlags(Qt::Window);
@@ -52,7 +58,6 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
     // Toolbar: add a node / publish the bundle.
     QHBoxLayout * Toolbar = new QHBoxLayout();
     Toolbar->setSpacing(1);
-    QPushButton * AddNodeBtn   = new QPushButton("Add Node", this);
     QPushButton * ValidateBtn  = new QPushButton("Check Package Validity", this);
     QPushButton * FixCaseBtn   = new QPushButton("Fix Case Conflicts", this);
     QPushButton * PublishBtn   = new QPushButton("Publish",  this);
@@ -60,18 +65,11 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
                             "cross-layer case collisions. Authoring-only — the regular launcher assumes packages are valid.");
     FixCaseBtn->setToolTip("Resolve cross-layer case conflicts: rename case-colliding zip entries in the higher-priority\n"
                            "layers to the base layer's case (unpack→rename→repackage) so patches/add-ons override cleanly.");
-    Toolbar->addWidget(AddNodeBtn);
     Toolbar->addStretch();
     Toolbar->addWidget(ValidateBtn);
     Toolbar->addWidget(FixCaseBtn);
     Toolbar->addWidget(PublishBtn);
     MainLayout->addLayout(Toolbar);
-
-    connect(AddNodeBtn, &QPushButton::clicked, this, [this](){
-        json NewNode = json::object({ {"NODE_ID", "new_node"}, {"LAYERS", json::array()} });   // a bare content node; add Declare* layers to give it identity
-        (*MANIFESTJSON)["NODES"].push_back(NewNode);
-        Model->SaveNodes(); BuildUI();
-    });
 
     //Publish (dehydrate): flush edits, seed each layer's content over IPFS + record its CID into the node files in
     //place, and export a manifest-only copy to a chosen folder (ready to commit into a sharing repo).
@@ -119,44 +117,39 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
             QString("Rewrote %1 zip(s) — case-colliding entries were renamed to the base layer's case.\n\n%2").arg(Fixed).arg(Report));
     });
 
-    // Node graph overview — a clickable DAG sidebar on the LEFT of the editor. Flows top→down (launchables on top,
-    // the PARENTS chain below, branches spreading right). Clicking a chip jumps to that node's editor tab.
-    GraphView = new NodeGraphView(this);
-    QScrollArea * GraphScroll = new QScrollArea(this);
-    GraphScroll->setWidget(GraphView);
-    GraphScroll->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-    GraphScroll->setFrameShape(QFrame::StyledPanel);
-    GraphScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    GraphScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    GraphScroll->setMinimumWidth(150);
-    connect(GraphView, &NodeGraphView::nodeClicked, this, [this](const QString & Id){ SelectNodeTab(Id.toStdString()); });
+    // The editing surface IS the graph. A node is one layer of one TYPE, so it draws as one box with pins and
+    // its payload inline — which is exactly what the two-tier model could not be rendered as (a node containing
+    // an ordered array has no pins to wire). The old tab-strip of per-node forms is gone.
+    //The save hook persists BOTH: the package (node files) and the canvas layout (LAYOUT.vglayout).
+    //They are deliberately separate files — a drag must never rewrite package bytes.
+    Canvas = new PkgCanvasPanel(&Model->doc(), [this]{ Model->SaveNodes(); Model->SaveLayout(); }, this,
+                                &Model->layout());
+    Canvas->canvas()->setKnownIds([this]{ return Model->KnownNodeIds(); });
 
-    // Right side: the node tabs, with the validation panel docked beneath them.
+    // The canvas draws action buttons and reports clicks; PkgActions does everything that touches disk, spawns
+    // a process, opens a dialog or builds a runtime — which is what keeps the canvas headlessly testable.
+    Actions = new PkgActions(Model, Canvas->canvas(), this, this);
+    // QUEUED: an action opens file dialogs and confirmations. Even dispatched after the ImGui frame closes,
+    // running it inline would still sit inside paintGL's call stack; a queued connection puts it on a clean
+    // turn of the event loop instead.
+    connect(Canvas->canvas(), &PkgCanvas::nodeAction, Actions, &PkgActions::perform, Qt::QueuedConnection);
+    connect(Canvas->canvas(), &PkgCanvas::cancelRequested, Actions, &PkgActions::cancel);
+
+    // Right: the raw JSON of the selected node (unchanged — it is the escape hatch and it works), with the
+    // validation panel docked beneath it.
     QWidget * RightPanel = new QWidget(this);
     QVBoxLayout * RightLayout = new QVBoxLayout(RightPanel);
     RightLayout->setContentsMargins(0, 0, 0, 0);
     RightLayout->setSpacing(1);
-
-    PackageEditorTabWidget = new QTabWidget(RightPanel);
-    RightLayout->addWidget(PackageEditorTabWidget, 1);
-    // Keep the graph's highlight in sync with the open tab.
-    connect(PackageEditorTabWidget, &QTabWidget::currentChanged, this, [this](int Idx){
-        if (!GraphView || !MANIFESTJSON) return;
-        const auto & A = (*MANIFESTJSON)["NODES"];
-        const int NodeI = Idx - 1;   // tab 0 = JSON
-        GraphView->SetCurrent(NodeI >= 0 && NodeI < (int)A.size() ? A[NodeI].value("NODE_ID", std::string()) : std::string());
-    });
-
-    // Validation panel — a persistent box docked beneath the tabs; self-refreshes on the model's validationChanged.
+    RightLayout->addWidget(new JsonRawEditor(Model, RightPanel), 1);
     RightLayout->addWidget(new ValidationPanel(Model, RightPanel), 0);
 
-    // Graph sidebar (left) | tabs+validation (right) — resizable.
     QSplitter * Split = new QSplitter(Qt::Horizontal, this);
-    Split->addWidget(GraphScroll);
+    Split->addWidget(Canvas);
     Split->addWidget(RightPanel);
-    Split->setStretchFactor(0, 0);
-    Split->setStretchFactor(1, 1);
-    Split->setSizes({ 300, 1200 });
+    Split->setStretchFactor(0, 1);
+    Split->setStretchFactor(1, 0);
+    Split->setSizes({ 1250, 470 });
     MainLayout->addWidget(Split, 1);
 
     // Open the bundle (pick a dir if none was preselected), then point our working-doc/PackageDir aliases at the
@@ -174,7 +167,40 @@ PackageEditor::PackageEditor(const nlohmann::ordered_json * GlobalConfigJSON, QW
 
 }
 
-PackageEditor::~PackageEditor() = default;
+PackageEditor::~PackageEditor()
+{
+    if (Live == this) Live = nullptr;
+}
+
+PackageEditor *PackageEditor::Live = nullptr;
+
+QString PackageEditor::bundleDir() const
+{
+    return Model ? Model->packagePath() : QString();
+}
+
+PackageEditor *PackageEditor::OpenFor(nlohmann::ordered_json *GlobalConfigJSON, QWidget *parent,
+                                      const QString &PackagePath, bool *Created)
+{
+    if (Created) *Created = false;
+    if (Live)
+    {
+        const QString Open = Live->bundleDir();
+        if (!PackagePath.isEmpty() && !Open.isEmpty() && QDir(Open) != QDir(PackagePath))
+            QMessageBox::information(parent, "Package Editor",
+                "The package editor is already open on:\n\n" + Open +
+                "\n\nClose it before opening another bundle - the blueprint canvas can only run one at a time.");
+        Live->show();
+        Live->raise();
+        Live->activateWindow();
+        return Live;
+    }
+    auto *Ed = new PackageEditor(GlobalConfigJSON, parent, PackagePath);
+    Live = Ed;
+    if (Created) *Created = true;
+    Ed->show();
+    return Ed;
+}
 
 
 
@@ -193,55 +219,38 @@ PackageEditor::~PackageEditor() = default;
 bool PackageEditor::BuildUI()
 {
     Model->Revalidate();
-    SavedMainTab = PackageEditorTabWidget->currentIndex();
-
-    // Free the old tab widgets. QTabWidget::clear() detaches but does NOT delete the pages, so without this they'd
-    // leak (and stale JsonRawEditors would keep reacting to the model). deleteLater (not delete) because a child
-    // NodeEditor's own button lambda may have triggered this rebuild — it must outlive the current call.
-    // Block the whole subtree's signals first: a focused QLineEdit fires editingFinished while losing focus during
-    // ~QWidget, which would invoke onFieldEdited on the half-destroyed section (Qt assert/abort). Common trigger:
-    // renaming a NODE_ID and pressing Enter, then the rebuild deletes the still-focused field.
-    for (int i = PackageEditorTabWidget->count() - 1; i >= 0; --i)
-    {
-        QWidget * Page = PackageEditorTabWidget->widget(i);
-        Page->blockSignals(true);
-        for (QObject * Child : Page->findChildren<QObject *>()) Child->blockSignals(true);
-        Page->deleteLater();
-    }
-    PackageEditorTabWidget->clear();
-
-    // ---- JSON tab: raw edit of one node file at a time (its own widget; self-refreshes via the model) ----
-    PackageEditorTabWidget->addTab(new JsonRawEditor(Model, PackageEditorTabWidget), "JSON");
-
-    // ---- one tab per node (each its own NodeEditor widget; edits flow through the model) ----
-    for (int n = 0; n < (int)(*MANIFESTJSON)["NODES"].size(); n++)
-    {
-        const std::string NodeIdStr = (*MANIFESTJSON)["NODES"][n].value("NODE_ID", std::string());
-        const QString TabLabel = NodeIdStr.empty() ? QString("node %1").arg(n + 1) : QString::fromStdString(NodeIdStr);
-        PackageEditorTabWidget->addTab(new NodeEditor(Model, n, PackageEditorTabWidget), TabLabel);
-    }
-
-    int MainCount = PackageEditorTabWidget->count();
-    PackageEditorTabWidget->setCurrentIndex(qBound(0, SavedMainTab, MainCount - 1));
-
-    // Refresh the node-graph overview and highlight the open node.
-    if (GraphView && MANIFESTJSON)
-    {
-        GraphView->SetGraph((*MANIFESTJSON)["NODES"]);
-        const auto & A = (*MANIFESTJSON)["NODES"];
-        const int NodeI = PackageEditorTabWidget->currentIndex() - 1;
-        GraphView->SetCurrent(NodeI >= 0 && NodeI < (int)A.size() ? A[NodeI].value("NODE_ID", std::string()) : std::string());
-    }
+    if (!Canvas) return true;
+    // Validation findings are attached to the node they are ABOUT, so a problem is drawn on the node that is
+    // wrong instead of in a report you have to correlate by hand. Messages are tagged "node '<id>': …".
+    std::vector<std::pair<std::string, std::string>> Issues;
+    auto Attach = [&Issues](const std::vector<std::string> &Msgs) {
+        for (const std::string &M : Msgs)
+        {
+            const size_t A = M.find("node '");
+            if (A == std::string::npos) continue;
+            const size_t B = M.find('\'', A + 6);
+            if (B == std::string::npos) continue;
+            const std::string Id = M.substr(A + 6, B - (A + 6));
+            std::string Text = M.substr(B + 1);
+            if (Text.rfind(": ", 0) == 0) Text = Text.substr(2);
+            Issues.emplace_back(Id, Text);
+        }
+    };
+    Attach(Model->validationErrors());
+    Attach(Model->validationWarnings());
+    Canvas->canvas()->invalidateGraph();   // the document may have changed under the cached graph
+    Canvas->canvas()->setIssues(Issues);
+    if (Actions) Actions->refreshHints();
+    Canvas->update();
     return true;
 }
 
-//Jumps the tab widget to the node with this NODE_ID (tab 0 = JSON, tabs 1.. = NODES in array order).
+//Selects the node with this NODE_ID on the canvas.
 void PackageEditor::SelectNodeTab(const std::string & NodeId)
 {
-    if (!MANIFESTJSON || !PackageEditorTabWidget) return;
-    const auto & A = (*MANIFESTJSON)["NODES"];
-    for (int I = 0; I < (int)A.size(); ++I)
-        if (A[I].value("NODE_ID", std::string()) == NodeId) { PackageEditorTabWidget->setCurrentIndex(I + 1); return; }
+    if (!Canvas) return;
+    const int I = Canvas->canvas()->indexOf(NodeId);
+    if (I >= 0) { Canvas->canvas()->selectNode(I); Canvas->update(); }
 }
 
 // ============================================================================

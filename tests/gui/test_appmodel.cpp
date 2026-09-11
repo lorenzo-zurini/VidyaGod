@@ -9,6 +9,7 @@
 
 #include "appmodel.h"
 #include "apppaths.h"
+#include "nodefixture.h"
 
 #include <fstream>
 
@@ -96,11 +97,10 @@ private slots:
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
         QTemporaryDir pkg; QVERIFY(pkg.isValid());
-        json node = { {"NODE_ID", "tg"},
-            {"LAYERS", json::array({
-                json{{"TYPE", "DeclareLibraryItem"}, {"UID", "999"}, {"TITLE", "Test Game"}},
-                json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"},
-                     {"RUNNER", "geproton_10_20_runner"}} })} };
+        json exec = NodeFixture::Exec("win32", "g.exe");
+        exec["RUNNER"] = "geproton_10_20_runner";
+        // The tile is the launchable's PARENT (pure Meta upstream, exec terminal).
+        json node = NodeFixture::Chain("tg", {NodeFixture::Tile("999", "Test Game"), exec});
         { std::ofstream f((pkg.path() + "/tg.json").toStdString()); f << node.dump(); }
 
         json cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};

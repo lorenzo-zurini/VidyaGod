@@ -5,6 +5,8 @@
 
 #include <string>
 
+#include "authoringsessionmodel.h"   // CaptureMode
+
 class PackageEditorModel;
 class AuthoringSessionModel;
 class DeltaTree;
@@ -24,11 +26,14 @@ class AuthoringSessionWindow : public QWidget
 {
     Q_OBJECT
 public:
-    AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & TargetNodeId, QWidget * parent = nullptr);
+    //`Mode` decides which guest tool opens, which half of the window is shown, and what the capture becomes.
+    AuthoringSessionWindow(PackageEditorModel * Editor, const std::string & AnchorNodeId,
+                           CaptureMode Mode = CaptureMode::Setup, QWidget * parent = nullptr);
 
 private:
     void updateCapturePreview();           // "Morrowind → mounts at <contentRoot>/<target>/Morrowind" per checked root
 
+    CaptureMode  Mode = CaptureMode::Setup;
     AuthoringSessionModel * Model = nullptr;
     DeltaTree *  Tree         = nullptr;   // changed files
     DeltaTree *  RegTree      = nullptr;   // changed registry keys (mirror)
@@ -37,7 +42,6 @@ private:
     QLabel *     FilesPreview = nullptr;   // live capture-level + mount-path preview
     QString      ContentRootStr;           // the runner's content root (for the mount-path preview)
     QComboBox *  RunnerCombo  = nullptr;
-    QComboBox *  TargetCombo  = nullptr;
     QLineEdit *  TargetEdit   = nullptr;
     QLineEdit *  DestNameEdit = nullptr;
     QPushButton * RunExeBtn = nullptr;

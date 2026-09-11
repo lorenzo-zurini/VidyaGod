@@ -144,17 +144,30 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             { std::ofstream o(vs[i].node->BundleDir / blob, std::ios::binary); o.write((const char *)delta.data(), (std::streamsize)delta.size()); }
             after += delta.size();
 
+            // A node IS its layer, and a file holds one node or an array of them — so rewrite the node object
+            // in place rather than indexing into a LAYERS array that no longer exists.
             nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
-            nlohmann::ordered_json parents = J.value("PARENTS", nlohmann::ordered_json::array());
+            nlohmann::ordered_json *Nd = nullptr;
+            if (J.is_object() && J.value("NODE_ID", std::string()) == vs[i].node->NodeId) Nd = &J;
+            else if (J.is_array())
+                for (auto &E : J)
+                    if (E.is_object() && E.value("NODE_ID", std::string()) == vs[i].node->NodeId) { Nd = &E; break; }
+            if (!Nd) { LogErr("convert-delta", "could not find node " + vs[i].node->NodeId + " in " + vs[i].node->File.string()); return 1; }
+
+            nlohmann::ordered_json parents = Nd->value("PARENTS", nlohmann::ordered_json::array());
             if (!parents.is_array()) parents = nlohmann::ordered_json::array();
             bool have = false; for (auto &p : parents) if (p == vs[i - 1].node->NodeId) have = true;
             if (!have) parents.push_back(vs[i - 1].node->NodeId);
-            J["PARENTS"] = parents;
-            nlohmann::ordered_json deltaLayer{ {"TYPE", "VFSDeltaLayer"}, {"PATH", blob}, {"TARGET", vs[i].target} };
+            (*Nd)["PARENTS"] = parents;
+            (*Nd)["TYPE"] = "Content";
+            (*Nd)["FORM"] = "delta";
+            (*Nd)["PATH"] = blob;
+            (*Nd)["TARGET"] = vs[i].target;
             // Cross-target: when the byte-base zip mounts at a DIFFERENT target than this node (e.g. a complete
-            // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair them.
-            if (vs[i - 1].target != vs[i].target) deltaLayer["BASE_TARGET"] = vs[i - 1].target;
-            J["LAYERS"][vs[i].layerIdx] = deltaLayer;
+            // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair
+            // them. Arrayable, because a delta may dedup against a CONCATENATION of bases.
+            if (vs[i - 1].target != vs[i].target)
+                (*Nd)["BASE_TARGET"] = nlohmann::ordered_json::array({vs[i - 1].target});
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);

@@ -75,8 +75,19 @@ protected:
 };
 
 
+#include <QSurfaceFormat>
+
 int main(int argc, char *argv[])
 {
+    // The package editor hosts Dear ImGui in a QOpenGLWidget; ImGui's shaders need GL 3.2+, and Qt's default
+    // surface format is 2.0 — which compiles nothing and renders a blank canvas. Request 3.3 core app-wide,
+    // before any widget exists.
+    QSurfaceFormat GlFmt;
+    GlFmt.setRenderableType(QSurfaceFormat::OpenGL);
+    GlFmt.setVersion(3, 3);
+    GlFmt.setProfile(QSurfaceFormat::CoreProfile);
+    QSurfaceFormat::setDefaultFormat(GlFmt);
+
     //IN-SANDBOX INIT: when invoked as `VidyaGod --sandbox-init …` (bwrap's payload inside a nested sandbox), do the
     //low-level setup (mount vidyagodfs, bring up the overlay TUN + hand its fd to the parent) and execvp the game.
     //Must be the FIRST thing in main() — before the single-instance lock, config init, or any Qt — because this is

@@ -8,10 +8,13 @@
 
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <vector>
@@ -34,7 +37,7 @@ static std::string LaunchableForNode(const NodeIndex & Idx, const std::string & 
     return "";
 }
 
-PackageEditorModel::PackageEditorModel(const nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent)
+PackageEditorModel::PackageEditorModel(nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent)
     : QObject(parent), GlobalConfigJSON(globalConfig), DialogParent(dialogParent)
 {
     Doc = json::object({ {"NODES", json::array()} });
@@ -59,7 +62,11 @@ void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * 
 QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) const
 {
     //Prefer <NODE_ID>.json so a rename re-files the node (SaveNodes then cleans the stale file).
-    const std::string Id = Node.is_object() ? Node.value("NODE_ID", std::string()) : std::string();
+    std::string Id = Node.is_object() ? Node.value("NODE_ID", std::string()) : std::string();
+    //A node id becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Ids are authored
+    //freely on the canvas; sanitise rather than trust.
+    for (char &C : Id) if (C == '/' || C == '\\' || C == ':') C = '_';
+    if (Id == "." || Id == "..") Id = "node";
     if (!Id.empty()) return QString::fromStdString(Id) + ".json";
     if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
         && !std::string(Node["__FILE__"]).empty())
@@ -70,23 +77,96 @@ QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) con
 void PackageEditorModel::LoadNodes()
 {
     Doc = json::object({ {"NODES", json::array()} });
+    Carried.clear();
 
     const QStringList Files = PackageDir->entryList(QStringList() << "*.json", QDir::Files, QDir::Name);
     for (const QString &FileName : Files)
     {
         nlohmann::ordered_json J;
         QFile F(PackageDir->filePath(FileName));
-        if (JSONOps::LoadJSON(&F, &J) || !J.is_object()) continue;   // LoadJSON returns true on FAILURE
-        if (!J.contains("NODE_ID")) continue;                        // non-node json (legacy MANIFEST.json, etc.)
-        J["__FILE__"] = FileName.toStdString();
-        Doc["NODES"].push_back(std::move(J));
+        if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
+        //A file holds ONE node or an ARRAY of them — grouping nodes into files is pure presentation, so the
+        //editor reads either and (see SaveNodes) writes back the grouping it found.
+        if (J.is_object() && J.contains("NODE_ID"))
+        {
+            J["__FILE__"] = FileName.toStdString();
+            Doc["NODES"].push_back(std::move(J));
+        }
+        else if (J.is_array())
+        {
+            //An entry we do not recognise as a node is CARRIED, not dropped: SaveNodes rewrites the whole file
+            //from what was loaded, so skipping an element here would erase it from disk the next time anything
+            //in that file is touched.
+            nlohmann::ordered_json Strays = nlohmann::ordered_json::array();
+            for (auto &N : J)
+            {
+                if (N.is_object() && N.contains("NODE_ID"))
+                {
+                    N["__FILE__"] = FileName.toStdString();
+                    Doc["NODES"].push_back(std::move(N));
+                }
+                else Strays.push_back(N);
+            }
+            if (!Strays.empty())
+            {
+                Carried[FileName.toStdString()] = std::move(Strays);
+                LogWarn("PackageEditorModel", "Carrying " + std::to_string(Carried[FileName.toStdString()].size())
+                        + " unrecognised entr(ies) in " + FileName.toStdString() + " through untouched.");
+            }
+        }
     }
 
     if (Doc["NODES"].empty())
-        Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"LAYERS", json::array()} }));   // a bare content node
+        Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
+    LoadLayout();
     LogSucc("PackageEditorModel", "Loaded " + std::to_string(Doc["NODES"].size()) + " node(s).");
+}
+
+//The canvas layout sidecar.
+//
+//NOT in the node files: a Meta-CID is minted add-by-reference and IN PLACE over those very files, so anything
+//stored there is in the CID and no later stage can strip it — every drag would republish the package.
+//
+//NOT under USERDATA either, which was the first attempt: a `Persist KEEP %RuntimePath%` node makes
+//<bundle>/USERDATA the writable TOP branch of the union (vfsmount.cpp), so its whole contents appear at the
+//game's runtime root — the layout file would ship into the game's own directory, visible to mod loaders and
+//data-file scanners, and durably. USERDATA is per-machine runtime state that is DELIBERATELY exposed to the
+//game; a canvas layout is per-machine state that must never be.
+//
+//So: the bundle root, with a non-.json extension. Both publish paths are TEXT-ONLY-JSON by design and by
+//stated invariant (VidyaGodIPFS buildMetaDirNode takes only *.json; MirrorDehydrated the same; covers and
+//content travel as CIDs referenced FROM the json), and nothing mounts the bundle directory itself — only the
+//layers a node declares. So a non-json file here is invisible to publishing, to seeding and to the runtime,
+//while still travelling with the bundle for the author who is editing it.
+static QString LayoutPathFor(const QDir *PackageDir)
+{
+    return PackageDir ? PackageDir->filePath("LAYOUT.vglayout") : QString();
+}
+
+void PackageEditorModel::LoadLayout()
+{
+    Layout = nlohmann::ordered_json::object();
+    const QString P = LayoutPathFor(PackageDir);
+    if (P.isEmpty()) return;
+    std::ifstream In(P.toStdString());
+    if (!In) return;
+    //A corrupt or half-written sidecar must cost the author their LAYOUT, never their session: fall back to
+    //auto-layout rather than propagating a parse error out of opening a bundle.
+    try { nlohmann::ordered_json J; In >> J; if (J.is_object()) Layout = std::move(J); }
+    catch (const std::exception &E)
+    { LogWarn("PackageEditorModel", std::string("ignoring unreadable LAYOUT.json: ") + E.what()); }
+}
+
+void PackageEditorModel::SaveLayout() const
+{
+    const QString P = LayoutPathFor(PackageDir);
+    if (P.isEmpty() || !Layout.is_object()) return;
+    QDir().mkpath(QFileInfo(P).path());
+    std::ofstream Out(P.toStdString());
+    if (Out) Out << Layout.dump(2) << "\n";
+    else LogWarn("PackageEditorModel", "could not write " + P.toStdString());
 }
 
 void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json node)
@@ -105,31 +185,80 @@ void PackageEditorModel::SaveNodes()
     InvalidateExecIndex();   // the bundle's nodes are changing — drop the cached catalog index
     auto &Nodes = Doc["NODES"];
 
-    // Desired on-disk filenames for the current nodes.
-    std::set<QString> Desired;
-    for (auto &N : Nodes) { QString F = FileForNode(N); if (!F.isEmpty()) Desired.insert(F); }
+    // Which file each node belongs to. A node whose __FILE__ is SHARED with others stays in that file (the
+    // author grouped them; file grouping carries no semantics, so the editor must not silently re-shuffle it).
+    // A node that owns its file keeps the old behaviour — <NODE_ID>.json, so a rename re-files it.
+    std::map<std::string, int> Occupants;
+    for (auto &N : Nodes)
+        if (N.contains("__FILE__") && N["__FILE__"].is_string()) ++Occupants[N["__FILE__"].get<std::string>()];
+    auto TargetFile = [&](nlohmann::ordered_json &N) -> QString {
+        if (N.contains("__FILE__") && N["__FILE__"].is_string())
+        {
+            const std::string F = N["__FILE__"].get<std::string>();
+            //Keep the file when it is SHARED, and also when it carries entries we did not parse as nodes —
+            //re-filing the node away from it would orphan the file, and the orphan sweep would then delete
+            //the strays with it.
+            if (Occupants[F] > 1 || Carried.count(F)) return QString::fromStdString(F);
+        }
+        return FileForNode(N);
+    };
 
-    // Delete orphaned node files (a *.json holding a NODE_ID no longer backed by a current node — rename/delete).
-    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
-    {
-        if (Desired.count(Existing)) continue;
-        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
-        if (!JSONOps::LoadJSON(&F, &J) && J.is_object() && J.contains("NODE_ID"))
-            PackageDir->remove(Existing);
-    }
-
-    // Write each node to its file (stripping the editor-only tag), keeping the tag synced to where we wrote it.
-    bool Ok = true;
+    // Group the nodes by destination file, preserving document order within each.
+    std::map<QString, std::vector<nlohmann::ordered_json *>> ByFile;
+    std::vector<QString> FileOrder;
     for (auto &N : Nodes)
     {
-        QString FileName = FileForNode(N);
-        if (FileName.isEmpty()) continue;
-        nlohmann::ordered_json Out = N; Out.erase("__FILE__");
-        N["__FILE__"] = FileName.toStdString();
+        const QString F = TargetFile(N);
+        if (F.isEmpty()) continue;
+        if (ByFile.find(F) == ByFile.end()) FileOrder.push_back(F);
+        ByFile[F].push_back(&N);
+    }
+
+    // Write each file: one node → an object, several → an array (the form it was read in).
+    // WRITES COME FIRST. Deleting orphans up front meant a failed write (full disk, read-only bundle) left the
+    // node existing only in memory, with the old file already gone and nothing but a log line to say so.
+    bool Ok = true;
+    for (const QString &FileName : FileOrder)
+    {
+        auto &Group = ByFile[FileName];
+        nlohmann::ordered_json Out;
+        if (Group.size() == 1) { Out = *Group.front(); Out.erase("__FILE__"); }
+        else
+        {
+            Out = nlohmann::ordered_json::array();
+            for (auto *N : Group) { nlohmann::ordered_json C = *N; C.erase("__FILE__"); Out.push_back(std::move(C)); }
+        }
+        //Re-append anything this file held that we did not parse as a node, so a save never erases it.
+        if (auto Cit = Carried.find(FileName.toStdString()); Cit != Carried.end())
+        {
+            if (!Out.is_array()) { nlohmann::ordered_json A = nlohmann::ordered_json::array(); A.push_back(Out); Out = std::move(A); }
+            for (const auto &X : Cit->second) Out.push_back(X);
+        }
+        for (auto *N : Group) (*N)["__FILE__"] = FileName.toStdString();
         QFile F(PackageDir->filePath(FileName));
         if (!JSONOps::SaveJSON(&Out, &F)) Ok = false;
     }
-    if (!Ok) LogErr("PackageEditorModel", "One or more node files failed to save.");
+    if (!Ok)
+    {
+        // Nothing is swept when a write failed: the stale files on disk are now the only copy of whatever did
+        // not get written, so removing them would turn a failed save into data loss.
+        LogErr("PackageEditorModel", "One or more node files failed to save — leaving every existing file in "
+                                     "place. Fix the problem (disk full? read-only bundle?) and save again.");
+        emit savedToDisk(PackageDir->path());
+        Validated = false; emit validationChanged();
+        return;
+    }
+
+    // Only now sweep the files that are genuinely orphaned (a *.json holding nodes no current node claims).
+    for (const QString &Existing : PackageDir->entryList(QStringList() << "*.json", QDir::Files))
+    {
+        if (ByFile.count(Existing)) continue;
+        nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
+        if (JSONOps::LoadJSON(&F, &J)) continue;
+        const bool IsNodeFile = (J.is_object() && J.contains("NODE_ID"))
+                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("NODE_ID"));
+        if (IsNodeFile) PackageDir->remove(Existing);
+    }
 
     emit savedToDisk(PackageDir->path());
     Validated = false; emit validationChanged();   // edits invalidate the last check; re-run on demand via the button
@@ -248,58 +377,30 @@ void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string
     Container.Cleanup();
 }
 
-void PackageEditorModel::AnalyzeNodeRegistry(const std::string & NodeId)
+
+std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
+                                           const std::vector<std::string> & Parents,
+                                           const std::string & IdHint)
 {
-    SaveNodes();
-    NodeIndex Idx = BuildExecIndex();
-    const std::string Launch = LaunchableForNode(Idx, NodeId);
-    if (Launch.empty())
-    { QMessageBox::warning(DialogParent, "Analyze Registry", "No launchable node includes this one — nothing to analyze against."); return; }
+    auto Exists = [this](const std::string & Id) {
+        for (const auto & N : Doc["NODES"]) if (N.value("NODE_ID", std::string()) == Id) return true;
+        return false;
+    };
+    std::string Base = IdHint.empty() ? std::string("node") : IdHint;
+    for (char & C : Base) if (!std::isalnum((unsigned char)C) && C != '_') C = '_';
+    std::string Id = Base;
+    for (int K = 2; Exists(Id); ++K) Id = Base + "_" + std::to_string(K);
 
-    const Node * LaunchNode = Idx.Find(Launch);
-    const std::string PackageUID = LaunchNode ? LaunchNode->Uid : PackageDir->dirName().toStdString();
-    std::filesystem::path SessionTemp = AppPaths::DataRoot() / "TEMP" / PackageUID;
-
-    // Comparator: the launchable's baseline state in read-only mode, on isolated paths.
-    ContainerParams ComparatorParams(PackageDir->path().toStdString());
-    ComparatorParams.NodeIdx = &Idx;
-    ComparatorParams.LaunchNodeId = Launch;
-    nlohmann::ordered_json Dummy = nlohmann::ordered_json::object();
-    ContainerWrapper Comparator(*GlobalConfigJSON, Dummy, ComparatorParams);
-    Comparator.ContainerParams.TempPath      = SessionTemp / "COMPARATOR_TEMP";
-    Comparator.ContainerParams.DefPrefixPath = SessionTemp / "COMPARATOR_TEMP" / "DEFPREFIX";
-    Comparator.ContainerParams.RuntimePath   = SessionTemp / "COMPARATOR";
-    Comparator.ContainerParams.ReadOnlyVFS   = true;
-    Comparator.Cleanup();
-    Comparator.BuildContainerRuntime();
-
-    //Either half failing produces a diff that is confidently wrong rather than absent: an unreadable baseline
-    //makes every pre-existing key look newly authored, an unreadable "after" makes real changes disappear.
-    RegistryWrapper Baseline;
-    if (!Baseline.LoadPrefix(Comparator.ContainerParams.RuntimePath))
-        LogErr("PackageEditorModel::AnalyzeNodeRegistry", "could not read the baseline registry — the delta below "
-                   "will treat the entire existing prefix as new edits.");
-    Comparator.Cleanup();
-
-    RegistryWrapper After;
-    if (!After.LoadPrefix(SessionTemp / "WRITELAYER"))
-        LogErr("PackageEditorModel::AnalyzeNodeRegistry", "could not read the session's WRITELAYER registry — the "
-                   "delta below will be EMPTY even if the registry did change.");
-
-    nlohmann::ordered_json Delta = After.DiffToRegEdits(Baseline);
-    LogOut("PackageEditorModel::AnalyzeNodeRegistry", "Delta: " + std::to_string(Delta.size()) + " RegEdit layer(s).");
-
-    if (!Delta.empty())
-    {
-        // Locate NodeId's array index in the working document.
-        int ArrIdx = -1;
-        for (int n = 0; n < (int)Doc["NODES"].size(); n++)
-            if (Doc["NODES"][n].value("NODE_ID", std::string()) == NodeId) { ArrIdx = n; break; }
-        if (ArrIdx >= 0) MergeRegistryDeltaInNode(&Delta, ArrIdx);
-    }
-
+    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"NODE_ID", Id}});
+    nlohmann::ordered_json P = nlohmann::ordered_json::array();
+    for (const std::string & X : Parents) if (!X.empty()) P.push_back(X);
+    N["PARENTS"] = std::move(P);
+    for (const auto & [K, V] : Payload.items()) N[K] = V;
+    Doc["NODES"].push_back(std::move(N));
     SaveNodes();
     emit documentReloaded();
+    LogSucc("PackageEditorModel", "Created node '" + Id + "'.");
+    return Id;
 }
 
 QString PackageEditorModel::packagePath() const
@@ -319,55 +420,5 @@ std::vector<std::string> PackageEditorModel::bundleNodeIds() const
     return Out;
 }
 
-void PackageEditorModel::appendLayerToNode(const std::string & NodeId, const nlohmann::ordered_json & Layer)
-{
-    if (!Doc.contains("NODES") || !Doc["NODES"].is_array()) return;
-    for (auto & N : Doc["NODES"])
-        if (N.value("NODE_ID", std::string()) == NodeId)
-        {
-            if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
-            N["LAYERS"].push_back(Layer);
-            SaveNodes();
-            emit documentReloaded();
-            return;
-        }
-    LogWarn("PackageEditorModel::appendLayerToNode", "Target node not found: " + NodeId);
-}
 
-void PackageEditorModel::mergeRegEditsIntoNode(const std::string & NodeId, nlohmann::ordered_json Delta)
-{
-    if (Delta.empty() || !Doc.contains("NODES") || !Doc["NODES"].is_array()) return;
-    for (int n = 0; n < (int)Doc["NODES"].size(); n++)
-        if (Doc["NODES"][n].value("NODE_ID", std::string()) == NodeId)
-        {
-            MergeRegistryDeltaInNode(&Delta, n);
-            SaveNodes();
-            emit documentReloaded();
-            return;
-        }
-    LogWarn("PackageEditorModel::mergeRegEditsIntoNode", "Target node not found: " + NodeId);
-}
 
-void PackageEditorModel::MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray)
-{
-    if (NodeIndexInArray < 0 || NodeIndexInArray >= (int)Doc["NODES"].size()) return;
-    auto &Layers = Doc["NODES"][NodeIndexInArray]["LAYERS"];
-    if (!Layers.is_array()) Layers = json::array();
-
-    for (int i = 0; i < (int)Delta->size(); i++)
-    {
-        auto &DeltaLayer = (*Delta)[i];
-        bool Merged = false;
-        for (int j = 0; j < (int)Layers.size(); j++)
-        {
-            auto &Existing = Layers[j];
-            if (!Existing.is_object() || Existing.value("TYPE", std::string()) != "RegEdit") continue;
-            if (DeltaLayer.value("REGPATH", std::string()) == Existing.value("REGPATH", std::string()))
-            {
-                for (auto KV : DeltaLayer["KEYVALUES"].items()) Existing["KEYVALUES"][KV.key()] = KV.value();
-                Merged = true; break;
-            }
-        }
-        if (!Merged) Layers.push_back(DeltaLayer);
-    }
-}

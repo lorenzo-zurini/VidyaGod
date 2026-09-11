@@ -1,5 +1,6 @@
 #include "manifestmodel.h"
 #include "commonutils.h"
+#include "nodelower.h"   // NodeLower::Lower — flat node payload → the executor's ordered layer sequence
 #include "varsubst.h"    // VarSubst::ConditionParses — WHEN syntax lint
 #include "launchparams.h"   // ContainerParams::GetVariablesMap — the single source of truth for built-in %variables%
 
@@ -27,15 +28,78 @@ namespace ManifestModel {
 
 // ----- node graph (everything is a node) -----
 
+static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
+                             const std::filesystem::path &BundleDir, Node &Out);
+
+//THE boundary where untrusted JSON becomes a Node, and therefore the place that must be TOTAL.
+//
+//NodeLower::Lower already guarantees its OUTPUT is well-typed, which protects every consumer of Node::Layers.
+//But ParseNode also reads a few fields off the RAW node — TOGGLE, NODE_ID, PARENTS, EXCLUDE — and nlohmann's
+//.value() throws on a type mismatch. `{"TOGGLE": true}` (a plausible authoring slip: the field reads like a
+//boolean) therefore still aborted the process inside BuildNodeIndex, which runs at STARTUP.
+//
+//Rather than hardening each read and hoping the next one added remembers, the whole derivation is guarded and
+//a throw becomes the same refusal a malformed payload produces: the node is indexed, named by validation, and
+//never routed through.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out)
+{
+    try
+    {
+        return ParseNodeOrThrow(J, File, BundleDir, Out);
+    }
+    catch (const std::exception &E)
+    {
+        const std::string Id = (J.is_object() && J.contains("NODE_ID") && J["NODE_ID"].is_string())
+                                   ? J["NODE_ID"].get<std::string>() : std::string();
+        if (Id.empty()) return false;                       // not identifiable ⇒ not a node at all
+        LogWarn("ManifestModel::ParseNode",
+                "Malformed node '" + Id + "' — " + E.what() + " (" + File.string() + ")");
+        Out = Node{};
+        Out.NodeId     = Id;
+        Out.LowerError = "node '" + Id + "': malformed field (" + E.what() + ")";
+        Out.Layers     = nlohmann::ordered_json::array();
+        if (J.contains("PARENTS") && J["PARENTS"].is_array())
+            for (const auto &P : J["PARENTS"])
+                if (P.is_string() && !P.get<std::string>().empty()) Out.Parents.push_back(P.get<std::string>());
+        Out.File      = File;
+        Out.BundleDir = BundleDir;
+        return true;
+    }
+}
+
+static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
+                             const std::filesystem::path &BundleDir, Node &Out)
 {
     if (!J.is_object() || !J.contains("NODE_ID") || !J["NODE_ID"].is_string()) return false;
     Out = Node{};
     Out.NodeId   = J["NODE_ID"].get<std::string>();
     if (Out.NodeId.empty()) return false;
-    if (J.contains("LAYERS")  && J["LAYERS"].is_array()) Out.Layers = J["LAYERS"];
-    else                                                  Out.Layers = nlohmann::ordered_json::array();
+    //A node IS one layer of one TYPE; NodeLower expands its (possibly batched) payload into the ordered
+    //layer sequence the launch engine consumes. A malformed payload is refused here rather than launched
+    //half-understood — the node is skipped and the graph reports it missing at resolve time.
+    std::string LowerErr;
+    Out.Layers = NodeLower::Lower(J, Out.NodeId, LowerErr);
+    if (!LowerErr.empty())
+    {
+        //INDEXED, not dropped. Dropping it removed the node from the graph entirely, so a referrer dangled
+        //(loud) but a LEAF mistake was reported by nothing at all — --validate-nodes said 0 errors while a
+        //layer had silently vanished, contradicting the spec's own "unknown TYPE is an error". Keep it with no
+        //layers and the reason attached: validation names it, and ResolveNodeOrder refuses to route through it.
+        LogWarn("ManifestModel::ParseNode", "Malformed node — " + LowerErr + " (" + File.string() + ")");
+        Out.LowerError = LowerErr;
+        Out.Layers = nlohmann::ordered_json::array();
+        //Its PROVENANCE and EDGES still have to be filled in. Returning bare left File/BundleDir/Parents empty,
+        //and every scope selector matches on UID or BundleDir — so the broken node could never enter a scoped
+        //set, and `--validate-nodes <bundle>` (the PRE-PUBLISH check) reported the very bundle containing the
+        //mistake as clean. Only the whole-graph form saw it.
+        if (J.contains("PARENTS") && J["PARENTS"].is_array())
+            for (const auto &P : J["PARENTS"])
+                if (P.is_string() && !P.get<std::string>().empty()) Out.Parents.push_back(P.get<std::string>());
+        Out.File      = File;
+        Out.BundleDir = BundleDir;
+        return true;
+    }
 
     //--- Identity is DERIVED entirely from the Declare* layers. A node with none is plain content. ---
     for (const auto &L : Out.Layers)
@@ -66,8 +130,25 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
             Out.Uid  = L.value("UID", Out.Uid);
         }
     }
-    Out.Optional = J.value("OPTIONAL", false);
-    Out.Default  = J.value("DEFAULT", true);
+    //TOGGLE replaces the old OPTIONAL+DEFAULT pair: present ⇒ user-toggleable, and the value IS the
+    //initial state. (They were never independent — DEFAULT was meaningless without OPTIONAL — and the
+    //old name collided with CustomVar's own DEFAULT once payloads were hoisted onto the node.)
+    //It belongs on the TAIL of a module's chain: ResolveNodeOrder only descends into nodes it keeps, so
+    //switching the tail off drops the module's private ancestors with it.
+    //An UNKNOWN value is refused, not guessed. `Out.Default = (Toggle != "off")` means every typo — "of",
+    //"Off", "false" — reads as ON, i.e. the author asks for opt-in and ships opt-out. The two legal values
+    //are the whole vocabulary, so anything else is a mistake worth naming.
+    Out.RawWhen = (J.contains("WHEN") && J["WHEN"].is_string()) ? J["WHEN"].get<std::string>() : std::string();
+    const std::string Toggle = J.value("TOGGLE", std::string());
+    if (!Toggle.empty() && Toggle != "on" && Toggle != "off")
+    {
+        LogWarn("ManifestModel::ParseNode", "Malformed node '" + Out.NodeId + "' — TOGGLE must be \"on\" or "
+                                            "\"off\", not \"" + Toggle + "\" (" + File.string() + ")");
+        Out.LowerError = "node '" + Out.NodeId + "': TOGGLE must be \"on\" or \"off\", not \"" + Toggle + "\"";
+        Out.Layers = nlohmann::ordered_json::array();
+    }
+    Out.Optional = !Toggle.empty();
+    Out.Default  = (Toggle != "off");
     if (J.contains("EXCLUDE") && J["EXCLUDE"].is_array())
         for (const auto &E : J["EXCLUDE"]) if (E.is_string() && !std::string(E).empty()) Out.Exclude.push_back(E.get<std::string>());
     if (J.contains("PARENTS") && J["PARENTS"].is_array())
@@ -90,11 +171,20 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
         try { In >> J; }
         catch (const std::exception &E)
         { LogWarn("ManifestModel::ScanBundleNodes", "Skipping unparseable " + Entry.path().string() + ": " + E.what()); continue; }
-        Node N;
-        if (!ParseNode(J, Entry.path(), BundleDir, N)) continue;          // not a node file (no NODE_ID)
-        if (Idx.Nodes.count(N.NodeId))
-        { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate NODE_ID '" + N.NodeId + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
-        Idx.Nodes.emplace(N.NodeId, std::move(N));
+        //A file holds ONE node or an ARRAY of them. Grouping nodes into files is pure presentation —
+        //it carries no semantics, so an author can keep a package's display vars together, split a
+        //patch set out, or leave one node per file, without any of it meaning anything to the graph.
+        nlohmann::ordered_json Single;                                    // only materialised for the 1-node form
+        if (!J.is_array()) Single = nlohmann::ordered_json::array({J});   // (both operands lvalues ⇒ no copy of J)
+        const nlohmann::ordered_json &Nodes = J.is_array() ? J : Single;
+        for (const auto &Doc : Nodes)
+        {
+            Node N;
+            if (!ParseNode(Doc, Entry.path(), BundleDir, N)) continue;    // not a node (no NODE_ID / bad payload)
+            if (Idx.Nodes.count(N.NodeId))
+            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate NODE_ID '" + N.NodeId + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
+            Idx.Nodes.emplace(N.NodeId, std::move(N));
+        }
     }
 }
 
@@ -194,7 +284,10 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
 {
     std::vector<std::string> Order;
     const Node *Launch = Idx.Find(LaunchNodeId);
-    if (!Launch) { if (Missing) Missing->push_back(LaunchNodeId); return Order; }
+    //A node whose payload never lowered is unusable: routing through it would apply nothing where the author
+    //declared something. Treated as missing so the launch refuses loudly instead of quietly doing less.
+    if (!Launch || !Launch->LowerError.empty())
+    { if (Missing) Missing->push_back(LaunchNodeId); return Order; }
 
     //Phase 1 — determine the ENABLED set by a breadth-first walk over PARENTS from the launch node, applying
     //each node's own optional/EXCLUDE gate. A required parent is always pulled; an optional one only if its
@@ -240,7 +333,7 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
         {
             if (Enabled.count(Pid)) continue;
             const Node *P = Idx.Find(Pid);
-            if (!P) { if (Missing) Missing->push_back(Pid); continue; }
+            if (!P || !P->LowerError.empty()) { if (Missing) Missing->push_back(Pid); continue; }
             if (P->Optional)
             {
                 const bool On = Toggles.count(Pid) ? Toggles.at(Pid) : P->Default;
@@ -642,17 +735,11 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         return false;
     };
 
-    //A VFS layer whose PATH/SOURCE.PATH carries a %VAR% is RUNTIME-SOURCED: its source is a mount path resolved at
-    //launch (e.g. a proton prefix-assembly layer PATH="%DefaultPfxDir%" pointing into the runner mount), NOT local
-    //authoring content. Such layers are never seeded to IPFS and, on a runner node, ARE used (routed to the prefix
-    //assembly) rather than ignored — so the "convert to STORE zip" / "runner layers are IGNORED" warnings don't apply.
-    auto RuntimeSourced = [](const nlohmann::ordered_json &L) {
-        const std::string P = L.value("PATH", std::string());
-        if (P.find('%') != std::string::npos) return true;
-        if (L.contains("SOURCE") && L["SOURCE"].is_object())
-            return std::string(L["SOURCE"].value("PATH", std::string())).find('%') != std::string::npos;
-        return false;
-    };
+    //A VFS layer whose PATH/SOURCE.PATH carries a %VAR% is RUNTIME-SOURCED (IsRuntimeSourcedLayer): its source is a
+    //mount path resolved at launch (e.g. a proton prefix-assembly layer PATH="%DefaultPfxDir%" pointing into the
+    //runner mount), NOT local authoring content. Such layers are never seeded to IPFS, so the "convert to STORE zip"
+    //warning doesn't apply to them.
+    const auto &RuntimeSourced = IsRuntimeSourcedLayer;
 
     //Cycle-detection memo shared across the whole pass: a node proven acyclic (fully explored with no back-edge)
     //never participates in a cycle, so later roots skip it. Hoisting this out of the per-node loop turns the
@@ -683,18 +770,11 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (HasCycle(Id)) Errors.push_back(Tag + ": PARENTS form a cycle");
         }
 
-        //A runner's BUILD comes from its PARENT content nodes (the runner node itself is excluded from the runner
-        //closure), so VFS layers placed directly on a runner node are silently IGNORED — never mounted. Authors who
-        //ship the runtime as the runner's own LAYERS get a runner with no build. Warn and point at the fix.
-        if (N.IsRunner() && N.Layers.is_array())
-            for (const auto &L : N.Layers)
-                if (L.is_object() && IsVfsLayer(L.value("TYPE", std::string())) && !RuntimeSourced(L))
-                {
-                    Warnings.push_back(Tag + ": a runner node carries its own VFS layer ('" + LayerType(L)
-                        + "') — runner layers are IGNORED (the build is taken from the runner's PARENT content nodes). "
-                        "Move it to a content node and add that node to the runner's PARENTS.");
-                    break;
-                }
+        //(The old "a runner node carries its own VFS layer — runner layers are IGNORED" warning is GONE, because the
+        //footgun it guarded is now unrepresentable: a node is one layer of one TYPE, so a runner DECLARATION node
+        //cannot also carry content. Whether a VFS layer in a runner's closure is the BUILD or prefix ASSEMBLY is
+        //decided by IsRuntimeSourcedLayer, not by which node it sits on — so there is no longer a place to put a
+        //layer where it would be silently dropped.)
 
         //VFS layers must declare a local PATH (or SOURCE.PATH).
         if (N.Layers.is_array())
@@ -832,27 +912,106 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         if (OnlyNodes && !OnlyNodes->count(Id)) continue;
         if (!N.Layers.is_array()) continue;
         const std::string Tag = "node '" + Id + "'";
-        int NExec = 0, NLib = 0, NRun = 0;
-        const nlohmann::ordered_json *Exec = nullptr;
+        //The payload never lowered — an unknown TYPE, an unknown FORM, malformed EDITS. This is the rule the
+        //spec states as "an unknown TYPE is an error, not something to ignore": a node whose payload nobody
+        //applies is a package that quietly does less than it says.
+        //LowerError already names the node (NodeLower prefixes every message), so no Tag here — it read
+        //"node 'x': node 'x': ...".
+        if (!N.LowerError.empty()) Errors.push_back(N.LowerError);
+        //A WHEN on a DeclareExec or a DeclareLibraryItem has NO CONSUMER: those payloads are folded into the
+        //node's identity at index time and never re-evaluated, so the condition would be silently ignored —
+        //a node that looks conditional and is not. TOGGLE is the mechanism for "this node is off"; say so
+        //rather than accepting a declaration nothing honours.
         for (const auto &L : N.Layers)
         {
-            if (!L.is_object()) continue;
-            const std::string T = L.value("TYPE", std::string());
-            if      (T == "DeclareExec")        { ++NExec; Exec = &L; }
-            else if (T == "DeclareLibraryItem") ++NLib;
-            else if (T == "DeclareRunner")      ++NRun;
+            if (!L.is_object() || !L.contains("WHEN")) continue;
+            const std::string LT = L.value("TYPE", std::string());
+            if (LT == "DeclareExec" || LT == "DeclareLibraryItem" || LT == "DeclareRunner")
+                Errors.push_back(Tag + ": WHEN on a " + LT + " is never evaluated (its payload becomes the "
+                                 "node's identity at index time). Use TOGGLE to make the node opt-in.");
         }
-        if (NExec > 1) Errors.push_back(Tag + ": more than one DeclareExec layer (a node has a single identity)");
-        if (NLib  > 1) Errors.push_back(Tag + ": more than one DeclareLibraryItem layer");
-        if (NRun  > 1) Errors.push_back(Tag + ": more than one DeclareRunner layer");
-        if (NExec && NRun) Warnings.push_back(Tag + ": both DeclareExec and DeclareRunner — a node is usually one or the other");
-        (void)Exec;   // (a DeclareExec with no CONTENTPATH is valid — self-contained launchable, e.g. gemrb runs a data dir)
+        //...and the same for Group, from the other direction: it emits NO layers, so there is nothing for the
+        //condition to be stamped on and it evaporates in silence. Group exists to carry PARENTS — "this module
+        //IS these parents" — which makes it the most natural place to write a conditional module, and the
+        //whole subtree would then apply unconditionally.
+        if (N.Layers.is_array() && N.Layers.empty() && !N.RawWhen.empty())
+            Errors.push_back(Tag + ": WHEN on a payload-less node is never evaluated (it emits no layer to "
+                             "gate). Use TOGGLE to make the node opt-in, or move the condition to a child.");
+        int NLib = 0;
+        for (const auto &L : N.Layers)
+            if (L.is_object() && L.value("TYPE", std::string()) == "DeclareLibraryItem") ++NLib;
+        //The "more than one Declare* layer on a node" family of rules is GONE, not forgotten: a node is one
+        //layer of one TYPE, so those states are unrepresentable and the checks could never fire. What replaces
+        //them are the two rules the flat model makes checkable for the first time — a tile is now its own node,
+        //so its UID is one field on one node, and a launchable's tile is now an ANCESTOR, so "which tile?" is a
+        //graph question with a possible wrong answer.
+        if (NLib)
+        {
+            //A tile's UID keys saved state, settings, and the content root inside the prefix. Missing, it used
+            //to fall back silently at launch — and the user lost their saves to a path that moved.
+            if (N.Uid.empty())
+                Errors.push_back(Tag + ": DeclareLibraryItem has no UID (it keys saves, settings and the "
+                                       "content root — a missing one silently relocates all three)");
+        }
         if (NLib && !N.IsLaunchable())   // a tile node: needs a launchable variant somewhere that parents it
         {
             bool HasVariant = false;
             for (const auto &[VId, V] : Idx.Nodes)
                 if (V.IsLaunchable() && V.GameKey() == Id) { HasVariant = true; break; }
             if (!HasVariant) Warnings.push_back(Tag + ": DeclareLibraryItem tile has no launchable variant (no DeclareExec node parents it)");
+        }
+    }
+
+    //----- AMBIGUOUS TILE: a launchable that reaches TWO different DeclareLibraryItem ancestors. --------------
+    //LinkGames binds a variant to the NEAREST presentable ancestor, taking the first match in PARENTS order —
+    //so a second reachable tile is resolved by array position, which the format says is meaningless (I9). The
+    //variant then shows under one game, keyed by that game's UID, with nothing saying the other was dropped.
+    //Unrepresentable before the tile became its own node; now a graph question with a wrong answer available.
+    {
+        //Up to two DISTINCT presentable ancestors per node, memoized. Two is all the rule needs, and it keeps
+        //the walk O(N+E) on a 900-deep Minecraft chain instead of materialising an ancestor set per launchable.
+        //A TILE is a node that CARRIES a DeclareLibraryItem layer — not one that is `Presentable()`. LinkGames
+        //runs inside BuildNodeIndex and copies the tile's Meta onto every variant, so by the time validation
+        //runs every linked launchable is Presentable() too. Using that predicate here made the rule skip
+        //exactly the nodes it exists to check: it fired in a unit test that built an index by hand (no
+        //LinkGames) and never once against the real pipeline.
+        auto IsTile = [](const Node &N) {
+            if (!N.Layers.is_array()) return false;
+            for (const auto &L : N.Layers)
+                if (L.is_object() && L.value("TYPE", std::string()) == "DeclareLibraryItem") return true;
+            return false;
+        };
+        std::unordered_map<std::string, std::vector<std::string>> Tiles;
+        std::function<const std::vector<std::string> &(const std::string &)> Reach =
+            [&](const std::string &Nid) -> const std::vector<std::string> & {
+            auto It = Tiles.find(Nid);
+            if (It != Tiles.end()) return It->second;
+            std::vector<std::string> &Out = Tiles[Nid];          // placeholder first: cycle guard
+            const Node *Nn = Idx.Find(Nid);
+            if (!Nn) return Out;
+            if (IsTile(*Nn)) { Out.push_back(Nid); return Out; }          // a tile terminates the search
+            for (const std::string &P : Nn->Parents)
+            {
+                if (!Idx.Find(P)) continue;
+                for (const std::string &T : Reach(P))
+                {
+                    if (std::find(Out.begin(), Out.end(), T) != Out.end()) continue;
+                    Out.push_back(T);
+                    if (Out.size() >= 2) return Out;
+                }
+                if (Out.size() >= 2) break;
+            }
+            return Out;
+        };
+        for (const auto &[Id, N] : Idx.Nodes)
+        {
+            if (OnlyNodes && !OnlyNodes->count(Id)) continue;
+            if (!N.IsLaunchable() || IsTile(N)) continue;
+            const std::vector<std::string> &T = Reach(Id);
+            if (T.size() >= 2)
+                Errors.push_back("node '" + Id + "': reaches more than one DeclareLibraryItem ('" + T[0]
+                                 + "' and '" + T[1] + "') — which tile it belongs to is decided by PARENTS order, "
+                                   "which carries no meaning. Give it exactly one.");
         }
     }
 
@@ -1006,17 +1165,46 @@ void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
 
 bool IsVfsLayer(const std::string &Type) { return !VfsSpecType(Type).empty(); }
 
-const std::vector<std::string> &MetaEditableFields()
+std::string LayerPathString(const nlohmann::ordered_json &Sub)
 {
-    static const std::vector<std::string> Fields = {
-        "RELEASEDATE", "EDITION", "EDITIONDATE", "DEVELOPER", "PUBLISHER",
-        "TGDBID", "STEAMAPPID", "GOGPRODUCTID", "UMUID",
-        "SERIES", "SERIESSORTNUMBER", "SUBSERIES", "SUBSERIESSORTNUMBER",
-        "EDITOR", "ONLINEDRM",
-        "NETWORKMULTIPLAYER", "DIRECTCONNECT", "LANMULTIPLAYER", "ONLINEMULTIPLAYER",
-        "NETWORKCOOP", "LOCALMULTIPLAYER", "LOCALCOOP", "OTHERONLINEFEATURES"
-    };
-    return Fields;
+    if (!Sub.is_object()) return {};
+    std::string P = Sub.value("PATH", std::string());
+    if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object()) P = Sub["SOURCE"].value("PATH", P);
+    return P;
+}
+
+std::vector<std::string> PathVariableTokens(const std::string &P)
+{
+    //A %variable% is a MATCHED PAIR around an IDENTIFIER, not merely the presence of a '%'. A filename may
+    //legitimately contain one (URL-escaped names are common in scraped content: "100%25%20done.zip" has a
+    //matched pair around "25"), and treating that as a variable silently excluded a real file from hydration,
+    //verification AND a runner's build.
+    std::vector<std::string> Out;
+    for (size_t I = P.find('%'); I != std::string::npos; I = P.find('%', I + 1))
+    {
+        const size_t Close = P.find('%', I + 1);
+        if (Close == std::string::npos) break;
+        if (Close > I + 1 && P.find('/', I) > Close)
+        {
+            const std::string Tok = P.substr(I + 1, Close - I - 1);
+            if ((std::isalpha((unsigned char)Tok[0]) || Tok[0] == '_')
+                && std::all_of(Tok.begin(), Tok.end(),
+                               [](unsigned char C) { return std::isalnum(C) || C == '_'; }))
+                Out.push_back(Tok);
+        }
+        I = Close;
+    }
+    return Out;
+}
+
+bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub)
+{
+    return !PathVariableTokens(LayerPathString(Sub)).empty();
+}
+
+bool IsRunnerBuildLayer(const nlohmann::ordered_json &Sub)
+{
+    return IsVfsLayer(LayerType(Sub)) && !IsRuntimeSourcedLayer(Sub);
 }
 
 std::string NormalizeTargetPath(std::string P)

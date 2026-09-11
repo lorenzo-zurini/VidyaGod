@@ -9,6 +9,7 @@
 
 #include "manifestmodel.h"   // NodeIndex
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -17,27 +18,33 @@ class QWidget;
 // ---------------------------------------------------------------------------
 // PackageEditorModel — the state/signal hub for the node-native bundle editor (the AppModel-style central structure
 // for PackageEditor). It OWNS the working document (`{ "NODES":[ <node>, ... ] }`, each node carrying an editor-only
-// "__FILE__" tag), the bundle `QDir`, and the borrowed read-only GlobalConfigJSON, plus the latest validation
+// "__FILE__" tag), the bundle `QDir`, and the borrowed GlobalConfigJSON, plus the latest validation
 // results. It does all the NON-UI work: node file I/O, validation, the catalog/exec-index queries, and the
 // authoring runs (build a container + execute / analyze registry against the live launch engine). The editor's
 // widgets read state through it, call its mutators, and react to its signals — they never touch each other.
 //
 // A QWidget* DialogParent is held solely to parent the modal dialogs the authoring runs raise (mirrors how
-// DownloadManager holds a dialog parent). The model never mutates GlobalConfigJSON (it only reads repo dirs and
-// hands a copy to ContainerWrapper), so it borrows it by const.
+// DownloadManager holds a dialog parent). The model itself only READS GlobalConfigJSON, but it is borrowed
+// non-const because a test-launch hands it to PreLaunchWindow, which persists the player's CustomVar choices
+// into USERSETTINGS.
 // ---------------------------------------------------------------------------
 class PackageEditorModel : public QObject
 {
     Q_OBJECT
 public:
-    PackageEditorModel(const nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent = nullptr);
+    PackageEditorModel(nlohmann::ordered_json * globalConfig, QWidget * dialogParent, QObject * parent = nullptr);
     ~PackageEditorModel() override;
 
     // ── State access (widgets read directly; the model owns the lifetime) ──
     nlohmann::ordered_json &       doc()                 { return Doc; }
     const nlohmann::ordered_json & doc() const           { return Doc; }
+    //The canvas-position sidecar: NODE_ID -> [x,y], persisted to <bundle>/LAYOUT.vglayout. It is NOT part of
+    //the package — both publish paths take only *.json — so moving a node on screen cannot change the
+    //package's bytes, and therefore its CID, for every peer. See LayoutPathFor for why not USERDATA.
+    nlohmann::ordered_json &       layout()              { return Layout; }
+    void SaveLayout() const;
     QDir *                         packageDir() const    { return PackageDir; }
-    const nlohmann::ordered_json * globalConfig() const  { return GlobalConfigJSON; }
+    nlohmann::ordered_json *       globalConfig() const  { return GlobalConfigJSON; }
     const std::vector<std::string> & validationErrors()   const { return ValErrors; }
     const std::vector<std::string> & validationWarnings() const { return ValWarnings; }
     bool validated() const { return Validated; }   // false = not checked since last edit (validation is on-demand)
@@ -45,6 +52,7 @@ public:
     // ── Bundle open + node file I/O (one file per node) ──
     void initPackage(const QString & preselectedPath, QWidget * dirPickerParent);   // pick dir (if empty) + LoadNodes
     void LoadNodes();
+    void LoadLayout();
     void SaveNodes();                                              // write files → emit savedToDisk + validationChanged
     QString FileForNode(const nlohmann::ordered_json & Node) const;
     //Replace one node's whole JSON (preserving its __FILE__ tag), persist, and request a structural rebuild. Used
@@ -64,7 +72,6 @@ public:
 
     // ── Authoring (native node engine): build NodeId's container and run / analyze it ──
     void RunInNode(const std::string & NodeId, const std::string & Exe = "");
-    void AnalyzeNodeRegistry(const std::string & NodeId);
     // True if "Test launch" can do something for this node: it's launchable (has a DeclareExec) OR a launchable in the
     // bundle includes it (so the node can be tested in the context of the game that pulls it in). Uses the cached index.
     bool NodeTestable(const std::string & NodeId) const;
@@ -72,10 +79,11 @@ public:
     // ── Authoring Session hooks (the held-open AuthoringSession window captures back into the document) ──
     QString                  packagePath() const;                        // the edited bundle dir ("" if none open)
     std::vector<std::string> bundleNodeIds() const;                      // NODE_IDs declared in THIS bundle (target picker)
-    // Append a captured layer (VFSDirLayer / …) to NodeId's LAYERS, persist + rebuild. No-op if the node is gone.
-    void appendLayerToNode(const std::string & NodeId, const nlohmann::ordered_json & Layer);
-    // Merge a captured RegEdit delta array into NodeId (reusing MergeRegistryDeltaInNode), persist + rebuild.
-    void mergeRegEditsIntoNode(const std::string & NodeId, nlohmann::ordered_json Delta);
+    //Create a node from a payload, parented at `Parents`, persist + rebuild; returns its NODE_ID. A capture IS a
+    //node in the flat schema — one layer of one TYPE — so a capture creates one rather than appending into
+    //somebody else's. `IdHint` seeds a unique id.
+    std::string createNode(nlohmann::ordered_json Payload, const std::vector<std::string> & Parents,
+                           const std::string & IdHint);
 
 signals:
     void documentReloaded();                       // structural change — views rebuild
@@ -83,7 +91,6 @@ signals:
     void savedToDisk(const QString & packagePath); // node files written (relayed to PackageEditor::packageSaved)
 
 private:
-    void MergeRegistryDeltaInNode(nlohmann::ordered_json * Delta, int NodeIndexInArray);
     // Cached BuildExecIndex(): the catalog scan (this bundle + every repo) is expensive and was rebuilt per node
     // section (KnownPlatforms) AND per save (Revalidate). The cache rebuilds once, invalidated whenever the bundle's
     // nodes change (SaveNodes). Returns a stable reference for callers that only read.
@@ -91,8 +98,12 @@ private:
     void                           InvalidateExecIndex() { ExecIndexValid = false; }
 
     nlohmann::ordered_json         Doc;                       // working document { "NODES": [...] }
+    nlohmann::ordered_json         Layout = nlohmann::ordered_json::object();   // NODE_ID -> [x,y], see layout()
     QDir *                         PackageDir = nullptr;
-    const nlohmann::ordered_json * GlobalConfigJSON = nullptr;
+    //Entries in a multi-node file that are not nodes. Held so SaveNodes can write them back rather
+    //than erasing them when it rewrites the file from the nodes it loaded.
+    std::map<std::string, nlohmann::ordered_json> Carried;
+    nlohmann::ordered_json *       GlobalConfigJSON = nullptr;
     QWidget *                      DialogParent = nullptr;
     std::vector<std::string>       ValErrors, ValWarnings;
     bool                           Validated = false;   // set by Revalidate(); cleared on any edit/load

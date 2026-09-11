@@ -1,10 +1,12 @@
 #include "authoringsessionmodel.h"
+#include "pkggraph.h"   // RegRowsInto — the captured delta becomes the schema's nested hive tree
 #include "packageeditormodel.h"
 #include "manifestmodel.h"     // NodeIndex / Node / ScanBundleNodes / MachinePlatform
 #include "packagecatalog.h"    // BuildCatalogIndex
 
 #include <QDir>
 
+#include <map>
 #include <set>
 #include <utility>
 
@@ -117,8 +119,9 @@ void AuthoringWorker::end()
 
 // ============================================================================ model (GUI thread)
 
-AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string Node, QObject * parent)
-    : QObject(parent), Editor(E), TargetNodeId(std::move(Node))
+AuthoringSessionModel::AuthoringSessionModel(PackageEditorModel * E, std::string AnchorNodeId,
+                                             CaptureMode M, QObject * parent)
+    : QObject(parent), Editor(E), TargetNodeId(std::move(AnchorNodeId)), Mode(M)
 {
     Worker = new AuthoringWorker;
     Worker->moveToThread(&Thread);
@@ -175,10 +178,9 @@ void AuthoringSessionModel::runWindows(const QString & Exe, const QString & Runn
 void AuthoringSessionModel::runGuest(const QString & GuestCmd){ emit busyChanged(true, "Running…");  emit requestRunExe(GuestCmd); }
 void AuthoringSessionModel::refreshDelta()                    { emit busyChanged(true, "Scanning…"); emit requestRefresh(); }
 
-void AuthoringSessionModel::captureFiles(const QStringList & Roots, const QString & TargetNode,
-                                         const QString & DestName, const QString & Target)
+void AuthoringSessionModel::captureFiles(const QStringList & Roots, const QString & DestName, const QString & Target)
 {
-    PendTargetNode = TargetNode; PendDestName = DestName; PendTarget = Target; PendRoots = Roots;
+    PendDestName = DestName; PendTarget = Target; PendRoots = Roots;
     const QString DestDirAbs = (Editor ? Editor->packagePath() : QString()) + "/" + DestName;
     emit busyChanged(true, "Capturing files…");
     emit requestCaptureFiles(Roots, DestDirAbs);
@@ -190,7 +192,7 @@ void AuthoringSessionModel::scanRegistry()
     emit requestScanRegistry();
 }
 
-void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths, const QString & TargetNode)
+void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths)
 {
     // Filter the last scanned delta to the picked keys (cheap JSON, GUI thread) and merge them into the node.
     std::set<std::string> Want;
@@ -200,9 +202,41 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
         for (const auto & E : LastRegDelta)
             if (Want.count(E.value("REGPATH", std::string()))) Picked.push_back(E);
     if (Picked.empty()) { emit captured("No registry keys checked."); return; }
-    if (Editor) Editor->mergeRegEditsIntoNode(TargetNode.toStdString(), Picked);
+    if (!Editor) return;
+    // The scan yields flat {REGPATH, KEYVALUES} entries; the schema stores the registry as the tree it actually
+    // is. Group by architecture, then let RegRowsInto build the hives.
+    std::map<std::string, std::vector<PkgGraph::RegRow>> ByArch;
+    for (const auto & E : Picked)
+    {
+        const std::string Path = E.value("REGPATH", std::string());
+        const std::string Arch = E.contains("ARCHITECTURE") && E["ARCHITECTURE"].is_string()
+                                     ? E["ARCHITECTURE"].get<std::string>() : std::string("32");
+        if (Path.empty()) continue;
+        // DiffToRegEdits OMITS KEYVALUES entirely for a key-only edit (registrywrapper.cpp) — which is the
+        // single most common registry capture, an installer creating a key. const operator[] on a missing key
+        // asserts (or dereferences end() under NDEBUG), so look it up without inserting or throwing.
+        const nlohmann::ordered_json KV = E.value("KEYVALUES", nlohmann::ordered_json::object());
+        //FLAGGED as key-only. An empty NAME is the key's DEFAULT value, not "no values" — leaving the flag
+        //off here wrote a spurious `@=""` into the prefix on the most common capture there is.
+        if (!KV.is_object() || KV.empty())
+        { PkgGraph::RegRow R{Path, "", ""}; R.KeyOnly = true; ByArch[Arch].push_back(std::move(R)); continue; }
+        for (const auto & [K, V] : KV.items())
+            ByArch[Arch].push_back({Path, K, V.is_string() ? V.get<std::string>() : V.dump()});
+    }
+    nlohmann::ordered_json Edits = nlohmann::ordered_json::array();
+    for (const auto & [Arch, Rows] : ByArch)
+    {
+        nlohmann::ordered_json Entry = nlohmann::ordered_json::object({
+            {"ARCHITECTURE", nlohmann::ordered_json::array({Arch})}});
+        PkgGraph::RegRowsInto(Entry, Rows);
+        Edits.push_back(std::move(Entry));
+    }
+    const std::string NewId = Editor->createNode(
+        nlohmann::ordered_json::object({{"TYPE", "RegEdit"}, {"EDITS", Edits}}), {TargetNodeId}, "captured_registry");
     emit registryCaptured(RegPaths);
-    emit captured(QString("Captured %1 registry key(s) into '%2'.").arg((int)Picked.size()).arg(TargetNode));
+    emit nodeCreated(QString::fromStdString(NewId));
+    emit captured(QString("Captured %1 registry key(s) → new RegEdit node '%2'.")
+                      .arg((int)Picked.size()).arg(QString::fromStdString(NewId)));
 }
 
 void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine,
@@ -226,10 +260,16 @@ void AuthoringSessionModel::onFilesCopied(int count)
 {
     emit busyChanged(false, QString());
     if (count <= 0) { emit captured("Nothing copied — check the selection."); return; }
-    if (Editor) Editor->appendLayerToNode(PendTargetNode.toStdString(),
-                                          AuthoringSession::MakeDirLayer(PendDestName.toStdString(), PendTarget.toStdString()));
+    if (!Editor) return;
+    // A capture IS a node: one Content node holding what the run wrote, parented at the anchor so it applies
+    // exactly where the capture was taken.
+    nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
+        {"TYPE", "Content"}, {"FORM", "dir"}, {"PATH", PendDestName.toStdString()}});
+    if (!PendTarget.isEmpty()) Payload["TARGET"] = PendTarget.toStdString();
+    const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");
     emit filesCaptured(PendRoots);
-    emit captured(QString("Captured %1 file(s) into '%2' → VFSDirLayer on '%3'.").arg(count).arg(PendDestName).arg(PendTargetNode));
+    emit nodeCreated(QString::fromStdString(NewId));
+    emit captured(QString("Captured %1 file(s) → new Content node '%2'.").arg(count).arg(QString::fromStdString(NewId)));
 }
 
 void AuthoringSessionModel::onRegistryScan(QString deltaJsonDump, QStringList regPaths)

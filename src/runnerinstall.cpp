@@ -34,7 +34,7 @@ bool RunnerInstall::CollectRunnerNodeTargets(const NodeIndex &Idx, const std::st
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
         for (const auto &L : C->Layers)
         {
-            if (!IsVfsLayer(LayerType(L))) continue;
+            if (!ManifestModel::IsRunnerBuildLayer(L)) continue;                   // NOT IsVfsLayer — see the helper
             std::filesystem::path Local; std::string Cid;
             LayerLocator(L, C->BundleDir, Local, Cid);                            // resolve against the layer's OWN node bundle
             if (Cid.empty() || Local == C->BundleDir || std::filesystem::exists(Local, Ec)) continue;  // present / no source
@@ -54,7 +54,9 @@ bool RunnerInstall::RunnerBuildPresent(const NodeIndex &Idx, const std::string &
     for (const Node *C : RunnerBuildNodes(Idx, RunnerNodeId))
         for (const auto &L : C->Layers)
         {
-            if (!IsVfsLayer(LayerType(L))) continue;
+            //NOT IsVfsLayer: a prefix-assembly layer ("%DefaultPfxDir%") resolves to <bundle>/%DefaultPfxDir%,
+            //which never exists on disk, so counting it here reported EVERY proton runner as not installed.
+            if (!ManifestModel::IsRunnerBuildLayer(L)) continue;
             std::filesystem::path Local; std::string Cid;
             LayerLocator(L, C->BundleDir, Local, Cid);
             if (Local == C->BundleDir) continue;                                  // no PATH

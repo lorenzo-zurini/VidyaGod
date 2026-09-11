@@ -27,6 +27,23 @@ using namespace ManifestModel;
 
 namespace PackageCatalog {
 
+//A node file holds ONE node object or an ARRAY of them (grouping nodes into files is pure presentation), and a
+//node IS its layer — the payload is hoisted onto the node, so there is no LAYERS array to walk. These two
+//helpers are the whole difference for the seed/publish readers, which parse node JSON directly rather than
+//through ParseNode (they must MUTATE it in place to record the minted SOURCE.CID).
+static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &J)
+{
+    std::vector<nlohmann::ordered_json *> Out;
+    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("NODE_ID")) Out.push_back(&N); }
+    else if (J.is_object() && J.contains("NODE_ID")) Out.push_back(&J);
+    return Out;
+}
+//Content nodes are the ones carrying seedable bytes (PATH + SOURCE); FORM says how they are interpreted.
+static bool IsContentNode(const nlohmann::ordered_json &N)
+{
+    return N.is_object() && N.value("TYPE", std::string()) == "Content";
+}
+
 
 // ----- import / publish -----
 
@@ -152,32 +169,26 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             SeedCover(G);                                                         // legacy game-level COVER
         }
 
-        //Node files (everything-is-a-node): seed VFS layers in LAYERS + the cover on the DeclareLibraryItem layer.
-        if (Frag.contains("NODE_ID") && Frag["NODE_ID"].is_string())
+        //Node files (everything-is-a-node): seed each Content node's bytes + the cover on a DeclareLibraryItem node.
+        for (nlohmann::ordered_json *Np : NodeDocsOf(Frag))
         {
-            if (Frag.contains("LAYERS") && Frag["LAYERS"].is_array())
-            for (auto &S : Frag["LAYERS"])
-            {
-                if (!IsVfsLayer(LayerType(S))) continue;
-                ++Walked;
-                std::filesystem::path Local; std::string Cid;
-                LayerLocator(S, Pkg, Local, Cid);
-                std::error_code Rc;
-                if (!NeedsSeed(Cid, Local)) continue;                            // has a CID that still verifies — idempotent
-                if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
-                { Unfetchable.push_back(Local.string()); continue; }
-                std::string Err;
-                const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
-                if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
-                nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object()) ? S["SOURCE"] : nlohmann::ordered_json::object();
-                Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; S["SOURCE"] = std::move(Src);
-                Mutated = true; ++Seeded;
-            }
-            //Cover art: node-native covers live on a Declare* layer's COVER field (DeclareLibraryItem), not a top-level
-            //META.COVER (that was the pre-Declare* shape). Seed whichever is present.
-            if (Frag.contains("LAYERS") && Frag["LAYERS"].is_array())
-                for (auto &L : Frag["LAYERS"]) if (L.is_object() && L.contains("COVER")) SeedCover(L);
-            if (Frag.contains("META") && Frag["META"].is_object()) SeedCover(Frag["META"]);
+            nlohmann::ordered_json &S = *Np;
+            //Cover art lives on the DeclareLibraryItem node's COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
+            if (S.contains("COVER") && S["COVER"].is_object()) SeedCover(S);
+            if (!IsContentNode(S)) continue;
+            ++Walked;
+            std::filesystem::path Local; std::string Cid;
+            LayerLocator(S, Pkg, Local, Cid);
+            std::error_code Rc;
+            if (!NeedsSeed(Cid, Local)) continue;                                // has a CID that still verifies — idempotent
+            if (!std::filesystem::exists(Local, Rc))                             // no local content to seed
+            { Unfetchable.push_back(Local.string()); continue; }
+            std::string Err;
+            const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
+            if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
+            nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object()) ? S["SOURCE"] : nlohmann::ordered_json::object();
+            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; S["SOURCE"] = std::move(Src);
+            Mutated = true; ++Seeded;
         }
 
         if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
@@ -229,7 +240,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
 
         nlohmann::ordered_json J;
         { std::ifstream F(It->path()); if (!F) continue; try { F >> J; } catch (...) { continue; } }
-        if (!J.is_object()) continue;
+        if (!J.is_object() && !J.is_array()) continue;      // one node, or an array of them
         const fs::path Bundle = It->path().parent_path();
 
         auto Consider = [&](const nlohmann::ordered_json &Obj) {            // an object with PATH + SOURCE{ipfs,CID}
@@ -249,15 +260,14 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             if (!ExistingOnly || fs::exists(Local, Ec)) ToSeed[Local.generic_string()] = Cid;
         };
 
-        if (!CoversOnly && J.contains("LAYERS") && J["LAYERS"].is_array())
-            for (const auto &L : J["LAYERS"]) Consider(L);                        // content layers (skipped in covers-only)
-        // Cover art (ALWAYS seeded): node-native covers live on a Declare* layer's COVER field (DeclareLibraryItem);
-        // legacy manifests put it at top-level META.COVER. Both are {PATH, SOURCE:{ipfs,CID}} like a layer.
-        if (J.contains("LAYERS") && J["LAYERS"].is_array())
-            for (const auto &L : J["LAYERS"])
-                if (L.is_object() && L.contains("COVER") && L["COVER"].is_object()) Consider(L["COVER"]);
-        if (J.contains("META") && J["META"].is_object() && J["META"]["COVER"].is_object())
-            Consider(J["META"]["COVER"]);                                        // legacy pre-Declare* format
+        // A node IS its layer, so the node object itself carries PATH + SOURCE when it is Content. Cover art is
+        // ALWAYS seeded and lives on the DeclareLibraryItem node's COVER field — {PATH, SOURCE:{ipfs,CID}}, the
+        // same shape as content.
+        for (nlohmann::ordered_json *Np : NodeDocsOf(J))
+        {
+            if (!CoversOnly && IsContentNode(*Np)) Consider(*Np);                 // content (skipped in covers-only)
+            if (Np->contains("COVER") && (*Np)["COVER"].is_object()) Consider((*Np)["COVER"]);
+        }
     }
     return ToSeed;
 }
@@ -503,6 +513,7 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir)
         if (Runtime) continue;
         const std::filesystem::path Out = Dest / Rel;
         std::filesystem::create_directories(Out.parent_path(), Ce);
+
         std::filesystem::copy_file(Entry.path(), Out, std::filesystem::copy_options::overwrite_existing, Ce);
         if (Ce) LogWarn("PackageCatalog::MirrorDehydrated", "skip " + Entry.path().string() + " (" + Ce.message() + ")");
         else ++Copied;

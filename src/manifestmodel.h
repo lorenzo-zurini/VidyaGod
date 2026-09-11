@@ -50,7 +50,17 @@ struct VariantInfo {
 //One node, parsed from a <node_id>.json file. Edges are bare global NODE_IDs in Parents (later = higher
 //CFS priority). Selection attributes (Optional/Default/Exclude) live on the node itself, not on the edge.
 struct Node {
-    std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine", "gemrb")
+    std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine")
+    //Non-empty when the node's payload could not be lowered (unknown TYPE, unknown FORM, malformed EDITS…).
+    //Such a node is STILL INDEXED, deliberately: dropping it made the whole node vanish, so a leaf mistake —
+    //an unknown FORM on a Content node, a typo'd TYPE — was reported by NOTHING. --validate-nodes printed a
+    //perfect package while a layer had silently disappeared. It is indexed so validation can name it and so
+    //resolution can refuse to launch through it; it contributes NO layers, so it can never be applied.
+    std::string LowerError;
+    //The node's own WHEN as authored. Kept because a payload-less node (Group) emits no layer for the
+    //condition to ride on, so validation has nothing else to see it in — and a silently-dropped condition is
+    //a module that applies unconditionally.
+    std::string RawWhen;
     // Identity is DERIVED from the node's Declare* layers (no ROLE field): DeclareExec ⇒ launchable, DeclareRunner ⇒
     // runner, DeclareLibraryItem ⇒ a library tile. The fields below are populated by ParseNode from those layers (or,
     // transitionally, from the legacy top-level ROLE/EXEC/META/PLATFORM until packages are migrated).
@@ -188,11 +198,38 @@ bool ZipFullyStored(const std::string &ZipPath, std::string *FirstCompressed = n
 std::string VfsSpecType(const std::string &Type);
 // True if a subcomponent TYPE string names a VFS content layer (Zip/Dir/File/Delta).
 bool IsVfsLayer(const std::string &Type);
+
+//True when a VFS layer's SOURCE is a LIVE RUNTIME PATH rather than package content on disk — i.e. its PATH
+//(or SOURCE.PATH) carries a %variable%, e.g. a runner's prefix-assembly mount from "%DefaultPfxDir%" or
+//"%RunnerMount%/files/share/default_pfx". Such a layer resolves at BuildLayerSpec time, so it has nothing to
+//hydrate, fetch or verify, and it is not part of a runner's importable BUILD.
+//This used to be implicit: a runner's prefix-assembly layers sat on the same node as its DeclareRunner, so the
+//"skip runner nodes" rule in the chain walk excluded them as a side effect. One node per layer makes that
+//coincidence impossible, so the property is stated directly here and applied wherever build content is counted.
+bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub);
+
+//The %Name% tokens in a path: a matched pair of '%' around a non-empty identifier ([A-Za-z_][A-Za-z0-9_]*)
+//containing no path separator. This is the tokenizer for the "is this path runtime-sourced?" question, and
+//every asker of THAT question must use it. It is deliberately stricter than VarSubst's substitution scanner,
+//which also accepts the "%KEY:format%" render syntax — a path is never rendered, so a ':' there is a filename. Exposed because IsRuntimeSourcedLayer is
+//not the only question asked of a templated path — "which variables would this need?" is another — and a
+//SECOND hand-rolled scanner is how the two answers drifted: one classified "100%25%20done.zip" as real
+//content while the other called it a runtime mount, so a fetchable-missing layer reported as hydrated.
+std::vector<std::string> PathVariableTokens(const std::string &P);
+
+//A VFS layer's local path string, exactly as IsRuntimeSourcedLayer reads it (SOURCE.PATH overrides PATH).
+std::string LayerPathString(const nlohmann::ordered_json &Sub);
+
+//THE question every site that walks a runner's content closure is actually asking: "is this layer part of the
+//runner's BUILD?" — real bytes to fetch, stat, import and mount at %RunnerMount%. It is `IsVfsLayer(TYPE) &&
+//!IsRuntimeSourcedLayer`, and it exists as one named function because spelling that conjunction out at each call
+//site is a bug waiting to happen: five sites ask it, the flat schema turned the prefix-assembly layers into
+//ordinary Content nodes INSIDE the closure, and two sites that forgot the second half started reporting every
+//GE-Proton runner as not installed — which kills the Play button on every Windows game with no diagnostic.
+//Any NEW site that walks a runner's build MUST call this rather than re-deriving it.
+bool IsRunnerBuildLayer(const nlohmann::ordered_json &Sub);
 // A subcomponent's TYPE ("" if absent).
 std::string LayerType(const nlohmann::ordered_json &Sub);
-// The editable META metadata fields (rendered as flat forms by the package editor). Package-format
-// knowledge, owned here — the editor widgets used to keep two divergent copies of this list.
-const std::vector<std::string> &MetaEditableFields();
 // Normalize a layer TARGET / runtime-relative path: backslashes → slashes, leading/trailing slashes trimmed.
 // This is the parent-side twin of VidyaGodFS's NormalizeVPath (layerspec.cpp) MINUS the FS's zip-name context —
 // the two must agree so target strings match the FS's per-target base map (a parity test pins that; the FS side

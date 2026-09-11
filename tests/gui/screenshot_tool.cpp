@@ -3,14 +3,15 @@
 // Output dir is argv[1] (default /tmp/vg_shots). Lets a human (or me) eyeball that the de-godded editor renders.
 
 #include <QApplication>
+#include <QSurfaceFormat>
 #include <QDir>
 #include <QFile>
 
 #include <nlohmann/json.hpp>
 
 #include "packageeditor.h"
+#include "nodefixture.h"
 #include "packageeditormodel.h"
-#include "nodesections.h"
 #include "jsonoperations.h"
 #include "mainwindow.h"
 #include "appmodel.h"
@@ -21,11 +22,15 @@
 
 using json = nlohmann::ordered_json;
 
-static void writeNode(const QString & dir, const QString & id, const json & node)
+// A node file holds one node or an ARRAY of them; name it after the chain's TAIL — the node everything else
+// references, and the one whose id the fixture was built around.
+static void writeNodes(const QString & dir, const json & nodes)
 {
-    json n = node; n["NODE_ID"] = id.toStdString();
-    QFile f(dir + "/" + id + ".json");
-    JSONOps::SaveJSON(&n, &f);
+    json doc = nodes;
+    const std::string id = (doc.is_array() && !doc.empty())
+                               ? doc.back().value("NODE_ID", std::string("node")) : std::string("node");
+    QFile f(dir + "/" + QString::fromStdString(id) + ".json");
+    JSONOps::SaveJSON(&doc, &f);
 }
 
 static void shot(QWidget * w, int width, int height, const QString & path)
@@ -44,6 +49,15 @@ static void shot(QWidget * w, int width, int height, const QString & path)
 
 int main(int argc, char ** argv)
 {
+    // The package editor hosts Dear ImGui in a QOpenGLWidget; ImGui's shaders need GL 3.2+, and Qt's default
+    // surface format is 2.0 — which compiles nothing and renders a blank canvas. Request 3.3 core app-wide,
+    // before any widget exists.
+    QSurfaceFormat GlFmt;
+    GlFmt.setRenderableType(QSurfaceFormat::OpenGL);
+    GlFmt.setVersion(3, 3);
+    GlFmt.setProfile(QSurfaceFormat::CoreProfile);
+    QSurfaceFormat::setDefaultFormat(GlFmt);
+
     QApplication app(argc, argv);
     const QString out = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QStringLiteral("/tmp/vg_shots");
     QDir().mkpath(out);
@@ -52,48 +66,48 @@ int main(int argc, char ** argv)
     const QString bundle = "/tmp/vg_shot_bundle";
     QDir(bundle).removeRecursively(); QDir().mkpath(bundle);
 
-    writeNode(bundle, "aoe2", json{
-        {"PARENTS", json::array({"wine-ge", "aoe2-base"})},
-        {"LAYERS", json::array({
-            json{{"TYPE", "DeclareLibraryItem"}, {"UID", "aoe2-hd"}, {"TITLE", "Age of Empires II"},
-                 {"DEVELOPER", "Ensemble Studios"}, {"PUBLISHER", "Microsoft"}, {"RELEASEDATE", "1999"},
-                 {"SERIES", "Age of Empires"}},
-            json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "AoK HD.exe"},
-                 {"EXEARGS", ""}, {"WORKDIR", ""}, {"LABEL", "HD Edition"}, {"RECOMMENDED", true}},
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"TARGET", "drive_c/aoe2"}},
-            json{{"TYPE", "RegEdit"}, {"REGPATH", "HKCU\\Software\\Microsoft\\AoE2"}, {"ARCHITECTURE", "32"},
-                 {"KEYVALUES", {{"Resolution", "1920x1080"}, {"Windowed", "0"}}}},
-            json{{"TYPE", "CustomVar"}, {"KEY", "FPS_CAP"}, {"LABEL", "FPS cap"}, {"DEFAULT", "60"},
-                 {"VARTYPE", "dword"}, {"DISPLAY", true}},
-            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/users/steamuser/Saved Games/aoe2"}}})}});
+    // One node per layer, chained by PARENTS; the tail owns the bare id.
+    json tile = NodeFixture::Tile("aoe2-hd", "Age of Empires II",
+                                  json{{"DEVELOPER", "Ensemble Studios"}, {"PUBLISHER", "Microsoft"},
+                                       {"RELEASEDATE", "1999"}, {"SERIES", "Age of Empires"}});
+    json exec = NodeFixture::Exec("win32", "AoK HD.exe");
+    exec["LABEL"] = "HD Edition"; exec["RECOMMENDED"] = true; exec["ARGS"] = json::array();
+    writeNodes(bundle, NodeFixture::Chain("aoe2", {
+        NodeFixture::Content("zip", "game.zip", "drive_c/aoe2"),
+        json{{"TYPE", "RegEdit"},
+             {"EDITS", json::array({ json{{"ARCHITECTURE", json::array({"32"})},
+                                          {"HKCU", {{"Software", {{"Microsoft", {{"AoE2",
+                                              {{"Resolution", "1920x1080"}, {"Windowed", "0"}}}}}}}}}} })}},
+        json{{"TYPE", "CustomVar"}, {"KEY", "FPS_CAP"}, {"DEFAULT", "60"},
+             {"UI", {{"LABEL", "FPS cap"}, {"CONTROL", "enum"}}}},
+        json{{"TYPE", "Persist"}, {"KEEP", json::array({"drive_c/users/steamuser/Saved Games/aoe2"})}},
+        tile, exec}, {"wine-ge", "aoe2-base"}));
 
-    writeNode(bundle, "wine-ge", json{
-        {"LAYERS", json::array({
-            json{{"TYPE", "DeclareRunner"}, {"HOST", "linux64"}, {"GUEST", json::array({"win32", "win64"})},
-                 {"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
-                 {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})},
-                 {"ENV", {{"PROTON_LOG", "%PROTON_LOG%"}}}},
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}} })}});
+    json runner = NodeFixture::Runner("linux64", {"win32", "win64"}, "%RunnerMount%/proton");
+    runner["CONTENT_ROOT"] = "pfx/drive_c/%PackageUID%";
+    runner["PREFIX_GENERATE"] = true;
+    runner["ARGS"] = json::array({"waitforexitandrun", "%Content%"});
+    runner["ENV"] = json{{"PROTON_LOG", "%PROTON_LOG%"}};
+    writeNodes(bundle, NodeFixture::Chain("wine-ge", {NodeFixture::Content("zip", "proton.zip"), runner}));
 
-    const json cfg = json{{"Settings", {{"Repositories", json::array()}}}};
+    json cfg = json{{"Settings", {{"Repositories", json::array()}}}};   // non-const: a test launch persists CustomVar choices
 
     // ---- the full editor on the bundle ----
+    // The editing surface is a QOpenGLWidget now, and QWidget::grab() cannot capture GL content — so when
+    // asked to HOLD, show the editor on a real display and let an external screen capture take it.
+    const bool hold = (argc > 2 && QString::fromLocal8Bit(argv[2]) == "--hold");
+    const QString holdBundle = (argc > 3) ? QString::fromLocal8Bit(argv[3]) : bundle;
+    if (hold)
+    {
+        PackageEditor * editor = new PackageEditor(&cfg, nullptr, holdBundle);
+        editor->resize(1800, 1000);
+        editor->show();
+        return app.exec();
+    }
     {
         PackageEditor editor(&cfg, nullptr, bundle);
         shot(&editor, 1500, 950, out + "/01_packageeditor_full.png");
     }
-
-    // ---- individual sections (node 0 = the launchable/tile, node 1 = the runner) ----
-    // Identity is now a derived badge; all the Declare*/content/edit editors live in the LAYERS section.
-    PackageEditorModel model(&cfg, nullptr);
-    model.initPackage(bundle, nullptr);
-    { NodeIdentitySection  s(&model, 0); shot(&s, 560, 280, out + "/02_section_identity.png"); }
-    { NodeParentsSection   s(&model, 0); shot(&s, 560, 320, out + "/03_section_parents.png"); }
-    { NodeSelectionSection s(&model, 0); shot(&s, 560, 320, out + "/04_section_selection.png"); }
-    // node 0's LAYERS: DeclareLibraryItem (cover drop) + DeclareExec + VFS/RegEdit/CustomVar/Persist
-    { NodeLayersSection    s(&model, 0); shot(&s, 700, 900, out + "/05_section_layers_game.png"); }
-    // node 1's LAYERS: DeclareRunner + the runner's VFS build layer
-    { NodeLayersSection    s(&model, 1); shot(&s, 700, 520, out + "/06_section_layers_runner.png"); }
 
     // ---- the real MainWindow against the live ~/.VidyaGod (read-only render; IPFS node is NOT started, so the
     // IPFS tab shows "unavailable" — everything else renders with the real library/catalog/settings) ----

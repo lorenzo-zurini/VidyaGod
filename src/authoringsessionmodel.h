@@ -12,6 +12,15 @@
 
 class PackageEditorModel;
 
+// What a session is FOR. The runtime it mounts is the same in every case; the mode decides which guest tool it
+// opens for you, which half of the window is shown, and which kind of node the capture becomes.
+enum class CaptureMode
+{
+    Setup,      // run an installer; capture files AND registry (up to two nodes)
+    Files,      // open a file manager on the runtime; capture what appeared → a Content node
+    Registry,   // open regedit on the prefix; capture what changed → a RegEdit node
+};
+
 // ---------------------------------------------------------------------------
 // AuthoringWorker — owns the AuthoringSession and runs every heavy op (wineboot, installer runs, multi-GB captures,
 // huge write-delta walks) on its OWN thread, so the GUI never blocks. It lives on the worker thread; the model talks
@@ -58,7 +67,11 @@ class AuthoringSessionModel : public QObject
 {
     Q_OBJECT
 public:
-    AuthoringSessionModel(PackageEditorModel * Editor, std::string TargetNodeId, QObject * parent = nullptr);
+    //`AnchorNodeId` is the point in the chain the runtime is built up to, AND the parent of whatever the capture
+    //creates — "capture at this point" means exactly "the new node's PARENTS is this node".
+    AuthoringSessionModel(PackageEditorModel * Editor, std::string AnchorNodeId, CaptureMode Mode,
+                          QObject * parent = nullptr);
+    CaptureMode mode() const { return Mode; }
     ~AuthoringSessionModel() override;
 
     QString     targetNode() const { return QString::fromStdString(TargetNodeId); }
@@ -69,9 +82,9 @@ public slots:
     void runWindows(const QString & Exe, const QString & RunnerId);   // the "Run Windows program" tool
     void runGuest(const QString & GuestCmd);            // regedit.exe / explorer.exe (post-wine)
     void refreshDelta();
-    void captureFiles(const QStringList & Roots, const QString & TargetNode, const QString & DestName, const QString & Target);
+    void captureFiles(const QStringList & Roots, const QString & DestName, const QString & Target);
     void scanRegistry();                                                            // diff → populate the registry tree
-    void captureSelectedRegistry(const QStringList & RegPaths, const QString & TargetNode);  // merge the picked keys
+    void captureSelectedRegistry(const QStringList & RegPaths);   // the picked keys become a new RegEdit node
 
 signals:
     // → worker (queued)
@@ -91,6 +104,7 @@ signals:
     void filesCaptured(QStringList roots);              // the file roots just captured (→ tint them green)
     void registryCaptured(QStringList keys);            // the registry keys just captured (→ tint them green)
     void captured(QString message);
+    void nodeCreated(QString nodeId);                   // a capture produced this node (parented at the anchor)
     void failed(QString message);
 
 private slots:
@@ -102,10 +116,11 @@ private slots:
 
 private:
     PackageEditorModel *   Editor = nullptr;
-    std::string            TargetNodeId;
+    std::string            TargetNodeId;               // the anchor: runtime built to here, captures parented here
+    CaptureMode            Mode = CaptureMode::Setup;
     QThread                Thread;
     AuthoringWorker *      Worker = nullptr;
-    QString                PendTargetNode, PendDestName, PendTarget;  // file-capture context awaiting the worker result
+    QString                PendDestName, PendTarget;   // file-capture context awaiting the worker result
     QStringList            PendRoots;                                  // the file roots being captured (echoed back on success)
     nlohmann::ordered_json LastRegDelta = nlohmann::ordered_json::array();  // the scanned registry diff (filtered on capture)
 };

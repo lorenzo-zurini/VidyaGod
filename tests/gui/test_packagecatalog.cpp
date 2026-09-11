@@ -8,6 +8,7 @@
 
 #include "packagecatalog.h"
 #include "manifestmodel.h"
+#include "nodefixture.h"
 #include "runnerinstall.h"
 #include "ipfswrapper.h"
 #include "apppaths.h"
@@ -40,11 +41,9 @@ private slots:
     void node_has_content_vs_contentless()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
-                                     json{{"TYPE", "VFSDirLayer"}, {"PATH", "data"}} })}});
-        writeJson(dir.path() + "/empty.json", json{{"NODE_ID", "empty"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+        writeJson(dir.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Content("dir", "data"), NodeFixture::Exec("win32", "g.exe")}));
+        writeJson(dir.path() + "/empty.json", NodeFixture::Chain("empty", {NodeFixture::Exec("win32", "g.exe")}));
         QDir(dir.path() + "/data").mkpath(".");                 // make 'game' hydrated
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
@@ -60,14 +59,11 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         // Missing file + a CID → FETCHABLE-MISSING → un-hydrated (the download button has work to do).
-        writeJson(dir.path() + "/remote.json", json{{"NODE_ID", "remote"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
-                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"},
-                                          {"SOURCE", json{{"TYPE", "ipfs"}, {"CID", "Qmdeadbeef"}}}} })}});
+        writeJson(dir.path() + "/remote.json",
+                  NodeFixture::Chain("remote", {NodeFixture::ContentCid("file", "blob.bin", "Qmdeadbeef"), NodeFixture::Exec("win32", "g.exe")}));
         // Missing file + NO CID → local-only, nothing to fetch → hydrated (broken-ness surfaces via validation).
-        writeJson(dir.path() + "/localonly.json", json{{"NODE_ID", "localonly"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
-                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "solo.bin"}} })}});
+        writeJson(dir.path() + "/localonly.json",
+                  NodeFixture::Chain("localonly", {NodeFixture::Content("file", "solo.bin"), NodeFixture::Exec("win32", "g.exe")}));
 
         NodeIndex idx0; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx0);
         QVERIFY(!PackageCatalog::NodeHydrated(idx0, "remote"));     // CID-backed blob.bin not fetched yet
@@ -82,9 +78,8 @@ private slots:
     void dehydrate_node_removes_content_keeps_manifest()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}},
-                                     json{{"TYPE", "VFSFileLayer"}, {"PATH", "blob.bin"}} })}});
+        writeJson(dir.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Content("file", "blob.bin"), NodeFixture::Exec("win32", "g.exe")}));
         writeFile(dir.path() + "/blob.bin");
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
@@ -133,19 +128,16 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         // Dehydrated game: content zip has an IPFS CID but the file is absent → a fetch target.
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "g"}},
-                                     json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })},
-            {"PARENTS", json::array({"content"})}});
-        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"LAYERS", json::array({
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_GAME"}}}} })}});
+        writeJson(dir.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"content"}));
+        writeJson(dir.path() + "/content.json",
+                  NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", "game.zip", "CID_GAME")}));
         // Runner with a dehydrated build (its build is a PARENT content node, per the runner closure).
-        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareRunner"}, {"HOST", ManifestModel::MachinePlatform()},
-                                          {"GUEST", json::array({"win32"})}, {"EXECUTABLE", "x"}} })},
-            {"PARENTS", json::array({"winebuild"})}});
-        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"LAYERS", json::array({
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "wine.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_WINE"}}}} })}});
+        writeJson(dir.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
+                                     {"winebuild"}));
+        writeJson(dir.path() + "/winebuild.json",
+                  NodeFixture::Chain("winebuild", {NodeFixture::ContentCid("zip", "wine.zip", "CID_WINE")}));
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
 
@@ -160,24 +152,105 @@ private slots:
         QVERIFY(targets.size() >= 2);
     }
 
+    // Hydration asks the LAYER whether it is runtime-sourced, never the resolved absolute path. Two ways the
+    // path-derived version got it wrong, both of which report an un-fetched layer as HYDRATED — so the download
+    // button never appears and the game launches against a hole:
+    //   * a URL-escaped filename, which the predicate deliberately treats as real content; and
+    //   * a library root that itself contains a '%' segment, which poisoned every layer beneath it.
+    void hydrationAsksTheLayerNotTheResolvedPath()
+    {
+        auto missingWithCid = [&](const QString &dir, const char *name) {
+            writeJson(dir + "/game.json",
+                      NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")},
+                                         {"content"}));
+            writeJson(dir + "/content.json",
+                      NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", name, "CID_GAME")}));
+            NodeIndex idx; ManifestModel::ScanBundleNodes(dir.toStdString(), idx);
+            return PackageCatalog::NodeHydrated(idx, "game");      // file ABSENT + a CID => NOT hydrated
+        };
+
+        QTemporaryDir plain; QVERIFY(plain.isValid());
+        QVERIFY(!missingWithCid(plain.path(), "game.zip"));                  // the control
+
+        QTemporaryDir escaped; QVERIFY(escaped.isValid());
+        QVERIFY(!missingWithCid(escaped.path(), "100%25%20done.zip"));       // an escaped NAME is content
+
+        // A bundle whose own directory carries a '%' segment: nothing about the LAYER changed.
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const QString odd = root.path() + "/My %Games%";
+        QVERIFY(QDir().mkpath(odd));
+        QVERIFY(!missingWithCid(odd, "game.zip"));
+
+        // ...and a genuine runtime mount is still Runtime: no file, no CID, nothing to fetch, still "hydrated".
+        QTemporaryDir rt; QVERIFY(rt.isValid());
+        writeJson(rt.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
+                                     {"pfx"}));
+        writeJson(rt.path() + "/pfx.json",
+                  NodeFixture::Chain("pfx", {NodeFixture::Content("dir", "%DefaultPfxDir%")}));
+        writeJson(rt.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"pfx"}));
+        NodeIndex ridx; ManifestModel::ScanBundleNodes(rt.path().toStdString(), ridx);
+        QVERIFY(PackageCatalog::NodeHydrated(ridx, "game"));
+    }
+
+    // THE install gate, against the shape the flat schema actually produces. A prefix-generating runner's
+    // assembly mounts ("%DefaultPfxDir%") used to sit on the runner node itself, where "skip the root" hid them;
+    // they are now ordinary Content nodes INSIDE the closure, and they resolve to <bundle>/%DefaultPfxDir% —
+    // a path that never exists on disk. Any site that counts them as build content declares the runner
+    // not-installed, which greys out Play on every game that needs it with no diagnostic.
+    //
+    // This asserts the CALL SITES, not the predicate: the previous test pinned IsRuntimeSourcedLayer and passed
+    // while two of the five callers had never been taught to use it.
+    void prefix_assembly_content_is_not_the_runners_build()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        writeJson(dir.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
+                                     {"winebuild"}));
+        // The real build: present on disk.
+        writeJson(dir.path() + "/winebuild.json",
+                  NodeFixture::Chain("winebuild", {NodeFixture::Content("zip", "wine.zip")}, {"wine_defaultpfx"}));
+        writeFile(dir.path() + "/wine.zip");
+        // The prefix-assembly mount, as its own Content node — nothing on disk, by design.
+        writeJson(dir.path() + "/wine_defaultpfx.json",
+                  NodeFixture::Chain("wine_defaultpfx", {NodeFixture::Content("dir", "%DefaultPfxDir%")}));
+
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
+
+        QVERIFY(RunnerInstall::RunnerBuildPresent(idx, "wine"));      // the build IS here
+        QVERIFY(PackageCatalog::RunnerInstalled(idx, "wine"));        // ...so the runner is installed
+
+        // ...and it is not something to download, either: a fetch target for a %variable% path would have the
+        // download manager forever re-offering an already-hydrated runner.
+        std::vector<IpfsWrapper::FetchTarget> targets; std::string err;
+        QVERIFY(RunnerInstall::CollectRunnerNodeTargets(idx, "wine", targets, &err));
+        for (const auto & t : targets)
+            QVERIFY2(t.LocalPath.find('%') == std::string::npos, t.LocalPath.c_str());
+
+        // The control: remove the REAL build and the runner must go back to not-installed, or this test would
+        // pass just as well against a gate that checks nothing at all.
+        QVERIFY(QFile::remove(dir.path() + "/wine.zip"));
+        NodeIndex idx2; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx2);
+        QVERIFY(!RunnerInstall::RunnerBuildPresent(idx2, "wine"));
+        QVERIFY(!PackageCatalog::RunnerInstalled(idx2, "wine"));
+    }
+
     // Full-closure hydrate: CollectRunnerChainTargets auto-resolves the game's runner via the PLATFORM GRAPH (no
     // manually-named runner) and pools its build — so a downloaded game is immediately playable. Same graph as above:
     // the game (PLATFORM win32) resolves to the wine runner (GUEST [win32]) whose build (CID_WINE) must be fetched.
     void hydrate_pools_resolved_runner_chain()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeJson(dir.path() + "/game.json", json{{"NODE_ID", "game"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "g"}},
-                                     json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })},
-            {"PARENTS", json::array({"content"})}});
-        writeJson(dir.path() + "/content.json", json{{"NODE_ID", "content"}, {"LAYERS", json::array({
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_GAME"}}}} })}});
-        writeJson(dir.path() + "/wine.json", json{{"NODE_ID", "wine"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareRunner"}, {"HOST", ManifestModel::MachinePlatform()},
-                                          {"GUEST", json::array({"win32"})}, {"EXECUTABLE", "x"}} })},
-            {"PARENTS", json::array({"winebuild"})}});
-        writeJson(dir.path() + "/winebuild.json", json{{"NODE_ID", "winebuild"}, {"LAYERS", json::array({
-            json{{"TYPE", "VFSZipLayer"}, {"PATH", "wine.zip"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "CID_WINE"}}}} })}});
+        writeJson(dir.path() + "/game.json",
+                  NodeFixture::Chain("game", {NodeFixture::Tile("g"), NodeFixture::Exec("win32", "g.exe")}, {"content"}));
+        writeJson(dir.path() + "/content.json",
+                  NodeFixture::Chain("content", {NodeFixture::ContentCid("zip", "game.zip", "CID_GAME")}));
+        writeJson(dir.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")},
+                                     {"winebuild"}));
+        writeJson(dir.path() + "/winebuild.json",
+                  NodeFixture::Chain("winebuild", {NodeFixture::ContentCid("zip", "wine.zip", "CID_WINE")}));
 
         NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
 
@@ -195,10 +268,9 @@ private slots:
     void local_package_is_indexed()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());                 // an external bundle, not under any repo
-        writeJson(dir.path() + "/tile.json", json{{"NODE_ID", "tile"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "777"}, {"TITLE", "My Local Game"}} })}});
-        writeJson(dir.path() + "/variant.json", json{{"NODE_ID", "variant"}, {"PARENTS", json::array({"tile"})},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+        writeJson(dir.path() + "/tile.json", NodeFixture::Chain("tile", {NodeFixture::Tile("777", "My Local Game")}));
+        writeJson(dir.path() + "/variant.json",
+                  NodeFixture::Chain("variant", {NodeFixture::Exec("win32", "g.exe")}, {"tile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()}}},
                         {"LIBRARY", json::array({ json{{"PACKAGEUID", "777"}, {"PATH", dir.path().toStdString()}} })}};
@@ -237,10 +309,9 @@ private slots:
 
         const QString bundle = data.path() + "/LIBRARY/mysource/game";
         QDir().mkpath(bundle);
-        writeJson(bundle + "/tile.json", json{{"NODE_ID", "cidtile"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "9090"}, {"TITLE", "CID Game"}} })}});
-        writeJson(bundle + "/variant.json", json{{"NODE_ID", "cidvariant"}, {"PARENTS", json::array({"cidtile"})},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+        writeJson(bundle + "/tile.json", NodeFixture::Chain("cidtile", {NodeFixture::Tile("9090", "CID Game")}));
+        writeJson(bundle + "/variant.json",
+                  NodeFixture::Chain("cidvariant", {NodeFixture::Exec("win32", "g.exe")}, {"cidtile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()},
                                       {"PackageSources", json::array({ json{{"CID", "QmSourceFolderCID"}, {"NAME", "mysource"}} })}}}};
@@ -268,10 +339,9 @@ private slots:
         // The already-fetched source dir holds the bundle files directly (no wrapping subdir).
         const QString dir = data.path() + "/LIBRARY/solopkg";
         QDir().mkpath(dir);
-        writeJson(dir + "/tile.json", json{{"NODE_ID", "solotile"},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareLibraryItem"}, {"UID", "7777"}, {"TITLE", "Solo Game"}} })}});
-        writeJson(dir + "/variant.json", json{{"NODE_ID", "solovariant"}, {"PARENTS", json::array({"solotile"})},
-            {"LAYERS", json::array({ json{{"TYPE", "DeclareExec"}, {"PLATFORM", "win32"}, {"CONTENTPATH", "g.exe"}} })}});
+        writeJson(dir + "/tile.json", NodeFixture::Chain("solotile", {NodeFixture::Tile("7777", "Solo Game")}));
+        writeJson(dir + "/variant.json",
+                  NodeFixture::Chain("solovariant", {NodeFixture::Exec("win32", "g.exe")}, {"solotile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()},
                                       {"PackageSources", json::array({ json{{"CID", "QmSoloPackageCID"}, {"NAME", "solopkg"}} })}}}};
@@ -341,13 +411,10 @@ private slots:
         { std::ofstream f((bundle + "/game.zip").toStdString()); f << "content"; }
         { std::ofstream f((bundle + "/cover.png").toStdString()); f << "img"; }
 
-        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
-            {"LAYERS", json::array({
-                json{{"TYPE", "VFSZipLayer"}, {"PATH", "game.zip"},
-                     {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmLayerCID"}}}},
-                json{{"TYPE", "DeclareLibraryItem"}, {"UID", "1"}, {"TITLE", "G"},
-                     {"COVER", {{"PATH", "cover.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmCoverCID"}}}}}},
-            })}});
+        json tile = NodeFixture::Tile("1", "G");
+        tile["COVER"] = json{{"PATH", "cover.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmCoverCID"}}}};
+        writeJson(bundle + "/node.json",
+                  NodeFixture::Chain("g", {NodeFixture::ContentCid("zip", "game.zip", "QmLayerCID"), tile}));
 
         const auto all = PackageCatalog::SeedTargets(d.path().toStdString(), /*CoversOnly=*/false);
         QCOMPARE(all.at((bundle + "/game.zip").toStdString()), std::string("QmLayerCID"));
@@ -370,7 +437,7 @@ private slots:
         QTemporaryDir d; QVERIFY(d.isValid());
         const QString bundle = d.path() + "/game";
         QDir().mkpath(bundle);
-        writeJson(bundle + "/good.json", json{{"NODE_ID", "g"}, {"LAYERS", json::array()}});
+        writeJson(bundle + "/good.json", NodeFixture::Chain("g", {}));   // pure composition: TYPE "Group"
         writeFile(bundle + "/broken.json", "{ \"NODE_ID\": \"b\", oops not json");
 
         std::vector<std::string> Errors;
@@ -396,8 +463,7 @@ private slots:
         QTemporaryDir d; QVERIFY(d.isValid());
         const QString bundle = d.path() + "/game";
         QDir().mkpath(bundle);
-        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
-            {"LAYERS", json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "never_existed.zip"}} })}});
+        writeJson(bundle + "/node.json", NodeFixture::Chain("g", {NodeFixture::Content("zip", "never_existed.zip")}));
 
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
@@ -418,10 +484,8 @@ private slots:
         QTemporaryDir d; QVERIFY(d.isValid());
         const QString bundle = d.path() + "/game";
         QDir().mkpath(bundle);
-        writeJson(bundle + "/node.json", json{{"NODE_ID", "g"},
-            {"LAYERS", json::array({
-                json{{"TYPE", "VFSZipLayer"}, {"PATH", "already.zip"},
-                     {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmAlreadyAddressed"}}}} })}});
+        writeJson(bundle + "/node.json",
+                  NodeFixture::Chain("g", {NodeFixture::ContentCid("zip", "already.zip", "QmAlreadyAddressed")}));
 
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){

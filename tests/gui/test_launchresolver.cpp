@@ -196,6 +196,39 @@ private slots:
         QCOMPARE(prefixVfs, 0);    // runner-tree build layer stays in the runner mount, not the prefix
     }
 
+    // A runner-closure node the user switched ON must contribute its prefix-assembly layers. The walk that
+    // collects them used to derive its own toggle map by first walking with DEFAULTS - which never visits an
+    // off-by-default node, so the node got no entry and was gated off again. The toggle could only ever move a
+    // node OFF; turning one ON silently did nothing.
+    void runner_optional_node_toggled_on_contributes_prefix_layers()
+    {
+        auto build = [](const std::map<std::string, bool> & states) {
+            NodeIndex idx;
+            // Prefix-ASSEMBLY layer: runtime-sourced PATH, so it assembles the game prefix rather than the
+            // runner tree - which is exactly the set the toggled walk collects.
+            Node extra = contentNode("wine_extra_dlls", json::array({
+                json{{"TYPE", "VFSDirLayer"}, {"PATH", "%RunnerMount%/extra"}, {"TARGET", "pfx/drive_c/extra"}} }));
+            extra.Optional = true;
+            extra.Default  = false;                       // OFF unless the user says otherwise
+            idx.Nodes["wine_extra_dlls"] = extra;
+            idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"wine_extra_dlls"});
+            idx.Nodes["game"] = launchNode("game", "win32", {});
+
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = states;
+            json pool = json::object();
+            LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+            int n = 0;
+            for (const auto & L : cp.SubComponentsArray)
+                if (L.value("PATH", std::string()) == "%RunnerMount%/extra") ++n;
+            return n;
+        };
+
+        QCOMPARE(build({}), 0);                                        // off by default
+        QCOMPARE(build({{"wine_extra_dlls", false}}), 0);               // explicitly off
+        QCOMPARE(build({{"wine_extra_dlls", true}}), 1);                // explicitly ON - the regression
+    }
+
     // No qualifying runner (guest platform mismatch) → no runner picked.
     void initialize_from_node_no_matching_runner()
     {
@@ -334,6 +367,81 @@ private slots:
 
     // "Keep everything" is just a KEEP of the runtime root (%RuntimePath%) — no mode flag. The runner keep-set unions
     // in regardless (additive); a bare runner keep-set leaves the runtime pristine apart from the user profile + HKCU.
+    // THE FLOW, not the function. The two tests below hand `RunnerPersistLayers` to DerivePersistence
+    // directly — a shape InitializeFromNode can no longer produce — so they stayed green while the runner
+    // keep-set stopped reaching it at all and EVERY GAME SILENTLY LOST ITS SAVES at exit. Nothing else
+    // resolves a runner closure for persistence, so nothing else could notice: DerivePersistence printed a
+    // green summary and --audit-packages reported every launchable clean.
+    //
+    // Pre-flat the keep-set sat on the runner NODE's own layers; it is now its own Persist node in the
+    // runner's PARENTS. This asserts the whole path from a graph to KeepDirs/KeepHives.
+    void runner_keepset_reaches_persistence_through_the_closure()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton_keepset"] = contentNode("proton_keepset", json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "pfx/drive_c/users"}},
+            json{{"TYPE", "Persist"}, {"KEEP", "HKCU"}} }));
+        idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"proton_keepset"});
+        idx.Nodes["game"] = launchNode("game", "win32", {});
+
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        LaunchResolver::DerivePersistence(pool, cp);
+
+        QVERIFY2(!cp.KeepDirs.empty(), "the runner's keep-set never reached persistence - saves are lost");
+        QVERIFY(std::find(cp.KeepDirs.begin(), cp.KeepDirs.end(), std::string("pfx/drive_c/users"))
+                != cp.KeepDirs.end());
+        QVERIFY(!cp.KeepRegHives.empty() || !cp.KeepRegKeys.empty());          // HKCU
+
+        // ...and in a CHAIN, every runner's keep-set counts, not just the boundary's: an emulator nested
+        // under proton has user-state of its own, and taking only the outermost link drops it silently.
+        NodeIndex ch;
+        ch.Nodes["emu_keep"] = contentNode("emu_keep", json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "drive_c/emu_state"}} }));
+        ch.Nodes["emu"]      = chainRunner("emu", {"vortex"}, "win32");
+        ch.Nodes["emu"].Parents = {"emu_keep"};
+        ch.Nodes["proton"]   = chainRunner("proton", {"win32"}, kMachine);
+        ch.Nodes["proton"].Parents = {"proton_keep"};
+        ch.Nodes["proton_keep"] = contentNode("proton_keep", json::array({
+            json{{"TYPE", "Persist"}, {"KEEP", "pfx/drive_c/users"}} }));
+        ch.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
+        ch.Nodes["vgame"]     = launchNode("vgame", "vortex", {});
+
+        ContainerParams cp2("/tmp/vg_bundle");
+        cp2.NodeIdx = &ch; cp2.LaunchNodeId = "vgame";
+        json pool2 = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp2, pool2, json{{"Settings", json::object()}}));
+        LaunchResolver::DerivePersistence(pool2, cp2);
+        QVERIFY2(std::find(cp2.KeepDirs.begin(), cp2.KeepDirs.end(), std::string("drive_c/emu_state"))
+                 != cp2.KeepDirs.end(), "the INNER runner's keep-set was dropped");
+        QVERIFY(std::find(cp2.KeepDirs.begin(), cp2.KeepDirs.end(), std::string("pfx/drive_c/users"))
+                != cp2.KeepDirs.end());
+    }
+
+    // A WHEN on a Persist node gates it like any other layer. BuildSubComponentsArray's gate deliberately
+    // SKIPS Persist (it is consumed by DerivePersistence, not mounted), so without a gate here a conditional
+    // keep-set applied unconditionally.
+    void a_false_when_on_a_persist_node_keeps_nothing()
+    {
+        auto build = [](const char *when) {
+            NodeIndex idx;
+            idx.Nodes["keep"] = contentNode("keep", json::array({
+                json{{"TYPE", "Persist"}, {"KEEP", "drive_c/Saves"}, {"WHEN", when}} }));
+            idx.Nodes["wine"] = runnerNode("wine", {"win32"}, {"keep"});
+            idx.Nodes["game"] = launchNode("game", "win32", {});
+            ContainerParams cp("/tmp/vg_bundle");
+            cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+            json pool = json::object();
+            LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}});
+            LaunchResolver::DerivePersistence(pool, cp);
+            return (int)cp.KeepDirs.size();
+        };
+        QCOMPARE(build("1 == 1"), 1);            // true  -> kept
+        QCOMPARE(build("1 == 2"), 0);            // false -> inert
+    }
+
     void derive_persistence_keep_root_and_runner_keepset()
     {
         // The runner keep-set (RunnerPersistLayers) supplies KEEPs; the game KEEPs the runtime root → whole-runtime

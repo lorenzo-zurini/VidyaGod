@@ -711,7 +711,7 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
         if (Id == RunnerNodeId) continue;
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) { ShipsBuild = true; break; }
+        for (const auto &L : N->Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; break; }
         if (ShipsBuild) break;
     }
     if (ShipsBuild)
@@ -803,14 +803,26 @@ static std::map<std::string, std::string> CustomVarDefaults(const NodeIndex &Idx
 // substitution is RUNTIME-sourced (a runner's "%RunnerMount%/..." prefix mount) — it resolves to a live mount at
 // launch, not to on-disk content (mirrors LaunchSources' IsRuntimeSourcedLayer skip).
 enum class PathState : std::uint8_t { Runtime, Present, Missing };
-static PathState ResolvePathState(const std::filesystem::path &Local, const std::map<std::string, std::string> &Vars)
+
+// Runtime-sourced is a property of the LAYER, and it is decided by the ONE predicate — never re-derived from
+// the resolved absolute path. Deriving it from the path was wrong twice over:
+//   * a library root containing a '%' segment (a folder literally named "My %Games%") made EVERY layer under
+//     it classify as Runtime, so the whole library silently reported hydrated; and
+//   * a URL-escaped filename ("100%25%20done.zip"), which the predicate deliberately treats as real content,
+//     fell through to substitute-and-see, where the undefined %25% survived and again produced Runtime — so a
+//     fetchable-missing layer was invisible to the download button and the game launched against a hole.
+// A path whose tokens are ALL defined is CustomVar-templated ("%dgv_zip%" -> a real zip) and does resolve;
+// one with any undefined token is a live runtime mount ("%RunnerMount%/...") and has no on-disk file at all.
+// Asked this way rather than by substituting, because substitution LOGS a warning per undefined token and
+// here an undefined token is the expected answer, not a problem.
+static PathState ResolvePathState(const nlohmann::ordered_json &Layer, const std::filesystem::path &Local,
+                                  const std::map<std::string, std::string> &Vars)
 {
+    const std::vector<std::string> Tokens = ManifestModel::PathVariableTokens(ManifestModel::LayerPathString(Layer));
+    for (const std::string &T : Tokens) if (!Vars.count(T)) return PathState::Runtime;
+
     std::string S = Local.string();
-    if (S.find('%') != std::string::npos)
-    {
-        VarSubst::StringVariableSubstitution(S, Vars);
-        if (S.find('%') != std::string::npos) return PathState::Runtime;
-    }
+    if (!Tokens.empty()) VarSubst::StringVariableSubstitution(S, Vars);   // every token IS defined
     std::error_code Ec;
     return std::filesystem::exists(S, Ec) ? PathState::Present : PathState::Missing;
 }
@@ -829,8 +841,8 @@ bool NodeHydrated(const NodeIndex &Idx, const std::string &LaunchNodeId)
     if (!Idx.Find(LaunchNodeId)) return false;
     const std::map<std::string, std::string> Vars = CustomVarDefaults(Idx);
     bool AllFetched = true;
-    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
-        if (LayerFetchableMissing(ResolvePathState(Local, Vars), Cid)) AllFetched = false;
+    ForEachContentLayer(Idx, LaunchNodeId, {}, [&](const nlohmann::ordered_json&L, const std::filesystem::path &Local, const std::string &Cid){
+        if (LayerFetchableMissing(ResolvePathState(L, Local, Vars), Cid)) AllFetched = false;
     });
     return AllFetched;
 }
@@ -868,7 +880,7 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
                 auto Sc = StatCache.find(Key);
                 PathState PS;
                 if (Sc != StatCache.end()) PS = Sc->second;
-                else { PS = ResolvePathState(Local, Vars); StatCache[Key] = PS; }
+                else { PS = ResolvePathState(L, Local, Vars); StatCache[Key] = PS; }
                 if (LayerFetchableMissing(PS, Cid)) R.Hydrated = false;
             }
         // Fold in the parents' (already-memoized) closure result.

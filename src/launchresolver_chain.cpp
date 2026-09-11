@@ -110,7 +110,8 @@ bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
     bool Ships = false;
     ManifestModel::ForEachClosureNode(Idx, R.NodeId, {}, [&](const Node &N) {
         if (Ships || N.IsRunner() || !N.Layers.is_array()) return;
-        for (const auto &L : N.Layers) if (IsVfsLayer(LayerType(L))) { Ships = true; return; }
+        for (const auto &L : N.Layers)
+            if (ManifestModel::IsRunnerBuildLayer(L)) { Ships = true; return; }
     });
     return Ships;
 }
@@ -194,7 +195,10 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
         if (N.IsRunner() || !N.Layers.is_array()) return;
         for (nlohmann::ordered_json Lay : N.Layers)
         {
-            if (!IsVfsLayer(LayerType(Lay))) continue;
+            //A runtime-sourced layer (a %variable% PATH — the prefix-assembly mounts) is NOT part of the
+            //runner's importable build: there is nothing on disk to hydrate or verify, and EnsureSources
+            //would block the launch on a path that only exists once the mount is live.
+            if (!ManifestModel::IsRunnerBuildLayer(Lay)) continue;
             LaunchResolver::AbsolutizeLayerPaths(Lay, N.BundleDir);
             L.Layers.push_back(std::move(Lay));
         }

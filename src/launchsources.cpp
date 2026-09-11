@@ -15,8 +15,6 @@ using namespace ManifestModel;
 //readiness warning. Iteration 1 verifies every VFS layer's resolved source exists.
 //TODO(sharing): also verify the resolved runner + its RUNTIME + cross-package component references, and
 //distinguish a fully-bundled (portable) chain from one needing external/global packages.
-static bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub);
-
 std::vector<std::string> LaunchSources::VerifyDependencies(const struct ContainerParams &ContainerParams)
 {
     std::vector<std::string> Missing;
@@ -29,7 +27,7 @@ std::vector<std::string> LaunchSources::VerifyDependencies(const struct Containe
         //already skip them via this predicate; this one didn't, so EVERY wine launch reported 3 phantom
         //"content unavailable" ERRORS into the diagnostics verdict — false alarms that train ignoring the one
         //summary built to be un-ignorable.
-        if (IsRuntimeSourcedLayer(Sub)) continue;
+        if (ManifestModel::IsRuntimeSourcedLayer(Sub)) continue;
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;
@@ -50,12 +48,6 @@ std::vector<std::string> LaunchSources::VerifyDependencies(const struct Containe
 //A VFS layer whose source PATH carries a %variable% (e.g. a runner's prefix-assembly mount from "%RunnerMount%/...")
 //is RUNTIME-sourced: it resolves to a live mount path at BuildLayerSpec time, not to package content on disk. So it
 //has nothing to hydrate or fetch — the source/materialize passes must skip it.
-static bool IsRuntimeSourcedLayer(const nlohmann::ordered_json &Sub)
-{
-    std::string P = Sub.value("PATH", std::string());
-    if (Sub.contains("SOURCE") && Sub["SOURCE"].is_object()) P = Sub["SOURCE"].value("PATH", P);
-    return P.find('%') != std::string::npos;
-}
 
 bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
 {
@@ -106,7 +98,7 @@ bool LaunchSources::EnsureSources(struct ContainerParams &ContainerParams)
     {
         const std::string Type = Sub.value("TYPE", std::string());
         if (!IsVfsLayer(Type)) continue;
-        if (IsRuntimeSourcedLayer(Sub)) continue;                                // %VAR% source (e.g. a runner's prefix
+        if (ManifestModel::IsRuntimeSourcedLayer(Sub)) continue;                                // %VAR% source (e.g. a runner's prefix
                                                                                  // mount from %RunnerMount%): not package
                                                                                  // content — resolved at mount time.
         std::filesystem::path Local; std::string Cid;
@@ -135,7 +127,7 @@ bool LaunchSources::MaterializeLayers(struct ContainerParams &ContainerParams)
     {
         const std::string Type = Sub.value("TYPE", std::string());
         if (!IsVfsLayer(Type)) continue;
-        if (IsRuntimeSourcedLayer(Sub)) continue;                                // %VAR% source — resolved at mount time
+        if (ManifestModel::IsRuntimeSourcedLayer(Sub)) continue;                                // %VAR% source — resolved at mount time
         std::filesystem::path Local; std::string Cid;
         LayerLocator(Sub, ContainerParams.PackagePath, Local, Cid);
         std::error_code Ec;

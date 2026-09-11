@@ -122,6 +122,16 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
 
     auto Scan = [&](const nlohmann::ordered_json &S){
         if (!S.is_object() || S.value("TYPE", std::string()) != "Persist") return;
+        //A WHEN gates this layer like any other. BuildSubComponentsArray's gate deliberately SKIPS Persist
+        //(it is consumed here, not mounted), which left a conditional Persist node applying unconditionally —
+        //inert-looking in the file, live at launch. The condition is evaluated against the same resolved var
+        //map the targets are substituted with.
+        if (S.contains("WHEN") && S["WHEN"].is_string()
+            && !VarSubst::EvaluateCondition(S["WHEN"].get<std::string>(), Vars))
+        {
+            LogOut("DerivePersistence", "  skipped (WHEN false: " + S["WHEN"].get<std::string>() + ")");
+            return;
+        }
         if (S.contains("KEEP") && S["KEEP"].is_string()) ClassifyKeep(S["KEEP"]);
         if (S.contains("DROP") && S["DROP"].is_string()) ClassifyDrop(S["DROP"]);
     };

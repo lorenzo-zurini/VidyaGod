@@ -114,9 +114,9 @@ void LibraryTab::buildUi()
     QPushButton * addBtn = new QPushButton("Add Local Package", toolbar);
     tl->addWidget(edBtn); tl->addWidget(addBtn);   // "Add CID" now lives on the Catalog tab
     connect(edBtn, &QPushButton::clicked, this, [this]{
-        auto * Ed = new PackageEditor(Model.config(), this);
-        connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
-        Ed->show();
+        bool Created = false;
+        auto * Ed = PackageEditor::OpenFor(Model.config(), this, "", &Created);
+        if (Ed && Created) connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
     });
     connect(addBtn, &QPushButton::clicked, this, [this]{
         const QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory…");
