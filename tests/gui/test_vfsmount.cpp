@@ -712,6 +712,90 @@ private slots:
         (void)Persisted;
     }
 
+    // MaterializePlanPaths sits in SpawnVidyagodfs, which every mount goes through — INCLUDING the read-only
+    // ones (the runner build, runner install, a read-only runtime), whose plans set "writelayer": null. A
+    // `Spec.value("writelayer", std::string())` there does not return the default: nlohmann THROWS on a
+    // present-but-wrong-type key and only defaults when the key is ABSENT. That took down the whole app on the
+    // first proton launch — the mount step of every game that has a runner build.
+    void materializing_a_read_only_plan_does_not_throw()
+    {
+        ContainerParams CP = Make();
+        CP.ReadOnlyVFS = true;
+        //A path of this test's own: the fixture's temp root is shared, and an earlier test legitimately creates
+        //the default WRITELAYER — asserting on it here would pass or fail on test ORDER, not on behaviour.
+        CP.WriteLayerPath = std::filesystem::path(Root.path().toStdString()) / "RO_WRITELAYER";
+        CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
+        const json Spec = VfsMount::BuildLayerSpec(CP);
+        QVERIFY2(Spec["writelayer"].is_null(), "a read-only plan has a NULL write branch, not a missing one");
+        VfsMount::MaterializePlanPaths(Spec);           // must not throw
+        QVERIFY(!std::filesystem::exists(CP.WriteLayerPath));
+
+        // ...and the same for a spec that is malformed outright — a plan can be hand-written or come off disk.
+        VfsMount::MaterializePlanPaths(json::object());
+        VfsMount::MaterializePlanPaths(json{{"writelayer", 7}, {"layers", "not-an-array"}});
+        VfsMount::MaterializePlanPaths(json{{"layers", json::array({ json{{"rw", true}, {"type", "dir"}} })}});
+        QVERIFY2(VfsMount::ReportMissingSources(json::object()) == 0, "and the sweep is total too");
+    }
+
+    // The sweep must run AFTER the mount has created what the plan names, or it reports the RW passthrough
+    // sources (KEEP dirs, DROP shadows) as missing on every first launch — a false alarm on the one diagnostic
+    // that exists to catch genuinely absent content, which is how a real one stops being believed.
+    void the_missing_source_sweep_does_not_flag_paths_the_mount_creates()
+    {
+        ContainerParams CP = Make();
+        CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
+        //Paths unique to this test: the fixture's temp root is shared, so reusing a name another test already
+        //materialised would make the "before" assertion pass or fail on test ORDER rather than on behaviour.
+        CP.KeepDirs  = {"game/save_sweep_only"};
+        CP.DropPaths = {"game/temp_sweep_only"};
+        const json Spec = VfsMount::BuildLayerSpec(CP);
+
+        // before the mount touches anything they are legitimately absent...
+        QCOMPARE(VfsMount::ReportMissingSources(Spec), size_t(2));
+
+        // ...and PrepareMount — what MountVFS actually calls — must leave nothing missing. Asserting the two
+        // halves separately would pass with the calls in EITHER order; the order is the whole bug.
+        Complaints C;
+        VfsMount::PrepareMount(Spec);
+        QVERIFY2(!C.Mentions("do not exist"),
+                 "the sweep ran before the mount created the paths it names — a false missing-content alarm");
+    }
+
+    // SUBMOUNTS relocate a subtree to another runtime path, and EVERY submount-using node in the library
+    // carries a %var% in its destination. Package layers are substituted wholesale by the resolver, but the
+    // runner-build list is assigned straight off the runner node and reaches the mount builder RAW — it used to
+    // substitute TARGET and BASE_TARGETS by name and leave PATH and SUBMOUNTS alone, so a library package
+    // parented to a runner mounted its files under a directory literally called "%dxwnd_dir%", silently.
+    void runner_build_layers_are_substituted_whole_not_field_by_field()
+    {
+        ContainerParams CP = Make();
+        CP.PrefixRoot        = "pfx";
+        CP.RunnerPackagePath = CP.PackagePath;
+        json L = ZipLayer("codecs.zip", "%PrefixRoot%/lib");
+        L["SUBMOUNTS"] = json::array({ "codecs/ir41_32.dll:%PrefixRoot%/drive_c/windows/syswow64/ir41_32.dll" });
+        CP.RunnerLayers = json::array({ L });
+
+        const json Spec = VfsMount::BuildRunnerLayerSpec(CP);
+        QCOMPARE(Spec["layers"].size(), size_t(1));
+        QCOMPARE(Spec["layers"][0].value("target", std::string()), std::string("pfx/lib"));
+        QVERIFY2(Spec["layers"][0]["submounts"][0].get<std::string>()
+                     == "codecs/ir41_32.dll:pfx/drive_c/windows/syswow64/ir41_32.dll",
+                 "a SUBMOUNT destination must be %var%-substituted like any other target");
+    }
+
+    // ...and if one ever does survive, it must be reported rather than mounted at a literal "%Var%" path.
+    void a_token_surviving_in_a_submount_is_reported()
+    {
+        Complaints C;
+        ContainerParams CP = Make();
+        json L = ZipLayer("codecs.zip", "lib");
+        L["SUBMOUNTS"] = json::array({ "codecs/x.dll:%NoSuchVariable%/drive_c/x.dll" });
+        CP.SubComponentsArray = json::array({ L });
+        VfsMount::BuildLayerSpec(CP);
+        QVERIFY2(C.Mentions("SUBMOUNT"), "a token surviving in a submount must be reported, not mounted quietly");
+        QVERIFY2(C.Mentions("NoSuchVariable"), "and must name the variable that was missing");
+    }
+
     void the_mountpoint_is_the_runtime_path()
     {
         ContainerParams CP = Make();

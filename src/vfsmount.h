@@ -21,6 +21,10 @@ nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
 //plan has no side effects, so the mount materializes what it asks for.
 void MaterializePlanPaths(const nlohmann::ordered_json &Spec);
 
+//Readies a built plan for the FS: materialises the paths it names, THEN reports what is still missing. One
+//function because the order is load-bearing — sweeping first flags the very paths the mount is about to create.
+void PrepareMount(const nlohmann::ordered_json &Spec);
+
 //Reports (and counts) layers in a built plan whose source does not exist on disk. Such a layer mounts EMPTY
 //and the mount still SUCCEEDS, so the game just quietly misses those files. Asked by the mount, not by the plan
 //builder: a plan is also built by callers that never mount one, where runtime-sourced layers do not exist yet.

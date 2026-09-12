@@ -88,6 +88,23 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //a delta that sits mid-chain resolves to that chain's partial view; whether generation diffed against the
 //partial or the finished tree is not knowable from the plan, so it is not guessed at here — a wrong guess would
 //fail the delta's own size check at mount, loudly, which is the better place for it.
+//WHOLE-LAYER %variable% substitution, exactly as BuildSubComponentsArray does for package components:
+//serialise, substitute, re-parse. Used by the mount builders whose layer lists never pass through the resolver
+//(the runner build, the inner-runner chain). It replaces a FIELD WHITELIST that substituted TARGET and
+//BASE_TARGETS but not PATH or SUBMOUNTS — so a library package parented to a RUNNER (every one of the 26
+//submount-using nodes carries a %var% in its destination) would mount under a directory literally named
+//"%dxwnd_dir%", in silence. Whitelists rot; substituting the whole object cannot miss a field added later.
+//A malformed result is impossible from a re-parse of our own dump, but is returned unchanged rather than
+//discarded if it ever happens — a layer that vanishes is worse than one that keeps a token the sweep reports.
+static nlohmann::ordered_json SubstituteLayerJson(const nlohmann::ordered_json &Sub,
+                                                  const std::map<std::string, std::string> &Vars)
+{
+    std::string J = Sub.dump();
+    VarSubst::StringVariableSubstitution(J, Vars);
+    nlohmann::ordered_json Out = nlohmann::ordered_json::parse(J, nullptr, /*allow_exceptions=*/false);
+    return Out.is_discarded() ? Sub : Out;
+}
+
 static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char *Ctx)
 {
     std::set<std::string> ByteViews;
@@ -95,6 +112,18 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
     {
         const std::string Type   = L.value("type", std::string());
         const std::string Target = L.value("target", std::string());
+
+        //SUBMOUNTS relocate a subtree to another runtime path, and every submount-using node in the library
+        //carries a %var% in its destination. A token surviving there is the same silent disaster as one in
+        //TARGET — the files mount under a directory literally named "%dxwnd_dir%" — and nothing checked it.
+        //Checked for EVERY layer type, before the zip/delta filter below: dir and file layers submount too.
+        if (L.contains("submounts") && L["submounts"].is_array())
+            for (const auto &M : L["submounts"])
+                if (M.is_string() && ManifestModel::HasLiveToken(M.get<std::string>()))
+                    LogErr(Ctx, "Layer '" + L.value("source", std::string("?")) + "': SUBMOUNT '"
+                                    + M.get<std::string>() + "' still contains a %token% after substitution — "
+                                      "those files will mount at that LITERAL path and be invisible.");
+
         if (Type != "zip" && Type != "delta") continue;
 
         bool Resolved = true;
@@ -213,6 +242,8 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //NOTHING is dropped: a base that resolves to "" is the VFS ROOT, a perfectly real target, and silently
     //discarding it would turn a 2-base delta into a 1-base one — a differently-sized base, a reconstruction that
     //fails its size check, and a skipped layer.
+    auto SubstituteLayer = [&](const nlohmann::ordered_json &Sub) { return SubstituteLayerJson(Sub, Vars); };
+
     auto ResolveBases = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
         std::vector<std::string> Out;
         for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
@@ -237,9 +268,10 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
             const RunnerLink &L = ContainerParams.RunnerChain[i];
             const std::string Base = ContentRoot.empty() ? LaunchResolver::InnerRunnerMountRel(L.NodeId)
                                                          : (ContentRoot + "/" + LaunchResolver::InnerRunnerMountRel(L.NodeId));
-            for (const auto &Sub : L.Layers)
+            for (const auto &Raw : L.Layers)
             {
-                if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+                if (!IsVfsLayer(Raw.value("TYPE", std::string()))) continue;
+                const nlohmann::ordered_json Sub = SubstituteLayer(Raw);   // PATH + SUBMOUNTS too, not just TARGET
                 Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
                                                   ResolveTarget(Base, Sub), ResolveBases(Base, Sub)));
             }
@@ -305,11 +337,24 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
 {
     std::error_code Ec;
-    const std::string WL = Spec.value("writelayer", std::string());
-    if (!WL.empty()) std::filesystem::create_directories(WL, Ec);
-    for (const auto &L : Spec.value("layers", nlohmann::ordered_json::array()))
-        if (L.value("type", std::string()) == "dir" && L.value("rw", false))
-            std::filesystem::create_directories(L.value("source", std::string()), Ec);
+    //`writelayer` is NULL on every read-only plan — the runner build, runner install, a read-only runtime — and
+    //nlohmann's value() THROWS on a present-but-wrong-type key rather than returning the default. It only
+    //defaults when the key is ABSENT. So this read has to be total, like every other read of a spec field.
+    const auto WLIt = Spec.find("writelayer");
+    if (WLIt != Spec.end() && WLIt->is_string())
+    {
+        const std::string WL = WLIt->get<std::string>();
+        if (!WL.empty()) std::filesystem::create_directories(WL, Ec);
+    }
+    const auto LayersIt = Spec.find("layers");
+    if (LayersIt == Spec.end() || !LayersIt->is_array()) return;
+    for (const auto &L : *LayersIt)
+    {
+        if (!L.is_object() || !L.value("rw", false)) continue;
+        const auto SrcIt = L.find("source");
+        if (L.value("type", std::string()) == "dir" && SrcIt != L.end() && SrcIt->is_string())
+            std::filesystem::create_directories(SrcIt->get<std::string>(), Ec);
+    }
 }
 
 size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntimeSourced)
@@ -338,6 +383,18 @@ size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool S
     return MissingSources;
 }
 
+//Gets a built plan ready to hand to the FS: create what it NAMES, then report what is still missing.
+//The ORDER is the point and is why this is one function rather than two calls at the call site: the RW
+//passthrough sources (KEEP dirs, DROP shadows) are created BY the mount, so sweeping first reports layers that
+//are about to appear — a false "N of M layer source(s) do not exist" on the one diagnostic that exists to catch
+//genuinely absent content. Splitting the plan builder from the mount inverted this order once already; as two
+//statements in MountVFS nothing could pin the sequence, because no test can mount.
+void VfsMount::PrepareMount(const nlohmann::ordered_json &Spec)
+{
+    VfsMount::MaterializePlanPaths(Spec);
+    VfsMount::ReportMissingSources(Spec);
+}
+
 bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams);
@@ -346,7 +403,7 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     //UserDataPath, DROP shadows under TempPath); creating them is the mount's job, so a plan can be built and
     //inspected — by a test, or by --audit-packages — without writing to the user's data directory.
 
-    VfsMount::ReportMissingSources(Spec);
+    VfsMount::PrepareMount(Spec);
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
@@ -475,9 +532,14 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
                                                        "be invisible to the runtime.");
         return NormalizeTargetPath(T);
     };
-    for (auto &Sub : ContainerParams.RunnerLayers)
+    //RunnerLayers are assigned straight from the boundary runner's node (launchresolver: CP.RunnerLayers =
+    //Boundary.Layers) and never pass through BuildSubComponentsArray, so NOTHING has substituted them yet.
+    //Substituting the whole layer here covers PATH and SUBMOUNTS as well as TARGET — a library package parented
+    //to a runner would otherwise mount under a literal "%dxwnd_dir%".
+    for (const auto &RawSub : ContainerParams.RunnerLayers)
     {
-        if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
+        if (!IsVfsLayer(RawSub.value("TYPE", std::string()))) continue;
+        const nlohmann::ordered_json Sub = SubstituteLayerJson(RawSub, Vars);
         //Which key holds the bases is asked ONCE, in ManifestModel::LayerBaseTargets — this builder differs from
         //the content mount only in how a target string is substituted, never in what it reads or what it keeps.
         std::vector<std::string> BaseTargets;
