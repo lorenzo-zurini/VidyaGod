@@ -79,7 +79,15 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
         const QString Dest = QFileDialog::getExistingDirectory(
             this, "Export dehydrated copy to… (cancel to dehydrate in place only)");
         std::string Err;
-        const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(), &Err);
+        //Hand the publisher THIS machine's drags: they live only in GlobalConfig, so without them the stamp
+        //would bake the computed layout over the arrangement the author is looking at.
+        const nlohmann::ordered_json *Local =
+            Model->globalConfig() ? PackageCatalog::EditorLayoutFor(
+                                        *Model->globalConfig(),
+                                        std::filesystem::path(PackageDir->path().toStdString()))
+                                  : nullptr;
+        const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(),
+                                                       &Err, Local);
         if (Ok)
         {
             Model->LoadNodes(); BuildUI();
@@ -123,7 +131,10 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     //The save hook persists BOTH: the package (node files) and this machine's canvas positions (GlobalConfig EDITORLAYOUT).
     //They are deliberately separate files — a drag must never rewrite package bytes.
     Canvas = new PkgCanvasPanel(&Model->doc(), [this]{ Model->SaveNodes(); Model->SaveLayout(); }, this,
-                                &Model->layout());
+                                &Model->layout(),
+                                //A drag changed no node file, so it saves only the positions. The full hook
+                                //rewrites every .json in the bundle, which for moving one box is pure waste.
+                                [this]{ Model->SaveLayout(); });
     Canvas->canvas()->setKnownIds([this]{ return Model->KnownNodeIds(); });
 
     // The canvas draws action buttons and reports clicks; PkgActions does everything that touches disk, spawns

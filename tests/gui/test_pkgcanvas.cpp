@@ -987,6 +987,10 @@ private slots:
     // that IS on screen, and a small graph must not be culled at all.
     void everySmallGraphNodeIsStillDrawn()
     {
+        //WITH culling on. Without this the minimap stays enabled at 6 nodes, culling stands down entirely,
+        //and the assertion below holds even with OnScreen() returning false for everything — it passed with
+        //the whole culling block deleted.
+        Canvas->setMiniMap(false);
         for (int I = 0; I < 6; ++I) Canvas->addNode("Content", 60.0f + I * 120.0f, 80.0f);
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 6);

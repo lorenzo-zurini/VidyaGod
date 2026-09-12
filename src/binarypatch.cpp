@@ -1,4 +1,5 @@
 #include "binarypatch.h"
+#include "fileedits.h"   // FileEdits::PathEscapesBase — one copy of the escape check, not two
 #include "commonutils.h"   // Log*
 #include "varsubst.h"      // field-level %token% render (Poke VALUE etc.)
 
@@ -308,20 +309,6 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
 }
 
 
-//An edit path must stay INSIDE its base. A package arrives from a peer by CID, so FILE is untrusted input, and
-//neither the leading-separator strip nor is_absolute() stops "../../../.config/autostart/x.desktop" — nor, on
-//Windows, a drive-absolute "C:/Users/..." (no leading separator, and operator/ then discards the base) or a
-//drive-relative "C:foo" (resolved against that drive's current directory). Normalising and then requiring the
-//result to be under the base covers all of them with one rule.
-static bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
-                            std::filesystem::path &OutNormalised)
-{
-    OutNormalised = Joined.lexically_normal();
-    const std::filesystem::path Rel = OutNormalised.lexically_relative(Base.lexically_normal());
-    //Empty means the two share no common root at all (a different drive, or an absolute path that replaced the
-    //base); a leading ".." means it climbed out.
-    return Rel.empty() || Rel.native().rfind("..", 0) == 0;
-}
 
 bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
 {
@@ -364,7 +351,7 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
                         "anything reads it. Author it relative to the base.");
         }
         std::filesystem::path FilePath;
-        if (PathEscapesBase(ContainerParams.RuntimePath / File, ContainerParams.RuntimePath, FilePath))
+        if (FileEdits::PathEscapesBase(ContainerParams.RuntimePath / File, ContainerParams.RuntimePath, FilePath))
         {
             LogErr("BinaryPatch::ProcessBinaryPatches",
                    "FILE '" + File + "' resolves OUTSIDE the runtime mount root ('"

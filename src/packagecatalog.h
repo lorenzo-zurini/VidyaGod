@@ -114,7 +114,14 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 // ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
-[[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error = nullptr);
+//`LayoutOverride` (optional) is this machine's dragged positions for the bundle — pass
+//EditorLayoutFor(GlobalConfig, PackageDir). Without it the stamp bakes the COMPUTED layout, silently
+//replacing whatever the author arranged: their drags live only in GlobalConfig by design, so a publisher that
+//does not read them ships a picture nobody has ever seen, and a later remint (which does read them) then
+//mints a different CID for the same bundle.
+[[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
+                                  std::string *Error = nullptr,
+                                  const nlohmann::ordered_json *LayoutOverride = nullptr);
 
 // Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
 // (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it
@@ -191,7 +198,8 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
 std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
-//The GlobalConfig["EDITORLAYOUT"] key for a bundle: its absolute path, cleaned. ONE function because the
+//The GlobalConfig["EDITORLAYOUT"] key for a bundle: its path made ABSOLUTE, normalised, and stripped of
+//any trailing separator. ONE function because the
 //writer (the editor) and the reader (publishing) must agree exactly — they did not, and a mismatch is
 //invisible: the lookup simply misses, publishing stamps the algorithm's default, and the author's whole
 //arrangement is discarded at the moment it was supposed to be preserved.

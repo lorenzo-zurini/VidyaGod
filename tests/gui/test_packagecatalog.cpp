@@ -620,8 +620,20 @@ private slots:
         QVERIFY2(Cfg.contains("EDITORLAYOUT"), "the editor wrote no layout at all");
 
         // What publishing reads, through publishing's own path.
-        // Through the SAME function the publisher calls — asserting the key by hand would only prove the test
-        // and the editor agree, which is not the pair that broke.
+        // Through the SAME function the publisher calls, and — critically — with the path SHAPES the publisher
+        // actually produces. An already-absolute, already-normal path makes both sides equal by construction,
+        // so the test would pass with EditorLayoutKey implemented as `return BundleDir.string();` and could not
+        // see a relative root (--remint-library LIBRARY), a trailing slash, or a "/./" segment.
+        for (const std::string &Shape : { Bundle.toStdString(),
+                                          Bundle.toStdString() + "/",
+                                          Bundle.toStdString() + "/./",
+                                          std::filesystem::relative(Bundle.toStdString()).string() })
+        {
+            if (Shape.empty()) continue;   // relative() yields "" across filesystems; not a case we can force
+            QVERIFY2(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Shape)) != nullptr,
+                     qPrintable(QString("publishing finds nothing for bundle path shape '%1'")
+                                .arg(QString::fromStdString(Shape))));
+        }
         const json *Local = PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Bundle.toStdString()));
         QVERIFY2(Local != nullptr,
                  "publishing's own lookup finds nothing for the bundle the editor just wrote");

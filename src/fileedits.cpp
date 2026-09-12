@@ -44,7 +44,7 @@ bool FileEdits::ProcessDLLOverrides(struct ContainerParams &ContainerParams)
 //Windows, a drive-absolute "C:/Users/..." (no leading separator, and operator/ then discards the base) or a
 //drive-relative "C:foo" (resolved against that drive's current directory). Normalising and then requiring the
 //result to be under the base covers all of them with one rule.
-static bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
+bool FileEdits::PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
                             std::filesystem::path &OutNormalised)
 {
     OutNormalised = Joined.lexically_normal();

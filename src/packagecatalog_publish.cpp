@@ -66,9 +66,18 @@ static bool IsContentNode(const nlohmann::ordered_json &N)
 //---------------------------------------------------------------------------------------------------------
 std::string EditorLayoutKey(const std::filesystem::path &BundleDir)
 {
-    //lexically_normal so "…/X" and "…/X/" and "…/./X" are one key; no canonical()/absolute() resolution, so a
-    //bundle behind a symlink keys the same way the editor opened it.
-    return BundleDir.lexically_normal().string();
+    //ABSOLUTE, then normalised, then stripped of a trailing separator. Every step earns its place:
+    //  - absolute, because the editor always writes an absolute key while the remint path takes its root from
+    //    argv verbatim — `cd ~/.VidyaGod && VidyaGod --remint-library LIBRARY` produced a relative key that
+    //    matched nothing, and a missed lookup is indistinguishable from "never arranged";
+    //  - lexically_normal, to fold "…/./X" and "…/a/../X";
+    //  - the trailing-separator strip, because lexically_normal does NOT remove one ("/a/b/" stays "/a/b/").
+    std::error_code Ec;
+    std::filesystem::path P = BundleDir.is_absolute() ? BundleDir : std::filesystem::absolute(BundleDir, Ec);
+    if (Ec) P = BundleDir;                       // unreadable cwd: a stable key still beats no key
+    std::string S = P.lexically_normal().string();
+    while (S.size() > 1 && (S.back() == '/' || S.back() == '\\')) S.pop_back();
+    return S;
 }
 
 const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &GlobalConfigJSON,
@@ -176,15 +185,16 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     return true;
 }
 
-bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
+bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error,
+                    const nlohmann::ordered_json *LayoutOverride)
 {
-    //Stamp the layout before anything is hashed. Only the remint path did this, so a package published from
-    //the editor's own button shipped with no POS at all — opening as a pile at the origin on every machine
-    //that received it, which is the case the field exists to remove. No local override here: this path has no
-    //GlobalConfig, so it bakes the computed default, which is still a layout rather than none.
+    //Stamp the layout before anything is hashed. Only the remint path used to do this, so a package published
+    //from the editor's own button shipped with no POS at all. It takes the author's OVERRIDE: stamping the
+    //computed default here would silently discard the arrangement they just made — the same failure as a
+    //missed key lookup, reached from the other side.
     {
         std::string StampErr;
-        if (!StampNodePositions(PackageDir, nullptr, &StampErr))
+        if (!StampNodePositions(PackageDir, LayoutOverride, &StampErr))
             LogWarn("PackageCatalog::PublishPackage",
                     "could not stamp node positions (" + StampErr + ") — publishing without them; the package "
                     "will open unlaid-out for whoever receives it.");

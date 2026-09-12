@@ -94,9 +94,15 @@ def main():
         for node in launchables(bundle):
             #--bypass-single-instance-lock so the harness runs while the GUI is open; the lock is about one
             #app owning the real data dir, and this run owns a throwaway one.
-            run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
-                                  "--resolve-only", node],
-                                 capture_output=True, text=True, timeout=300)
+            try:
+                run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
+                                      "--resolve-only", node],
+                                     capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                #A hung resolve is a result, not a crash in the harness: report it the way every other failure
+                #is reported instead of unwinding out of main() with a traceback.
+                failures.append(f"{node}: resolve TIMED OUT after 300s")
+                continue
             dump = os.path.join(data, f"vg_resolve_{node}.json")
             if run.returncode != 0 or not os.path.isfile(dump):
                 failures.append(f"{node}: resolve FAILED (exit {run.returncode})")
@@ -126,18 +132,23 @@ def main():
         # The plan goldens above stop at resolution. This one actually composes the mount, applies the edits
         # and patches, starts a process inside it, and records what that process could see — which is the only
         # way to catch a plan that is perfectly correct and mounts to the wrong thing.
-        run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data, "--node", RUN_NODE],
-                             capture_output=True, text=True, timeout=600)
+        try:
+            run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
+                                  "--node", RUN_NODE],
+                                 capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            failures.append(f"{RUN_NODE}: the run TIMED OUT after 600s — the probe never finished")
+            run = None
         report = []
         inside = False
-        for line in run.stdout.splitlines():
+        for line in (run.stdout.splitlines() if run else []):
             if line.startswith(RUN_BEGIN): inside = True
             if inside: report.append(line)
             if line.startswith(RUN_END):   inside = False
         rpath = os.path.join(GOLDEN, f"{RUN_NODE}.runtime.txt")
         if not report:
             failures.append(f"{RUN_NODE}: the probe produced NO report — it never ran inside the mount")
-            failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
+            failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
         else:
             text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
             if args.update:

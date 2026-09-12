@@ -1,8 +1,10 @@
-// Times the canvas on the REAL Minecraft bundle (2775 nodes / 39k links) — the graph the user reports as
-// "opens after half an hour, then completely unresponsive". Measurement, not speculation: it separates the
-// one-time open cost (graph build) from the per-frame cost (drawing every node and every wire, every frame).
+// Times the canvas on a graph the SHAPE of the biggest bundle in the library (2775 nodes, a 904-layer chain
+// with heavy fan-in) — the graph reported as "opens after half an hour, then completely unresponsive".
+// Measurement, not speculation: it separates the one-time open cost from the per-frame cost of drawing every
+// node and every wire.
 //
-// Skipped when the bundle is not present, so it never fails on a machine without that library.
+// The graph is SYNTHETIC on purpose. Keying it to a real bundle made this a QSKIP on every machine but one,
+// so a green ctest said nothing about the regression it exists to catch.
 
 #include "pkgcanvas.h"
 #include "pkggraph.h"
@@ -11,7 +13,6 @@
 #include "imnodes.h"
 
 #include <QtTest>
-#include <QDir>
 #include <QElapsedTimer>
 
 #include <fstream>
@@ -24,10 +25,6 @@ class CanvasPerfTest : public QObject
     json Doc, Layout;
     PkgCanvas *Canvas = nullptr;
 
-    static QString bundlePath()
-    {
-        return QDir::homePath() + "/.VidyaGod/LIBRARY/VidyaGod/[320][v1.0] Minecraft";
-    }
 
 private slots:
     void initTestCase()

@@ -223,6 +223,17 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //one-key object (the first cut) made the diagnostic below read "Layer ? '?'", naming neither the layer type
     //nor the PATH, which is the only way to find the offender among 992 delta nodes. `Sub` is here for the
     //message and nothing else.
+    //Substitutes, checks, then anchors. This is a SECOND pass for a layer that reached here through
+    //BuildSubComponentsArray (which already substituted it), and that is deliberate: BuildLayerSpec's contract
+    //is that it substitutes its own input, so it is correct for a caller that hands it raw layers — which the
+    //tests do, and which any future caller might. Substitution is idempotent for every value that does not
+    //contain a literal '%'.
+    //
+    //The cost, accepted rather than fixed: a value that legitimately contains a lone '%' (a game directory
+    //like "100% Orange Juice") trips VarSubst's unmatched-'%' warning on the second pass. That is log noise on
+    //a path that is otherwise silent; making it go away means dropping the substitution here and requiring
+    //every caller to pre-substitute, which trades a cosmetic warning for a silent literal-token mount if any
+    //caller ever forgets. The loud, wrong-looking warning is the better failure.
     auto ResolveOneTarget = [&](const std::string &Base, std::string T,
                                 const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
         VarSubst::StringVariableSubstitution(T, Vars);

@@ -17,8 +17,10 @@ class PkgCanvasPanel : public QOpenGLWidget
     Q_OBJECT
 
 public:
+    //`saveLayoutOnly` runs instead of `save` when a frame changed ONLY positions — see PkgCanvas.
     PkgCanvasPanel(nlohmann::ordered_json *doc, PkgCanvas::SaveFn save, QWidget *parent = nullptr,
-                   nlohmann::ordered_json *layout = nullptr);   // layout sidecar — see PkgGraph::Build
+                   nlohmann::ordered_json *layout = nullptr,    // this machine's positions — see PkgGraph::Build
+                   PkgCanvas::SaveFn saveLayoutOnly = {});
     ~PkgCanvasPanel() override;
 
     PkgCanvas *canvas() const { return m_canvas; }

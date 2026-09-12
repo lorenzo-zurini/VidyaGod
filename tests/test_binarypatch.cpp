@@ -265,3 +265,59 @@ TEST(bp_reproduces_woxl_derivatives)
     CHECK(ReproOne(d + "/pristine/sp/Wipeout2.exe", d + "/patched/sp/Wipeout2.exe", kSpNoCd));
     CHECK(ReproOne(d + "/pristine/mp/NET-WOXL.EXE", d + "/patched/mp/NET-WOXL.EXE", kMpNoCdBlit));
 }
+
+//A minimal, valid PE32 — BinaryPatch refuses anything else, so an escape test whose target is NOT a PE passes
+//whether or not the guard exists: the patch fails on the PE check before it would have written. Same layout as
+//the launch-matrix fixture's: one .text section at RVA 0x1000 over ImageBase 0x400000, first 64 bytes a ramp.
+static std::vector<uint8_t> MinimalPe()
+{
+    std::vector<uint8_t> D(0x800, 0);
+    auto W32 = [&](size_t O, uint32_t V) { D[O] = uint8_t(V); D[O+1] = uint8_t(V>>8); D[O+2] = uint8_t(V>>16); D[O+3] = uint8_t(V>>24); };
+    auto W16 = [&](size_t O, uint16_t V) { D[O] = uint8_t(V); D[O+1] = uint8_t(V>>8); };
+    D[0] = 'M'; D[1] = 'Z';
+    W32(0x3C, 0x80);                                   // e_lfanew
+    D[0x80] = 'P'; D[0x81] = 'E';
+    W16(0x84, 0x014C);                                 // Machine i386
+    W16(0x86, 1);                                      // NumberOfSections
+    W16(0x94, 0xE0);                                   // SizeOfOptionalHeader
+    W16(0x96, 0x0102);                                 // Characteristics
+    W16(0x98, 0x10B);                                  // PE32
+    W32(0x98 + 28, 0x400000);                          // ImageBase
+    const size_t Sec = 0x98 + 0xE0;
+    std::memcpy(&D[Sec], ".text\0\0\0", 8);
+    W32(Sec +  8, 0x400);                              // VirtualSize
+    W32(Sec + 12, 0x1000);                             // VirtualAddress
+    W32(Sec + 16, 0x400);                              // SizeOfRawData
+    W32(Sec + 20, 0x400);                              // PointerToRawData
+    W32(Sec + 36, 0x60000020);                         // code | execute | read
+    for (int I = 0; I < 64; ++I) D[0x400 + (size_t)I] = uint8_t(I);
+    return D;
+}
+
+//A BinaryPatch FILE is untrusted input exactly like a FileEdit's — a package arrives from a peer by CID — and
+//the escape check used to be a second copy living in this TU with no test at all: deleting it broke nothing.
+//It is one shared function now, and this is the assertion that keeps the patch side honest about using it.
+TEST(a_binarypatch_path_that_climbs_out_of_the_runtime_is_refused)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_escape";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME";
+    std::filesystem::create_directories(Runtime);
+    //A REAL PE, so that without the guard the patch would genuinely apply and change these bytes.
+    const std::filesystem::path Outside = Root / "outside.exe";
+    const std::vector<uint8_t> Pristine = MinimalPe();
+    { std::ofstream O(Outside, std::ios::binary); O.write((const char *)Pristine.data(), (std::streamsize)Pristine.size()); }
+
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE","../outside.exe"},
+                               {"EDITS", nlohmann::ordered_json::array()},
+                               {"MODE","Poke"},{"OFFSET","0x0"},{"VALUE","ff"}}});
+
+    CHECK(!BinaryPatch::ProcessBinaryPatches(CP));       // refused, and reported as a failure
+    std::ifstream In(Outside, std::ios::binary);
+    const std::vector<uint8_t> After((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    CHECK(After == Pristine);                            // and byte-for-byte untouched
+    std::filesystem::remove_all(Root);
+}

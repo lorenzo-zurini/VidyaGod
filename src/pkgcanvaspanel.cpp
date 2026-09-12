@@ -53,8 +53,9 @@ void feedModifiers(Qt::KeyboardModifiers m)
 } // namespace
 
 PkgCanvasPanel::PkgCanvasPanel(nlohmann::ordered_json *doc, PkgCanvas::SaveFn save, QWidget *parent,
-                               nlohmann::ordered_json *layout)
-    : QOpenGLWidget(parent), m_canvas(new PkgCanvas(doc, std::move(save), this, layout))
+                               nlohmann::ordered_json *layout, PkgCanvas::SaveFn saveLayoutOnly)
+    : QOpenGLWidget(parent),
+      m_canvas(new PkgCanvas(doc, std::move(save), this, layout, std::move(saveLayoutOnly)))
 {
     setFocusPolicy(Qt::StrongFocus);
     setMouseTracking(true);

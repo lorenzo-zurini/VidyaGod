@@ -106,6 +106,8 @@ struct PkgCanvasState
     //seeded this node" is the wrong question — the right one is "was it submitted LAST frame", which is the
     //only thing that says whether imnodes still remembers where it goes.
     std::set<std::string> DrawnLast;
+    //Last frame's selected node indices — read after EndNodeEditor, where asking imnodes is legal.
+    std::set<int>         SelectedLast;
     bool  ShowMiniMap = true;
     bool MiniMapAuto  = true;   // false once the author has toggled it by hand
     int  VisibleNodes = 0;
@@ -116,6 +118,7 @@ struct PkgCanvasState
     //(a node's own POS is the published default). Null = positions are not persisted.
     json *Layout = nullptr;
     PkgCanvas::SaveFn Save;
+    PkgCanvas::SaveFn SaveLayoutOnly;   // used when a frame changed ONLY positions
     PkgCanvas::KnownIdsFn KnownIds;
     PkgCanvas::ActionFn Action;
     ImNodesContext *Ctx = nullptr;
@@ -161,12 +164,13 @@ struct PkgCanvasState
     }
 };
 
-PkgCanvas::PkgCanvas(json *doc, SaveFn save, QObject *parent, json *layout)
+PkgCanvas::PkgCanvas(json *doc, SaveFn save, QObject *parent, json *layout, SaveFn saveLayoutOnly)
     : QObject(parent), m_s(std::make_unique<PkgCanvasState>())
 {
     m_s->Doc = doc;
     m_s->Layout = layout;
     m_s->Save = std::move(save);
+    m_s->SaveLayoutOnly = std::move(saveLayoutOnly);
 }
 
 PkgCanvas::~PkgCanvas() = default;
@@ -299,6 +303,12 @@ bool PkgCanvas::removeNode(int index)
         N["PARENTS"] = std::move(Keep);
     }
     m_s->Selected = -1;
+    //...and clear imnodes' OWN selection set. It stores INDICES, which every later node's index has just
+    //shifted under, and it never validates them: leaving it populated makes the next frame report a selection
+    //for whichever node inherited the index — and since a selected node is never culled, that wrong index can
+    //never be culled away either, so it persists for the rest of the session.
+    ImNodes::ClearNodeSelection();
+    m_s->SelectedLast.clear();
     m_s->MarkDirty();
     return true;
 }
@@ -1107,19 +1117,14 @@ void PkgCanvas::frame()
         return X > -MarginX && Y > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
     };
     //A SELECTED node is never culled. imnodes keeps a culled node's index in SelectedNodeIndices with no
-    //liveness check, so once its pool slot is reused: GetSelectedNodes reports the new occupant's id (a live
-    //index, which a Drawn check cannot reject), and TranslateSelectedNodes drags it — moving nodes the user
-    //never selected and persisting that. Keeping the selection submitted keeps imnodes' own set honest.
-    std::set<int> Selected;
-    {
-        const int N = ImNodes::NumSelectedNodes();
-        if (N > 0)
-        {
-            std::vector<int> Sel((size_t)N, 0);
-            ImNodes::GetSelectedNodes(Sel.data());
-            for (int S : Sel) if (S >= 0 && S < (int)G.Nodes.size()) Selected.insert(S);
-        }
-    }
+    //liveness check, so once its pool slot is reused: GetSelectedNodes reports the new occupant's id, and
+    //TranslateSelectedNodes drags it — moving nodes the user never selected and persisting that.
+    //
+    //Read from LAST frame's snapshot, not from imnodes now: NumSelectedNodes/GetSelectedNodes assert
+    //CurrentScope == None (imnodes.cpp), and we are inside BeginNodeEditor here. The assert is compiled out in
+    //this project's default build, which is the only reason calling it here appeared to work — a Debug build
+    //aborted on the editor's first frame. The snapshot is taken after EndNodeEditor below.
+    const std::set<int> &Selected = m_s->SelectedLast;
     std::vector<char> Drawn((size_t)G.Nodes.size(), 0);
     int Visible = 0;
     for (int I = 0; I < (int)G.Nodes.size(); ++I)
@@ -1159,6 +1164,18 @@ void PkgCanvas::frame()
     if (m_s->ShowMiniMap) ImNodes::MiniMap(0.18f, ImNodesMiniMapLocation_BottomRight);
     ImNodes::EndNodeEditor();
     ImGui::SetWindowFontScale(1.0f);
+    //Selection snapshot for the NEXT frame's culling — legal only out here, with the editor scope closed.
+    {
+        std::set<int> Now;
+        const int SelCount = ImNodes::NumSelectedNodes();
+        if (SelCount > 0)
+        {
+            std::vector<int> Sel((size_t)SelCount, 0);
+            ImNodes::GetSelectedNodes(Sel.data());
+            for (int S : Sel) if (S >= 0 && S < (int)G.Nodes.size()) Now.insert(S);
+        }
+        m_s->SelectedLast.swap(Now);
+    }
 
     // ---- interactions ----
     int StartAttr = 0, EndAttr = 0;
@@ -1251,10 +1268,16 @@ void PkgCanvas::frame()
     }
 
     const bool Released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
-    if ((m_s->Dirty && (Released || !ImGui::IsAnyItemActive())) || (m_s->PosDirty && Released))
+    const bool DocChanged = m_s->Dirty && (Released || !ImGui::IsAnyItemActive());
+    const bool PosOnly     = !DocChanged && m_s->PosDirty && Released;
+    if (DocChanged || PosOnly)
     {
         m_s->Dirty = false; m_s->PosDirty = false;
-        if (m_s->Save) m_s->Save();
+        //A drag changed no node file — positions are not in them — so a position-only change saves only the
+        //layout where the caller gave us a way to. The full save rewrites every .json in the bundle, which on
+        //the biggest one is 2775 write-and-rename cycles for moving one box.
+        if (PosOnly && m_s->SaveLayoutOnly) m_s->SaveLayoutOnly();
+        else if (m_s->Save)                 m_s->Save();
         emit documentChanged();
     }
 }

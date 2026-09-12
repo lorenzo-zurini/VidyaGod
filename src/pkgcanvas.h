@@ -36,8 +36,12 @@ public:
 
     //`layout` is the canvas-position sidecar (NODE_ID -> [x,y]); see PkgGraph::Build. Optional: pass nullptr and
     //the canvas auto-lays-out every frame and persists nothing, which is what the headless tests want.
+    //`saveLayoutOnly` (optional) is called instead of `save` when the ONLY thing that changed is a node's
+    //position. Positions do not live in the node files, so the full save — which rewrites every .json in the
+    //bundle — is pure waste for a drag: on the 2775-node bundle that was 2775 write+rename cycles for moving
+    //one box. Omit it and a drag falls back to the full save, as before.
     PkgCanvas(nlohmann::ordered_json *doc, SaveFn save, QObject *parent = nullptr,
-              nlohmann::ordered_json *layout = nullptr);
+              nlohmann::ordered_json *layout = nullptr, SaveFn saveLayoutOnly = {});
     ~PkgCanvas() override;
 
     void initContexts();      // right after ImGui::CreateContext()

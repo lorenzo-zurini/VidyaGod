@@ -10,6 +10,15 @@
 // Free functions over the shared ContainerParams (the subcomponents are already %VARIABLE%-substituted).
 namespace FileEdits
 {
+
+//True when joining `Rel` onto `Base` lands OUTSIDE `Base`; `OutNormalised` receives the normalised join either
+//way. Shared by FileEdit and BinaryPatch because a package arrives from a peer by CID — FILE is untrusted
+//input — and because two copies of a security check is how one of them silently stops matching the other.
+//Purely LEXICAL: it stops "..", an absolute path replacing the base, and a Windows drive-relative path. It
+//does NOT resolve symlinks, so a link inside the mounted runtime is still followed.
+bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
+                     std::filesystem::path &OutNormalised);
+
 //Collects DLLOVERRIDE values from all DllOverride subcomponents into ContainerParams.DLLOverrides (later joined
 //into WINEDLLOVERRIDES at launch).
 [[nodiscard]] bool ProcessDLLOverrides(struct ContainerParams &ContainerParams);

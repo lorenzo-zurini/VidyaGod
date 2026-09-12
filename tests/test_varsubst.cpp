@@ -165,3 +165,26 @@ TEST(subst_applies_use_site_format)
     // Unknown key keeps the whole token (incl. format) in place.
     CHECK_EQ(Sub("%MISSING:dword%", m),    std::string("%MISSING:dword%"));
 }
+
+//The value-walk replaced a dump-substitute-reparse splice, which substituted object KEYS as well as values.
+//A RegEdit's KEYVALUES is keyed by the registry VALUE NAME, so a token there is legitimate authoring — and
+//losing it would write the literal "%TOKEN%" into the registry with no diagnostic at all.
+TEST(json_substitution_covers_keys_values_and_nesting)
+{
+    const std::map<std::string, std::string> Vars = {{"MODE", "host"}, {"DIR", "C:\\Program Files"}};
+    nlohmann::ordered_json In = {
+        {"TYPE", "RegEdit"},
+        {"KEYVALUES", {{"%MODE%_Port", "%MODE%"}}},
+        {"LIST", nlohmann::ordered_json::array({"%DIR%/a", 7, true})},
+        {"NESTED", {{"inner", {{"%MODE%", "%DIR%"}}}}},
+    };
+    const nlohmann::ordered_json Out = VarSubst::SubstituteJsonValues(In, Vars);
+    CHECK(Out["KEYVALUES"].contains("host_Port"));
+    CHECK_EQ(Out["KEYVALUES"].value("host_Port", std::string()), std::string("host"));
+    //A value that would break JSON if spliced into serialised text survives verbatim.
+    CHECK_EQ(Out["LIST"][0].get<std::string>(), std::string("C:\\Program Files/a"));
+    CHECK_EQ(Out["LIST"][1].get<int>(), 7);              // non-strings pass through untouched
+    CHECK_EQ(Out["LIST"][2].get<bool>(), true);
+    CHECK(Out["NESTED"]["inner"].contains("host"));
+    CHECK_EQ(Out["NESTED"]["inner"].value("host", std::string()), std::string("C:\\Program Files"));
+}

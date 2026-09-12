@@ -23,7 +23,9 @@ void MaterializePlanPaths(const nlohmann::ordered_json &Spec);
 
 //Readies a built plan for the FS: materialises the paths it names, THEN reports what is still missing. One
 //function because the order is load-bearing — sweeping first flags the very paths the mount is about to
-//create. Covered end to end by the launch matrix, whose lm_run mounts for real.
+//create. Pinned by the_missing_source_sweep_does_not_flag_paths_the_mount_creates, which drives
+//PrepareMount rather than the two halves separately. (NOT by the launch matrix: its golden captures the
+//probe's stdout, and this warning is engine log output that never reaches it.)
 void PrepareMount(const nlohmann::ordered_json &Spec);
 
 //Reports (and counts) layers in a built plan whose source does not exist on disk. Such a layer mounts EMPTY

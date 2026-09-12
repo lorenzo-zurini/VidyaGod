@@ -322,7 +322,16 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
     if (V.is_object())
     {
         nlohmann::ordered_json Out = nlohmann::ordered_json::object();
-        for (const auto &[K, E] : V.items()) Out[K] = SubstituteJsonValues(E, Vars);
+        for (const auto &[K, E] : V.items())
+        {
+            //KEYS are substituted too. The dump-and-reparse form this replaced did, and a key is a real place
+            //for a token: a RegEdit's KEYVALUES is keyed by the registry VALUE NAME, so "%NETMODE%_Port" is
+            //legitimate authoring. Dropping key substitution would have written the literal token into the
+            //registry, silently — a narrowing with no diagnostic, since HasLiveToken only inspects targets.
+            std::string Key = K;
+            VarSubst::StringVariableSubstitution(Key, Vars);
+            Out[Key] = SubstituteJsonValues(E, Vars);
+        }
         return Out;
     }
     return V;
