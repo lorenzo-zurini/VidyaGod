@@ -857,6 +857,74 @@ private slots:
         QCOMPARE(pathOf("X"), std::string("HKLM\\Soft\\Sub"));
     }
 
+    // ---- zoom + viewport culling -----------------------------------------------------------------------
+    // Zoom is a VIEW property built on top of imnodes (which has none of its own): positions are pushed to
+    // imnodes pre-scaled and divided back out on read. The bug that buys is obvious and expensive — a drag
+    // read back at 0.5x without dividing would halve the whole layout and then PERSIST it.
+
+    void zoomIsClampedAndDefaultsToUnity()
+    {
+        QCOMPARE(Canvas->zoom(), 1.0f);
+        Canvas->setZoom(1000.0f);
+        QVERIFY(Canvas->zoom() <= 3.0f);
+        Canvas->setZoom(0.0001f);
+        QVERIFY(Canvas->zoom() >= 0.2f);
+        Canvas->setZoom(1.0f);
+        QCOMPARE(Canvas->zoom(), 1.0f);
+    }
+
+    void zoomingDoesNotMoveTheStoredPositions()
+    {
+        Canvas->addNode("Content", 400, 300);
+        Canvas->addNode("DeclareExec", 900, 300);
+        runFrame();
+        const std::string Before = Layout.dump();
+
+        for (float Z : {0.5f, 2.0f, 0.25f, 1.0f})
+        {
+            Canvas->setZoom(Z);
+            runFrame();
+            runFrame();   // a second frame: the read-back runs against what the first pushed
+        }
+        QCOMPARE(Layout.dump(), Before);          // nothing was dragged, only looked at
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[0].X, 400.0f);
+        QCOMPARE(G.Nodes[0].Y, 300.0f);
+        QCOMPARE(G.Nodes[1].X, 900.0f);
+    }
+
+    // Culling is what makes the 2775-node bundle usable (3753 ms -> 15 ms a frame). It must never drop a node
+    // that IS on screen, and a small graph must not be culled at all.
+    void everySmallGraphNodeIsStillDrawn()
+    {
+        for (int I = 0; I < 6; ++I) Canvas->addNode("Content", 60.0f + I * 120.0f, 80.0f);
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 6);
+    }
+
+    void aNodeFarOutsideTheViewportIsCulled()
+    {
+        Canvas->addNode("Content", 40, 40);
+        Canvas->addNode("Content", 90000, 90000);   // far off-screen at 1.0x
+        runFrame();
+        QCOMPARE(Canvas->nodeCount(), 2);
+        QCOMPARE(Canvas->visibleNodes(), 1);
+    }
+
+    // ...and a culled node must not have its position rewritten. imnodes was never told where it goes, so
+    // reading its position back yields the default origin — which is precisely how a layout got zeroed before.
+    void aCulledNodeKeepsItsStoredPosition()
+    {
+        Canvas->addNode("Content", 90000, 90000);
+        Canvas->addNode("Content", 40, 40);
+        runFrame();
+        runFrame();
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[0].X, 90000.0f);
+        QCOMPARE(G.Nodes[0].Y, 90000.0f);
+    }
+
+
 private:
     void clickAt(ImVec2 p)
     {
@@ -885,6 +953,8 @@ private:
     }
 
     ImVec2 LastMouse = ImVec2(400, 300);
+
+private:
     json Doc;
     json Layout;
     PkgCanvas *Canvas = nullptr;

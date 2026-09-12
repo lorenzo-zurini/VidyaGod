@@ -85,8 +85,23 @@ json TextToList(const std::string &T, bool KeepEmpty = false)
 
 } // namespace
 
+//Zoom bounds: below ~0.2 a node is a smudge, above ~3 one node fills the screen and panning is easier.
+static constexpr float kMinZoom = 0.2f;
+static constexpr float kMaxZoom = 3.0f;
+
 struct PkgCanvasState
 {
+    //Viewport culling + minimap gate. The minimap re-draws the WHOLE graph scaled, so on a big bundle it
+    //costs as much again as the graph itself; it becomes opt-in once a bundle is large enough for that to
+    //matter, and the toolbar reports how much of the graph is actually on screen.
+    //Zoom. imnodes has no notion of it, so it is built here: node GRID positions are pushed scaled, the font
+    //is scaled to match, and the read-back divides back out. The document always holds UNSCALED positions —
+    //zoom is a view property and must never reach the layout, let alone the package.
+    float Zoom        = 1.0f;
+    bool  ShowMiniMap = true;
+    bool MiniMapAuto  = true;   // false once the author has toggled it by hand
+    int  VisibleNodes = 0;
+
     json *Doc = nullptr;
     //The canvas-position sidecar (NODE_ID -> [x,y]), owned by the model and persisted to
     //<bundle>/LAYOUT.vglayout. Never the document: see PkgGraph::Build. Null = positions are not persisted.
@@ -214,6 +229,18 @@ int PkgCanvas::indexOf(const std::string &nodeId) const
 }
 
 Graph PkgCanvas::graph() const { return Build(m_s->Nodes(), m_s->Layout); }
+
+float PkgCanvas::zoom() const { return m_s->Zoom; }
+void  PkgCanvas::setZoom(float Z)
+{
+    const float New = std::clamp(Z, kMinZoom, kMaxZoom);
+    if (New == m_s->Zoom) return;
+    m_s->Zoom = New;
+    m_s->Seeded.clear();   // every pushed position is in the old scale
+}
+int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
+bool PkgCanvas::miniMap() const      { return m_s->ShowMiniMap; }
+void PkgCanvas::setMiniMap(bool On)  { m_s->ShowMiniMap = On; m_s->MiniMapAuto = false; }
 int  PkgCanvas::selectedNode() const { return m_s->Selected; }
 //VALIDATED: this is public, and a selection is an INDEX into a document that can be replaced underneath it.
 void PkgCanvas::selectNode(int index)
@@ -839,19 +866,29 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     auto Sit = m_s->Seeded.find(Id);
     if (Sit == m_s->Seeded.end() || Sit->second != Index)
     {
-        ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[Index].X, G.Nodes[Index].Y));
+        ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[Index].X * m_s->Zoom, G.Nodes[Index].Y * m_s->Zoom));
         m_s->Seeded[Id] = Index;
     }
 }
 
-void PkgCanvas::syncLinks(const Graph &G)
+void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
 {
+    //A link can only be submitted when BOTH of its endpoints were submitted this frame: imnodes resolves a
+    //link through the attribute ids, and an id that was never begun this frame has no position to draw to.
+    auto EndsDrawn = [&](const Link &L) {
+        const bool ChildOk  = L.ChildIndex  >= 0 && L.ChildIndex  < (int)Drawn.size() && Drawn[(size_t)L.ChildIndex];
+        //An external parent is a chip, always submitted, so only the in-bundle end needs checking.
+        const bool ParentOk = L.ParentIndex < 0
+                              || (L.ParentIndex < (int)Drawn.size() && Drawn[(size_t)L.ParentIndex]);
+        return ChildOk && ParentOk;
+    };
     // The link id must address the exact PARENTS entry it came from. G.Links SKIPS empty/non-string entries,
     // so a running counter over it drifts from the real array index and a detach would erase a different
     // parent. Recover the true index instead.
     m_s->LinkSlot.clear();
     for (const Link &L : G.Links)
     {
+        if (!EndsDrawn(L)) continue;
         //The link id must address the exact PARENTS entry the edge came from. Build already knows it, so it is
         //carried on the Link — recovering it here meant a linear scan of the child's PARENTS with a
         //std::string construction per comparison, EVERY FRAME: on the Minecraft bundle (39k links, 902 nodes
@@ -889,8 +926,15 @@ void PkgCanvas::flushPositions(Graph &G)
         // with zeroes. A node that was never drawn (scrolled out on the first frame) is left alone.
         auto Sit = m_s->Seeded.find(G.Nodes[I].Id);
         if (Sit == m_s->Seeded.end() || Sit->second != I) continue;
-        const ImVec2 P = ImNodes::GetNodeGridSpacePos(I);
-        if (std::abs(P.x - G.Nodes[I].X) > 0.5f || std::abs(P.y - G.Nodes[I].Y) > 0.5f)
+        //Positions come back in the SCALED grid, so divide the zoom out before comparing or storing: a drag
+        //at 0.5x that wrote raw coordinates would halve the whole layout, and persist it.
+        const ImVec2 S = ImNodes::GetNodeGridSpacePos(I);
+        const float Z = (m_s->Zoom > 0.0001f) ? m_s->Zoom : 1.0f;
+        const ImVec2 P(S.x / Z, S.y / Z);
+        //Tolerance scales too — half a pixel on screen is a whole unzoomed unit at 0.5x, which would make a
+        //zoomed-out view report a drag on every frame and mark the layout dirty forever.
+        const float Tol = 0.5f / Z;
+        if (std::abs(P.x - G.Nodes[I].X) > Tol || std::abs(P.y - G.Nodes[I].Y) > Tol)
         {
             if (m_s->Layout) { SetPos(*m_s->Layout, G.Nodes[I].Id, P.x, P.y); m_s->PosDirty = true; }
         }
@@ -912,6 +956,21 @@ void PkgCanvas::drawToolbar()
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
     }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("zoom %.0f%%", (double)(m_s->Zoom * 100.0f));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("ctrl + mouse wheel");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("reset##zoom")) setZoom(1.0f);
+    ImGui::SameLine();
+    bool Mm = m_s->ShowMiniMap;
+    if (ImGui::Checkbox("minimap", &Mm)) setMiniMap(Mm);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The minimap re-draws the whole graph every frame — off by default past 400 nodes.");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%d/%d shown", m_s->VisibleNodes, (int)m_s->Nodes().size());
+
     // Bring in a node from ANOTHER bundle so there is a chip to drag a wire from. Every package in the library
     // depends on at least one out-of-bundle node (a runner, MediaStack_MS, asiloader), so without this the
     // canvas cannot author a real package at all — which is what setKnownIds was always for.
@@ -950,6 +1009,9 @@ void PkgCanvas::frame()
         m_s->CacheValid = true;
     }
     Graph &G = m_s->Cache;
+    //Measured on the 2775-node bundle: the minimap alone was 1.7 s of a 3.75 s frame. 400 is comfortably
+    //above every hand-authored bundle in the library and far below the ones where it stops being free.
+    if (m_s->MiniMapAuto) m_s->ShowMiniMap = (int)G.Nodes.size() <= 400;
 
     ImGuiIO &IO = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -961,9 +1023,61 @@ void PkgCanvas::frame()
     drawToolbar();
     ImGui::Separator();
 
+    //---- zoom ------------------------------------------------------------------------------------------
+    //imnodes has no zoom of its own, so it is composed from the two things it does expose: node GRID
+    //positions (pushed pre-scaled) and panning. Ctrl+wheel scales about the CURSOR — zooming about the origin
+    //sends whatever you were looking at off-screen, which is indistinguishable from the view breaking.
+    {
+        ImGuiIO &ZIO = ImGui::GetIO();
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ZIO.KeyCtrl && ZIO.MouseWheel != 0.0f)
+        {
+            const float Old = m_s->Zoom;
+            const float New = std::clamp(Old * std::pow(1.1f, ZIO.MouseWheel), kMinZoom, kMaxZoom);
+            if (New != Old)
+            {
+                //Keep the grid point under the cursor fixed: screen = grid*zoom + pan, so holding `screen`
+                //while zoom changes means pan moves by the same factor about the cursor.
+                const ImVec2 Pan0 = ImNodes::EditorContextGetPanning();
+                const ImVec2 M    = ImGui::GetMousePos();
+                const ImVec2 Win  = ImGui::GetWindowPos();
+                const ImVec2 Rel(M.x - Win.x, M.y - Win.y);
+                const float  K    = New / Old;
+                ImNodes::EditorContextResetPanning(ImVec2(Rel.x - (Rel.x - Pan0.x) * K,
+                                                          Rel.y - (Rel.y - Pan0.y) * K));
+                m_s->Zoom = New;
+                //Every node's pushed position is now stale: re-seed them all, or the graph keeps the old
+                //scale until each node happens to change index.
+                m_s->Seeded.clear();
+            }
+        }
+        //Text has to scale with the boxes or a zoomed-out graph is unreadable labels on tiny nodes.
+        ImGui::SetWindowFontScale(m_s->Zoom);
+    }
+
     ImNodes::BeginNodeEditor();
 
-    for (int I = 0; I < (int)G.Nodes.size(); ++I) drawNode(I, G);
+    //---- viewport culling ------------------------------------------------------------------------------
+    //Submitting every node and every wire regardless of where the view is costs what the graph costs, not
+    //what the SCREEN costs, and the library's biggest bundle is 2775 nodes / 39k links: measured at 3.75 s
+    //PER FRAME (0.27 fps) — the editor opened and then could not be used. Drawing only what is near the
+    //viewport makes the cost proportional to what is actually visible.
+    //
+    //Culling is safe precisely because a node that is not drawn is already handled everywhere else: drawNode
+    //seeds imnodes with the position the FIRST time it draws a node, and the position read-back skips any
+    //node it has not seeded at this index. Our own G.Nodes[].X/Y is the authority either way.
+    const ImVec2 Pan    = ImNodes::EditorContextGetPanning();
+    const ImVec2 Canvas = ImGui::GetWindowSize();
+    //One node body plus slack, so a node is drawn slightly before it scrolls in and its wires never pop.
+    const float MarginX = 700.0f, MarginY = 500.0f;
+    auto OnScreen = [&](int I) {
+        const float X = G.Nodes[I].X * m_s->Zoom + Pan.x, Y = G.Nodes[I].Y * m_s->Zoom + Pan.y;
+        return X > -MarginX && Y > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
+    };
+    std::vector<char> Drawn((size_t)G.Nodes.size(), 0);
+    int Visible = 0;
+    for (int I = 0; I < (int)G.Nodes.size(); ++I)
+        if (OnScreen(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
+    m_s->VisibleNodes = Visible;
 
     // Out-of-bundle parents: a reference chip, not a box we own — you cannot edit another package from here.
     std::vector<std::string> Chips = G.Externals;
@@ -984,9 +1098,13 @@ void PkgCanvas::frame()
         ImNodes::PopColorStyle();
     }
 
-    syncLinks(G);
-    ImNodes::MiniMap(0.18f, ImNodesMiniMapLocation_BottomRight);
+    syncLinks(G, Drawn);
+    //The MiniMap re-draws the WHOLE graph scaled down, so on a big bundle it costs as much again as the graph
+    //itself (1.7 s of the 3.75 s measured). It is a navigation aid, so it is worth exactly what it costs on a
+    //graph you can already see — off past the point where it stops being free, with a toolbar toggle.
+    if (m_s->ShowMiniMap) ImNodes::MiniMap(0.18f, ImNodesMiniMapLocation_BottomRight);
     ImNodes::EndNodeEditor();
+    ImGui::SetWindowFontScale(1.0f);
 
     // ---- interactions ----
     int StartAttr = 0, EndAttr = 0;

@@ -81,6 +81,15 @@ public:
     int  nodeCount() const;
     int  indexOf(const std::string &nodeId) const;
     PkgGraph::Graph graph() const;
+
+    //View state. Zoom is a VIEW property: it scales what imnodes is told and is divided back out on read, so
+    //the document and the saved layout always hold unscaled coordinates. Exposed so a test can drive it.
+    float zoom() const;
+    void  setZoom(float z);
+    //How many nodes the last frame actually submitted (viewport culling) — the rest were off-screen.
+    int   visibleNodes() const;
+    bool  miniMap() const;
+    void  setMiniMap(bool on);
     int  selectedNode() const;
     void selectNode(int index);
 
@@ -97,7 +106,9 @@ private:
     void drawActions(nlohmann::ordered_json &node, int index, const PkgGraph::Graph &g);
     void drawField(nlohmann::ordered_json &node, const PkgGraph::Field &f, int index);
     void drawRegEdits(nlohmann::ordered_json &node, int index);
-    void syncLinks(const PkgGraph::Graph &g);
+    //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
+    //between two endpoints that exist, so culled nodes take their wires with them.
+    void syncLinks(const PkgGraph::Graph &g, const std::vector<char> &Drawn);
     void flushPositions(PkgGraph::Graph &g);
     std::unique_ptr<PkgCanvasState> m_s;
 };
