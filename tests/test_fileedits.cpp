@@ -1,5 +1,6 @@
 #include "vgtest.h"
 #include "fileedits.h"
+#include "launchparams.h"   // ContainerParams — ProcessFileEdits takes one
 
 #include <filesystem>
 #include <fstream>
@@ -95,4 +96,44 @@ TEST(fileoverwrite_creates_parents_and_replaces)
     CHECK(FileEdits::FileOverwrite("NEW", f));      // second write REPLACES (trunc), not appends
     CHECK_EQ(ReadAll(f), std::string("NEW"));
     std::filesystem::remove_all(dir);
+}
+
+//A package arrives from a peer by CID, so a FileEdit's FILE is UNTRUSTED INPUT. Neither stripping a leading
+//separator nor is_absolute() stops a "../" climb, and following one is an arbitrary file write outside the
+//runtime, at launch, from data someone else authored.
+TEST(a_fileedit_path_that_climbs_out_of_its_base_is_refused)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_fe_escape";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base);
+    const std::filesystem::path Outside = Root / "outside.txt";
+
+    ContainerParams CP(Root / "PKG");
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","../outside.txt"},
+                               {"MODE","Overwrite"},{"VALUE","escaped\n"}}});
+
+    const bool Ok = FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base);
+    CHECK(!Ok);                                             // reported as a FAILED edit, not quietly skipped
+    CHECK(!std::filesystem::exists(Outside));               // and nothing was written outside the base
+    std::filesystem::remove_all(Root);
+}
+
+//...while an ordinary nested path still works, so the guard is not simply refusing everything.
+TEST(a_fileedit_path_inside_its_base_still_applies)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_fe_ok";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base);
+
+    ContainerParams CP(Root / "PKG");
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","deep/nested/ok.txt"},
+                               {"MODE","Overwrite"},{"VALUE","fine\n"}}});
+
+    CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+    CHECK(std::filesystem::exists(Base / "deep" / "nested" / "ok.txt"));
+    std::filesystem::remove_all(Root);
 }

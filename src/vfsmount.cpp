@@ -124,31 +124,7 @@ static const nlohmann::ordered_json *ReadArray(const nlohmann::ordered_json &J, 
 static nlohmann::ordered_json SubstituteLayerJson(const nlohmann::ordered_json &Sub,
                                                   const std::map<std::string, std::string> &Vars)
 {
-    //Recursive so it reaches SUBMOUNTS entries and BASE_TARGETS elements, not just top-level fields. Only
-    //STRINGS are touched: a key is a field name, and a number or bool cannot carry a token.
-    std::function<nlohmann::ordered_json(const nlohmann::ordered_json &)> Walk =
-        [&](const nlohmann::ordered_json &V) -> nlohmann::ordered_json {
-        if (V.is_string())
-        {
-            std::string S = V.get<std::string>();
-            VarSubst::StringVariableSubstitution(S, Vars);
-            return S;
-        }
-        if (V.is_array())
-        {
-            nlohmann::ordered_json Out = nlohmann::ordered_json::array();
-            for (const auto &E : V) Out.push_back(Walk(E));
-            return Out;
-        }
-        if (V.is_object())
-        {
-            nlohmann::ordered_json Out = nlohmann::ordered_json::object();
-            for (const auto &[K, E] : V.items()) Out[K] = Walk(E);
-            return Out;
-        }
-        return V;
-    };
-    return Walk(Sub);
+    return VarSubst::SubstituteJsonValues(Sub, Vars);
 }
 
 static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char *Ctx)
@@ -254,8 +230,8 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         //"%Foo%/whatever", the game sees none of those files, and the mount itself succeeds — the quietest failure
         //this subsystem can produce. VarSubst names the variable; this says what it cost.
         if (ManifestModel::HasLiveToken(T))
-            LogErr("VfsMount::BuildLayerSpec", "Layer " + Sub.value("TYPE", std::string("?")) + " '"
-                                                   + Sub.value("PATH", std::string("?")) + "': " + Key + " still contains a "
+            LogErr("VfsMount::BuildLayerSpec", "Layer " + (ReadStr(Sub, "TYPE").empty() ? std::string("?") : ReadStr(Sub, "TYPE")) + " '"
+                                                   + (ReadStr(Sub, "PATH").empty() ? std::string("?") : ReadStr(Sub, "PATH")) + "': " + Key + " still contains a "
                                                    "%token% after substitution (\"" + T + "\") — it will mount at that "
                                                    "LITERAL path and its files will be invisible to the game.");
         T = NormalizeTargetPath(T);                                         // win separators + slash trim
@@ -569,12 +545,15 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     //had its own bare substitution helper with no token check at all, so a runner-build layer whose target failed
     //to substitute produced a wrong mount plan in total silence — the one diagnostic this subsystem has, absent
     //from the one builder where multi-base actually pays (a prefix delta'd over [wine ‖ dxvk]).
-    auto SubstTarget = [&](const std::string &In, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
-        std::string T = In;
-        VarSubst::StringVariableSubstitution(T, Vars);
+    //CHECKS a target, it does not substitute one: SubstituteLayerJson below already walked every string in the
+    //layer. Substituting again would run a second pass over an already-substituted value, so a legitimate '%'
+    //in a VALUE would trip the unmatched-token warning on every launch, and the surviving-token diagnostic
+    //could then only fire for a token that came out of a variable rather than one that failed to resolve.
+    auto CheckTarget = [&](const std::string &In, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
+        const std::string &T = In;
         if (ManifestModel::HasLiveToken(T))
-            LogErr("VfsMount::MountRunnerBuild", "Runner layer " + Sub.value("TYPE", std::string("?")) + " '"
-                                                     + Sub.value("PATH", std::string("?")) + "': " + Key
+            LogErr("VfsMount::MountRunnerBuild", "Runner layer " + (ReadStr(Sub, "TYPE").empty() ? std::string("?") : ReadStr(Sub, "TYPE")) + " '"
+                                                     + (ReadStr(Sub, "PATH").empty() ? std::string("?") : ReadStr(Sub, "PATH")) + "': " + Key
                                                      + " still contains a %token% after substitution (\"" + T
                                                      + "\") — it will mount at that LITERAL path and its files will "
                                                        "be invisible to the runtime.");
@@ -586,15 +565,15 @@ nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &Co
     //to a runner would otherwise mount under a literal "%dxwnd_dir%".
     for (const auto &RawSub : ContainerParams.RunnerLayers)
     {
-        if (!IsVfsLayer(RawSub.value("TYPE", std::string()))) continue;
+        if (!IsVfsLayer(ReadStr(RawSub, "TYPE"))) continue;
         const nlohmann::ordered_json Sub = SubstituteLayerJson(RawSub, Vars);
         //Which key holds the bases is asked ONCE, in ManifestModel::LayerBaseTargets — this builder differs from
         //the content mount only in how a target string is substituted, never in what it reads or what it keeps.
         std::vector<std::string> BaseTargets;
         for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
-            BaseTargets.push_back(SubstTarget(Raw, Sub, "BASE_TARGETS"));
+            BaseTargets.push_back(CheckTarget(Raw, Sub, "BASE_TARGETS"));
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
-                                          SubstTarget(Sub.value("TARGET", std::string()), Sub, "TARGET"), BaseTargets));
+                                          CheckTarget(ReadStr(Sub, "TARGET"), Sub, "TARGET"), BaseTargets));
     }
     // NB: GE-Proton's protonfixes hack forces PROTON_DLL_COPY='*' (COPY every builtin DLL into the prefix, ~650 MB,
     // instead of symlinking). It is neutralized by the `proton-settings` content node, which every runner PARENTs:

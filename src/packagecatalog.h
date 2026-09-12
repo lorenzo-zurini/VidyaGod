@@ -191,6 +191,19 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
 std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
+//The GlobalConfig["EDITORLAYOUT"] key for a bundle: its absolute path, cleaned. ONE function because the
+//writer (the editor) and the reader (publishing) must agree exactly — they did not, and a mismatch is
+//invisible: the lookup simply misses, publishing stamps the algorithm's default, and the author's whole
+//arrangement is discarded at the moment it was supposed to be preserved.
+std::string EditorLayoutKey(const std::filesystem::path &BundleDir);
+
+//This machine's stored canvas positions for a bundle, or nullptr when it has none. The LOOKUP is a function
+//rather than two lines inlined at the call site so a test can hold the publisher to the same key the editor
+//writes — inlined, the two drifted and nothing failed, because a missed lookup is indistinguishable from
+//"this bundle was never arranged".
+const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &GlobalConfigJSON,
+                                              const std::filesystem::path &BundleDir);
+
 //Writes the canvas layout into the bundle's nodes as POS, so a published package opens laid out for someone who
 //has never seen it. Stamps the layout AS IT STANDS — `LocalOverride` (this machine's drags, from GlobalConfig's
 //EDITORLAYOUT) beats a node's current POS, which beats the computed default — so publishing bakes the picture

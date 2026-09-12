@@ -460,8 +460,20 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     {
         for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));
         for (auto &[Key, Value] : L->Env.items())
+        {
+            if (!Value.is_string())
+            {
+                //Same authoring mistake, same treatment as the boundary runner's ENV a few lines up — that
+                //guard was added and this loop, in the same function, was left throwing an uncaught
+                //type_error at the last step of the launch.
+                LogWarn("ContainerWrapper::Execute",
+                        "chained-runner ENV key '" + Key + "' is " + std::string(Value.type_name())
+                        + ", not a string — skipped. Environment values are strings (quote the number).");
+                continue;
+            }
             if (!RunProcessEnvironment.contains(QString::fromStdString(Key)))    // innermost/boundary wins
                 RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
+        }
     }
 
     // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix. MERGED with any value already in

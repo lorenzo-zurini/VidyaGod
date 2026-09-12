@@ -127,27 +127,28 @@ void PackageEditorModel::LoadNodes()
 //The canvas layout sidecar.
 //
 //NOT in the node files: a Meta-CID is minted add-by-reference and IN PLACE over those very files, so anything
-//stored there is in the CID and no later stage can strip it — every drag would republish the package.
+//stored there is in the CID and no later stage can strip it — every drag would republish the package. (A
+//node's POS is the exception, and deliberately so: it is written once at PUBLISH, not on every mouse-up.)
 //
 //NOT under USERDATA either, which was the first attempt: a `Persist KEEP %RuntimePath%` node makes
 //<bundle>/USERDATA the writable TOP branch of the union (vfsmount.cpp), so its whole contents appear at the
-//game's runtime root — the layout file would ship into the game's own directory, visible to mod loaders and
-//data-file scanners, and durably. USERDATA is per-machine runtime state that is DELIBERATELY exposed to the
-//game; a canvas layout is per-machine state that must never be.
+//game's runtime root — the layout would ship into the game's own directory, visible to mod loaders and
+//data-file scanners, and durably.
 //
-//So: the bundle root, with a non-.json extension. Both publish paths are TEXT-ONLY-JSON by design and by
-//stated invariant (VidyaGodIPFS buildMetaDirNode takes only *.json; MirrorDehydrated the same; covers and
-//content travel as CIDs referenced FROM the json), and nothing mounts the bundle directory itself — only the
-//layers a node declares. So a non-json file here is invisible to publishing, to seeding and to the runtime,
-//while still travelling with the bundle for the author who is editing it.
-//The GlobalConfig key for a bundle's local positions: its ABSOLUTE PATH. Not the package UID — a bundle need
-//not declare one (a runner bundle has no DeclareLibraryItem), and the editor must key every bundle it can
-//open, including one being authored before it has any identity. And not the directory NAME, which collides:
-//two sources can each hold a bundle directory of the same name, and sharing one stanza means drags made in one
-//are stamped into the OTHER's node files at publish.
+//NOT a sidecar in the bundle root either, which is what this used to be. It was invisible to publishing (both
+//paths are text-only-JSON), but a bundle is still the wrong home for per-machine state: it travels with the
+//folder whenever the author copies, moves or backs it up, so one person's canvas arrangement rides along into
+//everyone else's copy.
+//
+//So: the tool's own per-user configuration, which is what per-machine state is.
+//The GlobalConfig key for a bundle's local positions. Delegates to PackageCatalog::EditorLayoutKey so the
+//editor (which writes it) and publishing (which reads it) cannot drift: they already did once, and a mismatch
+//is silent — the lookup misses and the author's arrangement is discarded at publish.
 static std::string LayoutKeyFor(const QDir *PackageDir)
 {
-    return PackageDir ? QDir::cleanPath(PackageDir->absolutePath()).toStdString() : std::string();
+    if (!PackageDir) return {};
+    return PackageCatalog::EditorLayoutKey(
+        std::filesystem::path(QDir::cleanPath(PackageDir->absolutePath()).toStdString()));
 }
 
 void PackageEditorModel::LoadLayout()
@@ -165,7 +166,7 @@ void PackageEditorModel::LoadLayout()
     Layout = *BundleIt;
 }
 
-void PackageEditorModel::SaveLayout() const
+void PackageEditorModel::SaveLayout()
 {
     const std::string Key = LayoutKeyFor(PackageDir);
     if (Key.empty() || !GlobalConfigJSON || !Layout.is_object()) return;
@@ -183,8 +184,10 @@ void PackageEditorModel::SaveLayout() const
     //...and reach DISK. The sidecar this replaced was written on every mouse-up; GlobalConfig is otherwise
     //only flushed by MainWindow::closeEvent, so a crash, a kill, or any exit that skips closeEvent would lose
     //the whole session's arranging — a strictly worse guarantee than the file it replaced.
+    //SaveJSON returns TRUE ON SUCCESS (every other call site reads it that way). Inverted, this logged "could
+    //not flush" after every successful save and said nothing when the write actually failed.
     QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
-    if (JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))     // returns true on FAILURE
+    if (!JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))
         LogWarn("PackageEditorModel", "could not flush the canvas layout to GlobalConfig.JSON");
 }
 

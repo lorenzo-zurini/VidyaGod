@@ -64,6 +64,22 @@ static bool IsContentNode(const nlohmann::ordered_json &N)
 //Idempotent where nothing moved: an unchanged bundle with no new drags produces identical bytes and mints the
 //same CID, because a node whose POS already equals its resolved position is not rewritten at all.
 //---------------------------------------------------------------------------------------------------------
+std::string EditorLayoutKey(const std::filesystem::path &BundleDir)
+{
+    //lexically_normal so "…/X" and "…/X/" and "…/./X" are one key; no canonical()/absolute() resolution, so a
+    //bundle behind a symlink keys the same way the editor opened it.
+    return BundleDir.lexically_normal().string();
+}
+
+const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &GlobalConfigJSON,
+                                              const std::filesystem::path &BundleDir)
+{
+    const auto SecIt = GlobalConfigJSON.find("EDITORLAYOUT");
+    if (SecIt == GlobalConfigJSON.end() || !SecIt->is_object()) return nullptr;
+    const auto BIt = SecIt->find(EditorLayoutKey(BundleDir));
+    return (BIt != SecIt->end() && BIt->is_object()) ? &*BIt : nullptr;
+}
+
 bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_json *LocalOverride,
                         std::string *Error)
 {
@@ -136,7 +152,11 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
         {
             std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
             if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); return false; }
-            Out << Loaded[F].dump(2) << "\n";
+            //dump(4), NO trailing newline — byte-identical to how SaveNodes and the CID stamper write a node
+            //file. A different format here reflows the file on stamp and back again on the next editor save:
+            //a byte change with zero semantic change, a new Meta-CID, and every peer re-downloading a package
+            //that did not change.
+            Out << Loaded[F].dump(4);
             Out.flush();
             //A stream that filled the disk fails HERE, not at open — checked, or the rename below publishes a
             //truncated file over a good one.
@@ -158,6 +178,18 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
 
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
 {
+    //Stamp the layout before anything is hashed. Only the remint path did this, so a package published from
+    //the editor's own button shipped with no POS at all — opening as a pile at the origin on every machine
+    //that received it, which is the case the field exists to remove. No local override here: this path has no
+    //GlobalConfig, so it bakes the computed default, which is still a layout rather than none.
+    {
+        std::string StampErr;
+        if (!StampNodePositions(PackageDir, nullptr, &StampErr))
+            LogWarn("PackageCatalog::PublishPackage",
+                    "could not stamp node positions (" + StampErr + ") — publishing without them; the package "
+                    "will open unlaid-out for whoever receives it.");
+    }
+
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::PublishPackage", M); return false; };
 
     std::error_code Ec;
@@ -696,13 +728,7 @@ bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Confi
             //Publish the layout as it stands NOW: this machine's dragged positions (EDITORLAYOUT, keyed by
             //bundle directory) are the author's arrangement and become the package's defaults. The algorithm
             //only fills in nodes nobody has ever positioned.
-            const nlohmann::ordered_json *Local = nullptr;
-            const auto SecIt = Config.find("EDITORLAYOUT");
-            if (SecIt != Config.end() && SecIt->is_object())
-            {
-                const auto BIt = SecIt->find(Pkg.filename().string());
-                if (BIt != SecIt->end() && BIt->is_object()) Local = &(*BIt);
-            }
+            const nlohmann::ordered_json *Local = EditorLayoutFor(Config, Pkg);
             if (!StampNodePositions(Pkg.string(), Local, &E)) return Fail("package " + Pkg.string() + ": " + E);
             const std::string PkgCid = PublishMetaCid(Pkg.string(), &E);
             if (PkgCid.empty()) return Fail("package " + Pkg.string() + ": " + E);

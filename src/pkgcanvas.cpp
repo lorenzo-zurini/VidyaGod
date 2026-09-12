@@ -26,6 +26,9 @@ constexpr int kExternalBase = 100000;
 //One uniform node body, so the graph tiles predictably and long ids/paths scroll inside their field instead of
 //stretching the box. The old editor's forms grew to their longest string and the canvas inherited that.
 constexpr float kNodeWidth  = 330.0f;
+//Zoom scales node POSITIONS and the font, but a node's BODY is laid out in pixels — so without scaling these
+//too, zooming out moved the columns 5x closer while every box stayed 330 px wide and the graph became one
+//solid overlapping mass. Zoom-out is the direction that matters on the bundle this was built for.
 constexpr float kLabelCol   = 96.0f;
 constexpr float kFieldWidth = 228.0f;
 
@@ -411,7 +414,7 @@ bool PkgCanvas::renameNode(int index, const std::string &newId)
 void PkgCanvas::drawField(json &Node, const Field &F, int Index)
 {
     ImGui::PushID(F.Key);
-    const float W = kFieldWidth;
+    const float W = kFieldWidth * m_s->Zoom;
     switch (F.Kind)
     {
     case FieldKind::Text:
@@ -458,7 +461,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         // far more often than not, and a stack of empty textareas is what made the node bodies tall and unreadable.
         const int Lines = (int)std::count(T.begin(), T.end(), '\n') + (T.empty() ? 0 : 1);
         ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
-        ImGui::SetNextItemWidth(kFieldWidth);
+        ImGui::SetNextItemWidth(kFieldWidth * m_s->Zoom);
         //An emptied list ERASES the key rather than writing []. The two are not the same thing: BASE_TARGETS []
         //is a delta with no base and is refused outright, so clearing the box in the editor produced a node
         //the format rejects and the editor could not repair (the refusal says "omit it", and there was no way
@@ -472,7 +475,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         {
             if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T);
         }
-        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
+        else if (ImGui::InputTextMultiline("##v", &T, ImVec2(kFieldWidth * m_s->Zoom, 16.0f * m_s->Zoom * (float)std::min(Lines + 1, 6))))
             Write(T);
         break;
     }
@@ -699,7 +702,7 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.55f, 0.78f, 1.0f, 1.0f), "%s", B.What.toUtf8().constData());
         if (B.Frac >= 0.0f)
-            ImGui::ProgressBar(B.Frac, ImVec2(kFieldWidth, 14.0f),
+            ImGui::ProgressBar(B.Frac, ImVec2(kFieldWidth * m_s->Zoom, 14.0f * m_s->Zoom),
                                B.Detail.isEmpty() ? nullptr : B.Detail.toUtf8().constData());
         else
         {
@@ -721,7 +724,7 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
     for (size_t I = 0; I < Acts.size(); ++I)
     {
         const float W = ImGui::CalcTextSize(Acts[I].Label).x + 14.0f;
-        if (I && Width + W < kNodeWidth) ImGui::SameLine(); else Width = 0.0f;
+        if (I && Width + W < kNodeWidth * m_s->Zoom) ImGui::SameLine(); else Width = 0.0f;
         Width += W + 4.0f;
         //Recorded, not invoked: an action opens dialogs, and a nested Qt event loop inside an ImGui frame
         //lets the repaint timer re-enter NewFrame() with a node scope still open.
@@ -754,7 +757,7 @@ void PkgCanvas::drawEnvelope(json &Node)
                             : Toggle == "off" ? "toggle, starts OFF"
                                               : "toggle, starts on";
     ImGui::TextUnformatted("toggle"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
+    ImGui::SetNextItemWidth(kFieldWidth * m_s->Zoom);
     if (ImGui::BeginCombo("##toggle", ToggleLabel))
     {
         if (ImGui::Selectable("always on (not a toggle)", !HasToggle))
@@ -768,7 +771,7 @@ void PkgCanvas::drawEnvelope(json &Node)
 
     std::string W = When;
     ImGui::TextUnformatted("when"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
+    ImGui::SetNextItemWidth(kFieldWidth * m_s->Zoom);
     if (ImGui::InputTextWithHint("##when", "condition - node is inert when false", &W))
     {
         if (W.empty()) Node.erase("WHEN"); else Node["WHEN"] = W;
@@ -777,7 +780,7 @@ void PkgCanvas::drawEnvelope(json &Node)
 
     std::string Ex = ListToText(Node.contains("EXCLUDE") ? Node["EXCLUDE"] : json::array());
     ImGui::TextUnformatted("excludes"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
+    ImGui::SetNextItemWidth(kFieldWidth * m_s->Zoom);
     if (ImGui::InputTextWithHint("##excl", "mutually-exclusive NODE_IDs", &Ex))
     {
         json A = TextToList(Ex);
@@ -844,10 +847,10 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     ImGui::TextUnformatted("used by");
     ImNodes::EndOutputAttribute();
 
-    ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
+    ImGui::Dummy(ImVec2(kNodeWidth * m_s->Zoom, 1.0f));
     std::string EditId = Id;
     ImGui::TextUnformatted("id"); ImGui::SameLine(kLabelCol);
-    ImGui::SetNextItemWidth(kFieldWidth);
+    ImGui::SetNextItemWidth(kFieldWidth * m_s->Zoom);
     if (m_s->Running.find(Id) == m_s->Running.end()
         && ImGui::InputText("##id", &EditId) && !EditId.empty()) renameNode(Index, EditId);
 
@@ -948,6 +951,14 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
         if (std::abs(P.x - G.Nodes[I].X) > Tol || std::abs(P.y - G.Nodes[I].Y) > Tol)
         {
             if (m_s->Layout) { SetPos(*m_s->Layout, G.Nodes[I].Id, P.x, P.y); m_s->PosDirty = true; }
+            //Write it back into the CACHED graph too, or the cache stays at the pre-drag coordinate for the
+            //rest of the session (a drag does not MarkDirty, so nothing rebuilds it). Three things went wrong
+            //when it did: this comparison was true on EVERY frame, so PosDirty latched and every mouse-release
+            //anywhere re-saved every node file in the bundle; culling tested the OLD position, so a node
+            //dragged across the graph vanished while being looked at; and the re-seed after a cull put it back
+            //at the old coordinate, so the canvas and the persisted layout silently disagreed.
+            G.Nodes[I].X = P.x;
+            G.Nodes[I].Y = P.y;
         }
     }
 }
@@ -1095,10 +1106,24 @@ void PkgCanvas::frame()
         const float X = G.Nodes[I].X * m_s->Zoom + Pan.x, Y = G.Nodes[I].Y * m_s->Zoom + Pan.y;
         return X > -MarginX && Y > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
     };
+    //A SELECTED node is never culled. imnodes keeps a culled node's index in SelectedNodeIndices with no
+    //liveness check, so once its pool slot is reused: GetSelectedNodes reports the new occupant's id (a live
+    //index, which a Drawn check cannot reject), and TranslateSelectedNodes drags it — moving nodes the user
+    //never selected and persisting that. Keeping the selection submitted keeps imnodes' own set honest.
+    std::set<int> Selected;
+    {
+        const int N = ImNodes::NumSelectedNodes();
+        if (N > 0)
+        {
+            std::vector<int> Sel((size_t)N, 0);
+            ImNodes::GetSelectedNodes(Sel.data());
+            for (int S : Sel) if (S >= 0 && S < (int)G.Nodes.size()) Selected.insert(S);
+        }
+    }
     std::vector<char> Drawn((size_t)G.Nodes.size(), 0);
     int Visible = 0;
     for (int I = 0; I < (int)G.Nodes.size(); ++I)
-        if (!CullingOn || OnScreen(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
+        if (!CullingOn || OnScreen(I) || Selected.count(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
     m_s->VisibleNodes = Visible;
     //Recorded AFTER the node loop and BEFORE anything reads it back: this is the set imnodes will still know
     //about on the next frame.

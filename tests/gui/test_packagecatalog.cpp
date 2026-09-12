@@ -7,6 +7,8 @@
 #include <QTemporaryDir>
 
 #include "packagecatalog.h"
+#include "pkggraph.h"
+#include "packageeditormodel.h"
 #include "manifestmodel.h"
 #include "nodefixture.h"
 #include "runnerinstall.h"
@@ -594,6 +596,44 @@ private slots:
         json J; In >> J;
         QCOMPARE(J.size(), (size_t)3);
         for (const auto &N : J) QVERIFY(N.contains("POS"));
+    }
+
+    // The WIRING, not the function. Every other stamp test calls StampNodePositions with a hand-built override,
+    // so when the editor's key and publishing's lookup drifted apart — which they did — nothing failed: the
+    // lookup simply missed and the author's whole arrangement was replaced by the algorithm's default at the
+    // one moment it was supposed to be preserved. This asserts the two agree on the same bundle.
+    void theEditorsLayoutKeyIsTheOnePublishingLooksUp()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        const QString Bundle = Dir.filePath("[999][v1.0] Keyed");
+        QVERIFY(QDir().mkpath(Bundle));
+        json A; A["NODE_ID"] = "a"; A["TYPE"] = "Group";
+        writeJson(Bundle + "/a.json", A);
+
+        // What the editor writes, through the editor's own path.
+        json Cfg = json::object();
+        PackageEditorModel Model(&Cfg, nullptr);
+        Model.initPackage(Bundle, nullptr);
+        PkgGraph::SetPos(Model.layout(), "a", 4242.0, 2424.0);
+        Model.SaveLayout();
+        QVERIFY2(Cfg.contains("EDITORLAYOUT"), "the editor wrote no layout at all");
+
+        // What publishing reads, through publishing's own path.
+        // Through the SAME function the publisher calls — asserting the key by hand would only prove the test
+        // and the editor agree, which is not the pair that broke.
+        const json *Local = PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Bundle.toStdString()));
+        QVERIFY2(Local != nullptr,
+                 "publishing's own lookup finds nothing for the bundle the editor just wrote");
+        QCOMPARE((*Local)["a"][0].get<double>(), 4242.0);
+
+        // ...and end to end: the drag must reach POS.
+        std::string Err;
+        QVERIFY2(PackageCatalog::StampNodePositions(Bundle.toStdString(), Local, &Err), Err.c_str());
+        std::ifstream In((Bundle + "/a.json").toStdString());
+        json J; In >> J;
+        QCOMPARE(J["POS"][0].get<double>(), 4242.0);
+        QCOMPARE(J["POS"][1].get<double>(), 2424.0);
     }
 };
 

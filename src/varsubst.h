@@ -1,6 +1,8 @@
 #ifndef VARSUBST_H
 #define VARSUBST_H
 
+#include <nlohmann/json.hpp>
+
 #include <map>
 #include <string>
 
@@ -8,6 +10,17 @@
 // Zero heavy deps (no Qt / IPFS / catalog), so it is unit-testable in isolation (tests/test_varsubst.cpp).
 namespace VarSubst
 {
+
+//Substitutes %variables% in every STRING inside a JSON value, recursively (arrays and objects included).
+//
+//Use this rather than dump -> substitute text -> parse. The text form is only safe while no substituted VALUE
+//can break JSON, and several can: filesystem paths are backslash-laden on Windows ("\\U" and "\\T" are invalid
+//escapes), package TITLEs are free text, and CustomVar values are typed by the user in the pre-launch dialog.
+//One quote or backslash and the re-parse either throws out of the launch or — worse — is swallowed and the
+//layer is used with its %tokens% intact.
+nlohmann::ordered_json SubstituteJsonValues(const nlohmann::ordered_json &V,
+                                            const std::map<std::string, std::string> &Vars);
+
 //Replaces all %KEY% tokens in SourceString with values from VariablesMap. A token MAY carry a use-site render
 //format: %KEY:format% looks up KEY, then renders the value via RenderValue(value, format) (see below). A bare
 //%KEY% yields the raw value. An unmatched '%' aborts further substitution (the remainder is preserved); unknown

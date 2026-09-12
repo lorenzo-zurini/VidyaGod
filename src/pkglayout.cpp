@@ -123,7 +123,18 @@ void Compute(Graph &G, const Options &O)
     int MaxDepth = 0;
     for (int D : Depth) MaxDepth = std::max(MaxDepth, D);
     std::vector<std::vector<int>> Layers((size_t)MaxDepth + 1);
-    for (int I = 0; I < N; ++I) Layers[(size_t)Depth[I]].push_back(I);   //document order seeds the ordering
+    for (int I = 0; I < N; ++I) Layers[(size_t)Depth[I]].push_back(I);
+    //Seed each layer by NODE_ID, not by document order. The ordering sweeps below refine this, but they start
+    //from it, so with a document-order seed the same graph laid out from a different FILE ORDER produced a
+    //different picture — and the editor and the publisher genuinely enumerate differently (QDir::entryList
+    //skips dotfiles, std::filesystem::directory_iterator does not). That is a layout the author never saw
+    //being stamped into POS, and a CID that changes because of how a directory happened to be read.
+    for (auto &L : Layers)
+        std::stable_sort(L.begin(), L.end(), [&](int A, int B) {
+            if (G.Nodes[(size_t)A].Id != G.Nodes[(size_t)B].Id)
+                return G.Nodes[(size_t)A].Id < G.Nodes[(size_t)B].Id;
+            return A < B;                       // an empty/duplicate id still orders deterministically
+        });
 
     OrderWithinLayers(G, A, Depth, Layers, std::max(0, O.Sweeps));
 

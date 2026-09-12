@@ -175,10 +175,11 @@ TEST(ordering_reduces_crossings_versus_document_order)
     PkgGraph::Graph Raw = PkgGraph::Build(A);
     PkgLayout::Compute(Raw, NoSweeps);
 
-    //Document order draws every pair crossed: C(12,2) = 66. Asserting only "ordered <= raw" is blind, because
-    //disabling the ordering pass changes BOTH sides identically and the comparison still holds. A plain
-    //reversal is what the median heuristic exists to solve, so demand it be solved completely.
-    CHECK_EQ(PkgLayout::CountCrossings(Raw), 66LL);
+    //Asserting only "ordered <= raw" is blind: disabling the ordering pass changes BOTH sides identically and
+    //the comparison still holds. So demand the ABSOLUTE result — a plain reversal is exactly what the median
+    //heuristic exists to solve, and it must solve it completely — and that the unsorted seed really is a
+    //crossed drawing, or the zero above would prove nothing either.
+    CHECK(PkgLayout::CountCrossings(Raw) > 0);
     CHECK_EQ(PkgLayout::CountCrossings(Ordered), 0LL);
 }
 
@@ -300,29 +301,34 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW);     CHECK_EQ(G.Nodes[4].Y, Y0);            // d      layer 3
 }
 
-//Document ORDER seeds the within-layer ordering, so the same graph written in a different file order must not
-//produce a different picture for the nodes that have no reason to move.
-TEST(layer_assignment_does_not_depend_on_document_order)
+//Document ORDER seeds the within-layer ordering, so this has to be tested on a WIDE layer — a chain has one
+//node per layer, where the property holds trivially and the test proves nothing. It matters concretely because
+//the editor enumerates node files with QDir::entryList (which skips dotfiles) and the publisher with
+//std::filesystem::directory_iterator (which does not): the two can hand the layout a different order for the
+//same bundle, and the author would then see one picture while a different one is stamped into POS.
+TEST(a_wide_layers_ordering_does_not_depend_on_document_order)
 {
-    auto Build = [](bool Reversed) {
-        ordered_json A = ordered_json::array();
+    auto BuildPositions = [](bool Reversed) {
         std::vector<ordered_json> Ns;
-        for (int I = 0; I < 6; ++I)
+        ordered_json Root; Root["NODE_ID"] = "root"; Root["TYPE"] = "Group";
+        Ns.push_back(Root);
+        for (int I = 0; I < 10; ++I)
         {
             ordered_json J;
-            J["NODE_ID"] = "n" + std::to_string(I);
+            J["NODE_ID"] = "c" + std::to_string(I);
             J["TYPE"]    = "Group";
-            if (I > 0) J["PARENTS"] = ordered_json::array({"n" + std::to_string(I - 1)});
+            J["PARENTS"] = ordered_json::array({"root"});
             Ns.push_back(J);
         }
         if (Reversed) std::reverse(Ns.begin(), Ns.end());
+        ordered_json A = ordered_json::array();
         for (const auto &J : Ns) A.push_back(J);
         std::map<std::string, std::pair<float, float>> Pos;
         const PkgGraph::Graph G = PkgGraph::Build(A);
         for (const auto &Nd : G.Nodes) Pos[Nd.Id] = {Nd.X, Nd.Y};
         return Pos;
     };
-    const auto Forward = Build(false), Backward = Build(true);
+    const auto Forward = BuildPositions(false), Backward = BuildPositions(true);
     for (const auto &[Id, P] : Forward)
     {
         CHECK(Backward.count(Id) == 1);

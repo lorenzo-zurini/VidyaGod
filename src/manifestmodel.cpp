@@ -225,9 +225,23 @@ nlohmann::ordered_json ComposeAcrossClosure(
             //declaring ENV {A} loses A. That was harmless only while nothing consumed a launchable's ENV;
             //now it reaches the process, so it is a missing environment variable at launch with no
             //diagnostic. Merge key-wise — the more-specific node still wins on a shared KEY.
+            //ENV is a BAG of keys: merge, do not replace. ENV_REMOVE/REMOVE_ENV is a LIST of keys and has
+            //exactly the same property — a variant declaring ENV_REMOVE ["B"] over a base declaring ["A"]
+            //silently stopped removing A.
             if (K == "ENV" && V.is_object() && Out.contains(K) && Out[K].is_object())
             {
                 for (const auto &[EK, EV] : V.items()) Out[K][EK] = EV;
+                continue;
+            }
+            if ((K == "ENV_REMOVE" || K == "REMOVE_ENV") && V.is_array()
+                && Out.contains(K) && Out[K].is_array())
+            {
+                for (const auto &E : V)
+                {
+                    bool Seen = false;
+                    for (const auto &X : Out[K]) if (X == E) { Seen = true; break; }
+                    if (!Seen) Out[K].push_back(E);
+                }
                 continue;
             }
             Out[K] = V;                                                      // later (more-specific) node wins, field-by-field

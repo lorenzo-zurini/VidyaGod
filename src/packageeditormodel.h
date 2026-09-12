@@ -39,12 +39,13 @@ public:
     nlohmann::ordered_json &       doc()                 { return Doc; }
     const nlohmann::ordered_json & doc() const           { return Doc; }
     //THIS MACHINE's canvas-position override: NODE_ID -> [x,y], held in GlobalConfig under EDITORLAYOUT and
-    //keyed by bundle directory name. The author's DEFAULT position is the node's own POS, stamped at publish
+    //keyed by bundle PATH (PackageCatalog::EditorLayoutKey — the same key publishing looks up). The author's DEFAULT position is the node's own POS, stamped at publish
     //time; this is only what has been dragged since. Keeping drags out of the package is the whole point — a
     //Meta-CID is minted IN PLACE over the node files, so a position written back into a node would change the
     //package's bytes, and its CID, for every peer, on every mouse-up.
     nlohmann::ordered_json &       layout()              { return Layout; }
-    void SaveLayout() const;
+    //NOT const: it writes into GlobalConfigJSON and flushes it to disk.
+    void SaveLayout();
     QDir *                         packageDir() const    { return PackageDir; }
     nlohmann::ordered_json *       globalConfig() const  { return GlobalConfigJSON; }
     const std::vector<std::string> & validationErrors()   const { return ValErrors; }

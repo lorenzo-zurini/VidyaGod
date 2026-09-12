@@ -307,6 +307,22 @@ BinaryPatch::Result BinaryPatch::ApplyOne(const nlohmann::ordered_json &Patch, s
     return Result::Error;
 }
 
+
+//An edit path must stay INSIDE its base. A package arrives from a peer by CID, so FILE is untrusted input, and
+//neither the leading-separator strip nor is_absolute() stops "../../../.config/autostart/x.desktop" — nor, on
+//Windows, a drive-absolute "C:/Users/..." (no leading separator, and operator/ then discards the base) or a
+//drive-relative "C:foo" (resolved against that drive's current directory). Normalising and then requiring the
+//result to be under the base covers all of them with one rule.
+static bool PathEscapesBase(const std::filesystem::path &Joined, const std::filesystem::path &Base,
+                            std::filesystem::path &OutNormalised)
+{
+    OutNormalised = Joined.lexically_normal();
+    const std::filesystem::path Rel = OutNormalised.lexically_relative(Base.lexically_normal());
+    //Empty means the two share no common root at all (a different drive, or an absolute path that replaced the
+    //base); a leading ".." means it climbed out.
+    return Rel.empty() || Rel.native().rfind("..", 0) == 0;
+}
+
 bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
 {
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
@@ -347,7 +363,15 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
                         "FILE '" + File + "' is ABSOLUTE and escapes the runtime mount root — the edit will not land where "
                         "anything reads it. Author it relative to the base.");
         }
-        const std::filesystem::path FilePath = ContainerParams.RuntimePath / File;
+        std::filesystem::path FilePath;
+        if (PathEscapesBase(ContainerParams.RuntimePath / File, ContainerParams.RuntimePath, FilePath))
+        {
+            LogErr("BinaryPatch::ProcessBinaryPatches",
+                   "FILE '" + File + "' resolves OUTSIDE the runtime mount root ('"
+                   + ContainerParams.RuntimePath.string() + "') — refused. A patch may only write inside it.");
+            ++Failed; Ok = false;
+            continue;
+        }
 
         std::vector<uint8_t> Image;
         {

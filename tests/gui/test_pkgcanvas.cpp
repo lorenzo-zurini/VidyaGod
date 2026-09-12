@@ -891,6 +891,67 @@ private slots:
         QCOMPARE(G.Nodes[0].Y, 200.0f);
     }
 
+
+    // A drag must reach the CACHED graph, not just the stored layout — and the observable consequence is
+    // CULLING, which tests the cached coordinate. With a stale cache a node dragged far off-screen stays
+    // "visible" forever (and, symmetrically, one dragged into view never appears). Asserting through
+    // Canvas->graph() cannot see this: that rebuilds from the layout, which SetPos has already updated.
+    void aDraggedPositionReachesTheCacheThatCullingReads()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        Canvas->addNode("Content", 300, 100);
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 2);
+
+        ImNodes::SetNodeGridSpacePos(0, ImVec2(90000, 90000));   // as a drag would leave it
+        runFrame();                                              // read-back sees it and updates the cache
+        runFrame();                                              // ...so this frame culls on the NEW position
+        QCOMPARE(Canvas->visibleNodes(), 1);
+    }
+
+    // A SELECTED node is never culled: imnodes keeps a freed node's index in its own selection set with no
+    // liveness check, so a culled-then-reused slot makes TranslateSelectedNodes drag a node the user never
+    // selected — and persist it.
+    void aSelectedNodeIsNeverCulled()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 40, 40);
+        Canvas->addNode("Content", 600, 300);
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 2);
+
+        // Select it while it is still on screen — imnodes cannot select a node it has already destroyed —
+        // and only then move it far away.
+        ImNodes::ClearNodeSelection();
+        ImNodes::SelectNode(1);
+        runFrame();
+        ImNodes::SetNodeGridSpacePos(1, ImVec2(90000, 90000));
+        runFrame();
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 2);   // off-screen, but selected, so still submitted
+    }
+
+
+    // Zoom must scale the node BODY, not just positions and the font: at 0.2x the columns come five times
+    // closer, so a box that stayed 330 px wide would overlap its neighbours into one unreadable mass —
+    // and zoom-out is the direction the big-bundle case needs.
+    void zoomingOutShrinksTheNodeBodyNotJustTheSpacing()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        runFrame();
+        const ImVec2 Full = ImNodes::GetNodeDimensions(0);
+
+        Canvas->setZoom(0.25f);
+        runFrame();
+        runFrame();
+        const ImVec2 Small = ImNodes::GetNodeDimensions(0);
+
+        QVERIFY2(Small.x < Full.x * 0.6f,
+                 qPrintable(QString("node stayed %1 px wide at 0.25x (was %2)").arg(Small.x).arg(Full.x)));
+    }
+
     void zoomIsClampedAndDefaultsToUnity()
     {
         QCOMPARE(Canvas->zoom(), 1.0f);

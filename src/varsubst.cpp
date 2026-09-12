@@ -302,3 +302,28 @@ bool VarSubst::StringVariableSubstitution(
     SourceString = std::move(result);
     return replaced;
 }
+
+nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_json &V,
+                                                      const std::map<std::string, std::string> &Vars)
+{
+    //Only STRINGS are touched: a key is a field name, and a number or a bool cannot carry a token.
+    if (V.is_string())
+    {
+        std::string S = V.get<std::string>();
+        VarSubst::StringVariableSubstitution(S, Vars);
+        return S;
+    }
+    if (V.is_array())
+    {
+        nlohmann::ordered_json Out = nlohmann::ordered_json::array();
+        for (const auto &E : V) Out.push_back(SubstituteJsonValues(E, Vars));
+        return Out;
+    }
+    if (V.is_object())
+    {
+        nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+        for (const auto &[K, E] : V.items()) Out[K] = SubstituteJsonValues(E, Vars);
+        return Out;
+    }
+    return V;
+}

@@ -259,10 +259,12 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
                     continue;
                 }
             }
-            //Serialize to string, substitute %VAR% tokens, then re-parse.
-            std::string SubJSON = Subs[j].dump();
-            VarSubst::StringVariableSubstitution(SubJSON, FrozenVars);
-            ContainerParams.SubComponentsArray.push_back(nlohmann::ordered_json::parse(SubJSON));
+            //Substitute %VAR% tokens VALUE BY VALUE, not by splicing into serialised text. The text form
+            //parsed with exceptions ON and there is no catch anywhere on the launch path, so a CustomVar the
+            //user typed containing a quote — or any Windows path, where "\U" is an invalid JSON escape —
+            //threw parse_error out of the resolve and killed the app at launch.
+            ContainerParams.SubComponentsArray.push_back(
+                VarSubst::SubstituteJsonValues(Subs[j], FrozenVars));
             if (VerboseLogging())   // per-subcomponent trace — 81 lines per resolve, gated like the rest
                 LogOut("BuildSubComponentsArray", "Added COMPONENT " + RecipeComponentID + " SUBCOMPONENT " + std::to_string(j + 1));
         }
