@@ -241,6 +241,20 @@ bool ContainerWrapper::BuildContainerRuntime()
         if (!BinaryPatch::ProcessBinaryPatches(this->ContainerParams))
             LogErr("ContainerWrapper::BuildContainerRuntime",
                    "BinaryPatch FAILED — an executable patch above was not applied; the game may not run as intended.");
+        //A DllOverride only means something to a wine prefix. On any other runner the layers are simply not
+        //consumed — which is the silent shape this project keeps paying for: the node is in the closure, the
+        //editor shows it, the plan carries it, and nothing applies it. Say so rather than discarding it.
+        if (!PrefixGen)
+        {
+            int Declared = 0;
+            for (const auto &Sub : this->ContainerParams.SubComponentsArray)
+                if (Sub.is_object() && Sub.value("TYPE", std::string()) == "DllOverride") ++Declared;
+            if (Declared > 0)
+                LogWarn("ContainerWrapper::BuildContainerRuntime",
+                        std::to_string(Declared) + " DllOverride layer(s) are in this closure, but the runner '"
+                        + this->ContainerParams.RunnerName + "' does not generate a wine prefix — DLL overrides "
+                        "only apply inside one, so they were NOT applied.");
+        }
         if (PrefixGen)
         {
             if (!FileEdits::ProcessDLLOverrides(this->ContainerParams))

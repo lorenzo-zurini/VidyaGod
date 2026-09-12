@@ -233,6 +233,13 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
             L["PLATFORM"] = J.value("HOST", std::string());
             if (J.contains("PATH")) L["CONTENTPATH"] = J["PATH"];
             if (J.contains("ARGS")) L["EXEARGS"]     = J["ARGS"];
+            //ENV was copied for a RUNNER and silently dropped for a LAUNCHABLE, so a game's own environment
+            //never reached its process: the field round-tripped through the editor, survived every save, and
+            //did nothing. Tonic Trouble needed a BINARY PATCH to disable an SDL backend because
+            //"SDL_JOYSTICK_WGI": "0" on its DeclareExec evaporated here. Same spelling as the runner branch
+            //(ENV_REMOVE on disk, REMOVE_ENV on the layer) so one consumer reads both.
+            if (J.contains("ENV"))        L["ENV"]        = J["ENV"];
+            if (J.contains("ENV_REMOVE")) L["REMOVE_ENV"] = J["ENV_REMOVE"];
             CopyIf(J, L, {"LABEL", "RECOMMENDED", "WORKDIR", "RUNNER"});           // WHEN: applied at the tail
         }
         Out.push_back(std::move(L));

@@ -64,16 +64,26 @@ bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool O
         const std::string Key = Sub.value("KEY", std::string());
         VarSubst::StringVariableSubstitution(File,  Vars);
         VarSubst::StringVariableSubstitution(Value, Vars);
+        //An absolute FILE is invalid by contract — an edit path is ALWAYS relative to its pass base (spec
+        //ch.15) — so it is re-anchored rather than followed. There is no authored-vs-expanded distinction to
+        //make here: FILE reaches this pass already %variable%-substituted, and the overwhelmingly common way
+        //to get one is the house style "%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is ""
+        //(native), which turns it into "/drive_c/...". BasePath / File then discards the base entirely and the
+        //edit lands outside the runtime: Worms 4 shipped exactly this and printed one line nobody read, and
+        //the launch-matrix fixture reproduced it with EVERY edit failing at once. The engine already absorbs
+        //the same expansion for the exe path, whose resolver strips leading slashes off CONTENTPATH.
+        if (std::filesystem::path(File).is_absolute())
+        {
+            const std::string Before = File;
+            while (!File.empty() && (File.front() == '/' || File.front() == '\\')) File.erase(File.begin());
+            LogWarn("FileEdits::ProcessFileEdits",
+                    "FILE '" + Before + "' is ABSOLUTE — an edit path is relative to its base, so it was "
+                    "re-anchored to '" + File + "' under the " + PassName + " pass base. Author it relative "
+                    "(a leading %variable% that is empty on this runner is the usual cause).");
+        }
+
         std::filesystem::path FilePath = BasePath / File;
         ++Attempted;
-
-        //An ABSOLUTE FILE silently escapes this pass: BasePath / File discards BasePath entirely when File is
-        //absolute, so the edit lands somewhere the pass does not own (usually a path that does not exist yet).
-        //Worms 4 shipped exactly this and printed one line nobody read.
-        if (std::filesystem::path(File).is_absolute())
-            LogWarn("FileEdits::ProcessFileEdits",
-                    "FILE '" + File + "' is ABSOLUTE — it discards the " + PassName + " pass base ('"
-                    + BasePath.string() + "'). Author it relative to the pass base instead.");
 
         bool EditOk = true;
         if (Mode == "ConfigWrite")

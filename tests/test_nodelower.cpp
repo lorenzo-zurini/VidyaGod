@@ -556,3 +556,34 @@ TEST(lower_group_is_empty_but_not_an_error)
     CHECK(Refused(ordered_json{{"NODE_ID", "x"}}));                        // no TYPE at all is an ERROR
     CHECK(Refused(ordered_json{{"NODE_ID", "x"}, {"TYPE", "Nonsense"}}));
 }
+
+//ENV on a LAUNCHABLE was copied for runners only, so a game's own environment was lowered away in silence —
+//the field survived every save and never reached the process. Tonic Trouble paid for this with a binary patch.
+TEST(declareexec_launchable_keeps_ENV_and_ENV_REMOVE)
+{
+    ordered_json N = {{"NODE_ID","g"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
+                      {"ENV", {{"SDL_JOYSTICK_WGI","0"}}},
+                      {"ENV_REMOVE", ordered_json::array({"LD_PRELOAD"})}};
+    const ordered_json L = Lower(N);
+    CHECK_EQ(L.size(), (size_t)1);
+    CHECK_EQ(L[0].value("TYPE", std::string()), std::string("DeclareExec"));   // launchable, not runner
+    //Guarded: CHECK does not abort, so dereferencing a missing key on the next line would throw and take the
+    //WHOLE suite down — a regression that hides every other result instead of naming itself.
+    CHECK(L[0].contains("ENV"));
+    if (L[0].contains("ENV"))
+        CHECK_EQ(L[0]["ENV"].value("SDL_JOYSTICK_WGI", std::string()), std::string("0"));
+    CHECK(L[0].contains("REMOVE_ENV"));                                        // same spelling as the runner layer
+    if (L[0].contains("REMOVE_ENV") && L[0]["REMOVE_ENV"].is_array() && L[0]["REMOVE_ENV"].size() == 1)
+        CHECK_EQ(L[0]["REMOVE_ENV"][0].get<std::string>(), std::string("LD_PRELOAD"));
+    else
+        CHECK(false);
+}
+
+//...and a launchable that declares none must not sprout empty ones: an absent ENV is absent, not {}.
+TEST(declareexec_launchable_without_ENV_emits_none)
+{
+    ordered_json N = {{"NODE_ID","g"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"}};
+    const ordered_json L = Lower(N);
+    CHECK(!L[0].contains("ENV"));
+    CHECK(!L[0].contains("REMOVE_ENV"));
+}

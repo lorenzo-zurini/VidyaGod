@@ -323,9 +323,22 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
 
         std::string File = Sub.value("FILE", std::string());
         VarSubst::StringVariableSubstitution(File, Vars);
+        //An absolute FILE is invalid by contract — an edit path is ALWAYS relative to its pass base (spec
+        //ch.15) — so it is re-anchored rather than followed. There is no authored-vs-expanded distinction to
+        //make here: FILE reaches this pass already %variable%-substituted, and the overwhelmingly common way
+        //to get one is the house style "%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is ""
+        //(native), which turns it into "/drive_c/...". Following it wrote outside the runtime and EVERY edit
+        //silently failed. The engine already absorbs exactly this for the exe path, whose resolver strips
+        //leading slashes off CONTENTPATH; an edit is now held to the same rule.
         if (std::filesystem::path(File).is_absolute())
+        {
+            const std::string Before = File;
+            while (!File.empty() && (File.front() == '/' || File.front() == '\\')) File.erase(File.begin());
             LogWarn("BinaryPatch::ProcessBinaryPatches",
-                    "FILE '" + File + "' is ABSOLUTE — it escapes the runtime mount root; author it relative.");
+                    "FILE '" + Before + "' is ABSOLUTE — an edit path is relative to its base, so it was "
+                    "re-anchored to '" + File + "'. Author it relative (a leading %variable% that is empty on "
+                    "this runner is the usual cause).");
+        }
         const std::filesystem::path FilePath = ContainerParams.RuntimePath / File;
 
         std::vector<uint8_t> Image;

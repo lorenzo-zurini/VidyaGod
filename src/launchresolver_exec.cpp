@@ -92,6 +92,23 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
             ContainerParams.ExePathRelative = std::filesystem::path(ContentRootRelative(ExeStr, ContainerParams.ContentRoot));
         }
     }
+    //The LAUNCHABLE's own ENV, merged over the runner boundary's. Only RunnerEnv/RunnerRemoveEnv are applied
+    //at Execute, so without this the game's ENV has a layer and no consumer — lowered, carried, and dropped at
+    //the last step. The game wins over the runner on a shared key: the runner states how its platform is run,
+    //the game states what THIS program needs, and the more specific one is the game's.
+    if (Resolved.contains("ENV") && Resolved["ENV"].is_object())
+    {
+        if (!ContainerParams.RunnerEnv.is_object()) ContainerParams.RunnerEnv = nlohmann::ordered_json::object();
+        for (const auto &[K, V] : Resolved["ENV"].items())
+            if (V.is_string()) ContainerParams.RunnerEnv[K] = V;
+    }
+    if (Resolved.contains("REMOVE_ENV") && Resolved["REMOVE_ENV"].is_array())
+        for (const auto &K : Resolved["REMOVE_ENV"])
+            if (K.is_string()
+                && std::find(ContainerParams.RunnerRemoveEnv.begin(), ContainerParams.RunnerRemoveEnv.end(),
+                             K.get<std::string>()) == ContainerParams.RunnerRemoveEnv.end())
+                ContainerParams.RunnerRemoveEnv.push_back(K.get<std::string>());
+
     LogOut("ResolveExecutableDefinition", "ContentPath: " + ContainerParams.ExePathRelative.string());
     LogOut("ResolveExecutableDefinition", "Content: " + ContainerParams.ExePathComplete.string());
     auto &WorkDirVal = Resolved["WORKDIR"];
