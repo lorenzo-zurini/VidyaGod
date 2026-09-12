@@ -43,6 +43,12 @@ bool BoolOf(const json &N, const char *Key, bool Def = false)
     return (N.is_object() && N.contains(Key) && N[Key].is_boolean()) ? N[Key].get<bool>() : Def;
 }
 
+//NOTE on the one shape this cannot express: the text is entries joined by newlines with no terminator, so []
+//and [""] both render as "". A LONE root base therefore shows as an empty box. It is PRESERVED — the list is
+//only rewritten when its own box is edited, and editing an empty box is the user replacing it — but it cannot
+//be typed from scratch here; author it as BASE_TARGETS: [""] (or let makeDelta write it). Adding a terminator
+//to disambiguate was tried and is worse: ListToText(TextToList(t)) then stops being the identity, so the text
+//grows a newline under the cursor while you type.
 std::string ListToText(const json &Arr)
 {
     std::string T;
@@ -52,7 +58,10 @@ std::string ListToText(const json &Arr)
     return T;
 }
 
-json TextToList(const std::string &T)
+//One line per entry, trimmed. `KeepEmpty` decides what a BLANK line means: for most lists it is typing noise
+//and is dropped, but for a delta's BASE_TARGETS an empty entry is the MOUNT ROOT — a real target. Dropping it
+//there made the root base untypeable, and silently deleted it from any node that already had one.
+json TextToList(const std::string &T, bool KeepEmpty = false)
 {
     json Arr = json::array();
     std::string Line;
@@ -61,7 +70,12 @@ json TextToList(const std::string &T)
         if (I == T.size() || T[I] == '\n')
         {
             size_t B = Line.find_first_not_of(" \t\r"), E = Line.find_last_not_of(" \t\r");
-            if (B != std::string::npos) Arr.push_back(Line.substr(B, E - B + 1));
+            if (B != std::string::npos)   Arr.push_back(Line.substr(B, E - B + 1));
+            //A blank line is an entry — INCLUDING the last one. ListToText writes no terminator, so "a\n" is
+            //["a",""] and "a" is ["a"]; treating the final blank as a separator silently ate a TRAILING root
+            //base, which is exactly the ["dxvk", ""] shape a prefix delta over the runner-mount root has.
+            //Wholly empty text is the one exception: that is no entries, and it ERASES the key.
+            else if (KeepEmpty && !T.empty()) Arr.push_back(std::string());
             Line.clear();
         }
         else Line += T[I];
@@ -398,23 +412,31 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         break;
     }
     case FieldKind::StringList:
+    case FieldKind::StringListKeepEmpty:
     {
+        const bool KeepEmpty = (F.Kind == FieldKind::StringListKeepEmpty);
         std::string T = ListToText(Node.contains(F.Key) ? Node[F.Key] : json::array());
+        //A KeepEmpty field is ALWAYS multiline — not "when it has entries". A blank line cannot be typed into a
+        //single-line input at all, so the field's own hint ("a blank line is the mount root") would be an
+        //instruction the widget forbids; and a lone [""] renders as empty text, so a single-line box would show
+        //only the hint and look identical to an unset field. Deciding per-value instead flips the widget between
+        //the two shapes on the first keystroke, which deactivates it mid-edit and swallows the next key.
+        const bool ForceMultiline = KeepEmpty;
         // An empty list gets a single line: a package's optional lists (submounts, base targets, args) are empty
         // far more often than not, and a stack of empty textareas is what made the node bodies tall and unreadable.
         const int Lines = (int)std::count(T.begin(), T.end(), '\n') + (T.empty() ? 0 : 1);
         ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
         ImGui::SetNextItemWidth(kFieldWidth);
-        //An emptied list ERASES the key rather than writing []. The two are not the same thing: BASE_TARGET []
+        //An emptied list ERASES the key rather than writing []. The two are not the same thing: BASE_TARGETS []
         //is a delta with no base and is refused outright, so clearing the box in the editor produced a node
         //the format rejects and the editor could not repair (the refusal says "omit it", and there was no way
         //to omit). drawEnvelope already erases WHEN/EXCLUDE this way; the list writer just never learned it.
         auto Write = [&](const std::string &Text) {
-            json A = TextToList(Text);
+            json A = TextToList(Text, KeepEmpty);
             if (A.empty()) Node.erase(F.Key); else Node[F.Key] = std::move(A);
             m_s->MarkDirty();
         };
-        if (Lines <= 1)
+        if (Lines <= 1 && !ForceMultiline)
         {
             if (ImGui::InputTextWithHint("##v", F.Hint, &T)) Write(T);
         }
@@ -738,7 +760,14 @@ void PkgCanvas::drawPayload(json &Node, int Index)
     const std::string Type = StrOf(Node, "TYPE", "Group");
     const auto &Fields = FieldsFor(Type);
     if (Fields.empty()) { ImGui::TextDisabled("no payload - composition only"); return; }
-    for (const Field &F : Fields) drawField(Node, F, Index);
+    for (const Field &F : Fields)
+    {
+        //A delta's byte-bases are meaningless on any other FORM, and NodeLower now REFUSES them there — so
+        //offering the box on every Content node is a two-click way to make a node that will not lower. The
+        //refusal turned a silent no-op into a hard failure; leaving the trap in place would just relocate it.
+        if (F.Key == std::string("BASE_TARGETS") && StrOf(Node, "FORM") != "delta") continue;
+        drawField(Node, F, Index);
+    }
 }
 
 // ---- node rendering -------------------------------------------------------

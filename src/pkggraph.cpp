@@ -203,7 +203,7 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"PATH",        "Path",        FieldKind::Text,       "file in this bundle", {}, {}},
             {"TARGET",      "Target",      FieldKind::Text,       "%PrefixRoot%/drive_c/%PackageUID%", {}, {}},
             {"SUBMOUNTS",   "Submounts",   FieldKind::StringList, "source/path:dest/path", {}, {}},
-            {"BASE_TARGET", "Base target", FieldKind::StringList, "delta only - concatenated, in order", {}, {}},
+            {"BASE_TARGETS", "Base targets", FieldKind::StringListKeepEmpty, "delta only - concatenated, in order; a blank line is the mount root", {}, {}},
         };
     if (Type == "RegEdit")
         return {{"EDITS", "Registry", FieldKind::RegEdits, "", {}, {}}};

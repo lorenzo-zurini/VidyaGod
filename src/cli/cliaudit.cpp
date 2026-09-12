@@ -5,6 +5,7 @@
 #include "packagecatalog.h"
 #include "launchresolver.h"
 #include "launchparams.h"
+#include "vfsmount.h"
 #include "varsubst.h"
 
 #include <algorithm>
@@ -33,24 +34,13 @@
 
 namespace {
 
+using ManifestModel::HasLiveToken;
+
 struct Finding
 {
     std::string Node, Package, Kind, Detail;
     bool        Error = true;      // false ⇒ warning
 };
-
-//Does this string still contain an unresolved %TOKEN%? The resolver leaves reference cycles and typos literal,
-//and a literal %token% reaching a command line or a file path is never what the author meant.
-bool HasLiveToken(const std::string &S)
-{
-    const size_t A = S.find('%');
-    if (A == std::string::npos) return false;
-    const size_t B = S.find('%', A + 1);
-    if (B == std::string::npos || B == A + 1) return false;
-    for (size_t I = A + 1; I < B; ++I)
-        if (!(std::isalnum(static_cast<unsigned char>(S[I])) || S[I] == '_' || S[I] == ':')) return false;
-    return true;
-}
 
 //Static checks for authoring that silently does nothing. Each of these has actually shipped.
 void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Out)
@@ -215,6 +205,13 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     //these lines were always being printed and never being read.
     std::vector<std::pair<LogLevel, std::string>> Captured;
     bool Capturing = false;
+    //RAII, because the callback closes over `Captured` and this frame, and the window now calls into the plan
+    //builders — real code that can throw (a filesystem_error from a bad path, a json type error). An escaping
+    //exception used to leave the GLOBAL log callback pointing at a destroyed vector and a destroyed frame, so
+    //the next Log() anywhere in the process was a use-after-free.
+    struct CaptureScope {
+        ~CaptureScope() { ClearLogCallback(); }
+    } CaptureGuard;
     SetLogCallback([&](LogLevel Lv, const std::string &Ctx, const std::string &Msg) {
         if (Capturing && (Lv == LogLevel::WARN || Lv == LogLevel::ERR))
             Captured.push_back({Lv, Ctx + ": " + Msg});
@@ -241,6 +238,28 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
         Capturing = true;
         const bool Init = LaunchResolver::InitializeFromNode(CP, Pool, GlobalConfigJSON);
         const bool Exec = Init && LaunchResolver::ResolveExecutableDefinition(nlohmann::ordered_json::object(), CP);
+        //BUILD THE ACTUAL MOUNT PLANS. Everything the plan builders complain about — a %token% that survived
+        //substitution, a delta whose declared byte-base nothing composes — is complained about HERE, by the same
+        //code a real launch runs, and lands in Captured like any other engine diagnostic. The alternative, which
+        //this replaced, was a second approximate model of the plan living in the audit: it disagreed with the
+        //mounter about which layer types can be a base, about the effect of plan ORDER, and about the prefix an
+        //inner-runner's targets carry — three ways to report a package broken that isn't, or clean when it is.
+        //Safe to call because building a plan has no filesystem side effects; MountVFS materializes the dirs.
+        if (Init)
+        {
+            //The prefix LAYOUT variables are normally derived by probing the mounted runner, which this sweep
+            //deliberately never does. Derive them anyway (the probe degrades to its documented last-resort
+            //paths when nothing is mounted) — the same pretence as the pinned screen size above, and without it
+            //every prefix-assembly layer keeps its %token% and the report is all context artifact.
+            LaunchResolver::ProbePrefixLayout(CP);
+            //...and the source-existence sweep, minus the layers that cannot exist before a mount. Dropping it
+            //from the only OFFLINE check would have lost the most valuable diagnostic here: a typo'd PATH
+            //("data/mian.zip") validates clean, audits clean, mounts EMPTY and the game silently misses content.
+            const nlohmann::ordered_json Plan = VfsMount::BuildLayerSpec(CP);
+            (void)VfsMount::ReportMissingSources(Plan, /*SkipRuntimeSourced=*/true);
+            if (VfsMount::RunnerShipsMountableBuild(CP))
+                (void)VfsMount::ReportMissingSources(VfsMount::BuildRunnerLayerSpec(CP), true);
+        }
         Capturing = false;
 
         if (!Init) Findings.push_back({Id, Pkg, "resolve-failed", "InitializeFromNode failed — this node cannot launch.", true});
@@ -264,31 +283,8 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
                 Findings.push_back({Id, Pkg, "unresolved-token-in-contentpath",
                                     "CONTENTPATH resolved to '" + CP.ExePathRelative.string() + "'.", true});
 
-            //A layer TARGET is substituted at mount time, and a token that survives becomes a LITERAL directory
-            //name: the layer mounts at "%Foo%/game", every file in it is invisible to the game, and the mount
-            //still succeeds. This mirrors BuildLayerSpec's resolution WITHOUT its create_directories side effects,
-            //so auditing 961 packages does not litter the library with runtime dirs.
-            const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
-            for (const auto &Sub : CP.SubComponentsArray)
-            {
-                if (!ManifestModel::IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
-                for (const char *Key : {"TARGET", "BASE_TARGET"})
-                {
-                    if (!Sub.contains(Key) || !Sub[Key].is_string()) continue;
-                    std::string T = Sub[Key];
-                    VarSubst::StringVariableSubstitution(T, Vars);
-                    if (!HasLiveToken(T)) continue;
-                    Findings.push_back({Id, Pkg, "unresolved-token-in-layer-target",
-                                        std::string(Key) + " of " + Sub.value("TYPE", std::string("?")) + " '"
-                                            + Sub.value("PATH", std::string("?")) + "' resolves to '" + T
-                                            + "' — it would mount at that literal path and its files would be "
-                                              "invisible to the game.", true});
-                }
-            }
         }
     }
-    ClearLogCallback();
-
     //Group by package so the report reads as "which games are broken", not a flat wall.
     std::map<std::string, std::vector<const Finding*>> ByPkg;
     for (const auto &F : Findings) ByPkg[F.Package].push_back(&F);

@@ -167,7 +167,7 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair
             // them. Arrayable, because a delta may dedup against a CONCATENATION of bases.
             if (vs[i - 1].target != vs[i].target)
-                (*Nd)["BASE_TARGET"] = nlohmann::ordered_json::array({vs[i - 1].target});
+                (*Nd)["BASE_TARGETS"] = nlohmann::ordered_json::array({vs[i - 1].target});
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);

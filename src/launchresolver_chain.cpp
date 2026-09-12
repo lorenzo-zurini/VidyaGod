@@ -1,3 +1,4 @@
+#include <sys/stat.h>
 #include "launchresolver.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
@@ -405,3 +406,48 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
 }
 
 //Native node-graph init — populates ContainerParams + the internal component pool DIRECTLY from the node graph.
+
+//Derives the wine/proton prefix LAYOUT variables (%DefaultPfxDir%, %WineSys32Dir%, …) from the runner mount.
+//Extracted from the launch sequence so the AUDIT can call it too: it builds every mount plan without mounting
+//anything, and without these the prefix-assembly layers' PATHs keep their %tokens% — 168 warnings and 56 errors
+//of pure context artifact, on a library where every one of them resolves fine at launch. Existence-probing
+//degrades to the documented last-resort path when nothing is mounted, which is exactly what a plan needs.
+void LaunchResolver::ProbePrefixLayout(struct ContainerParams &ContainerParams)
+{
+    //THE GATE LIVES HERE, not at the call sites. These variables exist only for a prefix-generating runner that
+    //ships a build; defining them for anything else does not "fix" an undefined %token%, it HIDES one — a layer
+    //under a native runner that references %DefaultPfxDir% mounts at that literal path and the game sees none of
+    //its files. The audit defining them unconditionally would have reported such a package clean.
+    if (!ContainerParams.PrefixGenerate || !ContainerParams.RunnerShipsBuild
+        || ContainerParams.RunnerMountPath.empty())
+        return;
+
+    const std::filesystem::path RM = ContainerParams.RunnerMountPath;
+    std::error_code Pec;
+    const std::string Root = std::filesystem::exists(RM / "files" / "lib" / "wine", Pec) ? "files" : "dist";
+    const std::string Lib  = (Root == "files") ? "lib" : "lib64";
+    //The two PE dirs are probed INDEPENDENTLY: newer protons unify both arches under lib/wine, but
+    //GE-Proton7-era builds split them (lib/wine/i386-windows + lib64/wine/x86_64-windows). Deriving both from
+    //one Lib pointed WineSys32Dir at a nonexistent dir on GE-7 — the system32 assembly layer mounted EMPTY
+    //(caught by the mount plan's missing-source check during the 2026-09-01 overnight run; harmless for a
+    //32-bit game, fatal for any 64-bit one on that runner).
+    auto PeDir = [&](const char *Arch) -> std::string {
+        for (const char *L : {"lib", "lib64"})
+        {
+            std::error_code E;
+            const std::filesystem::path P = RM / Root / L / "wine" / Arch;
+            if (std::filesystem::exists(P, E)) return P.string();
+        }
+        return (RM / Root / Lib / "wine" / Arch).string();   // old behavior as the last resort
+    };
+    auto &V = ContainerParams.CustomVariables;
+    V["DefaultPfxDir"]   = (RM / Root / "share" / "default_pfx").string() + "/";
+    V["WineFontsDir"]    = (RM / Root / "share" / "fonts").string() + "/";
+    V["WineLibDir"]      = (RM / Root / Lib).string() + "/";
+    V["WineSys32Dir"]    = PeDir("x86_64-windows");
+    V["WineSysWow64Dir"] = PeDir("i386-windows");
+    struct stat St{};
+    const std::string SysReg = (RM / Root / "share" / "default_pfx" / "system.reg").string();
+    V["SysRegMtime"] = (::stat(SysReg.c_str(), &St) == 0) ? (std::to_string((long long)St.st_mtime) + ".0") : "0";
+    LogOut("LaunchResolver::ProbePrefixLayout", "Probed prefix layout: " + Root + " (sysreg mtime " + V["SysRegMtime"] + ")");
+}

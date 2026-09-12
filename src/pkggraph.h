@@ -95,7 +95,13 @@ enum class FieldKind
     Text,        // a string
     Enum,        // a string with a fixed option list
     Check,       // a bool
-    StringList,  // an array of strings, one per line
+    StringList,  // an array of strings, one per line; blank lines are typing noise and are dropped
+    // ...except here: an array of strings where an EMPTY entry is MEANINGFUL, so a blank line is data, not noise.
+    // A delta's BASE_TARGETS is the only such field: "" is the mount root, a perfectly ordinary base. Under the
+    // plain StringList writer that entry could not be typed (blank line dropped → list empty → key erased) and,
+    // worse, an existing ["", "dxvk"] lost its first element the moment anyone touched the box — turning a
+    // two-base delta into a one-base one, which is a base of the wrong SIZE and a layer the mount silently skips.
+    StringListKeepEmpty,
     KeyValue,    // an object of string→string
     ObjArray,    // an array of objects, each described by `Sub`
     RegEdits,    // RegEdit's EDITS[]: ARCHITECTURE + a hive tree, edited as flattened key paths

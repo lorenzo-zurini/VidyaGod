@@ -1229,19 +1229,78 @@ std::string LayerType(const nlohmann::ordered_json &Sub)
     return Sub.is_object() ? Sub.value("TYPE", std::string()) : std::string();
 }
 
-//Build ONE vidyagodfs spec-layer object from a package VFS layer `Sub`, with caller-resolved `Source`/`Target` (and, for
-//a cross-target delta, `BaseTarget`). Returns a null json if `Sub` is not a VFS layer (caller skips). Centralizes the
-//entry skeleton + the delta baseTarget field so every mount builder stays byte-for-byte consistent. The source/target
-//resolution stays at the call site because it genuinely differs (package path vs per-link base prefix vs var-subst).
+//Build ONE vidyagodfs spec-layer object from a package VFS layer `Sub`, with caller-resolved `Source`/`Target` (and,
+//for a delta, its resolved byte-BASES in order). Returns a null json if `Sub` is not a VFS layer (caller skips).
+//Centralizes the entry skeleton + the delta base fields so every mount builder stays byte-for-byte consistent. The
+//source/target resolution stays at the call site because it genuinely differs (package path vs per-link base prefix
+//vs var-subst).
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
-                                        const std::string &Target, const std::string &BaseTarget)
+                                        const std::string &Target, const std::vector<std::string> &BaseTargets)
 {
     const std::string LType = VfsSpecType(Sub.value("TYPE", std::string()));
     if (LType.empty()) return nullptr;
     nlohmann::ordered_json J = {{"type", LType}, {"source", Source}, {"target", Target},
                                 {"submounts", Sub.value("SUBMOUNTS", nlohmann::ordered_json::array())}, {"rw", false}};
-    if (LType == "delta" && !BaseTarget.empty()) J["baseTarget"] = BaseTarget;
+    //ONE base is the singular key the FS has always read; SEVERAL is the multi-base form it stitches with a
+    //ConcatByteSource. ONE key for one base or many: "" is a legitimate target (the VFS root), so a singular
+    //key could not distinguish a base DECLARED at the root from no base at all — the FS would silently fall back
+    //to the delta's own target, reconstruct against the wrong bytes, and skip the layer.
+    //No delta-only check here: whether a layer HAS a byte-base is LayerBaseTargets' single answer, and every
+    //caller's vector comes from it. A second gate here would be redundant, and a redundant gate is one that no
+    //test can pin — remove either and the suite stays green, which is how a guard quietly stops guarding.
+    if (!BaseTargets.empty()) J["baseTargets"] = BaseTargets;
+    //RUNTIME-SOURCED: this layer reads from a path that only exists once something ELSE is mounted (a prefix
+    //assembly layer under %RunnerMount%). Recorded here because it is the last place that still has the node —
+    //by the time a plan is inspected the source is a resolved absolute path indistinguishable from any other.
+    //A caller that is not mounting (--audit-packages builds 960 plans) must not report these as missing.
+    if (IsRuntimeSourcedLayer(Sub)) J["runtimeSourced"] = true;
     return J;
+}
+
+//Does this string still contain an unresolved %TOKEN%? The resolver leaves reference cycles and typos literal,
+//and a literal %token% reaching a command line, a mount target or a file path is never what the author meant.
+//ONE definition: the mount builder used to ask "is there a '%' in here" and the audit asked this, so a target
+//like "save50%" was an error on every launch and clean in the audit, and "%a-b%" was the reverse — two opinions
+//about the same question, one per call site, which is the shape of every bug this subsystem keeps producing.
+bool HasLiveToken(const std::string &S)
+{
+    //A SURVIVING '%' is the signal, not a well-formed %IDENT% pair. Requiring the pair shape silently excused
+    //the malformed cases — "%PrefixRoot/drive_c/%UID%" (missing close), "%Prefix Root%", "%X-TARGET%" — which
+    //are precisely the typos substitution cannot resolve and therefore the ones that reach a real path literally.
+    //The pair shape now only decides how the message is PHRASED, not whether there is a problem.
+    return S.find('%') != std::string::npos;
+}
+
+std::vector<std::string> LayerBaseTargets(const nlohmann::ordered_json &Sub)
+{
+    std::vector<std::string> Out;
+    //Accepts BOTH shapes a delta is written in — the LOWERED layer (TYPE "VFSDeltaLayer") and the NODE it came
+    //from (TYPE "Content", FORM "delta") — because the key and its meaning are identical in both and the editor
+    //reads nodes while the mounter reads layers. Splitting that into two readers is how this question came to be
+    //answered differently in four places to begin with.
+    if (!Sub.is_object()) return Out;
+    const std::string T = LayerType(Sub);
+    const bool IsDelta = (T == "VFSDeltaLayer")
+                      || (T == "Content" && Sub.value("FORM", std::string()) == "delta");
+    if (!IsDelta) return Out;                                                // only a delta has a byte-base
+    //ONE key, always a list. A one-entry list is the ordinary cross-target delta; several are a concatenation.
+    //A malformed shape yields NOTHING and says so, rather than a SHORTER list: the bases are concatenated, so a
+    //missing entry is a base of the wrong length — the delta fails its size check, the FS drops the layer, and
+    //the content is gone. vidyagodfs refuses the same shape for the same reason (layerspec.cpp); a reader that
+    //quietly patched it up here would hand the mounter a plan the FS would never have accepted.
+    if (!Sub.contains("BASE_TARGETS")) return Out;
+    const auto &B = Sub["BASE_TARGETS"];
+    const bool WellFormed = B.is_array() && [&]{ for (const auto &E : B) if (!E.is_string()) return false; return true; }();
+    if (!WellFormed)
+    {
+        LogErr("ManifestModel::LayerBaseTargets",
+               "Layer " + Sub.value("TYPE", std::string("?")) + " '" + Sub.value("PATH", std::string("?"))
+                   + "': BASE_TARGETS must be an array of strings — the delta's byte-base is IGNORED, so it will "
+                     "reconstruct against its own target or be skipped entirely.");
+        return Out;
+    }
+    for (const auto &E : B) Out.push_back(E.get<std::string>());
+    return Out;
 }
 
 void ForEachVfsLayer(const nlohmann::ordered_json &Components,

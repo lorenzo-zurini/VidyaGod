@@ -235,10 +235,28 @@ std::string LayerType(const nlohmann::ordered_json &Sub);
 // the two must agree so target strings match the FS's per-target base map (a parity test pins that; the FS side
 // additionally never sees backslashes, its inputs being zip entry names). Was inlined ×3 across the engine.
 std::string NormalizeTargetPath(std::string P);
-// Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target (and a delta's
-// BaseTarget). Null json if `Sub` is not a VFS layer. Centralizes the entry skeleton so mount builders never drift.
+// The ONE answer to "which key holds this delta's byte-bases, and in what order?". A delta may be based on the
+// CONCATENATION of several composed views (a wine build ‖ a DXVK build ‖ the previous prefix), so the answer is
+// always a LIST, under ONE key: `BASE_TARGETS`. There is no singular spelling anywhere in the format — two
+// spellings for one idea is how the plural came to be emitted, documented and never read by the mounter.
+// Returns the DECLARED strings, unresolved and unsubstituted — each caller applies its own target resolution.
+// Empty for a non-delta layer, and for a delta with no declared base (whose base is implicitly the composed view
+// at its own TARGET). Every question of this shape asked separately per call site has broken separately; this one
+// is asked once. Order is load-bearing: it must match what generation concatenated.
+std::vector<std::string> LayerBaseTargets(const nlohmann::ordered_json &Sub);
+// True when a string still holds an unresolved %TOKEN% after substitution. The single definition of "surviving
+// token" — the mount builders and --audit-packages must agree, or one reports a launch broken that the other
+// calls clean.
+bool HasLiveToken(const std::string &S);
+// Build one vidyagodfs spec-layer object from a package VFS layer, with caller-resolved Source/Target (and, for a
+// delta, its resolved byte-BASES in order). Null json if `Sub` is not a VFS layer. Centralizes the entry skeleton so
+// mount builders never drift.
+//
+// A delta's bases go on the wire as ONE key, `baseTargets`, however many there are — an empty string is a real
+// target (the VFS root), so a singular key could not distinguish "based at the root" from "no base declared".
 nlohmann::ordered_json MakeVfsSpecLayer(const nlohmann::ordered_json &Sub, const std::string &Source,
-                                        const std::string &Target, const std::string &BaseTarget = "");
+                                        const std::string &Target,
+                                        const std::vector<std::string> &BaseTargets = {});
 // Invokes Fn on every VFS-layer subcomponent across a COMPONENTS array (any json shape is tolerated).
 void ForEachVfsLayer(const nlohmann::ordered_json &Components,
                      const std::function<void(const nlohmann::ordered_json &Sub)> &Fn);

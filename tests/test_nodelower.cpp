@@ -133,23 +133,58 @@ TEST(lower_content_maps_form_to_layer_type_and_carries_placement)
     CHECK(Refused(ordered_json{{"NODE_ID", "c"}, {"TYPE", "Content"}, {"FORM", "tarball"}}));
 }
 
-// BASE_TARGET is arrayable: one entry is a plain cross-target delta, several are a CONCATENATION of bases.
-// The mounter reads the singular and the plural under different keys, so the shape must be preserved.
-TEST(lower_content_base_target_singular_and_plural)
+// A delta's byte-base(s) are BASE_TARGETS: ONE key, ALWAYS a list, node and layer alike. One entry is the
+// ordinary cross-target delta; several are a CONCATENATION. There is no singular spelling — two keys for one
+// idea is exactly how the plural came to be emitted, documented and never read by the mounter — and "" is a
+// real target (the mount root) that a lone string could not tell apart from "no base declared".
+TEST(lower_content_base_targets_is_one_key_always_a_list)
 {
     auto Mk = [](ordered_json B) {
         return ordered_json{{"NODE_ID", "c"}, {"TYPE", "Content"}, {"FORM", "delta"}, {"PATH", "d.vgdelta"},
-                            {"BASE_TARGET", std::move(B)}};
+                            {"BASE_TARGETS", std::move(B)}};
     };
-    CHECK_EQ(Lower(Mk("one"))[0].value("BASE_TARGET", std::string()), std::string("one"));
-    CHECK_EQ(Lower(Mk(ordered_json::array({"one"})))[0].value("BASE_TARGET", std::string()), std::string("one"));
-    const ordered_json Multi = Lower(Mk(ordered_json::array({"a", "b"})));
-    CHECK(!Multi[0].contains("BASE_TARGET"));
-    CHECK_EQ((int)Multi[0].value("BASE_TARGETS", ordered_json::array()).size(), 2);
+    auto Bases = [](const ordered_json &Lowered) {
+        std::vector<std::string> B;
+        for (const auto &E : Lowered[0].value("BASE_TARGETS", ordered_json::array())) B.push_back(E.get<std::string>());
+        return B;
+    };
+    CHECK_EQ(Bases(Lower(Mk(ordered_json::array({"one"})))), (std::vector<std::string>{"one"}));
+    CHECK_EQ(Bases(Lower(Mk(ordered_json::array({"a", "b"})))), (std::vector<std::string>{"a", "b"}));
+    //A base at the ROOT is a real declaration and must survive as one.
+    CHECK_EQ(Bases(Lower(Mk(ordered_json::array({""})))), (std::vector<std::string>{""}));
     //An EMPTY array used to fall through every branch and silently drop the base — a delta with nothing to
     //reconstruct against, reported by nobody.
     CHECK(Refused(Mk(ordered_json::array())));
     CHECK(Refused(Mk(7)));
+    CHECK(Refused(Mk(ordered_json::array({"a", 7}))));            // a non-string entry shortens the concatenation
+    //A bare string is refused rather than wrapped: the key is a LIST, said once, so there is no second shape
+    //for a reader to forget. (It is the plausible slip, so the refusal names the fix.)
+    CHECK(Refused(Mk("one")));
+    //...and so is the singular key, rather than being ignored: BASE_TARGET reads as obviously right, and
+    //dropping it silently gives a delta with no base that validates clean and audits clean.
+    std::string E;
+    NodeLower::Lower(ordered_json{{"NODE_ID", "c"}, {"TYPE", "Content"}, {"FORM", "delta"},
+                                  {"PATH", "d.vgdelta"}, {"BASE_TARGET", "a"}}, "c", E);
+    CHECK(E.find("BASE_TARGETS") != std::string::npos);           // and the message names the key to use
+}
+
+// BASE_TARGETS is a DELTA's byte-base. On any other FORM it used to be accepted and then silently discarded
+// by the mounter — and the editor offers the field on every Content node, so it is a two-click mistake.
+TEST(lower_content_base_targets_only_means_something_on_a_delta)
+{
+    auto Mk = [](const char *Form) {
+        return ordered_json{{"NODE_ID", "c"}, {"TYPE", "Content"}, {"FORM", Form}, {"PATH", "a.zip"},
+                            {"BASE_TARGETS", ordered_json::array({"wine"})}};
+    };
+    for (const char *F : {"zip", "dir", "file"})
+    {
+        std::string E;
+        NodeLower::Lower(Mk(F), "c", E);
+        CHECK(!E.empty());                                     // refused, not quietly dropped
+        CHECK(E.find("BASE_TARGETS") != std::string::npos);    // and the message names the key
+    }
+    CHECK(!Refused(ordered_json{{"NODE_ID", "c"}, {"TYPE", "Content"}, {"FORM", "delta"},
+                                {"PATH", "d.vgdelta"}, {"BASE_TARGETS", ordered_json::array({"wine"})}}));
 }
 
 // ---- RegEdit -------------------------------------------------------------------------------------

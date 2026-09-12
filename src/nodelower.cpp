@@ -85,19 +85,28 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
         if (!VfsType) return Fail("Content has unknown FORM '" + Form + "'");
         ordered_json L = {{"TYPE", VfsType}};
         CopyIf(J, L, {"PATH", "TARGET", "SOURCE", "SUBMOUNTS", "COMMENT"});   // WHEN: applied at the tail
-        //BASE_TARGET is an array (a delta may dedup against a CONCATENATION of bases). vidyagodfs carries
-        //the plural as LayerSpec::baseTargets; the single-entry form is a plain cross-target delta.
+        //BASE_TARGETS is a delta's byte-base(s): ALWAYS a list, because the base may be the CONCATENATION of
+        //several composed views and a one-element list says exactly what a singular key would have. There is
+        //deliberately no singular spelling — two keys for one idea is how the plural came to be emitted,
+        //documented and never read, and "" is a real target (the mount root) that a lone string could not tell
+        //apart from "no base declared".
         if (J.contains("BASE_TARGET"))
+            return Fail("BASE_TARGET does not exist — a delta's base(s) are BASE_TARGETS, always a list "
+                        "(one entry for an ordinary cross-target delta)");
+        //...and it is meaningless on anything but a delta, where it was accepted and then silently discarded by
+        //the mounter. The editor offers the field on every Content node, so this is a two-click mistake.
+        if (J.contains("BASE_TARGETS") && Form != "delta")
+            return Fail("BASE_TARGETS is a delta's byte-base — it means nothing on FORM \"" + Form + "\"");
+        if (J.contains("BASE_TARGETS"))
         {
-            const auto &B = J["BASE_TARGET"];
-            if (B.is_string())                              L["BASE_TARGET"]  = B;
-            else if (B.is_array() && B.size() == 1)         L["BASE_TARGET"]  = B[0];
-            else if (B.is_array() && B.size() > 1)          L["BASE_TARGETS"] = B;
-            //An EMPTY array fell through every branch and silently dropped the base — a delta with nothing to
-            //reconstruct against, reported by nobody. Say it instead of omitting the key.
-            else if (B.is_array())                          return Fail("BASE_TARGET is an empty array (omit it "
-                                                                        "to base the delta on its own TARGET)");
-            else                                            return Fail("BASE_TARGET must be a string or array");
+            const auto &B = J["BASE_TARGETS"];
+            if (!B.is_array()) return Fail("BASE_TARGETS must be an array of mount targets, not "
+                                           + std::string(B.type_name()));
+            //An EMPTY array silently dropped the base — a delta with nothing to reconstruct against, reported
+            //by nobody. Say it instead of omitting the key.
+            if (B.empty()) return Fail("BASE_TARGETS is an empty array (omit it to base the delta on its own TARGET)");
+            for (const auto &E : B) if (!E.is_string()) return Fail("BASE_TARGETS entries must be strings");
+            L["BASE_TARGETS"] = B;
         }
         Out.push_back(std::move(L));
     }
@@ -304,7 +313,7 @@ enum Kind { Str, Bool, Num, Arr, Obj, StrArr };
 const std::map<std::string, Kind> &Table()
 {
     static const std::map<std::string, Kind> T = {
-        {"TYPE",Str},{"PATH",Str},{"TARGET",Str},{"BASE_TARGET",Str},{"REGPATH",Str},{"DLLOVERRIDE",Str},
+        {"TYPE",Str},{"PATH",Str},{"TARGET",Str},{"REGPATH",Str},{"DLLOVERRIDE",Str},
         {"FILE",Str},{"MODE",Str},{"OFFSET",Str},{"EXPECT",Str},{"REPLACE",Str},{"VALUE",Str},{"PAYLOAD",Str},
         {"CAVE",Str},{"ANCHOR",Str},{"APPLY",Str},{"KEY",Str},{"DEFAULT",Str},{"COMMENT",Str},{"WHEN",Str},
         {"PLATFORM",Str},{"HOST",Str},{"EXECUTABLE",Str},{"CONTENTPATH",Str},{"WORKDIR",Str},{"LABEL",Str},

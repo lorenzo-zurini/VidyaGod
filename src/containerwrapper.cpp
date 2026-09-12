@@ -176,37 +176,9 @@ bool ContainerWrapper::BuildContainerRuntime()
     //(default_pfx/DLL VFSDirLayers + config_info FileEdit) are IDENTICAL across all ~150 versions — the layout paths +
     //system.reg mtime resolve from the live mount, mirroring proton's fonts_dir/lib_dir/default_pfx_dir + system.reg
     //mtime so its config_info fast-path fires (zero-copy). Irrelevant to native runners (no wine prefix).
-    if (PrefixGen && ContainerParams.RunnerShipsBuild && !ContainerParams.RunnerMountPath.empty())
     {
         StepScope Step(6, "Probing the wine prefix layout");
-        const std::filesystem::path RM = ContainerParams.RunnerMountPath;
-        std::error_code Pec;
-        const std::string Root = std::filesystem::exists(RM / "files" / "lib" / "wine", Pec) ? "files" : "dist";
-        const std::string Lib  = (Root == "files") ? "lib" : "lib64";
-        //The two PE dirs are probed INDEPENDENTLY: newer protons unify both arches under lib/wine, but
-        //GE-Proton7-era builds split them (lib/wine/i386-windows + lib64/wine/x86_64-windows). Deriving both from
-        //one Lib pointed WineSys32Dir at a nonexistent dir on GE-7 — the system32 assembly layer mounted EMPTY
-        //(caught by the mount plan's missing-source check during the 2026-09-01 overnight run; harmless for a
-        //32-bit game, fatal for any 64-bit one on that runner).
-        auto PeDir = [&](const char *Arch) -> std::string {
-            for (const char *L : {"lib", "lib64"})
-            {
-                std::error_code E;
-                const std::filesystem::path P = RM / Root / L / "wine" / Arch;
-                if (std::filesystem::exists(P, E)) return P.string();
-            }
-            return (RM / Root / Lib / "wine" / Arch).string();   // old behavior as the last resort
-        };
-        auto &V = ContainerParams.CustomVariables;
-        V["DefaultPfxDir"]   = (RM / Root / "share" / "default_pfx").string() + "/";
-        V["WineFontsDir"]    = (RM / Root / "share" / "fonts").string() + "/";
-        V["WineLibDir"]      = (RM / Root / Lib).string() + "/";
-        V["WineSys32Dir"]    = PeDir("x86_64-windows");
-        V["WineSysWow64Dir"] = PeDir("i386-windows");
-        struct stat St{};
-        const std::string SysReg = (RM / Root / "share" / "default_pfx" / "system.reg").string();
-        V["SysRegMtime"] = (::stat(SysReg.c_str(), &St) == 0) ? (std::to_string((long long)St.st_mtime) + ".0") : "0";
-        LogOut("ContainerWrapper::BuildContainerRuntime", "Probed prefix layout: " + Root + " (sysreg mtime " + V["SysRegMtime"] + ")");
+        LaunchResolver::ProbePrefixLayout(ContainerParams);   // no-ops unless this runner generates a prefix
     }
 
     //Materialise every package-encoded BASE edit into the DEFAULTDATA layer (between the component layers

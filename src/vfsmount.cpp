@@ -73,6 +73,64 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //dirs), the KEEP dirs as durable RW passthrough layers, the DROP paths as ephemeral RW shadows, and the
 //writable top branch (the durable UserDataPath when the whole runtime is kept, else the ephemeral WRITELAYER).
 //Array order is union priority (lowest first).
+//Every DECLARED delta base must name a target that an EARLIER layer of THIS plan composes bytes at. When it
+//does not, vidyagodfs prints one line to its own stderr and SKIPS the layer — so the mount succeeds, the game
+//starts, and that content is simply absent. This runs on the assembled plan (not on the node list) because the
+//answer depends on ORDER and on layer TYPE, and it logs through the engine so a real launch says it too; the
+//audit gets it by capturing the same line rather than by re-deriving the plan and disagreeing about it.
+//
+//Only zip and delta layers compose a byte view (overlay.cpp keeps `baseByTarget` inside that branch): a dir or
+//file layer mounts perfectly well and is still not a base, so accepting one here would pass exactly the plans
+//the FS refuses.
+//
+//WHAT THIS DOES NOT CATCH, stated so it is not mistaken for more: it asks whether SOME composed view exists at
+//the target by the time the delta is built, not WHICH one. At a target carrying a delta chain, a base named by
+//a delta that sits mid-chain resolves to that chain's partial view; whether generation diffed against the
+//partial or the finished tree is not knowable from the plan, so it is not guessed at here — a wrong guess would
+//fail the delta's own size check at mount, loudly, which is the better place for it.
+static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char *Ctx)
+{
+    std::set<std::string> ByteViews;
+    for (const auto &L : Layers)
+    {
+        const std::string Type   = L.value("type", std::string());
+        const std::string Target = L.value("target", std::string());
+        if (Type != "zip" && Type != "delta") continue;
+
+        bool Resolved = true;
+        if (Type == "delta")
+        {
+            //A delta with NO declared base is based on the composed view at its OWN target — the ordinary chain,
+            //and what every delta in the library actually is. Checking only the DECLARED case covered ~none of
+            //them. It is decidable here for the same reason the declared case is: this runs on the ASSEMBLED
+            //plan, which already holds every layer of every node in the closure, so "does anything compose bytes
+            //below me" is simply a question about the layers already walked.
+            std::vector<std::string> Bases;
+            if (L.contains("baseTargets") && L["baseTargets"].is_array())
+                for (const auto &B : L["baseTargets"]) { if (B.is_string()) Bases.push_back(B.get<std::string>()); }
+            const bool Declared = !Bases.empty();
+            if (!Declared) Bases.push_back(Target);
+
+            for (const std::string &B : Bases)
+            {
+                if (ByteViews.count(B)) continue;
+                Resolved = false;
+                LogErr(Ctx, "Delta layer '" + L.value("source", std::string("?")) + "' (target '" + Target + "') "
+                                + (Declared ? "declares a byte-base at '" + B + "'"
+                                            : "has no layer below it at its own target '" + B + "'")
+                                + ", but no earlier layer in this plan composes bytes there (only zip/delta layers "
+                                  "do). The mount will SKIP this layer and its content will be missing from the "
+                                  "runtime.");
+            }
+        }
+
+        //A delta the FS will SKIP composes no view either — overlay.cpp registers the target only after
+        //DeltaByteSource::Create succeeds. Pretending otherwise lets the NEXT delta based on this target pass a
+        //check it will fail at mount: one error logged, two layers silently lost.
+        if (Resolved) ByteViews.insert(Target);
+    }
+}
+
 nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec;
@@ -84,8 +142,10 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         Spec["writelayer"] = nullptr;
     else
     {
+        //NAMED, not created — see ReportMissingSources: building a plan must not touch the filesystem. Under
+        //PersistAll this path is the user's DURABLE data dir, and --audit-packages builds 960 plans it never
+        //mounts; creating it here littered that directory with one entry per audited package.
         const std::filesystem::path RW = ContainerParams.PersistAll ? ContainerParams.UserDataPath : ContainerParams.WriteLayerPath;
-        std::filesystem::create_directories(RW);
         Spec["writelayer"] = RW.string();
     }
 
@@ -107,14 +167,18 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     // under drive_c/<UID>. An absent TARGET means the VFS root ("" — the author composes from there). Content layers
     // pass an empty Base below; the inner-runner nesting passes its own mount base (engine-internal, not author TARGET).
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
-    auto ResolveTargetKey = [&](const std::string &Base, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
-        if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
-        std::string T = Sub[Key].get<std::string>();
+    //Resolves ONE already-extracted target string. Split out from the key-reading below because a multi-base
+    //delta's bases are values inside an array, not a key on the layer — resolving them through a SYNTHETIC
+    //one-key object (the first cut) made the diagnostic below read "Layer ? '?'", naming neither the layer type
+    //nor the PATH, which is the only way to find the offender among 992 delta nodes. `Sub` is here for the
+    //message and nothing else.
+    auto ResolveOneTarget = [&](const std::string &Base, std::string T,
+                                const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
         VarSubst::StringVariableSubstitution(T, Vars);
         //A token that survived substitution becomes a LITERAL DIRECTORY NAME in the mount plan: the layer mounts at
         //"%Foo%/whatever", the game sees none of those files, and the mount itself succeeds — the quietest failure
         //this subsystem can produce. VarSubst names the variable; this says what it cost.
-        if (T.find('%') != std::string::npos)
+        if (ManifestModel::HasLiveToken(T))
             LogErr("VfsMount::BuildLayerSpec", "Layer " + Sub.value("TYPE", std::string("?")) + " '"
                                                    + Sub.value("PATH", std::string("?")) + "': " + Key + " still contains a "
                                                    "%token% after substitution (\"" + T + "\") — it will mount at that "
@@ -123,7 +187,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         if (T.empty()) return Base;
         return Base.empty() ? T : (Base + "/" + T);
     };
-    // The mount TARGET is the common case; a cross-target VFSDeltaLayer also carries BASE_TARGET (the target of its
+    auto ResolveTargetKey = [&](const std::string &Base, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
+        if (!Sub.contains(Key) || !Sub[Key].is_string()) return Base;
+        return ResolveOneTarget(Base, Sub[Key].get<std::string>(), Sub, Key);
+    };
+    // The mount TARGET is the common case; a cross-target VFSDeltaLayer also carries BASE_TARGETS (the targets of its
     // byte-base zip), resolved identically so the two strings match the FS's per-target base map.
     auto ResolveTarget = [&](const std::string &Base, const nlohmann::ordered_json &Sub) { return ResolveTargetKey(Base, Sub, "TARGET"); };
     // A layer's SOURCE is %variable%-substituted too (like TARGET): after substitution an ABSOLUTE path is used as-is
@@ -138,14 +206,26 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         return ResolveLayerSource(S, PkgPath);
     };
 
+    //A delta's byte-BASES, resolved in order, through the SAME substitution and diagnostics as any other target.
+    //Which key holds them is ManifestModel::LayerBaseTargets' business (asked once, there). Reading only the
+    //singular here is what left the arrayable format silently half-wired: the node said three bases, the mount got
+    //none, the FS skipped the layer and the game launched with that content absent.
+    //NOTHING is dropped: a base that resolves to "" is the VFS ROOT, a perfectly real target, and silently
+    //discarding it would turn a 2-base delta into a 1-base one — a differently-sized base, a reconstruction that
+    //fails its size check, and a skipped layer.
+    auto ResolveBases = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
+        std::vector<std::string> Out;
+        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
+            Out.push_back(ResolveOneTarget(Base, Raw, Sub, "BASE_TARGETS"));
+        return Out;
+    };
+
     for (auto &Sub : ContainerParams.SubComponentsArray)
     {
         if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
-        std::string BaseTarget;                                   // cross-target byte-base of a VFSDeltaLayer (else empty)
-        if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
-            BaseTarget = ResolveTargetKey(std::string(), Sub, "BASE_TARGET");
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveSource(Sub, ContainerParams.PackagePath),
-                                          ResolveTarget(std::string(), Sub), BaseTarget));   // VFS-root-relative target
+                                          ResolveTarget(std::string(), Sub),
+                                          ResolveBases(std::string(), Sub)));   // VFS-root-relative target
     }
 
     //CROSS-NAMESPACE NESTING: an INNER chain runner (e.g. a win32 emulator under proton) runs inside the boundary's
@@ -160,10 +240,8 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
             for (const auto &Sub : L.Layers)
             {
                 if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
-                std::string BaseTarget;
-                if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
-                    BaseTarget = ResolveTargetKey(Base, Sub, "BASE_TARGET");
-                Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath), ResolveTarget(Base, Sub), BaseTarget));
+                Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
+                                                  ResolveTarget(Base, Sub), ResolveBases(Base, Sub)));
             }
         }
 
@@ -179,21 +257,18 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //Skipped when the whole runtime is kept (the writable branch is already the durable UserDataPath).
     if (!ContainerParams.PersistAll)
         for (const std::string &Rel : ContainerParams.KeepDirs)
-        {
-            std::filesystem::path Src = ContainerParams.UserDataPath / Rel;
-            std::filesystem::create_directories(Src);
-            Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
-        }
+            Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.UserDataPath / Rel).string()},
+                              {"target", Rel}, {"rw", true}});
 
     //DROP paths → ephemeral RW shadow layers (highest priority, appended LAST so they win). The source is an empty
     //per-launch dir under TempPath, so writes to <rel> go nowhere durable — carving an ephemeral hole in a whole-runtime
     //keep, or in an enclosing KEEP dir. Always emitted (harmless when nothing durable encloses it).
+    //The RW sources are CREATED by MountVFS, not here: building a plan must not touch the filesystem, or the
+    //plan cannot be inspected without side effects — which is why the audit used to re-implement this function
+    //approximately instead of just calling it, and then disagreed with it about what mounts where.
     for (const std::string &Rel : ContainerParams.DropPaths)
-    {
-        std::filesystem::path Src = ContainerParams.TempPath / "DROPS" / Rel;
-        std::filesystem::create_directories(Src);
-        Layers.push_back({{"type", "dir"}, {"source", Src.string()}, {"target", Rel}, {"rw", true}});
-    }
+        Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.TempPath / "DROPS" / Rel).string()},
+                          {"target", Rel}, {"rw", true}});
 
     //The mount plan IS the game's filesystem, and its ORDER IS PRIORITY — yet until now it was assembled and handed
     //to the FUSE helper without ever being stated. Print it: index, type, rw, target, source, and whether the source
@@ -203,24 +278,13 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
                                            + std::to_string(Layers.size()) + " layer(s), listed LOWEST priority first"
                                            + (ContainerParams.ReadOnlyVFS ? ", read-only (no writelayer)"
                                                                           : ", writelayer " + Spec.value("writelayer", std::string())));
-    size_t MissingSources = 0;
-    for (size_t i = 0; i < Layers.size(); ++i)
-    {
-        const auto &L      = Layers[i];
-        const std::string S = L.value("source", std::string());
-        const bool Exists   = !S.empty() && std::filesystem::exists(S);
-        if (!Exists) ++MissingSources;
-        LogOut("VfsMount::BuildLayerSpec", "  [" + std::to_string(i) + "] " + L.value("type", std::string("?"))
-                                               + (L.value("rw", false) ? " rw " : " ro ") + "target='"
-                                               + L.value("target", std::string()) + "' source=" + (S.empty() ? "(none)" : S)
-                                               + (Exists ? "" : "   <-- SOURCE DOES NOT EXIST"));
-    }
-    if (MissingSources)
-        LogErr("VfsMount::BuildLayerSpec", std::to_string(MissingSources) + " of " + std::to_string(Layers.size())
-                                               + " layer source(s) do not exist on disk — those layers will mount EMPTY "
-                                                 "and the mount will still succeed. Expect missing files in the game.");
+    //The SOURCE-EXISTENCE sweep lives in MountVFS, not here: it asks a question about the filesystem AT MOUNT
+    //TIME, and a plan is also built by callers that will never mount one (--audit-packages builds all 960).
+    //There, runtime-sourced layers legitimately do not exist yet, and reporting them made a healthy library
+    //emit 56 errors of pure context artifact — which is how a diagnostic stops being read.
 
     Spec["layers"] = Layers;
+    ValidateDeltaBases(Layers, "VfsMount::BuildLayerSpec");
     return Spec;
 }
 
@@ -229,9 +293,60 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 //mount is live, so the spawn returns; we then poll mountinfo to confirm readiness before proceeding.
 //RuntimePath registers for the non-lazy save-safe unmount whenever durable data is reachable through
 //the mount (a whole-runtime keep's writelayer or any KEEP-dir RW passthrough), else the lazy path.
+//A layer whose source is gone mounts EMPTY and succeeds, so the game just quietly misses those files — the same
+//silence class as a FileEdit that never applied. A pure question about a plan and the filesystem, so it is named
+//and callable: the MOUNT asks it (where "does this exist yet" is meaningful), a test asks it directly, and the
+//plan BUILDER deliberately does not — --audit-packages builds 960 plans it will never mount, and there the
+//runtime-sourced layers legitimately do not exist yet.
+//Creates the writable paths a built plan NAMES: the write branch and every RW passthrough source (KEEP dirs,
+//DROP shadows). The counterpart to building a plan without side effects — the plan says what it needs, the
+//mount provides it. Named and callable so the two halves can be tested apart: nothing else in the suite can
+//mount, so without this a mount that stopped creating them would break only on real hardware.
+void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
+{
+    std::error_code Ec;
+    const std::string WL = Spec.value("writelayer", std::string());
+    if (!WL.empty()) std::filesystem::create_directories(WL, Ec);
+    for (const auto &L : Spec.value("layers", nlohmann::ordered_json::array()))
+        if (L.value("type", std::string()) == "dir" && L.value("rw", false))
+            std::filesystem::create_directories(L.value("source", std::string()), Ec);
+}
+
+size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntimeSourced)
+{
+    const nlohmann::ordered_json Layers = Spec.value("layers", nlohmann::ordered_json::array());
+    size_t MissingSources = 0;
+    for (size_t i = 0; i < Layers.size(); ++i)
+    {
+        const auto &L      = Layers[i];
+        const std::string S = L.value("source", std::string());
+        //A RUNTIME-SOURCED layer reads from a path that only exists once something else is mounted (a prefix
+        //assembly layer under %RunnerMount%), and an RW passthrough source is created BY the mount. Neither is
+        //missing before a mount — a caller that is not mounting says so rather than reporting both as broken.
+        if (SkipRuntimeSourced && (L.value("rw", false) || L.value("runtimeSourced", false))) continue;
+        const bool Exists   = !S.empty() && std::filesystem::exists(S);
+        if (!Exists) ++MissingSources;
+        LogOut("VfsMount::ReportMissingSources", "  [" + std::to_string(i) + "] " + L.value("type", std::string("?"))
+                                               + (L.value("rw", false) ? " rw " : " ro ") + "target='"
+                                               + L.value("target", std::string()) + "' source=" + (S.empty() ? "(none)" : S)
+                                               + (Exists ? "" : "   <-- SOURCE DOES NOT EXIST"));
+    }
+    if (MissingSources)
+        LogErr("VfsMount::ReportMissingSources", std::to_string(MissingSources) + " of " + std::to_string(Layers.size())
+                                               + " layer source(s) do not exist on disk — those layers will mount EMPTY "
+                                                 "and the mount will still succeed. Expect missing files in the game.");
+    return MissingSources;
+}
+
 bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 {
     nlohmann::ordered_json Spec = BuildLayerSpec(ContainerParams);
+
+    //Materialize what the plan says it needs. BuildLayerSpec only COMPUTES these paths (KEEP dirs under
+    //UserDataPath, DROP shadows under TempPath); creating them is the mount's job, so a plan can be built and
+    //inspected — by a test, or by --audit-packages — without writing to the user's data directory.
+
+    VfsMount::ReportMissingSources(Spec);
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
@@ -280,6 +395,11 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::filesystem::path &Mountpoint,
                                        const std::filesystem::path &SpecPath, long long *OutPid)
 {
+    //Every mount in the app goes through here — the runtime, the runner build, runner install — so this is the
+    //one place that can guarantee a plan's writable paths exist before the helper is handed the spec. Doing it
+    //in MountVFS instead left the runner paths to chance and left the call itself unpinnable: no test can FUSE
+    //mount, so deleting it broke only real hardware.
+    VfsMount::MaterializePlanPaths(Spec);
     {
         std::ofstream Out(SpecPath);   // SpecPath lives under TempPath (already created) — safe on both OSes
         if (!Out) { LogErr("VfsMount::SpawnVidyagodfs", "Cannot write spec " + SpecPath.string()); return false; }
@@ -324,16 +444,11 @@ bool VfsMount::SpawnVidyagodfs(const nlohmann::ordered_json &Spec, const std::fi
 //separate-mount, installed-runner model. The zips are mounted (never extracted) at the mount root by their
 //resolved (cached) source. Registers the mount for lazy cleanup. No-op when the runner ships no build or is
 //unified into the game RUNTIME.
-bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
+//The runner build's mount plan, separated from the act of mounting it. It used to be built inline inside
+//MountRunnerBuild, which meant the ONE builder where multi-base deltas actually pay (a prefix delta'd over
+//[wine ‖ dxvk]) had no seam a test could reach: deleting its whole base-resolution block left every suite green.
+nlohmann::ordered_json VfsMount::BuildRunnerLayerSpec(struct ContainerParams &ContainerParams)
 {
-    if (!ContainerParams.RunnerShipsBuild || ContainerParams.UnifiedRuntime) return true;
-    if (ContainerParams.RunnerLayers.empty()) return true;
-
-    //Ensure TempPath (for the spec) + the RUNNER mountpoint exist. This mount can run before MountVFS (which otherwise
-    //creates TempPath), e.g. for a native runner that ships a build without generating a wine prefix — CleanStaleRuntime
-    //may have removed TempPath, and SpawnVidyagodfs does not create it. create_directories is idempotent.
-    { std::error_code Mec; std::filesystem::create_directories(ContainerParams.RunnerMountPath, Mec); }
-
     nlohmann::ordered_json Spec;
     Spec["mountpoint"] = ContainerParams.RunnerMountPath.string();
     Spec["uid"] = 1000; Spec["gid"] = 1000;
@@ -341,23 +456,35 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
     // A runner build may itself be a .vgdelta CHAIN (many Proton versions = base + deltas); MakeVfsSpecLayer handles
     // VFSDeltaLayer so pinning a specific version reconstructs it (its base zip precedes it — closure order is
-    // parents-first). TARGET/BASE_TARGET are bare (beside the runner-mount root — no per-link base prefix here) and
+    // parents-first). TARGET/BASE_TARGETS are bare (beside the runner-mount root — no per-link base prefix here) and
     // %VAR%-substituted from the closure, so a SHARED library node (e.g. a dedup'd dxvk pinned by many proton versions)
     // can place itself per-referrer via TARGET:"%DXVK_TARGET%" — the composing runner defines DXVK_TARGET.
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
-    auto SubstTarget = [&](const std::string &In) -> std::string {
+    //Same substitution AND the same surviving-%token% diagnostic as the content mount. The first cut of this block
+    //had its own bare substitution helper with no token check at all, so a runner-build layer whose target failed
+    //to substitute produced a wrong mount plan in total silence — the one diagnostic this subsystem has, absent
+    //from the one builder where multi-base actually pays (a prefix delta'd over [wine ‖ dxvk]).
+    auto SubstTarget = [&](const std::string &In, const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
         std::string T = In;
         VarSubst::StringVariableSubstitution(T, Vars);
+        if (ManifestModel::HasLiveToken(T))
+            LogErr("VfsMount::MountRunnerBuild", "Runner layer " + Sub.value("TYPE", std::string("?")) + " '"
+                                                     + Sub.value("PATH", std::string("?")) + "': " + Key
+                                                     + " still contains a %token% after substitution (\"" + T
+                                                     + "\") — it will mount at that LITERAL path and its files will "
+                                                       "be invisible to the runtime.");
         return NormalizeTargetPath(T);
     };
     for (auto &Sub : ContainerParams.RunnerLayers)
     {
         if (!IsVfsLayer(Sub.value("TYPE", std::string()))) continue;
-        std::string BaseTarget;
-        if (Sub.value("TYPE", std::string()) == "VFSDeltaLayer" && Sub.contains("BASE_TARGET") && Sub["BASE_TARGET"].is_string())
-            BaseTarget = SubstTarget(std::string(Sub["BASE_TARGET"]));
+        //Which key holds the bases is asked ONCE, in ManifestModel::LayerBaseTargets — this builder differs from
+        //the content mount only in how a target string is substituted, never in what it reads or what it keeps.
+        std::vector<std::string> BaseTargets;
+        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
+            BaseTargets.push_back(SubstTarget(Raw, Sub, "BASE_TARGETS"));
         Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, ContainerParams.RunnerPackagePath),
-                                          SubstTarget(Sub.value("TARGET", std::string())), BaseTarget));
+                                          SubstTarget(Sub.value("TARGET", std::string()), Sub, "TARGET"), BaseTargets));
     }
     // NB: GE-Proton's protonfixes hack forces PROTON_DLL_COPY='*' (COPY every builtin DLL into the prefix, ~650 MB,
     // instead of symlinking). It is neutralized by the `proton-settings` content node, which every runner PARENTs:
@@ -366,6 +493,29 @@ bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
     // restores proton's default DLL_COPY list, so builtins SYMLINK into the RO wine mount. Pure node data; no engine
     // special-case (the loop above already mounted it like any other runner-build VFS layer).
     Spec["layers"] = Layers;
+    ValidateDeltaBases(Layers, "VfsMount::BuildRunnerLayerSpec");
+    return Spec;
+}
+
+//Does this container have a runner build to mount at all? Asked by the mount and by every caller that wants the
+//runner's plan — stated once, because the same conjunction spelled out at two call sites is how "which node
+//holds this" came to be answered four different ways.
+bool VfsMount::RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams)
+{
+    return ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime
+           && !ContainerParams.RunnerLayers.empty();
+}
+
+bool VfsMount::MountRunnerBuild(struct ContainerParams &ContainerParams)
+{
+    if (!VfsMount::RunnerShipsMountableBuild(ContainerParams)) return true;
+
+    //Ensure TempPath (for the spec) + the RUNNER mountpoint exist. This mount can run before MountVFS (which otherwise
+    //creates TempPath), e.g. for a native runner that ships a build without generating a wine prefix — CleanStaleRuntime
+    //may have removed TempPath, and SpawnVidyagodfs does not create it. create_directories is idempotent.
+    { std::error_code Mec; std::filesystem::create_directories(ContainerParams.RunnerMountPath, Mec); }
+
+    const nlohmann::ordered_json Spec = VfsMount::BuildRunnerLayerSpec(ContainerParams);
 
     const std::filesystem::path SpecPath = ContainerParams.TempPath / "vidyagodfs.runner.spec.json";
     long long RunnerHelperPid = 0;

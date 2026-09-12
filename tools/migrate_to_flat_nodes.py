@@ -86,7 +86,7 @@ def convert(nid, j):
             nd = {"TYPE": "Content", "FORM": VFS_FORM[T], "PATH": l.get("PATH")}
             for k in ("TARGET", "SOURCE", "SUBMOUNTS", "COMMENT", "WHEN"):
                 if k in l: nd[k] = l[k]
-            if "BASE_TARGET" in l: nd["BASE_TARGET"] = [l["BASE_TARGET"]]     # now arrayable (exposes baseTargets)
+            if "BASE_TARGET" in l: nd["BASE_TARGETS"] = [l["BASE_TARGET"]]    # one key, always a list
             nd["NODE_ID"] = f"{nid}_content_{slug(stem)}"
             S.emit(nd)
 

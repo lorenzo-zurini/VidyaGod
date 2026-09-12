@@ -17,6 +17,18 @@ namespace VfsMount
 //PERSIST dirs as RW passthrough + the writable top branch).
 nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
 
+//Creates the writable paths a built plan NAMES (the write branch + every RW passthrough source). Building a
+//plan has no side effects, so the mount materializes what it asks for.
+void MaterializePlanPaths(const nlohmann::ordered_json &Spec);
+
+//Reports (and counts) layers in a built plan whose source does not exist on disk. Such a layer mounts EMPTY
+//and the mount still SUCCEEDS, so the game just quietly misses those files. Asked by the mount, not by the plan
+//builder: a plan is also built by callers that never mount one, where runtime-sourced layers do not exist yet.
+//`SkipRuntimeSourced` excludes the layers that cannot exist before a mount — RW passthrough sources (created
+//BY the mount) and runtime-sourced layers (reading from another mount). Pass true from callers that build a
+//plan without mounting it; the mount itself passes false and checks everything.
+size_t ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntimeSourced = false);
+
 //Writes the layer-spec and spawns vidyagodfs onto RuntimePath, polling mountinfo for readiness. Registers
 //RuntimePath for non-lazy save-safe unmount when durable data is reachable through it.
 [[nodiscard]] bool MountVFS(struct ContainerParams &ContainerParams);
@@ -27,6 +39,11 @@ nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
                      const std::filesystem::path &SpecPath, long long *OutPid = nullptr);
 
 //Mounts the selected runner's build (RunnerLayers) read-only at RunnerMountPath. No-op when the runner ships no build.
+// The runner build's mount plan (the runner's own zip/delta chain, mounted beside the runtime). Split out from
+// MountRunnerBuild so the plan can be asserted without mounting anything.
+nlohmann::ordered_json BuildRunnerLayerSpec(struct ContainerParams &ContainerParams);
+//True when this container has a runner build to mount (ships one, not a unified runtime, and has layers).
+bool RunnerShipsMountableBuild(const struct ContainerParams &ContainerParams);
 [[nodiscard]] bool MountRunnerBuild(struct ContainerParams &ContainerParams);
 
 //Walks DirectoryPath recursively and warns (via QMessageBox) if any two paths differ only in case.

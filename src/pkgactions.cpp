@@ -761,6 +761,13 @@ void PkgActions::undelta(const std::string & NodeId)
     // Resolve everything the reconstruction needs BEFORE going off-thread. reconstructDelta used to read the
     // model from the worker — for as long as a multi-GB stream takes — so closing the editor freed the
     // document under it, and any edit that grew the NODES array reallocated it mid-read.
+    //A MULTI-BASE delta reconstructs against the CONCATENATION of several mounted targets, which exists only
+    //inside a live mount — there is no single parent archive to hand DeltaByteSource here. Say that, rather than
+    //composing it over one base and reporting the resulting hash mismatch as "could not be composed".
+    if (ManifestModel::LayerBaseTargets(Ns[I]).size() > 1)
+    { tell("Undelta", "This delta is based on several targets at once (a concatenation), which only exists inside "
+                      "a mounted runtime. Reconstructing it from the package folder is not possible."); return; }
+
     std::string BasePath, BaseTarget;
     if (!DeltaBaseOf(Ns, I, BasePath, BaseTarget))
     { tell("Undelta", "This delta has no Content parent to reconstruct against."); return; }
@@ -790,7 +797,7 @@ void PkgActions::undelta(const std::string & NodeId)
             json & N = Model->doc()["NODES"][J];
             N["FORM"] = "zip";
             N["PATH"] = ZipName;
-            N.erase("BASE_TARGET");                      // a full archive has no byte-base
+            N.erase("BASE_TARGETS");                      // a full archive has no byte-base
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -904,7 +911,9 @@ void PkgActions::makeDelta(const std::string & NodeId)
             N["FORM"] = "delta";
             N["PATH"] = Blob;
             // Cross-target: when the byte-base mounts at a DIFFERENT target, name it so the FS can pair them.
-            if (BaseTarget != TgtTarget && !BaseTarget.empty()) N["BASE_TARGET"] = json::array({BaseTarget});
+            //A base at the ROOT ("") is a real, ordinary base — the wine/runner-build shape. Skipping the key for it
+            //left an UNDECLARED base, so the FS looks at the delta's OWN target, finds nothing, and drops the layer.
+            if (BaseTarget != TgtTarget) N["BASE_TARGETS"] = json::array({BaseTarget});
             Model->SaveNodes(); Model->requestReload();
         });
 }

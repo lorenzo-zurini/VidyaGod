@@ -60,6 +60,11 @@ bool ChainHasInnerLinks(const struct ContainerParams &CP);
 //The boundary runner index in CP.RunnerChain: the OUTERMOST link that creates a guest fs (non-native namespace), or 0
 //(the innermost) when the whole chain is native. The boundary owns the FUSE mount / wine prefix.
 int BoundaryLinkIndex(const struct ContainerParams &CP);
+// Derives the prefix LAYOUT variables (%DefaultPfxDir%, %WineSys32Dir%, %WineSysWow64Dir%, %WineFontsDir%,
+// %WineLibDir%, %SysRegMtime%) by probing the runner mount. Called by the launch sequence once the runner build
+// is mounted, and by --audit-packages before it builds plans it will never mount — without it every
+// prefix-assembly layer keeps its %token% and the sweep drowns in artifacts of its own no-mount context.
+void ProbePrefixLayout(struct ContainerParams &ContainerParams);
 
 //Map a CONTENT_ROOT-relative path to the boundary runner's GUEST path via its GUEST_PATH template (%REL% = Rel; other
 //%tokens% from CP). Empty template → identity (native paths). E.g. template "C:\\%PackageUID%\\%REL%" + Rel

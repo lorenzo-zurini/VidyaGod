@@ -730,6 +730,31 @@ private slots:
           LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("ovr")); }
     }
+
+    // The prefix LAYOUT variables (%DefaultPfxDir%, %WineSys32Dir%, …) exist only for a prefix-generating runner
+    // that ships a build. Defining them for anything else does not fix an undefined %token%, it HIDES one: a
+    // layer under a native runner that references %DefaultPfxDir% mounts at that literal path and the game sees
+    // none of its files. The gate lives in the function so its two callers — the launch and --audit-packages,
+    // which derives them without ever mounting — cannot answer the question differently.
+    void probe_prefix_layout_is_gated_on_a_prefix_generating_runner()
+    {
+        auto Vars = [](bool PrefixGen, bool ShipsBuild, const char *Mount) {
+            ContainerParams CP("/tmp/vg_bundle");
+            CP.PrefixGenerate   = PrefixGen;
+            CP.RunnerShipsBuild = ShipsBuild;
+            CP.RunnerMountPath  = Mount;
+            LaunchResolver::ProbePrefixLayout(CP);
+            return CP.CustomVariables;
+        };
+        QVERIFY2(Vars(false, true,  "/tmp/vg_runner").empty(), "a runner that generates no prefix defines none of them");
+        QVERIFY2(Vars(true,  false, "/tmp/vg_runner").empty(), "nor one that ships no build");
+        QVERIFY2(Vars(true,  true,  "").empty(),               "nor one with nothing mounted to probe");
+
+        const auto Defined = Vars(true, true, "/tmp/vg_runner");
+        QVERIFY(Defined.count("DefaultPfxDir"));
+        QVERIFY(Defined.count("WineSys32Dir"));
+        QVERIFY2(Defined.count("WineSysWow64Dir"), "and the full set when the runner really does generate one");
+    }
 };
 
 QTEST_MAIN(LaunchResolverTest)

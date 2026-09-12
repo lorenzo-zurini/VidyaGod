@@ -513,19 +513,21 @@ private slots:
     }
 
     // Clearing a list ERASES the key rather than writing []. They are not the same thing: an empty
-    // BASE_TARGET is a delta with no base and is refused outright, so clearing the box produced a node the
+    // BASE_TARGETS is a delta with no base and is refused outright, so clearing the box produced a node the
     // format rejects and the editor could not repair — the refusal says "omit it" and there was no way to.
     void clearingAListErasesTheKeyRatherThanWritingAnEmptyArray()
     {
-        // First, why it matters: [] and absent are NOT the same node. An empty BASE_TARGET is a delta with
+        // First, why it matters: [] and absent are NOT the same node. An empty BASE_TARGETS is a delta with
         // no base and is refused outright, and the refusal says "omit it" — which the editor must be able to.
         {
-            json N{{"NODE_ID","c"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
-                   {"BASE_TARGET", json::array()}};
+            //FORM must be "delta": BASE_TARGETS on any other form is refused for a DIFFERENT reason ("it means
+            //nothing on FORM zip"), which would make this assertion pass without testing the empty-array rule.
+            json N{{"NODE_ID","c"}, {"TYPE","Content"}, {"FORM","delta"}, {"PATH","a.vgdelta"},
+                   {"BASE_TARGETS", json::array()}};
             std::string Err;
             NodeLower::Lower(N, "c", Err);
-            QVERIFY2(!Err.empty(), "an empty BASE_TARGET must be refused");
-            N.erase("BASE_TARGET");
+            QVERIFY2(!Err.empty(), "an empty BASE_TARGETS must be refused");
+            N.erase("BASE_TARGETS");
             NodeLower::Lower(N, "c", Err);
             QVERIFY(Err.empty());
         }
@@ -533,8 +535,12 @@ private slots:
         // Now drive the REAL widget: find the list field by effect, type into it, then clear it.
         const int n = Canvas->addNode("Content");
         const std::string id = Doc["NODES"][n]["NODE_ID"].get<std::string>();
+        //FORM must be "delta": the base-targets box is offered only there, because the key means nothing on any
+        //other form and NodeLower refuses it outright.
+        Doc["NODES"][n]["FORM"] = "delta";
+        Doc["NODES"][n]["PATH"] = "d.vgdelta";
         auto reset = [&] {
-            Doc["NODES"][n].erase("BASE_TARGET");
+            Doc["NODES"][n].erase("BASE_TARGETS");
             Layout[id] = json::array({30.0, 30.0});
             Canvas->invalidateGraph();
             runFrame(); runFrame();
@@ -551,9 +557,9 @@ private slots:
                 clickAt(ImVec2(1100, 850));
                 runFrame();
                 const json &N = Doc["NODES"][n];
-                if (N.contains("BASE_TARGET") && N["BASE_TARGET"].is_array()
-                    && N["BASE_TARGET"].size() == 1
-                    && N["BASE_TARGET"][0].get<std::string>() == "Q") { box = ImVec2(x, y); break; }
+                if (N.contains("BASE_TARGETS") && N["BASE_TARGETS"].is_array()
+                    && N["BASE_TARGETS"].size() == 1
+                    && N["BASE_TARGETS"][0].get<std::string>() == "Q") { box = ImVec2(x, y); break; }
             }
         QVERIFY2(box.x >= 0, "could not find the base-target list field");
 
@@ -562,15 +568,110 @@ private slots:
         clickAt(box);
         type("Q");
         runFrame();
-        QVERIFY(Doc["NODES"][n].contains("BASE_TARGET"));
+        QVERIFY(Doc["NODES"][n].contains("BASE_TARGETS"));
         ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace, true);
         runFrame(LastMouse);
         ImGui::GetIO().AddKeyEvent(ImGuiKey_Backspace, false);
         runFrame(LastMouse);
         clickAt(ImVec2(1100, 850));
         runFrame();
-        QVERIFY2(!Doc["NODES"][n].contains("BASE_TARGET"),
+        QVERIFY2(!Doc["NODES"][n].contains("BASE_TARGETS"),
                  "an emptied list wrote [] - which the format refuses and the editor cannot undo");
+    }
+
+    // "" is a REAL base target — the mount root — and it is the shape the whole one-key design exists to make
+    // expressible. The generic list writer trimmed blank lines as typing noise, so this entry could not be
+    // typed AND, far worse, vanished from any node that already had one the moment the box was touched:
+    // ["", "dxvk"] silently became ["dxvk"], turning a two-base delta into a one-base one — a base of the
+    // wrong SIZE, a reconstruction that fails its size check, and a layer the mount skips without a word.
+    void anEmptyBaseTargetEntryIsDataAndSurvivesEditing()
+    {
+        const int n = Canvas->addNode("Content");
+        const std::string id = Doc["NODES"][n]["NODE_ID"].get<std::string>();
+        Doc["NODES"][n]["FORM"] = "delta";
+        Doc["NODES"][n]["PATH"] = "d.vgdelta";
+        Layout[id] = json::array({30.0, 30.0});
+
+        auto seed = [&](const json &V) {
+            if (V.is_null()) Doc["NODES"][n].erase("BASE_TARGETS"); else Doc["NODES"][n]["BASE_TARGETS"] = V;
+            Canvas->invalidateGraph();
+            runFrame(); runFrame();
+        };
+        auto key = [&](ImGuiKey K, int Times = 1) {
+            for (int i = 0; i < Times; ++i) {
+                ImGui::GetIO().AddKeyEvent(K, true);  runFrame(LastMouse);
+                ImGui::GetIO().AddKeyEvent(K, false); runFrame(LastMouse);
+            }
+        };
+
+        // Find the base-targets box BY EFFECT — an edit that lands in BASE_TARGETS and nowhere else. Sweeping
+        // for "some active widget" is not enough: any other focused field leaves BASE_TARGETS untouched, which
+        // reads as success and makes the whole test vacuous.
+        ImVec2 box(-1, -1);
+        for (float y = 30.0f; y < 700.0f && box.x < 0; y += 4.0f)
+            for (float x = 40.0f; x < 420.0f; x += 10.0f)
+            {
+                seed(json(nullptr));
+                clickAt(ImVec2(x, y));
+                if (!ImGui::IsAnyItemActive()) continue;
+                type("Q");
+                clickAt(ImVec2(1100, 850));
+                runFrame();
+                const json &N = Doc["NODES"][n];
+                if (N.contains("BASE_TARGETS") && N["BASE_TARGETS"].is_array() && N["BASE_TARGETS"].size() == 1
+                    && N["BASE_TARGETS"][0].get<std::string>() == "Q") { box = ImVec2(x, y); break; }
+            }
+        QVERIFY2(box.x >= 0, "could not find the base-targets list field");
+
+        // Merely PAINTING a node that already has a root base must not rewrite it.
+        seed(json::array({ "", "dxvk" }));
+        QCOMPARE(Doc["NODES"][n]["BASE_TARGETS"].size(), size_t(2));
+        QCOMPARE(Doc["NODES"][n]["BASE_TARGETS"][0].get<std::string>(), std::string(""));
+
+        // ...and neither must EDITING it. Append at the very end (down past the last line, then End) so the
+        // blank first line is untouched by the edit itself — the only thing that can remove it is the writer.
+        clickAt(box);
+        QVERIFY2(ImGui::IsAnyItemActive(), "the box must activate on click");
+        key(ImGuiKey_DownArrow, 4);
+        key(ImGuiKey_End);
+        type("Z");
+        clickAt(ImVec2(1100, 850));
+        runFrame();
+
+        const json &B = Doc["NODES"][n]["BASE_TARGETS"];
+        QVERIFY2(B.is_array() && B.size() == 2, "the empty (root) entry was silently dropped by the list writer");
+        QCOMPARE(B[0].get<std::string>(), std::string(""));
+        QCOMPARE(B[1].get<std::string>(), std::string("dxvkZ"));
+
+        // ...and the TRAILING position too, which is the shape a prefix delta over the runner-mount root has
+        // (["dxvk", ""]). It renders as "dxvk\n", whose final blank line is an ENTRY, not a separator.
+        seed(json::array({ "dxvk", "" }));
+        clickAt(box);
+        QVERIFY(ImGui::IsAnyItemActive());
+        key(ImGuiKey_UpArrow, 4);
+        key(ImGuiKey_Home);
+        type("Z");
+        clickAt(ImVec2(1100, 850));
+        runFrame();
+        const json &B2 = Doc["NODES"][n]["BASE_TARGETS"];
+        QVERIFY2(B2.is_array() && B2.size() == 2, "a TRAILING empty entry is an entry, not a separator");
+        QCOMPARE(B2[0].get<std::string>(), std::string("Zdxvk"));
+        QCOMPARE(B2[1].get<std::string>(), std::string(""));
+
+        // ...and the root base must be TYPEABLE, not merely preserved: the field's hint says "a blank line is
+        // the mount root", which a single-line input cannot accept at all — Enter commits instead of inserting.
+        seed(json(nullptr));
+        clickAt(box);
+        QVERIFY(ImGui::IsAnyItemActive());
+        type("wine");
+        key(ImGuiKey_Enter);
+        clickAt(ImVec2(1100, 850));
+        runFrame();
+        const json &B3 = Doc["NODES"][n]["BASE_TARGETS"];
+        QVERIFY2(B3.is_array() && B3.size() == 2,
+                 "a blank line must be typeable, or the field cannot express the root base at all");
+        QCOMPARE(B3[0].get<std::string>(), std::string("wine"));
+        QCOMPARE(B3[1].get<std::string>(), std::string(""));
     }
 
     // THE editor must be able to DISPLAY a node the format refuses — it is the tool you open to fix one, and
