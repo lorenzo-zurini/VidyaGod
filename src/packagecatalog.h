@@ -191,6 +191,15 @@ int MirrorDehydrated(const std::string &SrcDir, const std::string &DestDir);
 // reference), then AddNoCopy it. Returns the folder CID, or "" on failure.
 std::string PublishMetaCid(const std::string &SrcDir, std::string *Error = nullptr);
 
+//Writes the canvas layout into the bundle's nodes as POS, so a published package opens laid out for someone who
+//has never seen it. Stamps the layout AS IT STANDS — `LocalOverride` (this machine's drags, from GlobalConfig's
+//EDITORLAYOUT) beats a node's current POS, which beats the computed default — so publishing bakes the picture
+//the author is actually looking at, and the algorithm only supplies positions for nodes nobody ever moved.
+//Rewrites nothing whose POS is already correct, so republishing an unchanged bundle mints the same CID.
+[[nodiscard]] bool StampNodePositions(const std::string &PackageDir,
+                                      const nlohmann::ordered_json *LocalOverride = nullptr,
+                                      std::string *Error = nullptr);
+
 // Re-mint every CID of a whole LIBRARY (a dir of source-collection subdirs, e.g. ~/.VidyaGod/LIBRARY) in ONE node
 // session, across the 3-level schema: content CIDs (per file, written as SOURCE.CID into the node JSONs), package
 // meta-CIDs (per package folder — recorded in Settings.PackageCids), and collection meta-CIDs (per source — updated

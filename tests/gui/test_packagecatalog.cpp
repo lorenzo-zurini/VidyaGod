@@ -15,6 +15,7 @@
 #include "commonutils.h"
 
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -496,6 +497,103 @@ private slots:
         for (const auto &E : Errors)
             QVERIFY2(E.find("PUBLISHED WITH GAPS") == std::string::npos,
                      "an already-addressed layer is the idempotent case and must not be reported as a gap");
+    }
+
+    // ---- StampNodePositions: the layout the author sees is what a peer receives -------------------------
+    // Positions are the one thing allowed to enter the package's bytes only at publish time. These pin the
+    // three properties that makes that safe: it writes POS for everything, it bakes the CURRENT layout (a
+    // local drag beats the node's old POS), and it is a no-op on an unchanged bundle — because a stamp that
+    // rewrote bytes every run would mint a new CID, and re-download the package for every peer, for nothing.
+
+    void stamp_writes_POS_for_every_node()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        for (int I = 0; I < 5; ++I)
+        {
+            json N;
+            N["NODE_ID"] = "n" + std::to_string(I);
+            N["TYPE"]    = "Group";
+            if (I > 0) N["PARENTS"] = json::array({"n" + std::to_string(I - 1)});
+            writeJson(Dir.filePath(QString("n%1.json").arg(I)), N);
+        }
+        std::string Err;
+        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err), Err.c_str());
+
+        std::set<std::pair<double, double>> Seen;
+        for (int I = 0; I < 5; ++I)
+        {
+            std::ifstream In(Dir.filePath(QString("n%1.json").arg(I)).toStdString());
+            json J; In >> J;
+            QVERIFY(J.contains("POS"));
+            QVERIFY(J["POS"].is_array() && J["POS"].size() == 2);
+            Seen.insert({J["POS"][0].get<double>(), J["POS"][1].get<double>()});
+        }
+        QCOMPARE(Seen.size(), (size_t)5);          // distinct: nothing stacked on the origin
+    }
+
+    void stamp_is_a_no_op_the_second_time()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        json A; A["NODE_ID"] = "a"; A["TYPE"] = "Group";
+        json B; B["NODE_ID"] = "b"; B["TYPE"] = "Group"; B["PARENTS"] = json::array({"a"});
+        writeJson(Dir.filePath("a.json"), A);
+        writeJson(Dir.filePath("b.json"), B);
+
+        std::string Err;
+        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err));
+        auto Read = [&](const char *F) {
+            std::ifstream In(Dir.filePath(F).toStdString());
+            return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        };
+        const std::string A1 = Read("a.json"), B1 = Read("b.json");
+        //Byte equality alone proves nothing here — rewriting the same content produces the same bytes, so it
+        //holds even if the skip is gone. The property worth pinning is that an unchanged node is NOT WRITTEN
+        //at all, so assert the mtime too, after letting the clock move far enough to tell.
+        const QDateTime AT = QFileInfo(Dir.filePath("a.json")).lastModified();
+        QTest::qSleep(1100);
+        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err));
+        QCOMPARE(Read("a.json"), A1);              // byte-identical ⇒ same Meta-CID on republish
+        QCOMPARE(Read("b.json"), B1);
+        QCOMPARE(QFileInfo(Dir.filePath("a.json")).lastModified(), AT);   // and untouched on disk
+    }
+
+    void stamp_bakes_a_local_drag_over_the_existing_POS()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        json A; A["NODE_ID"] = "a"; A["TYPE"] = "Group"; A["POS"] = json::array({10.0, 20.0});
+        writeJson(Dir.filePath("a.json"), A);
+
+        json Local = json::object();
+        Local["a"] = json::array({777.0, 888.0});   // the author dragged it; that is the current layout
+        std::string Err;
+        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Local, &Err));
+
+        std::ifstream In(Dir.filePath("a.json").toStdString());
+        json J; In >> J;
+        QCOMPARE(J["POS"][0].get<double>(), 777.0);
+        QCOMPARE(J["POS"][1].get<double>(), 888.0);
+    }
+
+    void stamp_handles_a_file_holding_an_array_of_nodes()
+    {
+        //Grouping nodes into one file is presentation the editor preserves, so the stamp has to reach into an
+        //array rather than skipping it — a skipped file is a package that publishes half a layout.
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        json Arr = json::array();
+        for (int I = 0; I < 3; ++I)
+        { json N; N["NODE_ID"] = "m" + std::to_string(I); N["TYPE"] = "Group"; Arr.push_back(N); }
+        writeJson(Dir.filePath("many.json"), Arr);
+
+        std::string Err;
+        QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), nullptr, &Err));
+        std::ifstream In(Dir.filePath("many.json").toStdString());
+        json J; In >> J;
+        QCOMPARE(J.size(), (size_t)3);
+        for (const auto &N : J) QVERIFY(N.contains("POS"));
     }
 };
 

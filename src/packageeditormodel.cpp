@@ -140,33 +140,44 @@ void PackageEditorModel::LoadNodes()
 //content travel as CIDs referenced FROM the json), and nothing mounts the bundle directory itself — only the
 //layers a node declares. So a non-json file here is invisible to publishing, to seeding and to the runtime,
 //while still travelling with the bundle for the author who is editing it.
-static QString LayoutPathFor(const QDir *PackageDir)
+//The GlobalConfig key for a bundle's local positions: the bundle DIRECTORY name. Not the package UID — a
+//bundle need not declare one (a runner bundle has no DeclareLibraryItem), and the editor has to key something
+//for every bundle it can open, including one being authored before it has any identity at all.
+static std::string LayoutKeyFor(const QDir *PackageDir)
 {
-    return PackageDir ? PackageDir->filePath("LAYOUT.vglayout") : QString();
+    return PackageDir ? PackageDir->dirName().toStdString() : std::string();
 }
 
 void PackageEditorModel::LoadLayout()
 {
+    //THIS MACHINE's positions only. A node's published default lives in the node itself (POS) and is applied by
+    //PkgGraph::Build; this object is the local override laid on top, so dragging a box is a preference on this
+    //computer and never an edit to the package.
     Layout = nlohmann::ordered_json::object();
-    const QString P = LayoutPathFor(PackageDir);
-    if (P.isEmpty()) return;
-    std::ifstream In(P.toStdString());
-    if (!In) return;
-    //A corrupt or half-written sidecar must cost the author their LAYOUT, never their session: fall back to
-    //auto-layout rather than propagating a parse error out of opening a bundle.
-    try { nlohmann::ordered_json J; In >> J; if (J.is_object()) Layout = std::move(J); }
-    catch (const std::exception &E)
-    { LogWarn("PackageEditorModel", std::string("ignoring unreadable LAYOUT.json: ") + E.what()); }
+    const std::string Key = LayoutKeyFor(PackageDir);
+    if (Key.empty() || !GlobalConfigJSON) return;
+    const auto SecIt = GlobalConfigJSON->find("EDITORLAYOUT");
+    if (SecIt == GlobalConfigJSON->end() || !SecIt->is_object()) return;
+    const auto BundleIt = SecIt->find(Key);
+    if (BundleIt == SecIt->end() || !BundleIt->is_object()) return;
+    Layout = *BundleIt;
 }
 
 void PackageEditorModel::SaveLayout() const
 {
-    const QString P = LayoutPathFor(PackageDir);
-    if (P.isEmpty() || !Layout.is_object()) return;
-    QDir().mkpath(QFileInfo(P).path());
-    std::ofstream Out(P.toStdString());
-    if (Out) Out << Layout.dump(2) << "\n";
-    else LogWarn("PackageEditorModel", "could not write " + P.toStdString());
+    const std::string Key = LayoutKeyFor(PackageDir);
+    if (Key.empty() || !GlobalConfigJSON || !Layout.is_object()) return;
+    //An empty override is not worth a stanza: once every node carries POS, the common case is a bundle nobody
+    //has dragged, and writing "{}" for each would grow GlobalConfig by one entry per bundle ever opened.
+    if (Layout.empty())
+    {
+        auto SecIt = GlobalConfigJSON->find("EDITORLAYOUT");
+        if (SecIt != GlobalConfigJSON->end() && SecIt->is_object()) SecIt->erase(Key);
+        return;
+    }
+    if (!GlobalConfigJSON->contains("EDITORLAYOUT") || !(*GlobalConfigJSON)["EDITORLAYOUT"].is_object())
+        (*GlobalConfigJSON)["EDITORLAYOUT"] = nlohmann::ordered_json::object();
+    (*GlobalConfigJSON)["EDITORLAYOUT"][Key] = Layout;
 }
 
 void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json node)

@@ -192,6 +192,8 @@ set(SHARED_SOURCES
 
     src/pkggraph.h
     src/pkggraph.cpp
+    src/pkglayout.h
+    src/pkglayout.cpp
     src/pkgcanvas.h
     src/pkgcanvas.cpp
     src/pkgactions.h
@@ -368,6 +370,7 @@ add_executable(vg_tests
     tests/test_binarypatch.cpp
     tests/test_registrylayer.cpp
     tests/test_depcheck.cpp
+    tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
     src/manifestmodel.cpp
     src/nodelower.cpp
@@ -377,6 +380,8 @@ add_executable(vg_tests
     src/binarypatch.cpp
     src/registrylayer.cpp
     src/persistlayer.cpp
+    src/pkggraph.cpp
+    src/pkglayout.cpp
     src/commonutils.cpp
     src/depcheck.cpp        # Qt-free dependency detection engine (ParseLdconfig/Check)
     ${VG_PLATFORM_SRC}      # Platform::SelfExe (used by depcheck) — POSIX or Win32 impl
@@ -407,7 +412,21 @@ function(add_gui_test name)
     set_tests_properties(${name} PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endfunction()
 
+# The launch-matrix fixture needs REAL deltas (a stub proves the plan, never the reconstruction), so it gets a
+# tiny generator built against the same vgdelta the mount uses.
+add_executable(vg_make_delta tests/fixtures/launchmatrix/make_delta.cpp)
+target_include_directories(vg_make_delta PRIVATE VidyaGodFS/src)
+target_link_libraries(vg_make_delta PRIVATE vgfs_core PkgConfig::LIBZIP PkgConfig::LIBZSTD)
+
+# ---- Launch matrix — a synthetic package exercising every launch-engine feature, diffed against golden plans.
+# Not a unit test: it runs the built binary against a generated fixture in a throwaway data dir and compares the
+# resolved plan for each launchable. Touch the launch engine and this says which plans moved.
+add_test(NAME launch_matrix COMMAND ${CMAKE_COMMAND} -E env python3
+         ${CMAKE_SOURCE_DIR}/tools/launch_matrix.py)
+set_tests_properties(launch_matrix PROPERTIES TIMEOUT 600)
+
 add_gui_test(test_pkgcanvas)
+add_gui_test(test_canvasperf)
 add_gui_test(test_pkgactions)
 add_gui_test(test_packageeditormodel)
 add_gui_test(test_tray)

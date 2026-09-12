@@ -1,4 +1,6 @@
 #include "packagecatalog.h"
+#include "pkglayout.h"
+#include "pkggraph.h"
 #include "packagecatalog_p.h"
 #include "apppaths.h"
 #include "manifestmodel.h"
@@ -47,6 +49,81 @@ static bool IsContentNode(const nlohmann::ordered_json &N)
 
 // ----- import / publish -----
 
+
+
+//---------------------------------------------------------------------------------------------------------
+//StampNodePositions — write the canvas layout into the nodes, so a published package opens laid out on a
+//machine that has never seen it. Called on the way to a CID, because that is the only moment a layout is
+//allowed to change the package's bytes: authoring drags live in GlobalConfig precisely so they do NOT.
+//
+//What gets stamped is the layout AS IT STANDS: `LocalOverride` (this machine's drags) wins over the node's
+//current POS, which wins over the computed default — the same precedence PkgGraph::Build applies on screen, so
+//publishing bakes exactly the picture the author is looking at. The algorithm only ever supplies a position for
+//a node nobody has positioned.
+//
+//Idempotent where nothing moved: an unchanged bundle with no new drags produces identical bytes and mints the
+//same CID, because a node whose POS already equals its resolved position is not rewritten at all.
+//---------------------------------------------------------------------------------------------------------
+bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_json *LocalOverride,
+                        std::string *Error)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    if (!fs::is_directory(PackageDir, Ec)) { if (Error) *Error = "not a directory: " + PackageDir; return false; }
+
+    //One file holds one node or an array of them. Both shapes are collected into a single ordered document,
+    //sorted by relative path so the seed order the layout starts from is a property of the bundle, not of the
+    //order the filesystem happened to hand back.
+    struct Slot { fs::path File; bool Array; size_t Index; };
+    std::vector<fs::path> Files;
+    for (auto It = fs::recursive_directory_iterator(PackageDir, Ec); !Ec && It != fs::recursive_directory_iterator(); ++It)
+        if (It->is_regular_file(Ec) && It->path().extension() == ".json") Files.push_back(It->path());
+    std::sort(Files.begin(), Files.end());
+
+    std::map<fs::path, nlohmann::ordered_json> Loaded;
+    std::vector<Slot> Slots;
+    nlohmann::ordered_json Nodes = nlohmann::ordered_json::array();
+    for (const fs::path &F : Files)
+    {
+        std::ifstream In(F);
+        nlohmann::ordered_json J;
+        try { In >> J; } catch (const std::exception &) { continue; }   //a file we cannot parse is left alone
+        if (J.is_object() && J.contains("NODE_ID"))
+        { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
+        else if (J.is_array())
+        {
+            for (size_t I = 0; I < J.size(); ++I)
+                if (J[I].is_object() && J[I].contains("NODE_ID"))
+                { Slots.push_back({F, true, I}); Nodes.push_back(J[I]); }
+            Loaded[F] = std::move(J);
+        }
+    }
+    if (Nodes.empty()) return true;   //nothing to lay out is not a failure
+
+    const PkgGraph::Graph G = PkgGraph::Build(Nodes, LocalOverride);
+    if (G.Nodes.size() != Slots.size()) { if (Error) *Error = "node/slot mismatch while stamping positions"; return false; }
+
+    std::set<fs::path> Dirty;
+    for (size_t I = 0; I < Slots.size(); ++I)
+    {
+        nlohmann::ordered_json Pos = nlohmann::ordered_json::array({ G.Nodes[I].X, G.Nodes[I].Y });
+        nlohmann::ordered_json &Target = Slots[I].Array ? Loaded[Slots[I].File][Slots[I].Index]
+                                                        : Loaded[Slots[I].File];
+        if (Target.contains("POS") && Target["POS"] == Pos) continue;   //already correct: do not touch the bytes
+        Target["POS"] = std::move(Pos);
+        Dirty.insert(Slots[I].File);
+    }
+    for (const fs::path &F : Dirty)
+    {
+        std::ofstream Out(F);
+        if (!Out) { if (Error) *Error = "could not write " + F.string(); return false; }
+        Out << Loaded[F].dump(2) << "\n";
+    }
+    if (!Dirty.empty())
+        LogOut("PackageCatalog::StampNodePositions",
+               "stamped POS into " + std::to_string(Dirty.size()) + " file(s) of " + PackageDir);
+    return true;
+}
 
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
 {
@@ -585,6 +662,17 @@ bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Confi
         for (const auto &Pkg : Pkgs)
         {
             std::string E;
+            //Publish the layout as it stands NOW: this machine's dragged positions (EDITORLAYOUT, keyed by
+            //bundle directory) are the author's arrangement and become the package's defaults. The algorithm
+            //only fills in nodes nobody has ever positioned.
+            const nlohmann::ordered_json *Local = nullptr;
+            const auto SecIt = Config.find("EDITORLAYOUT");
+            if (SecIt != Config.end() && SecIt->is_object())
+            {
+                const auto BIt = SecIt->find(Pkg.filename().string());
+                if (BIt != SecIt->end() && BIt->is_object()) Local = &(*BIt);
+            }
+            if (!StampNodePositions(Pkg.string(), Local, &E)) return Fail("package " + Pkg.string() + ": " + E);
             const std::string PkgCid = PublishMetaCid(Pkg.string(), &E);
             if (PkgCid.empty()) return Fail("package " + Pkg.string() + ": " + E);
             Settings["PackageCids"][Pkg.filename().string()] = PkgCid;

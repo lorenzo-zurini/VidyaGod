@@ -11,10 +11,14 @@
 //
 // Pure data + description, NO UI and NO filesystem: the canvas renders a Graph and edits the SAME
 // `{"NODES":[…]}` document the model persists one-file-per-node, so the graph IS the package — there is no
-// separate representation to keep in sync. Canvas POSITION is the one thing that is NOT in the document: it is
-// presentation, and a Meta-CID is minted add-by-reference IN PLACE over the node files, so a position stored
-// there would put every drag into the package's bytes. It lives in a sidecar at <bundle>/LAYOUT.vglayout —
-// both publish paths take only *.json, and nothing mounts the bundle directory itself.
+// separate representation to keep in sync.
+//
+// POSITION is split in two, because it answers two different questions. A node's own `POS` is the AUTHOR'S
+// default — computed by PkgLayout and stamped at publish time — so a package opens laid out on the machine of
+// someone who has never seen it. Where THIS machine has since dragged a node is a local preference and lives in
+// GlobalConfig, never in the package: a Meta-CID is minted add-by-reference IN PLACE over the author's node
+// files, so writing a drag back into a node would put every mouse movement into the package's bytes and change
+// the CID for every peer. Build applies POS first and the local override second.
 //
 // The field tables below are why this is not nodesections.cpp: an editor row is DECLARED (key, label, kind,
 // options, hint), not hand-built per type. A field with N legal values is an enum with N entries, so the
@@ -32,8 +36,8 @@ struct Node
     std::string Id;             // NODE_ID
     std::string Type;           // TYPE ("Group" when payload-less)
     std::string Form;           // Content's FORM ("" for other types) — what a delta can be based on
-    float       X = 0, Y = 0;   // canvas position, from the layout sidecar (never the node)
-    bool        HasPos = false; // false → auto-layout placed it; first drag persists
+    float       X = 0, Y = 0;   // canvas position: node POS, then this machine's override, then computed
+    bool        HasPos = false; // false → nothing declared one, so PkgLayout placed it
 };
 
 // A PARENTS edge. `ParentIndex` >= 0 is an in-bundle node; -1 means the parent lives in another bundle and is
@@ -57,18 +61,14 @@ struct Graph
     std::vector<std::string> Externals;   // distinct out-of-bundle parent ids, in first-seen order
 };
 
-//Read the document into a Graph. `Layout` (optional) is the canvas-position SIDECAR: an object keyed by NODE_ID
-//whose values are [x, y]. Nodes with no stored position are laid out (layered by dependency depth) so an
-//un-positioned bundle opens readable instead of stacked at the origin.
+//Read the document into a Graph. `Layout` (optional) is THIS MACHINE's position override — an object keyed by
+//NODE_ID whose values are [x, y], held in GlobalConfig — and it wins over a node's own POS. Anything neither
+//declares is placed by PkgLayout, so a bundle always opens readable instead of stacked at the origin.
 //
-//Position is NOT a node field. It is presentation, and a package is content-addressed: a Meta-CID is minted
-//add-by-reference and IN PLACE over the author's own files, so anything living in a node file is in the CID.
-//Storing layout there meant dragging a box on screen changed the package's bytes for every peer. The sidecar
-//lives at <bundle>/LAYOUT.vglayout: both publish paths take only *.json by stated invariant, and nothing
-//mounts the bundle directory itself, so it is invisible to publishing, seeding AND the runtime.
 Graph Build(const nlohmann::ordered_json &NodesArray, const nlohmann::ordered_json *Layout = nullptr);
 
-//Write a node's position into the layout sidecar. Returns false if the id is empty.
+//Write a node's position into THIS MACHINE's override object (GlobalConfig, never the package). Returns false
+//if the id is empty.
 bool SetPos(nlohmann::ordered_json &Layout, const std::string &NodeId, float X, float Y);
 
 //Pin ids, derived (never stored) — imnodes needs ints: in = idx*4, out = idx*4+1.

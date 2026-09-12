@@ -1,5 +1,7 @@
 #include "pkggraph.h"
 
+#include "pkglayout.h"   // PkgLayout::ComputeUnplaced — the shared auto-layout
+
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -36,12 +38,18 @@ Graph Build(const json &NodesArray, const json *Layout)
         Nd.Id    = Str("NODE_ID", "");
         Nd.Type  = Str("TYPE", "Group");
         Nd.Form  = Str("FORM", "");
+        //Position resolves in three steps, weakest first: the node's own POS (the author's published default),
+        //then the caller's Layout override (this machine's own drags, held in GlobalConfig), then — for
+        //whatever is still unplaced — the computed layout below. A node carrying POS therefore opens where the
+        //author put it, and moving it never writes to the package.
+        auto ReadPos = [&](const json &P) {
+            if (!P.is_array() || P.size() != 2 || !P[0].is_number() || !P[1].is_number()) return false;
+            Nd.X = P[0].get<float>(); Nd.Y = P[1].get<float>(); Nd.HasPos = true;
+            return true;
+        };
+        if (N.contains("POS")) ReadPos(N["POS"]);
         if (Layout && Layout->is_object() && !Nd.Id.empty() && Layout->contains(Nd.Id))
-        {
-            const json &P = (*Layout)[Nd.Id];
-            if (P.is_array() && P.size() == 2 && P[0].is_number() && P[1].is_number())
-            { Nd.X = P[0].get<float>(); Nd.Y = P[1].get<float>(); Nd.HasPos = true; }
-        }
+            ReadPos((*Layout)[Nd.Id]);
         if (!Nd.Id.empty()) ById[Nd.Id] = Nd.Index;
         G.Nodes.push_back(std::move(Nd));
     }
@@ -71,39 +79,11 @@ Graph Build(const json &NodesArray, const json *Layout)
         }
     }
 
-    // Auto-layout anything with no stored position: depth = longest path to a node with no in-bundle parent, so
-    // base content lands left and the launchable that pulls everything sits right. Un-positioned bundles open
-    // readable; the first drag persists a sidecar entry and this never touches them again.
-    const int Count = (int)G.Nodes.size();
-    bool AnyUnplaced = false;
-    for (const Node &N : G.Nodes) if (!N.HasPos) { AnyUnplaced = true; break; }
-    if (Count > 0 && AnyUnplaced)
-    {
-        // Parents indexed once: DepthOf used to rescan EVERY link per node, which on a 2775-node bundle
-        // (Minecraft) is millions of comparisons — and it ran for every node, including the ones whose
-        // position is already stored and which therefore need no depth at all.
-        std::vector<std::vector<int>> ParentsOf(Count);
-        for (const Link &L : G.Links)
-            if (L.ParentIndex >= 0 && L.ParentIndex != L.ChildIndex) ParentsOf[L.ChildIndex].push_back(L.ParentIndex);
+    //Anything still unplaced gets the computed layout. It lives in PkgLayout because the same function has
+    //to run at publish time to STAMP POS into the nodes — one algorithm, so what an author sees on the canvas
+    //is exactly what a peer opening the published package sees.
+    PkgLayout::ComputeUnplaced(G);
 
-        std::vector<int> Depth(Count, -1);
-        std::function<int(int)> DepthOf = [&](int I) -> int {
-            if (Depth[I] >= 0) return Depth[I];
-            Depth[I] = 0;                                  // also breaks an accidental cycle
-            int M = 0;
-            for (int P : ParentsOf[I]) M = std::max(M, DepthOf(P) + 1);
-            return Depth[I] = M;
-        };
-        std::map<int, int> UsedRows;
-        for (int I = 0; I < Count; ++I)
-        {
-            if (G.Nodes[I].HasPos) continue;
-            const int D = DepthOf(I);
-            const int Row = UsedRows[D]++;
-            G.Nodes[I].X = 60.0f + (float)D   * 430.0f;   // > one node body, so columns never overlap
-            G.Nodes[I].Y = 60.0f + (float)Row * 300.0f;
-        }
-    }
     return G;
 }
 
