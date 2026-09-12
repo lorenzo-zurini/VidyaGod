@@ -801,6 +801,54 @@ private slots:
         ContainerParams CP = Make();
         QCOMPARE(VfsMount::BuildLayerSpec(CP).value("mountpoint", std::string()), CP.RuntimePath.string());
     }
+
+    // A substituted VALUE that would break JSON must still substitute. The old form serialised the layer,
+    // spliced values into the TEXT, and re-parsed: one backslash or quote in a path or a package title made
+    // the re-parse fail, and the layer was then mounted with its %tokens% intact — silently, which is the
+    // exact failure whole-layer substitution exists to prevent.
+    void aValueContainingJsonMetacharactersStillSubstitutes()
+    {
+        ContainerParams CP = Make();
+        CP.CustomVariables["awkward"] = R"(C:\Users\Tom "T" O'Neil\dir)";
+        CP.RunnerLayers = json::array({ json{{"TYPE","VFSZipLayer"},{"PATH","%awkward%/a.zip"},
+                                             {"TARGET","%awkward%/t"},
+                                             {"SUBMOUNTS", json::array({"x:%awkward%/y"})}} });
+        CP.RunnerShipsBuild = true;
+        CP.UnifiedRuntime   = false;
+        const json Spec = VfsMount::BuildRunnerLayerSpec(CP);
+        QVERIFY(Spec.contains("layers"));
+        QVERIFY(!Spec["layers"].empty());
+        const json &L = Spec["layers"][0];
+        const std::string Target = L.value("target", std::string());
+        const std::string Source = L.value("source", std::string());
+        QVERIFY2(Target.find('%') == std::string::npos,
+                 ("target kept a raw token: " + Target).c_str());
+        QVERIFY2(Source.find('%') == std::string::npos,
+                 ("source kept a raw token: " + Source).c_str());
+        // ...and the value survived intact rather than being mangled by an escaping round trip.
+        QVERIFY(Target.find(R"(Tom "T" O'Neil)") != std::string::npos);
+    }
+
+    // The crash this guards is a key that is PRESENT and NULL, not one that is absent — value() has always
+    // handled absent. Every read of a plan has to survive it, so every read is exercised with a null.
+    void aPlanWhoseKeysArePresentAndNullDoesNotThrow()
+    {
+        json Spec;
+        Spec["writelayer"] = nullptr;
+        Spec["layers"]     = nullptr;
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::MaterializePlanPaths(Spec));
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::ReportMissingSources(Spec));
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::PrepareMount(Spec));
+
+        json WithNullLayer;
+        WithNullLayer["writelayer"] = nullptr;
+        WithNullLayer["layers"] = json::array({ json{{"type", nullptr}, {"target", nullptr},
+                                                     {"source", nullptr}, {"rw", nullptr},
+                                                     {"runtimeSourced", nullptr}} });
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::MaterializePlanPaths(WithNullLayer));
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::ReportMissingSources(WithNullLayer));
+        QVERIFY_THROWS_NO_EXCEPTION(VfsMount::PrepareMount(WithNullLayer));
+    }
 };
 
 QTEST_MAIN(VfsMountTest)

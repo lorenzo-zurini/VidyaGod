@@ -209,12 +209,21 @@ void Compute(Graph &G, const Options &O)
 
 void ComputeUnplaced(Graph &G, const Options &O)
 {
-    //Remember what was already placed, lay the whole graph out, then restore the placed ones. Laying out only
-    //the unplaced subset would let a new node land on top of a positioned one, which is the bug this avoids.
+    //Remember what was already placed, lay the whole graph out, then restore the placed ones. Laying out the
+    //WHOLE graph (rather than the unplaced subset alone) is what keeps an unplaced node in the right LAYER
+    //relative to its neighbours — its depth depends on nodes that already have positions.
+    //
+    //It does NOT guarantee a new node misses a dragged one: the computed slot is in layout space and a dragged
+    //node can sit anywhere. Overlap is possible and is the author's to resolve by moving it.
     std::vector<char> Had((size_t)G.Nodes.size(), 0);
     std::vector<float> X((size_t)G.Nodes.size()), Y((size_t)G.Nodes.size());
     for (size_t I = 0; I < G.Nodes.size(); ++I)
     { Had[I] = G.Nodes[I].HasPos ? 1 : 0; X[I] = G.Nodes[I].X; Y[I] = G.Nodes[I].Y; }
+
+    //Nothing unplaced means nothing to do — and that is the STEADY STATE once POS stamping has run, so
+    //without this every canvas cache rebuild (i.e. every edit) re-ran a full Kahn plus four median sweeps over
+    //the whole graph to produce coordinates it was about to throw away. On Minecraft that is ~21 ms a keystroke.
+    if (std::find(Had.begin(), Had.end(), (char)0) == Had.end()) return;
 
     Compute(G, O);
 

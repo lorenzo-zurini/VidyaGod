@@ -75,8 +75,12 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     //sorted by relative path so the seed order the layout starts from is a property of the bundle, not of the
     //order the filesystem happened to hand back.
     struct Slot { fs::path File; bool Array; size_t Index; };
+    //TOP LEVEL ONLY, matching PackageEditorModel::LoadNodes (QDir::entryList, non-recursive). Walking
+    //subdirectories would lay out a graph the author has never seen: a node-shaped .json below the bundle root
+    //would join the layout, shift every other node's computed coordinates and receive a POS of its own, which
+    //contradicts the one thing this function promises — that publishing bakes the picture on screen.
     std::vector<fs::path> Files;
-    for (auto It = fs::recursive_directory_iterator(PackageDir, Ec); !Ec && It != fs::recursive_directory_iterator(); ++It)
+    for (auto It = fs::directory_iterator(PackageDir, Ec); !Ec && It != fs::directory_iterator(); ++It)
         if (It->is_regular_file(Ec) && It->path().extension() == ".json") Files.push_back(It->path());
     std::sort(Files.begin(), Files.end());
 
@@ -87,7 +91,16 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     {
         std::ifstream In(F);
         nlohmann::ordered_json J;
-        try { In >> J; } catch (const std::exception &) { continue; }   //a file we cannot parse is left alone
+        //A file we cannot parse is left alone — but SAID, because dropping it silently removes it from the
+        //layout graph and moves every other node, which looks like the algorithm changed.
+        try { In >> J; }
+        catch (const std::exception &E)
+        {
+            LogWarn("PackageCatalog::StampNodePositions",
+                    "skipping unparseable " + F.filename().string() + " (" + E.what() + ") — its nodes are not "
+                    "laid out, and every other node's position is computed without them.");
+            continue;
+        }
         if (J.is_object() && J.contains("NODE_ID"))
         { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
         else if (J.is_array())
@@ -113,11 +126,29 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
         Target["POS"] = std::move(Pos);
         Dirty.insert(Slots[I].File);
     }
+    //Write to a sibling temp and rename. This rewrites EVERY node file of EVERY package in the library
+    //(RemintLibrary calls it per package), and a node .json is the author's only copy: truncating in place
+    //means a crash, a kill or ENOSPC part way through leaves a half-written file where their package was.
+    //rename() within the same directory is atomic, so a node file is either the old one or the new one.
     for (const fs::path &F : Dirty)
     {
-        std::ofstream Out(F);
-        if (!Out) { if (Error) *Error = "could not write " + F.string(); return false; }
-        Out << Loaded[F].dump(2) << "\n";
+        const fs::path Tmp = F.string() + ".vgtmp";
+        {
+            std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
+            if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); return false; }
+            Out << Loaded[F].dump(2) << "\n";
+            Out.flush();
+            //A stream that filled the disk fails HERE, not at open — checked, or the rename below publishes a
+            //truncated file over a good one.
+            if (!Out.good())
+            { std::error_code Rm; fs::remove(Tmp, Rm);
+              if (Error) *Error = "write failed (disk full?) for " + F.string(); return false; }
+        }
+        std::error_code Rn;
+        fs::rename(Tmp, F, Rn);
+        if (Rn)
+        { std::error_code Rm; fs::remove(Tmp, Rm);
+          if (Error) *Error = "could not replace " + F.string() + ": " + Rn.message(); return false; }
     }
     if (!Dirty.empty())
         LogOut("PackageCatalog::StampNodePositions",

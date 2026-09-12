@@ -88,7 +88,8 @@
   ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "arrived",
-    "LM_FROM_VAR": "%lm_derived%"
+    "LM_FROM_VAR": "%lm_derived%",
+    "LM_RUNNER_ONLY": "from-runner"
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",

@@ -89,7 +89,9 @@
     }
   ],
   "RunnerEnv": {
-    "LM_EXEC_ENV": "does-this-arrive"
+    "LM_EXEC_ENV": "does-this-arrive",
+    "LM_RUNNER_ONLY": "from-runner",
+    "LM_SHOULD_BE_GONE": "runner-set-this"
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",

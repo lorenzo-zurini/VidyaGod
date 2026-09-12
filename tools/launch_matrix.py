@@ -8,10 +8,14 @@ The fixture is generated fresh into a throwaway data dir every run, so the resul
 tests/fixtures/launchmatrix/make_fixture.py — never on the machine's real library, the network, or what was
 installed yesterday. A golden diff is the review: it names exactly which plans a change moved.
 
-WHAT THIS COVERS: node lowering, closure, variable resolution, runner selection and chaining, persistence
-classification, DLL overrides, and the ordered layer list a mount would be built from. It stops at the plan.
-Mounting, byte-level delta reconstruction and the game process itself are NOT exercised — the .vgdelta files in
-the fixture are stubs, and asserting otherwise would be a lie told by a passing test.
+WHAT THIS COVERS: two layers. The PLAN goldens are node lowering, closure, variable resolution, runner
+selection and chaining, persistence classification, and the ordered layer list a mount is built from. The
+RUNTIME golden goes further and actually launches: the mount composes, edits and patches apply, and a probe
+process runs inside it and reports what it can see. The deltas are REAL (generated and verified by
+vg_make_delta) and the BinaryPatch target is a real PE32, so byte reconstruction and patching are exercised.
+
+NOT covered: wine. The runners are native, so PrefixRoot is empty, DLLOverrides resolves to [] and neither
+prefix generation nor registry application is reached.
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile
 
@@ -64,16 +68,23 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--update", action="store_true", help="re-record the goldens instead of verifying")
     ap.add_argument("--keep", action="store_true", help="keep the generated data dir and print its path")
+    #Passed by ctest as $<TARGET_FILE:...> so the harness always tests THIS build tree. The defaults are for
+    #running it by hand from the repo root.
+    ap.add_argument("--binary", default=BINARY, help="the VidyaGod binary to exercise")
+    ap.add_argument("--make-delta", default=None, help="the vg_make_delta binary the fixture generates with")
     args = ap.parse_args()
 
-    if not os.path.isfile(BINARY):
-        print(f"build the app first: {BINARY} is missing", file=sys.stderr)
+    binary = os.path.abspath(args.binary)
+    if not os.path.isfile(binary):
+        print(f"build the app first: {binary} is missing", file=sys.stderr)
         return 2
 
     data = tempfile.mkdtemp(prefix="vglm", dir="/tmp")   # short: a unix socket path caps near 108 bytes
     try:
+        env = dict(os.environ)
+        if args.make_delta: env["VG_MAKE_DELTA"] = os.path.abspath(args.make_delta)
         gen = subprocess.run([sys.executable, os.path.join(FIXTURE, "make_fixture.py"), data],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, env=env)
         if gen.returncode != 0:
             print(gen.stderr, file=sys.stderr); return 2
         bundle = next(os.path.join(data, "fixture", d) for d in os.listdir(os.path.join(data, "fixture")))
@@ -83,7 +94,7 @@ def main():
         for node in launchables(bundle):
             #--bypass-single-instance-lock so the harness runs while the GUI is open; the lock is about one
             #app owning the real data dir, and this run owns a throwaway one.
-            run = subprocess.run([BINARY, "--bypass-single-instance-lock", "--data-dir", data,
+            run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
                                   "--resolve-only", node],
                                  capture_output=True, text=True, timeout=300)
             dump = os.path.join(data, f"vg_resolve_{node}.json")
@@ -115,7 +126,7 @@ def main():
         # The plan goldens above stop at resolution. This one actually composes the mount, applies the edits
         # and patches, starts a process inside it, and records what that process could see — which is the only
         # way to catch a plan that is perfectly correct and mounts to the wrong thing.
-        run = subprocess.run([BINARY, "--bypass-single-instance-lock", "--data-dir", data, "--node", RUN_NODE],
+        run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data, "--node", RUN_NODE],
                              capture_output=True, text=True, timeout=600)
         report = []
         inside = False

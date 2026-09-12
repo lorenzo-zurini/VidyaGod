@@ -323,21 +323,29 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
 
         std::string File = Sub.value("FILE", std::string());
         VarSubst::StringVariableSubstitution(File, Vars);
-        //An absolute FILE is invalid by contract — an edit path is ALWAYS relative to its pass base (spec
-        //ch.15) — so it is re-anchored rather than followed. There is no authored-vs-expanded distinction to
-        //make here: FILE reaches this pass already %variable%-substituted, and the overwhelmingly common way
-        //to get one is the house style "%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is ""
-        //(native), which turns it into "/drive_c/...". Following it wrote outside the runtime and EVERY edit
-        //silently failed. The engine already absorbs exactly this for the exe path, whose resolver strips
-        //leading slashes off CONTENTPATH; an edit is now held to the same rule.
-        if (std::filesystem::path(File).is_absolute())
+        //An edit path is ALWAYS relative to its pass base (spec ch.15), so a path that is not is re-anchored
+        //rather than followed. The overwhelmingly common way to get one is the house style
+        //"%PrefixRoot%/drive_c/..." under a runner where PrefixRoot is "" (native), which yields
+        //"/drive_c/...": BasePath / File then discards the base entirely and the edit lands outside the
+        //runtime. Worms 4 shipped exactly that and printed one line nobody read; the launch-matrix fixture
+        //reproduced it with every edit failing at once.
+        //
+        //Tested with a LEADING-SEPARATOR check rather than is_absolute(), because is_absolute() is false for
+        //"/drive_c/x" on WINDOWS (a root-directory with no root-name) — so the one case this exists for would
+        //not have been caught there at all, while "C:/Users/..." would have been "re-anchored" by a strip loop
+        //that removes nothing, logging a claim that never happened.
         {
             const std::string Before = File;
             while (!File.empty() && (File.front() == '/' || File.front() == '\\')) File.erase(File.begin());
-            LogWarn("BinaryPatch::ProcessBinaryPatches",
-                    "FILE '" + Before + "' is ABSOLUTE — an edit path is relative to its base, so it was "
-                    "re-anchored to '" + File + "'. Author it relative (a leading %variable% that is empty on "
-                    "this runner is the usual cause).");
+            if (File != Before)
+                LogWarn("BinaryPatch::ProcessBinaryPatches",
+                        "FILE '" + Before + "' is root-relative — an edit path is relative to its base, so it "
+                        "was re-anchored to '" + File + "' under the runtime mount root. Author it relative (a leading %variable% "
+                        "that is empty on this runner is the usual cause).");
+            else if (std::filesystem::path(File).is_absolute())
+                LogWarn("BinaryPatch::ProcessBinaryPatches",
+                        "FILE '" + File + "' is ABSOLUTE and escapes the runtime mount root — the edit will not land where "
+                        "anything reads it. Author it relative to the base.");
         }
         const std::filesystem::path FilePath = ContainerParams.RuntimePath / File;
 

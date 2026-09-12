@@ -6,6 +6,7 @@
 === env (matrix only)
   LM_EXEC_ENV=arrived
   LM_FROM_VAR=hello-beta
+  LM_RUNNER_ONLY=from-runner
 === mounted tree
   .
   ./bin

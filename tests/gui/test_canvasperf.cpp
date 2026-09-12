@@ -41,29 +41,45 @@ private slots:
     }
     void cleanupTestCase() { ImGui::DestroyContext(); }
 
-    void theBiggestGraphInTheLibraryIsUsable()
+    // A SYNTHETIC graph of the same shape as the real one, so this runs in CI and on any machine. Keying the
+    // only guard against the 3753 ms regression to a bundle that exists on one developer's disk made ctest
+    // green mean nothing: ~/.VidyaGod is documented as user-deletable, and CI has never had it.
+    static json syntheticMinecraftShaped(int chainLen, int fanPerLink)
     {
-        const QString Dir = bundlePath();
-        if (!QDir(Dir).exists()) QSKIP("Minecraft bundle not present on this machine");
-
-        QElapsedTimer T; T.start();
-        Doc = json{{"NODES", json::array()}};
-        const QStringList Files = QDir(Dir).entryList(QStringList() << "*.json", QDir::Files, QDir::Name);
-        for (const QString &F : Files)
+        // The real bundle: 2775 nodes, 904 layers deep, widest layer 15, heavy fan-in per link.
+        json Nodes = json::array();
+        for (int I = 0; I < chainLen; ++I)
         {
-            std::ifstream In((Dir + "/" + F).toStdString());
-            json J;
-            try { In >> J; } catch (...) { continue; }
-            if (J.is_object() && J.contains("NODE_ID")) Doc["NODES"].push_back(std::move(J));
-            else if (J.is_array()) for (auto &N : J) if (N.is_object() && N.contains("NODE_ID")) Doc["NODES"].push_back(N);
+            json N;
+            N["NODE_ID"] = "c" + std::to_string(I);
+            N["TYPE"]    = "Content";
+            N["FORM"]    = "delta";
+            N["PATH"]    = "d" + std::to_string(I) + ".vgdelta";
+            json P = json::array();
+            if (I > 0) P.push_back("c" + std::to_string(I - 1));
+            for (int K = 0; K < fanPerLink; ++K)
+            {
+                const int Src = (I * 7 + K * 13) % std::max(1, chainLen);
+                if (Src < I) P.push_back("c" + std::to_string(Src));
+            }
+            N["PARENTS"] = P;
+            Nodes.push_back(std::move(N));
         }
+        return json{{"NODES", std::move(Nodes)}};
+    }
+
+    void aMinecraftShapedGraphIsUsable()
+    {
+        QElapsedTimer T; T.start();
+        Doc = syntheticMinecraftShaped(2775, 14);   // ~= the real 2775 nodes / 39k links
         const qint64 LoadMs = T.restart();
         const int N = (int)Doc["NODES"].size();
-        qInfo() << "nodes:" << N << " load:" << LoadMs << "ms";
+        qInfo() << "nodes:" << N << " build:" << LoadMs << "ms";
 
         Layout = json::object();
         Canvas = new PkgCanvas(&Doc, []{}, nullptr, &Layout);
         Canvas->initContexts();
+        Canvas->setMiniMap(false);   // culling stands down while the minimap is on — this measures culling
 
         const PkgGraph::Graph G = PkgGraph::Build(Doc["NODES"], &Layout);
         qInfo() << "links:" << (int)G.Links.size() << " externals:" << (int)G.Externals.size()

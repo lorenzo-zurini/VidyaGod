@@ -100,14 +100,34 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     {
         if (!ContainerParams.RunnerEnv.is_object()) ContainerParams.RunnerEnv = nlohmann::ordered_json::object();
         for (const auto &[K, V] : Resolved["ENV"].items())
-            if (V.is_string()) ContainerParams.RunnerEnv[K] = V;
+        {
+            //Refuse a non-string LOUDLY. Dropping it silently and letting the runner path reach
+            //Value.get<std::string>() at Execute gives the same authoring mistake two opposite endings — one
+            //invisible, one an uncaught type_error that kills the launch.
+            if (!V.is_string())
+            {
+                LogWarn("ResolveExecutableDefinition",
+                        "ENV key '" + K + "' is " + std::string(V.type_name()) + ", not a string — skipped. "
+                        "Environment values are strings (quote the number).");
+                continue;
+            }
+            ContainerParams.RunnerEnv[K] = V;
+        }
     }
     if (Resolved.contains("REMOVE_ENV") && Resolved["REMOVE_ENV"].is_array())
         for (const auto &K : Resolved["REMOVE_ENV"])
-            if (K.is_string()
-                && std::find(ContainerParams.RunnerRemoveEnv.begin(), ContainerParams.RunnerRemoveEnv.end(),
-                             K.get<std::string>()) == ContainerParams.RunnerRemoveEnv.end())
-                ContainerParams.RunnerRemoveEnv.push_back(K.get<std::string>());
+        {
+            if (!K.is_string()) continue;
+            const std::string Key = K.get<std::string>();
+            //A removal must also drop the key from the merged env. Execute applies removals FIRST and then
+            //inserts RunnerEnv, so a launchable asking to remove a key its RUNNER sets would watch the runner
+            //put it straight back — "the game wins over the runner" has to hold in both directions or it is
+            //not a rule, just the happy path.
+            if (ContainerParams.RunnerEnv.is_object()) ContainerParams.RunnerEnv.erase(Key);
+            if (std::find(ContainerParams.RunnerRemoveEnv.begin(), ContainerParams.RunnerRemoveEnv.end(), Key)
+                == ContainerParams.RunnerRemoveEnv.end())
+                ContainerParams.RunnerRemoveEnv.push_back(Key);
+        }
 
     LogOut("ResolveExecutableDefinition", "ContentPath: " + ContainerParams.ExePathRelative.string());
     LogOut("ResolveExecutableDefinition", "Content: " + ContainerParams.ExePathComplete.string());

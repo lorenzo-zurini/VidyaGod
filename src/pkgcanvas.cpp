@@ -98,13 +98,19 @@ struct PkgCanvasState
     //is scaled to match, and the read-back divides back out. The document always holds UNSCALED positions —
     //zoom is a view property and must never reach the layout, let alone the package.
     float Zoom        = 1.0f;
+    //imnodes DESTROYS every node not submitted during a frame (ObjectPoolUpdate) and re-creates it at
+    //Origin(0,0) the next time it is begun. With viewport culling that happens constantly, so "have I ever
+    //seeded this node" is the wrong question — the right one is "was it submitted LAST frame", which is the
+    //only thing that says whether imnodes still remembers where it goes.
+    std::set<std::string> DrawnLast;
     bool  ShowMiniMap = true;
     bool MiniMapAuto  = true;   // false once the author has toggled it by hand
     int  VisibleNodes = 0;
 
     json *Doc = nullptr;
     //The canvas-position sidecar (NODE_ID -> [x,y]), owned by the model and persisted to
-    //<bundle>/LAYOUT.vglayout. Never the document: see PkgGraph::Build. Null = positions are not persisted.
+    //GlobalConfig under EDITORLAYOUT, keyed by bundle path. Never the document: see PkgGraph::Build
+    //(a node's own POS is the published default). Null = positions are not persisted.
     json *Layout = nullptr;
     PkgCanvas::SaveFn Save;
     PkgCanvas::KnownIdsFn KnownIds;
@@ -140,7 +146,6 @@ struct PkgCanvasState
     PkgGraph::Graph Cache;
     bool CacheValid = false;
     std::set<int> HasDependent;                              // precomputed once per rebuild
-    std::map<int, int> LinkSlot;
     std::vector<std::string> OfferedExternals;               // chips placed by the picker, not yet wired
     std::string ExternalFilter;
     float SidePanel = 360.0f;
@@ -864,7 +869,11 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     // Previously this ran only for nodes with NO stored position, so a saved layout was never restored: every
     // node rendered at imnodes' default origin and the next mouse-release wrote [0,0] over the whole bundle.
     auto Sit = m_s->Seeded.find(Id);
-    if (Sit == m_s->Seeded.end() || Sit->second != Index)
+    //Re-seed when the index moved (a different node now owns this id) OR when the node was not submitted last
+    //frame: in that case imnodes destroyed it and BeginNode above just created a fresh one at (0,0). Skipping
+    //the re-seed there is how a node that scrolled out and back collapsed to the origin — and the read-back
+    //then wrote that origin into the layout.
+    if (Sit == m_s->Seeded.end() || Sit->second != Index || !m_s->DrawnLast.count(Id))
     {
         ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[Index].X * m_s->Zoom, G.Nodes[Index].Y * m_s->Zoom));
         m_s->Seeded[Id] = Index;
@@ -885,7 +894,6 @@ void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
     // The link id must address the exact PARENTS entry it came from. G.Links SKIPS empty/non-string entries,
     // so a running counter over it drifts from the real array index and a detach would erase a different
     // parent. Recover the true index instead.
-    m_s->LinkSlot.clear();
     for (const Link &L : G.Links)
     {
         if (!EndsDrawn(L)) continue;
@@ -916,14 +924,17 @@ void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
     }
 }
 
-void PkgCanvas::flushPositions(Graph &G)
+void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
 {
     json &Ns = m_s->Nodes();
     for (int I = 0; I < (int)G.Nodes.size() && I < (int)Ns.size(); ++I)
     {
-        // Only read back a node we have already seeded THIS session at THIS index. Reading imnodes before it
-        // has been told where the node goes yields its default origin, which is how a layout got overwritten
-        // with zeroes. A node that was never drawn (scrolled out on the first frame) is left alone.
+        // Only read back a node SUBMITTED THIS FRAME. Two separate disasters otherwise, both from culling:
+        // imnodes has already freed every unsubmitted node by the time this runs (it is called after
+        // EndNodeEditor), so GetNodeGridSpacePos does ObjectPoolFind -> -1 and then indexes Pool[-1] — an
+        // out-of-bounds read whose assert is compiled out in a release build; and a node re-created this frame
+        // at (0,0) would report a "drag" to the origin and persist it.
+        if (I >= (int)Drawn.size() || !Drawn[(size_t)I]) continue;
         auto Sit = m_s->Seeded.find(G.Nodes[I].Id);
         if (Sit == m_s->Seeded.end() || Sit->second != I) continue;
         //Positions come back in the SCALED grid, so divide the zoom out before comparing or storing: a drag
@@ -1012,6 +1023,10 @@ void PkgCanvas::frame()
     //Measured on the 2775-node bundle: the minimap alone was 1.7 s of a 3.75 s frame. 400 is comfortably
     //above every hand-authored bundle in the library and far below the ones where it stops being free.
     if (m_s->MiniMapAuto) m_s->ShowMiniMap = (int)G.Nodes.size() <= 400;
+    //The minimap draws from the nodes SUBMITTED this frame, so culling would reduce it to a copy of the
+    //viewport — an overview of exactly what you can already see, which is not an overview. Where it is on, the
+    //graph is small enough that drawing all of it was never the problem, so culling stands down.
+    const bool CullingOn = !m_s->ShowMiniMap;
 
     ImGuiIO &IO = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -1039,8 +1054,11 @@ void PkgCanvas::frame()
                 //while zoom changes means pan moves by the same factor about the cursor.
                 const ImVec2 Pan0 = ImNodes::EditorContextGetPanning();
                 const ImVec2 M    = ImGui::GetMousePos();
-                const ImVec2 Win  = ImGui::GetWindowPos();
-                const ImVec2 Rel(M.x - Win.x, M.y - Win.y);
+                //Relative to where the EDITOR CANVAS starts, not the window: the canvas begins below the
+                //toolbar and separator, so measuring from the window origin puts the anchor off by that
+                //height and repeated ctrl+wheel walks the view upward.
+                const ImVec2 Origin = ImGui::GetCursorScreenPos();
+                const ImVec2 Rel(M.x - Origin.x, M.y - Origin.y);
                 const float  K    = New / Old;
                 ImNodes::EditorContextResetPanning(ImVec2(Rel.x - (Rel.x - Pan0.x) * K,
                                                           Rel.y - (Rel.y - Pan0.y) * K));
@@ -1068,7 +1086,11 @@ void PkgCanvas::frame()
     const ImVec2 Pan    = ImNodes::EditorContextGetPanning();
     const ImVec2 Canvas = ImGui::GetWindowSize();
     //One node body plus slack, so a node is drawn slightly before it scrolls in and its wires never pop.
-    const float MarginX = 700.0f, MarginY = 500.0f;
+    //SCALED BY ZOOM, because the margin is a screen-space distance but a node's on-screen SIZE grows with
+    //zoom: at 3x a tall node (a RegEdit with dozens of entries) whose ORIGIN sits above the viewport still
+    //fills the screen, and a fixed margin culls it while the user is looking straight at it.
+    const float MarginX = 700.0f * std::max(1.0f, m_s->Zoom);
+    const float MarginY = 500.0f * std::max(1.0f, m_s->Zoom);
     auto OnScreen = [&](int I) {
         const float X = G.Nodes[I].X * m_s->Zoom + Pan.x, Y = G.Nodes[I].Y * m_s->Zoom + Pan.y;
         return X > -MarginX && Y > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
@@ -1076,8 +1098,15 @@ void PkgCanvas::frame()
     std::vector<char> Drawn((size_t)G.Nodes.size(), 0);
     int Visible = 0;
     for (int I = 0; I < (int)G.Nodes.size(); ++I)
-        if (OnScreen(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
+        if (!CullingOn || OnScreen(I)) { drawNode(I, G); Drawn[(size_t)I] = 1; ++Visible; }
     m_s->VisibleNodes = Visible;
+    //Recorded AFTER the node loop and BEFORE anything reads it back: this is the set imnodes will still know
+    //about on the next frame.
+    {
+        std::set<std::string> Now;
+        for (int I = 0; I < (int)G.Nodes.size(); ++I) if (Drawn[(size_t)I]) Now.insert(G.Nodes[I].Id);
+        m_s->DrawnLast.swap(Now);
+    }
 
     // Out-of-bundle parents: a reference chip, not a box we own — you cannot edit another package from here.
     std::vector<std::string> Chips = G.Externals;
@@ -1134,7 +1163,16 @@ void PkgCanvas::frame()
     }
 
     int Sel = -1;
-    if (ImNodes::NumSelectedNodes() == 1) { ImNodes::GetSelectedNodes(&Sel); if (Sel < kExternalBase) m_s->Selected = Sel; }
+    //Only trust a selection whose node was SUBMITTED THIS FRAME. imnodes frees a culled node's pool slot but
+    //leaves its index in SelectedNodeIndices, and GetSelectedNodes reads Pool[thatIndex].Id — so once another
+    //node reuses the slot, the "selection" silently becomes a node the user never clicked, and every
+    //selection-scoped action (the JSON panel, delete) points at it.
+    if (ImNodes::NumSelectedNodes() == 1)
+    {
+        ImNodes::GetSelectedNodes(&Sel);
+        if (Sel >= 0 && Sel < kExternalBase && Sel < (int)Drawn.size() && Drawn[(size_t)Sel])
+            m_s->Selected = Sel;
+    }
     // Delete drops the node AND every edge pointing at it, with no undo. Ask once — a mis-keyed Delete on a
     // shared library node silently unhooks every dependent, which is the failure this whole schema exists to
     // make visible rather than silent.
@@ -1170,7 +1208,7 @@ void PkgCanvas::frame()
         else m_s->ConfirmDelete = -1;   // dismissed with ESC / a click outside: do not reopen next frame
     }
 
-    flushPositions(G);
+    flushPositions(G, Drawn);
     ImGui::End();
 
     // Persist on mouse-up rather than per keystroke: one write per gesture, and the JSON view never sees a

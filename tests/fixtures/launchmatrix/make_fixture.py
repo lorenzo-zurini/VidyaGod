@@ -179,7 +179,11 @@ def nodes():
     # Runs the content through an explicit interpreter rather than exec'ing it directly, so the fixture does
     # not depend on the FUSE mount preserving an executable bit.
     add(NODE_ID="lm_runner_native", TYPE="DeclareExec", PARENTS=[], HOST="linux64",
-        GUEST=["linux64"], PATH="/bin/sh", ARGS=["%Content%"])
+        GUEST=["linux64"], PATH="/bin/sh", ARGS=["%Content%"],
+        # The runner sets both: one the launchable overrides, one it REMOVES. Removal has to beat the runner,
+        # or a launchable can never get rid of something its runner insists on.
+        ENV={"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
+             "LM_EXEC_ENV": "runner-loses"})
     add(NODE_ID="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
         TARGET="runner/fakerunner.sh")
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
@@ -318,8 +322,8 @@ def nodes():
     add(NODE_ID="lm_all", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="linux64",
         PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=["--matrix", "%lm_derived%"],
         LABEL="Everything", RECOMMENDED=True,
-        # ENV on a LAUNCHABLE is currently dropped by the lowering (only runners copy it). It is here on
-        # purpose: the golden records today's behaviour, so the day that gap is closed shows up as a diff.
+        # ENV on a LAUNCHABLE reaches the process (it used to be dropped by the lowering, and had no consumer
+        # either). lm_run proves the whole path at runtime; this one pins it in the plan.
         ENV={"LM_EXEC_ENV": "does-this-arrive"})
     # (2) THE RUNTIME CASE: mounts for real and runs the probe, whose stdout is its own golden. Same closure
     # as lm_all except it points at a program instead of a data file.

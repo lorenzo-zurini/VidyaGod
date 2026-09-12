@@ -263,3 +263,71 @@ TEST(an_empty_graph_is_not_a_crash)
     CHECK_EQ(G.Nodes.size(), (size_t)0);
     PkgLayout::Compute(G);
 }
+
+//A PINNED layout. Building the same document twice in one process rules out almost nothing that threatens CID
+//stability: the danger is the algorithm DRIFTING between the machine that stamps POS and the machine that reads
+//it, or between today's build and next month's. Concrete coordinates for a fixed graph are the only assertion
+//that catches that — if this test fails, every published POS in the library is now inconsistent with the code,
+//and the golden must be updated deliberately rather than by reflex.
+TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
+{
+    ordered_json A = ordered_json::array();
+    auto N = [&](const char *Id, std::initializer_list<const char *> Parents) {
+        ordered_json J;
+        J["NODE_ID"] = Id;
+        J["TYPE"]    = "Group";
+        if (Parents.size())
+        {
+            ordered_json P = ordered_json::array();
+            for (const char *X : Parents) P.push_back(X);
+            J["PARENTS"] = P;
+        }
+        A.push_back(J);
+    };
+    N("root",  {});
+    N("a",     {"root"});
+    N("b",     {"root"});
+    N("c",     {"a", "b"});
+    N("d",     {"c"});
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    CHECK_EQ(G.Nodes.size(), (size_t)5);
+    const float X0 = 60.0f, Y0 = 60.0f, CW = 430.0f, RH = 300.0f;
+    CHECK_EQ(G.Nodes[0].X, X0);              CHECK_EQ(G.Nodes[0].Y, Y0);            // root   layer 0
+    CHECK_EQ(G.Nodes[1].X, X0 + CW);         CHECK_EQ(G.Nodes[1].Y, Y0);            // a      layer 1 row 0
+    CHECK_EQ(G.Nodes[2].X, X0 + CW);         CHECK_EQ(G.Nodes[2].Y, Y0 + RH);       // b      layer 1 row 1
+    CHECK_EQ(G.Nodes[3].X, X0 + 2 * CW);     CHECK_EQ(G.Nodes[3].Y, Y0);            // c      layer 2
+    CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW);     CHECK_EQ(G.Nodes[4].Y, Y0);            // d      layer 3
+}
+
+//Document ORDER seeds the within-layer ordering, so the same graph written in a different file order must not
+//produce a different picture for the nodes that have no reason to move.
+TEST(layer_assignment_does_not_depend_on_document_order)
+{
+    auto Build = [](bool Reversed) {
+        ordered_json A = ordered_json::array();
+        std::vector<ordered_json> Ns;
+        for (int I = 0; I < 6; ++I)
+        {
+            ordered_json J;
+            J["NODE_ID"] = "n" + std::to_string(I);
+            J["TYPE"]    = "Group";
+            if (I > 0) J["PARENTS"] = ordered_json::array({"n" + std::to_string(I - 1)});
+            Ns.push_back(J);
+        }
+        if (Reversed) std::reverse(Ns.begin(), Ns.end());
+        for (const auto &J : Ns) A.push_back(J);
+        std::map<std::string, std::pair<float, float>> Pos;
+        const PkgGraph::Graph G = PkgGraph::Build(A);
+        for (const auto &Nd : G.Nodes) Pos[Nd.Id] = {Nd.X, Nd.Y};
+        return Pos;
+    };
+    const auto Forward = Build(false), Backward = Build(true);
+    for (const auto &[Id, P] : Forward)
+    {
+        CHECK(Backward.count(Id) == 1);
+        if (Backward.count(Id) != 1) continue;
+        CHECK_EQ(Backward.at(Id).first,  P.first);
+        CHECK_EQ(Backward.at(Id).second, P.second);
+    }
+}

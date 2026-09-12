@@ -1,4 +1,5 @@
 #include "vfsmount.h"
+#include <functional>
 #include "platform/platform.h"
 #include "procenv.h"         // SystemToolEnv + RunCommand
 #include "commonutils.h"        // Log*
@@ -88,21 +89,66 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //a delta that sits mid-chain resolves to that chain's partial view; whether generation diffed against the
 //partial or the finished tree is not knowable from the plan, so it is not guessed at here — a wrong guess would
 //fail the delta's own size check at mount, loudly, which is the better place for it.
-//WHOLE-LAYER %variable% substitution, exactly as BuildSubComponentsArray does for package components:
-//serialise, substitute, re-parse. Used by the mount builders whose layer lists never pass through the resolver
+//WHOLE-LAYER %variable% substitution for the mount builders whose layer lists never pass through the resolver
 //(the runner build, the inner-runner chain). It replaces a FIELD WHITELIST that substituted TARGET and
 //BASE_TARGETS but not PATH or SUBMOUNTS — so a library package parented to a RUNNER (every one of the 26
 //submount-using nodes carries a %var% in its destination) would mount under a directory literally named
-//"%dxwnd_dir%", in silence. Whitelists rot; substituting the whole object cannot miss a field added later.
-//A malformed result is impossible from a re-parse of our own dump, but is returned unchanged rather than
-//discarded if it ever happens — a layer that vanishes is worse than one that keeps a token the sweep reports.
+//"%dxwnd_dir%", in silence. Whitelists rot; walking the whole object cannot miss a field added later.
+//
+//Substitutes VALUE BY VALUE rather than over the serialised text. The text form (dump -> substitute -> parse,
+//which BuildSubComponentsArray still uses) is only safe while no substituted VALUE can break JSON, and several
+//can: %RuntimePath%, %TempPath% and %RunnerMount% are filesystem paths, backslash-laden on Windows, where "\U"
+//and "\T" are invalid escapes; %PackageName%/%GameName% come from a package TITLE; CustomVar values are typed
+//by the user in the pre-launch dialog. One quote or backslash and the re-parse fails — and returning the layer
+//unchanged there means mounting with the tokens still in it, which is the exact disaster this function exists
+//to prevent, arrived at silently.
+//TOTAL readers. nlohmann's value() throws type_error.302 on a key that is PRESENT and NULL — which is the
+//shape every read-only plan has — so the fix for that crash has to cover every read of a plan, not just the
+//one that happened to crash first. An absent key and a null key mean the same thing here: not set.
+static bool ReadBool(const nlohmann::ordered_json &J, const char *K)
+{
+    const auto It = J.find(K);
+    return It != J.end() && It->is_boolean() && It->get<bool>();
+}
+static std::string ReadStr(const nlohmann::ordered_json &J, const char *K)
+{
+    const auto It = J.find(K);
+    return (It != J.end() && It->is_string()) ? It->get<std::string>() : std::string();
+}
+static const nlohmann::ordered_json *ReadArray(const nlohmann::ordered_json &J, const char *K)
+{
+    const auto It = J.find(K);
+    return (It != J.end() && It->is_array()) ? &*It : nullptr;
+}
+
 static nlohmann::ordered_json SubstituteLayerJson(const nlohmann::ordered_json &Sub,
                                                   const std::map<std::string, std::string> &Vars)
 {
-    std::string J = Sub.dump();
-    VarSubst::StringVariableSubstitution(J, Vars);
-    nlohmann::ordered_json Out = nlohmann::ordered_json::parse(J, nullptr, /*allow_exceptions=*/false);
-    return Out.is_discarded() ? Sub : Out;
+    //Recursive so it reaches SUBMOUNTS entries and BASE_TARGETS elements, not just top-level fields. Only
+    //STRINGS are touched: a key is a field name, and a number or bool cannot carry a token.
+    std::function<nlohmann::ordered_json(const nlohmann::ordered_json &)> Walk =
+        [&](const nlohmann::ordered_json &V) -> nlohmann::ordered_json {
+        if (V.is_string())
+        {
+            std::string S = V.get<std::string>();
+            VarSubst::StringVariableSubstitution(S, Vars);
+            return S;
+        }
+        if (V.is_array())
+        {
+            nlohmann::ordered_json Out = nlohmann::ordered_json::array();
+            for (const auto &E : V) Out.push_back(Walk(E));
+            return Out;
+        }
+        if (V.is_object())
+        {
+            nlohmann::ordered_json Out = nlohmann::ordered_json::object();
+            for (const auto &[K, E] : V.items()) Out[K] = Walk(E);
+            return Out;
+        }
+        return V;
+    };
+    return Walk(Sub);
 }
 
 static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char *Ctx)
@@ -110,8 +156,8 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
     std::set<std::string> ByteViews;
     for (const auto &L : Layers)
     {
-        const std::string Type   = L.value("type", std::string());
-        const std::string Target = L.value("target", std::string());
+        const std::string Type   = ReadStr(L, "type");
+        const std::string Target = ReadStr(L, "target");
 
         //SUBMOUNTS relocate a subtree to another runtime path, and every submount-using node in the library
         //carries a %var% in its destination. A token surviving there is the same silent disaster as one in
@@ -120,7 +166,7 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
         if (L.contains("submounts") && L["submounts"].is_array())
             for (const auto &M : L["submounts"])
                 if (M.is_string() && ManifestModel::HasLiveToken(M.get<std::string>()))
-                    LogErr(Ctx, "Layer '" + L.value("source", std::string("?")) + "': SUBMOUNT '"
+                    LogErr(Ctx, "Layer '" + (ReadStr(L, "source").empty() ? std::string("?") : ReadStr(L, "source")) + "': SUBMOUNT '"
                                     + M.get<std::string>() + "' still contains a %token% after substitution — "
                                       "those files will mount at that LITERAL path and be invisible.");
 
@@ -144,7 +190,7 @@ static void ValidateDeltaBases(const nlohmann::ordered_json &Layers, const char 
             {
                 if (ByteViews.count(B)) continue;
                 Resolved = false;
-                LogErr(Ctx, "Delta layer '" + L.value("source", std::string("?")) + "' (target '" + Target + "') "
+                LogErr(Ctx, "Delta layer '" + (ReadStr(L, "source").empty() ? std::string("?") : ReadStr(L, "source")) + "' (target '" + Target + "') "
                                 + (Declared ? "declares a byte-base at '" + B + "'"
                                             : "has no layer below it at its own target '" + B + "'")
                                 + ", but no earlier layer in this plan composes bytes there (only zip/delta layers "
@@ -309,7 +355,7 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     LogOut("VfsMount::BuildLayerSpec", "Mount plan for " + ContainerParams.RuntimePath.string() + " — "
                                            + std::to_string(Layers.size()) + " layer(s), listed LOWEST priority first"
                                            + (ContainerParams.ReadOnlyVFS ? ", read-only (no writelayer)"
-                                                                          : ", writelayer " + Spec.value("writelayer", std::string())));
+                                                                          : ", writelayer " + ReadStr(Spec, "writelayer")));
     //The SOURCE-EXISTENCE sweep lives in MountVFS, not here: it asks a question about the filesystem AT MOUNT
     //TIME, and a plan is also built by callers that will never mount one (--audit-packages builds all 960).
     //There, runtime-sourced layers legitimately do not exist yet, and reporting them made a healthy library
@@ -350,30 +396,31 @@ void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
     if (LayersIt == Spec.end() || !LayersIt->is_array()) return;
     for (const auto &L : *LayersIt)
     {
-        if (!L.is_object() || !L.value("rw", false)) continue;
+        if (!L.is_object() || !ReadBool(L, "rw")) continue;
         const auto SrcIt = L.find("source");
-        if (L.value("type", std::string()) == "dir" && SrcIt != L.end() && SrcIt->is_string())
+        if (ReadStr(L, "type") == "dir" && SrcIt != L.end() && SrcIt->is_string())
             std::filesystem::create_directories(SrcIt->get<std::string>(), Ec);
     }
 }
 
 size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool SkipRuntimeSourced)
 {
-    const nlohmann::ordered_json Layers = Spec.value("layers", nlohmann::ordered_json::array());
+    const nlohmann::ordered_json *LayersPtr = ReadArray(Spec, "layers");
+    const nlohmann::ordered_json Layers = LayersPtr ? *LayersPtr : nlohmann::ordered_json::array();
     size_t MissingSources = 0;
     for (size_t i = 0; i < Layers.size(); ++i)
     {
         const auto &L      = Layers[i];
-        const std::string S = L.value("source", std::string());
+        const std::string S = ReadStr(L, "source");
         //A RUNTIME-SOURCED layer reads from a path that only exists once something else is mounted (a prefix
         //assembly layer under %RunnerMount%), and an RW passthrough source is created BY the mount. Neither is
         //missing before a mount — a caller that is not mounting says so rather than reporting both as broken.
-        if (SkipRuntimeSourced && (L.value("rw", false) || L.value("runtimeSourced", false))) continue;
+        if (SkipRuntimeSourced && (ReadBool(L, "rw") || ReadBool(L, "runtimeSourced"))) continue;
         const bool Exists   = !S.empty() && std::filesystem::exists(S);
         if (!Exists) ++MissingSources;
-        LogOut("VfsMount::ReportMissingSources", "  [" + std::to_string(i) + "] " + L.value("type", std::string("?"))
-                                               + (L.value("rw", false) ? " rw " : " ro ") + "target='"
-                                               + L.value("target", std::string()) + "' source=" + (S.empty() ? "(none)" : S)
+        LogOut("VfsMount::ReportMissingSources", "  [" + std::to_string(i) + "] " + (ReadStr(L, "type").empty() ? std::string("?") : ReadStr(L, "type"))
+                                               + (ReadBool(L, "rw") ? " rw " : " ro ") + "target='"
+                                               + ReadStr(L, "target") + "' source=" + (S.empty() ? "(none)" : S)
                                                + (Exists ? "" : "   <-- SOURCE DOES NOT EXIST"));
     }
     if (MissingSources)
@@ -407,10 +454,11 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
 
     //Zip layers are served zero-copy, which requires STORE (uncompressed). Block any compressed
     //archive up front with a re-zip dialog (GUI) / log (headless), before mounting.
-    for (const auto &L : Spec.value("layers", nlohmann::ordered_json::array()))
+    const nlohmann::ordered_json *ZipLayers = ReadArray(Spec, "layers");
+    for (const auto &L : ZipLayers ? *ZipLayers : nlohmann::ordered_json::array())
     {
-        if (L.value("type", std::string()) != "zip") continue;
-        std::string Src = L.value("source", std::string());
+        if (ReadStr(L, "type") != "zip") continue;
+        std::string Src = ReadStr(L, "source");
         std::string Bad = ZipFirstCompressedEntry(Src);
         if (Bad.empty()) continue;
 

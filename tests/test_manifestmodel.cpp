@@ -576,3 +576,25 @@ TEST(validate_flags_cross_layer_case_collision_after_memoization)
 
     fs::remove_all(Dir);
 }
+
+//ENV is a BAG: composing a variant's ENV over a base's must keep the base's other keys. Previously the whole
+//object was replaced, which deleted them — harmless only while nothing consumed a launchable's ENV.
+TEST(compose_merges_ENV_key_wise_rather_than_replacing_it)
+{
+    NodeIndex Idx;
+    Add(Idx, {{"NODE_ID","base"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
+                  {"ENV", {{"A","1"},{"SHARED","base"}}}});
+    Add(Idx, {{"NODE_ID","variant"},{"TYPE","DeclareExec"},{"PARENTS", ordered_json::array({"base"})},
+                  {"HOST","win32"},{"PATH","G.exe"},
+                  {"ENV", {{"B","2"},{"SHARED","variant"}}}});
+    const ordered_json Composed = ManifestModel::ComposeAcrossClosure(
+        Idx, "variant", {}, [](const Node &N) -> const ordered_json * {
+            return N.Exec.is_object() ? &N.Exec : nullptr;
+        });
+    CHECK(Composed.contains("ENV"));
+    if (!Composed.contains("ENV")) return;
+    const ordered_json &E = Composed["ENV"];
+    CHECK_EQ(E.value("A", std::string()), std::string("1"));        // the base's key survives
+    CHECK_EQ(E.value("B", std::string()), std::string("2"));        // the variant's key arrives
+    CHECK_EQ(E.value("SHARED", std::string()), std::string("variant"));   // ...and wins where they collide
+}

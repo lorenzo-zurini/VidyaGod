@@ -218,7 +218,20 @@ nlohmann::ordered_json ComposeAcrossClosure(
         if (!N) continue;
         const nlohmann::ordered_json *Obj = Pick(*N);
         if (!Obj || !Obj->is_object()) continue;
-        for (const auto &[K, V] : Obj->items()) Out[K] = V;                  // later (more-specific) node wins, field-by-field
+        for (const auto &[K, V] : Obj->items())
+        {
+            //ENV is a BAG of independent keys, not a single value, so a more-specific node replacing it
+            //wholesale silently deletes the base's variables: a variant declaring ENV {B} over a base
+            //declaring ENV {A} loses A. That was harmless only while nothing consumed a launchable's ENV;
+            //now it reaches the process, so it is a missing environment variable at launch with no
+            //diagnostic. Merge key-wise — the more-specific node still wins on a shared KEY.
+            if (K == "ENV" && V.is_object() && Out.contains(K) && Out[K].is_object())
+            {
+                for (const auto &[EK, EV] : V.items()) Out[K][EK] = EV;
+                continue;
+            }
+            Out[K] = V;                                                      // later (more-specific) node wins, field-by-field
+        }
     }
     return Out;
 }

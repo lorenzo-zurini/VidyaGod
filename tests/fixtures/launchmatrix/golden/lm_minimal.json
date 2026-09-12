@@ -43,7 +43,11 @@
       "NodeId": "lm_runner_native"
     }
   ],
-  "RunnerEnv": {},
+  "RunnerEnv": {
+    "LM_EXEC_ENV": "runner-loses",
+    "LM_RUNNER_ONLY": "from-runner",
+    "LM_SHOULD_BE_GONE": "runner-set-this"
+  },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",
   "RunnerRemoveEnv": [],

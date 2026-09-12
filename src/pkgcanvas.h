@@ -109,7 +109,9 @@ private:
     //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
     //between two endpoints that exist, so culled nodes take their wires with them.
     void syncLinks(const PkgGraph::Graph &g, const std::vector<char> &Drawn);
-    void flushPositions(PkgGraph::Graph &g);
+    //Reads dragged positions back out of imnodes. `Drawn` marks the nodes SUBMITTED THIS FRAME — the only
+    //ones imnodes still has, since it frees the rest at EndNodeEditor.
+    void flushPositions(PkgGraph::Graph &g, const std::vector<char> &Drawn);
     std::unique_ptr<PkgCanvasState> m_s;
 };
 

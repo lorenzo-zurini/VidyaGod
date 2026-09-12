@@ -120,7 +120,7 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     // The editing surface IS the graph. A node is one layer of one TYPE, so it draws as one box with pins and
     // its payload inline — which is exactly what the two-tier model could not be rendered as (a node containing
     // an ordered array has no pins to wire). The old tab-strip of per-node forms is gone.
-    //The save hook persists BOTH: the package (node files) and the canvas layout (LAYOUT.vglayout).
+    //The save hook persists BOTH: the package (node files) and this machine's canvas positions (GlobalConfig EDITORLAYOUT).
     //They are deliberately separate files — a drag must never rewrite package bytes.
     Canvas = new PkgCanvasPanel(&Model->doc(), [this]{ Model->SaveNodes(); Model->SaveLayout(); }, this,
                                 &Model->layout());

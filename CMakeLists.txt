@@ -413,17 +413,26 @@ function(add_gui_test name)
 endfunction()
 
 # The launch-matrix fixture needs REAL deltas (a stub proves the plan, never the reconstruction), so it gets a
-# tiny generator built against the same vgdelta the mount uses.
-add_executable(vg_make_delta tests/fixtures/launchmatrix/make_delta.cpp)
-target_include_directories(vg_make_delta PRIVATE VidyaGodFS/src)
-target_link_libraries(vg_make_delta PRIVATE vgfs_core PkgConfig::LIBZIP PkgConfig::LIBZSTD)
+# tiny generator built against the same vgdelta the mount uses. POSIX only: the harness mounts and launches.
+if(NOT WIN32)
+    add_executable(vg_make_delta tests/fixtures/launchmatrix/make_delta.cpp)
+    target_include_directories(vg_make_delta PRIVATE VidyaGodFS/src)
+    target_link_libraries(vg_make_delta PRIVATE vgfs_core PkgConfig::LIBZIP PkgConfig::LIBZSTD)
+endif()
 
 # ---- Launch matrix — a synthetic package exercising every launch-engine feature, diffed against golden plans.
 # Not a unit test: it runs the built binary against a generated fixture in a throwaway data dir and compares the
 # resolved plan for each launchable. Touch the launch engine and this says which plans moved.
-add_test(NAME launch_matrix COMMAND ${CMAKE_COMMAND} -E env python3
-         ${CMAKE_SOURCE_DIR}/tools/launch_matrix.py)
-set_tests_properties(launch_matrix PROPERTIES TIMEOUT 600)
+# Bound to the binaries of THIS build tree, not to a hardcoded build/VidyaGod: a second tree
+# (build-asan, a Release dir) would otherwise run the matrix against a stale binary from another build and pass
+# — the same stale-binary trap that makes a mutation look blind, wired into the test itself.
+if(NOT WIN32)
+    add_test(NAME launch_matrix COMMAND ${CMAKE_COMMAND} -E env python3
+             ${CMAKE_SOURCE_DIR}/tools/launch_matrix.py
+             --binary $<TARGET_FILE:VidyaGod>
+             --make-delta $<TARGET_FILE:vg_make_delta>)
+    set_tests_properties(launch_matrix PROPERTIES TIMEOUT 600)
+endif()
 
 add_gui_test(test_pkgcanvas)
 add_gui_test(test_canvasperf)

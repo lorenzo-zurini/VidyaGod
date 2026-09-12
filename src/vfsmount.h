@@ -22,7 +22,8 @@ nlohmann::ordered_json BuildLayerSpec(struct ContainerParams &ContainerParams);
 void MaterializePlanPaths(const nlohmann::ordered_json &Spec);
 
 //Readies a built plan for the FS: materialises the paths it names, THEN reports what is still missing. One
-//function because the order is load-bearing — sweeping first flags the very paths the mount is about to create.
+//function because the order is load-bearing — sweeping first flags the very paths the mount is about to
+//create. Covered end to end by the launch matrix, whose lm_run mounts for real.
 void PrepareMount(const nlohmann::ordered_json &Spec);
 
 //Reports (and counts) layers in a built plan whose source does not exist on disk. Such a layer mounts EMPTY

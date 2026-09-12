@@ -443,7 +443,19 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
         RunProcessEnvironment.remove(QString::fromStdString(Key));
     for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
+    {
+        //get<std::string>() THROWS on a non-string, uncaught, at the last step of a launch. A runner ENV comes
+        //from a package file like any other field, so this is an authoring mistake, not an invariant: name it
+        //and carry on rather than killing the launch with a type_error nobody can place.
+        if (!Value.is_string())
+        {
+            LogWarn("ContainerWrapper::Execute",
+                    "runner ENV key '" + Key + "' is " + std::string(Value.type_name()) + ", not a string — "
+                    "skipped. Environment values are strings (quote the number).");
+            continue;
+        }
         RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
+    }
     for (const RunnerLink *L : OuterWrappers)
     {
         for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));

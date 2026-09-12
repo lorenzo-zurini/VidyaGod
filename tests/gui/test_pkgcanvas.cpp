@@ -862,6 +862,35 @@ private slots:
     // imnodes pre-scaled and divided back out on read. The bug that buys is obvious and expensive — a drag
     // read back at 0.5x without dividing would halve the whole layout and then PERSIST it.
 
+
+    // THE round trip: a node drawn, then culled, then brought back. imnodes DESTROYS any node not submitted
+    // during a frame (ObjectPoolUpdate) and re-creates it at Origin(0,0) when it next appears — so anything
+    // that decides "already seeded, no need to re-place it" hands the read-back a (0,0) that is then written
+    // to the layout and, at publish, stamped into POS. Panning away and back must not move a single node.
+    void aNodeThatScrollsOutAndBackKeepsItsPosition()
+    {
+        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
+        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
+        //relying on a threshold this test does not control.
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 300, 200);
+        Canvas->addNode("Content", 90000, 90000);   // far away: something to scroll to
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 1);
+
+        // Scroll the first node off-screen by panning to the far node, then come back.
+        ImNodes::EditorContextResetPanning(ImVec2(-89000, -89000));
+        runFrame();
+        runFrame();
+        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
+        runFrame();
+        runFrame();
+
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[0].X, 300.0f);
+        QCOMPARE(G.Nodes[0].Y, 200.0f);
+    }
+
     void zoomIsClampedAndDefaultsToUnity()
     {
         QCOMPARE(Canvas->zoom(), 1.0f);
@@ -904,6 +933,10 @@ private slots:
 
     void aNodeFarOutsideTheViewportIsCulled()
     {
+        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
+        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
+        //relying on a threshold this test does not control.
+        Canvas->setMiniMap(false);
         Canvas->addNode("Content", 40, 40);
         Canvas->addNode("Content", 90000, 90000);   // far off-screen at 1.0x
         runFrame();
@@ -915,6 +948,10 @@ private slots:
     // reading its position back yields the default origin — which is precisely how a layout got zeroed before.
     void aCulledNodeKeepsItsStoredPosition()
     {
+        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
+        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
+        //relying on a threshold this test does not control.
+        Canvas->setMiniMap(false);
         Canvas->addNode("Content", 90000, 90000);
         Canvas->addNode("Content", 40, 40);
         runFrame();

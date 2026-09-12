@@ -140,12 +140,14 @@ void PackageEditorModel::LoadNodes()
 //content travel as CIDs referenced FROM the json), and nothing mounts the bundle directory itself — only the
 //layers a node declares. So a non-json file here is invisible to publishing, to seeding and to the runtime,
 //while still travelling with the bundle for the author who is editing it.
-//The GlobalConfig key for a bundle's local positions: the bundle DIRECTORY name. Not the package UID — a
-//bundle need not declare one (a runner bundle has no DeclareLibraryItem), and the editor has to key something
-//for every bundle it can open, including one being authored before it has any identity at all.
+//The GlobalConfig key for a bundle's local positions: its ABSOLUTE PATH. Not the package UID — a bundle need
+//not declare one (a runner bundle has no DeclareLibraryItem), and the editor must key every bundle it can
+//open, including one being authored before it has any identity. And not the directory NAME, which collides:
+//two sources can each hold a bundle directory of the same name, and sharing one stanza means drags made in one
+//are stamped into the OTHER's node files at publish.
 static std::string LayoutKeyFor(const QDir *PackageDir)
 {
-    return PackageDir ? PackageDir->dirName().toStdString() : std::string();
+    return PackageDir ? QDir::cleanPath(PackageDir->absolutePath()).toStdString() : std::string();
 }
 
 void PackageEditorModel::LoadLayout()
@@ -178,6 +180,12 @@ void PackageEditorModel::SaveLayout() const
     if (!GlobalConfigJSON->contains("EDITORLAYOUT") || !(*GlobalConfigJSON)["EDITORLAYOUT"].is_object())
         (*GlobalConfigJSON)["EDITORLAYOUT"] = nlohmann::ordered_json::object();
     (*GlobalConfigJSON)["EDITORLAYOUT"][Key] = Layout;
+    //...and reach DISK. The sidecar this replaced was written on every mouse-up; GlobalConfig is otherwise
+    //only flushed by MainWindow::closeEvent, so a crash, a kill, or any exit that skips closeEvent would lose
+    //the whole session's arranging — a strictly worse guarantee than the file it replaced.
+    QFile Cfg(QString::fromStdString((AppPaths::DataRoot() / "GlobalConfig.JSON").string()));
+    if (JSONOps::SaveJSON(GlobalConfigJSON, &Cfg))     // returns true on FAILURE
+        LogWarn("PackageEditorModel", "could not flush the canvas layout to GlobalConfig.JSON");
 }
 
 void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json node)
