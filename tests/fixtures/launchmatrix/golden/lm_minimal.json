@@ -1,0 +1,59 @@
+{
+  "Content": "<DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001/game/data.txt",
+  "ContentPath": "drive_c/90000000000001/game/data.txt",
+  "ContentRoot": "",
+  "CustomVariables": {
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX": "on",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>"
+  },
+  "DLLOverrides": [],
+  "DropPaths": [],
+  "ExeArgs": [],
+  "GameName": "Launch Matrix",
+  "KeepDirs": [],
+  "KeepFiles": [],
+  "KeepRegHives": [],
+  "KeepRegKeys": [],
+  "PackageUID": "90000000000001",
+  "PersistAll": false,
+  "Platform": "linux64",
+  "PrefixGenerate": false,
+  "PrefixRoot": "",
+  "Recipe": [
+    "lm_minimal_content",
+    "lm_tile",
+    "lm_minimal__self"
+  ],
+  "RunnerArgs": [
+    "%Content%"
+  ],
+  "RunnerChain": [
+    {
+      "Executable": "/bin/sh",
+      "Guests": [
+        "linux64"
+      ],
+      "Host": "linux64",
+      "Native": true,
+      "NodeId": "lm_runner_native"
+    }
+  ],
+  "RunnerEnv": {},
+  "RunnerExecutable": "/bin/sh",
+  "RunnerName": "lm_runner_native",
+  "RunnerRemoveEnv": [],
+  "RunnerShipsBuild": false,
+  "SubComponentsArray": [
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSZipLayer"
+    }
+  ],
+  "UnifiedRuntime": false
+}

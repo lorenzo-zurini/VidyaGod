@@ -1,0 +1,294 @@
+{
+  "Content": "<DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001/bin/probe.sh",
+  "ContentPath": "drive_c/90000000000001/bin/probe.sh",
+  "ContentRoot": "",
+  "CustomVariables": {
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX": "on",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>",
+    "lm_conditional": "on-because-beta",
+    "lm_derived": "hello-beta",
+    "lm_flag": "1",
+    "lm_mode": "beta",
+    "lm_text": "hello"
+  },
+  "DLLOverrides": [],
+  "DropPaths": [
+    "drive_c/90000000000001/game/saves/cache"
+  ],
+  "ExeArgs": [
+    "--matrix",
+    "hello-beta"
+  ],
+  "GameName": "Launch Matrix",
+  "KeepDirs": [
+    "drive_c/90000000000001/game/saves"
+  ],
+  "KeepFiles": [
+    "drive_c/90000000000001/game/config.ini"
+  ],
+  "KeepRegHives": [
+    "user.reg"
+  ],
+  "KeepRegKeys": [
+    "HKLM\\Software\\LaunchMatrix"
+  ],
+  "PackageUID": "90000000000001",
+  "PersistAll": false,
+  "Platform": "linux64",
+  "PrefixGenerate": false,
+  "PrefixRoot": "",
+  "Recipe": [
+    "lm_c_zip_base",
+    "lm_c_zip_patch",
+    "lm_c_submount",
+    "lm_c_dir",
+    "lm_c_file",
+    "lm_c_delta_base",
+    "lm_c_masked_dir",
+    "lm_c_delta_implicit",
+    "lm_c_inner_zip",
+    "lm_c_delta_multibase",
+    "lm_c_probe",
+    "lm_v_text",
+    "lm_v_enum",
+    "lm_v_bool",
+    "lm_v_derived",
+    "lm_v_conditional",
+    "lm_fe_config",
+    "lm_fe_overwrite",
+    "lm_fe_append",
+    "lm_fe_basepass",
+    "lm_fe_when",
+    "lm_bp",
+    "lm_reg",
+    "lm_dll",
+    "lm_persist",
+    "lm_group",
+    "lm_tile",
+    "lm_run__self"
+  ],
+  "RunnerArgs": [
+    "%Content%"
+  ],
+  "RunnerChain": [
+    {
+      "Executable": "/bin/sh",
+      "Guests": [
+        "linux64"
+      ],
+      "Host": "linux64",
+      "Native": true,
+      "NodeId": "lm_runner_native"
+    }
+  ],
+  "RunnerEnv": {
+    "LM_EXEC_ENV": "arrived",
+    "LM_FROM_VAR": "%lm_derived%"
+  },
+  "RunnerExecutable": "/bin/sh",
+  "RunnerName": "lm_runner_native",
+  "RunnerRemoveEnv": [
+    "LM_SHOULD_BE_GONE"
+  ],
+  "RunnerShipsBuild": false,
+  "SubComponentsArray": [
+    {
+      "COMMENT": "the base layer",
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/patch.zip",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/carrier.zip",
+      "SUBMOUNTS": [
+        "nested/relocated.txt:/drive_c/90000000000001/unpacked/relocated.txt"
+      ],
+      "TARGET": "/drive_c/90000000000001/carrier",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/loosedir",
+      "TARGET": "/drive_c/90000000000001/loose",
+      "TYPE": "VFSDirLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "TARGET": "/drive_c/90000000000001/loosefile",
+      "TYPE": "VFSFileLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
+      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/maskeddir",
+      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TYPE": "VFSDirLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_base.vgdelta",
+      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TYPE": "VFSDeltaLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/inner.zip",
+      "TARGET": "/drive_c/90000000000001/innerzip",
+      "TYPE": "VFSZipLayer"
+    },
+    {
+      "BASE_TARGETS": [
+        "/drive_c/90000000000001/deltatarget",
+        "/drive_c/90000000000001/innerzip"
+      ],
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_concat.vgdelta",
+      "TARGET": "/drive_c/90000000000001/combined",
+      "TYPE": "VFSDeltaLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/probe.sh",
+      "TARGET": "/drive_c/90000000000001/bin",
+      "TYPE": "VFSFileLayer"
+    },
+    {
+      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "KEY": "Setting=",
+      "MODE": "ConfigWrite",
+      "OVERRIDE": true,
+      "TYPE": "FileEdit",
+      "VALUE": "1"
+    },
+    {
+      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "KEY": "FromVar=",
+      "MODE": "ConfigWrite",
+      "OVERRIDE": true,
+      "TYPE": "FileEdit",
+      "VALUE": "hello-beta"
+    },
+    {
+      "FILE": "/drive_c/90000000000001/game/written.txt",
+      "MODE": "Overwrite",
+      "OVERRIDE": true,
+      "TYPE": "FileEdit",
+      "VALUE": "overwritten by the matrix\n"
+    },
+    {
+      "COMMENT": "idempotent by contract",
+      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "MODE": "AppendLine",
+      "OVERRIDE": true,
+      "TYPE": "FileEdit",
+      "VALUE": "; appended once"
+    },
+    {
+      "FILE": "basepass.txt",
+      "MODE": "Overwrite",
+      "TYPE": "FileEdit",
+      "VALUE": "base pass ran\n"
+    },
+    {
+      "FILE": "/drive_c/90000000000001/game/conditional.txt",
+      "MODE": "Overwrite",
+      "OVERRIDE": true,
+      "TYPE": "FileEdit",
+      "VALUE": "flag was on\n",
+      "WHEN": "1 == 1"
+    },
+    {
+      "COMMENT": "VA replace behind an EXPECT guard",
+      "EXPECT": "000102",
+      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "MODE": "Replace",
+      "OFFSET": "0x401000",
+      "REPLACE": "aabbcc",
+      "TYPE": "BinaryPatch"
+    },
+    {
+      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "MODE": "Poke",
+      "OFFSET": "0x401010",
+      "TYPE": "BinaryPatch",
+      "VALUE": "ff"
+    },
+    {
+      "CAVE": "auto",
+      "COMMENT": "cave into section slack the patcher picks itself",
+      "EXPECT": "2021222324",
+      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "MODE": "Cave",
+      "OFFSET": "0x401020",
+      "PAYLOAD": "9090",
+      "TYPE": "BinaryPatch"
+    },
+    {
+      "ARCHITECTURE": "32",
+      "KEYVALUES": {
+        "FromVar": "beta",
+        "Number": "dword:0000002a",
+        "Value": "plain"
+      },
+      "REGPATH": "HKLM\\Software\\LaunchMatrix",
+      "TYPE": "RegEdit"
+    },
+    {
+      "ARCHITECTURE": "64",
+      "KEYVALUES": {
+        "FromVar": "beta",
+        "Number": "dword:0000002a",
+        "Value": "plain"
+      },
+      "REGPATH": "HKLM\\Software\\LaunchMatrix",
+      "TYPE": "RegEdit"
+    },
+    {
+      "ARCHITECTURE": "64",
+      "KEYVALUES": {
+        "": "this is the key's DEFAULT value"
+      },
+      "REGPATH": "HKCU\\Software\\LaunchMatrix",
+      "TYPE": "RegEdit"
+    },
+    {
+      "ARCHITECTURE": "64",
+      "KEYVALUES": {},
+      "REGPATH": "HKCU\\Software\\LaunchMatrix\\EmptyKey",
+      "TYPE": "RegEdit"
+    },
+    {
+      "KEYVALUES": {
+        "Only": "when the flag is on"
+      },
+      "REGPATH": "HKLM\\Software\\LaunchMatrixConditional",
+      "TYPE": "RegEdit",
+      "WHEN": "1 == 1"
+    },
+    {
+      "DLLOVERRIDE": "ddraw=n,b",
+      "TYPE": "DllOverride"
+    },
+    {
+      "DLLOVERRIDE": "dinput8=n,b",
+      "TYPE": "DllOverride"
+    },
+    {
+      "DLLOVERRIDE": "winmm=b,n",
+      "TYPE": "DllOverride"
+    },
+    {
+      "DLLOVERRIDE": "broken=",
+      "TYPE": "DllOverride"
+    }
+  ],
+  "UnifiedRuntime": false
+}
