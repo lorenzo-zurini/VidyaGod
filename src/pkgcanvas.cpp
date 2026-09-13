@@ -175,6 +175,17 @@ PkgCanvas::PkgCanvas(json *doc, SaveFn save, QObject *parent, json *layout, Save
 
 PkgCanvas::~PkgCanvas() = default;
 
+//Dropping imnodes' own selection, but only where there IS an imnodes context. invalidateGraph runs from
+//model-level paths (a reload, a rebuild) that can happen with no canvas realised at all — calling into
+//imnodes there dereferences a null context and takes the process down, which is how test_packageeditormodel
+//started segfaulting.
+void PkgCanvas::clearSelection()
+{
+    m_s->Selected = -1;
+    m_s->SelectedLast.clear();
+    if (m_s->Ctx) ImNodes::ClearNodeSelection();
+}
+
 void PkgCanvas::initContexts()
 {
     m_s->Ctx = ImNodes::CreateContext();
@@ -196,8 +207,13 @@ void PkgCanvas::setKnownIds(KnownIdsFn fn)       { m_s->KnownIds = std::move(fn)
 void PkgCanvas::invalidateGraph()
 {
     m_s->CacheValid = false;
-    m_s->Selected = -1;
+    clearSelection();
     m_s->ConfirmDelete = -1;
+    //...and imnodes' own selection, plus the snapshot culling reads. Clearing only our copy left the stale
+    //INDEX in both: the next frame force-draws every index in SelectedLast (a selected node is never culled),
+    //which makes Drawn[stale] true — so the Drawn guard, the only thing between a stale index and Selected,
+    //passes precisely BECAUSE of the force-draw, and Selected is restored to an index that now addresses a
+    //different node.
 }
 
 void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
@@ -253,7 +269,6 @@ void  PkgCanvas::setZoom(float Z)
 int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
 bool PkgCanvas::miniMap() const      { return m_s->ShowMiniMap; }
 void PkgCanvas::setMiniMap(bool On)  { m_s->ShowMiniMap = On; m_s->MiniMapAuto = false; }
-int  PkgCanvas::selectedNode() const { return m_s->Selected; }
 //VALIDATED: this is public, and a selection is an INDEX into a document that can be replaced underneath it.
 void PkgCanvas::selectNode(int index)
 {
@@ -302,13 +317,11 @@ bool PkgCanvas::removeNode(int index)
         for (const auto &P : N["PARENTS"]) if (!(P.is_string() && P.get<std::string>() == Id)) Keep.push_back(P);
         N["PARENTS"] = std::move(Keep);
     }
-    m_s->Selected = -1;
-    //...and clear imnodes' OWN selection set. It stores INDICES, which every later node's index has just
-    //shifted under, and it never validates them: leaving it populated makes the next frame report a selection
-    //for whichever node inherited the index — and since a selected node is never culled, that wrong index can
-    //never be culled away either, so it persists for the rest of the session.
-    ImNodes::ClearNodeSelection();
-    m_s->SelectedLast.clear();
+    //imnodes' own selection set stores INDICES, which every later node's index has just shifted under, and it
+    //never validates them: leaving it populated makes the next frame report a selection for whichever node
+    //inherited the index — and since a selected node is never culled, that wrong index can never be culled
+    //away either, so it persists for the rest of the session.
+    clearSelection();
     m_s->MarkDirty();
     return true;
 }

@@ -39,7 +39,8 @@ private slots:
         Doc = json{{"NODES", json::array()}};
         Layout = json::object();
         Saves = 0;
-        Canvas = new PkgCanvas(&Doc, [this]{ ++Saves; }, nullptr, &Layout);
+        Canvas = new PkgCanvas(&Doc, [this]{ ++Saves; ++FullSaves; }, nullptr, &Layout,
+                               [this]{ ++Saves; ++LayoutSaves; });
         Canvas->initContexts();
     }
     void cleanup()
@@ -952,6 +953,67 @@ private slots:
                  qPrintable(QString("node stayed %1 px wide at 0.25x (was %2)").arg(Small.x).arg(Full.x)));
     }
 
+
+    // The save SPLIT. A pure drag must reach the layout-only hook (positions live in no node file, so the full
+    // save rewrites the whole bundle for nothing), and a real document edit must still reach the full one.
+    // Misclassifying the second way is silent loss of a node edit, so both directions are pinned.
+    void aPureDragSavesOnlyTheLayout()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        runFrame();
+        FullSaves = 0; LayoutSaves = 0;
+
+        ImNodes::SetNodeGridSpacePos(0, ImVec2(1500, 900));
+        runFrame();                       // read-back notices the move
+        releaseMouse();                   // the save fires on mouse-up
+        QCOMPARE(LayoutSaves, 1);
+        QCOMPARE(FullSaves, 0);           // no node file was touched
+    }
+
+    void aDocumentEditStillSavesEverything()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        runFrame();
+        FullSaves = 0; LayoutSaves = 0;
+
+        Canvas->renameNode(0, "renamed_node");   // a real document change
+        runFrame();
+        releaseMouse();
+        QCOMPARE(FullSaves, 1);
+        QCOMPARE(LayoutSaves, 0);
+    }
+
+
+    // ...and when both a document edit and a drag are outstanding, the full save must win — choosing the
+    // layout-only hook there would drop the node edit while the canvas still showed it.
+    //
+    // HONEST NOTE ON ITS STRENGTH: this one pins INTENT, not a reachable bug. Mutating `PosOnly` to ignore
+    // DocChanged does not change the outcome, because a document edit commits on the FOLLOWING frame through
+    // the `!IsAnyItemActive()` arm rather than waiting for a release — so the two flags never actually meet at
+    // a commit. The `!DocChanged` term is defensive against that arm changing, and this test is what would
+    // notice if it did.
+    void aDocumentEditCombinedWithADragStillSavesTheDocument()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        runFrame();
+        FullSaves = 0; LayoutSaves = 0;
+
+        // Drag FIRST and let a frame observe it, so PosDirty is genuinely latched...
+        ImNodes::SetNodeGridSpacePos(0, ImVec2(1500, 900));
+        runFrame();
+        // ...then make a document edit before the button comes up, so both flags are live at the commit.
+        // (Editing first would not do: renameNode invalidates the graph, the node is re-seeded from the
+        // cache, and the position delta the read-back would have seen never exists.)
+        Canvas->renameNode(0, "edited_and_moved");
+        releaseMouse();
+
+        QCOMPARE(FullSaves, 1);       // the node edit reached disk
+        QCOMPARE(LayoutSaves, 0);     // ...and was not swallowed by the positions-only path
+    }
+
     void zoomIsClampedAndDefaultsToUnity()
     {
         QCOMPARE(Canvas->zoom(), 1.0f);
@@ -1054,6 +1116,16 @@ private:
         ImGui::Render();
     }
 
+    //A frame with the left button going UP: the canvas only commits a save on release.
+    void releaseMouse()
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+        runFrame(LastMouse);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+        runFrame(LastMouse);
+    }
+
     ImVec2 LastMouse = ImVec2(400, 300);
 
 private:
@@ -1061,6 +1133,8 @@ private:
     json Layout;
     PkgCanvas *Canvas = nullptr;
     int Saves = 0;
+    int FullSaves = 0;
+    int LayoutSaves = 0;
 };
 
 QTEST_MAIN(PkgCanvasTest)

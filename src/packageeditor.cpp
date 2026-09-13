@@ -86,8 +86,14 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
                                         *Model->globalConfig(),
                                         std::filesystem::path(PackageDir->path().toStdString()))
                                   : nullptr;
-        const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(),
-                                                       &Err, Local);
+        //Stamp FIRST, explicitly: this is the authoring path, so the bytes that get hashed carry the layout
+        //the author arranged. PublishPackage itself no longer stamps — it is also reached for bundles this
+        //machine merely fetched, which must never be rewritten.
+        std::string StampErr;
+        if (!PackageCatalog::StampNodePositions(PackageDir->path().toStdString(), Local, &StampErr))
+            LogWarn("PackageEditor", "could not stamp node positions (" + StampErr + ") — publishing without "
+                                     "them; the package will open unlaid-out for whoever receives it.");
+        const bool Ok = PackageCatalog::PublishPackage(PackageDir->path().toStdString(), Dest.toStdString(), &Err);
         if (Ok)
         {
             Model->LoadNodes(); BuildUI();

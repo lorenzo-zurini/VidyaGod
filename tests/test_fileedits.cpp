@@ -137,3 +137,22 @@ TEST(a_fileedit_path_inside_its_base_still_applies)
     CHECK(std::filesystem::exists(Base / "deep" / "nested" / "ok.txt"));
     std::filesystem::remove_all(Root);
 }
+
+//A first component that merely STARTS with ".." is not a climb. Comparing two characters instead of the whole
+//component refused "..config/settings.ini", a legitimate (if unusual) file name.
+TEST(a_fileedit_path_whose_first_component_starts_with_dotdot_is_allowed)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_fe_dotdot";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base);
+
+    ContainerParams CP(Root / "PKG");
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},{"FILE","..config/settings.ini"},
+                               {"MODE","Overwrite"},{"VALUE","kept\n"}}});
+
+    CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+    CHECK(std::filesystem::exists(Base / "..config" / "settings.ini"));
+    std::filesystem::remove_all(Root);
+}

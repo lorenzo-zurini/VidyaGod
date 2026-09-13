@@ -102,9 +102,10 @@ private slots:
         Canvas->shutdownContexts();
         delete Canvas; Canvas = nullptr;
 
-        // 100 ms/frame is 10 fps — already bad, and well short of the multi-minute stall being chased. These
-        // are the numbers that say whether a fix worked, so they are asserted, not just printed.
-        QVERIFY2(SteadyMs < 100, qPrintable(QString("steady frame %1 ms — the canvas is unusable").arg(SteadyMs)));
+        // The measured steady frame is ~0-15 ms with culling and ~450 ms without, so the threshold sits an
+        // order of magnitude below the broken case and well above the working one. 100 ms would have let a
+        // 6x regression through while still reading like a guard.
+        QVERIFY2(SteadyMs < 50, qPrintable(QString("steady frame %1 ms — the canvas is regressing").arg(SteadyMs)));
     }
 };
 

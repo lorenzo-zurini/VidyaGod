@@ -139,6 +139,11 @@ def main():
         except subprocess.TimeoutExpired:
             failures.append(f"{RUN_NODE}: the run TIMED OUT after 600s — the probe never finished")
             run = None
+        #The plan loop checks the exit code; this one did not, so a run that printed a good report and then
+        #failed during teardown compared clean and the harness said "match".
+        if run is not None and run.returncode != 0:
+            failures.append(f"{RUN_NODE}: the run exited {run.returncode}")
+            failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
         report = []
         inside = False
         for line in (run.stdout.splitlines() if run else []):

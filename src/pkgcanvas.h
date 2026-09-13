@@ -86,6 +86,11 @@ public:
     int  indexOf(const std::string &nodeId) const;
     PkgGraph::Graph graph() const;
 
+    //Drops the selection everywhere it is held: ours, imnodes' own index set, and the snapshot that
+    //culling reads. Safe with no imnodes context — model-level paths can invalidate the graph before
+    //any canvas has been realised, and calling into imnodes there takes the process down.
+    void clearSelection();
+
     //View state. Zoom is a VIEW property: it scales what imnodes is told and is divided back out on read, so
     //the document and the saved layout always hold unscaled coordinates. Exposed so a test can drive it.
     float zoom() const;
@@ -94,7 +99,6 @@ public:
     int   visibleNodes() const;
     bool  miniMap() const;
     void  setMiniMap(bool on);
-    int  selectedNode() const;
     void selectNode(int index);
 
 signals:

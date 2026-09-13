@@ -2,6 +2,17 @@
 
 A synthetic package that exercises the launch engine, and a golden plan for every launchable in it.
 
+## Build
+
+The harness runs the real binaries, so build them first (Linux; the matrix mounts and launches, so it is not
+built or registered on Windows):
+
+```sh
+cmake -S . -B build && cmake --build build -j"$(nproc)"     # VidyaGod + vg_make_delta
+```
+
+## Run
+
 ```sh
 python3 tools/launch_matrix.py            # verify — non-zero exit if any plan moved
 python3 tools/launch_matrix.py --update   # re-record, then READ THE DIFF before committing it

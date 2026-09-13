@@ -114,14 +114,15 @@ bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const st
 // ----- publish -----
 // Dehydrate a local bundle for sharing: seed each node LAYER's VFS content + META.COVER over IPFS, record
 // SOURCE:{ipfs,CID} into the node files IN PLACE (content kept), and optionally export a node-files-only copy.
-//`LayoutOverride` (optional) is this machine's dragged positions for the bundle — pass
-//EditorLayoutFor(GlobalConfig, PackageDir). Without it the stamp bakes the COMPUTED layout, silently
-//replacing whatever the author arranged: their drags live only in GlobalConfig by design, so a publisher that
-//does not read them ships a picture nobody has ever seen, and a later remint (which does read them) then
-//mints a different CID for the same bundle.
+//Does NOT stamp node positions. Stamping is an AUTHORING act and belongs to the paths that have both the
+//author's intent and their drags — the editor's Publish button and RemintLibrary, which call
+//StampNodePositions explicitly first. Doing it in here made every publish path an authoring path: the IPFS
+//tab offers "Publish package CID" for ANY catalog entry, so a bundle fetched from someone else's CID source
+//had POS written into its node files and its bytes stopped matching the CID that served them. It also meant
+//the three call sites that pass no override minted a DIFFERENT CID from the editor's button for the same
+//bundle, because they baked the computed layout where the editor bakes the author's.
 [[nodiscard]] bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir,
-                                  std::string *Error = nullptr,
-                                  const nlohmann::ordered_json *LayoutOverride = nullptr);
+                                  std::string *Error = nullptr);
 
 // Re-establish seeding from a publisher's master: walk every node bundle under Dir and add each CID-referenced file
 // (LAYER + META.COVER SOURCE.ipfs content) to the IPFS node BY REFERENCE, so the node serves it (and reprovides it

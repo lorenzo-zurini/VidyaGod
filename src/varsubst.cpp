@@ -306,7 +306,8 @@ bool VarSubst::StringVariableSubstitution(
 nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_json &V,
                                                       const std::map<std::string, std::string> &Vars)
 {
-    //Only STRINGS are touched: a key is a field name, and a number or a bool cannot carry a token.
+    //Strings are substituted; numbers and bools cannot carry a token and pass through untouched. Object
+    //KEYS are substituted too (see below) — a RegEdit's KEYVALUES is keyed by the registry value name.
     if (V.is_string())
     {
         std::string S = V.get<std::string>();
@@ -330,6 +331,14 @@ nlohmann::ordered_json VarSubst::SubstituteJsonValues(const nlohmann::ordered_js
             //registry, silently — a narrowing with no diagnostic, since HasLiveToken only inspects targets.
             std::string Key = K;
             VarSubst::StringVariableSubstitution(Key, Vars);
+            //Two source keys can render to the SAME string ("%A%_Port" and "%B%_Port" where A and B hold the
+            //same value, or a literal "host_Port" beside "%MODE%_Port" with MODE=host). The second would
+            //overwrite the first and one registry value would simply never be written, with no diagnostic
+            //anywhere — HasLiveToken only inspects targets.
+            if (Out.contains(Key))
+                LogWarn("VarSubst::SubstituteJsonValues",
+                        "key '" + K + "' substitutes to '" + Key + "', which another key in the same object "
+                        "already produced — one of them will be lost. Give them distinct names.");
             Out[Key] = SubstituteJsonValues(E, Vars);
         }
         return Out;

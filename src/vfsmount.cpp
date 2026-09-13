@@ -277,6 +277,30 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
     //fails its size check, and a skipped layer.
     auto SubstituteLayer = [&](const nlohmann::ordered_json &Sub) { return SubstituteLayerJson(Sub, Vars); };
 
+    //Check-only twins for callers that have ALREADY substituted (the inner-runner chain). Same diagnostic,
+    //same anchoring, no second substitution pass.
+    auto CheckOneTarget = [&](const std::string &Base, std::string T,
+                              const nlohmann::ordered_json &Sub, const char *Key) -> std::string {
+        if (ManifestModel::HasLiveToken(T))
+            LogErr("VfsMount::BuildLayerSpec", "Layer " + (ReadStr(Sub, "TYPE").empty() ? std::string("?") : ReadStr(Sub, "TYPE"))
+                                                   + " '" + (ReadStr(Sub, "PATH").empty() ? std::string("?") : ReadStr(Sub, "PATH"))
+                                                   + "': " + Key + " still contains a %token% after substitution (\"" + T
+                                                   + "\") — it will mount at that LITERAL path and its files will be "
+                                                     "invisible to the game.");
+        T = NormalizeTargetPath(T);
+        if (T.empty()) return Base;
+        return Base.empty() ? T : (Base + "/" + T);
+    };
+    auto ResolveTargetPresubstituted = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
+        return CheckOneTarget(Base, ReadStr(Sub, "TARGET"), Sub, "TARGET");
+    };
+    auto ResolveBasesPresubstituted = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
+        std::vector<std::string> Out;
+        for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
+            Out.push_back(CheckOneTarget(Base, Raw, Sub, "BASE_TARGETS"));
+        return Out;
+    };
+
     auto ResolveBases = [&](const std::string &Base, const nlohmann::ordered_json &Sub) {
         std::vector<std::string> Out;
         for (const std::string &Raw : ManifestModel::LayerBaseTargets(Sub))
@@ -304,9 +328,17 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
             for (const auto &Raw : L.Layers)
             {
                 if (!IsVfsLayer(Raw.value("TYPE", std::string()))) continue;
-                const nlohmann::ordered_json Sub = SubstituteLayer(Raw);   // PATH + SUBMOUNTS too, not just TARGET
+                //Substituted HERE (PATH and SUBMOUNTS too, not just TARGET) because an inner-runner link's
+                //layers never pass through BuildSubComponentsArray. So the target resolvers must NOT
+                //substitute again: this branch is the pre-substituted one, and a second pass over a finished
+                //value makes a legitimate '%' in it trip the unmatched-token warning on every launch and
+                //leaves the surviving-token error unable to tell "failed to resolve" from "came out of a
+                //variable". (The SubComponentsArray loop above keeps substituting: it is BuildLayerSpec's
+                //stated contract, and the tests feed it raw layers.)
+                const nlohmann::ordered_json Sub = SubstituteLayer(Raw);
                 Layers.push_back(MakeVfsSpecLayer(Sub, ResolveLayerSource(Sub, L.PackagePath),
-                                                  ResolveTarget(Base, Sub), ResolveBases(Base, Sub)));
+                                                  ResolveTargetPresubstituted(Base, Sub),
+                                                  ResolveBasesPresubstituted(Base, Sub)));
             }
         }
 

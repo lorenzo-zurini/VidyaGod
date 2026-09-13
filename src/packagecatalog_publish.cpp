@@ -185,20 +185,8 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     return true;
 }
 
-bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error,
-                    const nlohmann::ordered_json *LayoutOverride)
+bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
 {
-    //Stamp the layout before anything is hashed. Only the remint path used to do this, so a package published
-    //from the editor's own button shipped with no POS at all. It takes the author's OVERRIDE: stamping the
-    //computed default here would silently discard the arrangement they just made — the same failure as a
-    //missed key lookup, reached from the other side.
-    {
-        std::string StampErr;
-        if (!StampNodePositions(PackageDir, LayoutOverride, &StampErr))
-            LogWarn("PackageCatalog::PublishPackage",
-                    "could not stamp node positions (" + StampErr + ") — publishing without them; the package "
-                    "will open unlaid-out for whoever receives it.");
-    }
 
     auto Fail = [&](const std::string &M) -> bool { if (Error) *Error = M; LogErr("PackageCatalog::PublishPackage", M); return false; };
 
@@ -738,8 +726,18 @@ bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Confi
             //Publish the layout as it stands NOW: this machine's dragged positions (EDITORLAYOUT, keyed by
             //bundle directory) are the author's arrangement and become the package's defaults. The algorithm
             //only fills in nodes nobody has ever positioned.
+            //Stamp only what this machine AUTHORS. A remint root can contain bundles fetched from someone
+            //else's CID source, and writing POS into those changes bytes that a CID out there still claims to
+            //serve — the "recorded CID no longer serves its bytes" condition, caused by us. A bundle with a
+            //stored layout is one the author has opened and arranged; one without is left exactly as fetched.
             const nlohmann::ordered_json *Local = EditorLayoutFor(Config, Pkg);
-            if (!StampNodePositions(Pkg.string(), Local, &E)) return Fail("package " + Pkg.string() + ": " + E);
+            if (Local)
+            {
+                if (!StampNodePositions(Pkg.string(), Local, &E)) return Fail("package " + Pkg.string() + ": " + E);
+            }
+            else if (VerboseLogging())
+                LogOut("PackageCatalog::RemintLibrary",
+                       "no stored layout for " + Pkg.filename().string() + " — leaving its node files untouched.");
             const std::string PkgCid = PublishMetaCid(Pkg.string(), &E);
             if (PkgCid.empty()) return Fail("package " + Pkg.string() + ": " + E);
             Settings["PackageCids"][Pkg.filename().string()] = PkgCid;

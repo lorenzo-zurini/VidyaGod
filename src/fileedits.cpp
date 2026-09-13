@@ -49,9 +49,11 @@ bool FileEdits::PathEscapesBase(const std::filesystem::path &Joined, const std::
 {
     OutNormalised = Joined.lexically_normal();
     const std::filesystem::path Rel = OutNormalised.lexically_relative(Base.lexically_normal());
-    //Empty means the two share no common root at all (a different drive, or an absolute path that replaced the
-    //base); a leading ".." means it climbed out.
-    return Rel.empty() || Rel.native().rfind("..", 0) == 0;
+    //Empty means the two share no common root at all (a different drive, or an absolute path that replaced
+    //the base). Otherwise the first COMPONENT decides: comparing the first two CHARACTERS instead would
+    //refuse a legitimate "..config/settings.ini", whose first component is "..config", not "..".
+    if (Rel.empty()) return true;
+    return *Rel.begin() == "..";
 }
 
 bool FileEdits::ProcessFileEdits(struct ContainerParams &ContainerParams, bool OverridePass,
