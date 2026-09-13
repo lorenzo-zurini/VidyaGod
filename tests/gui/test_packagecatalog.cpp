@@ -684,10 +684,13 @@ private slots:
                  "whose bytes must keep matching the CID that serves them");
     }
 
-    void stampingIsSkippedForABundleNobodyArranged()
+    // Pins the LOOKUP CONTRACT the two authoring gates are built on: nullptr for a bundle nobody arranged,
+    // non-null once one exists. It does NOT pin the gates themselves — removing `if (Local)` from
+    // packageeditor.cpp or packagecatalog_publish.cpp leaves this green, because reaching either needs a live
+    // PackageEditor or a RemintLibrary run (IPFS). The PublishPackage half IS pinned, by
+    // publishingDoesNotWritePositionsIntoNodeFiles; the editor-side gate is currently unguarded.
+    void theLayoutLookupIsNullUntilSomethingIsArranged()
     {
-        // EditorLayoutFor returns nullptr for a bundle with no stored arrangement, and both authoring paths
-        // gate on that. Asserted through the lookup, which is what they actually call.
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
         json Cfg = json::object();

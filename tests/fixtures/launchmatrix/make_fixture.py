@@ -186,12 +186,12 @@ def nodes():
         # or a launchable can never get rid of something its runner insists on.
         ENV={"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
              "LM_EXEC_ENV": "runner-loses"},
-        # NOT CURRENTLY DISCRIMINATING, and here as documentation rather than proof: a native terminal is
-        # treated as a PASSTHROUGH and skipped as an outer wrapper (containerwrapper.cpp), so this REMOVE_ENV
-        # is never applied and the golden below would look the same either way. Reaching the outer-wrapper
-        # path needs a real wrapper TOOL in the chain (gamescope/mangohud shape), which this fixture has no
-        # case for yet. The ordering it is meant to pin — an outer link must not strip a key the GAME set —
-        # is therefore fixed but untested.
+        # LOAD-BEARING — do not delete as dead weight. As an OUTER link of lm_run_chained's chain this runner
+        # asks for LM_GAME_KEEPS_THIS to be removed, and the game sets it, so the golden's
+        # "LM_GAME_KEEPS_THIS=survived-the-outer-remove" is a real assertion that an outer wrapper cannot
+        # strip a key the GAME declared. Verified: the run logs "Chain wrap: lm_runner_native (/bin/sh)" (it is
+        # wrapped precisely because its PATH is a real program rather than %Content%), and restoring the old
+        # exec-time environment order makes that line vanish from the golden.
         ENV_REMOVE=["LM_GAME_KEEPS_THIS"])
     add(NODE_ID="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
         TARGET="runner/fakerunner.sh")

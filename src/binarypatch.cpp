@@ -339,6 +339,18 @@ bool BinaryPatch::ProcessBinaryPatches(struct ContainerParams &ContainerParams)
         //that removes nothing, logging a claim that never happened.
         {
             const std::string Before = File;
+            //Strip ONLY when the absolute path does not already land inside the base. "%RuntimePath%/game/x"
+            //substitutes to a real absolute path that IS inside it — stripping that one turned
+            //"/home/.../RUNTIME/game/x" into "<base>/home/.../RUNTIME/game/x", a path that exists nowhere,
+            //where before it resolved correctly. Only the PrefixRoot-is-empty shape ("/drive_c/...") needs
+            //re-anchoring, and that one does escape.
+            std::filesystem::path AlreadyInside;
+            if (std::filesystem::path(File).is_absolute()
+                && !FileEdits::PathEscapesBase(std::filesystem::path(File), ContainerParams.RuntimePath, AlreadyInside))
+            {
+                File = AlreadyInside.string();
+            }
+            else
             while (!File.empty() && (File.front() == '/' || File.front() == '\\')) File.erase(File.begin());
             if (File != Before)
                 LogWarn("BinaryPatch::ProcessBinaryPatches",

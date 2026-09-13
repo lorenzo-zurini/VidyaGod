@@ -156,3 +156,27 @@ TEST(a_fileedit_path_whose_first_component_starts_with_dotdot_is_allowed)
     CHECK(std::filesystem::exists(Base / "..config" / "settings.ini"));
     std::filesystem::remove_all(Root);
 }
+
+//An ABSOLUTE path that already lands inside the base must be used AS IS. "%RuntimePath%/game/x.ini" is the
+//shape: it substitutes to a real absolute path under the runtime, and stripping its leading separator turned
+//it into "<base>/home/.../RUNTIME/game/x.ini" — a path that exists nowhere. Only the PrefixRoot-is-empty
+//shape ("/drive_c/...") needs re-anchoring, and that one genuinely escapes.
+TEST(an_absolute_fileedit_path_already_inside_the_base_is_used_as_is)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_fe_absin";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Base = Root / "base";
+    std::filesystem::create_directories(Base / "game");
+
+    ContainerParams CP(Root / "PKG");
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","FileEdit"},
+                               {"FILE", (Base / "game" / "x.ini").string()},   // absolute, inside the base
+                               {"MODE","Overwrite"},{"VALUE","landed\n"}}});
+
+    CHECK(FileEdits::ProcessFileEdits(CP, /*OverridePass=*/false, Base));
+    CHECK(std::filesystem::exists(Base / "game" / "x.ini"));
+    //...and NOT re-anchored under the base a second time.
+    CHECK(!std::filesystem::exists(Base / Base.relative_path() / "game" / "x.ini"));
+    std::filesystem::remove_all(Root);
+}

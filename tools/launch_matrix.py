@@ -158,22 +158,35 @@ def main():
                 failures.append(f"{node}: the probe produced NO report — it never ran inside the mount")
                 failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
             else:
+                #INSIDE the else on purpose. Left outside, a run that produced no report fell through to the
+                #recorder with `text` still holding the PREVIOUS iteration's value — so `--update` wrote the
+                #last plan's JSON into the runtime golden and exited 0. On any machine where the mount or the
+                #probe cannot run (no FUSE, no user namespaces, CI), re-recording poisoned the committed
+                #artifact and said "recorded".
                 text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
-            if args.update:
-                with open(rpath, "w") as F: F.write(text)
-            else:
-                checked += 1
-                want = open(rpath).read() if os.path.isfile(rpath) else None
-                if want is None:
-                    failures.append(f"{RUN_NODE} runtime: NO GOLDEN — run with --update and review it")
-                elif want != text:
-                    import difflib
-                    d = list(difflib.unified_diff(want.splitlines(True), text.splitlines(True),
-                                                  f"golden/{RUN_NODE}.runtime.txt", "observed", n=2))
-                    failures.append(f"{RUN_NODE} runtime: WHAT THE GAME SEES CHANGED")
-                    failures += ["    " + l.rstrip("\n") for l in d[:60]]
+                if args.update:
+                    with open(rpath, "w") as F: F.write(text)
+                else:
+                    checked += 1
+                    want = open(rpath).read() if os.path.isfile(rpath) else None
+                    if want is None:
+                        failures.append(f"{node} runtime: NO GOLDEN — run with --update and review it")
+                    elif want != text:
+                        import difflib
+                        d = list(difflib.unified_diff(want.splitlines(True), text.splitlines(True),
+                                                      f"golden/{node}.runtime.txt", "observed", n=2))
+                        failures.append(f"{node} runtime: WHAT THE GAME SEES CHANGED")
+                        failures += ["    " + l.rstrip("\n") for l in d[:60]]
 
         if args.update:
+            #A re-record that could not produce something is a FAILURE, not a quiet partial success. Reporting
+            #"recorded" while a runtime node never ran is how a machine that cannot mount (no FUSE, no user
+            #namespaces, CI) ends up committing goldens it never actually observed.
+            if failures:
+                print("\n".join(failures))
+                print(f"\nNOT fully recorded — {os.path.relpath(GOLDEN, ROOT)} was left as it was for whatever "
+                      f"could not be produced.")
+                return 1
             print(f"recorded {checked} plan golden(s) + the runtime report(s) in {os.path.relpath(GOLDEN, ROOT)}")
             return 0
         if failures:
