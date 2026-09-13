@@ -1783,15 +1783,17 @@ private slots:
             //before this one. A tight bound would make this test pass or fail on test ORDER, which is worse
             //than useless. What it still catches is the failure that matters: an estimate that is SHORT, and
             //one that is wrong by a whole payload (the ignored-cap mutation reports 8680 against 2967).
-            //An ABSOLUTE band, not a proportional one, and that distinction is the whole point. A proportional
-            //bound grows with the node, so a per-ROW error hides behind a per-entry surplus: shaving 6.5% off
-            //the constant every row is multiplied by left the whole suite green while costing 88px on the
-            //59-row RegEdit this feature exists for. What the slack legitimately covers is FIXED — the "node
-            //options" tree the estimate always reserves (three rows, because ImGui keeps its open/closed state
-            //in its own per-window storage, so the same node measures 57px either way depending only on which
-            //tests ran first) plus two warning lines — so any slack that grows with the node is a calibration
-            //error, and this catches it at the size where it starts to matter rather than at every size.
-            else if (Est - Drawn > 3 * 19.0f + 2 * 17.0f + 80.0f)
+            //An ABSOLUTE band, not a proportional one, and that distinction is the whole point: a proportional
+            //bound grows with the node, so a per-row or per-entry error hides inside it. What the slack
+            //legitimately covers is FIXED — two reserved warning lines, plus a little for rows the arms round
+            //up. It does NOT need to cover the "node options" tree any more: an earlier version budgeted three
+            //rows for it because the tree's state was whatever previous tests had left, and the measurement
+            //above now takes both states, so that ambiguity is gone and so is the 57px it bought.
+            //
+            //Measured worst case across every shape here: 94px (a Content with multiline lists). 120 leaves
+            //room for a row's rounding and nothing like enough for a per-entry drift — doubling either the
+            //separator or the button-row constant reports several hundred.
+            else if (Est - Drawn > 120.0f)
                 outliers << QString("%1 is drawn %2px but estimated %3px - %4px of slack, past the fixed "
                                     "reservations, so the layout will leave a hole")
                                 .arg(Who).arg(Drawn).arg(Est).arg(Est - Drawn);
@@ -2316,10 +2318,14 @@ private slots:
             Doc["NODES"][N]["EDITS"] = json::array({E});
             return N;
         };
+        //Close enough that the overview's boxes are TENS of pixels. A box is floored at 1px so a huge graph
+        //does not round every node away (pkgcanvas.cpp), and at an 80,000-unit spread the twins measured 1.9px
+        //— at which point every undersizing collapses onto that floor and the comparison below can only ever
+        //catch OVER-sizing. Spread the graph far enough to cull, no further.
         const int Near = reg(200.0f, 200.0f, 30);        // on screen
-        const int Far  = reg(40000.0f, 30000.0f, 30);    // far away, never submitted
-        reg(60000.0f, 45000.0f, 4);                      // a couple more, to give the overview a real spread
-        reg(80000.0f, 60000.0f, 60);
+        const int Far  = reg(2500.0f, 1800.0f, 30);      // past the cull margin, never submitted
+        reg(4000.0f, 2800.0f, 4);                        // a couple more, to give the overview a real spread
+        reg(5200.0f, 3600.0f, 60);
         Canvas->invalidateGraph();                       // drop every measured size, as a document swap does
         runFrame(); runFrame();
 
@@ -2332,11 +2338,12 @@ private slots:
         float nx = 0, ny = 0, nw = 0, nh = 0, fx = 0, fy = 0, fw = 0, fh = 0;
         Canvas->miniMapNodeBox(Near, nx, ny, nw, nh);
         Canvas->miniMapNodeBox(Far,  fx, fy, fw, fh);
-        QVERIFY2(nh > 0.0f && fh > 0.0f,
-                 qPrintable(QString("the overview drew no box for one of the twins (%1px and %2px)").arg(nh).arg(fh)));
-        //A box is floored at 1px so a huge graph does not round every node away, so a badly-undersized one
-        //shows up AS that floor rather than as a proportional difference — report both numbers either way.
-        QVERIFY2(std::abs(nh - fh) <= std::max(1.0f, nh * 0.06f),
+        //Both must be clear of the 1px floor, or the comparison below is between two clamped numbers and
+        //means nothing. This is the assertion that makes the layout above load-bearing.
+        QVERIFY2(nh > 4.0f && fh > 1.0f,
+                 qPrintable(QString("the overview's boxes are at or near the 1px floor (%1px measured, %2px "
+                                    "never-measured) - nothing can be compared at that size").arg(nh).arg(fh)));
+        QVERIFY2(std::abs(nh - fh) <= std::max(1.0f, nh * 0.12f),
                  qPrintable(QString("two nodes of identical height (%1px) got boxes of %2px (measured) and "
                                     "%3px (never measured) - the overview is not drawing an unmeasured node "
                                     "at the size the layout gave it")
@@ -2359,6 +2366,11 @@ private slots:
 
         int Warnings = 0;
         QStringList Lines;
+        //RAII. A QCOMPARE/QVERIFY2 expands to `return`, which would skip a ClearLogCallback() at the end and
+        //leave this process-global slot holding a lambda that captures two of this method's LOCALS — every
+        //later test's warnings then writing into a dead stack frame. The failure path of a test is exactly
+        //when that happens, which is exactly when it must not.
+        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
             if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
             { ++Warnings; Lines << QString::fromStdString(M); }
@@ -2367,14 +2379,20 @@ private slots:
         QCOMPARE(Warnings, 1);
         // Now rebuild the graph twenty times over, as twenty keystrokes would.
         for (int i = 0; i < 20; ++i) { Canvas->invalidateGraph(); runFrame(); }
-        ClearLogCallback();
+        // And twenty keystrokes into the ID BOX of the corrupt node itself, which is the path that actually
+        // happens: renameNode runs per character, ends in MarkDirty, and the graph is rebuilt with a new id —
+        // so a warning keyed by the old one fires again under the new one, naming ids that never existed.
+        std::string Id = Doc["NODES"][N].value("NODE_ID", std::string());
+        for (int i = 0; i < 20; ++i) { Id += 'x'; Canvas->renameNode(N, Id); runFrame(); }
         QVERIFY2(Warnings == 1,
-                 qPrintable(QString("twenty rebuilds produced %1 warnings, not 1:\n  %2")
+                 qPrintable(QString("twenty rebuilds and a twenty-character rename produced %1 warnings, not 1:\n  %2")
                                 .arg(Warnings).arg(Lines.join("\n  "))));
         // And the one line has to be usable: it names the node, says which declaration, and does not carry
         // hundreds of digits of whatever the package happened to contain.
         QVERIFY2(Lines[0].contains("its own POS"), qPrintable("the warning does not say WHICH declaration: " + Lines[0]));
-        QVERIFY2(Lines[0].size() < 200, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
+        //The bound is what SafeId guarantees (96 chars + an ellipsis) plus the fixed wording, not what this
+        //test's short generated id happens to produce — a real node with a long id reaches ~223 bytes.
+        QVERIFY2(Lines[0].size() < 240, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
         // The node is laid out rather than left at the impossible coordinate.
         const PkgGraph::Graph G = Canvas->graph();
         QVERIFY2(std::abs(G.Nodes[(size_t)N].X) < 1.0e6f && std::abs(G.Nodes[(size_t)N].Y) < 1.0e6f,

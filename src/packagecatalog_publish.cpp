@@ -141,6 +141,16 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     const PkgGraph::Graph G = PkgGraph::Build(Nodes, LocalOverride);
     if (G.Nodes.size() != Slots.size()) { if (Error) *Error = "node/slot mismatch while stamping positions"; return false; }
 
+    //A declared position Build refused. Publish is the one place where that matters MOST: the computed
+    //position is about to be written over the author's declaration, the file's bytes change and the package's
+    //Meta-CID with them — and the only line this function prints otherwise is "stamped POS into N file(s)",
+    //which says nothing about why one of them moved. Build records rather than logs (it runs per keystroke in
+    //the editor); this is the other caller, and it has to say so.
+    for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
+        Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
+            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives (" + R.Value
+                + "), which no layout could have produced - stamping a computed position over it");
+
     std::set<fs::path> Dirty;
     for (size_t I = 0; I < Slots.size(); ++I)
     {

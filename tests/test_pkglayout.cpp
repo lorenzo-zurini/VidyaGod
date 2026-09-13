@@ -324,7 +324,7 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (G.Nodes[I].X != G.Nodes[J].X) continue;            // different column: cannot collide
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;   // overlapping in X, not identical            // different column: cannot collide
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1) ++Overlaps;
@@ -370,7 +370,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (G.Nodes[I].X != G.Nodes[J].X) continue;
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;   // overlapping in X, not identical
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1)
@@ -454,9 +454,10 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
     }
     const float W = MaxX - MinX, H = MaxY - MinY;
     const float Aspect = W / H;
-    //Bounded either way up. One band-budget pass lands at 1.85 against a 16:9 target; a second pass moved it
-    //to 1.76 and was deleted as not worth a loop nothing could observe. This asserts the drawing stays a
-    //readable rectangle, which is the property that mattered — not the 0.09 the second pass bought.
+    //Bounded either way up, and deliberately no tighter. One band-budget pass lands at 1.85 against a 16:9
+    //target and the deleted second pass gave 1.76 — this band does NOT distinguish them and is not meant to:
+    //what it guards is that the wrap keeps producing a readable rectangle on the one shape where the deleted
+    //code had any effect at all, so that shape stops being untested. It fires at a 4.0 target (aspect 4.35).
     if (!(Aspect > 0.8f && Aspect < 3.2f))
         std::printf("    fan-out laid out %.0f x %.0f, aspect %.2f\n", W, H, Aspect);
     CHECK(Aspect > 0.8f);
@@ -466,7 +467,9 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (G.Nodes[I].X != G.Nodes[J].X) continue;
+            //Overlapping in X, not identically placed in it: two nodes 100 units apart share 230px of a
+            //330px body and collide just as much as two in the same column. An equality test sees neither.
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;
             if (G.Nodes[I].Y < G.Nodes[J].Y + G.Nodes[J].Height
                 && G.Nodes[J].Y < G.Nodes[I].Y + G.Nodes[I].Height) ++Overlaps;
         }
@@ -496,12 +499,14 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes.size(), (size_t)5);
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 390.0f);   // b,    after a's 240 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 831.0f);   // c,    after b's 351 + 90 gap
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 388.0f);   // b,    after a's 238 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 827.0f);   // c,    after b's 349 + 90 gap
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
-    //And the heights those Y values are made of, so a failure says WHICH half moved.
-    CHECK_EQ(G.Nodes[1].Height, 240.0f);
-    CHECK_EQ(G.Nodes[2].Height, 351.0f);
+    //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
+    //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
+    //a deliberate correction, and this golden is where that shows up as a decision rather than a side effect.
+    CHECK_EQ(G.Nodes[1].Height, 238.0f);
+    CHECK_EQ(G.Nodes[2].Height, 349.0f);
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)

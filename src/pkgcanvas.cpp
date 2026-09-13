@@ -32,9 +32,14 @@ constexpr int kExternalBase = 100000;
 //A node's last measured size, or a nominal box for one that culling has never let on screen. The minimap
 //draws EVERY node, those included, and a nominal box is an honest "about this big" — the alternative is
 //pretending a node we have never measured has no size, which makes the overview's bounds wrong.
-//The canvas hijacks two pieces of global imgui state for the duration of the editor — the cursor position and
-//delta it hands imnodes, and a widened clip rect for submission — and both must be handed back on EVERY exit
-//from frame(), including an early return. This guards exactly that and nothing more: a throw escaping frame()
+//The canvas hijacks several pieces of global imgui state for the duration of the editor — the cursor position
+//and delta it hands imnodes, a widened clip rect for submission, imnodes' canvas rectangle, and the main
+//viewport (so in-node popups place themselves in the space their widgets are laid out in). This guard covers
+//the first two, which are the ones with no other restore path; the other two are restored immediately after
+//EndNodeEditor, where there is no early return between. The viewport is the one worth watching: SetupDrawData
+//takes the backend's projection straight from it, so reaching Render() with it still pointed at the world
+//region would draw the WHOLE application frame at the wrong scale until the next NewFrame corrects it.
+//These must be handed back on EVERY exit from frame(), including an early return. This guards exactly that and nothing more: a throw escaping frame()
 //still leaves imnodes mid-scope with its draw-list splitter split and imgui's window stack unbalanced, which
 //no RAII here can repair. The value is that the two pieces of state THIS file borrowed are always returned.
 //A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
@@ -59,9 +64,11 @@ void EditorTooltip(const ImVec2 &RealMouse, const ImVec2 &ScreenPos, const ImVec
     const ImVec2 WasMouse = Io.MousePos, WasPos = VP->Pos, WasSize = VP->Size;
     Io.MousePos = RealMouse;
     VP->Pos = ScreenPos; VP->Size = ScreenSize;
+    VP->WorkPos = ScreenPos; VP->WorkSize = ScreenSize;
     ImGui::SetTooltip("%s", Text);
     Io.MousePos = WasMouse;
     VP->Pos = WasPos; VP->Size = WasSize;
+    VP->WorkPos = WasPos; VP->WorkSize = WasSize;
 }
 
 struct EditorIoGuard
@@ -216,8 +223,9 @@ struct PkgCanvasState
     //measured the last time it WAS on screen is kept here; a node never yet seen falls back to a nominal box.
     std::map<std::string, ImVec2> NodeDims;
     //Node ids already warned about an impossible position — the warning is worth one line, not one per frame.
-    //Maintained by removeNode/renameNode/invalidateGraph like every other id-keyed map here: a stale entry
-    //does not merely leak, it suppresses the warning for a DIFFERENT package's node of the same name.
+    //Keyed "<id>@<source>@<value>", so the only thing ever suppressed is a message identical to one already
+    //printed. Maintained by removeNode and renameNode BY PREFIX — the composite shape is why erasing a bare id
+    //silently did nothing — and deliberately NOT cleared by invalidateGraph, which runs on every keystroke.
     std::set<std::string> WarnedPos;
 
     json *Doc = nullptr;
@@ -464,7 +472,10 @@ bool PkgCanvas::removeNode(int index)
     m_s->Hints.erase(Id);
     m_s->Seeded.erase(Id);
     m_s->NodeDims.erase(Id);
-    m_s->WarnedPos.erase(Id);
+    //By PREFIX: the key is "<id>@<source>@<value>", the same shape RegBuf uses below, so erasing the bare id
+    //removes nothing at all.
+    for (auto It = m_s->WarnedPos.begin(); It != m_s->WarnedPos.end(); )
+        It = (It->rfind(Id + "@", 0) == 0) ? m_s->WarnedPos.erase(It) : std::next(It);
     for (auto It = m_s->RegBuf.begin(); It != m_s->RegBuf.end(); )
         It = (It->first.rfind(Id + "#", 0) == 0) ? m_s->RegBuf.erase(It) : std::next(It);
     Ns.erase(index);
@@ -577,7 +588,18 @@ bool PkgCanvas::renameNode(int index, const std::string &newId)
     auto Move = [&](auto &M) { auto It = M.find(Old); if (It == M.end()) return;
                                M[newId] = std::move(It->second); M.erase(It); };
     Move(m_s->Seeded); Move(m_s->Running); Move(m_s->Hints); Move(m_s->NodeDims);
-    m_s->WarnedPos.erase(Old);
+    //And the warned-about keys, RE-KEYED rather than dropped. This runs on EVERY KEYSTROKE of an id edit and
+    //ends in MarkDirty(), so the graph is rebuilt with the new id — and a warning keyed by the old one then
+    //fires again under the new one, once per character typed, naming ids that never existed. Measured before
+    //this: a 20-character id produced 21 warnings and 20 immortal entries. Prefix again, because the key is
+    //composite and erasing the bare id was a no-op.
+    {
+        std::vector<std::string> Rekey;
+        for (auto It = m_s->WarnedPos.begin(); It != m_s->WarnedPos.end(); )
+            if (It->rfind(Old + "@", 0) == 0) { Rekey.push_back(It->substr(Old.size())); It = m_s->WarnedPos.erase(It); }
+            else ++It;
+        for (const std::string &Tail : Rekey) m_s->WarnedPos.insert(newId + Tail);
+    }
     //Collected first, then re-inserted: inserting into the map being iterated can land the new key AFTER the
     //cursor, where it matches the same prefix again (a NODE_ID containing '#' is enough) and the loop never ends.
     {
@@ -1327,6 +1349,10 @@ void PkgCanvas::frame()
     //imnodes — and imnodes consumes the mouse inside EndNodeEditor, long before our widget exists.
     ImVec4 MiniRect(0, 0, 0, 0);
     m_s->MiniMapRect = ImVec4(0, 0, 0, 0);
+    //Cleared whether or not the overview draws this frame. Left stale it hands back the LAST minimap frame's
+    //rectangles, indexed by a node index that may now belong to a different node or to none — and a test that
+    //forgot to switch the minimap on would read a previous test's geometry and pass.
+    m_s->MiniBoxes.assign(m_s->Cache.Nodes.size(), ImVec4(0, 0, 0, 0));
     ImVec2 MiniWorldMin(0, 0), MiniWorldMax(0, 0);
     float  MiniScale   = 0.0f;
     bool   MiniHovered = false;
@@ -1429,12 +1455,28 @@ void PkgCanvas::frame()
     //the editor is actually laying out in puts that decision back in one space; the transform then maps the
     //result to where the widget is drawn. Restored immediately after the editor, before anything screen-space
     //(the minimap) is drawn.
+    //Applied at EVERY zoom, 1.0 included — at 1.0 the region IS the canvas viewport, so the only change is
+    //that a dropdown opened near the bottom of the canvas is kept inside the canvas instead of hanging over
+    //the toolbar, which is what it should do anyway. Skipping it there left a discontinuity at exactly 1.0
+    //with no reason behind it.
+    //
+    //Except when the region is too SMALL to hold a popup: FindBestWindowPosForPopupEx pins a popup taller than
+    //the allowed extent to that extent's top-left corner, and a combo caps at eight items (~136px). On a
+    //canvas shorter than roughly 136 * zoom this would put EVERY dropdown in the canvas corner regardless of
+    //its widget — far worse than the misplacement this fixes — so below that the display stays the extent.
     ImGuiViewport *VPort = ImGui::GetMainViewport();
     const ImVec2 VPosWas = VPort->Pos, VSizeWas = VPort->Size;
-    if (ViewZoom != 1.0f)
+    const ImVec2 VWorld(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
+    if (VWorld.x > 300.0f && VWorld.y > 300.0f)
     {
         VPort->Pos  = SubClipMin;
-        VPort->Size = ImVec2(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
+        VPort->Size = VWorld;
+        //WorkPos/WorkSize describe the same viewport minus any menu bars, and leaving them in screen space
+        //while Pos/Size move to world space means GetMainRect() and GetWorkRect() answer in different
+        //coordinate systems. Nothing in the editor reads the work rect today; a landmine with no sign on it
+        //is worse than one extra pair of assignments.
+        VPort->WorkPos  = VPort->Pos;
+        VPort->WorkSize = VPort->Size;
     }
     //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
     //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
@@ -1569,6 +1611,7 @@ void PkgCanvas::frame()
     ImNodes::EndNodeEditor();
     GImNodes->CanvasRectScreenSpace = CanvasRectWas;
     VPort->Pos = VPosWas; VPort->Size = VSizeWas;
+    VPort->WorkPos = VPosWas; VPort->WorkSize = VSizeWas;
     ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
     ZIO.MouseDelta = RealDelta;                     // (also the guard's job, on the path where this is skipped)
     //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
@@ -1752,7 +1795,6 @@ void PkgCanvas::frame()
             return ImVec2(Off.x + (Wx - MiniWorldMin.x) * MiniScale,
                           Off.y + (Wy - MiniWorldMin.y) * MiniScale);
         };
-        m_s->MiniBoxes.assign(G.Nodes.size(), ImVec4(0, 0, 0, 0));
         for (int I = 0; I < (int)G.Nodes.size(); ++I)
         {
             const Node &N = G.Nodes[(size_t)I];
@@ -1763,7 +1805,10 @@ void PkgCanvas::frame()
             const ImVec2 P1(std::max(P1raw.x, P0.x + 1.0f), std::max(P1raw.y, P0.y + 1.0f));
             const bool Sel = m_s->SelectedLast.count(I) != 0;
             DL->AddRectFilled(P0, P1, Sel ? IM_COL32(255, 190, 80, 255) : IM_COL32(130, 145, 165, 200));
-            m_s->MiniBoxes[(size_t)I] = ImVec4(P0.x, P0.y, P1.x, P1.y);
+            //Bounds-checked. The sizes cannot disagree today (this loop walks the very array MiniBoxes was
+            //sized from), but an unguarded write into a parallel vector is a buffer overrun the moment they
+            //ever do — and the crash is in the renderer, nowhere near the cause.
+            if (I < (int)m_s->MiniBoxes.size()) m_s->MiniBoxes[(size_t)I] = ImVec4(P0.x, P0.y, P1.x, P1.y);
         }
         //What the canvas is actually looking at. A node at world w is at origin + (pan + w) * zoom, so the
         //visible world rectangle is (-pan) to (avail / zoom - pan).
