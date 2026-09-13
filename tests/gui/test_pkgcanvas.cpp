@@ -1724,8 +1724,18 @@ private slots:
         // GetNodeDimensions then reports the title-bar-only size of the box imnodes re-created — 35.5px for
         // everything, which compares as "wildly over-estimated" for every type at once. That is a measurement
         // artifact, not a finding, and it is exactly the shape of one: a uniform, implausible number.
+        //A UNIQUE id per measurement, and a TOGGLE on every node. Together they force the "node options" tree
+        //OPEN deterministically: drawEnvelope opens it on sight when TOGGLE/WHEN/EXCLUDE is set, but only with
+        //ImGuiCond_Once, and the stored open/closed state is keyed by the tree's ID and lives in the ImGui
+        //CONTEXT — which outlives the per-test canvas. Reusing an id therefore inherits whatever an earlier
+        //test left, and the SHORT branch (the one this test exists for) is only armed when the tree is open.
+        //Measured: deleting the estimate's warning-line reserve failed the full suite and PASSED this test
+        //alone, purely on that. A fresh id has no stored state, so Once applies and the state is known.
+        int Serial = 0;
         auto measure = [&](const char *Type, const json &Payload) {
             const int N = Canvas->addNode(Type, 100.0f, 100.0f);
+            Doc["NODES"][N]["NODE_ID"] = std::string("h") + std::to_string(++Serial);
+            if (!Doc["NODES"][N].contains("TOGGLE")) Doc["NODES"][N]["TOGGLE"] = "on";
             for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
             //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
             //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
@@ -1737,8 +1747,15 @@ private slots:
                      qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
                                     .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
             const float Drawn = ImNodes::GetNodeDimensions(N).y;
+            const float Wide  = ImNodes::GetNodeDimensions(N).x;
             const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
             const QString Who = QString("%1%2").arg(Type).arg(Payload.empty() ? "" : " (loaded)");
+            //The layout's per-column overlap check rests on a node being narrower than ColumnStep, and nothing
+            //estimates width — so the assumption is measured here, where a real node is actually on screen,
+            //rather than asserted between two compile-time constants.
+            if (Wide >= 430.0f)
+                outliers << QString("%1 is %2px wide, at or past the 430px column step - nodes in adjacent "
+                                    "columns can now collide").arg(Who).arg(Wide);
             if (Est < Drawn)
                 outliers << QString("%1 is drawn %2px but estimated only %3px - SHORT, so the layout will "
                                     "overlap it").arg(Who).arg(Drawn).arg(Est);
@@ -1772,6 +1789,20 @@ private slots:
         for (int r = 0; r < 24; ++r) Keys["Software"]["App"]["v" + std::to_string(r)] = "data";
         json E = json::object(); E["ARCHITECTURE"] = json::array({"64"}); E["HKLM"] = Keys;
         measure("RegEdit", json{{"EDITS", json::array({E})}});
+
+        // SEVERAL ENTRIES, which is the shape with a per-entry cost and the one every case here had missed:
+        // one entry hides an error worth a whole row each time, and `capture_reg` emits an entry per captured
+        // hive and architecture. Measured with that error present: +17px per entry, 1091px on a 59-entry node.
+        {
+            json Entries = json::array();
+            for (int e = 0; e < 10; ++e) {
+                json K = json::object();
+                for (int r = 0; r < 4; ++r) K["Software"]["G" + std::to_string(e)]["v" + std::to_string(r)] = "d";
+                json En = json::object(); En["ARCHITECTURE"] = json::array({"64"}); En["HKLM"] = K;
+                Entries.push_back(En);
+            }
+            measure("RegEdit", json{{"EDITS", Entries}});
+        }
 
         // And a REALLY tall one. The slack the estimate reserves is fixed, so a per-ROW calibration error only
         // becomes visible once enough rows have accumulated it: shaving 1.5px off the constant every row is
@@ -1939,8 +1970,10 @@ private slots:
                                                  "anything").arg(H)));
 
         QStringList outliers;
-        // Scroll the node's TOP well above the viewport while its body still covers the screen.
-        for (float pan : {-400.0f, -800.0f, -1200.0f}) {
+        // Scroll the node's TOP well above the viewport while its body still covers the screen. Every value is
+        // past MarginY (500 * max(1, zoom)), or the origin test alone would already pass it and the case would
+        // be incapable of failing: -400 was exactly that, and sat here looking like coverage.
+        for (float pan : {-700.0f, -1000.0f, -1400.0f}) {
             ImNodes::EditorContextResetPanning(ImVec2(0.0f, pan));
             runFrame(); runFrame();
             if (Canvas->visibleNodes() != 1)
@@ -2072,18 +2105,177 @@ private slots:
 
             // The popup must be AT the thing that was clicked — imgui puts it directly under the widget, so
             // the click point has to be within a widget's height of its top edge and inside it horizontally.
-            const ImRect R = Pop->OuterRectClipped;
-            const float DX = std::max(0.0f, std::max(R.Min.x - Hit.x, Hit.x - R.Max.x));
-            const float DY = std::max(0.0f, std::max(R.Min.y - Hit.y, Hit.y - R.Max.y));
-            if (DX > 60.0f || DY > 60.0f)
+            //UNCLIPPED (Pos+Size), not OuterRectClipped: the clipped rect reports a popup hanging off the
+            //display as ending neatly at its edge, so a misplaced one is invisible in it.
+            //
+            //And TRANSFORMED into the space it is actually drawn in. imgui lays the popup out in the same
+            //unscaled world the node was submitted in, and the view transform scales the result — so Pos/Size
+            //straight out of imgui describe where it would have been at 1:1, not where the user sees it.
+            //Asserting on those reported a correctly-placed popup as 420px off.
+            //Read from the HIT rectangle, which the canvas transforms and nudges as one with the pixels, so
+            //this is both where it is drawn and where it responds — the two cannot silently disagree.
+            const ImVec2 Min = Pop->OuterRectClipped.Min, Max = Pop->OuterRectClipped.Max;
+            //A combo popup is wider than it is tall and opens directly BELOW its widget, so "is the click
+            //inside the box" is nearly free horizontally — it has to be pinned to the widget's own edge. The
+            //top of the popup is what tracks the widget.
+            const float DX = std::max(0.0f, std::max(Min.x - Hit.x, Hit.x - Max.x));
+            const float DTop = std::abs(Min.y - Hit.y);
+            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
+            if (DX > 60.0f || DTop > 60.0f)
                 outliers << QString("zoom %1: clicked at (%2,%3) and the popup opened at [%4,%5 .. %6,%7] - "
-                                    "%8,%9 px away").arg(z).arg(Hit.x).arg(Hit.y)
-                                .arg(R.Min.x).arg(R.Min.y).arg(R.Max.x).arg(R.Max.y).arg(DX).arg(DY);
-            ImGui::ClearActiveID();
-            runFrame(); runFrame();                    // let the popup close before the next zoom
+                                    "%8px off horizontally, top %9px from the click").arg(z).arg(Hit.x).arg(Hit.y)
+                                .arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y).arg(DX).arg(DTop);
+            if (Min.x < -1.0f || Min.y < -1.0f || Max.x > Disp.x + 1.0f || Max.y > Disp.y + 1.0f)
+                outliers << QString("zoom %1: the popup hangs off the display: [%2,%3 .. %4,%5] against %6x%7")
+                                .arg(z).arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y).arg(Disp.x).arg(Disp.y);
+            //Close it properly. ClearActiveID does not dismiss a popup, and an open one blocks hovering
+            //everywhere else in the context — which outlives this test's canvas, so the next test that needs
+            //a hover finds none and reports a defect that is really this test's litter.
+            closeAnyPopup();
         }
+        closeAnyPopup();
         Canvas->setZoom(1.0f);
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // A tooltip raised from inside the editor is placed by imgui from io.MousePos, which in there is the WORLD
+    // cursor. The fix hands the real one back for the duration of the call rather than pinning the window with
+    // SetNextWindowPos — because pinning makes imgui skip both the flip-to-the-other-side placement and the
+    // clamp, so a tip raised near an edge runs off the screen with nothing to pull it back. Both halves are
+    // asserted here: it lands near the real cursor, and it stays on screen at the corner.
+    void anEditorTooltipLandsAtTheCursorAndStaysOnScreen()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 200, 200);          // Content has action buttons, which carry tooltips
+        Canvas->setZoom(1.0f);
+        //An ACTIVE item swallows hovering everywhere else, and an earlier test in this suite leaves one behind
+        //(the nested-field click test focuses a text box). Without this the search below finds no tooltip
+        //anywhere on the node and reports it as a defect, in the full suite only.
+        ImGui::ClearActiveID();
+        //And the VIEW: panning is canvas state that earlier tests leave wherever they finished, so the node can
+        //start off-screen — at which point the search below skips every point as out of viewport and reports
+        //"no tooltip anywhere", which is indistinguishable from the defect it is looking for.
+        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
+        runFrame(); runFrame();
+        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node is not on screen to be hovered");
+
+        auto tipWindow = [&]() -> const ImGuiWindow * {
+            const ImGuiContext &C = *ImGui::GetCurrentContext();
+            for (int w = 0; w < C.Windows.Size; ++w)
+                if (C.Windows[w]->Name && C.Windows[w]->Active && std::strstr(C.Windows[w]->Name, "##Tooltip"))
+                    return C.Windows[w];
+            return nullptr;
+        };
+        // Hover along the node's action row until a tooltip actually appears; fail loudly if none ever does.
+        auto raiseTip = [&](float z) -> ImVec2 {
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            const ImVec2 D = ImNodes::GetNodeDimensions(0);
+            for (float fy = 0.05f; fy < 1.0f; fy += 0.02f)
+                for (float fx = 0.03f; fx < 0.95f; fx += 0.05f) {
+                    const ImVec2 At(vx0 + (P.x + D.x * fx - vx0) * z, vy0 + (P.y + D.y * fy - vy0) * z);
+                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                    runFrame(At); runFrame(At);
+                    if (tipWindow()) return At;
+                }
+            return ImVec2(-1, -1);
+        };
+
+        // TWO checks, at two different setups, because each hides the other's defect.
+        //
+        // Proximity is checked at 2x with the node CENTRED: there the world cursor is much nearer the canvas
+        // origin than the real one, so a tooltip placed from the wrong one lands hundreds of pixels away and
+        // imgui has no reason to clamp it back. At 1:1 the two cursors are identical and nothing shows.
+        //
+        // Staying on screen is checked at 0.5x with the node driven into the BOTTOM-RIGHT corner: only there
+        // does imgui have to flip the tooltip to the other side of the cursor, which it will only do when the
+        // position is its own to choose. And it must be read from Pos+Size, NOT OuterRectClipped — the latter
+        // is clipped to the display by definition, so it reports a tooltip hanging off the edge as ending
+        // neatly at it, which is exactly how an earlier version of this test passed the mutation.
+        auto panNodeTo = [&](float Z, float FracX, float FracY) {
+            float ax = 0, ay = 0, bx = 0, by = 0;
+            Canvas->canvasViewport(ax, ay, bx, by);
+            const ImVec2 P = ImNodes::GetNodeGridSpacePos(0);
+            const ImVec2 D = ImNodes::GetNodeDimensions(0);
+            ImNodes::EditorContextResetPanning(ImVec2(((bx - ax) * FracX) / Z - P.x - D.x * FracX,
+                                                      ((by - ay) * FracY) / Z - P.y - D.y * FracY));
+            runFrame(); runFrame();
+        };
+
+        Canvas->setZoom(2.0f);
+        runFrame(); runFrame();
+        panNodeTo(2.0f, 0.5f, 0.5f);
+        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node left the screen at 2x");
+        const ImVec2 At2 = raiseTip(2.0f);
+        QVERIFY2(At2.x >= 0.0f, "no action-button tooltip could be raised at 2x");
+        {
+            const ImGuiWindow *W = tipWindow();
+            const ImRect R(W->Pos, ImVec2(W->Pos.x + W->Size.x, W->Pos.y + W->Size.y));
+            const float Dist = std::max(std::max(R.Min.x - At2.x, At2.x - R.Max.x),
+                                        std::max(R.Min.y - At2.y, At2.y - R.Max.y));
+            QVERIFY2(Dist < 90.0f,
+                     qPrintable(QString("at 2x the tooltip was raised at (%1,%2) and drawn at [%3,%4 .. "
+                                        "%5,%6] - %7px away, so it is following the world cursor")
+                                    .arg(At2.x).arg(At2.y).arg(R.Min.x).arg(R.Min.y)
+                                    .arg(R.Max.x).arg(R.Max.y).arg(Dist)));
+        }
+        closeAnyPopup();
+
+        Canvas->setZoom(0.5f);
+        runFrame(); runFrame();
+        panNodeTo(0.5f, 1.0f, 1.0f);
+        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node left the screen at 0.5x");
+        const ImVec2 At3 = raiseTip(0.5f);
+        QVERIFY2(At3.x >= 0.0f, "no action-button tooltip could be raised in the corner");
+        {
+            const ImGuiWindow *W = tipWindow();
+            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
+            const ImVec2 Max(W->Pos.x + W->Size.x, W->Pos.y + W->Size.y);
+            QVERIFY2(W->Pos.x >= -1.0f && W->Pos.y >= -1.0f && Max.x <= Disp.x + 1.0f && Max.y <= Disp.y + 1.0f,
+                     qPrintable(QString("the tooltip hangs off the screen: [%1,%2 .. %3,%4] against a %5x%6 "
+                                        "display, cursor at (%7,%8)").arg(W->Pos.x).arg(W->Pos.y)
+                                    .arg(Max.x).arg(Max.y).arg(Disp.x).arg(Disp.y).arg(At3.x).arg(At3.y)));
+        }
+        Canvas->setZoom(1.0f);
+    }
+
+    // The overview falls back to a node's ESTIMATED height for one it has never measured — which after a
+    // document swap is every node, and for a culled one is forever. With a nominal box instead, a graph of
+    // wildly different nodes draws as a grid of identical stubs.
+    void theOverviewShowsRealSizesForNodesItHasNeverMeasured()
+    {
+        Canvas->setMiniMap(true);
+        // Spread far enough that culling submits almost nothing, so almost every box comes from the fallback.
+        Canvas->addNode("Group", 0, 0);
+        for (int i = 0; i < 6; ++i) {
+            const int N = Canvas->addNode("RegEdit", 6000.0f + i * 4000.0f, 4000.0f + i * 3000.0f);
+            json K = json::object();
+            for (int r = 0; r < 10 + i * 25; ++r) K["Software"]["v" + std::to_string(r)] = "d";
+            json E = json::object(); E["HKLM"] = K;
+            Doc["NODES"][N]["EDITS"] = json::array({E});
+        }
+        Canvas->invalidateGraph();                      // clears the measured sizes, as a document swap does
+        runFrame(); runFrame();
+        QVERIFY2(Canvas->visibleNodes() < Canvas->nodeCount(),
+                 "nothing was culled - the fallback is not what is being measured");
+
+        // Distinct box HEIGHTS in the overview: a nominal fallback makes them all the same.
+        const ImDrawList *D = miniMapDrawList();
+        QVERIFY2(D && D->VtxBuffer.Size > 0, "the minimap painted nothing");
+        std::vector<float> Heights;
+        for (int v = 0; v + 3 < D->VtxBuffer.Size; v += 4) {
+            const float h = D->VtxBuffer[v + 2].pos.y - D->VtxBuffer[v].pos.y;
+            if (h > 0.5f) Heights.push_back(h);
+        }
+        std::sort(Heights.begin(), Heights.end());
+        Heights.erase(std::unique(Heights.begin(), Heights.end(),
+                                  [](float a, float b) { return std::abs(a - b) < 0.75f; }), Heights.end());
+        QVERIFY2(Heights.size() >= 4,
+                 qPrintable(QString("the overview drew only %1 distinct box heights for 7 nodes of very "
+                                    "different sizes - it is using a nominal box, not the estimate")
+                                .arg(Heights.size())));
+        Canvas->setMiniMap(false);
     }
 
     void zoomIsClampedAndDefaultsToUnity()
@@ -2194,6 +2386,20 @@ private:
         io.AddMouseButtonEvent(0, true);  runFrame(p);
         io.AddMouseButtonEvent(0, false); runFrame(p);
     }
+    // Dismiss any open popup (a combo dropdown). Escape is what a person presses, and imgui's own popup
+    // handling is what closes it; ClearActiveID does not. An open popup captures hovering for the whole
+    // context, which outlives the per-test canvas.
+    void closeAnyPopup()
+    {
+        //A click OUTSIDE it, which is what dismisses a combo for a person and what imgui itself listens for.
+        //Escape does not work here: the offscreen harness feeds no keyboard focus to the popup.
+        for (int i = 0; i < 6 && ImGui::GetCurrentContext()->OpenPopupStack.Size > 0; ++i)
+            clickAt(ImVec2(60.0f, 860.0f));
+        runFrame();
+        QVERIFY2(ImGui::GetCurrentContext()->OpenPopupStack.Size == 0,
+                 "a popup refused to close - it would block hovering for every test after this one");
+    }
+
     // One character per frame: a keystroke is only meaningful once the widget has processed the one before it.
     void type(const char *s)
     {

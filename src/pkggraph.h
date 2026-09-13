@@ -174,6 +174,10 @@ std::vector<RegRow> RegRowsOf(const nlohmann::ordered_json &Entry);
 //graph rebuild and building the rows for it was 40% of that rebuild; the two are pinned against each other by
 //the_registry_row_count_matches_the_flattening, because a drift between them silently under-reserves height.
 size_t CountRegRows(const nlohmann::ordered_json &Entry);
+
+//A NODE_ID rendered safe to put in a log line — C0 controls replaced, length capped. Ids come from arbitrary
+//on-disk or peer JSON and the log is this codebase's verdict channel.
+std::string SafeId(const std::string &Id);
 //Rebuild an entry's hive trees from rows, preserving ARCHITECTURE/OVERRIDE.
 void RegRowsInto(nlohmann::ordered_json &Entry, const std::vector<RegRow> &Rows);
 

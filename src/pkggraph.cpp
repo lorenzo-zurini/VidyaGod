@@ -1,5 +1,7 @@
 #include "pkggraph.h"
 
+#include "commonutils.h"   // Log
+
 #include "pkglayout.h"   // PkgLayout::ComputeUnplaced — the shared auto-layout
 
 #include <algorithm>
@@ -14,6 +16,23 @@ namespace PkgGraph
 {
 
 // ---- graph ----------------------------------------------------------------
+
+//An id safe to put in a log line. NODE_ID is arbitrary on-disk or peer JSON with no character validation,
+//and a log line is how this codebase reports verdicts — a control character in one can forge a record, and an
+//escape sequence can drive the terminal reading it. Strips every C0 control (not just the three whitespace
+//ones) and caps the length. NOT a claim that the whole codebase is hardened: the other sites that log an id
+//are listed in the review that prompted this and are untouched; this covers the two that this work added.
+std::string SafeId(const std::string &Id)
+{
+    std::string Out;
+    Out.reserve(std::min<size_t>(Id.size(), 96));
+    for (char C : Id)
+    {
+        if (Out.size() >= 96) { Out += "..."; break; }
+        Out += (static_cast<unsigned char>(C) < 0x20 || C == 0x7f) ? '?' : C;
+    }
+    return Out;
+}
 
 Graph Build(const json &NodesArray, const json *Layout)
 {
@@ -54,7 +73,17 @@ Graph Build(const json &NodesArray, const json *Layout)
             //the author can actually see and fix it. The bound is absurd rather than tight: real graphs are
             //tens of thousands of units across, and `get<float>()` on 1e300 quietly yields inf.
             if (!std::isfinite(Px) || !std::isfinite(Py) || std::abs(Px) > 1.0e7 || std::abs(Py) > 1.0e7)
+            {
+                //Loudly. Dropping a declared position silently means the author's layout disappears, publish
+                //re-stamps a computed one over it, the package's bytes change and its Meta-CID with them —
+                //with "stamped POS into N file(s)" as the only trace. The whole point of rejecting here is
+                //that the alternative was an invisible failure; a silent rejection is another one.
+                Log(LogLevel::WARN, "PkgGraph::Build",
+                    "node '" + SafeId(Nd.Id) + "' declares a position no layout could produce ("
+                        + std::to_string(Px) + ", " + std::to_string(Py) + ") - ignoring it and laying the "
+                          "node out instead");
                 return false;
+            }
             Nd.X = (float)Px; Nd.Y = (float)Py; Nd.HasPos = true;
             return true;
         };
@@ -397,7 +426,11 @@ float FieldPx(const json &Node, const Field &F)
         float Px = 0.0f;
         for (const json &E : *V)
         {
-            Px += kRowPx * 2.0f;                                // "views" and the override checkbox
+            //ONE row: drawRegEdits puts the "views" label, the 32/64 checkboxes and "override pass" on a
+            //single SameLine chain. Charging two cost a full row PER ENTRY — invisible on the one-entry nodes
+            //every test built, +1091px on a 59-entry one, and exactly the per-entry growth the absolute bound
+            //below was introduced to catch.
+            Px += kRowPx;
             //The row count the canvas will draw. Counted rather than built: RegRowsOf materialises three
             //std::strings per row, and on a graph of 500 nodes carrying 59 rows each that was 29,500 RegRow
             //structs per rebuild — 1.45 ms of a 3.58 ms Build, 40% of it, for a number. CountRegRows walks
@@ -438,8 +471,9 @@ float EstimateHeight(const json &Node)
     //payload — the same node has none at publish time, which is when this number is stamped — and there can be
     //any number of them, so they cannot be counted properly here. But the slack left over on a bare Group was
     //measured at 15px against a warning line of 17px: ONE warning already pushed the commonest node type in a
-    //composition graph past its reserved height. Two lines puts the cliff where a node has to be badly broken
-    //to reach it.
+    //composition graph past its reserved height. Two lines is a THRESHOLD, not a bound — a node carrying six
+    //findings still overflows by 16px, and PackageEditor attaches errors and warnings to the same id with no
+    //cap. It buys the common case; a node that broken overlapping its neighbour is the least of its problems.
     Px += 2.0f * kTextPx;
     return Px;
 }

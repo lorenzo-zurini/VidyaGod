@@ -186,80 +186,59 @@ void Compute(Graph &G, const Options &O)
     //totals once — the drawing only has to be readable, not optimal.
     const float ColumnBudget = (float)MaxRows * O.RowStep;
 
-    //Splitting a layer into sub-columns and deciding how wide a band may be are mutually dependent: the band
-    //budget is derived from how tall the blocks are, and an over-wide block is then re-split — which can only
-    //make it TALLER, so the budget was aimed at a shape the drawing would not have. Two passes settle it. Not
-    //iterated to a fixed point: the second budget is computed from real post-re-split heights, which is the
-    //information the first pass lacked, and a third pass has nothing new to learn.
+    //ONE pass. A second one — re-deriving the budget from post-re-split heights — was written on the theory
+    //that a re-split can only make a block taller, so the first budget aims at a shape the drawing will not
+    //have. Measured afterwards: byte-identical (id, X, Y) on every bundle in the library, the 2775-node
+    //Minecraft chain included, and a synthetic 500-node two-layer fan-out had to be built before it changed
+    //anything at all (aspect 1.85 -> 1.76). It also left the pass-1 re-split using the pass-0 budget and never
+    //un-split a block over-split against a smaller intermediate one. A loop with no observable effect on any
+    //real input, and no test that could tell it was there, is worse than the approximation it was correcting.
     std::vector<std::vector<std::vector<int>>> Blocks(Layers.size());
     std::vector<float> BlockH(Layers.size(), 0.0f);
-    int BandBudget = 1;
-
-    for (int Pass = 0; Pass < 2; ++Pass)
+    for (size_t D = 0; D < Layers.size(); ++D)
     {
-        //Fresh from the ordered layers every pass — re-splitting an already-split block is not the same
-        //operation and would not be reproducible.
-        for (size_t D = 0; D < Layers.size(); ++D)
-        {
-            Blocks[D] = SplitByHeight(Layers[D], Pitch, ColumnBudget);
-            BlockH[D] = BlockHeight(Blocks[D], Pitch);
-        }
-        if (Pass > 0)
-            for (size_t D = 0; D < Layers.size(); ++D)
-                if ((int)Blocks[D].size() > BandBudget)
-                {
-                    double Budget = 0.0;
-                    for (int Idx : Layers[D]) Budget += (double)Pitch[(size_t)Idx];
-                    Budget /= (double)BandBudget;
-                    for (int Tries = 0; Tries < 64 && (int)Blocks[D].size() > BandBudget; ++Tries)
-                    {
-                        Blocks[D] = SplitByHeight(Layers[D], Pitch, (float)Budget);
-                        Budget *= 1.1;
-                    }
-                    BlockH[D] = BlockHeight(Blocks[D], Pitch);
-                }
-
-        //The band's height is the TALLEST block in it, so the budget has to come from the real distribution of
-        //block heights — not from the cap. Estimating with the cap is what made a 904-layer chain (every block
-        //one node tall) compute a band budget three times too wide and draw the ribbon this wrap exists to
-        //avoid. The 90th percentile rather than the max: one outlier layer must not set the budget for all the
-        //others.
-        std::vector<float> SortedH = BlockH;
-        std::sort(SortedH.begin(), SortedH.end());
-        const double TypicalH = SortedH.empty() ? (double)O.RowStep
-                              : (double)SortedH[std::min(SortedH.size() - 1,
-                                                         (size_t)((double)SortedH.size() * 0.9))];
-        long long TotalColumns = 0;
-        for (size_t D = 0; D < Layers.size(); ++D) TotalColumns += (long long)Blocks[D].size();
-
-        const double ColumnW = (double)O.ColumnStep;
-        const double BandH   = std::max(1.0, TypicalH) + (double)O.BandGap;
-        //width == aspect * height  ⇒  budget*ColumnW == aspect * (TotalColumns/budget) * BandH
-        const double Ideal = std::sqrt(((double)TotalColumns * BandH * (double)O.TargetAspect)
-                                       / std::max(1.0, ColumnW));
-        //Ideal is continuous; a band budget is a whole number of columns, and on a SMALL graph the two
-        //candidates either side of it are not close to equivalent — rounding 3.35 down to 3 split a five-node
-        //graph across two bands when all four of its columns fit on one. So evaluate both and keep the better.
-        //
-        //Judged by RATIO to the target, so "twice too wide" and "twice too tall" weigh the same — and by
-        //divisions rather than std::log, because this choice is baked into published POS and therefore into
-        //the package's CID: std::log is not correctly rounded and varies between libm versions, where these
-        //divisions are the same exact operation on every machine.
-        auto AspectOf = [&](int Budget) {
-            const double Bands = std::ceil((double)TotalColumns / (double)std::max(1, Budget));
-            const double W = (double)Budget * ColumnW, H = Bands * BandH;
-            return (H > 0.0) ? W / H : 0.0;
-        };
-        auto Badness = [&](int Budget) {
-            const double Asp = AspectOf(Budget);
-            if (Asp <= 0.0) return 1e9;
-            const double T = std::max(1e-6, (double)O.TargetAspect);
-            return (Asp > T) ? (Asp / T) : (T / Asp);
-        };
-        const int Low  = std::max(1, (int)std::floor(Ideal));
-        const int High = std::max(1, (int)std::ceil(Ideal));
-        BandBudget = (Badness(High) < Badness(Low)) ? High : Low;
+        Blocks[D] = SplitByHeight(Layers[D], Pitch, ColumnBudget);
+        BlockH[D] = BlockHeight(Blocks[D], Pitch);
     }
+
+    //The band's height is the TALLEST block in it, so the budget has to come from the real distribution of
+    //block heights — not from the cap. Estimating with the cap is what made a 904-layer chain (every block one
+    //node tall) compute a band budget three times too wide and draw the ribbon this wrap exists to avoid. The
+    //90th percentile rather than the max: one outlier layer must not set the budget for all the others.
+    std::vector<float> SortedH = BlockH;
+    std::sort(SortedH.begin(), SortedH.end());
+    const double TypicalH = SortedH.empty() ? (double)O.RowStep
+                          : (double)SortedH[std::min(SortedH.size() - 1,
+                                                     (size_t)((double)SortedH.size() * 0.9))];
+    long long TotalColumns = 0;
+    for (size_t D = 0; D < Layers.size(); ++D) TotalColumns += (long long)Blocks[D].size();
+
+    const double BandH = std::max(1.0, TypicalH) + (double)O.BandGap;
+    //width == aspect * height  ⇒  budget*ColumnW == aspect * (TotalColumns/budget) * BandH
+    const double Ideal = std::sqrt(((double)TotalColumns * BandH * (double)O.TargetAspect)
+                                   / std::max(1.0, (double)O.ColumnStep));
+    //Ideal is continuous; a band budget is a whole number of columns, and on a SMALL graph the two candidates
+    //either side of it are not close to equivalent — rounding 3.35 down to 3 split a five-node graph across two
+    //bands when all four of its columns fit on one. So evaluate both and keep the better.
+    //
+    //Judged by RATIO to the target, so "twice too wide" and "twice too tall" weigh the same — and by divisions
+    //rather than std::log, because this choice is baked into published POS and therefore into the package's
+    //CID: std::log is not correctly rounded and varies between libm versions, where these divisions are the
+    //same exact operation on every machine.
+    auto AspectOf = [&](int Budget) {
+        const double Bands = std::ceil((double)TotalColumns / (double)std::max(1, Budget));
+        const double W = (double)Budget * (double)O.ColumnStep, H = Bands * BandH;
+        return (H > 0.0) ? W / H : 0.0;
+    };
+    auto Badness = [&](int Budget) {
+        const double Asp = AspectOf(Budget);
+        if (Asp <= 0.0) return 1e9;
+        const double T = std::max(1e-6, (double)O.TargetAspect);
+        return (Asp > T) ? (Asp / T) : (T / Asp);
+    };
+    const int Low  = std::max(1, (int)std::floor(Ideal));
+    const int High = std::max(1, (int)std::ceil(Ideal));
+    const int BandBudget = (Badness(High) < Badness(Low)) ? High : Low;
 
     const double ColumnW = (double)O.ColumnStep;
 

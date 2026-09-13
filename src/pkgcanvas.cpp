@@ -203,6 +203,8 @@ struct PkgCanvasState
     //measured the last time it WAS on screen is kept here; a node never yet seen falls back to a nominal box.
     std::map<std::string, ImVec2> NodeDims;
     //Node ids already warned about an impossible position — the warning is worth one line, not one per frame.
+    //Maintained by removeNode/renameNode/invalidateGraph like every other id-keyed map here: a stale entry
+    //does not merely leak, it suppresses the warning for a DIFFERENT package's node of the same name.
     std::set<std::string> WarnedPos;
 
     json *Doc = nullptr;
@@ -313,6 +315,9 @@ void PkgCanvas::invalidateGraph()
     //so a second package's nodes would inherit the first one's boxes in the overview. Unlike the maps above
     //this one grows without bound, because nothing else ever removes an entry on this path.
     m_s->NodeDims.clear();
+    //And the warned-about set, for the same reason and with a sharper consequence: auto-generated ids repeat
+    //across packages, so a stale entry SWALLOWS the warning for a different package's node.
+    m_s->WarnedPos.clear();
 }
 
 void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
@@ -439,6 +444,7 @@ bool PkgCanvas::removeNode(int index)
     m_s->Hints.erase(Id);
     m_s->Seeded.erase(Id);
     m_s->NodeDims.erase(Id);
+    m_s->WarnedPos.erase(Id);
     for (auto It = m_s->RegBuf.begin(); It != m_s->RegBuf.end(); )
         It = (It->first.rfind(Id + "#", 0) == 0) ? m_s->RegBuf.erase(It) : std::next(It);
     Ns.erase(index);
@@ -551,6 +557,7 @@ bool PkgCanvas::renameNode(int index, const std::string &newId)
     auto Move = [&](auto &M) { auto It = M.find(Old); if (It == M.end()) return;
                                M[newId] = std::move(It->second); M.erase(It); };
     Move(m_s->Seeded); Move(m_s->Running); Move(m_s->Hints); Move(m_s->NodeDims);
+    m_s->WarnedPos.erase(Old);
     //Collected first, then re-inserted: inserting into the map being iterated can land the new key AFTER the
     //cursor, where it matches the same prefix again (a NODE_ID containing '#' is enough) and the loop never ends.
     {
@@ -1122,10 +1129,9 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
             //log — an id carrying a newline would forge records in it.
             if (m_s->WarnedPos.insert(G.Nodes[I].Id).second)
             {
-                std::string Safe = G.Nodes[I].Id;
-                for (char &C : Safe) if (C == '\n' || C == '\r' || C == '\t') C = ' ';
                 Log(LogLevel::WARN, "PkgCanvas::flushPositions",
-                    "refused an impossible position from the editor for node '" + Safe + "' - re-seeding it");
+                    "refused an impossible position from the editor for node '"
+                        + PkgGraph::SafeId(G.Nodes[I].Id) + "' - re-seeding it");
             }
             m_s->Seeded.erase(G.Nodes[I].Id);
             continue;
@@ -1634,6 +1640,32 @@ void PkgCanvas::frame()
                                                   O.y + (Win->OuterRectClipped.Min.y - O.y) * Z),
                                            ImVec2(O.x + (Win->OuterRectClipped.Max.x - O.x) * Z,
                                                   O.y + (Win->OuterRectClipped.Max.y - O.y) * Z));
+
+            //A POPUP is an overlay, and imgui already took care to keep it on screen — but it did so in the
+            //unscaled space the node was submitted in, and the transform then moved it. Scaling about the
+            //canvas origin pushes anything near that origin off the top-left by origin*(Z-1): small (16px at
+            //3x) and bounded, but it is a dropdown hanging off the edge of the window. Nudged back, vertices
+            //and hit rectangle together so the two never disagree. Child windows are NOT nudged: they belong
+            //to their node and are clipped by the canvas on purpose.
+            if (Win->Flags & ImGuiWindowFlags_Popup)
+            {
+                const ImVec2 Disp = ImGui::GetIO().DisplaySize;
+                const ImVec2 Min(O.x + (Win->Pos.x - O.x) * Z, O.y + (Win->Pos.y - O.y) * Z);
+                const ImVec2 Max(Min.x + Win->Size.x * Z, Min.y + Win->Size.y * Z);
+                const float Dx = (Min.x < 0.0f) ? -Min.x : (Max.x > Disp.x ? Disp.x - Max.x : 0.0f);
+                const float Dy = (Min.y < 0.0f) ? -Min.y : (Max.y > Disp.y ? Disp.y - Max.y : 0.0f);
+                if (Dx != 0.0f || Dy != 0.0f)
+                {
+                    for (int V = 0; V < DL->VtxBuffer.Size; ++V)
+                    { DL->VtxBuffer[V].pos.x += Dx; DL->VtxBuffer[V].pos.y += Dy; }
+                    for (int C = 0; C < DL->CmdBuffer.Size; ++C)
+                    {
+                        ImVec4 &R = DL->CmdBuffer[C].ClipRect;
+                        R = ImVec4(R.x + Dx, R.y + Dy, R.z + Dx, R.w + Dy);
+                    }
+                    Win->OuterRectClipped.Translate(ImVec2(Dx, Dy));
+                }
+            }
         }
     }
 

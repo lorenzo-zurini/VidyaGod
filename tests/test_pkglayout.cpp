@@ -418,6 +418,43 @@ TEST(the_registry_row_count_matches_the_flattening)
     }
 }
 
+//The coordinates this file produces are STAMPED INTO THE PACKAGE at publish time, so they are part of its
+//bytes and therefore of its CID. That makes them a golden, and a golden has to be a literal: the chain-shaped
+//test below puts every node in its own column at Y0, where the vertical pitch — the thing this whole layout
+//change is about — never enters an assertion at all. This one has a LAYER, so the pitch is visible, and it is
+//pinned exactly. Changing these numbers is a deliberate act that re-stamps every package and changes its CID;
+//if a change here was not intended, the change that caused it was not either.
+TEST(a_layered_graph_lays_out_at_pinned_coordinates)
+{
+    ordered_json A = ordered_json::array();
+    auto N = [&](const char *Id, const char *Type, std::initializer_list<const char *> Parents) {
+        ordered_json J; J["NODE_ID"] = Id; J["TYPE"] = Type;
+        if (Parents.size())
+        {
+            ordered_json P = ordered_json::array();
+            for (const char *X : Parents) P.push_back(X);
+            J["PARENTS"] = P;
+        }
+        A.push_back(J);
+    };
+    N("root", "Group",   {});
+    N("a",    "Group",   {"root"});     // short
+    N("b",    "Content", {"root"});     // taller: Content has five fields
+    N("c",    "Group",   {"root"});     // short again, so it must clear b's height and not a's
+    N("tail", "Group",   {"a", "b", "c"});
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    CHECK_EQ(G.Nodes.size(), (size_t)5);
+    CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
+    CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 390.0f);   // b,    after a's 240 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 831.0f);   // c,    after b's 351 + 90 gap
+    CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
+    //And the heights those Y values are made of, so a failure says WHICH half moved.
+    CHECK_EQ(G.Nodes[1].Height, 240.0f);
+    CHECK_EQ(G.Nodes[2].Height, 351.0f);
+}
+
 TEST(an_impossible_declared_position_is_rejected_not_honoured)
 {
     ordered_json A = ordered_json::array();
