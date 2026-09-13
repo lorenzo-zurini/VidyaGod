@@ -1,5 +1,7 @@
 #include "pkgcanvas.h"
 
+#include "commonutils.h"   // Log
+
 //imnodes_internal.h pulls in imgui_internal.h, which insists on this before imgui.h.
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
@@ -31,10 +33,22 @@ constexpr int kExternalBase = 100000;
 //draws EVERY node, those included, and a nominal box is an honest "about this big" — the alternative is
 //pretending a node we have never measured has no size, which makes the overview's bounds wrong.
 //The canvas hijacks two pieces of global imgui state for the duration of the editor — the cursor position and
-//delta it hands imnodes, and a widened clip rect for submission — and both MUST be handed back. frame() runs a
-//whole editor's worth of code driven by arbitrary on-disk JSON between the two points, and a json type_error
-//from a malformed node (exactly what this editor exists to repair) used to leave the cursor stuck at an
-//inverse-transformed position and the clip stack unbalanced for the rest of the process.
+//delta it hands imnodes, and a widened clip rect for submission — and both must be handed back on EVERY exit
+//from frame(), including an early return. This guards exactly that and nothing more: a throw escaping frame()
+//still leaves imnodes mid-scope with its draw-list splitter split and imgui's window stack unbalanced, which
+//no RAII here can repair. The value is that the two pieces of state THIS file borrowed are always returned.
+//A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
+//editor is the cursor inverse-transformed into world space — so at 0.5x the tooltip lands twice as far from the
+//origin as the pointer that raised it and gets clamped into a corner of the screen, and at 3x it lands a third
+//of the way back. A tooltip is screen furniture like the minimap, so it is placed at the REAL cursor. (The
+//window it makes carries neither the Popup nor the ChildWindow flag, so imgui leaves its ParentWindow null and
+//the nested-window walk below never sees it — this is the only thing that can fix it.)
+void EditorTooltip(const ImVec2 &RealMouse, const char *Text)
+{
+    ImGui::SetNextWindowPos(ImVec2(RealMouse.x + 16.0f, RealMouse.y + 16.0f));
+    ImGui::SetTooltip("%s", Text);
+}
+
 struct EditorIoGuard
 {
     ImGuiIO &Io;
@@ -127,27 +141,24 @@ struct PkgCanvasState
     //from the nodes submitted, so it cost as much again as the graph and could not coexist with culling. The
     //minimap is ours now and draws from G.Nodes, so culling is unconditional, the minimap is always available,
     //and the toolbar reports how much of the graph is actually on screen.
-    //Zoom. imnodes has no notion of it, so it is built here: node GRID positions are pushed scaled, the font
-    //is scaled to match, and the read-back divides back out. The document always holds UNSCALED positions —
-    //zoom is a view property and must never reach the layout, let alone the package.
+    //Zoom, done as a VIEW TRANSFORM: imnodes is handed unscaled world coordinates and an unscaled style, and
+    //the vertices it emits are scaled about the canvas origin afterwards. Nothing the document or the layout
+    //holds is ever in a zoomed unit, so looking at the graph cannot edit it — by construction, not by a guard.
     float Zoom        = 1.0f;
-    float LastZoom    = 1.0f;
     //The wheel sets a TARGET and the view WALKS to it. A notch is a 10% multiplicative jump applied whole,
     //which reads as a teleport; easing over ~120 ms reads as zooming. Kept separate from Zoom so that
     //setZoom() — the toolbar, a test, "reset" — still lands instantly, where an animation would be a lie.
     float ZoomTarget  = 1.0f;
     bool  Zooming     = false;
-    //setZoom happens outside a frame, where the viewport is not known; the recentre it wants is done next frame.
-    bool  RecentreOnZoom = false;
+    //setZoom happens outside a frame, where the viewport is not known; the recentre it wants is done next
+    //frame, and needs the scale it came from as well as the one it went to.
+    float RecentreFromZoom = 0.0f;   // the zoom the pending recentre is coming FROM; 0 = none pending
     //The anchor the easing holds still: a screen offset from the canvas origin, and the WORLD point that was
     //under it when the gesture started. The pan is re-solved from these EVERY eased frame — easing the zoom
     //alone would let the point under the cursor drift away while the animation runs, which is the one thing a
     //cursor-anchored zoom must not do.
     ImVec2 ZoomAnchor{0, 0};
     ImVec2 ZoomAnchorWorld{0, 0};
-    //The zoom the node positions currently held by imnodes were PUSHED with. The read-back must divide by
-    //THIS, not by the live zoom: the wheel can change the zoom between the push and the read, and dividing an
-    //old value by a new scale invents movement out of nothing.
     //Bounds of the transformed surface (min x, min y, max x, max y) from the last frame. Computed while the
     //view transform walks the vertices, so it costs nothing, and it is the only way to observe the transform
     //from outside — imnodes' own reported sizes are deliberately unscaled now.
@@ -163,10 +174,9 @@ struct PkgCanvasState
     //Recorded because that mapping is otherwise invisible — and a click landing on the wrong node is the
     //quietest way for this whole approach to be wrong.
     ImVec2 EditorMouse{0, 0};
-    //The unscaled ImNodesStyle, captured once. Zoom scales node padding, corner rounding, border and link
-    //thickness and every pin dimension FROM this baseline — scaling the live style would compound every frame.
-    ImNodesStyle BaseStyle{};
-    bool  HaveBaseStyle = false;
+    //The REAL cursor, kept for the things inside the editor that are screen furniture rather than content —
+    //a tooltip is placed by imgui at io.MousePos, which in there is the world cursor.
+    ImVec2 RealMouse{0, 0};
     //imnodes DESTROYS every node not submitted during a frame (ObjectPoolUpdate) and re-creates it at
     //Origin(0,0) the next time it is begun. With viewport culling that happens constantly, so "have I ever
     //seeded this node" is the wrong question — the right one is "was it submitted LAST frame", which is the
@@ -258,8 +268,6 @@ void PkgCanvas::clearSelection()
 void PkgCanvas::initContexts()
 {
     m_s->Ctx = ImNodes::CreateContext();
-    m_s->BaseStyle = ImNodes::GetStyle();
-    m_s->HaveBaseStyle = true;
     ImNodes::GetIO().LinkDetachWithModifierClick.Modifier = &ImGui::GetIO().KeyCtrl;
     ImNodes::PushAttributeFlag(ImNodesAttributeFlags_EnableLinkDetachWithDragClick);
 }
@@ -285,6 +293,12 @@ void PkgCanvas::invalidateGraph()
     //which makes Drawn[stale] true — so the Drawn guard, the only thing between a stale index and Selected,
     //passes precisely BECAUSE of the force-draw, and Selected is restored to an index that now addresses a
     //different node.
+    //
+    //And the measured sizes, for the same reason removeNode drops them: this is also the path a whole
+    //DOCUMENT SWAP takes, and auto-generated ids repeat across packages ("content", "group", "declareexec"),
+    //so a second package's nodes would inherit the first one's boxes in the overview. Unlike the maps above
+    //this one grows without bound, because nothing else ever removes an entry on this path.
+    m_s->NodeDims.clear();
 }
 
 void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
@@ -338,13 +352,16 @@ void  PkgCanvas::setZoom(float Z)
     m_s->ZoomTarget = New;
     m_s->Zooming    = false;
     if (New == m_s->Zoom) return;
+    const float Old = m_s->Zoom;
     m_s->Zoom = New;
     //Anchored on the middle of the viewport, applied on the next frame because the viewport is only known
     //there. Without it "reset" from 3x left the pan untouched and the view landed on a different part of the
-    //graph than the one you were looking at. (No Seeded.clear() any more: it carried a comment claiming every
-    //pushed position was in the old scale, which stopped being true when zoom became a view transform —
-    //imnodes holds world coordinates. All it did was re-push N positions and stomp an in-flight drag.)
-    m_s->RecentreOnZoom = true;
+    //graph than the one you were looking at. The zoom it is coming FROM has to be carried across — solving for
+    //the new pan needs both scales, and an earlier version that used the new one twice reduced to Pan = Pan
+    //and silently did nothing at all. (No Seeded.clear() any more: it carried a comment claiming every pushed
+    //position was in the old scale, which stopped being true when zoom became a view transform — imnodes holds
+    //world coordinates. All it did was re-push N positions and stomp an in-flight drag.)
+    m_s->RecentreFromZoom = Old;
 }
 int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
 void PkgCanvas::editorMouse(float &X, float &Y) const { X = m_s->EditorMouse.x; Y = m_s->EditorMouse.y; }
@@ -853,7 +870,7 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
         //Recorded, not invoked: an action opens dialogs, and a nested Qt event loop inside an ImGui frame
         //lets the repaint timer re-enter NewFrame() with a node scope still open.
         if (ImGui::SmallButton(Acts[I].Label)) m_s->Pending = {Id, Acts[I].Id};
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", Acts[I].Tip);
+        if (ImGui::IsItemHovered()) EditorTooltip(m_s->RealMouse, Acts[I].Tip);
     }
 }
 
@@ -1078,7 +1095,16 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
         //catch a value that is already nonsense.
         if (!std::isfinite(P.x) || !std::isfinite(P.y)
             || std::abs(P.x) > 1.0e7f || std::abs(P.y) > 1.0e7f)
+        {
+            //Refusing to WRITE it is only half the job: imnodes is still holding the bad value, the node is
+            //still submitted every frame (culling reads our own X/Y, which is fine), and so it would be drawn
+            //off at that coordinate for the rest of the session — invisible, unclickable, with the document
+            //looking perfectly healthy. Dropping the seed makes drawNode push our position back next frame.
+            Log(LogLevel::WARN, "PkgCanvas::flushPositions",
+                "refused an impossible position from the editor for node " + G.Nodes[I].Id + " - re-seeding it");
+            m_s->Seeded.erase(G.Nodes[I].Id);
             continue;
+        }
         //Size is measured on the same terms and for the same reason: it is only knowable while the node is
         //submitted, and the minimap needs it for nodes that are not.
         m_s->NodeDims[G.Nodes[I].Id] = ImNodes::GetNodeDimensions(I);
@@ -1210,16 +1236,20 @@ void PkgCanvas::frame()
             ImNodes::EditorContextResetPanning(ImVec2(m_s->ZoomAnchor.x / m_s->Zoom - m_s->ZoomAnchorWorld.x,
                                                       m_s->ZoomAnchor.y / m_s->Zoom - m_s->ZoomAnchorWorld.y));
     }
-    //The recentre setZoom asked for, now that the viewport is known: hold the middle of the view still.
-    if (m_s->RecentreOnZoom)
+    //The recentre setZoom asked for, now that the viewport is known: hold the middle of the view still. A node
+    //at world w is drawn at origin + (pan + w) * zoom, so the world point at the centre under the OLD scale is
+    //Half/Old - Pan, and the pan that puts it back at the centre under the new one is Half/New minus that.
+    //Both scales appear, and that is the whole content of this: using the new scale on both sides cancels to
+    //Pan = Pan, which is what the first version of this did while claiming to recentre.
+    if (m_s->RecentreFromZoom > 0.0f)
     {
-        m_s->RecentreOnZoom = false;
+        const float Old = m_s->RecentreFromZoom;
+        m_s->RecentreFromZoom = 0.0f;
         const ImVec2 Pan = ImNodes::EditorContextGetPanning();
         const ImVec2 Half(CanvasAvail.x * 0.5f, CanvasAvail.y * 0.5f);
-        //The world point at the viewport centre BEFORE this zoom was applied is not recoverable here, so hold
-        //the one the current pan puts there and re-solve the pan for the new scale.
-        const ImVec2 World(Half.x / m_s->Zoom - Pan.x, Half.y / m_s->Zoom - Pan.y);
-        ImNodes::EditorContextResetPanning(ImVec2(Half.x / m_s->Zoom - World.x, Half.y / m_s->Zoom - World.y));
+        const ImVec2 World(Half.x / Old - Pan.x, Half.y / Old - Pan.y);
+        ImNodes::EditorContextResetPanning(ImVec2(Half.x / m_s->Zoom - World.x,
+                                                  Half.y / m_s->Zoom - World.y));
     }
 
     //---- minimap layout (computed BEFORE the editor, drawn after it) -------------------------------------
@@ -1294,12 +1324,14 @@ void PkgCanvas::frame()
     //is over the minimap, so lying about it mid-drag wrote -3.4e38 straight into the node, into the saved
     //layout, and into GlobalConfig — a node that can never be drawn, selected or recovered from the UI again.
     //An interaction already under way must therefore see the truth; only its BEGINNING is suppressed, which is
-    //exactly what imnodes' own IsMiniMapHovered guard does. The sentinel is off-canvas but finite and near, so
-    //that even a future path that did reach the drag code would displace a node by a screenful, not to
-    //infinity.
+    //exactly what imnodes' own IsMiniMapHovered guard does. What actually stops the click is MouseInCanvas()
+    //gating hover resolution, so the sentinel only has to be OUTSIDE the canvas rectangle — it is an ordinary
+    //world coordinate, not an impossible one, chosen finite and near so that a future path reaching the drag
+    //code would displace a node by a visible distance rather than to infinity.
     if (MiniHovered && !Interacting)
         ZIO.MousePos = ImVec2(SubClipMin.x - 10000.0f, SubClipMin.y - 10000.0f);
     m_s->EditorMouse = ZIO.MousePos;
+    m_s->RealMouse   = RealMouse;
 
     //imnodes' own grid is drawn INSIDE BeginNodeEditor, before the first vertex the transform can reach, so
     //it kept a fixed 32 px screen pitch and translated 1:1 with the panning while the content translated Z:1.
@@ -1307,6 +1339,9 @@ void PkgCanvas::frame()
     //whatsoever. Ours is drawn a few lines below, as ordinary content, so it simply scales and pans with
     //everything else.
     ImNodes::GetStyle().Flags &= ~ImNodesStyleFlags_GridLines;
+    //Auto-panning (dragging a node past the edge) adds speed * dt to the panning, which is in WORLD units, so
+    //on screen it runs Z times too fast. Divided here so the edge scrolls at the same rate at every zoom.
+    ImNodes::GetIO().AutoPanningSpeed = 1000.0f / std::max(0.05f, ViewZoom);
 
     ImNodes::BeginNodeEditor();
     //imnodes decides "is the mouse in the canvas" by testing the position we just handed it against the
@@ -1315,8 +1350,11 @@ void PkgCanvas::frame()
     //roughly four fifths of the visible graph could not be clicked, hovered, dragged, box-selected or panned,
     //and a node dragged past that invisible edge triggered imnodes' auto-pan and ran away with the view. Tell
     //it where the canvas is in the space the cursor is actually in and all of that follows.
-    ImNodes::EditorContextGet();   // the editor context must exist before GImNodes state is touched
-    GImNodes->CanvasRectScreenSpace = ImRect(SubClipMin, SubClipMax);
+    //Only while the two spaces actually differ, and restored after EndNodeEditor: at 1:1 imnodes' own rect is
+    //already right (its child's content region, inset by the 1px border), and leaving a WORLD-space rectangle
+    //in a global between frames is a trap for any later caller that compares it against a screen cursor.
+    const ImRect CanvasRectWas = GImNodes->CanvasRectScreenSpace;
+    if (ViewZoom != 1.0f) GImNodes->CanvasRectScreenSpace = ImRect(SubClipMin, SubClipMax);
     //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
     //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
     ImDrawList *Surface = ImGui::GetWindowDrawList();
@@ -1370,6 +1408,11 @@ void PkgCanvas::frame()
         for (float Y = Y0 + Step * std::ceil((SubClipMin.y - Y0) / Step); Y <= SubClipMax.y; Y += Step)
             Surface->AddLine(ImVec2(SubClipMin.x, Y), ImVec2(SubClipMax.x, Y), Col);
     }
+    //Everything measured from here on is CONTENT. The grid spans the region that maps onto the viewport at
+    //every zoom, so counting it makes the reported bounds a constant the size of the canvas and the vertex
+    //count a large fixed number — which silently turned "the geometry grew with the zoom" into a comparison
+    //of two rounding errors, and would have let a frame that drew no nodes at all pass as healthy.
+    const int ContentVtx0 = Surface->VtxBuffer.Size;
 
     //---- viewport culling ------------------------------------------------------------------------------
     //Submitting every node and every wire regardless of where the view is costs what the graph costs, not
@@ -1437,6 +1480,7 @@ void PkgCanvas::frame()
     syncLinks(G, Drawn);
     IoGuard.popClip();
     ImNodes::EndNodeEditor();
+    GImNodes->CanvasRectScreenSpace = CanvasRectWas;
     ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
     ZIO.MouseDelta = RealDelta;                     // (also the guard's job, on the path where this is skipped)
     //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
@@ -1456,11 +1500,14 @@ void PkgCanvas::frame()
                 Vt.pos.x = O.x + (Vt.pos.x - O.x) * Z;
                 Vt.pos.y = O.y + (Vt.pos.y - O.y) * Z;
             }
+            //Transform everything, measure only the content. The grid is transformed with the rest — that is
+            //what makes it scale — but it must not be part of what the bounds report.
+            if (V < ContentVtx0) continue;
             MinX = std::min(MinX, Vt.pos.x); MaxX = std::max(MaxX, Vt.pos.x);
             MinY = std::min(MinY, Vt.pos.y); MaxY = std::max(MaxY, Vt.pos.y);
         }
         m_s->SurfaceBounds = (MaxX >= MinX) ? ImVec4(MinX, MinY, MaxX, MaxY) : ImVec4(0, 0, 0, 0);
-        m_s->SurfaceVertices = Surface->VtxBuffer.Size - SurfVtx0;
+        m_s->SurfaceVertices = Surface->VtxBuffer.Size - ContentVtx0;
 
         //Clip rects need two DIFFERENT treatments, and treating them alike is what made the canvas unusable
         //zoomed out. A rect that IS the canvas viewport must stay exactly the viewport — scaling that one
@@ -1526,25 +1573,36 @@ void PkgCanvas::frame()
             for (ImGuiWindow *P = Win->ParentWindow; P; P = P->ParentWindow)
                 if (P->DrawList == Surface) { Inside = true; break; }
             if (!Inside) continue;
+            if (Z == 1.0f) continue;                      // nothing to move, and nothing to clamp either
             ImDrawList *DL = Win->DrawList;
-            if (Z != 1.0f)
-                for (int V = 0; V < DL->VtxBuffer.Size; ++V)
-                {
-                    ImDrawVert &Vt = DL->VtxBuffer[V];
-                    Vt.pos.x = O.x + (Vt.pos.x - O.x) * Z;
-                    Vt.pos.y = O.y + (Vt.pos.y - O.y) * Z;
-                }
+            for (int V = 0; V < DL->VtxBuffer.Size; ++V)
+            {
+                ImDrawVert &Vt = DL->VtxBuffer[V];
+                Vt.pos.x = O.x + (Vt.pos.x - O.x) * Z;
+                Vt.pos.y = O.y + (Vt.pos.y - O.y) * Z;
+            }
             for (int C = 0; C < DL->CmdBuffer.Size; ++C)
             {
                 ImVec4 &R = DL->CmdBuffer[C].ClipRect;
-                if (Z != 1.0f)
-                    R = ImVec4(O.x + (R.x - O.x) * Z, O.y + (R.y - O.y) * Z,
-                               O.x + (R.z - O.x) * Z, O.y + (R.w - O.y) * Z);
+                R = ImVec4(O.x + (R.x - O.x) * Z, O.y + (R.y - O.y) * Z,
+                           O.x + (R.z - O.x) * Z, O.y + (R.w - O.y) * Z);
                 R = ImVec4(std::max(R.x, CanvasRect.x), std::max(R.y, CanvasRect.y),
                            std::min(R.z, CanvasRect.z), std::min(R.w, CanvasRect.w));
                 if (R.z < R.x) R.z = R.x;
                 if (R.w < R.y) R.w = R.y;
             }
+            //And the rectangle the window is HIT-TESTED by. Moving only the pixels draws the field in the
+            //right place and leaves it clickable in the old one — which is worse than leaving it alone, since
+            //nothing is drawn where it still responds. imgui picks the hovered window in NewFrame, from the
+            //REAL cursor against OuterRectClipped, before frame() runs and therefore beyond the reach of the
+            //cursor hijack; it reads the value left from the previous frame (imgui.cpp documents that lag), so
+            //writing the drawn rectangle here is exactly what the next frame will test against. The item-level
+            //test inside the window compares the hijacked world cursor against world-space item rects and
+            //already agreed; the window was the only thing out of step.
+            Win->OuterRectClipped = ImRect(ImVec2(O.x + (Win->OuterRectClipped.Min.x - O.x) * Z,
+                                                  O.y + (Win->OuterRectClipped.Min.y - O.y) * Z),
+                                           ImVec2(O.x + (Win->OuterRectClipped.Max.x - O.x) * Z,
+                                                  O.y + (Win->OuterRectClipped.Max.y - O.y) * Z));
         }
     }
 

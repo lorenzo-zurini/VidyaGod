@@ -1145,12 +1145,19 @@ private slots:
     {
         Canvas->setMiniMap(false);
         const char *kinds[] = {"Content", "DeclareExec", "RegEdit", "FileEdit", "CustomVar", "Persist"};
-        for (int i = 0; i < 6; ++i) Canvas->addNode(kinds[i], 80.0f + i * 60.0f, 60.0f + i * 40.0f);
+        for (int i = 0; i < 6; ++i) Canvas->addNode(kinds[i], 500.0f + i * 60.0f, 300.0f + i * 40.0f);
         runFrame();
 
         struct Geo { ImVec2 pos, dim; };
         auto sample = [&]() {
             runFrame(); runFrame();
+            //Every node must have been SUBMITTED, or what follows measures the title-bar-only box imnodes
+            //re-creates for a culled one — a uniform, implausible number that reads as "everything resized".
+            //setZoom recentres the view now, so a test that pins geometry across zooms has to keep its nodes
+            //on screen rather than assume the pan never moves.
+            [&]{ QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
+                          qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
+                                         .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount()))); }();
             std::vector<Geo> g;
             for (int i = 0; i < Canvas->nodeCount(); ++i)
                 g.push_back({ImNodes::GetNodeGridSpacePos(i), ImNodes::GetNodeDimensions(i)});
@@ -1166,10 +1173,14 @@ private slots:
             for (size_t i = 0; i < Now.size(); ++i) {
                 const float dx = std::abs(Now[i].pos.x - Ref[i].pos.x), dy = std::abs(Now[i].pos.y - Ref[i].pos.y);
                 const float dw = std::abs(Now[i].dim.x - Ref[i].dim.x), dh = std::abs(Now[i].dim.y - Ref[i].dim.y);
-                if (dx > 0.5f || dy > 0.5f)
+                //1.5px, not 0.5: imgui rounds some item heights against the window's own scroll origin, which
+                //moves when setZoom recentres, so an identical node measures 0.75px different. What this is
+                //for is a node whose SIZE follows the zoom, which is a factor, not a rounding — the mutation
+                //that put kNodeWidth * Zoom back reports 346 against 340.
+                if (dx > 1.5f || dy > 1.5f)
                     outliers << QString("node %1 (%2) MOVED at zoom %3: d=(%4,%5)")
                                    .arg(i).arg(kinds[i % 6]).arg(z).arg(dx).arg(dy);
-                if (dw > 0.5f || dh > 0.5f)
+                if (dw > 1.5f || dh > 1.5f)
                     outliers << QString("node %1 (%2) RESIZED at zoom %3: %4x%5 -> %6x%7")
                                    .arg(i).arg(kinds[i % 6]).arg(z)
                                    .arg(Ref[i].dim.x).arg(Ref[i].dim.y).arg(Now[i].dim.x).arg(Now[i].dim.y);
@@ -1490,11 +1501,15 @@ private slots:
     void panningMovesTheGraphWithTheCursorAtEveryZoom()
     {
         Canvas->setMiniMap(false);
+        //Placed so the drag below starts on EMPTY canvas: a middle-drag begun ON a node is a different
+        //gesture, imnodes never reaches BeginCanvasInteraction, and the pan silently measures zero.
         Canvas->addNode("Content", 300, 300);
         QStringList outliers;
         for (float z : {1.0f, 0.5f, 2.0f}) {
             Canvas->setZoom(z);
             runFrame(); runFrame();
+            //setZoom recentres, so confirm the node is still drawn before measuring where it is.
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled - cannot measure a pan");
             float ox = 0, oy = 0, d = 0;
             Canvas->canvasViewport(ox, oy, d, d);
             auto screenOf = [&]() {
@@ -1502,9 +1517,21 @@ private slots:
                 return ImVec2(ox + (P.x - ox) * z, oy + (P.y - oy) * z);
             };
             const ImVec2 Before = screenOf();
-            // Middle-drag is the pan gesture; drive it the way imnodes reads it.
+            // Middle-drag is the pan gesture; drive it the way imnodes reads it — and start it on EMPTY
+            // canvas. A middle-drag begun ON a node is a different gesture: imnodes never reaches
+            // BeginCanvasInteraction and the pan silently measures zero, which reads exactly like a broken
+            // pan. Derived from where the node actually IS, because setZoom recentres and a fixed point
+            // that was empty at one zoom sits on the node at the next.
             ImGuiIO &io = ImGui::GetIO();
-            const ImVec2 From(700, 450);
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            const ImVec2 From(vx0 + 60.0f, vy1 - 60.0f);
+            const ImVec2 NodeAt = Before;
+            const ImVec2 NodeSz = ImNodes::GetNodeDimensions(0);
+            QVERIFY2(!(From.x >= NodeAt.x && From.x <= NodeAt.x + NodeSz.x * z
+                       && From.y >= NodeAt.y && From.y <= NodeAt.y + NodeSz.y * z),
+                     qPrintable(QString("zoom %1: the drag would start on the node, not on empty canvas")
+                                    .arg(z)));
             runFrame(From);
             io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
             runFrame(From);
@@ -1528,7 +1555,7 @@ private slots:
     {
         Canvas->setMiniMap(false);
         // SUBMOUNTS is a StringList; several lines make it a multiline box, which is what opens the child.
-        const int N = Canvas->addNode("Content", 200, 200);
+        const int N = Canvas->addNode("Content", 500, 300);
         Doc["NODES"][N]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -1556,6 +1583,9 @@ private slots:
         QVERIFY2(At1[0] > 0.0f, "no nested child window was drawn - this test is measuring nothing");
         Canvas->setZoom(2.0f);
         runFrame(); runFrame();
+        //setZoom recentres the view, so the node has to still be submitted for its field to exist at all.
+        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
+                 "the node was culled at 2x - nothing to measure");
         const std::array<float, 5> At2 = nestedBounds();
         QVERIFY2(At2[0] > 0.0f, "the nested child vanished when zoomed");
         // Its own extent must have grown with the zoom, like everything else the canvas draws.
@@ -1754,6 +1784,118 @@ private slots:
         // A multi-line StringList becomes a multiline box rather than a single-line input.
         measure("Content", json{{"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}});
 
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // Drawing a widget in the right place is half of it. imgui resolves g.HoveredWindow in NewFrame, from the
+    // REAL cursor against last frame's window rectangles — before frame() runs, so the MousePos hijack cannot
+    // reach it — and ItemHoverable then rejects any item whose window is not the hovered one. A multiline field
+    // lives in a child window of its own, so scaling only its VERTICES draws it where it cannot be clicked.
+    void aNestedFieldIsClickableWhereItIsDrawn()
+    {
+        Canvas->setMiniMap(false);
+        const int N = Canvas->addNode("Content", 120, 120);
+        Doc["NODES"][N]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
+        Canvas->invalidateGraph();
+        //Start from a known scale: the canvas is shared with every earlier test in this suite and a leftover
+        //zoom decides whether the node is on screen at all.
+        Canvas->setZoom(1.0f);
+        runFrame(); runFrame();
+
+        // Where the field's child window is DRAWN, at each zoom: its own draw-list bounds.
+        auto drawnBox = [&]() {
+            const ImGuiContext &C = *ImGui::GetCurrentContext();
+            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+            for (int w = 0; w < C.Windows.Size; ++w) {
+                const ImGuiWindow *W = C.Windows[w];
+                const char *SR = W->Name ? std::strstr(W->Name, "scrolling_region") : nullptr;
+                if (!W->Active || !SR || !std::strchr(SR, '/')) continue;
+                const ImDrawList *D = W->DrawList;
+                for (int v = 0; v < D->VtxBuffer.Size; ++v) {
+                    x0 = std::min(x0, D->VtxBuffer[v].pos.x); x1 = std::max(x1, D->VtxBuffer[v].pos.x);
+                    y0 = std::min(y0, D->VtxBuffer[v].pos.y); y1 = std::max(y1, D->VtxBuffer[v].pos.y);
+                }
+            }
+            return ImVec4(x0, y0, x1, y1);
+        };
+
+        QStringList outliers;
+        for (float z : {1.0f, 2.0f, 0.5f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            //Put the node in the middle of the viewport at THIS zoom, so its field is on screen whatever the
+            //recentre did. An off-screen child window is skipped by imgui entirely and draws no vertices,
+            //which looks identical to "the transform lost it".
+            {
+                float cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+                Canvas->canvasViewport(cx0, cy0, cx1, cy1);
+                const ImVec2 P = ImNodes::GetNodeGridSpacePos(0);
+                const ImVec2 Sz = ImNodes::GetNodeDimensions(0);
+                ImNodes::EditorContextResetPanning(
+                    ImVec2(((cx1 - cx0) * 0.5f) / z - P.x - Sz.x * 0.5f,
+                           ((cy1 - cy0) * 0.5f) / z - P.y - Sz.y * 0.5f));
+                runFrame(); runFrame();
+            }
+            const ImVec4 B = drawnBox();
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
+                     qPrintable(QString("zoom %1: the node was culled, so its field does not exist").arg(z)));
+            QVERIFY2(B.z > B.x, qPrintable(QString("zoom %1: the nested field drew nothing").arg(z)));
+            const ImVec2 Hit((B.x + B.z) * 0.5f, (B.y + B.w) * 0.5f);
+            // Click in the middle of where it is drawn; the field must take keyboard focus.
+            ImGui::ClearActiveID();
+            clickAt(Hit);
+            runFrame();
+            if (ImGui::GetActiveID() == 0)
+                outliers << QString("zoom %1: the field is drawn at [%2,%3 .. %4,%5] and a click at its centre "
+                                    "(%6,%7) focused nothing")
+                                .arg(z).arg(B.x).arg(B.y).arg(B.z).arg(B.w).arg(Hit.x).arg(Hit.y);
+            ImGui::ClearActiveID();
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // setZoom is the toolbar and "reset". Zooming about the canvas ORIGIN means resetting from 3x throws the
+    // view onto a different part of the graph than the one you were looking at — so it holds the middle of the
+    // viewport still. The first attempt used the new scale on both sides of the solve, which cancels to
+    // Pan = Pan: it compiled, ran every frame, and did precisely nothing.
+    void setZoomHoldsTheMiddleOfTheViewStill()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 1400, 900);
+        runFrame(); runFrame();
+        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
+
+        auto onScreen = [&]() {
+            const float Z = Canvas->zoom();
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            return ImVec2(vx0 + (P.x - vx0) * Z, vy0 + (P.y - vy0) * Z);
+        };
+        // Put the node under the middle of the viewport at 1:1.
+        {
+            const ImVec2 Pan = ImNodes::EditorContextGetPanning();
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            ImNodes::EditorContextResetPanning(ImVec2(Pan.x + (Centre.x - P.x), Pan.y + (Centre.y - P.y)));
+            runFrame(); runFrame();
+        }
+        const ImVec2 Before = onScreen();
+        QVERIFY2(std::hypot(Before.x - Centre.x, Before.y - Centre.y) < 30.0f,
+                 qPrintable(QString("setup failed: the node is at (%1,%2), not the centre (%3,%4)")
+                                .arg(Before.x).arg(Before.y).arg(Centre.x).arg(Centre.y)));
+
+        QStringList outliers;
+        for (float z : {2.0f, 0.5f, 1.0f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            const ImVec2 Now = onScreen();
+            const float D = std::hypot(Now.x - Centre.x, Now.y - Centre.y);
+            if (D > 40.0f)
+                outliers << QString("zoom %1 moved the centre of the view %2px away (node at %3,%4, centre "
+                                    "%5,%6)").arg(z).arg(D).arg(Now.x).arg(Now.y).arg(Centre.x).arg(Centre.y);
+        }
+        Canvas->setZoom(1.0f);
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
     }
 
