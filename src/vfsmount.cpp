@@ -95,8 +95,8 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 //submount-using nodes carries a %var% in its destination) would mount under a directory literally named
 //"%dxwnd_dir%", in silence. Whitelists rot; walking the whole object cannot miss a field added later.
 //
-//Substitutes VALUE BY VALUE rather than over the serialised text. The text form (dump -> substitute -> parse,
-//which BuildSubComponentsArray still uses) is only safe while no substituted VALUE can break JSON, and several
+//Substitutes VALUE BY VALUE rather than over the serialised text. The text form (dump -> substitute -> parse), which nothing uses any
+//more, is only safe while no substituted VALUE can break JSON, and several
 //can: %RuntimePath%, %TempPath% and %RunnerMount% are filesystem paths, backslash-laden on Windows, where "\U"
 //and "\T" are invalid escapes; %PackageName%/%GameName% come from a package TITLE; CustomVar values are typed
 //by the user in the pre-launch dialog. One quote or backslash and the re-parse fails — and returning the layer

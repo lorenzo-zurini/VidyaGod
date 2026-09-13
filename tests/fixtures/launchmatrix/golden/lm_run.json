@@ -94,6 +94,7 @@
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",
   "RunnerRemoveEnv": [
+    "LM_GAME_KEEPS_THIS",
     "LM_SHOULD_BE_GONE"
   ],
   "RunnerShipsBuild": false,

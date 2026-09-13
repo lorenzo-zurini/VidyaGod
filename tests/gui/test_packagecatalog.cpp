@@ -40,6 +40,20 @@ class PackageCatalogTest : public QObject
 {
     Q_OBJECT
 private slots:
+    //The data root is PROCESS-GLOBAL and sticky, and PackageEditorModel::SaveLayout flushes GlobalConfig.JSON
+    //to it — so a suite that does not claim it writes to AppPaths' fallback, which is the developer's REAL
+    //~/.VidyaGod/GlobalConfig.JSON. Running a single slot by name replaced a 50 KB config (sources, CIDs,
+    //friends, per-package variables) with a two-key stub, and reported PASS. A full-suite run only escaped
+    //because an earlier slot happened to leave the root pointing somewhere else — order-dependent luck that
+    //any reordering removes. Claim it once, for the whole binary.
+    void initTestCase()
+    {
+        SuiteRoot = new QTemporaryDir();
+        QVERIFY(SuiteRoot->isValid());
+        AppPaths::SetDataRoot(SuiteRoot->path().toStdString());
+    }
+    void cleanupTestCase() { delete SuiteRoot; SuiteRoot = nullptr; }
+
     // #2: a content-less node is vacuously "hydrated" but has no content — NodeHasContent must distinguish it.
     void node_has_content_vs_contentless()
     {
@@ -647,6 +661,47 @@ private slots:
         QCOMPARE(J["POS"][0].get<double>(), 4242.0);
         QCOMPARE(J["POS"][1].get<double>(), 2424.0);
     }
+
+    // The two properties the publish split exists for. Both were unpinned: re-inserting the stamp into
+    // PublishPackage, or dropping the has-a-layout gate, left the whole suite green — and four consecutive
+    // fix-ups in this changeset each introduced a regression, so the fixes themselves get the tests.
+
+    void publishingDoesNotWritePositionsIntoNodeFiles()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        json A; A["NODE_ID"] = "a"; A["TYPE"] = "Group";
+        writeJson(Dir.filePath("a.json"), A);
+
+        std::string Err;
+        // Dehydrated destination empty = publish in place, which is what the IPFS tab and --publish do.
+        (void)PackageCatalog::PublishPackage(Dir.path().toStdString(), std::string(), &Err);
+
+        std::ifstream In(Dir.filePath("a.json").toStdString());
+        json J; In >> J;
+        QVERIFY2(!J.contains("POS"),
+                 "PublishPackage stamped a layout — it is reached for bundles fetched from other people, "
+                 "whose bytes must keep matching the CID that serves them");
+    }
+
+    void stampingIsSkippedForABundleNobodyArranged()
+    {
+        // EditorLayoutFor returns nullptr for a bundle with no stored arrangement, and both authoring paths
+        // gate on that. Asserted through the lookup, which is what they actually call.
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        json Cfg = json::object();
+        QCOMPARE(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Dir.path().toStdString())),
+                 (const json *)nullptr);
+
+        Cfg["EDITORLAYOUT"] = json::object();
+        Cfg["EDITORLAYOUT"][PackageCatalog::EditorLayoutKey(
+            std::filesystem::path(Dir.path().toStdString()))] = json{{"a", json::array({1.0, 2.0})}};
+        QVERIFY(PackageCatalog::EditorLayoutFor(Cfg, std::filesystem::path(Dir.path().toStdString())) != nullptr);
+    }
+
+private:
+    QTemporaryDir *SuiteRoot = nullptr;
 };
 
 QTEST_MAIN(PackageCatalogTest)

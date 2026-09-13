@@ -440,13 +440,34 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     //----- ENV: one process tree, so every link's ENV/REMOVE_ENV applies. Boundary (legacy fields) first, then the
     //outer same-namespace wrappers — boundary (innermost, content-proximate) WINS on key conflicts. -----
     QProcessEnvironment RunProcessEnvironment = SystemToolEnv();                 // system runner, not AppImage libs
+    //ORDER: outermost first, boundary LAST, so the innermost (content-proximate) declaration wins on a shared
+    //key — which is what the rest of the engine promises. It used to run the other way: RunnerEnv went in
+    //first and each outer wrapper's Env overwrote it. That merely mis-ordered runner-vs-runner until a
+    //launchable's own ENV started being merged into RunnerEnv, at which point a chained outer link could
+    //silently beat the GAME's environment, contradicting "the more specific one is the game's".
+    for (auto It = OuterWrappers.rbegin(); It != OuterWrappers.rend(); ++It)
+    {
+        const RunnerLink *L = *It;
+        for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));
+        for (auto &[Key, Value] : L->Env.items())
+        {
+            if (!Value.is_string())
+            {
+                LogWarn("ContainerWrapper::Execute",
+                        "chained-runner ENV key '" + Key + "' is " + std::string(Value.type_name())
+                        + ", not a string — skipped. Environment values are strings (quote the number).");
+                continue;
+            }
+            RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
+        }
+    }
+    //The boundary's removals and env go last: closest to the content, so highest priority.
     for (const std::string &Key : ContainerParams.RunnerRemoveEnv)
         RunProcessEnvironment.remove(QString::fromStdString(Key));
     for (auto &[Key, Value] : ContainerParams.RunnerEnv.items())
     {
         //get<std::string>() THROWS on a non-string, uncaught, at the last step of a launch. A runner ENV comes
-        //from a package file like any other field, so this is an authoring mistake, not an invariant: name it
-        //and carry on rather than killing the launch with a type_error nobody can place.
+        //from a package file like any other field, so this is an authoring mistake, not an invariant.
         if (!Value.is_string())
         {
             LogWarn("ContainerWrapper::Execute",
@@ -455,25 +476,6 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
             continue;
         }
         RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
-    }
-    for (const RunnerLink *L : OuterWrappers)
-    {
-        for (const std::string &Key : L->RemoveEnv) RunProcessEnvironment.remove(QString::fromStdString(Key));
-        for (auto &[Key, Value] : L->Env.items())
-        {
-            if (!Value.is_string())
-            {
-                //Same authoring mistake, same treatment as the boundary runner's ENV a few lines up — that
-                //guard was added and this loop, in the same function, was left throwing an uncaught
-                //type_error at the last step of the launch.
-                LogWarn("ContainerWrapper::Execute",
-                        "chained-runner ENV key '" + Key + "' is " + std::string(Value.type_name())
-                        + ", not a string — skipped. Environment values are strings (quote the number).");
-                continue;
-            }
-            if (!RunProcessEnvironment.contains(QString::fromStdString(Key)))    // innermost/boundary wins
-                RunProcessEnvironment.insert(QString::fromStdString(Key), QString::fromStdString(Subst(Value.get<std::string>())));
-        }
     }
 
     // WINEDLLOVERRIDES — only meaningful for runners that have a wine prefix. MERGED with any value already in

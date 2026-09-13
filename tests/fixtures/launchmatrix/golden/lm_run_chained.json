@@ -1,6 +1,6 @@
 {
-  "Content": "<DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001/probe.sh",
-  "ContentPath": "probe.sh",
+  "Content": "<DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001/bin/probe.sh",
+  "ContentPath": "bin/probe.sh",
   "ContentRoot": "/drive_c/90000000000001",
   "CustomVariables": {
     "VIDYAGOD_PEER_NAMES": "<volatile>",
@@ -20,7 +20,9 @@
   "DropPaths": [
     "drive_c/90000000000001/game/saves/cache"
   ],
-  "ExeArgs": [],
+  "ExeArgs": [
+    "--chained"
+  ],
   "GameName": "Launch Matrix",
   "KeepDirs": [
     "drive_c/90000000000001/game/saves"
@@ -66,10 +68,8 @@
     "lm_dll",
     "lm_persist",
     "lm_group",
-    "lm_c_remote",
-    "lm_unhydrated",
     "lm_tile",
-    "lm_chained__self"
+    "lm_run_chained__self"
   ],
   "RunnerArgs": [
     "--run"
@@ -95,8 +95,9 @@
     }
   ],
   "RunnerEnv": {
-    "LM_EXEC_ENV": "game-wins-over-the-chain",
+    "LM_EXEC_ENV": "game-beats-the-outer-link",
     "LM_FROM_VAR": "%lm_text%",
+    "LM_GAME_KEEPS_THIS": "survived-the-outer-remove",
     "LM_RUNNER_ENV": "set"
   },
   "RunnerExecutable": "%RunnerMount%/runner/fakerunner.sh",
@@ -297,14 +298,6 @@
     {
       "DLLOVERRIDE": "broken=",
       "TYPE": "DllOverride"
-    },
-    {
-      "SOURCE": {
-        "CID": "bafkreiabsentabsentabsentabsentabsentabsentabsentabsentabsentab",
-        "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/never_fetched.zip"
-      },
-      "TARGET": "/drive_c/90000000000001/remote",
-      "TYPE": "VFSZipLayer"
     }
   ],
   "UnifiedRuntime": false

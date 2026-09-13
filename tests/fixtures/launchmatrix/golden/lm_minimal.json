@@ -50,7 +50,9 @@
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",
-  "RunnerRemoveEnv": [],
+  "RunnerRemoveEnv": [
+    "LM_GAME_KEEPS_THIS"
+  ],
   "RunnerShipsBuild": false,
   "SubComponentsArray": [
     {

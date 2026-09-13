@@ -14,6 +14,7 @@
 #include "imnodes.h"
 
 #include <QtTest>
+#include "apppaths.h"
 #include <QTemporaryDir>
 #include <QDir>
 #include <QProcess>
@@ -31,6 +32,12 @@ class PkgActionsTest : public QObject
 private slots:
     void initTestCase()
     {
+        //Claim a data root for the WHOLE binary — see the note in test_packagecatalog.cpp. Without it,
+        //anything reaching SaveLayout writes to the developer's real ~/.VidyaGod/GlobalConfig.JSON.
+        SuiteDataRoot = new QTemporaryDir();
+        QVERIFY(SuiteDataRoot->isValid());
+        AppPaths::SetDataRoot(SuiteDataRoot->path().toStdString());
+
         ImGui::CreateContext();
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = nullptr;
@@ -340,6 +347,9 @@ private:
         PkgCanvas *canvas = nullptr;
         PkgActions *act = nullptr;
     };
+
+private:
+    QTemporaryDir *SuiteDataRoot = nullptr;
 };
 
 QTEST_MAIN(PkgActionsTest)

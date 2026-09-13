@@ -5,6 +5,7 @@
 // Uses a real temp bundle dir and an empty GlobalConfig (no repositories → BuildExecIndex sees only this bundle).
 
 #include <QtTest>
+#include "apppaths.h"
 #include "packageeditor.h"
 
 #include <QTemporaryDir>
@@ -41,6 +42,18 @@ class PackageEditorModelTest : public QObject
     json Cfg = json{{"Settings", json::object()}};   // no Repositories → BuildExecIndex sees only the bundle
 
 private slots:
+    //Claim a data root for the WHOLE binary. It is process-global and sticky, and anything reaching
+    //PackageEditorModel::SaveLayout flushes GlobalConfig.JSON to it — so a suite that does not claim one
+    //writes to AppPaths' fallback, i.e. the developer's real ~/.VidyaGod/GlobalConfig.JSON. Running a single
+    //slot by name was enough to replace a 50 KB config with a stub, and report PASS.
+    void initTestCase()
+    {
+        SuiteDataRoot = new QTemporaryDir();
+        QVERIFY(SuiteDataRoot->isValid());
+        AppPaths::SetDataRoot(SuiteDataRoot->path().toStdString());
+    }
+    void cleanupTestCase() { delete SuiteDataRoot; SuiteDataRoot = nullptr; }
+
     // LoadNodes reads one-file-per-node, tags each with __FILE__, and skips non-node json.
     void load_nodes_reads_bundle_and_tags_files()
     {
@@ -245,6 +258,9 @@ private slots:
         QVERIFY(c && createdC);
         delete c;
     }
+
+private:
+    QTemporaryDir *SuiteDataRoot = nullptr;
 };
 
 QTEST_MAIN(PackageEditorModelTest)

@@ -431,7 +431,9 @@ if(NOT WIN32)
              ${CMAKE_SOURCE_DIR}/tools/launch_matrix.py
              --binary $<TARGET_FILE:VidyaGod>
              --make-delta $<TARGET_FILE:vg_make_delta>)
-    set_tests_properties(launch_matrix PROPERTIES TIMEOUT 600)
+    #Above the harness's OWN budget (300 s per plan + 600 s per runtime node), so a hang is reported by the
+    #harness — with its exit codes and golden diff — instead of ctest killing it and printing a bare Timeout.
+    set_tests_properties(launch_matrix PROPERTIES TIMEOUT 2400)
 endif()
 
 add_gui_test(test_pkgcanvas)

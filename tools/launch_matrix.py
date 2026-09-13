@@ -25,7 +25,9 @@ GOLDEN   = os.path.join(FIXTURE, "golden")
 BINARY   = os.path.join(ROOT, "build", "VidyaGod")
 
 #The runtime probe's report, delimited so the surrounding launch log never reaches the golden.
-RUN_NODE  = "lm_run"
+#Every launchable that is meant to RUN, not just resolve. lm_run_chained goes through a two-hop runner
+#chain, where the environment is assembled in a different order — a property no plan can show.
+RUN_NODES = ["lm_run", "lm_run_chained"]
 RUN_BEGIN = "=== argv"
 RUN_END   = "=== done"
 
@@ -128,34 +130,35 @@ def main():
                 failures.append(f"{node}: PLAN CHANGED ({sum(1 for l in d if l.startswith(('+','-')) and not l.startswith(('+++','---')))} line(s))")
                 failures += ["    " + l.rstrip("\n") for l in d[:40]]
 
-        # ---- the RUNTIME case: mount for real, run the probe, golden what it saw ------------------------
-        # The plan goldens above stop at resolution. This one actually composes the mount, applies the edits
-        # and patches, starts a process inside it, and records what that process could see — which is the only
-        # way to catch a plan that is perfectly correct and mounts to the wrong thing.
-        try:
-            run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
-                                  "--node", RUN_NODE],
-                                 capture_output=True, text=True, timeout=600)
-        except subprocess.TimeoutExpired:
-            failures.append(f"{RUN_NODE}: the run TIMED OUT after 600s — the probe never finished")
-            run = None
-        #The plan loop checks the exit code; this one did not, so a run that printed a good report and then
-        #failed during teardown compared clean and the harness said "match".
-        if run is not None and run.returncode != 0:
-            failures.append(f"{RUN_NODE}: the run exited {run.returncode}")
-            failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
-        report = []
-        inside = False
-        for line in (run.stdout.splitlines() if run else []):
-            if line.startswith(RUN_BEGIN): inside = True
-            if inside: report.append(line)
-            if line.startswith(RUN_END):   inside = False
-        rpath = os.path.join(GOLDEN, f"{RUN_NODE}.runtime.txt")
-        if not report:
-            failures.append(f"{RUN_NODE}: the probe produced NO report — it never ran inside the mount")
-            failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
-        else:
-            text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
+        for node in RUN_NODES:
+            # ---- the RUNTIME case: mount for real, run the probe, golden what it saw ------------------------
+            # The plan goldens above stop at resolution. This one actually composes the mount, applies the edits
+            # and patches, starts a process inside it, and records what that process could see — which is the only
+            # way to catch a plan that is perfectly correct and mounts to the wrong thing.
+            try:
+                run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
+                                      "--node", node],
+                                     capture_output=True, text=True, timeout=600)
+            except subprocess.TimeoutExpired:
+                failures.append(f"{node}: the run TIMED OUT after 600s — the probe never finished")
+                run = None
+            #The plan loop checks the exit code; this one did not, so a run that printed a good report and then
+            #failed during teardown compared clean and the harness said "match".
+            if run is not None and run.returncode != 0:
+                failures.append(f"{node}: the run exited {run.returncode}")
+                failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
+            report = []
+            inside = False
+            for line in (run.stdout.splitlines() if run else []):
+                if line.startswith(RUN_BEGIN): inside = True
+                if inside: report.append(line)
+                if line.startswith(RUN_END):   inside = False
+            rpath = os.path.join(GOLDEN, f"{node}.runtime.txt")
+            if not report:
+                failures.append(f"{node}: the probe produced NO report — it never ran inside the mount")
+                failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
+            else:
+                text = "\n".join(normalise({"r": report}, data)["r"]) + "\n"
             if args.update:
                 with open(rpath, "w") as F: F.write(text)
             else:
@@ -171,7 +174,7 @@ def main():
                     failures += ["    " + l.rstrip("\n") for l in d[:60]]
 
         if args.update:
-            print(f"recorded {checked} plan golden(s) + the runtime report in {os.path.relpath(GOLDEN, ROOT)}")
+            print(f"recorded {checked} plan golden(s) + the runtime report(s) in {os.path.relpath(GOLDEN, ROOT)}")
             return 0
         if failures:
             print("\n".join(failures))

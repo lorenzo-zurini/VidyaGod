@@ -147,7 +147,9 @@ def make_content(B):
     # The synthetic "game" and the synthetic runner binary. probe.sh is mounted at its own sub-target so the
     # opaque delta above cannot mask it.
     write(f"{B}/probe.sh", PROBE, 0o755)
-    write(f"{B}/fakerunner.sh", '#!/bin/sh\nexec "$@"\n', 0o755)
+    #Drops its own flag then runs the content through an interpreter, so the chain does not depend on the
+    #mount preserving an executable bit either.
+    write(f"{B}/fakerunner.sh", '#!/bin/sh\n[ "$1" = "--run" ] && shift\nexec /bin/sh "$@"\n', 0o755)
 
 def make_deltas(B, tool):
     """Real .vgdelta files, or None if the generator was not built (the fixture then has no delta coverage)."""
@@ -183,7 +185,14 @@ def nodes():
         # The runner sets both: one the launchable overrides, one it REMOVES. Removal has to beat the runner,
         # or a launchable can never get rid of something its runner insists on.
         ENV={"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
-             "LM_EXEC_ENV": "runner-loses"})
+             "LM_EXEC_ENV": "runner-loses"},
+        # NOT CURRENTLY DISCRIMINATING, and here as documentation rather than proof: a native terminal is
+        # treated as a PASSTHROUGH and skipped as an outer wrapper (containerwrapper.cpp), so this REMOVE_ENV
+        # is never applied and the golden below would look the same either way. Reaching the outer-wrapper
+        # path needs a real wrapper TOOL in the chain (gamescope/mangohud shape), which this fixture has no
+        # case for yet. The ordering it is meant to pin — an outer link must not strip a key the GAME set —
+        # is therefore fixed but untested.
+        ENV_REMOVE=["LM_GAME_KEEPS_THIS"])
     add(NODE_ID="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
         TARGET="runner/fakerunner.sh")
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
@@ -335,10 +344,22 @@ def nodes():
         # A launchable's own ENV, including a %var% reference — the probe prints every LM_* it was given, so
         # this is the end-to-end proof that a game's environment reaches its process.
         ENV={"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%"}, ENV_REMOVE=["LM_SHOULD_BE_GONE"])
-    # (3) the same content routed through the two-hop chain (fixture32 → linux64).
+    # (3) THE RUNTIME TWO-HOP CASE. Same runnable closure as lm_run, reached through the chain, and its ENV
+    # collides with the OUTER link's on purpose: the game's value must survive, which is a property of the
+    # order the environment is assembled in at exec time and is invisible in a plan.
+    add(NODE_ID="lm_run_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="fixture32",
+        PATH="%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", ARGS=["--chained"],
+        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%", LABEL="Runtime probe via a chain",
+        ENV={"LM_EXEC_ENV": "game-beats-the-outer-link",
+             #The outer link asks for this key to be REMOVED. The game sets it, so it must survive.
+             "LM_GAME_KEEPS_THIS": "survived-the-outer-remove"})
+    # (4) the same content routed through the two-hop chain, plus the un-hydrated branch (plan only).
     add(NODE_ID="lm_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="fixture32",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=[], LABEL="Through a runner chain")
-    # (4) the minimum that can launch at all — the control case a regression shows up against first.
+        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=[], LABEL="Through a runner chain",
+        # The game's own ENV against a CHAIN: the outer native link sets LM_EXEC_ENV too, and the game must
+        # still win. Before the ordering fix the outer wrapper was applied last and silently overrode it.
+        ENV={"LM_EXEC_ENV": "game-wins-over-the-chain"})
+    # (5) the minimum that can launch at all — the control case a regression shows up against first.
     add(NODE_ID="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")
     add(NODE_ID="lm_minimal", TYPE="DeclareExec", PARENTS=["lm_minimal_content", "lm_tile"], HOST="linux64",
