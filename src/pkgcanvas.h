@@ -118,6 +118,9 @@ public:
     //nodes culling never submitted. Exposed because the failure mode is invisible otherwise: renameNode runs
     //per keystroke, so a missed move leaks an entry per character and a later node reusing an id inherits it.
     int  cachedNodeSizes() const;
+    //The rectangle in-node popups were placed against last frame, in the editor's own (world) units. A combo
+    //dropdown is positioned from its widget's rect against this, and the two have to be the same space.
+    void popupExtent(float &X, float &Y, float &W, float &H) const;
     //The rectangle the overview drew for one node THIS FRAME, in screen pixels — all-zero if it drew none
     //(the overview is off, or the node was not reached). Exposed because
     //the alternative is guessing which quad in a draw list belongs to which node, and a test that guesses that

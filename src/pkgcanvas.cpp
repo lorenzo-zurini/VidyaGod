@@ -34,12 +34,10 @@ constexpr int kExternalBase = 100000;
 //pretending a node we have never measured has no size, which makes the overview's bounds wrong.
 //The canvas hijacks several pieces of global imgui state for the duration of the editor — the cursor position
 //and delta it hands imnodes, a widened clip rect for submission, imnodes' canvas rectangle, and the main
-//viewport (so in-node popups place themselves in the space their widgets are laid out in). This guard covers
-//the first two, which are the ones with no other restore path; the other two are restored immediately after
-//EndNodeEditor, where there is no early return between. The viewport is the one worth watching: SetupDrawData
-//takes the backend's projection straight from it, so reaching Render() with it still pointed at the world
-//region would draw the WHOLE application frame at the wrong scale until the next NewFrame corrects it.
-//These must be handed back on EVERY exit from frame(), including an early return. This guards exactly that and nothing more: a throw escaping frame()
+//viewport (so in-node popups place themselves in the space their widgets are laid out in). All of those must
+//be handed back on EVERY exit from frame(), including an early return, and everything except imnodes' own
+//rectangle is covered here — that one is imnodes state rather than imgui's, and is restored beside the call
+//that changes it. This guards exactly that and nothing more: a throw escaping frame()
 //still leaves imnodes mid-scope with its draw-list splitter split and imgui's window stack unbalanced, which
 //no RAII here can repair. The value is that the two pieces of state THIS file borrowed are always returned.
 //A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
@@ -73,12 +71,24 @@ void EditorTooltip(const ImVec2 &RealMouse, const ImVec2 &ScreenPos, const ImVec
 
 struct EditorIoGuard
 {
-    ImGuiIO &Io;
-    ImVec2   Pos, Delta;
-    bool     Clip = false;
-    explicit EditorIoGuard(ImGuiIO &I) : Io(I), Pos(I.MousePos), Delta(I.MouseDelta) {}
+    ImGuiIO       &Io;
+    ImGuiViewport *VP;
+    ImVec2         Pos, Delta, VPos, VSize, VWorkPos, VWorkSize;
+    bool           Clip = false;
+    explicit EditorIoGuard(ImGuiIO &I)
+        : Io(I), VP(ImGui::GetMainViewport()), Pos(I.MousePos), Delta(I.MouseDelta),
+          VPos(VP->Pos), VSize(VP->Size), VWorkPos(VP->WorkPos), VWorkSize(VP->WorkSize) {}
     void popClip() { if (Clip) { ImGui::PopClipRect(); Clip = false; } }
-    ~EditorIoGuard() { popClip(); Io.MousePos = Pos; Io.MouseDelta = Delta; }
+    //The viewport is in here rather than relying on "there is no early return between" — SetupDrawData takes
+    //the backend's projection straight from it, so reaching Render() with it still pointed at the world region
+    //draws the WHOLE application frame at the wrong scale. Restoring it twice (here and after EndNodeEditor)
+    //costs four assignments; not restoring it once costs the frame.
+    ~EditorIoGuard()
+    {
+        popClip();
+        Io.MousePos = Pos; Io.MouseDelta = Delta;
+        VP->Pos = VPos; VP->Size = VSize; VP->WorkPos = VWorkPos; VP->WorkSize = VWorkSize;
+    }
     EditorIoGuard(const EditorIoGuard &) = delete;
     EditorIoGuard &operator=(const EditorIoGuard &) = delete;
 };
@@ -197,6 +207,8 @@ struct PkgCanvasState
     int    SurfaceVertices = 0;
     //The rectangle the overview drew for each node this frame, by node index.
     std::vector<ImVec4> MiniBoxes;
+    //The viewport rectangle in-node popups were placed against last frame (position + size).
+    ImVec4 PopupExtent{0, 0, 0, 0};
     //The cursor position actually handed to the editor. Zoom scales the emitted geometry, so input must be
     //inverse-transformed on the way IN or every click lands where the node would have been drawn unzoomed.
     //Recorded because that mapping is otherwise invisible — and a click landing on the wrong node is the
@@ -425,6 +437,8 @@ void PkgCanvas::surfaceClip(float &MinX, float &MinY, float &MaxX, float &MaxY) 
 //size looks perfectly healthy while the box is empty.
 int PkgCanvas::surfaceVertices() const { return m_s->SurfaceVertices; }
 int PkgCanvas::cachedNodeSizes() const { return (int)m_s->NodeDims.size(); }
+void PkgCanvas::popupExtent(float &X, float &Y, float &W, float &H) const
+{ X = m_s->PopupExtent.x; Y = m_s->PopupExtent.y; W = m_s->PopupExtent.z; H = m_s->PopupExtent.w; }
 void PkgCanvas::miniMapNodeBox(int Index, float &X, float &Y, float &W, float &H) const
 {
     X = Y = W = H = 0.0f;
@@ -473,7 +487,9 @@ bool PkgCanvas::removeNode(int index)
     m_s->Seeded.erase(Id);
     m_s->NodeDims.erase(Id);
     //By PREFIX: the key is "<id>@<source>@<value>", the same shape RegBuf uses below, so erasing the bare id
-    //removes nothing at all.
+    //removes nothing at all. An id containing '@' can reach another node's keys through this — the same
+    //hazard the RegBuf loop below carries for '#'. Accepted for a suppression cache (the cost is a warning
+    //printed twice or once too few) where it would not be for the position and buffer maps.
     for (auto It = m_s->WarnedPos.begin(); It != m_s->WarnedPos.end(); )
         It = (It->rfind(Id + "@", 0) == 0) ? m_s->WarnedPos.erase(It) : std::next(It);
     for (auto It = m_s->RegBuf.begin(); It != m_s->RegBuf.end(); )
@@ -759,6 +775,17 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         {
             ImGui::PushID(I);
             ImGui::Separator();
+            //A batched entry that is not an OBJECT is malformed content, and this editor exists to open
+            //malformed content. Drawing its fields anyway means the first write — `Node[F.Key] = V` on a JSON
+            //string — throws type_error.305 out of paintGL, which has no catch: one click on a MODE dropdown
+            //terminates the app. drawRegEdits already guards exactly this shape; this arm did not.
+            if (!Arr[I].is_object())
+            {
+                ImGui::TextDisabled("(malformed entry - fix it in the JSON view)");
+                if (ImGui::SmallButton("remove")) Del = I;
+                ImGui::PopID();
+                continue;
+            }
             for (const Field &S : F.Sub) drawField(Arr[I], S, Index);
             if (ImGui::SmallButton("remove")) Del = I;
             ImGui::PopID();
@@ -1169,7 +1196,11 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
             //Once per node, not once per frame, and with the id made safe: NODE_ID comes from arbitrary
             //on-disk or peer JSON with no character validation, and this codebase's verdict channel IS the
             //log — an id carrying a newline would forge records in it.
-            if (m_s->WarnedPos.insert(G.Nodes[I].Id).second)
+            //The SAME composite shape the Build-rejection warning uses. Two producers writing two key shapes
+            //into one set is how the last round's fix inverted the bug it fixed: prefix maintenance covered
+            //one shape and silently ignored the other, so an entry from this path became immortal and
+            //suppressed a later node's warning. One shape, one maintenance rule.
+            if (m_s->WarnedPos.insert(G.Nodes[I].Id + "@the editor@" + std::to_string(P.x) + "," + std::to_string(P.y)).second)
             {
                 Log(LogLevel::WARN, "PkgCanvas::flushPositions",
                     "refused an impossible position from the editor for node '"
@@ -1265,8 +1296,8 @@ void PkgCanvas::frame()
             //message character-identical to one already printed, which is the thing dedup is for.
             if (m_s->WarnedPos.insert(R.NodeId + "@" + R.Source + "@" + R.Value).second)
                 Log(LogLevel::WARN, "PkgCanvas",
-                    "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives (" + R.Value
-                        + "), which no layout could have produced - that declaration is ignored");
+                    "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
+                        + ", which no layout could have produced - that declaration is ignored");
         m_s->HasDependent.clear();
         for (const Link &L : m_s->Cache.Links) if (L.ParentIndex >= 0) m_s->HasDependent.insert(L.ParentIndex);
         m_s->CacheValid = true;
@@ -1460,14 +1491,20 @@ void PkgCanvas::frame()
     //the toolbar, which is what it should do anyway. Skipping it there left a discontinuity at exactly 1.0
     //with no reason behind it.
     //
-    //Except when the region is too SMALL to hold a popup: FindBestWindowPosForPopupEx pins a popup taller than
-    //the allowed extent to that extent's top-left corner, and a combo caps at eight items (~136px). On a
-    //canvas shorter than roughly 136 * zoom this would put EVERY dropdown in the canvas corner regardless of
-    //its widget — far worse than the misplacement this fixes — so below that the display stays the extent.
+    //Except when the region is too SHORT to hold a popup: FindBestWindowPosForPopupEx pins a popup taller
+    //than the allowed extent to that extent's top-left corner, so below the cap EVERY dropdown would land in
+    //the canvas corner regardless of its widget — far worse than the misplacement this fixes.
+    //
+    //Both sides of that comparison are in WORLD units. The editor lays out with an unscaled font and the
+    //transform runs afterwards, so a combo's eight-item cap is ~136 world units whatever the zoom, and the
+    //region is screen/zoom. An earlier version demanded 300 in both axes and described it as "a canvas
+    //shorter than 136 * zoom" — the inverse of what it did: on an ordinary 1400x900 canvas the region is 286
+    //units tall at 3x, so the repoint switched ITSELF OFF at the top of the zoom range, which is exactly
+    //where the misplacement is largest. Height only, against the real cap, with room for a taller popup.
     ImGuiViewport *VPort = ImGui::GetMainViewport();
     const ImVec2 VPosWas = VPort->Pos, VSizeWas = VPort->Size;
     const ImVec2 VWorld(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
-    if (VWorld.x > 300.0f && VWorld.y > 300.0f)
+    if (VWorld.y > 200.0f)
     {
         VPort->Pos  = SubClipMin;
         VPort->Size = VWorld;
@@ -1478,6 +1515,7 @@ void PkgCanvas::frame()
         VPort->WorkPos  = VPort->Pos;
         VPort->WorkSize = VPort->Size;
     }
+    m_s->PopupExtent = ImVec4(VPort->Pos.x, VPort->Pos.y, VPort->Size.x, VPort->Size.y);
     //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
     //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
     ImDrawList *Surface = ImGui::GetWindowDrawList();

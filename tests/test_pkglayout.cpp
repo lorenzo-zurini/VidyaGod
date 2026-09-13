@@ -279,10 +279,10 @@ TEST(an_empty_graph_is_not_a_crash)
 //picture was unreadable, which is why this one has to be asserted directly.
 //
 //Overlap is checked as RECTANGLES, per column: two nodes at the same X overlap when their [Y, Y+Height) spans
-//intersect. Different columns cannot collide horizontally — but only because ColumnStep (430) is wider than a
-//node, and nothing estimates WIDTH, so nothing here would notice a field-width change that pushed a node past
-//it. Measured drawn widths today are 346 for most types and 355 for RegEdit; the assertion below is pinned to
-//that headroom, so if a node ever grows past 430 this comment is the thing that was wrong, not the test.
+//intersect. The X threshold is the DRAWN body width (346px for most types today, measured by the GUI suite's
+//theEstimatedNodeHeightMatchesTheDrawnOne, which fails if a node ever reaches the 430px column step) — not
+//kNodeWidth, which is the interior width and 16px narrower, so two nodes 330-345 units apart overlapped by up
+//to 16px and slipped through an earlier version of this check.
 TEST(tall_nodes_do_not_overlap_the_ones_below_them)
 {
     ordered_json A = ordered_json::array();
@@ -324,7 +324,7 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;   // overlapping in X, not identical            // different column: cannot collide
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;   // overlapping in X, not identical
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1) ++Overlaps;
@@ -370,7 +370,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;   // overlapping in X, not identical
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;   // overlapping in X, not identical
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1)
@@ -450,7 +450,7 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
     for (const auto &N : G.Nodes)
     {
         MinX = std::min(MinX, N.X);             MinY = std::min(MinY, N.Y);
-        MaxX = std::max(MaxX, N.X + 330.0f);    MaxY = std::max(MaxY, N.Y + N.Height);
+        MaxX = std::max(MaxX, N.X + 346.0f);    MaxY = std::max(MaxY, N.Y + N.Height);
     }
     const float W = MaxX - MinX, H = MaxY - MinY;
     const float Aspect = W / H;
@@ -469,7 +469,7 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
         {
             //Overlapping in X, not identically placed in it: two nodes 100 units apart share 230px of a
             //330px body and collide just as much as two in the same column. An equality test sees neither.
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 330.0f) continue;
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;
             if (G.Nodes[I].Y < G.Nodes[J].Y + G.Nodes[J].Height
                 && G.Nodes[J].Y < G.Nodes[I].Y + G.Nodes[I].Height) ++Overlaps;
         }
@@ -499,14 +499,15 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes.size(), (size_t)5);
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 388.0f);   // b,    after a's 238 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 827.0f);   // c,    after b's 349 + 90 gap
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 392.0f);   // b,    after a's 242 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 835.0f);   // c,    after b's 353 + 90 gap
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
     //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
     //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
     //a deliberate correction, and this golden is where that shows up as a decision rather than a side effect.
-    CHECK_EQ(G.Nodes[1].Height, 238.0f);
-    CHECK_EQ(G.Nodes[2].Height, 349.0f);
+    //They moved again when the action row started charging for the Separator above it.
+    CHECK_EQ(G.Nodes[1].Height, 242.0f);
+    CHECK_EQ(G.Nodes[2].Height, 353.0f);
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)

@@ -68,7 +68,13 @@ Graph Build(const json &NodesArray, const json *Layout)
                 //Recorded like the out-of-range shape below. "POS": ["10","20"] or a three-element POS is just
                 //as much a declaration that will be silently replaced at publish, and the comment below
                 //promises Build hands back what it refused — it has to mean every refusal, not one of them.
-                G.RejectedPositions.push_back({Nd.Id, Which, P.dump().substr(0, 40)});
+                //NOT P.dump().substr(): dump() serialises the WHOLE value first, and a package fetched from a
+                //content source can carry a megabytes-long array here — allocated on every cache rebuild,
+                //which is every keystroke. Describe the shape instead; the shape is the whole complaint.
+                G.RejectedPositions.push_back(
+                    {Nd.Id, Which, std::string("a ") + P.type_name()
+                                       + (P.is_array() ? " of " + std::to_string(P.size()) + " element(s)" : "")
+                                       + ", not two numbers"});
                 return false;
             }
             const double Px = P[0].get<double>(), Py = P[1].get<double>();
@@ -430,6 +436,8 @@ float FieldPx(const json &Node, const Field &F)
         for (size_t I = 0; I < Shown; ++I)
         {
             Px += kSepPx;                                       // the separator between entries
+            //Same malformed-entry branch the canvas draws: one disabled line and a remove button.
+            if (!V->at(I).is_object()) { Px += kTextPx + kBtnPx; continue; }
             for (const Field &S : F.Sub) Px += FieldPx(V->at(I), S);
             Px += kBtnPx;                                       // the entry's remove button
         }
@@ -444,7 +452,12 @@ float FieldPx(const json &Node, const Field &F)
         float Px = 0.0f;
         for (const json &E : *V)
         {
-            //Per entry, exactly what drawRegEdits emits: a Separator, the "views" label with the 32/64
+            //A malformed entry short-circuits to a separator and one disabled line, and nothing else —
+            //drawRegEdits has that branch precisely because this editor is what you open a broken package
+            //with. Charging it a full entry was 19.6px per entry too much, enough to trip the slack bound on
+            //a node made entirely of them.
+            if (!E.is_object()) { Px += kSepPx + kTextPx; continue; }
+            //Otherwise, exactly what drawRegEdits emits: a Separator, the "views" label with the 32/64
             //checkboxes and "override pass" all on one SameLine chain, the value rows, and the
             //"+ value" / "remove group" SmallButtons — also one line, also SameLine.
             //

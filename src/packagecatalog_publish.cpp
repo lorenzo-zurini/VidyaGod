@@ -146,10 +146,13 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     //Meta-CID with them — and the only line this function prints otherwise is "stamped POS into N file(s)",
     //which says nothing about why one of them moved. Build records rather than logs (it runs per keystroke in
     //the editor); this is the other caller, and it has to say so.
+    //"ignored", not "stamped over": if the node's OWN POS is good and only this machine's override was bad,
+    //the node keeps its declared position and the loop below writes nothing at all. The canvas's wording for
+    //the same record was the accurate one; this said the opposite for that case.
     for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
         Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
-            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives (" + R.Value
-                + "), which no layout could have produced - stamping a computed position over it");
+            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
+                + ", which no layout could have produced - that declaration is ignored");
 
     std::set<fs::path> Dirty;
     for (size_t I = 0; I < Slots.size(); ++I)

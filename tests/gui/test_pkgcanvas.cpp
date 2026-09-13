@@ -1790,9 +1790,12 @@ private slots:
             //rows for it because the tree's state was whatever previous tests had left, and the measurement
             //above now takes both states, so that ambiguity is gone and so is the 57px it bought.
             //
-            //Measured worst case across every shape here: 94px (a Content with multiline lists). 120 leaves
-            //room for a row's rounding and nothing like enough for a per-entry drift — doubling either the
-            //separator or the button-row constant reports several hundred.
+            //Measured worst case across every shape here: 94px (a Content with multiline lists), so 120 leaves
+            //room for a row's rounding. Note the ASYMMETRY that buys: the SHORT arm is tight to the pixel
+            //(kRowPx 19 -> 18 fails), while over-estimating has ~93px of headroom over a 27px baseline, so a
+            //single-pixel over-charge on a per-entry constant needs ~90 entries before it is caught. Doublings
+            //and the real per-entry mistakes are caught; a 1px over-charge on kSepPx or kBtnPx is not, and
+            //that is a deliberate trade against false positives on shapes the suite does not build.
             else if (Est - Drawn > 120.0f)
                 outliers << QString("%1 is drawn %2px but estimated %3px - %4px of slack, past the fixed "
                                     "reservations, so the layout will leave a hole")
@@ -1837,6 +1840,12 @@ private slots:
             }
             measure("RegEdit", json{{"EDITS", Es}});
         }
+
+        // MALFORMED entries, which drawRegEdits short-circuits to a separator and one disabled line. The
+        // editor exists to open broken packages, so this is a shape it must measure correctly — charging a
+        // full entry for it was 19.6px each, enough to trip the slack bound on a node made of them.
+        measure("RegEdit", json{{"EDITS", json::array({"nope", 7, json::object({{"HKLM", json::object()}}),
+                                                       "also nope", 9, "and again"})}});
 
         // And a REALLY tall one. The slack the estimate reserves is fixed, so a per-ROW calibration error only
         // becomes visible once enough rows have accumulated it: shaving 1.5px off the constant every row is
@@ -2343,11 +2352,19 @@ private slots:
         QVERIFY2(nh > 4.0f && fh > 1.0f,
                  qPrintable(QString("the overview's boxes are at or near the 1px floor (%1px measured, %2px "
                                     "never-measured) - nothing can be compared at that size").arg(nh).arg(fh)));
-        QVERIFY2(std::abs(nh - fh) <= std::max(1.0f, nh * 0.12f),
-                 qPrintable(QString("two nodes of identical height (%1px) got boxes of %2px (measured) and "
-                                    "%3px (never measured) - the overview is not drawing an unmeasured node "
-                                    "at the size the layout gave it")
-                                .arg(G.Nodes[(size_t)Near].Height).arg(nh).arg(fh)));
+        //Scaled by what the overview ACTUALLY used for the near twin — its measured height — not by the
+        //estimate. The two differ by exactly the slack the height arms are tuned against, so comparing the
+        //boxes directly wires a test about the minimap to the height constants: it showed a 10.7% gap at the
+        //correct implementation, which both hid a fallback wrong by up to 13% and turned red on a 1px change
+        //to kRowPx, blaming the minimap for it.
+        const float NearDrawn = ImNodes::GetNodeDimensions(Near).y;
+        QVERIFY2(NearDrawn > 1.0f, "the near twin was not submitted, so its measured height is unavailable");
+        const float Expect = nh * (G.Nodes[(size_t)Far].Height / NearDrawn);
+        QVERIFY2(std::abs(fh - Expect) <= std::max(1.0f, Expect * 0.06f),
+                 qPrintable(QString("the never-measured twin got a %1px box where %2px was due (the measured "
+                                    "twin is %3px for a drawn height of %4, and both nodes estimate %5) - the "
+                                    "overview is not drawing an unmeasured node at the size the layout gave it")
+                                .arg(fh).arg(Expect).arg(nh).arg(NearDrawn).arg(G.Nodes[(size_t)Far].Height)));
         Canvas->setMiniMap(false);
     }
 
@@ -2390,14 +2407,111 @@ private slots:
         // And the one line has to be usable: it names the node, says which declaration, and does not carry
         // hundreds of digits of whatever the package happened to contain.
         QVERIFY2(Lines[0].contains("its own POS"), qPrintable("the warning does not say WHICH declaration: " + Lines[0]));
-        //The bound is what SafeId guarantees (96 chars + an ellipsis) plus the fixed wording, not what this
-        //test's short generated id happens to produce — a real node with a long id reaches ~223 bytes.
-        QVERIFY2(Lines[0].size() < 240, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
+        //The bound is what the CODE guarantees, not what this test's short generated id happens to produce:
+        //85 chars of fixed wording + 27 for the longest source name + 99 for SafeId's cap and ellipsis + the
+        //value, which for the out-of-range arm is two %g numbers. A malformed-shape record is longer again.
+        QVERIFY2(Lines[0].size() < 280, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
         // The node is laid out rather than left at the impossible coordinate.
         const PkgGraph::Graph G = Canvas->graph();
         QVERIFY2(std::abs(G.Nodes[(size_t)N].X) < 1.0e6f && std::abs(G.Nodes[(size_t)N].Y) < 1.0e6f,
                  qPrintable(QString("the node kept its impossible position (%1,%2)")
                                 .arg(double(G.Nodes[(size_t)N].X)).arg(double(G.Nodes[(size_t)N].Y))));
+    }
+
+    // A batched entry that is not an OBJECT is malformed content, and this editor is what you open malformed
+    // content WITH. Drawing its fields anyway meant the first write — Node[key] = value on a JSON string —
+    // threw type_error.305 out of paintGL, which has no catch: one click on a dropdown terminated the app.
+    void aMalformedBatchedEntryIsNotDrawnAsFields()
+    {
+        Canvas->setMiniMap(false);
+        const int N = Canvas->addNode("BinaryPatch", 200, 200);
+        Doc["NODES"][N]["EDITS"] = json::array({"oops", 42, json::object({{"MODE", "Replace"}})});
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled");
+
+        // Click over every row of the node. Before the guard this reached a dropdown belonging to a string
+        // entry and terminated; the assertion is simply that we are still here afterwards, with the document
+        // unchanged where it was not an object.
+        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+        const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
+        const ImVec2 D = ImNodes::GetNodeDimensions(N);
+        for (float fy = 0.05f; fy < 0.98f; fy += 0.03f)
+            for (float fx : {0.3f, 0.75f}) {
+                const ImVec2 At(P.x + D.x * fx, P.y + D.y * fy);
+                if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                clickAt(At);
+                runFrame();
+            }
+        closeAnyPopup();
+        QVERIFY2(Doc["NODES"][N]["EDITS"][0].is_string(), "the string entry was rewritten");
+        QVERIFY2(Doc["NODES"][N]["EDITS"][1].is_number(), "the number entry was rewritten");
+        // And the height estimate agrees with the short form those entries actually draw as.
+        const float Est = Canvas->graph().Nodes[(size_t)N].Height;
+        const float Drawn = ImNodes::GetNodeDimensions(N).y;
+        QVERIFY2(Est >= Drawn && Est - Drawn < 120.0f,
+                 qPrintable(QString("a node of malformed entries is drawn %1px and estimated %2px")
+                                .arg(Drawn).arg(Est)));
+    }
+
+    // The popup extent repoint stands down when the region is too short to hold a dropdown, because below
+    // that imgui pins every popup to the extent's corner. Both sides of that comparison are in WORLD units —
+    // an earlier version demanded 300 in both axes and described it as the inverse, which switched the whole
+    // fix off at 3x on an ordinary canvas: the top of the zoom range, where the misplacement is largest.
+    void thePopupExtentFollowsTheEditorAtEveryZoom()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 300, 300);
+        QStringList outliers;
+        for (float z : {0.5f, 1.0f, 2.0f, 3.0f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            float ax = 0, ay = 0, bx = 0, by = 0;
+            Canvas->canvasViewport(ax, ay, bx, by);
+            // What the editor lays out in, in world units, and what a combo popup needs (8 items).
+            const float WorldH = (by - ay) / z;
+            if (WorldH <= 200.0f) continue;              // the stand-down case; nothing to assert
+            float ex = 0, ey = 0, ew = 0, eh = 0;
+            Canvas->popupExtent(ex, ey, ew, eh);
+            if (std::abs(eh - WorldH) > 2.0f)
+                outliers << QString("zoom %1: the canvas is %2 world units tall and the popup extent is %3 - "
+                                    "in-node dropdowns are being placed against the wrong rectangle")
+                                .arg(z).arg(WorldH).arg(eh);
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // removeNode's half of the warned-about maintenance. Only the rename path had a test; reverting the
+    // delete path to the pre-fix line left the whole suite green.
+    void deletingANodeForgetsThatItWasWarnedAbout()
+    {
+        Canvas->setMiniMap(false);
+        const int N = Canvas->addNode("Content", 100, 100);
+        const std::string Id = Doc["NODES"][N].value("NODE_ID", std::string());
+        Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
+        Canvas->invalidateGraph();
+
+        int Warnings = 0;
+        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
+            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos) ++Warnings;
+        });
+        runFrame(); runFrame();
+        QCOMPARE(Warnings, 1);
+
+        // Delete it, then create a DIFFERENT node that happens to reuse the id with the same bad position —
+        // which is what opening a second package does, since ids are auto-generated from the type name.
+        Canvas->removeNode(N);
+        const int M2 = Canvas->addNode("Content", 400, 100);
+        Doc["NODES"][M2]["NODE_ID"] = Id;
+        Doc["NODES"][M2]["POS"] = json::array({5.0e9, 5.0e9});
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        QVERIFY2(Warnings == 2,
+                 qPrintable(QString("the second node's warning was swallowed by the deleted node's entry "
+                                    "(%1 warnings, expected 2)").arg(Warnings)));
     }
 
     void zoomIsClampedAndDefaultsToUnity()
