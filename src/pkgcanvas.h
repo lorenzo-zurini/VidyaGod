@@ -118,6 +118,10 @@ public:
     //nodes culling never submitted. Exposed because the failure mode is invisible otherwise: renameNode runs
     //per keystroke, so a missed move leaks an entry per character and a later node reusing an id inherits it.
     int  cachedNodeSizes() const;
+    //The rectangle the overview drew for one node, in screen pixels (empty if it drew none). Exposed because
+    //the alternative is guessing which quad in a draw list belongs to which node, and a test that guesses that
+    //answers a different question than the one it asks.
+    void miniMapNodeBox(int index, float &X, float &Y, float &W, float &H) const;
     bool  miniMap() const;
     void  setMiniMap(bool on);
     void selectNode(int index);

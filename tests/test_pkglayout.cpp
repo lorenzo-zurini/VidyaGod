@@ -424,6 +424,55 @@ TEST(the_registry_row_count_matches_the_flattening)
 //change is about — never enters an assertion at all. This one has a LAYER, so the pitch is visible, and it is
 //pinned exactly. Changing these numbers is a deliberate act that re-stamps every package and changes its CID;
 //if a change here was not intended, the change that caused it was not either.
+//The wide two-layer fan-out. This is the ONE shape where a second band-budget pass (re-deriving the budget
+//from post-re-split block heights) measurably changed the drawing — every real bundle in the library came out
+//byte-identical — so deleting that pass needs the shape it touched pinned, or the deletion is unobserved and
+//so was the thing it deleted. Heights vary, because uniform ones never reach the re-split at all.
+TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
+{
+    ordered_json A = ordered_json::array();
+    ordered_json Root; Root["NODE_ID"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
+    for (int I = 0; I < 500; ++I)
+    {
+        ordered_json Keys = ordered_json::object();
+        for (int R = 0; R < (I % 17); ++R) Keys["Software"]["v" + std::to_string(R)] = "d";
+        ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
+        ordered_json N;
+        N["NODE_ID"] = "f" + std::to_string(I);
+        N["TYPE"]    = "RegEdit";
+        N["EDITS"]   = ordered_json::array({E});
+        N["PARENTS"] = ordered_json::array({"root"});
+        A.push_back(N);
+    }
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    float MinX = 1e30f, MinY = 1e30f, MaxX = -1e30f, MaxY = -1e30f;
+    for (const auto &N : G.Nodes)
+    {
+        MinX = std::min(MinX, N.X);             MinY = std::min(MinY, N.Y);
+        MaxX = std::max(MaxX, N.X + 330.0f);    MaxY = std::max(MaxY, N.Y + N.Height);
+    }
+    const float W = MaxX - MinX, H = MaxY - MinY;
+    const float Aspect = W / H;
+    //Bounded either way up. One band-budget pass lands at 1.85 against a 16:9 target; a second pass moved it
+    //to 1.76 and was deleted as not worth a loop nothing could observe. This asserts the drawing stays a
+    //readable rectangle, which is the property that mattered — not the 0.09 the second pass bought.
+    if (!(Aspect > 0.8f && Aspect < 3.2f))
+        std::printf("    fan-out laid out %.0f x %.0f, aspect %.2f\n", W, H, Aspect);
+    CHECK(Aspect > 0.8f);
+    CHECK(Aspect < 3.2f);
+    //And no overlaps, on the shape that wraps on both axes at once.
+    int Overlaps = 0;
+    for (size_t I = 0; I < G.Nodes.size(); ++I)
+        for (size_t J = I + 1; J < G.Nodes.size(); ++J)
+        {
+            if (G.Nodes[I].X != G.Nodes[J].X) continue;
+            if (G.Nodes[I].Y < G.Nodes[J].Y + G.Nodes[J].Height
+                && G.Nodes[J].Y < G.Nodes[I].Y + G.Nodes[I].Height) ++Overlaps;
+        }
+    CHECK_EQ(Overlaps, 0);
+}
+
 TEST(a_layered_graph_lays_out_at_pinned_coordinates)
 {
     ordered_json A = ordered_json::array();

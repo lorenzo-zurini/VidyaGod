@@ -43,18 +43,25 @@ constexpr int kExternalBase = 100000;
 //of the way back. A tooltip is screen furniture like the minimap, so it is placed at the REAL cursor. (The
 //window it makes carries neither the Popup nor the ChildWindow flag, so imgui leaves its ParentWindow null and
 //the nested-window walk below never sees it — this is the only thing that can fix it.)
-void EditorTooltip(const ImVec2 &RealMouse, const char *Text)
+void EditorTooltip(const ImVec2 &RealMouse, const ImVec2 &ScreenPos, const ImVec2 &ScreenSize, const char *Text)
 {
     //The cursor is handed BACK for the duration of the call rather than the window being pinned. Pinning it
     //with SetNextWindowPos sets window_pos_set_by_api, which makes imgui skip both FindBestWindowPosForPopup
     //(the code that flips a tooltip to the other side of the cursor at a screen edge) and ClampWindowPos — so
     //a tip raised near the right or bottom edge ran off-screen with nothing to pull it back. Giving imgui the
     //real position instead lets all of that work exactly as it does everywhere else in the app.
+    //The VIEWPORT goes back with it, for the same reason. While the editor lays out, the viewport is pointed
+    //at the world region being drawn so that in-node popups flip and clamp in the space their widgets live in
+    //— but a tooltip is screen furniture placed at the real cursor, so it has to be kept inside the real
+    //screen. Handing both back for the duration of the call is the whole of it.
     ImGuiIO &Io = ImGui::GetIO();
-    const ImVec2 Was = Io.MousePos;
+    ImGuiViewport *VP = ImGui::GetMainViewport();
+    const ImVec2 WasMouse = Io.MousePos, WasPos = VP->Pos, WasSize = VP->Size;
     Io.MousePos = RealMouse;
+    VP->Pos = ScreenPos; VP->Size = ScreenSize;
     ImGui::SetTooltip("%s", Text);
-    Io.MousePos = Was;
+    Io.MousePos = WasMouse;
+    VP->Pos = WasPos; VP->Size = WasSize;
 }
 
 struct EditorIoGuard
@@ -181,6 +188,8 @@ struct PkgCanvasState
     ImVec4 SurfaceClip{0, 0, 0, 0};
     ImVec4 ViewportRect{0, 0, 0, 0};
     int    SurfaceVertices = 0;
+    //The rectangle the overview drew for each node this frame, by node index.
+    std::vector<ImVec4> MiniBoxes;
     //The cursor position actually handed to the editor. Zoom scales the emitted geometry, so input must be
     //inverse-transformed on the way IN or every click lands where the node would have been drawn unzoomed.
     //Recorded because that mapping is otherwise invisible — and a click landing on the wrong node is the
@@ -189,6 +198,10 @@ struct PkgCanvasState
     //The REAL cursor, kept for the things inside the editor that are screen furniture rather than content —
     //a tooltip is placed by imgui at io.MousePos, which in there is the world cursor.
     ImVec2 RealMouse{0, 0};
+    //The real screen viewport, kept for the same reason: while the editor runs the viewport is pointed at the
+    //world region being laid out, and screen furniture raised from inside it needs the real one back.
+    ImVec2 ScreenViewportPos{0, 0};
+    ImVec2 ScreenViewportSize{0, 0};
     //imnodes DESTROYS every node not submitted during a frame (ObjectPoolUpdate) and re-creates it at
     //Origin(0,0) the next time it is begun. With viewport culling that happens constantly, so "have I ever
     //seeded this node" is the wrong question — the right one is "was it submitted LAST frame", which is the
@@ -315,9 +328,9 @@ void PkgCanvas::invalidateGraph()
     //so a second package's nodes would inherit the first one's boxes in the overview. Unlike the maps above
     //this one grows without bound, because nothing else ever removes an entry on this path.
     m_s->NodeDims.clear();
-    //And the warned-about set, for the same reason and with a sharper consequence: auto-generated ids repeat
-    //across packages, so a stale entry SWALLOWS the warning for a different package's node.
-    m_s->WarnedPos.clear();
+    //NOT the warned-about set: this runs on every cache invalidation, which is every keystroke, so clearing it
+    //here made a single corrupt node warn per character typed. It is keyed by node, source AND value instead,
+    //so a different package's node can only be silenced by a message identical to one already printed.
 }
 
 void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
@@ -404,6 +417,13 @@ void PkgCanvas::surfaceClip(float &MinX, float &MinY, float &MaxX, float &MaxY) 
 //size looks perfectly healthy while the box is empty.
 int PkgCanvas::surfaceVertices() const { return m_s->SurfaceVertices; }
 int PkgCanvas::cachedNodeSizes() const { return (int)m_s->NodeDims.size(); }
+void PkgCanvas::miniMapNodeBox(int Index, float &X, float &Y, float &W, float &H) const
+{
+    X = Y = W = H = 0.0f;
+    if (Index < 0 || Index >= (int)m_s->MiniBoxes.size()) return;
+    const ImVec4 &R = m_s->MiniBoxes[(size_t)Index];
+    X = R.x; Y = R.y; W = R.z - R.x; H = R.w - R.y;
+}
 void PkgCanvas::canvasViewport(float &MinX, float &MinY, float &MaxX, float &MaxY) const
 { MinX = m_s->ViewportRect.x; MinY = m_s->ViewportRect.y; MaxX = m_s->ViewportRect.z; MaxY = m_s->ViewportRect.w; }
 //VALIDATED: this is public, and a selection is an INDEX into a document that can be replaced underneath it.
@@ -894,7 +914,7 @@ void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
         //Recorded, not invoked: an action opens dialogs, and a nested Qt event loop inside an ImGui frame
         //lets the repaint timer re-enter NewFrame() with a node scope still open.
         if (ImGui::SmallButton(Acts[I].Label)) m_s->Pending = {Id, Acts[I].Id};
-        if (ImGui::IsItemHovered()) EditorTooltip(m_s->RealMouse, Acts[I].Tip);
+        if (ImGui::IsItemHovered()) EditorTooltip(m_s->RealMouse, m_s->ScreenViewportPos, m_s->ScreenViewportSize, Acts[I].Tip);
     }
 }
 
@@ -1212,6 +1232,19 @@ void PkgCanvas::frame()
     if (!m_s->CacheValid)
     {
         m_s->Cache = Build(m_s->Nodes(), m_s->Layout);
+        //Build refuses a declared position no layout could have produced and hands back what it refused. Said
+        //ONCE per node here rather than logged there, because this runs on every cache rebuild — which is
+        //every keystroke — and the same node would otherwise warn per character typed anywhere in the package.
+        for (const PkgGraph::RejectedPosition &R : m_s->Cache.RejectedPositions)
+            //Keyed on the VALUE as well as the node and the source. invalidateGraph is the document-swap path
+            //but it is ALSO every cache invalidation — every keystroke — so clearing the set there (which an
+            //earlier version did, to stop a stale id suppressing a different package's node) put the
+            //per-keystroke flood straight back. With the value in the key the only thing ever suppressed is a
+            //message character-identical to one already printed, which is the thing dedup is for.
+            if (m_s->WarnedPos.insert(R.NodeId + "@" + R.Source + "@" + R.Value).second)
+                Log(LogLevel::WARN, "PkgCanvas",
+                    "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives (" + R.Value
+                        + "), which no layout could have produced - that declaration is ignored");
         m_s->HasDependent.clear();
         for (const Link &L : m_s->Cache.Links) if (L.ParentIndex >= 0) m_s->HasDependent.insert(L.ParentIndex);
         m_s->CacheValid = true;
@@ -1363,6 +1396,8 @@ void PkgCanvas::frame()
         ZIO.MousePos = ImVec2(SubClipMin.x - 10000.0f, SubClipMin.y - 10000.0f);
     m_s->EditorMouse = ZIO.MousePos;
     m_s->RealMouse   = RealMouse;
+    m_s->ScreenViewportPos  = ImGui::GetMainViewport()->Pos;
+    m_s->ScreenViewportSize = ImGui::GetMainViewport()->Size;
 
     //imnodes' own grid is drawn INSIDE BeginNodeEditor, before the first vertex the transform can reach, so
     //it kept a fixed 32 px screen pitch and translated 1:1 with the panning while the content translated Z:1.
@@ -1386,6 +1421,21 @@ void PkgCanvas::frame()
     //in a global between frames is a trap for any later caller that compares it against a screen cursor.
     const ImRect CanvasRectWas = GImNodes->CanvasRectScreenSpace;
     if (ViewZoom != 1.0f) GImNodes->CanvasRectScreenSpace = ImRect(SubClipMin, SubClipMax);
+    //And what "the screen" means while the editor lays out. A popup opened inside a node — every combo is one
+    //— is positioned by imgui from the widget's rect, which in here is WORLD space, against the viewport rect,
+    //which is SCREEN space. At any zoom but 1 those disagree, and imgui then decides there is no room below a
+    //widget that has plenty and flips the dropdown far above it: measured at 0.5x with the node low in the
+    //view, a combo popup opened 245px away from the widget that owns it. Pointing the viewport at the region
+    //the editor is actually laying out in puts that decision back in one space; the transform then maps the
+    //result to where the widget is drawn. Restored immediately after the editor, before anything screen-space
+    //(the minimap) is drawn.
+    ImGuiViewport *VPort = ImGui::GetMainViewport();
+    const ImVec2 VPosWas = VPort->Pos, VSizeWas = VPort->Size;
+    if (ViewZoom != 1.0f)
+    {
+        VPort->Pos  = SubClipMin;
+        VPort->Size = ImVec2(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
+    }
     //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
     //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
     ImDrawList *Surface = ImGui::GetWindowDrawList();
@@ -1518,6 +1568,7 @@ void PkgCanvas::frame()
     IoGuard.popClip();
     ImNodes::EndNodeEditor();
     GImNodes->CanvasRectScreenSpace = CanvasRectWas;
+    VPort->Pos = VPosWas; VPort->Size = VSizeWas;
     ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
     ZIO.MouseDelta = RealDelta;                     // (also the guard's job, on the path where this is skipped)
     //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
@@ -1641,31 +1692,14 @@ void PkgCanvas::frame()
                                            ImVec2(O.x + (Win->OuterRectClipped.Max.x - O.x) * Z,
                                                   O.y + (Win->OuterRectClipped.Max.y - O.y) * Z));
 
-            //A POPUP is an overlay, and imgui already took care to keep it on screen — but it did so in the
-            //unscaled space the node was submitted in, and the transform then moved it. Scaling about the
-            //canvas origin pushes anything near that origin off the top-left by origin*(Z-1): small (16px at
-            //3x) and bounded, but it is a dropdown hanging off the edge of the window. Nudged back, vertices
-            //and hit rectangle together so the two never disagree. Child windows are NOT nudged: they belong
-            //to their node and are clipped by the canvas on purpose.
-            if (Win->Flags & ImGuiWindowFlags_Popup)
-            {
-                const ImVec2 Disp = ImGui::GetIO().DisplaySize;
-                const ImVec2 Min(O.x + (Win->Pos.x - O.x) * Z, O.y + (Win->Pos.y - O.y) * Z);
-                const ImVec2 Max(Min.x + Win->Size.x * Z, Min.y + Win->Size.y * Z);
-                const float Dx = (Min.x < 0.0f) ? -Min.x : (Max.x > Disp.x ? Disp.x - Max.x : 0.0f);
-                const float Dy = (Min.y < 0.0f) ? -Min.y : (Max.y > Disp.y ? Disp.y - Max.y : 0.0f);
-                if (Dx != 0.0f || Dy != 0.0f)
-                {
-                    for (int V = 0; V < DL->VtxBuffer.Size; ++V)
-                    { DL->VtxBuffer[V].pos.x += Dx; DL->VtxBuffer[V].pos.y += Dy; }
-                    for (int C = 0; C < DL->CmdBuffer.Size; ++C)
-                    {
-                        ImVec4 &R = DL->CmdBuffer[C].ClipRect;
-                        R = ImVec4(R.x + Dx, R.y + Dy, R.z + Dx, R.w + Dy);
-                    }
-                    Win->OuterRectClipped.Translate(ImVec2(Dx, Dy));
-                }
-            }
+            //NOT nudged back onto the display, though an earlier version did. Transforming a popup moves it,
+            //and the temptation is to translate it back — but its ITEMS hit-test in the unscaled space imgui
+            //laid them out in, against the world cursor, which is exactly consistent with where the transform
+            //draws them: point at a drawn item and the world cursor lands on its rect. Translating the pixels
+            //and the window rectangle without the item rects breaks that correspondence, and measurably did:
+            //at 3x the dropdown responded in a 13px band 130px below the sliver it was drawn in. The clip
+            //clamp above already keeps a popup inside the canvas; being clipped is the cost, and it is the
+            //cheaper one.
         }
     }
 
@@ -1718,6 +1752,7 @@ void PkgCanvas::frame()
             return ImVec2(Off.x + (Wx - MiniWorldMin.x) * MiniScale,
                           Off.y + (Wy - MiniWorldMin.y) * MiniScale);
         };
+        m_s->MiniBoxes.assign(G.Nodes.size(), ImVec4(0, 0, 0, 0));
         for (int I = 0; I < (int)G.Nodes.size(); ++I)
         {
             const Node &N = G.Nodes[(size_t)I];
@@ -1728,6 +1763,7 @@ void PkgCanvas::frame()
             const ImVec2 P1(std::max(P1raw.x, P0.x + 1.0f), std::max(P1raw.y, P0.y + 1.0f));
             const bool Sel = m_s->SelectedLast.count(I) != 0;
             DL->AddRectFilled(P0, P1, Sel ? IM_COL32(255, 190, 80, 255) : IM_COL32(130, 145, 165, 200));
+            m_s->MiniBoxes[(size_t)I] = ImVec4(P0.x, P0.y, P1.x, P1.y);
         }
         //What the canvas is actually looking at. A node at world w is at origin + (pan + w) * zoom, so the
         //visible world rectangle is (-pan) to (avail / zoom - pan).

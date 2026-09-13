@@ -59,9 +59,21 @@ struct Link
     int         Slot        = 0;
 };
 
+//A declared position that was refused because no layout could have produced it. Carried rather than logged:
+//Build runs on every cache rebuild — every keystroke — and the canvas is where the "said it once" state lives.
+//`Source` names WHICH of the two declarations was bad, because they are fixed in different places: the
+//package's own POS by editing the package, this machine's override by clearing a local setting.
+struct RejectedPosition
+{
+    std::string NodeId;
+    std::string Source;
+    std::string Value;
+};
+
 struct Graph
 {
     std::vector<Node> Nodes;
+    std::vector<RejectedPosition> RejectedPositions;
     std::vector<Link> Links;
     std::vector<std::string> Externals;   // distinct out-of-bundle parent ids, in first-seen order
 };

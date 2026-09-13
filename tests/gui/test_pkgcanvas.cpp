@@ -5,6 +5,7 @@
 
 #include "pkgcanvas.h"
 #include "pkggraph.h"
+#include "commonutils.h"
 #include "pkglayout.h"
 #include "nodelower.h"
 #include "manifestmodel.h"
@@ -1724,18 +1725,16 @@ private slots:
         // GetNodeDimensions then reports the title-bar-only size of the box imnodes re-created — 35.5px for
         // everything, which compares as "wildly over-estimated" for every type at once. That is a measurement
         // artifact, not a finding, and it is exactly the shape of one: a uniform, implausible number.
-        //A UNIQUE id per measurement, and a TOGGLE on every node. Together they force the "node options" tree
-        //OPEN deterministically: drawEnvelope opens it on sight when TOGGLE/WHEN/EXCLUDE is set, but only with
-        //ImGuiCond_Once, and the stored open/closed state is keyed by the tree's ID and lives in the ImGui
-        //CONTEXT — which outlives the per-test canvas. Reusing an id therefore inherits whatever an earlier
-        //test left, and the SHORT branch (the one this test exists for) is only armed when the tree is open.
-        //Measured: deleting the estimate's warning-line reserve failed the full suite and PASSED this test
-        //alone, purely on that. A fresh id has no stored state, so Once applies and the state is known.
-        int Serial = 0;
+        //The estimate reserves the "node options" tree as though it were OPEN, so what must be compared against
+        //is the OPEN height — and that state is NOT ours to set. It lives in ImGui's per-window storage under
+        //an id derived from the node INDEX (imnodes pushes it), the context outlives the per-test canvas, and
+        //SetNextItemOpen(..., Once) does not override a stored value. An earlier attempt to force it with a
+        //fresh NODE_ID was simply inert for that reason, and the SHORT branch — the one this test exists for —
+        //stayed armed or disarmed depending on which tests ran first, silently, by 57px on every node.
+        //
+        //So measure BOTH states and compare against the taller. No guessing, no ordering.
         auto measure = [&](const char *Type, const json &Payload) {
             const int N = Canvas->addNode(Type, 100.0f, 100.0f);
-            Doc["NODES"][N]["NODE_ID"] = std::string("h") + std::to_string(++Serial);
-            if (!Doc["NODES"][N].contains("TOGGLE")) Doc["NODES"][N]["TOGGLE"] = "on";
             for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
             //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
             //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
@@ -1746,7 +1745,26 @@ private slots:
             QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
                      qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
                                     .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
-            const float Drawn = ImNodes::GetNodeDimensions(N).y;
+            float Drawn = ImNodes::GetNodeDimensions(N).y;
+            //Toggle the options tree and keep the taller reading. The toggle is a click on the tree's own row,
+            //found by effect: the one click down the node's left edge that changes its height.
+            {
+                float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+                Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+                const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
+                bool Toggled = false;
+                for (float dy = 40.0f; dy < 140.0f && !Toggled; dy += 4.0f) {
+                    const ImVec2 At(P.x + 24.0f, P.y + dy);
+                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                    clickAt(At);
+                    runFrame(); runFrame();
+                    const float H2 = ImNodes::GetNodeDimensions(N).y;
+                    if (std::abs(H2 - Drawn) > 25.0f) { Drawn = std::max(Drawn, H2); Toggled = true; }
+                }
+                if (!Toggled)
+                    outliers << QString("%1: the node options tree could not be toggled, so only one of its "
+                                        "two heights was measured").arg(Type);
+            }
             const float Wide  = ImNodes::GetNodeDimensions(N).x;
             const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
             const QString Who = QString("%1%2").arg(Type).arg(Payload.empty() ? "" : " (loaded)");
@@ -1802,6 +1820,20 @@ private slots:
                 Entries.push_back(En);
             }
             measure("RegEdit", json{{"EDITS", Entries}});
+        }
+
+        // FORTY-FIVE entries. The per-entry arms are the ones that hide errors — one entry conceals a whole
+        // row's worth either way — and the bound only turns per-entry drift into a failure once enough entries
+        // have accumulated it. `capture_reg` emits an entry per captured hive and architecture.
+        {
+            json Es = json::array();
+            for (int e = 0; e < 45; ++e) {
+                json K = json::object();
+                for (int r = 0; r < 4; ++r) K["Software"]["G" + std::to_string(e)]["v" + std::to_string(r)] = "d";
+                json En = json::object(); En["ARCHITECTURE"] = json::array({"64"}); En["HKLM"] = K;
+                Es.push_back(En);
+            }
+            measure("RegEdit", json{{"EDITS", Es}});
         }
 
         // And a REALLY tall one. The slack the estimate reserves is fixed, so a per-ROW calibration error only
@@ -1966,8 +1998,10 @@ private slots:
         Canvas->invalidateGraph();
         runFrame(); runFrame();
         const float H = Canvas->graph().Nodes[(size_t)N].Height;
-        QVERIFY2(H > 1200.0f, qPrintable(QString("the test node is only %1px tall - not tall enough to mean "
-                                                 "anything").arg(H)));
+        QVERIFY2(H > 1500.0f,
+                 qPrintable(QString("the test node is only %1px tall - the -1400 case below needs it to reach "
+                                    "the viewport top from there, so a shorter node would make this test "
+                                    "demand that a genuinely off-screen node be drawn").arg(H)));
 
         QStringList outliers;
         // Scroll the node's TOP well above the viewport while its body still covers the screen. Every value is
@@ -2080,9 +2114,23 @@ private slots:
         };
 
         QStringList outliers;
-        for (float z : {1.0f, 0.5f, 2.0f}) {
+        //3x included, and at each zoom the node is driven LOW in the viewport. Both matter: a popup opens
+        //BELOW its widget, so only down there does the transform push it past the display edge, and only at a
+        //high zoom is the displacement large. Measured on the version that translated popups back on screen:
+        //at 3x this is where the dropdown ended up responding 130px away from the sliver it drew in, and a
+        //test that stayed at the default position and 2x could not see it.
+        for (float z : {1.0f, 0.5f, 2.0f, 3.0f}) {
             Canvas->setZoom(z);
             runFrame(); runFrame();
+            {
+                float ax = 0, ay = 0, bx = 0, by = 0;
+                Canvas->canvasViewport(ax, ay, bx, by);
+                const ImVec2 Gp = ImNodes::GetNodeGridSpacePos(0);
+                const ImVec2 Dm = ImNodes::GetNodeDimensions(0);
+                ImNodes::EditorContextResetPanning(ImVec2(((bx - ax) * 0.35f) / z - Gp.x,
+                                                          ((by - ay) * 0.80f) / z - Gp.y - Dm.y * 0.5f));
+                runFrame(); runFrame();
+            }
             QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
                      qPrintable(QString("zoom %1: the node was culled").arg(z)));
             float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
@@ -2105,32 +2153,38 @@ private slots:
 
             // The popup must be AT the thing that was clicked — imgui puts it directly under the widget, so
             // the click point has to be within a widget's height of its top edge and inside it horizontally.
-            //UNCLIPPED (Pos+Size), not OuterRectClipped: the clipped rect reports a popup hanging off the
-            //display as ending neatly at its edge, so a misplaced one is invisible in it.
-            //
-            //And TRANSFORMED into the space it is actually drawn in. imgui lays the popup out in the same
-            //unscaled world the node was submitted in, and the view transform scales the result — so Pos/Size
-            //straight out of imgui describe where it would have been at 1:1, not where the user sees it.
-            //Asserting on those reported a correctly-placed popup as 420px off.
-            //Read from the HIT rectangle, which the canvas transforms and nudges as one with the pixels, so
-            //this is both where it is drawn and where it responds — the two cannot silently disagree.
+            //The invariant that matters is not where the popup's rectangle is, it is that the popup RESPONDS
+            //where it is DRAWN. An earlier version asserted "is it on the display" and drove a fix that
+            //translated the pixels and the window rectangle back on screen while leaving the item rects
+            //behind — measurably making the dropdown respond in a 13px band 130px away from the sliver it
+            //drew in, and the assertion could not see it. So probe it: hover where an entry is painted and
+            //require that imgui reports an item under the cursor.
             const ImVec2 Min = Pop->OuterRectClipped.Min, Max = Pop->OuterRectClipped.Max;
-            //A combo popup is wider than it is tall and opens directly BELOW its widget, so "is the click
-            //inside the box" is nearly free horizontally — it has to be pinned to the widget's own edge. The
-            //top of the popup is what tracks the widget.
             const float DX = std::max(0.0f, std::max(Min.x - Hit.x, Hit.x - Max.x));
-            const float DTop = std::abs(Min.y - Hit.y);
-            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
-            if (DX > 60.0f || DTop > 60.0f)
+            //Either EDGE may be the one against the widget: imgui flips a popup above the cursor when there is
+            //no room below, which is exactly what it does for a combo near the bottom of the screen — and
+            //driving the node low, which this test now does on purpose, makes that the common case.
+            const float DEdge = std::min(std::abs(Min.y - Hit.y), std::abs(Max.y - Hit.y));
+            if (DX > 60.0f || DEdge > 60.0f)
                 outliers << QString("zoom %1: clicked at (%2,%3) and the popup opened at [%4,%5 .. %6,%7] - "
-                                    "%8px off horizontally, top %9px from the click").arg(z).arg(Hit.x).arg(Hit.y)
-                                .arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y).arg(DX).arg(DTop);
-            if (Min.x < -1.0f || Min.y < -1.0f || Max.x > Disp.x + 1.0f || Max.y > Disp.y + 1.0f)
-                outliers << QString("zoom %1: the popup hangs off the display: [%2,%3 .. %4,%5] against %6x%7")
-                                .arg(z).arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y).arg(Disp.x).arg(Disp.y);
-            //Close it properly. ClearActiveID does not dismiss a popup, and an open one blocks hovering
-            //everywhere else in the context — which outlives this test's canvas, so the next test that needs
-            //a hover finds none and reports a defect that is really this test's litter.
+                                    "%8px off horizontally, nearest edge %9px from the click")
+                                .arg(z).arg(Hit.x).arg(Hit.y).arg(Min.x).arg(Min.y).arg(Max.x).arg(Max.y)
+                                .arg(DX).arg(DEdge);
+
+            bool Responded = false;
+            QString Probed;
+            for (float fy = 0.05f; fy < 0.95f && !Responded; fy += 0.05f) {
+                const ImVec2 At((Min.x + Max.x) * 0.5f, Min.y + (Max.y - Min.y) * fy);
+                if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                runFrame(At); runFrame(At);
+                if (Probed.isEmpty()) Probed = QString("%1,%2").arg(At.x).arg(At.y);
+                if (ImGui::GetCurrentContext()->HoveredId != 0) Responded = true;
+            }
+            if (!Responded)
+                outliers << QString("zoom %1: the popup is drawn at [%2,%3 .. %4,%5] and nothing in it responds "
+                                    "to the cursor anywhere down that band (first probe %6) - it is painted "
+                                    "where it cannot be used").arg(z).arg(Min.x).arg(Min.y).arg(Max.x)
+                                .arg(Max.y).arg(Probed);
             closeAnyPopup();
         }
         closeAnyPopup();
@@ -2246,36 +2300,86 @@ private slots:
     void theOverviewShowsRealSizesForNodesItHasNeverMeasured()
     {
         Canvas->setMiniMap(true);
-        // Spread far enough that culling submits almost nothing, so almost every box comes from the fallback.
-        Canvas->addNode("Group", 0, 0);
-        for (int i = 0; i < 6; ++i) {
-            const int N = Canvas->addNode("RegEdit", 6000.0f + i * 4000.0f, 4000.0f + i * 3000.0f);
+        // TWIN nodes with identical payloads, therefore identical estimated heights — one left where culling
+        // submits it (so the overview uses its MEASURED size) and one far away (so it uses the fallback).
+        //
+        // That pairing is the only thing that can see this. The overview fits itself to the graph's bounds,
+        // and those bounds are computed from the same sizes it draws — so scaling every fallback by a constant
+        // moves the bounds and the boxes together and is invisible to any self-relative check. Measured: a
+        // fallback of Height * 0.4 left an earlier version of this test, which compared the boxes only to each
+        // other, completely green. A measured node and an unmeasured TWIN must get the same box.
+        auto reg = [&](float x, float y, int rows) {
+            const int N = Canvas->addNode("RegEdit", x, y);
             json K = json::object();
-            for (int r = 0; r < 10 + i * 25; ++r) K["Software"]["v" + std::to_string(r)] = "d";
+            for (int r = 0; r < rows; ++r) K["Software"]["v" + std::to_string(r)] = "d";
             json E = json::object(); E["HKLM"] = K;
             Doc["NODES"][N]["EDITS"] = json::array({E});
-        }
-        Canvas->invalidateGraph();                      // clears the measured sizes, as a document swap does
+            return N;
+        };
+        const int Near = reg(200.0f, 200.0f, 30);        // on screen
+        const int Far  = reg(40000.0f, 30000.0f, 30);    // far away, never submitted
+        reg(60000.0f, 45000.0f, 4);                      // a couple more, to give the overview a real spread
+        reg(80000.0f, 60000.0f, 60);
+        Canvas->invalidateGraph();                       // drop every measured size, as a document swap does
         runFrame(); runFrame();
-        QVERIFY2(Canvas->visibleNodes() < Canvas->nodeCount(),
-                 "nothing was culled - the fallback is not what is being measured");
 
-        // Distinct box HEIGHTS in the overview: a nominal fallback makes them all the same.
-        const ImDrawList *D = miniMapDrawList();
-        QVERIFY2(D && D->VtxBuffer.Size > 0, "the minimap painted nothing");
-        std::vector<float> Heights;
-        for (int v = 0; v + 3 < D->VtxBuffer.Size; v += 4) {
-            const float h = D->VtxBuffer[v + 2].pos.y - D->VtxBuffer[v].pos.y;
-            if (h > 0.5f) Heights.push_back(h);
-        }
-        std::sort(Heights.begin(), Heights.end());
-        Heights.erase(std::unique(Heights.begin(), Heights.end(),
-                                  [](float a, float b) { return std::abs(a - b) < 0.75f; }), Heights.end());
-        QVERIFY2(Heights.size() >= 4,
-                 qPrintable(QString("the overview drew only %1 distinct box heights for 7 nodes of very "
-                                    "different sizes - it is using a nominal box, not the estimate")
-                                .arg(Heights.size())));
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[(size_t)Near].Height, G.Nodes[(size_t)Far].Height);
+        QVERIFY2(Canvas->visibleNodes() >= 1 && Canvas->visibleNodes() < Canvas->nodeCount(),
+                 qPrintable(QString("%1 of %2 submitted - this needs both a measured node and an unmeasured "
+                                    "one").arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
+
+        float nx = 0, ny = 0, nw = 0, nh = 0, fx = 0, fy = 0, fw = 0, fh = 0;
+        Canvas->miniMapNodeBox(Near, nx, ny, nw, nh);
+        Canvas->miniMapNodeBox(Far,  fx, fy, fw, fh);
+        QVERIFY2(nh > 0.0f && fh > 0.0f,
+                 qPrintable(QString("the overview drew no box for one of the twins (%1px and %2px)").arg(nh).arg(fh)));
+        //A box is floored at 1px so a huge graph does not round every node away, so a badly-undersized one
+        //shows up AS that floor rather than as a proportional difference — report both numbers either way.
+        QVERIFY2(std::abs(nh - fh) <= std::max(1.0f, nh * 0.06f),
+                 qPrintable(QString("two nodes of identical height (%1px) got boxes of %2px (measured) and "
+                                    "%3px (never measured) - the overview is not drawing an unmeasured node "
+                                    "at the size the layout gave it")
+                                .arg(G.Nodes[(size_t)Near].Height).arg(nh).arg(fh)));
         Canvas->setMiniMap(false);
+    }
+
+    // A corrupt declared position is refused, and the refusal has to be REPORTED — publish otherwise stamps a
+    // computed position over it and changes the package's CID with "stamped POS into N file(s)" as the only
+    // trace. But the graph is rebuilt on every cache invalidation, which is every keystroke, so reporting it
+    // from there emitted one warning per character typed anywhere in the package: measured at 772 bytes a line
+    // (std::to_string(1e300) is 308 digits) and one Diagnostics warning each, per node, per keystroke.
+    void aRefusedPositionIsReportedOnceNotPerKeystroke()
+    {
+        Canvas->setMiniMap(false);
+        const int N = Canvas->addNode("Content", 100, 100);
+        Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
+        Canvas->addNode("Content", 500, 100);          // something else to type into
+        Canvas->invalidateGraph();
+
+        int Warnings = 0;
+        QStringList Lines;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
+            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
+            { ++Warnings; Lines << QString::fromStdString(M); }
+        });
+        runFrame(); runFrame();
+        QCOMPARE(Warnings, 1);
+        // Now rebuild the graph twenty times over, as twenty keystrokes would.
+        for (int i = 0; i < 20; ++i) { Canvas->invalidateGraph(); runFrame(); }
+        ClearLogCallback();
+        QVERIFY2(Warnings == 1,
+                 qPrintable(QString("twenty rebuilds produced %1 warnings, not 1:\n  %2")
+                                .arg(Warnings).arg(Lines.join("\n  "))));
+        // And the one line has to be usable: it names the node, says which declaration, and does not carry
+        // hundreds of digits of whatever the package happened to contain.
+        QVERIFY2(Lines[0].contains("its own POS"), qPrintable("the warning does not say WHICH declaration: " + Lines[0]));
+        QVERIFY2(Lines[0].size() < 200, qPrintable(QString("the warning is %1 bytes: %2").arg(Lines[0].size()).arg(Lines[0])));
+        // The node is laid out rather than left at the impossible coordinate.
+        const PkgGraph::Graph G = Canvas->graph();
+        QVERIFY2(std::abs(G.Nodes[(size_t)N].X) < 1.0e6f && std::abs(G.Nodes[(size_t)N].Y) < 1.0e6f,
+                 qPrintable(QString("the node kept its impossible position (%1,%2)")
+                                .arg(double(G.Nodes[(size_t)N].X)).arg(double(G.Nodes[(size_t)N].Y))));
     }
 
     void zoomIsClampedAndDefaultsToUnity()

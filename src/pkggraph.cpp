@@ -62,7 +62,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         //then the caller's Layout override (this machine's own drags, held in GlobalConfig), then — for
         //whatever is still unplaced — the computed layout below. A node carrying POS therefore opens where the
         //author put it, and moving it never writes to the package.
-        auto ReadPos = [&](const json &P) {
+        auto ReadPos = [&](const json &P, const char *Which) {
             if (!P.is_array() || P.size() != 2 || !P[0].is_number() || !P[1].is_number()) return false;
             const double Px = P[0].get<double>(), Py = P[1].get<double>();
             //A coordinate no layout could have produced is not a position, it is corruption — and accepting it
@@ -74,22 +74,26 @@ Graph Build(const json &NodesArray, const json *Layout)
             //tens of thousands of units across, and `get<float>()` on 1e300 quietly yields inf.
             if (!std::isfinite(Px) || !std::isfinite(Py) || std::abs(Px) > 1.0e7 || std::abs(Py) > 1.0e7)
             {
-                //Loudly. Dropping a declared position silently means the author's layout disappears, publish
-                //re-stamps a computed one over it, the package's bytes change and its Meta-CID with them —
-                //with "stamped POS into N file(s)" as the only trace. The whole point of rejecting here is
-                //that the alternative was an invisible failure; a silent rejection is another one.
-                Log(LogLevel::WARN, "PkgGraph::Build",
-                    "node '" + SafeId(Nd.Id) + "' declares a position no layout could produce ("
-                        + std::to_string(Px) + ", " + std::to_string(Py) + ") - ignoring it and laying the "
-                          "node out instead");
+                //RECORDED, not logged. Dropping a declared position silently means the author's layout
+                //disappears, publish re-stamps a computed one over it and the package's Meta-CID changes with
+                //"stamped POS into N file(s)" as the only trace — so it has to be reported. But Build is
+                //called on every cache rebuild, which is every KEYSTROKE, and logging here made one corrupt
+                //node emit a 772-byte warning per character typed anywhere in the package (500 such nodes:
+                //386 KB of stderr and 500 Warnings on the diagnostics tally, per keystroke). Build stays pure
+                //and hands the facts back; the canvas, which already keeps a warned-about set, says it once.
+                //
+                //%g, not std::to_string: the latter prints 1e300 as 308 digits of peer-controlled text.
+                char Buf[64];
+                std::snprintf(Buf, sizeof(Buf), "%g, %g", Px, Py);
+                G.RejectedPositions.push_back({Nd.Id, Which, Buf});
                 return false;
             }
             Nd.X = (float)Px; Nd.Y = (float)Py; Nd.HasPos = true;
             return true;
         };
-        if (N.contains("POS")) ReadPos(N["POS"]);
+        if (N.contains("POS")) ReadPos(N["POS"], "its own POS");
         if (Layout && Layout->is_object() && !Nd.Id.empty() && Layout->contains(Nd.Id))
-            ReadPos((*Layout)[Nd.Id]);
+            ReadPos((*Layout)[Nd.Id], "this machine's saved layout");
         Nd.Height = EstimateHeight(N);
         if (!Nd.Id.empty()) ById[Nd.Id] = Nd.Index;
         G.Nodes.push_back(std::move(Nd));
@@ -322,6 +326,7 @@ constexpr float kRowPx     = 19.0f;   // label + widget + item spacing
 constexpr float kTextPx    = 17.0f;   // a bare text line
 constexpr float kTitlePx   = 34.0f;   // the type title bar
 constexpr float kChromePx  = 26.0f;   // imnodes' own node padding, top and bottom together
+constexpr float kSepPx     =  6.0f;   // an ImGui::Separator() between batched entries
 
 //Rows a StringList spends: one for the label line, plus the multiline box when the value has several lines.
 //The box is 16px per line, capped at 6 lines.
@@ -411,7 +416,7 @@ float FieldPx(const json &Node, const Field &F)
         float Px = kTextPx;                                     // "Label (N)"
         for (size_t I = 0; I < Shown; ++I)
         {
-            Px += 6.0f;                                         // the separator between entries
+            Px += kSepPx;                                       // the separator between entries
             for (const Field &S : F.Sub) Px += FieldPx(V->at(I), S);
             Px += kRowPx;                                       // the entry's remove button
         }
@@ -426,11 +431,17 @@ float FieldPx(const json &Node, const Field &F)
         float Px = 0.0f;
         for (const json &E : *V)
         {
-            //ONE row: drawRegEdits puts the "views" label, the 32/64 checkboxes and "override pass" on a
-            //single SameLine chain. Charging two cost a full row PER ENTRY — invisible on the one-entry nodes
-            //every test built, +1091px on a 59-entry one, and exactly the per-entry growth the absolute bound
-            //below was introduced to catch.
-            Px += kRowPx;
+            //ONE row plus the separator. drawRegEdits puts the "views" label, the 32/64 checkboxes and
+            //"override pass" on a single SameLine chain, above an ImGui::Separator() per entry — the same
+            //separator the ObjArray arm above charges kSepPx for. Charging two rows was +19px per entry;
+            //charging one and forgetting the separator was -2px per entry, which is short from 16 entries up
+            //and past RowGap (a real overlap) from 61. Both errors are per-entry, and both were invisible
+            //because every RegEdit case in the suite had exactly one.
+            //The separator measures 2px here, not the 6 the ObjArray arm charges: there it sits BETWEEN
+            //entries under a label row, here it is the first item after a PushID. Both numbers come from
+            //measuring the real canvas across entry counts until the slack stops growing with them — 6 here
+            //made it grow +4px per entry, none made it shrink -2px per entry.
+            Px += kRowPx + 2.0f;
             //The row count the canvas will draw. Counted rather than built: RegRowsOf materialises three
             //std::strings per row, and on a graph of 500 nodes carrying 59 rows each that was 29,500 RegRow
             //structs per rebuild — 1.45 ms of a 3.58 ms Build, 40% of it, for a number. CountRegRows walks
