@@ -321,3 +321,30 @@ TEST(a_binarypatch_path_that_climbs_out_of_the_runtime_is_refused)
     CHECK(After == Pristine);                            // and byte-for-byte untouched
     std::filesystem::remove_all(Root);
 }
+
+//The patch side of the same rule, which was unpinned: an ABSOLUTE FILE already inside the runtime must be
+//used as is. Stripping its leading separator turned "%RuntimePath%/game/x.exe" into
+//"<runtime>/home/.../RUNTIME/game/x.exe", a path that exists nowhere — so the patch silently did not apply.
+TEST(an_absolute_binarypatch_path_already_inside_the_runtime_is_used_as_is)
+{
+    const std::filesystem::path Root = std::filesystem::temp_directory_path() / "vg_bp_absin";
+    std::filesystem::remove_all(Root);
+    const std::filesystem::path Runtime = Root / "RUNTIME";
+    std::filesystem::create_directories(Runtime / "game");
+    const std::filesystem::path Exe = Runtime / "game" / "x.exe";
+    { const std::vector<uint8_t> P = MinimalPe();
+      std::ofstream O(Exe, std::ios::binary); O.write((const char *)P.data(), (std::streamsize)P.size()); }
+
+    ContainerParams CP(Root / "PKG");
+    CP.RuntimePath = Runtime;
+    CP.SubComponentsArray = nlohmann::ordered_json::array({
+        nlohmann::ordered_json{{"TYPE","BinaryPatch"},{"FILE", Exe.string()},   // absolute, inside the runtime
+                               {"MODE","Poke"},{"OFFSET","0x401000"},{"VALUE","ff"}}});
+
+    CHECK(BinaryPatch::ProcessBinaryPatches(CP));
+    std::ifstream In(Exe, std::ios::binary);
+    const std::vector<uint8_t> After((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    CHECK(After.size() > 0x400);
+    if (After.size() > 0x400) CHECK_EQ((int)After[0x400], 0xff);   // the patch landed
+    std::filesystem::remove_all(Root);
+}

@@ -157,6 +157,11 @@ def main():
             if not report:
                 failures.append(f"{node}: the probe produced NO report — it never ran inside the mount")
                 failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
+            #A partial report from a run that then DIED is not an observation. Guarding only on "the report is
+            #empty" left the other shape open: the probe printed some of its report, exited non-zero, and
+            #--update rewrote the goldens from it while printing that it had left them alone.
+            elif run.returncode != 0:
+                pass
             else:
                 #INSIDE the else on purpose. Left outside, a run that produced no report fell through to the
                 #recorder with `text` still holding the PREVIOUS iteration's value — so `--update` wrote the
