@@ -45,8 +45,16 @@ constexpr int kExternalBase = 100000;
 //the nested-window walk below never sees it — this is the only thing that can fix it.)
 void EditorTooltip(const ImVec2 &RealMouse, const char *Text)
 {
-    ImGui::SetNextWindowPos(ImVec2(RealMouse.x + 16.0f, RealMouse.y + 16.0f));
+    //The cursor is handed BACK for the duration of the call rather than the window being pinned. Pinning it
+    //with SetNextWindowPos sets window_pos_set_by_api, which makes imgui skip both FindBestWindowPosForPopup
+    //(the code that flips a tooltip to the other side of the cursor at a screen edge) and ClampWindowPos — so
+    //a tip raised near the right or bottom edge ran off-screen with nothing to pull it back. Giving imgui the
+    //real position instead lets all of that work exactly as it does everywhere else in the app.
+    ImGuiIO &Io = ImGui::GetIO();
+    const ImVec2 Was = Io.MousePos;
+    Io.MousePos = RealMouse;
     ImGui::SetTooltip("%s", Text);
+    Io.MousePos = Was;
 }
 
 struct EditorIoGuard
@@ -61,10 +69,14 @@ struct EditorIoGuard
     EditorIoGuard &operator=(const EditorIoGuard &) = delete;
 };
 
-inline ImVec2 NodeSize(const std::map<std::string, ImVec2> &Dims, const std::string &Id)
+inline ImVec2 NodeSize(const std::map<std::string, ImVec2> &Dims, const PkgGraph::Node &N)
 {
-    const auto It = Dims.find(Id);
-    return It != Dims.end() ? It->second : ImVec2(330.0f, 140.0f);
+    const auto It = Dims.find(N.Id);
+    if (It != Dims.end()) return It->second;
+    //Nothing measured yet — after a document swap that is EVERY node, and a culled one is never measured at
+    //all, so it would keep the placeholder forever. The layout already estimated this node's height from its
+    //payload; using it means a 2950px BinaryPatch shows as a tall box in the overview rather than a stub.
+    return ImVec2(330.0f, N.Height > 1.0f ? N.Height : 140.0f);
 }
 
 //One uniform node body, so the graph tiles predictably and long ids/paths scroll inside their field instead of
@@ -190,6 +202,8 @@ struct PkgCanvasState
     //submitted — and a node that was never submitted has no size imnodes can be asked for. Whatever was
     //measured the last time it WAS on screen is kept here; a node never yet seen falls back to a nominal box.
     std::map<std::string, ImVec2> NodeDims;
+    //Node ids already warned about an impossible position — the warning is worth one line, not one per frame.
+    std::set<std::string> WarnedPos;
 
     json *Doc = nullptr;
     //The canvas-position sidecar (NODE_ID -> [x,y]), owned by the model and persisted to
@@ -361,7 +375,10 @@ void  PkgCanvas::setZoom(float Z)
     //and silently did nothing at all. (No Seeded.clear() any more: it carried a comment claiming every pushed
     //position was in the old scale, which stopped being true when zoom became a view transform — imnodes holds
     //world coordinates. All it did was re-push N positions and stomp an in-flight drag.)
-    m_s->RecentreFromZoom = Old;
+    //Only if nothing is already pending. Two setZoom calls before a frame would otherwise leave the SECOND
+    //call's "from" against a pan that still belongs to the FIRST one's scale: measured at 203px of drift for
+    //setZoom(2) followed by setZoom(0.5) in the same frame, against 0px when a frame runs between them.
+    if (m_s->RecentreFromZoom <= 0.0f) m_s->RecentreFromZoom = Old;
 }
 int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
 void PkgCanvas::editorMouse(float &X, float &Y) const { X = m_s->EditorMouse.x; Y = m_s->EditorMouse.y; }
@@ -1100,8 +1117,16 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
             //still submitted every frame (culling reads our own X/Y, which is fine), and so it would be drawn
             //off at that coordinate for the rest of the session — invisible, unclickable, with the document
             //looking perfectly healthy. Dropping the seed makes drawNode push our position back next frame.
-            Log(LogLevel::WARN, "PkgCanvas::flushPositions",
-                "refused an impossible position from the editor for node " + G.Nodes[I].Id + " - re-seeding it");
+            //Once per node, not once per frame, and with the id made safe: NODE_ID comes from arbitrary
+            //on-disk or peer JSON with no character validation, and this codebase's verdict channel IS the
+            //log — an id carrying a newline would forge records in it.
+            if (m_s->WarnedPos.insert(G.Nodes[I].Id).second)
+            {
+                std::string Safe = G.Nodes[I].Id;
+                for (char &C : Safe) if (C == '\n' || C == '\r' || C == '\t') C = ' ';
+                Log(LogLevel::WARN, "PkgCanvas::flushPositions",
+                    "refused an impossible position from the editor for node '" + Safe + "' - re-seeding it");
+            }
             m_s->Seeded.erase(G.Nodes[I].Id);
             continue;
         }
@@ -1271,7 +1296,7 @@ void PkgCanvas::frame()
         float MinX = 1e30f, MinY = 1e30f, MaxX = -1e30f, MaxY = -1e30f;
         for (const Node &N : G.Nodes)
         {
-            const ImVec2 D = NodeSize(m_s->NodeDims, N.Id);
+            const ImVec2 D = NodeSize(m_s->NodeDims, N);
             MinX = std::min(MinX, N.X);         MinY = std::min(MinY, N.Y);
             MaxX = std::max(MaxX, N.X + D.x);   MaxY = std::max(MaxY, N.Y + D.y);
         }
@@ -1434,7 +1459,13 @@ void PkgCanvas::frame()
     auto OnScreen = [&](int I) {
         //World space, then scaled to screen: a node at world (x,y) is drawn at origin + (pan + world) * zoom.
         const float X = (G.Nodes[I].X + Pan.x) * m_s->Zoom, Y = (G.Nodes[I].Y + Pan.y) * m_s->Zoom;
-        return X > -MarginX && Y > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
+        //Its BOX, not just its origin. A node is as tall as its payload makes it, and testing the origin alone
+        //culls one whose top has scrolled past the edge while the rest of it still fills the screen: measured
+        //on a 12-entry BinaryPatch (2950px tall), the canvas went blank for 2400px of panning with the node
+        //covering the entire viewport, unclickable. The height is already computed for the layout; this is the
+        //other place that needs it.
+        const float H = (G.Nodes[I].Height > 1.0f ? G.Nodes[I].Height : 200.0f) * m_s->Zoom;
+        return X > -MarginX && Y + H > -MarginY && X < Canvas.x + MarginX && Y < Canvas.y + MarginY;
     };
     //A SELECTED node is never culled. imnodes keeps a culled node's index in SelectedNodeIndices with no
     //liveness check, so once its pool slot is reused: GetSelectedNodes reports the new occupant's id, and
@@ -1658,7 +1689,7 @@ void PkgCanvas::frame()
         for (int I = 0; I < (int)G.Nodes.size(); ++I)
         {
             const Node &N = G.Nodes[(size_t)I];
-            const ImVec2 D = NodeSize(m_s->NodeDims, N.Id);
+            const ImVec2 D = NodeSize(m_s->NodeDims, N);
             const ImVec2 P0 = ToMini(N.X, N.Y), P1raw = ToMini(N.X + D.x, N.Y + D.y);
             //Never smaller than a pixel: at minecraft's 27520x18760 a node is a fraction of one, and a
             //rectangle that rounds away leaves a blank overview of a graph that is definitely there.

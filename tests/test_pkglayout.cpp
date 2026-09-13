@@ -12,6 +12,8 @@
 #include "pkggraph.h"
 
 #include <algorithm>
+#include <limits>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <set>
@@ -277,7 +279,10 @@ TEST(an_empty_graph_is_not_a_crash)
 //picture was unreadable, which is why this one has to be asserted directly.
 //
 //Overlap is checked as RECTANGLES, per column: two nodes at the same X overlap when their [Y, Y+Height) spans
-//intersect. Columns are 430 apart and a node is 330 wide, so different columns cannot collide horizontally.
+//intersect. Different columns cannot collide horizontally — but only because ColumnStep (430) is wider than a
+//node, and nothing estimates WIDTH, so nothing here would notice a field-width change that pushed a node past
+//it. Measured drawn widths today are 346 for most types and 355 for RegEdit; the assertion below is pinned to
+//that headroom, so if a node ever grows past 430 this comment is the thing that was wrong, not the test.
 TEST(tall_nodes_do_not_overlap_the_ones_below_them)
 {
     ordered_json A = ordered_json::array();
@@ -311,6 +316,9 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     CHECK_EQ(G.Nodes.size(), (size_t)6);
     //The estimate has to actually vary with the payload, or the overlap check below passes on a flat graph.
     CHECK(G.Nodes[5].Height > G.Nodes[1].Height * 5.0f);
+    //And the horizontal assumption the per-column check rests on: a node has to be narrower than the step, or
+    //"different X cannot collide" stops being true and this test silently stops covering half the plane.
+    CHECK(PkgLayout::Options{}.ColumnStep > 400.0f);
 
     int Overlaps = 0;
     for (size_t I = 0; I < G.Nodes.size(); ++I)
@@ -377,6 +385,70 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     CHECK_EQ(Overlaps, 0);
 }
 
+//A coordinate no layout could have produced is corruption, not a position. Accepting it made it permanent: the
+//canvas cannot draw, select or drag a node at 5e9, and the position read-back then refused the value it was
+//handed, re-seeded from the same number and refused it again — once per frame, forever.
+//The height estimate counts registry rows with its own walk instead of building the row structs, because
+//building them was 40% of a graph rebuild. Two readings of the same tree that drift apart is exactly how the
+//estimate would start under-reserving again, so they are pinned against each other here — on the shapes that
+//differ: empty keys, keys holding only subkeys, mixed values and subkeys, non-string values, deep nesting.
+TEST(the_registry_row_count_matches_the_flattening)
+{
+    auto Check = [](const char *What, const ordered_json &Entry) {
+        const size_t Walked = PkgGraph::RegRowsOf(Entry).size();
+        const size_t Counted = PkgGraph::CountRegRows(Entry);
+        if (Walked != Counted)
+            std::printf("    %s: flattening says %zu rows, the count says %zu\n", What, Walked, Counted);
+        CHECK_EQ(Counted, Walked);
+    };
+    Check("empty entry", ordered_json::object());
+    Check("scalars only", ordered_json{{"ARCHITECTURE", ordered_json::array({"64"})}, {"OVERRIDE", true}});
+    Check("one value", ordered_json{{"HKLM", {{"Software", {{"v", "d"}}}}}});
+    Check("key with no children", ordered_json{{"HKLM", {{"Software", ordered_json::object()}}}});
+    Check("values and subkeys", ordered_json{{"HKLM", {{"Software", {{"v", "d"}, {"Sub", {{"w", "e"}}}}}}}});
+    Check("non-string values", ordered_json{{"HKLM", {{"S", {{"n", 42}, {"b", true}}}}}});
+    Check("two hives", ordered_json{{"HKLM", {{"A", {{"v", "d"}}}}}, {"HKCU", {{"B", {{"w", "e"}}}}}});
+    // Deep and wide, the shape the codec libraries actually ship.
+    {
+        ordered_json Deep = ordered_json::object();
+        ordered_json *Cur = &Deep;
+        for (int I = 0; I < 8; ++I) { (*Cur)["k" + std::to_string(I)] = ordered_json::object(); Cur = &(*Cur)["k" + std::to_string(I)]; }
+        for (int I = 0; I < 20; ++I) (*Cur)["v" + std::to_string(I)] = "data";
+        Check("deep chain", ordered_json{{"HKLM", Deep}});
+    }
+}
+
+TEST(an_impossible_declared_position_is_rejected_not_honoured)
+{
+    ordered_json A = ordered_json::array();
+    auto N = [&](const char *Id, ordered_json Pos) {
+        ordered_json J; J["NODE_ID"] = Id; J["TYPE"] = "Group";
+        if (!Pos.is_null()) J["POS"] = Pos;
+        A.push_back(J);
+    };
+    N("sane",     ordered_json::array({120, 340}));
+    N("huge",     ordered_json::array({5e9, 5e9}));
+    N("enormous", ordered_json::array({1e300, 1.0}));
+    N("nan",      ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 0.0}));
+    N("none",     ordered_json());
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    CHECK_EQ(G.Nodes.size(), (size_t)5);
+    //The sane one is honoured, exactly.
+    CHECK(G.Nodes[0].HasPos);
+    CHECK_EQ(G.Nodes[0].X, 120.0f);
+    CHECK_EQ(G.Nodes[0].Y, 340.0f);
+    //The rest are treated as undeclared, so the layout places them where they can be seen and fixed.
+    for (size_t I = 1; I < G.Nodes.size(); ++I)
+    {
+        CHECK(!G.Nodes[I].HasPos);
+        CHECK(std::isfinite(G.Nodes[I].X));
+        CHECK(std::isfinite(G.Nodes[I].Y));
+        CHECK(std::abs(G.Nodes[I].X) < 1.0e6f);
+        CHECK(std::abs(G.Nodes[I].Y) < 1.0e6f);
+    }
+}
+
 TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
 {
     ordered_json A = ordered_json::array();
@@ -413,9 +485,10 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW);     CHECK_EQ(G.Nodes[4].Y, Y0);            // d      layer 3
     //And the estimate itself is a real number of pixels, not zero (which would silently restore the constant
     //step through the Height == 0 fallback) and not something absurd. A bare Group is the smallest node the
-    //canvas draws: a title, a pin row, an id and the collapsed options.
+    //canvas draws — a title, a pin row, an id — plus the two reservations it always makes: the "node options"
+    //tree as though it were open, and a couple of validation-warning lines.
     CHECK(G.Nodes[1].Height > 90.0f);
-    CHECK(G.Nodes[1].Height < 240.0f);
+    CHECK(G.Nodes[1].Height < 320.0f);
 }
 
 //Document ORDER seeds the within-layer ordering, so this has to be tested on a WIDE layer — a chain has one

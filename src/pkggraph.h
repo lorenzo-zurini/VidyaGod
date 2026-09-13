@@ -170,6 +170,10 @@ struct RegRow
 
 //Flatten one EDITS entry's hive trees into rows (the tree is the on-disk shape; rows are what a human edits).
 std::vector<RegRow> RegRowsOf(const nlohmann::ordered_json &Entry);
+//How many rows RegRowsOf WOULD produce, without producing them. The height estimate needs the count on every
+//graph rebuild and building the rows for it was 40% of that rebuild; the two are pinned against each other by
+//the_registry_row_count_matches_the_flattening, because a drift between them silently under-reserves height.
+size_t CountRegRows(const nlohmann::ordered_json &Entry);
 //Rebuild an entry's hive trees from rows, preserving ARCHITECTURE/OVERRIDE.
 void RegRowsInto(nlohmann::ordered_json &Entry, const std::vector<RegRow> &Rows);
 

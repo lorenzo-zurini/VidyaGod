@@ -1711,9 +1711,12 @@ private slots:
     void theEstimatedNodeHeightMatchesTheDrawnOne()
     {
         Canvas->setMiniMap(false);
-        //Issues are drawn ON the node, one warning line each, and an earlier test in this suite leaves some
-        //set — which made every measurement here 50-60px taller and reported three types as under-estimated.
-        //A cross-test leak, not a finding, and the test has to own its own preconditions to tell them apart.
+        //Issues and hints both add rows to a node — a warning line each, an action button each — so this
+        //states outright that there are none rather than relying on it. They cannot in fact arrive from an
+        //earlier test (the fixture builds a fresh PkgCanvas per test, and both live on it), which is worth
+        //saying because an earlier version of this comment blamed them for a cross-test effect that was really
+        //ImGui's: tree open/closed state lives in the CONTEXT, which does outlive the canvas. Nothing to
+        //restore, therefore — a fresh canvas has neither.
         Canvas->setIssues({});
         QStringList outliers;
 
@@ -1745,9 +1748,18 @@ private slots:
             //before this one. A tight bound would make this test pass or fail on test ORDER, which is worse
             //than useless. What it still catches is the failure that matters: an estimate that is SHORT, and
             //one that is wrong by a whole payload (the ignored-cap mutation reports 8680 against 2967).
-            else if (Est > Drawn * 1.4f + 120.0f)
-                outliers << QString("%1 is drawn %2px but estimated %3px - far too generous, the layout will "
-                                    "leave a hole").arg(Who).arg(Drawn).arg(Est);
+            //An ABSOLUTE band, not a proportional one, and that distinction is the whole point. A proportional
+            //bound grows with the node, so a per-ROW error hides behind a per-entry surplus: shaving 6.5% off
+            //the constant every row is multiplied by left the whole suite green while costing 88px on the
+            //59-row RegEdit this feature exists for. What the slack legitimately covers is FIXED — the "node
+            //options" tree the estimate always reserves (three rows, because ImGui keeps its open/closed state
+            //in its own per-window storage, so the same node measures 57px either way depending only on which
+            //tests ran first) plus two warning lines — so any slack that grows with the node is a calibration
+            //error, and this catches it at the size where it starts to matter rather than at every size.
+            else if (Est - Drawn > 3 * 19.0f + 2 * 17.0f + 80.0f)
+                outliers << QString("%1 is drawn %2px but estimated %3px - %4px of slack, past the fixed "
+                                    "reservations, so the layout will leave a hole")
+                                .arg(Who).arg(Drawn).arg(Est).arg(Est - Drawn);
             Canvas->removeNode(N);
             Canvas->invalidateGraph();
             runFrame();
@@ -1760,6 +1772,15 @@ private slots:
         for (int r = 0; r < 24; ++r) Keys["Software"]["App"]["v" + std::to_string(r)] = "data";
         json E = json::object(); E["ARCHITECTURE"] = json::array({"64"}); E["HKLM"] = Keys;
         measure("RegEdit", json{{"EDITS", json::array({E})}});
+
+        // And a REALLY tall one. The slack the estimate reserves is fixed, so a per-ROW calibration error only
+        // becomes visible once enough rows have accumulated it: shaving 1.5px off the constant every row is
+        // multiplied by is invisible at 24 rows and 180px short at 120. The codec libraries ship 59-row nodes,
+        // so this is the direction the real library grows in.
+        json ManyKeys = json::object();
+        for (int r = 0; r < 120; ++r) ManyKeys["Software"]["App"]["v" + std::to_string(r)] = "data";
+        json E2 = json::object(); E2["ARCHITECTURE"] = json::array({"64"}); E2["HKLM"] = ManyKeys;
+        measure("RegEdit", json{{"EDITS", json::array({E2})}});
 
         json Patches = json::array();
         for (int r = 0; r < 5; ++r)
@@ -1894,6 +1915,172 @@ private slots:
             if (D > 40.0f)
                 outliers << QString("zoom %1 moved the centre of the view %2px away (node at %3,%4, centre "
                                     "%5,%6)").arg(z).arg(D).arg(Now.x).arg(Now.y).arg(Centre.x).arg(Centre.y);
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // Culling tested the node's ORIGIN against the viewport. A node is as tall as its payload makes it, so one
+    // whose top has scrolled past the edge while the rest of it still fills the screen was dropped: the canvas
+    // went blank with a node covering the whole viewport, unclickable and un-editable there. The height was
+    // already being computed for the layout; this is the other place that needs it.
+    void aTallNodeIsDrawnWhileAnyOfItIsOnScreen()
+    {
+        Canvas->setMiniMap(false);
+        const int N = Canvas->addNode("BinaryPatch", 0, 0);
+        json Patches = json::array();
+        for (int r = 0; r < 12; ++r)
+            Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
+        Doc["NODES"][N]["EDITS"] = Patches;
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        const float H = Canvas->graph().Nodes[(size_t)N].Height;
+        QVERIFY2(H > 1200.0f, qPrintable(QString("the test node is only %1px tall - not tall enough to mean "
+                                                 "anything").arg(H)));
+
+        QStringList outliers;
+        // Scroll the node's TOP well above the viewport while its body still covers the screen.
+        for (float pan : {-400.0f, -800.0f, -1200.0f}) {
+            ImNodes::EditorContextResetPanning(ImVec2(0.0f, pan));
+            runFrame(); runFrame();
+            if (Canvas->visibleNodes() != 1)
+                outliers << QString("pan %1: the node spans %2..%3 and the viewport is 0..900, but it was "
+                                    "culled").arg(pan).arg(pan).arg(pan + H);
+        }
+        ImNodes::EditorContextResetPanning(ImVec2(0, 0));
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // Two setZoom calls before a frame. The pending recentre has to keep the scale it STARTED from — taking
+    // the second call's "from" pairs it with a pan that still belongs to the first call's scale.
+    void twoZoomChangesInOneFrameStillHoldTheCentre()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 400, 300);
+        Canvas->setZoom(1.0f);
+        runFrame(); runFrame();
+        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
+        auto onScreen = [&]() {
+            const float Z = Canvas->zoom();
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            const ImVec2 D = ImNodes::GetNodeDimensions(0);
+            return ImVec2(vx0 + (P.x + D.x * 0.5f - vx0) * Z, vy0 + (P.y + D.y * 0.5f - vy0) * Z);
+        };
+        // Park the node's middle on the viewport centre.
+        {
+            const ImVec2 Pan = ImNodes::EditorContextGetPanning();
+            const ImVec2 At = onScreen();
+            ImNodes::EditorContextResetPanning(ImVec2(Pan.x + (Centre.x - At.x), Pan.y + (Centre.y - At.y)));
+            runFrame(); runFrame();
+        }
+        QVERIFY2(std::hypot(onScreen().x - Centre.x, onScreen().y - Centre.y) < 20.0f, "setup failed");
+
+        // BOTH calls land before the next frame — the toolbar spinner and a double-click on "reset" do this.
+        Canvas->setZoom(2.0f);
+        Canvas->setZoom(0.5f);
+        runFrame(); runFrame();
+        const ImVec2 Now = onScreen();
+        const float D = std::hypot(Now.x - Centre.x, Now.y - Centre.y);
+        QVERIFY2(D < 40.0f,
+                 qPrintable(QString("two zoom changes in one frame moved the centre %1px (node at %2,%3, "
+                                    "centre %4,%5)").arg(D).arg(Now.x).arg(Now.y).arg(Centre.x).arg(Centre.y)));
+        Canvas->setZoom(1.0f);
+    }
+
+    // A StringList's height comes from the LINES the field renders, and the join that builds that text does not
+    // escape a newline inside an entry — so one array element carrying embedded newlines is a multiline box
+    // that an entry count calls a single-line input. Any package this canvas did not author can contain one.
+    void aListEntryWithNewlinesIsMeasuredByItsLines()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->setIssues({});
+        auto measure = [&](const char *Type, const json &Payload) {
+            const int N = Canvas->addNode(Type, 100.0f, 100.0f);
+            for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
+            Canvas->setNodeHints(Doc["NODES"][N].value("NODE_ID", std::string()), {});
+            Canvas->invalidateGraph();
+            runFrame(); runFrame();
+            const float Drawn = ImNodes::GetNodeDimensions(N).y;
+            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
+            Canvas->removeNode(N);
+            Canvas->invalidateGraph();
+            runFrame();
+            return std::pair<float, float>(Drawn, Est);
+        };
+        const json Multi = json::array({std::string("a\nb\nc\nd\ne\nf\ng")});
+        QStringList outliers;
+        const std::vector<std::pair<const char *, json>> Cases = {
+            {"DeclareExec", json{{"GUEST", Multi}, {"ARGS", Multi}, {"ENV_REMOVE", Multi}}},
+            {"Persist",     json{{"KEEP", Multi}, {"DROP", Multi}}},
+            {"Content",     json{{"SUBMOUNTS", Multi}, {"BASE_TARGETS", Multi}}},
+        };
+        for (const auto &C : Cases) {
+            const auto R = measure(C.first, C.second);
+            if (R.second < R.first)
+                outliers << QString("%1 with newline-bearing list entries is drawn %2px but estimated %3px - "
+                                    "SHORT by %4").arg(C.first).arg(R.first).arg(R.second).arg(R.first - R.second);
+        }
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // A combo's popup is a window of its own, positioned by imgui from the widget's rect against the SCREEN
+    // viewport — and inside the editor that rect is in world space. The previous review could not drive one
+    // open headlessly and said so, which left the claim that in-node combos work at every zoom resting on
+    // nothing. This drives one: it walks down the node's field column until a popup actually appears, so it
+    // fails loudly if it never manages to open one rather than passing by measuring nothing.
+    void anInNodeComboOpensWhereItWasClicked()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 200, 200);          // FORM is an enum, so the node has a combo
+        Canvas->setZoom(1.0f);
+        runFrame(); runFrame();
+
+        // The popup window imgui makes for a combo.
+        auto comboWindow = [&]() -> const ImGuiWindow * {
+            const ImGuiContext &C = *ImGui::GetCurrentContext();
+            for (int w = 0; w < C.Windows.Size; ++w)
+                if (C.Windows[w]->Name && C.Windows[w]->Active && std::strstr(C.Windows[w]->Name, "##Combo"))
+                    return C.Windows[w];
+            return nullptr;
+        };
+
+        QStringList outliers;
+        for (float z : {1.0f, 0.5f, 2.0f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
+                     qPrintable(QString("zoom %1: the node was culled").arg(z)));
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            const ImVec2 D = ImNodes::GetNodeDimensions(0);
+
+            // Walk down the node's value column looking for the combo.
+            ImVec2 Hit(0, 0);
+            const ImGuiWindow *Pop = nullptr;
+            for (float f = 0.15f; f < 0.95f && !Pop; f += 0.02f) {
+                const ImVec2 Try(vx0 + (P.x + D.x * 0.75f - vx0) * z, vy0 + (P.y + D.y * f - vy0) * z);
+                if (Try.x < vx0 || Try.x > vx1 || Try.y < vy0 || Try.y > vy1) continue;
+                clickAt(Try);
+                runFrame();
+                if ((Pop = comboWindow()) != nullptr) Hit = Try;
+                else { ImGui::ClearActiveID(); }
+            }
+            if (!Pop) { outliers << QString("zoom %1: no combo could be opened anywhere down the node").arg(z); continue; }
+
+            // The popup must be AT the thing that was clicked — imgui puts it directly under the widget, so
+            // the click point has to be within a widget's height of its top edge and inside it horizontally.
+            const ImRect R = Pop->OuterRectClipped;
+            const float DX = std::max(0.0f, std::max(R.Min.x - Hit.x, Hit.x - R.Max.x));
+            const float DY = std::max(0.0f, std::max(R.Min.y - Hit.y, Hit.y - R.Max.y));
+            if (DX > 60.0f || DY > 60.0f)
+                outliers << QString("zoom %1: clicked at (%2,%3) and the popup opened at [%4,%5 .. %6,%7] - "
+                                    "%8,%9 px away").arg(z).arg(Hit.x).arg(Hit.y)
+                                .arg(R.Min.x).arg(R.Min.y).arg(R.Max.x).arg(R.Max.y).arg(DX).arg(DY);
+            ImGui::ClearActiveID();
+            runFrame(); runFrame();                    // let the popup close before the next zoom
         }
         Canvas->setZoom(1.0f);
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));

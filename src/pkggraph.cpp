@@ -3,6 +3,7 @@
 #include "pkglayout.h"   // PkgLayout::ComputeUnplaced — the shared auto-layout
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <set>
@@ -44,7 +45,17 @@ Graph Build(const json &NodesArray, const json *Layout)
         //author put it, and moving it never writes to the package.
         auto ReadPos = [&](const json &P) {
             if (!P.is_array() || P.size() != 2 || !P[0].is_number() || !P[1].is_number()) return false;
-            Nd.X = P[0].get<float>(); Nd.Y = P[1].get<float>(); Nd.HasPos = true;
+            const double Px = P[0].get<double>(), Py = P[1].get<double>();
+            //A coordinate no layout could have produced is not a position, it is corruption — and accepting it
+            //here is what made it permanent. The canvas cannot draw a node at 5e9 (it fails every viewport
+            //test), cannot select it, and cannot drag it back; the read-back downstream then refused to write
+            //the value it was handed, re-seeded from this same number, and refused it again every frame.
+            //Rejected at the door instead, which leaves HasPos false so PkgLayout places the node somewhere
+            //the author can actually see and fix it. The bound is absurd rather than tight: real graphs are
+            //tens of thousands of units across, and `get<float>()` on 1e300 quietly yields inf.
+            if (!std::isfinite(Px) || !std::isfinite(Py) || std::abs(Px) > 1.0e7 || std::abs(Py) > 1.0e7)
+                return false;
+            Nd.X = (float)Px; Nd.Y = (float)Py; Nd.HasPos = true;
             return true;
         };
         if (N.contains("POS")) ReadPos(N["POS"]);
@@ -278,18 +289,65 @@ namespace {
 //One label-and-widget line, and one plain text line. Two constants rather than one because a node is mostly
 //widget rows with a few text lines, and the difference compounds over the 59-row RegEdits this exists for.
 //Calibrated against ImNodes::GetNodeDimensions in the GUI suite, not guessed.
-constexpr float kRowPx     = 23.0f;   // label + widget + item spacing
+constexpr float kRowPx     = 19.0f;   // label + widget + item spacing
 constexpr float kTextPx    = 17.0f;   // a bare text line
 constexpr float kTitlePx   = 34.0f;   // the type title bar
 constexpr float kChromePx  = 26.0f;   // imnodes' own node padding, top and bottom together
 
 //Rows a StringList spends: one for the label line, plus the multiline box when the value has several lines.
-//Mirrors drawField exactly — the box is 16px per line, capped at 6 lines.
+//The box is 16px per line, capped at 6 lines.
+//
+//LINES, not entries. drawField renders the joined text and counts newlines in it, and the join does not escape
+//a newline INSIDE an entry — so one array element carrying embedded newlines is a multiline box that an
+//entry count calls a single-line input. Measured on a DeclareExec whose GUEST/ARGS/ENV_REMOVE each held one
+//such entry: drawn 682px against an estimated 542, a 140px shortfall — 50px past the layout's whole RowGap,
+//i.e. a real box-on-box overlap, stamped into POS at publish time. Any package this canvas did not author can
+//contain one, because ARGS and friends are unvalidated strings.
+} // namespace
+
+//Rows one registry TREE contributes, by exactly the rules FlattenTree walks: a row per non-object value, one
+//"create this key" row for a key with no children at all, then the subkeys. Pinned against the real flattening
+//by the_registry_row_count_matches_the_flattening, because two readings of the same tree that drift apart is
+//precisely how the estimate would start under-reserving again.
+size_t CountRegTree(const json &Tree)
+{
+    size_t Rows = 0;
+    bool AnyValue = false;
+    for (const auto &[K, V] : Tree.items())
+        if (!V.is_object()) { ++Rows; AnyValue = true; }
+    if (!AnyValue && Tree.empty()) ++Rows;
+    for (const auto &[K, V] : Tree.items())
+        if (V.is_object()) Rows += CountRegTree(V);
+    return Rows;
+}
+
+//One RegEdit ENTRY: its hives are the object-valued members, everything else on it is a scalar field.
+size_t CountRegRows(const json &Entry)
+{
+    if (!Entry.is_object()) return 0;
+    size_t Rows = 0;
+    for (const auto &[K, V] : Entry.items())
+        if (V.is_object()) Rows += CountRegTree(V);
+    return Rows;
+}
+
+namespace {
+
 float StringListPx(const json &V, bool ForceMultiline)
 {
     int Lines = 0;
-    if (V.is_array()) Lines = (int)V.size();
-    else if (V.is_string() && !V.get<std::string>().empty()) Lines = 1;
+    if (V.is_array())
+    {
+        for (const auto &E : *V.get_ptr<const json::array_t *>())
+            if (E.is_string())
+                Lines += 1 + (int)std::count(E.get_ref<const std::string &>().begin(),
+                                             E.get_ref<const std::string &>().end(), '\n');
+    }
+    else if (V.is_string() && !V.get<std::string>().empty())
+    {
+        Lines = 1 + (int)std::count(V.get_ref<const std::string &>().begin(),
+                                    V.get_ref<const std::string &>().end(), '\n');
+    }
     if (Lines <= 1 && !ForceMultiline) return kRowPx;
     return kRowPx + 16.0f * (float)std::min(Lines + 1, 6);
 }
@@ -340,9 +398,11 @@ float FieldPx(const json &Node, const Field &F)
         for (const json &E : *V)
         {
             Px += kRowPx * 2.0f;                                // "views" and the override checkbox
-            //The row count the canvas will draw, from the SAME flattening it draws from — not a second
-            //reading of the tree that could disagree with it.
-            Px += (float)RegRowsOf(E).size() * kRowPx;
+            //The row count the canvas will draw. Counted rather than built: RegRowsOf materialises three
+            //std::strings per row, and on a graph of 500 nodes carrying 59 rows each that was 29,500 RegRow
+            //structs per rebuild — 1.45 ms of a 3.58 ms Build, 40% of it, for a number. CountRegRows walks
+            //the same tree by the same rules and allocates nothing.
+            Px += (float)CountRegRows(E) * kRowPx;
             Px += kRowPx;                                       // "+ value" / "remove group"
         }
         return Px + kRowPx;                                     // the add-group row
@@ -374,9 +434,13 @@ float EstimateHeight(const json &Node)
     Px += kTextPx + 3.0f * kRowPx;
     for (const Field &F : FieldsFor(Type)) Px += FieldPx(Node, F);
     Px += kRowPx;                                    // the action buttons
-    //NOT counted: the validation warnings the canvas draws on a node while you are looking at it. They are
-    //host state rather than payload — the same node has none at publish time, which is when this number is
-    //stamped — and they are unbounded. The slack above absorbs a line or two of them.
+    //Room for a couple of the validation warnings the canvas draws ON a node. They are host state rather than
+    //payload — the same node has none at publish time, which is when this number is stamped — and there can be
+    //any number of them, so they cannot be counted properly here. But the slack left over on a bare Group was
+    //measured at 15px against a warning line of 17px: ONE warning already pushed the commonest node type in a
+    //composition graph past its reserved height. Two lines puts the cliff where a node has to be badly broken
+    //to reach it.
+    Px += 2.0f * kTextPx;
     return Px;
 }
 
