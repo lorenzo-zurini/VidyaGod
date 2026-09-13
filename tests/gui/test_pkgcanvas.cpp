@@ -5,6 +5,7 @@
 
 #include "pkgcanvas.h"
 #include "pkggraph.h"
+#include "pkglayout.h"
 #include "nodelower.h"
 #include "manifestmodel.h"
 
@@ -1669,6 +1670,91 @@ private slots:
                  qPrintable(QString("a 120px pan during the zoom ease moved the view %1 units - the ease "
                                     "overwrote it").arg(Pan1.x - Pan0.x)));
         Canvas->setZoom(1.0f);
+    }
+
+    // The layout steps vertically by each node's ESTIMATED height, and it has to be an estimate: the layout is
+    // pure and is stamped into POS at publish time, headless, where nothing has ever been rendered. An estimate
+    // that drifts from the renderer is a layout that overlaps again, silently, and no layout-level test can see
+    // it — so this is the one place the two are tied together.
+    //
+    // Short is the dangerous direction (two nodes drawn on top of each other); generous merely wastes space.
+    void theEstimatedNodeHeightMatchesTheDrawnOne()
+    {
+        Canvas->setMiniMap(false);
+        //Issues are drawn ON the node, one warning line each, and an earlier test in this suite leaves some
+        //set — which made every measurement here 50-60px taller and reported three types as under-estimated.
+        //A cross-test leak, not a finding, and the test has to own its own preconditions to tell them apart.
+        Canvas->setIssues({});
+        QStringList outliers;
+
+        // ONE node at a time, at the top-left of the viewport. A node placed off-screen is culled, and
+        // GetNodeDimensions then reports the title-bar-only size of the box imnodes re-created — 35.5px for
+        // everything, which compares as "wildly over-estimated" for every type at once. That is a measurement
+        // artifact, not a finding, and it is exactly the shape of one: a uniform, implausible number.
+        auto measure = [&](const char *Type, const json &Payload) {
+            const int N = Canvas->addNode(Type, 100.0f, 100.0f);
+            for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
+            //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
+            //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
+            //every measurement. Cleared for the node under test so what is measured is the payload.
+            Canvas->setNodeHints(Doc["NODES"][N].value("NODE_ID", std::string()), {});
+            Canvas->invalidateGraph();
+            runFrame(); runFrame();
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
+                     qPrintable(QString("%1 of %2 nodes submitted - a culled node cannot be measured")
+                                    .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount())));
+            const float Drawn = ImNodes::GetNodeDimensions(N).y;
+            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
+            const QString Who = QString("%1%2").arg(Type).arg(Payload.empty() ? "" : " (loaded)");
+            if (Est < Drawn)
+                outliers << QString("%1 is drawn %2px but estimated only %3px - SHORT, so the layout will "
+                                    "overlap it").arg(Who).arg(Drawn).arg(Est);
+            //The slack allowed is deliberately wide, because the estimate deliberately reserves three rows for
+            //a "node options" tree that may or may not be open — ImGui keeps that state in its own per-window
+            //storage, so the SAME node measures 57px taller or shorter here depending only on which tests ran
+            //before this one. A tight bound would make this test pass or fail on test ORDER, which is worse
+            //than useless. What it still catches is the failure that matters: an estimate that is SHORT, and
+            //one that is wrong by a whole payload (the ignored-cap mutation reports 8680 against 2967).
+            else if (Est > Drawn * 1.4f + 120.0f)
+                outliers << QString("%1 is drawn %2px but estimated %3px - far too generous, the layout will "
+                                    "leave a hole").arg(Who).arg(Drawn).arg(Est);
+            Canvas->removeNode(N);
+            Canvas->invalidateGraph();
+            runFrame();
+        };
+
+        for (const std::string &T : PkgGraph::AllTypes()) measure(T.c_str(), json::object());
+
+        // The payloads that actually make a node tall.
+        json Keys = json::object();
+        for (int r = 0; r < 24; ++r) Keys["Software"]["App"]["v" + std::to_string(r)] = "data";
+        json E = json::object(); E["ARCHITECTURE"] = json::array({"64"}); E["HKLM"] = Keys;
+        measure("RegEdit", json{{"EDITS", json::array({E})}});
+
+        json Patches = json::array();
+        for (int r = 0; r < 5; ++r)
+            Patches.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
+        measure("BinaryPatch", json{{"EDITS", Patches}});
+
+        // PAST the cap. drawField reads a batched payload capped at 12 entries and prints "... and N more"
+        // instead, so the estimate must stop growing at exactly the same point: count past the cap and the
+        // layout reserves a screenful nothing occupies; ignore the cap and it under-reserves, which overlaps.
+        json Many = json::array();
+        for (int r = 0; r < 30; ++r)
+            Many.push_back(json{{"MODE", "Replace"}, {"OFFSET", "0x1000"}, {"EXPECT", "90"}, {"REPLACE", "cc"}});
+        measure("BinaryPatch", json{{"EDITS", Many}});
+
+        // A list longer than the multiline box's own 6-line cap, for the same reason.
+        json Lines = json::array();
+        for (int r = 0; r < 20; ++r) Lines.push_back("a" + std::to_string(r) + ":b");
+        measure("Content", json{{"SUBMOUNTS", Lines}});
+
+        // TOGGLE/WHEN open the "node options" tree, which is three more rows.
+        measure("CustomVar", json{{"TOGGLE", "on"}, {"WHEN", "%x%==1"}});
+        // A multi-line StringList becomes a multiline box rather than a single-line input.
+        measure("Content", json{{"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}});
+
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
     }
 
     void zoomIsClampedAndDefaultsToUnity()

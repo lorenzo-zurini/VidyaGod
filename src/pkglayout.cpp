@@ -107,8 +107,38 @@ void OrderWithinLayers(const Graph &G, const Adjacency &A, const std::vector<int
     (void)Depth;
 }
 
-//How many sub-columns a layer needs, and its drawn width in columns.
-inline int SubColumns(int Count, int MaxRows) { return (Count <= MaxRows) ? 1 : (Count + MaxRows - 1) / MaxRows; }
+//Split a layer's ordered nodes into sub-columns, each at most Budget tall. Greedy and order-preserving, so a
+//wrapped layer still reads as a column that continued. A node taller than the whole budget gets a column of
+//its own rather than being dropped or overlapped — the budget is a target, the node's height is a fact.
+std::vector<std::vector<int>> SplitByHeight(const std::vector<int> &L,
+                                            const std::vector<float> &Pitch, float Budget)
+{
+    std::vector<std::vector<int>> Cols;
+    float Used = 0.0f;
+    for (int Idx : L)
+    {
+        const float P = Pitch[(size_t)Idx];
+        if (Cols.empty() || (!Cols.back().empty() && Used + P > Budget))
+        { Cols.emplace_back(); Used = 0.0f; }
+        Cols.back().push_back(Idx);
+        Used += P;
+    }
+    if (Cols.empty()) Cols.emplace_back();
+    return Cols;
+}
+
+//The tallest sub-column in a block, which is what the block costs vertically.
+float BlockHeight(const std::vector<std::vector<int>> &Cols, const std::vector<float> &Pitch)
+{
+    float Tallest = 0.0f;
+    for (const auto &C : Cols)
+    {
+        float H = 0.0f;
+        for (int Idx : C) H += Pitch[(size_t)Idx];
+        Tallest = std::max(Tallest, H);
+    }
+    return Tallest;
+}
 
 } // namespace
 
@@ -130,89 +160,126 @@ void Compute(Graph &G, const Options &O)
     //skips dotfiles, std::filesystem::directory_iterator does not). That is a layout the author never saw
     //being stamped into POS, and a CID that changes because of how a directory happened to be read.
     for (auto &L : Layers)
-        std::stable_sort(L.begin(), L.end(), [&](int A, int B) {
-            if (G.Nodes[(size_t)A].Id != G.Nodes[(size_t)B].Id)
-                return G.Nodes[(size_t)A].Id < G.Nodes[(size_t)B].Id;
-            return A < B;                       // an empty/duplicate id still orders deterministically
+        std::stable_sort(L.begin(), L.end(), [&](int Lhs, int Rhs) {
+            if (G.Nodes[(size_t)Lhs].Id != G.Nodes[(size_t)Rhs].Id)
+                return G.Nodes[(size_t)Lhs].Id < G.Nodes[(size_t)Rhs].Id;
+            return Lhs < Rhs;                   // an empty/duplicate id still orders deterministically
         });
 
     OrderWithinLayers(G, A, Depth, Layers, std::max(0, O.Sweeps));
 
     const int MaxRows = std::max(1, O.MaxRows);
 
+    //---- vertical pitch -----------------------------------------------------
+    //Each node's own drawn height plus the gap. A node whose height nothing estimated (an empty placeholder,
+    //a caller that built a Graph by hand) falls back to the nominal step, so the old behaviour is what you get
+    //when there is nothing better to go on.
+    std::vector<float> Pitch((size_t)N, O.RowStep);
+    for (int I = 0; I < N; ++I)
+        if (G.Nodes[(size_t)I].Height > 1.0f) Pitch[(size_t)I] = G.Nodes[(size_t)I].Height + O.RowGap;
+
     //---- band packing -------------------------------------------------------
-    //Each layer is a block `SubColumns` columns wide and at most MaxRows tall. Bands are filled left to right
-    //until adding the next block would pass the band's column budget, which is chosen so the finished drawing
-    //approaches TargetAspect. Solving it exactly is circular (the budget depends on the height, which depends
-    //on the budget), so it is derived from the totals once — the drawing only has to be readable, not optimal.
-    //Each layer becomes a block: Rows tall, Cols wide. A layer at or under the cap is one column.
-    std::vector<int> Rows((size_t)MaxDepth + 1, 1), Cols((size_t)MaxDepth + 1, 1);
+    //Each layer is a block: as many sub-columns as its nodes need at ColumnBudget tall, and as tall as its
+    //tallest sub-column. Bands are filled left to right until adding the next block would pass the band's
+    //column budget, which is chosen so the finished drawing approaches TargetAspect. Solving it exactly is
+    //circular (the budget depends on the height, which depends on the budget), so it is derived from the
+    //totals once — the drawing only has to be readable, not optimal.
+    const float ColumnBudget = (float)MaxRows * O.RowStep;
+    std::vector<std::vector<std::vector<int>>> Blocks(Layers.size());
+    std::vector<float> BlockH(Layers.size(), 0.0f);
     for (size_t D = 0; D < Layers.size(); ++D)
     {
-        const int Count = std::max(1, (int)Layers[D].size());
-        Rows[D] = std::min(Count, MaxRows);
-        Cols[D] = (Count + Rows[D] - 1) / Rows[D];
+        Blocks[D] = SplitByHeight(Layers[D], Pitch, ColumnBudget);
+        BlockH[D] = BlockHeight(Blocks[D], Pitch);
     }
 
     //The band's height is the TALLEST block in it, so the budget has to be derived from the real distribution
-    //of block heights — not from MaxRows. Estimating with MaxRows is what made a 904-layer chain (every block
-    //one row tall) compute a band budget three times too wide and draw the ribbon this wrap exists to avoid.
+    //of block heights — not from the cap. Estimating with the cap is what made a 904-layer chain (every block
+    //one node tall) compute a band budget three times too wide and draw the ribbon this wrap exists to avoid.
     //The 90th percentile rather than the max: one outlier layer must not set the budget for all the others.
-    std::vector<int> SortedRows = Rows;
-    std::sort(SortedRows.begin(), SortedRows.end());
-    const int TypicalRows = SortedRows.empty() ? 1
-                          : SortedRows[std::min(SortedRows.size() - 1, (size_t)((double)SortedRows.size() * 0.9))];
+    std::vector<float> SortedH = BlockH;
+    std::sort(SortedH.begin(), SortedH.end());
+    const double TypicalH = SortedH.empty() ? (double)O.RowStep
+                          : (double)SortedH[std::min(SortedH.size() - 1, (size_t)((double)SortedH.size() * 0.9))];
 
     long long TotalColumns = 0;
-    for (size_t D = 0; D < Layers.size(); ++D) TotalColumns += Cols[D];
+    for (size_t D = 0; D < Layers.size(); ++D) TotalColumns += (long long)Blocks[D].size();
 
     const double ColumnW = (double)O.ColumnStep;
-    const double BandH   = (double)TypicalRows * (double)O.RowStep + (double)O.BandGap;
+    const double BandH   = std::max(1.0, TypicalH) + (double)O.BandGap;
     //width == aspect * height  ⇒  budget*ColumnW == aspect * (TotalColumns/budget) * BandH
-    const double Ideal   = std::sqrt(((double)TotalColumns * BandH * (double)O.TargetAspect) / std::max(1.0, ColumnW));
-    const int BandBudget = std::max(1, (int)std::llround(Ideal));
+    const double Ideal = std::sqrt(((double)TotalColumns * BandH * (double)O.TargetAspect) / std::max(1.0, ColumnW));
+    //Ideal is continuous; a band budget is a whole number of columns, and on a SMALL graph the two candidates
+    //either side of it are not close to equivalent — rounding 3.35 down to 3 split a five-node graph across two
+    //bands when all four of its columns fit comfortably on one. So evaluate both and keep the better, judging
+    //by the RATIO to the target rather than the difference, so "twice too wide" and "twice too tall" weigh the
+    //same. Costs two divisions and removes a whole class of silly pictures.
+    auto AspectOf = [&](int Budget) {
+        const double Bands = std::ceil((double)TotalColumns / (double)std::max(1, Budget));
+        const double W = (double)Budget * ColumnW, H = Bands * BandH;
+        return (H > 0.0) ? W / H : 0.0;
+    };
+    auto Badness = [&](int Budget) {
+        const double Asp = AspectOf(Budget);
+        return (Asp > 0.0) ? std::abs(std::log(Asp / std::max(1e-6, (double)O.TargetAspect))) : 1e9;
+    };
+    const int Low  = std::max(1, (int)std::floor(Ideal));
+    const int High = std::max(1, (int)std::ceil(Ideal));
+    const int BandBudget = (Badness(High) < Badness(Low)) ? High : Low;
 
-    //A single layer wider than the whole band would stick out past every other band. Re-shape it to exactly the
-    //budget and let it grow downward instead — that is what turns a 1000-wide fan-out into a rectangle.
+    //A single layer wider than the whole band would stick out past every other band. Re-split it with a taller
+    //column budget until it fits, and let it grow downward instead — that is what turns a 1000-wide fan-out
+    //into a rectangle. Raising the budget can only ever reduce the column count, so this terminates; the loop
+    //bound is belt and braces against a pathological pitch (an infinity, a node taller than any budget).
     for (size_t D = 0; D < Layers.size(); ++D)
-        if (Cols[D] > BandBudget)
+    {
+        if ((int)Blocks[D].size() <= BandBudget) continue;
+        double Budget = 0.0;
+        for (int Idx : Layers[D]) Budget += (double)Pitch[(size_t)Idx];
+        Budget /= (double)BandBudget;
+        for (int Tries = 0; Tries < 64 && (int)Blocks[D].size() > BandBudget; ++Tries)
         {
-            const int Count = (int)Layers[D].size();
-            Cols[D] = BandBudget;
-            Rows[D] = (Count + Cols[D] - 1) / Cols[D];
+            Blocks[D] = SplitByHeight(Layers[D], Pitch, (float)Budget);
+            Budget *= 1.1;
         }
+        BlockH[D] = BlockHeight(Blocks[D], Pitch);
+    }
 
     float BandTop = O.OriginY;
     int   ColumnInBand = 0;
-    int   TallestInBand = 0;
+    float TallestInBand = 0.0f;
 
     for (size_t D = 0; D < Layers.size(); ++D)
     {
-        const std::vector<int> &L = Layers[D];
-        const int BlockCols = Cols[D], BlockRows = std::max(1, Rows[D]);
+        const int BlockCols = (int)Blocks[D].size();
         //A block that would overflow the band starts a new one — unless the band is empty, in which case it
         //simply is the band (a single layer wider than the whole budget still has to go somewhere).
         if (ColumnInBand > 0 && ColumnInBand + BlockCols > BandBudget)
         {
-            BandTop += (float)((double)TallestInBand * (double)O.RowStep + (double)O.BandGap);
+            BandTop += (float)(TallestInBand + O.BandGap);
             ColumnInBand = 0;
-            TallestInBand = 0;
+            TallestInBand = 0.0f;
         }
 
-        TallestInBand = std::max(TallestInBand, BlockRows);
+        TallestInBand = std::max(TallestInBand, BlockH[D]);
 
-        for (int I = 0; I < (int)L.size(); ++I)
+        for (int C = 0; C < BlockCols; ++C)
         {
-            //Column-major within the block: consecutive nodes of a layer stay vertically adjacent, so a wrapped
-            //layer reads as a column that continued, not as a row.
-            const int SubCol = I / BlockRows;
-            const int Row    = I % BlockRows;
-            PkgGraph::Node &Nd = G.Nodes[L[I]];
-            Nd.X = O.OriginX + (float)((double)(ColumnInBand + SubCol) * ColumnW);
-            Nd.Y = BandTop   + (float)((double)Row * (double)O.RowStep);
-            //HasPos stays as it was on purpose: it means "somebody DECLARED this position" (a node's POS or
-            //this machine's override), which is what tells the canvas there is nothing to persist. A computed
-            //position is a default the reader made up, so it must not masquerade as a declared one.
+            //Column-major within the block: consecutive nodes of a layer stay vertically adjacent, so a
+            //wrapped layer reads as a column that continued, not as a row. Y advances by each node's OWN
+            //pitch, which is the whole point — a tall node pushes the next one down by its own height rather
+            //than by a constant that it long ago outgrew.
+            float Y = BandTop;
+            for (int Idx : Blocks[D][(size_t)C])
+            {
+                PkgGraph::Node &Nd = G.Nodes[(size_t)Idx];
+                Nd.X = O.OriginX + (float)((double)(ColumnInBand + C) * ColumnW);
+                Nd.Y = Y;
+                Y += Pitch[(size_t)Idx];
+                //HasPos stays as it was on purpose: it means "somebody DECLARED this position" (a node's POS
+                //or this machine's override), which is what tells the canvas there is nothing to persist. A
+                //computed position is a default the reader made up, so it must not masquerade as a declared one.
+            }
         }
         ColumnInBand += BlockCols;
     }

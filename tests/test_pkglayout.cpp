@@ -12,6 +12,7 @@
 #include "pkggraph.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <map>
 #include <set>
 #include <string>
@@ -270,6 +271,112 @@ TEST(an_empty_graph_is_not_a_crash)
 //it, or between today's build and next month's. Concrete coordinates for a fixed graph are the only assertion
 //that catches that — if this test fails, every published POS in the library is now inconsistent with the code,
 //and the golden must be updated deliberately rather than by reflex.
+//THE thing a constant row step got wrong. A node's box is as tall as its payload makes it — a RegEdit with
+//dozens of registry rows, a BinaryPatch with a dozen patch entries — and the layout stepped by 300 regardless,
+//so tall nodes were drawn straight through the ones beneath them. Every other property here held while the
+//picture was unreadable, which is why this one has to be asserted directly.
+//
+//Overlap is checked as RECTANGLES, per column: two nodes at the same X overlap when their [Y, Y+Height) spans
+//intersect. Columns are 430 apart and a node is 330 wide, so different columns cannot collide horizontally.
+TEST(tall_nodes_do_not_overlap_the_ones_below_them)
+{
+    ordered_json A = ordered_json::array();
+    //One parent, and a fan of children of WILDLY different heights hanging off it: a bare Group, a Content,
+    //and RegEdits carrying 5, 40 and 120 registry rows. The 120-row node is roughly ten nominal steps tall.
+    ordered_json Root; Root["NODE_ID"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
+    auto Child = [&](const char *Id, const ordered_json &Extra) {
+        ordered_json J = Extra;
+        J["NODE_ID"] = Id;
+        J["PARENTS"] = ordered_json::array({"root"});
+        A.push_back(J);
+    };
+    auto RegNode = [&](int Rows) {
+        ordered_json Keys = ordered_json::object();
+        for (int R = 0; R < Rows; ++R) Keys["Software"]["App"]["v" + std::to_string(R)] = "data";
+        ordered_json Entry = ordered_json::object();
+        Entry["ARCHITECTURE"] = ordered_json::array({"64"});
+        Entry["HKLM"] = Keys;
+        ordered_json J; J["TYPE"] = "RegEdit"; J["EDITS"] = ordered_json::array({Entry});
+        return J;
+    };
+    ordered_json Grp; Grp["TYPE"] = "Group";
+    ordered_json Cnt; Cnt["TYPE"] = "Content"; Cnt["FORM"] = "zip"; Cnt["PATH"] = "game.zip";
+    Child("c1_group", Grp);
+    Child("c2_content", Cnt);
+    Child("c3_reg5",   RegNode(5));
+    Child("c4_reg40",  RegNode(40));
+    Child("c5_reg120", RegNode(120));
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    CHECK_EQ(G.Nodes.size(), (size_t)6);
+    //The estimate has to actually vary with the payload, or the overlap check below passes on a flat graph.
+    CHECK(G.Nodes[5].Height > G.Nodes[1].Height * 5.0f);
+
+    int Overlaps = 0;
+    for (size_t I = 0; I < G.Nodes.size(); ++I)
+        for (size_t J = I + 1; J < G.Nodes.size(); ++J)
+        {
+            if (G.Nodes[I].X != G.Nodes[J].X) continue;            // different column: cannot collide
+            const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
+            const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
+            if (Top1 < Bot2 && Top2 < Bot1) ++Overlaps;
+        }
+    CHECK_EQ(Overlaps, 0);
+}
+
+//And the same property on the shapes the library actually contains, where the packing wraps on both axes and
+//a mistake in the band arithmetic is what would put two nodes on top of each other rather than a mistake in
+//one layer's stacking.
+TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
+{
+    ordered_json A = ordered_json::array();
+    //A 60-layer chain with a fan of varied-height children hanging off every fourth link: deep enough to wrap
+    //into bands, wide enough in places to wrap into sub-columns.
+    for (int I = 0; I < 60; ++I)
+    {
+        ordered_json Nd;
+        Nd["NODE_ID"] = "n" + std::to_string(I);
+        Nd["TYPE"]    = "Content";
+        Nd["FORM"]    = "zip";
+        Nd["PATH"]    = "layer.zip";
+        if (I) Nd["PARENTS"] = ordered_json::array({"n" + std::to_string(I - 1)});
+        A.push_back(Nd);
+        if (I % 4) continue;
+        for (int K = 0; K < 7; ++K)
+        {
+            ordered_json Keys = ordered_json::object();
+            for (int R = 0; R < (I + K) % 30; ++R) Keys["Software"]["v" + std::to_string(R)] = "d";
+            ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
+            ordered_json C;
+            C["NODE_ID"] = "f" + std::to_string(I) + "_" + std::to_string(K);
+            C["TYPE"]    = "RegEdit";
+            C["EDITS"]   = ordered_json::array({E});
+            C["PARENTS"] = ordered_json::array({"n" + std::to_string(I)});
+            A.push_back(C);
+        }
+    }
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    int Overlaps = 0;
+    std::string First;
+    for (size_t I = 0; I < G.Nodes.size(); ++I)
+        for (size_t J = I + 1; J < G.Nodes.size(); ++J)
+        {
+            if (G.Nodes[I].X != G.Nodes[J].X) continue;
+            const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
+            const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
+            if (Top1 < Bot2 && Top2 < Bot1)
+            {
+                if (First.empty())
+                    First = G.Nodes[I].Id + " [" + std::to_string(Top1) + "," + std::to_string(Bot1) + "] and "
+                          + G.Nodes[J].Id + " [" + std::to_string(Top2) + "," + std::to_string(Bot2) + "]";
+                ++Overlaps;
+            }
+        }
+    if (Overlaps) std::printf("    first overlap: %s\n", First.c_str());
+    CHECK_EQ(Overlaps, 0);
+}
+
 TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
 {
     ordered_json A = ordered_json::array();
@@ -293,12 +400,22 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
 
     const PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes.size(), (size_t)5);
-    const float X0 = 60.0f, Y0 = 60.0f, CW = 430.0f, RH = 300.0f;
+    const float X0 = 60.0f, Y0 = 60.0f, CW = 430.0f, Gap = 90.0f;
+    //The vertical step is the node's OWN height plus the gap, which is the whole point of the change: a
+    //constant step is what drew tall nodes through the ones beneath them. Asserted as the rule rather than as
+    //a literal, so re-calibrating the height estimate against the renderer does not churn this golden — the
+    //magnitude of the estimate is pinned separately, just below.
     CHECK_EQ(G.Nodes[0].X, X0);              CHECK_EQ(G.Nodes[0].Y, Y0);            // root   layer 0
     CHECK_EQ(G.Nodes[1].X, X0 + CW);         CHECK_EQ(G.Nodes[1].Y, Y0);            // a      layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, X0 + CW);         CHECK_EQ(G.Nodes[2].Y, Y0 + RH);       // b      layer 1 row 1
+    CHECK_EQ(G.Nodes[2].X, X0 + CW);
+    CHECK_EQ(G.Nodes[2].Y, Y0 + G.Nodes[1].Height + Gap);                           // b      layer 1 row 1
     CHECK_EQ(G.Nodes[3].X, X0 + 2 * CW);     CHECK_EQ(G.Nodes[3].Y, Y0);            // c      layer 2
     CHECK_EQ(G.Nodes[4].X, X0 + 3 * CW);     CHECK_EQ(G.Nodes[4].Y, Y0);            // d      layer 3
+    //And the estimate itself is a real number of pixels, not zero (which would silently restore the constant
+    //step through the Height == 0 fallback) and not something absurd. A bare Group is the smallest node the
+    //canvas draws: a title, a pin row, an id and the collapsed options.
+    CHECK(G.Nodes[1].Height > 90.0f);
+    CHECK(G.Nodes[1].Height < 240.0f);
 }
 
 //Document ORDER seeds the within-layer ordering, so this has to be tested on a WIDE layer — a chain has one

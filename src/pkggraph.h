@@ -38,6 +38,11 @@ struct Node
     std::string Form;           // Content's FORM ("" for other types) — what a delta can be based on
     float       X = 0, Y = 0;   // canvas position: node POS, then this machine's override, then computed
     bool        HasPos = false; // false → nothing declared one, so PkgLayout placed it
+    //Estimated DRAWN height, in the same units as X/Y. A node's box is as tall as its payload makes it — a
+    //RegEdit with 59 registry rows draws 59 rows — so a layout that steps by a constant runs tall nodes
+    //straight through the ones beneath them. Estimated rather than measured because the layout has to be
+    //PURE: it is stamped into POS at publish time, headless, where no node has ever been rendered.
+    float       Height = 0.0f;
 };
 
 // A PARENTS edge. `ParentIndex` >= 0 is an in-bundle node; -1 means the parent lives in another bundle and is
@@ -120,6 +125,15 @@ struct Field
 
 //The rows to render for a node of this TYPE, in order. Empty for "Group" (pure composition).
 const std::vector<Field> &FieldsFor(const std::string &Type);
+
+//How tall this node will be drawn, in canvas units. Derived from the SAME declared field table the canvas
+//renders from, so it tracks a schema change instead of drifting away from one, and from the payload's own
+//sizes (registry rows, patch entries, list lines) because that is what actually makes a node tall.
+//
+//It is an estimate and is allowed to be generous: the cost of over-estimating is a little white space, the
+//cost of under-estimating is two nodes drawn on top of each other. It is pinned to the real renderer by
+//theEstimatedNodeHeightMatchesTheDrawnOne, which measures every TYPE and fails if the estimate falls short.
+float EstimateHeight(const nlohmann::ordered_json &Node);
 
 // ---- node actions ---------------------------------------------------------
 

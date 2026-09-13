@@ -50,6 +50,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         if (N.contains("POS")) ReadPos(N["POS"]);
         if (Layout && Layout->is_object() && !Nd.Id.empty() && Layout->contains(Nd.Id))
             ReadPos((*Layout)[Nd.Id]);
+        Nd.Height = EstimateHeight(N);
         if (!Nd.Id.empty()) ById[Nd.Id] = Nd.Index;
         G.Nodes.push_back(std::move(Nd));
     }
@@ -268,6 +269,115 @@ const std::vector<Field> &FieldsFor(const std::string &Type)
     auto It = Cache.find(Type);
     if (It == Cache.end()) It = Cache.emplace(Type, MakeFields(Type)).first;
     return It->second;
+}
+
+// ---- drawn height ---------------------------------------------------------
+
+namespace {
+
+//One label-and-widget line, and one plain text line. Two constants rather than one because a node is mostly
+//widget rows with a few text lines, and the difference compounds over the 59-row RegEdits this exists for.
+//Calibrated against ImNodes::GetNodeDimensions in the GUI suite, not guessed.
+constexpr float kRowPx     = 23.0f;   // label + widget + item spacing
+constexpr float kTextPx    = 17.0f;   // a bare text line
+constexpr float kTitlePx   = 34.0f;   // the type title bar
+constexpr float kChromePx  = 26.0f;   // imnodes' own node padding, top and bottom together
+
+//Rows a StringList spends: one for the label line, plus the multiline box when the value has several lines.
+//Mirrors drawField exactly — the box is 16px per line, capped at 6 lines.
+float StringListPx(const json &V, bool ForceMultiline)
+{
+    int Lines = 0;
+    if (V.is_array()) Lines = (int)V.size();
+    else if (V.is_string() && !V.get<std::string>().empty()) Lines = 1;
+    if (Lines <= 1 && !ForceMultiline) return kRowPx;
+    return kRowPx + 16.0f * (float)std::min(Lines + 1, 6);
+}
+
+float FieldPx(const json &Node, const Field &F)
+{
+    const json *V = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
+    switch (F.Kind)
+    {
+    case FieldKind::Text:
+    case FieldKind::Enum:
+    case FieldKind::Check:
+    case FieldKind::Cover:
+        return kRowPx;
+    case FieldKind::StringList:
+        return StringListPx(V ? *V : json(), false);
+    case FieldKind::StringListKeepEmpty:
+        //Always a box: a blank line is data here, so drawField never collapses it to a single-line input.
+        return StringListPx(V ? *V : json(), true);
+    case FieldKind::KeyValue:
+    {
+        const size_t N = (V && V->is_object()) ? V->size() : 0;
+        return kTextPx + (float)N * kRowPx + kRowPx;            // label, one row per pair, the add row
+    }
+    case FieldKind::ObjArray:
+    {
+        const size_t N = (V && V->is_array()) ? V->size() : 0;
+        //drawField reads a batched payload CAPPED at 12 entries and prints a "... and N more" line instead —
+        //77 BinaryPatches must not turn the node into a wall, and the height must agree with that or the
+        //layout reserves a screenful of space nothing occupies.
+        const size_t Shown = std::min<size_t>(N, 12);
+        float Px = kTextPx;                                     // "Label (N)"
+        for (size_t I = 0; I < Shown; ++I)
+        {
+            Px += 6.0f;                                         // the separator between entries
+            for (const Field &S : F.Sub) Px += FieldPx(V->at(I), S);
+            Px += kRowPx;                                       // the entry's remove button
+        }
+        if (N > Shown) Px += kTextPx;                           // "... and N more"
+        return Px + kRowPx;                                     // the add button
+    }
+    case FieldKind::RegEdits:
+    {
+        //The one payload with no cap at all: a registry group draws every row it holds, and the codec
+        //libraries ship nodes with 59 of them.
+        if (!V || !V->is_array()) return kRowPx;
+        float Px = 0.0f;
+        for (const json &E : *V)
+        {
+            Px += kRowPx * 2.0f;                                // "views" and the override checkbox
+            //The row count the canvas will draw, from the SAME flattening it draws from — not a second
+            //reading of the tree that could disagree with it.
+            Px += (float)RegRowsOf(E).size() * kRowPx;
+            Px += kRowPx;                                       // "+ value" / "remove group"
+        }
+        return Px + kRowPx;                                     // the add-group row
+    }
+    }
+    return kRowPx;
+}
+
+} // namespace
+
+float EstimateHeight(const json &Node)
+{
+    const std::string Type = (Node.is_object() && Node.contains("TYPE") && Node["TYPE"].is_string())
+                                 ? Node["TYPE"].get<std::string>() : std::string("Group");
+    float Px = kChromePx + kTitlePx;
+    Px += kTextPx;                                   // the "depends on / used by" pin row
+    //The "not wired yet" note, which drawNode shows on any non-launchable nothing depends on. Counted ALWAYS,
+    //even though a wired node does not draw it: whether a node has dependents is a property of the GRAPH, not
+    //of the node, and EstimateHeight is payload-only on purpose. One text line of slack on a wired node is the
+    //cheap direction to be wrong in — the expensive one is a node drawn taller than the space reserved for it.
+    Px += kTextPx;
+    Px += kRowPx;                                    // the id row
+    //"node options" counted as though it were OPEN, always — its three rows plus the tree line. Whether it is
+    //open is not a property of the payload at all: it opens itself when TOGGLE/WHEN/EXCLUDE is set, and after
+    //that the author can open or close it on any node, with the state living in ImGui's own per-window storage.
+    //Predicting it is therefore impossible and guessing it is unsafe in the one direction that matters —
+    //opening a collapsed node would make it 57px taller than the space the layout reserved, and it would
+    //overlap its neighbour. Three rows of slack on every node is the price of that never happening.
+    Px += kTextPx + 3.0f * kRowPx;
+    for (const Field &F : FieldsFor(Type)) Px += FieldPx(Node, F);
+    Px += kRowPx;                                    // the action buttons
+    //NOT counted: the validation warnings the canvas draws on a node while you are looking at it. They are
+    //host state rather than payload — the same node has none at publish time, which is when this number is
+    //stamped — and they are unbounded. The slack above absorbs a line or two of them.
+    return Px;
 }
 
 // ---- node actions ---------------------------------------------------------

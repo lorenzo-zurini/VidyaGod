@@ -30,11 +30,16 @@ namespace PkgLayout
 struct Options
 {
     float ColumnStep = 430.0f;   //x distance between adjacent layers — wider than one node body, so columns never overlap
-    float RowStep    = 300.0f;   //y distance between adjacent rows within a layer
+    //Vertical placement is by HEIGHT, not by a row index: a node's pitch is its own drawn height plus RowGap.
+    //A constant step was the bug this replaced — a RegEdit with 59 registry rows, or a BinaryPatch with a
+    //dozen entries, is several times taller than the step and simply drew through the node beneath it.
+    float RowGap     =  90.0f;   //clear space between the bottom of one node and the top of the next
+    float RowStep    = 300.0f;   //pitch for a node whose height is unknown (Height == 0)
     float BandGap    = 220.0f;   //extra y between one band and the next
     float OriginX    =  60.0f;
     float OriginY    =  60.0f;
-    //Rows a single layer may occupy before it wraps into another sub-column. Also the band height budget.
+    //Height budget for one sub-column, expressed as a number of NOMINAL rows so the knob still reads the way
+    //it did. A layer taller than this wraps into another sub-column.
     int   MaxRows    = 18;
     //Ordering passes over the layers (down, then up, is one sweep). 4 is where crossing counts stop improving
     //measurably on the real bundles; the cost is O(sweeps * (V + E log E)).
