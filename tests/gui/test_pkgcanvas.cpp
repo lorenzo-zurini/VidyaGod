@@ -9,9 +9,16 @@
 #include "manifestmodel.h"
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imnodes.h"
 
 #include <QtTest>
+
+#include <array>
+#include <cstring>
+#include <cmath>
+#include <algorithm>
+#include <vector>
 #include <QDirIterator>
 
 #include <fstream>
@@ -870,9 +877,8 @@ private slots:
     // to the layout and, at publish, stamped into POS. Panning away and back must not move a single node.
     void aNodeThatScrollsOutAndBackKeepsItsPosition()
     {
-        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
-        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
-        //relying on a threshold this test does not control.
+        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
+        //measurement picks up.
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 300, 200);
         Canvas->addNode("Content", 90000, 90000);   // far away: something to scroll to
@@ -934,24 +940,6 @@ private slots:
     }
 
 
-    // Zoom must scale the node BODY, not just positions and the font: at 0.2x the columns come five times
-    // closer, so a box that stayed 330 px wide would overlap its neighbours into one unreadable mass —
-    // and zoom-out is the direction the big-bundle case needs.
-    void zoomingOutShrinksTheNodeBodyNotJustTheSpacing()
-    {
-        Canvas->setMiniMap(false);
-        Canvas->addNode("Content", 100, 100);
-        runFrame();
-        const ImVec2 Full = ImNodes::GetNodeDimensions(0);
-
-        Canvas->setZoom(0.25f);
-        runFrame();
-        runFrame();
-        const ImVec2 Small = ImNodes::GetNodeDimensions(0);
-
-        QVERIFY2(Small.x < Full.x * 0.6f,
-                 qPrintable(QString("node stayed %1 px wide at 0.25x (was %2)").arg(Small.x).arg(Full.x)));
-    }
 
 
     // The save SPLIT. A pure drag must reach the layout-only hook (positions live in no node file, so the full
@@ -1014,6 +1002,675 @@ private slots:
         QCOMPARE(LayoutSaves, 0);     // ...and was not swallowed by the positions-only path
     }
 
+
+
+
+    // Zooming must not move a single stored coordinate — and the values that threaten that are the ones a
+    // WHEEL produces (1.1^n), not the clean 0.5/2.0 an earlier test used, which are exactly representable in
+    // binary and so round-trip for free. Positions are pushed to imnodes multiplied by zoom and read back
+    // divided by it; if that round trip drifts, the drift is written to the layout and, at publish, stamped
+    // into the package's POS — a CID change caused by looking at the graph.
+    void wheelSizedZoomStepsDoNotDriftAnyPosition()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 137, 449);          // deliberately not round numbers
+        Canvas->addNode("DeclareExec", 911, 1303);
+        runFrame();
+        const std::string Before = Layout.dump();
+        const int SavesBefore = Saves;
+
+        // Ten notches up, then ten back down — the exact sequence the wheel handler produces.
+        float z = Canvas->zoom();
+        for (int i = 0; i < 10; ++i) { z *= 1.1f; Canvas->setZoom(z); runFrame(); runFrame(); }
+        for (int i = 0; i < 10; ++i) { z /= 1.1f; Canvas->setZoom(z); runFrame(); runFrame(); }
+        Canvas->setZoom(1.0f);
+        runFrame(); runFrame();
+
+        QCOMPARE(Layout.dump(), Before);               // not one coordinate written
+        QCOMPARE(Saves, SavesBefore);                  // and nothing marked dirty, so nothing to persist
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[0].X, 137.0f);
+        QCOMPARE(G.Nodes[0].Y, 449.0f);
+        QCOMPARE(G.Nodes[1].X, 911.0f);
+        QCOMPARE(G.Nodes[1].Y, 1303.0f);
+    }
+
+
+    // THE ACTUAL GESTURE. setZoom() clears the seed map itself, so a test driving it cannot exercise the
+    // protection the WHEEL path depends on: the wheel handler assigns the zoom field directly and relies on
+    // the per-frame "zoom changed -> re-seed everything" check. Without that check imnodes keeps positions
+    // scaled by the OLD zoom while the read-back divides by the NEW one, and the difference is written to the
+    // layout — a position corrupted by scrolling.
+    void wheelingOverTheCanvasDoesNotMoveAnyPosition()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 137, 449);
+        Canvas->addNode("DeclareExec", 911, 1303);
+        runFrame();
+        const std::string Before = Layout.dump();
+        const int SavesBefore = Saves;
+
+        auto wheel = [&](float notches) {
+            ImGuiIO &io = ImGui::GetIO();
+            io.AddMouseWheelEvent(0.0f, notches);
+            runFrame();      // the handler runs after EndNodeEditor
+            runFrame();      // the next frame re-seeds and reads back
+        };
+        for (int i = 0; i < 6; ++i) wheel(+1.0f);
+        for (int i = 0; i < 6; ++i) wheel(-1.0f);
+
+        QCOMPARE(Layout.dump(), Before);
+        QCOMPARE(Saves, SavesBefore);
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes[0].X, 137.0f);
+        QCOMPARE(G.Nodes[0].Y, 449.0f);
+        QCOMPARE(G.Nodes[1].X, 911.0f);
+        QCOMPARE(G.Nodes[1].Y, 1303.0f);
+    }
+
+
+    // Zoom is a VIEW TRANSFORM over the emitted geometry: imnodes is handed world coordinates and an unscaled
+    // style, and the vertices it produces are scaled about the canvas origin afterwards. So the thing to
+    // assert is the GEOMETRY, not imnodes' own reported sizes — those stay unscaled on purpose, which is
+    // exactly why the document can no longer be touched by looking at it.
+    void zoomScalesTheEmittedGeometry()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        Canvas->addNode("DeclareExec", 700, 400);
+
+        // The SURFACE's own bounds, not the whole draw data: the canvas window's background spans the display
+        // at every zoom, so a bbox over everything is pinned to the window width and cannot shrink.
+        auto surfaceWidth = [&]() {
+            runFrame();
+            float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+            Canvas->surfaceBounds(x0, y0, x1, y1);
+            return x1 - x0;
+        };
+
+        const float At1 = surfaceWidth();
+        Canvas->setZoom(2.0f);
+        const float At2 = surfaceWidth();
+        Canvas->setZoom(0.5f);
+        const float AtHalf = surfaceWidth();
+
+        QVERIFY2(At2 > At1 * 1.3f,
+                 qPrintable(QString("geometry did not grow with zoom: %1 -> %2").arg(At1).arg(At2)));
+        QVERIFY2(AtHalf < At1,
+                 qPrintable(QString("geometry did not shrink when zoomed out: %1 -> %2").arg(At1).arg(AtHalf)));
+        Canvas->setZoom(1.0f);
+    }
+
+
+    // Input must be inverse-transformed on the way INTO the editor. The view scales the geometry, so without
+    // this a click at 2x lands where the node would have been drawn at 1x — you click a node and select its
+    // neighbour, or nothing. Silent, and the single biggest risk of doing zoom as a surface transform.
+    void theCursorIsInverseTransformedForHitTesting()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        runFrame(ImVec2(900, 600));
+        float ex = 0, ey = 0;
+        Canvas->editorMouse(ex, ey);
+        // At 1:1 the editor sees the cursor exactly where it is.
+        QCOMPARE(ex, 900.0f);
+        QCOMPARE(ey, 600.0f);
+
+        Canvas->setZoom(2.0f);
+        runFrame(ImVec2(900, 600));
+        Canvas->editorMouse(ex, ey);
+        // Zoomed in, the same screen pixel is a point HALF as far from the canvas origin in world space, so
+        // the editor must be handed a cursor pulled back toward that origin — never the raw screen position.
+        QVERIFY2(ex < 900.0f && ey < 600.0f,
+                 qPrintable(QString("cursor not inverse-transformed at 2x: (%1,%2)").arg(ex).arg(ey)));
+
+        Canvas->setZoom(0.5f);
+        runFrame(ImVec2(900, 600));
+        Canvas->editorMouse(ex, ey);
+        QVERIFY2(ex > 900.0f && ey > 600.0f,
+                 qPrintable(QString("cursor not inverse-transformed at 0.5x: (%1,%2)").arg(ex).arg(ey)));
+        Canvas->setZoom(1.0f);
+    }
+
+
+    // THE OUTLIER SWEEP. With zoom as a pure view transform, EVERYTHING imnodes reports must be
+    // zoom-invariant: it is handed world coordinates, a constant style and constant widths, so a node's grid
+    // position and its dimensions cannot depend on the zoom. Anything that does move is an element being
+    // scaled somewhere it should not be — which is precisely how node widths ended up scaling twice and
+    // growing with the SQUARE of the zoom.
+    //
+    // So: measure every node at every zoom, and name whatever drifts.
+    void noElementGeometryDependsOnTheZoom()
+    {
+        Canvas->setMiniMap(false);
+        const char *kinds[] = {"Content", "DeclareExec", "RegEdit", "FileEdit", "CustomVar", "Persist"};
+        for (int i = 0; i < 6; ++i) Canvas->addNode(kinds[i], 80.0f + i * 60.0f, 60.0f + i * 40.0f);
+        runFrame();
+
+        struct Geo { ImVec2 pos, dim; };
+        auto sample = [&]() {
+            runFrame(); runFrame();
+            std::vector<Geo> g;
+            for (int i = 0; i < Canvas->nodeCount(); ++i)
+                g.push_back({ImNodes::GetNodeGridSpacePos(i), ImNodes::GetNodeDimensions(i)});
+            return g;
+        };
+        const std::vector<Geo> Ref = sample();
+
+        QStringList outliers;
+        for (float z : {0.4f, 0.75f, 1.5f, 2.0f, 3.0f}) {
+            Canvas->setZoom(z);
+            const std::vector<Geo> Now = sample();
+            QCOMPARE(Now.size(), Ref.size());
+            for (size_t i = 0; i < Now.size(); ++i) {
+                const float dx = std::abs(Now[i].pos.x - Ref[i].pos.x), dy = std::abs(Now[i].pos.y - Ref[i].pos.y);
+                const float dw = std::abs(Now[i].dim.x - Ref[i].dim.x), dh = std::abs(Now[i].dim.y - Ref[i].dim.y);
+                if (dx > 0.5f || dy > 0.5f)
+                    outliers << QString("node %1 (%2) MOVED at zoom %3: d=(%4,%5)")
+                                   .arg(i).arg(kinds[i % 6]).arg(z).arg(dx).arg(dy);
+                if (dw > 0.5f || dh > 0.5f)
+                    outliers << QString("node %1 (%2) RESIZED at zoom %3: %4x%5 -> %6x%7")
+                                   .arg(i).arg(kinds[i % 6]).arg(z)
+                                   .arg(Ref[i].dim.x).arg(Ref[i].dim.y).arg(Now[i].dim.x).arg(Now[i].dim.y);
+            }
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // The user's three zoom complaints, each turned into a measurement of the screen furniture that must NOT
+    // move: "the minimap position goes crazy with the zoom", "the window where you can pan also scales with
+    // the zoom leading to non working controls if you zoom out", and the node elongation (above).
+    //
+    // Everything here is screen space. Zoom is a transform over the CONTENT, so a rectangle that describes the
+    // VIEWPORT — where the canvas is on screen, where its overview sits, how far its clip reaches — must be
+    // byte-identical at 0.2x and at 3x. Any difference IS the bug.
+    void noScreenFurnitureMovesWithTheZoom()
+    {
+        Canvas->setMiniMap(true);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("Content", 100.0f + i * 400.0f, 80.0f + i * 250.0f);
+        runFrame(); runFrame();
+
+        auto rects = [&]() {
+            runFrame(); runFrame();
+            ImVec4 Mm, Clip, View;
+            Canvas->miniMapRect(Mm.x, Mm.y, Mm.z, Mm.w);
+            Canvas->surfaceClip(Clip.x, Clip.y, Clip.z, Clip.w);
+            Canvas->canvasViewport(View.x, View.y, View.z, View.w);
+            return std::array<ImVec4, 3>{Mm, Clip, View};
+        };
+        const std::array<ImVec4, 3> Ref = rects();
+        const char *Names[3] = {"minimap", "surface clip", "viewport"};
+        // The minimap must actually be there, or this test passes by measuring nothing.
+        QVERIFY2(Ref[0].z - Ref[0].x > 50.0f, "the minimap was not drawn - nothing to measure");
+        // And the clip the canvas draws through must BE the viewport at 1:1, so a later zoom has something
+        // meaningful to differ from.
+        QVERIFY2(std::abs(Ref[1].z - Ref[2].z) < 1.5f && std::abs(Ref[1].x - Ref[2].x) < 1.5f,
+                 qPrintable(QString("at 1:1 the canvas clip is not the viewport: [%1,%2] vs [%3,%4]")
+                                .arg(Ref[1].x).arg(Ref[1].z).arg(Ref[2].x).arg(Ref[2].z)));
+
+        QStringList outliers;
+        for (float z : {0.2f, 0.4f, 0.75f, 1.5f, 2.0f, 3.0f}) {
+            Canvas->setZoom(z);
+            const std::array<ImVec4, 3> Now = rects();
+            for (int r = 0; r < 3; ++r) {
+                const float d = std::max(std::max(std::abs(Now[r].x - Ref[r].x), std::abs(Now[r].y - Ref[r].y)),
+                                         std::max(std::abs(Now[r].z - Ref[r].z), std::abs(Now[r].w - Ref[r].w)));
+                if (d > 1.5f)
+                    outliers << QString("%1 MOVED at zoom %2 by %3px: [%4,%5,%6,%7] -> [%8,%9,%10,%11]")
+                                   .arg(Names[r]).arg(z).arg(d)
+                                   .arg(Ref[r].x).arg(Ref[r].y).arg(Ref[r].z).arg(Ref[r].w)
+                                   .arg(Now[r].x).arg(Now[r].y).arg(Now[r].z).arg(Now[r].w);
+            }
+        }
+        Canvas->setZoom(1.0f);
+        Canvas->setMiniMap(false);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // Found on the LIVE canvas at 47%, and invisible to every geometry assertion before it: nodes to the right
+    // of the viewport rendered as empty boxes with a title bar and nothing inside. imgui culls a widget against
+    // the clip rect at SUBMISSION time, and submission happens in unscaled coordinates — so zoomed out, the
+    // fields of a node whose unscaled position is off-screen are thrown away, and the transform then scales the
+    // hollow box into view. The box is still exactly the right size, which is why sizes and bounds all agreed.
+    //
+    // What it costs is CONTENT, so content is what this counts: zooming out brings more of the graph on screen,
+    // so it must emit MORE vertices, never fewer.
+    void zoomingOutStillDrawsWhatIsInsideTheNodes()
+    {
+        Canvas->setMiniMap(false);
+        // Spread well past the viewport (1400x900) horizontally and vertically, so at 1:1 most of it is off
+        // screen and at 0.3 all of it is on.
+        for (int i = 0; i < 12; ++i) Canvas->addNode("Content", 60.0f + i * 520.0f, 40.0f + i * 240.0f);
+        auto verticesAt = [&](float z) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            return Canvas->surfaceVertices();
+        };
+        const int At1 = verticesAt(1.0f);
+        QVERIFY2(At1 > 0, "nothing was drawn at 1:1");
+
+        QStringList outliers;
+        for (float z : {0.75f, 0.5f, 0.3f}) {
+            const int Now = verticesAt(z);
+            if (Now < At1)
+                outliers << QString("zoom %1 emitted FEWER vertices than 1:1 (%2 < %3) - content was culled "
+                                    "before the transform could bring it on screen").arg(z).arg(Now).arg(At1);
+        }
+        // And the far-out view must show substantially more than the 1:1 one, or "more of the graph is
+        // visible" is not actually true of what got drawn.
+        const int AtFar = verticesAt(0.3f);
+        if (AtFar < At1 * 3 / 2)
+            outliers << QString("zoom 0.3 drew only %1 vertices against %2 at 1:1 - the extra nodes it "
+                                "brought on screen are empty").arg(AtFar).arg(At1);
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // The minimap is drawn into a child of its OWN, created after the editor's, for one reason: draw order.
+    // A draw list appended to the parent window renders UNDERNEATH imnodes' scrolling region, so the overview
+    // would be painted and then covered by the canvas background — invisible, with nothing in the code to say
+    // why. Assert the ordering imgui actually produced rather than trusting that reasoning.
+    void theMinimapRendersAboveTheCanvas()
+    {
+        Canvas->setMiniMap(true);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("Content", 100.0f + i * 300.0f, 80.0f + i * 200.0f);
+        runFrame(); runFrame();
+
+        const ImGuiContext &C = *ImGui::GetCurrentContext();
+        const ImDrawList *MiniDL = nullptr, *EditorDL = nullptr;
+        for (int w = 0; w < C.Windows.Size; ++w) {
+            const ImGuiWindow *W = C.Windows[w];
+            //ACTIVE only. The imgui context outlives a single test, so windows from earlier canvases are
+            //still in the list under the same names — and a stale one's draw list is in no frame at all.
+            if (!W->Name || !W->Active) continue;
+            if (std::strstr(W->Name, "##minimap")) MiniDL = W->DrawList;
+            else if (std::strstr(W->Name, "scrolling_region")) EditorDL = W->DrawList;
+        }
+        QVERIFY2(MiniDL, "no ##minimap window was created");
+        QVERIFY2(EditorDL, "no imnodes scrolling_region window - the canvas did not draw");
+        QVERIFY2(MiniDL != EditorDL, "the minimap shares the canvas draw list - it would be scaled by the view "
+                                     "transform and covered by the canvas background");
+
+        int MiniAt = -1, EditorAt = -1;
+        const ImDrawData *D = ImGui::GetDrawData();
+        QVERIFY2(D, "no draw data");
+        for (int i = 0; i < D->CmdListsCount; ++i) {
+            if (D->CmdLists[i] == MiniDL)   MiniAt = i;
+            if (D->CmdLists[i] == EditorDL) EditorAt = i;
+        }
+        QVERIFY2(MiniAt >= 0 && EditorAt >= 0,
+                 qPrintable(QString("a draw list never reached the frame: minimap %1, canvas %2")
+                                .arg(MiniAt).arg(EditorAt)));
+        QVERIFY2(MiniAt > EditorAt,
+                 qPrintable(QString("the minimap renders UNDER the canvas: list %1 vs %2").arg(MiniAt).arg(EditorAt)));
+        Canvas->setMiniMap(false);
+    }
+
+    // The minimap draws from OUR node array, not from what imnodes was handed — that is the whole reason it can
+    // coexist with viewport culling, and the headline claim of replacing the built-in one.
+    //
+    // Asserting that its RECTANGLE exists proves none of that: the rectangle is computed from the canvas
+    // viewport before anything is drawn, so it is a healthy non-empty box whether the overview painted 107
+    // nodes, one, or none. Demonstrated: with the node-rectangle loop cut to zero iterations the whole suite
+    // stayed green. So count what the overview actually PAINTED, and pin it to the graph rather than to the
+    // viewport: a graph ten times larger draws a busier minimap even when culling submits fewer nodes than the
+    // small one did.
+    void theMinimapDrawsTheWholeGraphWhileCullingHidesMostOfIt()
+    {
+        Canvas->setMiniMap(true);
+        for (int i = 0; i < 6; ++i) Canvas->addNode("Content", 100.0f + i * 120.0f, 80.0f + i * 90.0f);
+        runFrame(); runFrame();
+        const int Small = miniMapVertices();
+        const int SmallDrawn = Canvas->visibleNodes();
+        QVERIFY2(Small > 0, "the minimap painted nothing at all");
+
+        // Ten times the nodes, spread far enough that culling submits FEWER than the small graph did.
+        for (int i = 0; i < 60; ++i) Canvas->addNode("Content", 4000.0f + i * 2600.0f, 3000.0f + i * 1700.0f);
+        runFrame(); runFrame();
+        const int Big = miniMapVertices();
+        QVERIFY2(Canvas->visibleNodes() <= SmallDrawn,
+                 qPrintable(QString("culling submitted %1 of %2 - not fewer than the 6-node graph's %3, so "
+                                    "this proves nothing about drawing what was NOT submitted")
+                                .arg(Canvas->visibleNodes()).arg(Canvas->nodeCount()).arg(SmallDrawn)));
+        QVERIFY2(Big > Small * 3,
+                 qPrintable(QString("66 nodes drew %1 minimap vertices against %2 for 6 - the overview is not "
+                                    "drawing the nodes culling hid").arg(Big).arg(Small)));
+        Canvas->setMiniMap(false);
+    }
+
+    // Click-to-centre. The entire interactive half of the new overview had no coverage, so the mapping from a
+    // minimap point back to a world point - and the pan that puts it in the middle of the viewport - could be
+    // any function at all and every test would still pass.
+    void clickingTheMinimapCentresTheViewThere()
+    {
+        Canvas->setMiniMap(true);
+        // Two nodes far apart, so the overview spans a wide world and a click at one end is unambiguous.
+        Canvas->addNode("Content", 0, 0);
+        Canvas->addNode("Content", 6000, 3600);
+        runFrame(); runFrame();
+        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
+        Canvas->miniMapRect(mx0, my0, mx1, my1);
+        QVERIFY2(mx1 - mx0 > 50.0f, "no minimap to click");
+
+        auto screenOf = [&](int n) { return ImNodes::GetNodeScreenSpacePos(n); };
+        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+        const ImVec2 Centre((vx0 + vx1) * 0.5f, (vy0 + vy1) * 0.5f);
+
+        // Click near the FAR (bottom-right) corner of the overview: the far node must end up near the middle
+        // of the viewport.
+        clickAt(ImVec2(mx1 - 12.0f, my1 - 12.0f));
+        runFrame(); runFrame();
+        const ImVec2 Far = screenOf(1);
+        const float D = std::hypot(Far.x - Centre.x, Far.y - Centre.y);
+        QVERIFY2(D < 420.0f,
+                 qPrintable(QString("clicking the far corner of the overview left the far node %1px from the "
+                                    "viewport centre (node at %2,%3, centre %4,%5)")
+                                .arg(D).arg(Far.x).arg(Far.y).arg(Centre.x).arg(Centre.y)));
+
+        // And the near corner brings the other node back, so it is a MAPPING and not a constant.
+        clickAt(ImVec2(mx0 + 12.0f, my0 + 12.0f));
+        runFrame(); runFrame();
+        const ImVec2 Near = screenOf(0);
+        const float D2 = std::hypot(Near.x - Centre.x, Near.y - Centre.y);
+        QVERIFY2(D2 < 420.0f,
+                 qPrintable(QString("clicking the near corner left the near node %1px from centre").arg(D2)));
+        Canvas->setMiniMap(false);
+    }
+
+    // THE WORST BUG THIS CANVAS HAS HAD, and it was introduced by the minimap's own input guard. The guard
+    // handed imnodes ImVec2(-FLT_MAX,-FLT_MAX) whenever the cursor was over the overview — but
+    // TranslateSelectedNodes computes a dragged node's origin ABSOLUTELY from that position and runs whether or
+    // not the cursor is over the minimap. So dragging a node toward the bottom-right corner, where the minimap
+    // lives, wrote -3.4e38 into the node, into the saved layout and into GlobalConfig: a node that can never be
+    // drawn (it fails every viewport test), never selected, never dragged back, and that survives reload
+    // because a layout entry wins over the package's own POS.
+    //
+    // The drag must therefore SURVIVE crossing the minimap with a sane position, and nothing absurd may ever
+    // reach the layout by any route.
+    void draggingANodeAcrossTheMinimapDoesNotDestroyIt()
+    {
+        Canvas->setMiniMap(true);
+        Canvas->addNode("Content", 200, 200);
+        runFrame(); runFrame();
+        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
+        Canvas->miniMapRect(mx0, my0, mx1, my1);
+        QVERIFY2(mx1 - mx0 > 50.0f, "no minimap - this test would cross nothing");
+
+        // Grab the node's title bar and drag into the middle of the minimap.
+        const ImVec2 Grab(ImNodes::GetNodeScreenSpacePos(0).x + 40.0f,
+                          ImNodes::GetNodeScreenSpacePos(0).y + 8.0f);
+        dragFromTo(Grab, ImVec2((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f));
+
+        // What IMNODES holds, checked first and deliberately. The read-back validates itself before writing to
+        // the layout, so a poisoned position never reaches G.Nodes or the layout at all — which means those
+        // two, on their own, stay green with the original -FLT_MAX guard still in place. The defence in depth
+        // hides the defect from any test that only looks downstream of it. This is the position the bug
+        // actually corrupts.
+        const ImVec2 Held = ImNodes::GetNodeGridSpacePos(0);
+        QVERIFY2(std::isfinite(Held.x) && std::isfinite(Held.y)
+                     && std::abs(Held.x) < 1.0e6f && std::abs(Held.y) < 1.0e6f,
+                 qPrintable(QString("the drag destroyed the position imnodes holds: (%1,%2)")
+                                .arg(double(Held.x)).arg(double(Held.y))));
+
+        const PkgGraph::Graph G = Canvas->graph();
+        QCOMPARE(G.Nodes.size(), size_t(1));
+        QVERIFY2(std::isfinite(G.Nodes[0].X) && std::isfinite(G.Nodes[0].Y)
+                     && std::abs(G.Nodes[0].X) < 1.0e6f && std::abs(G.Nodes[0].Y) < 1.0e6f,
+                 qPrintable(QString("the drag destroyed the node's position: (%1,%2)")
+                                .arg(double(G.Nodes[0].X)).arg(double(G.Nodes[0].Y))));
+        const QString Dump = QString::fromStdString(Layout.dump());
+        QVERIFY2(!Dump.contains("e+3") && !Dump.contains("inf") && !Dump.contains("nan"),
+                 qPrintable("an absurd coordinate reached the saved layout: " + Dump));
+        // And it must have actually MOVED, or the guard is just refusing to drag at all.
+        QVERIFY2(std::abs(G.Nodes[0].X - 200.0f) > 20.0f || std::abs(G.Nodes[0].Y - 200.0f) > 20.0f,
+                 "the node did not move - the drag never happened, so this proves nothing");
+        Canvas->setMiniMap(false);
+    }
+
+    // Clicking the minimap must not also reach the canvas behind it. The suppression is what makes that true,
+    // and the test above constrains how much suppression is allowed - so pin the other half too, or "fix" the
+    // crash by never suppressing at all and both tests still pass.
+    void clickingTheMinimapDoesNotTouchTheCanvasBehindIt()
+    {
+        Canvas->setMiniMap(true);
+        // A node placed so it sits UNDER the minimap corner at 1:1.
+        Canvas->addNode("Content", 1050, 700);
+        runFrame(); runFrame();
+        float mx0 = 0, my0 = 0, mx1 = 0, my1 = 0;
+        Canvas->miniMapRect(mx0, my0, mx1, my1);
+        const PkgGraph::Graph Before = Canvas->graph();
+
+        clickAt(ImVec2((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f));
+        runFrame();
+        QCOMPARE(ImNodes::NumSelectedNodes(), 0);      // nothing behind the overview was selected
+        const PkgGraph::Graph After = Canvas->graph();
+        QCOMPARE(After.Nodes[0].X, Before.Nodes[0].X);
+        QCOMPARE(After.Nodes[0].Y, Before.Nodes[0].Y);
+        Canvas->setMiniMap(false);
+    }
+
+    // imnodes gates every interaction on "is the mouse in the canvas", testing the position we hand it against
+    // the canvas rectangle it measured in SCREEN space. Those stop being the same space the moment the zoom is
+    // not 1, and the consequence was that only the top-left Z-by-Z fraction of the canvas responded to
+    // anything: at 0.5x a node plainly visible in the lower right could not be clicked.
+    void everyVisibleNodeIsClickableAtEveryZoom()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 1500, 1000);        // off-screen at 1:1, well on-screen zoomed out
+        QStringList outliers;
+        for (float z : {1.0f, 0.75f, 0.5f, 0.3f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            // Where the node actually IS on screen: world -> editor -> transform.
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+            float ox = 0, oy = 0, dummy = 0;
+            Canvas->canvasViewport(ox, oy, dummy, dummy);
+            const ImVec2 Hit(ox + (P.x + 40.0f - ox) * z, oy + (P.y + 8.0f - oy) * z);
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            if (Hit.x < vx0 || Hit.x > vx1 || Hit.y < vy0 || Hit.y > vy1) continue;   // genuinely off-screen
+            clickAt(Hit);
+            runFrame();
+            if (ImNodes::NumSelectedNodes() == 0)
+                outliers << QString("zoom %1: the node is drawn at (%2,%3), inside the viewport, and a click "
+                                    "there selected nothing").arg(z).arg(Hit.x).arg(Hit.y);
+            ImNodes::ClearNodeSelection();
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // Panning moves the view by `MouseDelta`, which imgui measured in SCREEN pixels, into a pan that is in
+    // WORLD units - so without dividing it by the zoom the graph crawled at half speed at 0.5x and bolted at
+    // 3x, and nothing you grabbed stayed under the pointer. Assert the thing the user feels: the graph moves
+    // the same number of SCREEN pixels as the cursor, whatever the zoom.
+    void panningMovesTheGraphWithTheCursorAtEveryZoom()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 300, 300);
+        QStringList outliers;
+        for (float z : {1.0f, 0.5f, 2.0f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            float ox = 0, oy = 0, d = 0;
+            Canvas->canvasViewport(ox, oy, d, d);
+            auto screenOf = [&]() {
+                const ImVec2 P = ImNodes::GetNodeScreenSpacePos(0);
+                return ImVec2(ox + (P.x - ox) * z, oy + (P.y - oy) * z);
+            };
+            const ImVec2 Before = screenOf();
+            // Middle-drag is the pan gesture; drive it the way imnodes reads it.
+            ImGuiIO &io = ImGui::GetIO();
+            const ImVec2 From(700, 450);
+            runFrame(From);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
+            runFrame(From);
+            for (int i = 1; i <= 4; ++i) runFrame(ImVec2(From.x + i * 25.0f, From.y));
+            io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
+            runFrame(ImVec2(From.x + 100.0f, From.y));
+            const ImVec2 After = screenOf();
+            const float Moved = After.x - Before.x;
+            if (std::abs(Moved - 100.0f) > 12.0f)
+                outliers << QString("zoom %1: a 100px pan moved the graph %2px on screen").arg(z).arg(Moved);
+        }
+        Canvas->setZoom(1.0f);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // A widget that opens a CHILD WINDOW gets its own draw list, which the transform over the editor's list
+    // never reaches. InputTextMultiline does — every StringList field with more than one line — so the node
+    // body scaled and moved while the text inside it stayed at its 1:1 position, painted over whatever node
+    // had moved there. Every geometry assertion passed it, because the box was still the right size.
+    void everyNestedFieldScalesWithItsNode()
+    {
+        Canvas->setMiniMap(false);
+        // SUBMOUNTS is a StringList; several lines make it a multiline box, which is what opens the child.
+        const int N = Canvas->addNode("Content", 200, 200);
+        Doc["NODES"][N]["SUBMOUNTS"] = json::array({"a/b:c/d", "e/f:g/h", "i/j:k/l"});
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+
+        auto nestedBounds = [&]() {
+            const ImGuiContext &C = *ImGui::GetCurrentContext();
+            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+            int found = 0;
+            for (int w = 0; w < C.Windows.Size; ++w) {
+                const ImGuiWindow *W = C.Windows[w];
+                const char *SR = W->Name ? std::strstr(W->Name, "scrolling_region") : nullptr;
+                if (!W->Active || !SR || !std::strchr(SR, '/')) continue;   // nested INSIDE the editor child
+                const ImDrawList *D = W->DrawList;
+                if (D->VtxBuffer.Size == 0) continue;
+                ++found;
+                for (int v = 0; v < D->VtxBuffer.Size; ++v) {
+                    x0 = std::min(x0, D->VtxBuffer[v].pos.x); x1 = std::max(x1, D->VtxBuffer[v].pos.x);
+                    y0 = std::min(y0, D->VtxBuffer[v].pos.y); y1 = std::max(y1, D->VtxBuffer[v].pos.y);
+                }
+            }
+            return std::array<float, 5>{(float)found, x0, y0, x1, y1};
+        };
+
+        const std::array<float, 5> At1 = nestedBounds();
+        QVERIFY2(At1[0] > 0.0f, "no nested child window was drawn - this test is measuring nothing");
+        Canvas->setZoom(2.0f);
+        runFrame(); runFrame();
+        const std::array<float, 5> At2 = nestedBounds();
+        QVERIFY2(At2[0] > 0.0f, "the nested child vanished when zoomed");
+        // Its own extent must have grown with the zoom, like everything else the canvas draws.
+        const float W1 = At1[3] - At1[1], W2 = At2[3] - At2[1];
+        QVERIFY2(W2 > W1 * 1.4f,
+                 qPrintable(QString("a nested field did not scale: %1px wide at 1:1, %2px at 2x - it is being "
+                                    "drawn at its unscaled position on top of the canvas").arg(W1).arg(W2)));
+        Canvas->setZoom(1.0f);
+    }
+
+    // imnodes draws its grid inside BeginNodeEditor, before the first vertex the transform can reach, so it
+    // kept a fixed screen pitch and translated 1:1 while the content translated Z:1 - the graph slid across
+    // its own grid on every pan, and the grid gave no scale cue at all. Ours is drawn as content.
+    void theGridScalesWithTheView()
+    {
+        Canvas->setMiniMap(false);
+        // No nodes on purpose: with an empty graph the only thin, tall quads in the editor's draw list are
+        // grid lines, so the measurement cannot pick up a node border or a glyph and call it the grid.
+        auto pitchAt = [&](float z) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            const ImDrawList *D = nullptr;
+            const ImGuiContext &C = *ImGui::GetCurrentContext();
+            for (int w = 0; w < C.Windows.Size; ++w)
+                if (C.Windows[w]->Name && C.Windows[w]->Active
+                    && std::strstr(C.Windows[w]->Name, "scrolling_region")
+                    && !std::strstr(C.Windows[w]->Name, "scrolling_region/"))
+                    D = C.Windows[w]->DrawList;
+            if (!D) return 0.0f;
+            // Grid lines are the thin 1px verticals; collect distinct x of 4-vertex quads that are tall.
+            std::vector<float> xs;
+            for (int v = 0; v + 3 < D->VtxBuffer.Size; v += 4) {
+                const float ax = D->VtxBuffer[v].pos.x, bx = D->VtxBuffer[v + 2].pos.x;
+                const float ay = D->VtxBuffer[v].pos.y, by = D->VtxBuffer[v + 2].pos.y;
+                if (std::abs(bx - ax) < 4.0f && (by - ay) > 200.0f) xs.push_back((ax + bx) * 0.5f);
+            }
+            std::sort(xs.begin(), xs.end());
+            float best = 0.0f;
+            for (size_t i = 1; i < xs.size(); ++i) {
+                const float d = xs[i] - xs[i - 1];
+                if (d > 1.0f && (best == 0.0f || d < best)) best = d;
+            }
+            return best;
+        };
+        const float P1 = pitchAt(1.0f);
+        QVERIFY2(P1 > 1.0f, "no grid lines found at 1:1 - the grid is not being drawn");
+        const float P2 = pitchAt(2.0f);
+        QVERIFY2(P2 > P1 * 1.5f,
+                 qPrintable(QString("the grid pitch did not scale: %1px at 1:1, %2px at 2x - the grid is "
+                                    "pinned to the screen while the graph moves over it").arg(P1).arg(P2)));
+        Canvas->setZoom(1.0f);
+    }
+
+    // NodeDims is the one piece of per-node canvas state the delete/rename paths forgot. renameNode runs on
+    // EVERY KEYSTROKE of an id edit, so a missed move leaks one entry per character typed and lets a node
+    // later named back into an old id inherit a stale box size in the overview; removeNode's own comment says
+    // exactly why every other map is maintained there.
+    void theMeasuredSizeCacheFollowsRenamesAndDeletes()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        Canvas->addNode("DeclareExec", 500, 100);
+        Canvas->addNode("Persist", 900, 100);
+        runFrame(); runFrame();
+        QCOMPARE(Canvas->cachedNodeSizes(), 3);
+
+        // A typed id arrives one character at a time, which is one rename per character.
+        const std::string Start = Doc["NODES"][0]["NODE_ID"].get<std::string>();
+        std::string Cur = Start;
+        for (const char *C = "abcdef"; *C; ++C) {
+            const std::string Next = Cur + *C;
+            Canvas->renameNode(0, Next);
+            Cur = Next;
+            runFrame(); runFrame();
+        }
+        QVERIFY2(Canvas->cachedNodeSizes() == 3,
+                 qPrintable(QString("typing a 6-character id left %1 cached sizes for 3 nodes - the rename "
+                                    "path is leaking one per keystroke").arg(Canvas->cachedNodeSizes())));
+
+        Canvas->removeNode(2);
+        runFrame(); runFrame();
+        QVERIFY2(Canvas->cachedNodeSizes() == 2,
+                 qPrintable(QString("a deleted node left its measured size behind (%1 for 2 nodes)")
+                                .arg(Canvas->cachedNodeSizes())));
+    }
+
+    // The zoom ease re-solves the pan from an anchor captured at the wheel event, every frame until it
+    // arrives. Applied unconditionally that DISCARDED whatever the user panned in the meantime: a middle-drag
+    // begun one frame after a notch ended up exactly where the ease wanted it, drag thrown away.
+    void panningDuringAZoomEaseIsNotThrownAway()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 300, 300);
+        runFrame(); runFrame();
+        const ImVec2 Pan0 = ImNodes::EditorContextGetPanning();
+
+        ImGuiIO &io = ImGui::GetIO();
+        io.AddMouseWheelEvent(0.0f, +1.0f);
+        runFrame(ImVec2(700, 450));                    // the notch: the ease is now in flight
+        QVERIFY2(Canvas->zoom() < 1.1f - 0.001f, "the zoom did not ease, so there is no ease to pan during");
+
+        const ImVec2 From(700, 450);
+        runFrame(From);
+        io.AddMouseButtonEvent(ImGuiMouseButton_Middle, true);
+        runFrame(From);
+        for (int i = 1; i <= 4; ++i) runFrame(ImVec2(From.x + i * 30.0f, From.y));
+        io.AddMouseButtonEvent(ImGuiMouseButton_Middle, false);
+        runFrame(ImVec2(From.x + 120.0f, From.y));
+        const ImVec2 Pan1 = ImNodes::EditorContextGetPanning();
+
+        QVERIFY2(Pan1.x - Pan0.x > 40.0f,
+                 qPrintable(QString("a 120px pan during the zoom ease moved the view %1 units - the ease "
+                                    "overwrote it").arg(Pan1.x - Pan0.x)));
+        Canvas->setZoom(1.0f);
+    }
+
     void zoomIsClampedAndDefaultsToUnity()
     {
         QCOMPARE(Canvas->zoom(), 1.0f);
@@ -1049,8 +1706,8 @@ private slots:
     // that IS on screen, and a small graph must not be culled at all.
     void everySmallGraphNodeIsStillDrawn()
     {
-        //WITH culling on. Without this the minimap stays enabled at 6 nodes, culling stands down entirely,
-        //and the assertion below holds even with OnScreen() returning false for everything — it passed with
+        //WITH culling on — which it always is now. The minimap is off so nothing it draws can be mistaken
+        //for a node the canvas submitted.
         //the whole culling block deleted.
         Canvas->setMiniMap(false);
         for (int I = 0; I < 6; ++I) Canvas->addNode("Content", 60.0f + I * 120.0f, 80.0f);
@@ -1060,9 +1717,8 @@ private slots:
 
     void aNodeFarOutsideTheViewportIsCulled()
     {
-        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
-        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
-        //relying on a threshold this test does not control.
+        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
+        //measurement picks up.
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 40, 40);
         Canvas->addNode("Content", 90000, 90000);   // far off-screen at 1.0x
@@ -1075,9 +1731,8 @@ private slots:
     // reading its position back yields the default origin — which is precisely how a layout got zeroed before.
     void aCulledNodeKeepsItsStoredPosition()
     {
-        //Culling stands down while the minimap is on (it would reduce the overview to the viewport), and a
-        //test graph is far below the size that turns the minimap off — so say it explicitly rather than
-        //relying on a threshold this test does not control.
+        //Culling is unconditional now; the minimap is off here only so the overview cannot be what a
+        //measurement picks up.
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 90000, 90000);
         Canvas->addNode("Content", 40, 40);
@@ -1090,6 +1745,33 @@ private slots:
 
 
 private:
+    // Press at `from`, move through `steps` intermediate positions to `to`, release. A real drag: imnodes
+    // starts an interaction on the press and updates it from the ABSOLUTE cursor on every frame after, so a
+    // drag that teleports in one frame exercises none of what a mouse actually does.
+    void dragFromTo(ImVec2 from, ImVec2 to, int steps = 6, bool release = true)
+    {
+        ImGuiIO &io = ImGui::GetIO();
+        runFrame(from);
+        io.AddMouseButtonEvent(0, true);
+        runFrame(from);
+        for (int i = 1; i <= steps; ++i)
+            runFrame(ImVec2(from.x + (to.x - from.x) * i / steps, from.y + (to.y - from.y) * i / steps));
+        if (release) { io.AddMouseButtonEvent(0, false); runFrame(to); }
+    }
+
+    // The minimap's own draw list. It is a child window of its own, so what it painted is separable from the
+    // canvas — which is the only way to assert that it painted ANYTHING. Returns nullptr when it was not drawn.
+    const ImDrawList *miniMapDrawList()
+    {
+        const ImGuiContext &C = *ImGui::GetCurrentContext();
+        for (int w = 0; w < C.Windows.Size; ++w) {
+            const ImGuiWindow *W = C.Windows[w];
+            if (W->Name && W->Active && std::strstr(W->Name, "##minimap")) return W->DrawList;
+        }
+        return nullptr;
+    }
+    int miniMapVertices() { const ImDrawList *D = miniMapDrawList(); return D ? D->VtxBuffer.Size : 0; }
+
     void clickAt(ImVec2 p)
     {
         ImGuiIO &io = ImGui::GetIO();

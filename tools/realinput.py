@@ -22,6 +22,7 @@ Usage:
   realinput.py click X Y [button]  # move, settle, click (button: left|right|middle)
   realinput.py key NAME [count]    # e.g. Return, Escape, space, a, F1
   realinput.py type TEXT
+  realinput.py wheel N [X Y]       # scroll N notches (negative = down), optionally at a point
   realinput.py combo NAME...       # keys pressed together, released in reverse (e.g. alt Tab)
   realinput.py seq "click 100 200; sleep 0.5; type Bob; key Return"
 
@@ -69,6 +70,11 @@ KEYS = {
     "Home": 102, "End": 107, "Prior": 104, "Next": 109,
     "shift": 42, "ctrl": 29, "alt": 56, "super": 125,
     "minus": 12, "equal": 13, "period": 52, "comma": 51, "slash": 53,
+    #The literal punctuation too, not just its X11 name. `type` looks a character up directly, so without
+    #these it dies on "unknown key: /" — which means it could never type a PATH, the one thing a file dialog
+    #ever wants from it.
+    "-": 12, "=": 13, ".": 52, ",": 51, "/": 53, ";": 39, "'": 40,
+    "[": 26, "]": 27, "\\": 43, "`": 41,
 }
 for i, c in enumerate("1234567890"):
     KEYS[c] = 2 + i
@@ -82,8 +88,8 @@ for i in range(1, 13):
     KEYS["F%d" % i] = (59 + i - 1) if i <= 10 else (87 + i - 11)
 
 SHIFTED = {"!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
-           "(": "9", ")": "0", "_": "minus", "+": "equal", ":": None, "?": "slash", "<": "comma",
-           ">": "period"}
+           "(": "9", ")": "0", "_": "minus", "+": "equal", ":": ";", "?": "slash", "<": "comma",
+           ">": "period", "{": "[", "}": "]", "|": "\\", "~": "`", "\"": "'"}
 
 
 class Device:
@@ -212,6 +218,18 @@ def run_one(d, cmd, args):
             else:
                 d.tap(keycode(ch))
             time.sleep(0.05)
+    elif cmd == "wheel":
+        # wheel NOTCHES [X Y] — scroll where the cursor is, or at an absolute point first. One REL_WHEEL
+        # event per notch with a gap between them, because that is what a real wheel produces: an app that
+        # accumulates per-frame (an ImGui canvas, say) sees one notch per frame rather than a single jump.
+        n = int(args[0])
+        if len(args) >= 3:
+            d.move_abs(int(args[1]), int(args[2]))
+            time.sleep(0.3)
+        for _ in range(abs(n)):
+            d.emit(EV_REL, REL_WHEEL, 1 if n > 0 else -1)
+            d.syn()
+            time.sleep(0.06)
     elif cmd == "combo":
         codes = [keycode(a) for a in args]
         for c in codes:
@@ -260,43 +278,7 @@ def main():
         return
     d = Device()
     try:
-        if cmd == "move":
-            d.move_abs(int(args[0]), int(args[1]))
-        elif cmd == "click":
-            btn = {"left": BTN_LEFT, "right": BTN_RIGHT, "middle": BTN_MIDDLE}[
-                args[2] if len(args) > 2 else "left"]
-            if len(args) >= 2:
-                d.move_abs(int(args[0]), int(args[1]))
-                time.sleep(0.4)   # games poll the cursor; let it settle where it landed
-            d.click(btn)
-        elif cmd == "key":
-            n = int(args[1]) if len(args) > 1 else 1
-            for _ in range(n):
-                d.tap(keycode(args[0]))
-                time.sleep(0.12)
-        elif cmd == "type":
-            for ch in " ".join(args):
-                if ch == " ":
-                    d.tap(KEYS["space"])
-                elif ch.isupper() or ch in SHIFTED:
-                    base = SHIFTED.get(ch, ch.lower())
-                    if base is None:
-                        continue
-                    d.emit(EV_KEY, KEYS["shift"], 1); d.syn()
-                    d.tap(keycode(base))
-                    d.emit(EV_KEY, KEYS["shift"], 0); d.syn()
-                else:
-                    d.tap(keycode(ch))
-                time.sleep(0.05)
-        elif cmd == "combo":
-            codes = [keycode(a) for a in args]
-            for c in codes:
-                d.emit(EV_KEY, c, 1); d.syn(); time.sleep(0.05)
-            time.sleep(0.1)
-            for c in reversed(codes):
-                d.emit(EV_KEY, c, 0); d.syn(); time.sleep(0.05)
-        else:
-            raise SystemExit(__doc__)
+        run_one(d, cmd, args)
     finally:
         time.sleep(0.2)
         d.close()

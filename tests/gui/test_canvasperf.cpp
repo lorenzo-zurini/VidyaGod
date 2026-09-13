@@ -76,7 +76,7 @@ private slots:
         Layout = json::object();
         Canvas = new PkgCanvas(&Doc, []{}, nullptr, &Layout);
         Canvas->initContexts();
-        Canvas->setMiniMap(false);   // culling stands down while the minimap is on — this measures culling
+        Canvas->setMiniMap(false);   // culling is unconditional now; this measures the canvas without the overview
 
         const PkgGraph::Graph G = PkgGraph::Build(Doc["NODES"], &Layout);
         qInfo() << "links:" << (int)G.Links.size() << " externals:" << (int)G.Externals.size()

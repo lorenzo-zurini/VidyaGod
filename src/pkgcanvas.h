@@ -97,6 +97,27 @@ public:
     void  setZoom(float z);
     //How many nodes the last frame actually submitted (viewport culling) — the rest were off-screen.
     int   visibleNodes() const;
+    //Screen-space bounds of the drawn surface from the last frame. Zoom is a view transform over the emitted
+    //geometry, so this is what actually changes when you zoom — imnodes' own reported node sizes and style
+    //stay unscaled by design. Plain floats so this header keeps its zero imgui dependency.
+    //The cursor position handed to the editor this frame — the real cursor inverse-transformed by the view
+    //scale, so hit-testing happens in world space.
+    void editorMouse(float &X, float &Y) const;
+    void surfaceBounds(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
+    //Screen rectangle the minimap occupied last frame. It is furniture pinned to the canvas corner, so the
+    //one thing worth asserting about it is that the zoom does NOT appear in it.
+    void miniMapRect(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
+    //The widest clip rectangle the canvas drew through last frame, and the canvas viewport itself. These are
+    //the interactive surface: if the first shrinks with the zoom, the area you can draw and pan in shrinks
+    //with it, which is what made zooming out leave the controls stranded in a corner.
+    void surfaceClip(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
+    void canvasViewport(float &MinX, float &MinY, float &MaxX, float &MaxY) const;
+    //Vertices the canvas emitted last frame — how much was actually DRAWN, as opposed to how big the boxes are.
+    int  surfaceVertices() const;
+    //How many nodes the canvas is holding a measured size for. One per live node — the minimap needs it for
+    //nodes culling never submitted. Exposed because the failure mode is invisible otherwise: renameNode runs
+    //per keystroke, so a missed move leaks an entry per character and a later node reusing an id inherits it.
+    int  cachedNodeSizes() const;
     bool  miniMap() const;
     void  setMiniMap(bool on);
     void selectNode(int index);
