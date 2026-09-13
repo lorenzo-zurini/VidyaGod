@@ -146,13 +146,21 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     //Meta-CID with them — and the only line this function prints otherwise is "stamped POS into N file(s)",
     //which says nothing about why one of them moved. Build records rather than logs (it runs per keystroke in
     //the editor); this is the other caller, and it has to say so.
-    //"ignored", not "stamped over": if the node's OWN POS is good and only this machine's override was bad,
-    //the node keeps its declared position and the loop below writes nothing at all. The canvas's wording for
-    //the same record was the accurate one; this said the opposite for that case.
+    //The two sources have different consequences HERE, which is the whole reason the record carries which one
+    //it was. A bad POS in the package means the computed position is about to be written over it: the file's
+    //bytes change and the package's Meta-CID with them, and that is the fact worth printing at publish time.
+    //A bad override is this machine's own setting — the node keeps the author's POS and nothing is rewritten.
+    //An earlier version said "stamping a computed position over it" for both, which was wrong for the second;
+    //the correction then said "ignored" for both, which dropped the first. Say each one.
     for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
+    {
+        const bool OwnPos = R.Source.find("own POS") != std::string::npos;
         Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
             "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
-                + ", which no layout could have produced - that declaration is ignored");
+                + ", which no layout could have produced - "
+                + (OwnPos ? "stamping a computed position over it, which changes this package's bytes"
+                          : "that declaration is ignored; the node keeps the position the package declares"));
+    }
 
     std::set<fs::path> Dirty;
     for (size_t I = 0; I < Slots.size(); ++I)

@@ -500,7 +500,12 @@ float EstimateHeight(const json &Node)
     //overlap its neighbour. Three rows of slack on every node is the price of that never happening.
     Px += kTextPx + 3.0f * kRowPx;
     for (const Field &F : FieldsFor(Type)) Px += FieldPx(Node, F);
-    Px += kBtnPx;                                    // the action buttons
+    //The action row: a Separator, then one SmallButton line per wrap. drawActions starts a new line whenever
+    //the next button would pass the node width, and a Content zip with a deflate hint and a zip parent has
+    //five of them — but how many actions a node offers depends on HOST facts (a hint saying this zip is
+    //DEFLATE-compressed), which are not in the payload and not knowable here. One line, and the reserve above
+    //absorbs a second; a node offering three rows of actions can still overflow.
+    Px += kSepPx + kBtnPx;
     //Room for a couple of the validation warnings the canvas draws ON a node. They are host state rather than
     //payload — the same node has none at publish time, which is when this number is stamped — and there can be
     //any number of them, so they cannot be counted properly here. But the slack left over on a bare Group was

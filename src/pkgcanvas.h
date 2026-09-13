@@ -121,6 +121,10 @@ public:
     //The rectangle in-node popups were placed against last frame, in the editor's own (world) units. A combo
     //dropdown is positioned from its widget's rect against this, and the two have to be the same space.
     void popupExtent(float &X, float &Y, float &W, float &H) const;
+    //Whether that rectangle is the editor's own region (true) or the real screen viewport, which is what it
+    //falls back to when the region is too small to hold a dropdown. The two are in different units, so a
+    //caller that does not ask is reading one as the other.
+    bool popupExtentFollowsEditor() const;
     //The rectangle the overview drew for one node THIS FRAME, in screen pixels — all-zero if it drew none
     //(the overview is off, or the node was not reached). Exposed because
     //the alternative is guessing which quad in a draw list belongs to which node, and a test that guesses that
@@ -129,6 +133,10 @@ public:
     bool  miniMap() const;
     void  setMiniMap(bool on);
     void selectNode(int index);
+    //Drive one field's WRITE path directly. Exposed for the malformed-package tests: the write is what throws
+    //on a value of the wrong type, and reaching it through synthetic clicks means a test can pass by never
+    //getting there — which is exactly how an earlier version of that test passed with the guards deleted.
+    void writeFieldForTest(int index, const char *key, const char *sub, const char *value);
 
 signals:
     void documentChanged();                       // the canvas mutated the document (already saved)

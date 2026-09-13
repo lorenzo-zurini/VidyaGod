@@ -18,6 +18,7 @@
 
 #include <array>
 #include <cstring>
+#include <functional>
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -2429,30 +2430,64 @@ private slots:
         Canvas->invalidateGraph();
         runFrame(); runFrame();
         QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled");
-
-        // Click over every row of the node. Before the guard this reached a dropdown belonging to a string
-        // entry and terminated; the assertion is simply that we are still here afterwards, with the document
-        // unchanged where it was not an object.
-        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
-        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
-        const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
-        const ImVec2 D = ImNodes::GetNodeDimensions(N);
-        for (float fy = 0.05f; fy < 0.98f; fy += 0.03f)
-            for (float fx : {0.3f, 0.75f}) {
-                const ImVec2 At(P.x + D.x * fx, P.y + D.y * fy);
-                if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
-                clickAt(At);
-                runFrame();
-            }
-        closeAnyPopup();
         QVERIFY2(Doc["NODES"][N]["EDITS"][0].is_string(), "the string entry was rewritten");
-        QVERIFY2(Doc["NODES"][N]["EDITS"][1].is_number(), "the number entry was rewritten");
-        // And the height estimate agrees with the short form those entries actually draw as.
+        // The height estimate agrees with the short form those entries actually draw as.
         const float Est = Canvas->graph().Nodes[(size_t)N].Height;
         const float Drawn = ImNodes::GetNodeDimensions(N).y;
         QVERIFY2(Est >= Drawn && Est - Drawn < 120.0f,
                  qPrintable(QString("a node of malformed entries is drawn %1px and estimated %2px")
                                 .arg(Drawn).arg(Est)));
+    }
+
+    // The crash itself, DRIVEN rather than hoped for. nlohmann's operator[](string) throws type_error.305 on a
+    // value that is not an object, and this editor's purpose is opening packages that are wrong — so every
+    // WRITE path that goes through a key has to refuse rather than throw, because the throw leaves frame() and
+    // paintGL, which has no catch, and terminates the application.
+    //
+    // A previous version of this test clicked blindly down the node and asserted "we are still here", which is
+    // liveness against an event it never triggered: deleting both guards left it passing. These call the write
+    // paths directly, which is the only way to be sure the throw is what is being prevented.
+    void everyFieldWriteRefusesAMalformedValueInsteadOfThrowing()
+    {
+        Canvas->setMiniMap(false);
+        QStringList survived;
+        auto attempt = [&](const char *What, const std::function<void()> &Write) {
+            try { Write(); }
+            catch (const std::exception &E)
+            { survived << QString("%1: threw %2").arg(What).arg(E.what()); }
+        };
+
+        // KeyValue: the "+ add" button and a rename both write Node[key][sub].
+        for (const char *Bad : {"\"oops\"", "5", "[]", "true", "null"}) {
+            const int N = Canvas->addNode("DllOverride", 200, 200);
+            Doc["NODES"][N]["OVERRIDES"] = json::parse(Bad);
+            Canvas->invalidateGraph(); runFrame();
+            attempt(QString("DllOverride OVERRIDES=%1").arg(Bad).toUtf8().constData(),
+                    [&] { Canvas->writeFieldForTest(N, "OVERRIDES", "k", "v"); });
+            Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
+        }
+        // Cover: one KEYSTROKE reached Node[key]["PATH"].
+        for (const char *Bad : {"5", "[]", "true"}) {
+            const int N = Canvas->addNode("DeclareLibraryItem", 200, 200);
+            Doc["NODES"][N]["COVER"] = json::parse(Bad);
+            Canvas->invalidateGraph(); runFrame();
+            attempt(QString("DeclareLibraryItem COVER=%1").arg(Bad).toUtf8().constData(),
+                    [&] { Canvas->writeFieldForTest(N, "COVER", "PATH", "x.png"); });
+            Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
+        }
+        // A NODES entry that is not an object at all: renameNode and the envelope both write through it.
+        {
+            Doc["NODES"].push_back("not a node");
+            Canvas->invalidateGraph(); runFrame(); runFrame();
+            const int Last = (int)Doc["NODES"].size() - 1;
+            attempt("a NODES entry that is a string", [&] { Canvas->renameNode(Last, "newid"); });
+            attempt("drawing a NODES entry that is a string", [&] { runFrame(); runFrame(); });
+            Doc["NODES"].erase(Doc["NODES"].size() - 1);
+            Canvas->invalidateGraph(); runFrame();
+        }
+        QVERIFY2(survived.isEmpty(),
+                 qPrintable("a malformed package terminated the editor instead of displaying:\n  "
+                            + survived.join("\n  ")));
     }
 
     // The popup extent repoint stands down when the region is too short to hold a dropdown, because below
@@ -2464,21 +2499,51 @@ private slots:
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 300, 300);
         QStringList outliers;
+        //A SMALL display as well as the usual one, so the stand-down branch is reached: at 3x on a 1400x900
+        //canvas the region is still 283 units tall, so every zoom this test can reach stays above the
+        //threshold and the branch was never executed.
+        for (const ImVec2 Disp : {ImVec2(1400, 900), ImVec2(700, 420)})
         for (float z : {0.5f, 1.0f, 2.0f, 3.0f}) {
+            DisplayOverride = Disp;
             Canvas->setZoom(z);
             runFrame(); runFrame();
             float ax = 0, ay = 0, bx = 0, by = 0;
             Canvas->canvasViewport(ax, ay, bx, by);
             // What the editor lays out in, in world units, and what a combo popup needs (8 items).
             const float WorldH = (by - ay) / z;
-            if (WorldH <= 200.0f) continue;              // the stand-down case; nothing to assert
             float ex = 0, ey = 0, ew = 0, eh = 0;
             Canvas->popupExtent(ex, ey, ew, eh);
-            if (std::abs(eh - WorldH) > 2.0f)
-                outliers << QString("zoom %1: the canvas is %2 world units tall and the popup extent is %3 - "
+            if (!Canvas->popupExtentFollowsEditor())
+            {
+                //The stand-down: it must be the REAL screen viewport, not a half-applied mixture, and it must
+                //only happen when the region really is too small. An earlier version skipped this case with a
+                //`continue`, which meant the branch its own comment was about had no coverage at all.
+                const ImVec2 Disp = ImGui::GetIO().DisplaySize;
+                if (WorldH > 220.0f && (bx - ax) / z > 320.0f)
+                    outliers << QString("zoom %1: the region is %2x%3 world units, big enough for a dropdown, "
+                                        "and the extent stood down anyway")
+                                    .arg(z).arg((bx - ax) / z).arg(WorldH);
+                else if (std::abs(ew - Disp.x) > 2.0f || std::abs(eh - Disp.y) > 2.0f)
+                    outliers << QString("zoom %1: stood down but the extent is %2x%3, not the %4x%5 display")
+                                    .arg(z).arg(ew).arg(eh).arg(Disp.x).arg(Disp.y);
+                continue;
+            }
+            //The whole rectangle, not just its height: a repoint that moved the origin somewhere else would
+            //place every dropdown wrong while the height matched perfectly.
+            //The whole rectangle, not just its height: a repoint that moved the origin would place every
+            //dropdown wrong while the height matched perfectly.
+            if (std::abs(eh - WorldH) > 2.0f || std::abs(ew - (bx - ax) / z) > 2.0f)
+                outliers << QString("zoom %1: the canvas is %2x%3 world units and the popup extent is %4x%5 - "
                                     "in-node dropdowns are being placed against the wrong rectangle")
-                                .arg(z).arg(WorldH).arg(eh);
+                                .arg(z).arg((bx - ax) / z).arg(WorldH).arg(ew).arg(eh);
+            //The ORIGIN is the canvas origin at every zoom: the region is the viewport inverse-transformed
+            //ABOUT that origin, so the corner it is anchored at does not move. That is worth asserting
+            //separately from the size, because it is what decides WHERE a popup lands.
+            if (std::abs(ex - ax) > 2.0f || std::abs(ey - ay) > 2.0f)
+                outliers << QString("zoom %1: the popup extent starts at (%2,%3), not the canvas origin (%4,%5)")
+                                .arg(z).arg(ex).arg(ey).arg(ax).arg(ay);
         }
+        DisplayOverride = ImVec2(0, 0);
         Canvas->setZoom(1.0f);
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
     }
@@ -2512,6 +2577,51 @@ private slots:
         QVERIFY2(Warnings == 2,
                  qPrintable(QString("the second node's warning was swallowed by the deleted node's entry "
                                     "(%1 warnings, expected 2)").arg(Warnings)));
+    }
+
+    // The OTHER producer of a warned-about key. flushPositions refuses an impossible position coming back from
+    // imnodes and must, like the Build-rejection path, say it once per node and not suppress a later node's.
+    // Both producers write into one set, and an earlier round had them writing two different key shapes so the
+    // maintenance covered one and silently ignored the other — reintroducing that is invisible to every other
+    // test in this suite, because nothing else drives this path at all.
+    void anImpossiblePositionFromTheEditorIsReportedOncePerNode()
+    {
+        Canvas->setMiniMap(false);
+        const int A = Canvas->addNode("Content", 100, 100);
+        runFrame(); runFrame();
+
+        int Warnings = 0;
+        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
+            if (L == LogLevel::WARN && M.find("refused an impossible position") != std::string::npos) ++Warnings;
+        });
+
+        // Reach past the canvas and put an impossible position into imnodes itself — which is exactly what the
+        // guarded minimap drag used to do, and what any future defect in this area would do again.
+        for (int i = 0; i < 6; ++i) {
+            ImNodes::SetNodeGridSpacePos(A, ImVec2(5.0e9f, 5.0e9f));
+            runFrame();
+        }
+        QVERIFY2(Warnings >= 1, "the impossible position was accepted silently");
+        QVERIFY2(Warnings <= 2,
+                 qPrintable(QString("six frames produced %1 warnings - it is firing per frame").arg(Warnings)));
+        // The node keeps a sane position, and nothing absurd reached the layout.
+        const PkgGraph::Graph G = Canvas->graph();
+        QVERIFY2(std::abs(G.Nodes[(size_t)A].X) < 1.0e6f, "the impossible position reached the graph");
+        QVERIFY2(!QString::fromStdString(Layout.dump()).contains("e+09"), "it reached the saved layout");
+
+        // Now a DIFFERENT node reusing the same id must still be able to warn — the failure mode when the two
+        // producers disagree about the key shape is that this one is swallowed.
+        const std::string Id = Doc["NODES"][A].value("NODE_ID", std::string());
+        Canvas->removeNode(A);
+        const int B = Canvas->addNode("Content", 400, 100);
+        Doc["NODES"][B]["NODE_ID"] = Id;
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        const int Before = Warnings;
+        for (int i = 0; i < 3; ++i) { ImNodes::SetNodeGridSpacePos(B, ImVec2(7.0e9f, 7.0e9f)); runFrame(); }
+        QVERIFY2(Warnings > Before,
+                 "a second node's impossible position was swallowed by the first node's entry");
     }
 
     void zoomIsClampedAndDefaultsToUnity()
@@ -2646,7 +2756,7 @@ private:
     void runFrame(ImVec2 mouse = ImVec2(400, 300))
     {
         ImGuiIO &io = ImGui::GetIO();
-        io.DisplaySize = ImVec2(1400, 900);
+        io.DisplaySize = (DisplayOverride.x > 0.0f) ? DisplayOverride : ImVec2(1400, 900);
         io.DeltaTime = 1.0f / 60.0f;
         io.AddMousePosEvent(mouse.x, mouse.y);
         LastMouse = mouse;
@@ -2666,6 +2776,9 @@ private:
     }
 
     ImVec2 LastMouse = ImVec2(400, 300);
+    //Lets one test drive a display size other than the harness default, to reach a branch that only exists on
+    //a small canvas. Reset to (0,0) — meaning "use the default" — by whoever sets it.
+    ImVec2 DisplayOverride = ImVec2(0, 0);
 
 private:
     json Doc;

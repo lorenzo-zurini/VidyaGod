@@ -279,10 +279,11 @@ TEST(an_empty_graph_is_not_a_crash)
 //picture was unreadable, which is why this one has to be asserted directly.
 //
 //Overlap is checked as RECTANGLES, per column: two nodes at the same X overlap when their [Y, Y+Height) spans
-//intersect. The X threshold is the DRAWN body width (346px for most types today, measured by the GUI suite's
-//theEstimatedNodeHeightMatchesTheDrawnOne, which fails if a node ever reaches the 430px column step) — not
-//kNodeWidth, which is the interior width and 16px narrower, so two nodes 330-345 units apart overlapped by up
-//to 16px and slipped through an earlier version of this check.
+//intersect. The X threshold is the WIDEST drawn body — 355px, which is RegEdit; most types are 346. Not
+//kNodeWidth (330): that is the interior width, so two nodes 330-354 units apart overlap by up to 25px and
+//slipped through earlier versions of this check, which used 330 and then 346. The GUI suite's
+//theEstimatedNodeHeightMatchesTheDrawnOne fails if any node reaches the 430px column step, which is the
+//property that keeps different COLUMNS from colliding; this one is about nodes inside a column.
 TEST(tall_nodes_do_not_overlap_the_ones_below_them)
 {
     ordered_json A = ordered_json::array();
@@ -324,7 +325,7 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;   // overlapping in X, not identical
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 355.0f) continue;   // overlapping in X, not identical
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1) ++Overlaps;
@@ -370,7 +371,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     for (size_t I = 0; I < G.Nodes.size(); ++I)
         for (size_t J = I + 1; J < G.Nodes.size(); ++J)
         {
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;   // overlapping in X, not identical
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 355.0f) continue;   // overlapping in X, not identical
             const float Top1 = G.Nodes[I].Y, Bot1 = Top1 + G.Nodes[I].Height;
             const float Top2 = G.Nodes[J].Y, Bot2 = Top2 + G.Nodes[J].Height;
             if (Top1 < Bot2 && Top2 < Bot1)
@@ -450,7 +451,7 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
     for (const auto &N : G.Nodes)
     {
         MinX = std::min(MinX, N.X);             MinY = std::min(MinY, N.Y);
-        MaxX = std::max(MaxX, N.X + 346.0f);    MaxY = std::max(MaxY, N.Y + N.Height);
+        MaxX = std::max(MaxX, N.X + 355.0f);    MaxY = std::max(MaxY, N.Y + N.Height);
     }
     const float W = MaxX - MinX, H = MaxY - MinY;
     const float Aspect = W / H;
@@ -469,11 +470,61 @@ TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
         {
             //Overlapping in X, not identically placed in it: two nodes 100 units apart share 230px of a
             //330px body and collide just as much as two in the same column. An equality test sees neither.
-            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 346.0f) continue;
+            if (std::abs(G.Nodes[I].X - G.Nodes[J].X) >= 355.0f) continue;
             if (G.Nodes[I].Y < G.Nodes[J].Y + G.Nodes[J].Height
                 && G.Nodes[J].Y < G.Nodes[I].Y + G.Nodes[I].Height) ++Overlaps;
         }
     CHECK_EQ(Overlaps, 0);
+}
+
+//Build REFUSES a declared position it could not have produced, and hands the refusal back rather than logging
+//it (it runs per keystroke in the editor). Both halves have to be observable, and neither was: deleting the
+//malformed-shape record left every suite green, because the only test feeding a bad POS used the out-of-range
+//arm and never looked at what came back.
+TEST(every_refused_position_is_handed_back_with_its_reason)
+{
+    ordered_json A = ordered_json::array();
+    auto N = [&](const char *Id, ordered_json Pos) {
+        ordered_json J; J["NODE_ID"] = Id; J["TYPE"] = "Group";
+        if (!Pos.is_null()) J["POS"] = Pos;
+        A.push_back(J);
+    };
+    N("ok",       ordered_json::array({120, 340}));
+    N("huge",     ordered_json::array({5e9, 5e9}));                     // out of range
+    N("strings",  ordered_json::array({"10", "20"}));                   // malformed shape
+    N("three",    ordered_json::array({1, 2, 3}));                      // malformed shape
+    N("object",   ordered_json{{"x", 1}, {"y", 2}});                    // malformed shape
+    N("none",     ordered_json());
+
+    const PkgGraph::Graph G = PkgGraph::Build(A);
+    //One record per refusal, and none for the good one or the absent one.
+    CHECK_EQ(G.RejectedPositions.size(), (size_t)4);
+    std::set<std::string> Ids;
+    for (const auto &R : G.RejectedPositions)
+    {
+        Ids.insert(R.NodeId);
+        CHECK(!R.Source.empty());
+        CHECK(!R.Value.empty());
+        //Never the raw value: a package from a content source can carry a megabytes-long POS, and this is
+        //built on the per-keystroke path.
+        CHECK(R.Value.size() < 80);
+    }
+    CHECK(Ids.count("huge") == 1);
+    CHECK(Ids.count("strings") == 1);
+    CHECK(Ids.count("three") == 1);
+    CHECK(Ids.count("object") == 1);
+    CHECK(Ids.count("ok") == 0);
+    CHECK(Ids.count("none") == 0);
+
+    //And this machine's override is named as a DIFFERENT source from the package's own POS, because the two
+    //are fixed in different places.
+    ordered_json Layout = ordered_json::object();
+    Layout["ok"] = ordered_json::array({1e300, 4.0});
+    const PkgGraph::Graph G2 = PkgGraph::Build(A, &Layout);
+    bool SawOverride = false;
+    for (const auto &R : G2.RejectedPositions)
+        if (R.NodeId == "ok") { SawOverride = true; CHECK(R.Source.find("machine") != std::string::npos); }
+    CHECK(SawOverride);
 }
 
 TEST(a_layered_graph_lays_out_at_pinned_coordinates)
