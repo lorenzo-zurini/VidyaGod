@@ -55,6 +55,18 @@ bool WritableObject(json &Node, const char *Key)
     return Node[Key].is_object();
 }
 
+//Write Node[Key][Sub] = Value, or refuse. ONE function rather than a guard at each call site, because a guard
+//at a call site can be deleted there and nothing else notices — which is exactly what a mutation showed:
+//removing `&& WritableObject(...)` from the two writers left every suite green, so the test that was supposed
+//to cover them was testing a parallel copy of the pattern rather than the code the UI runs. There is no guard
+//to delete here; the write and the refusal are the same statement, and the tests drive THIS.
+bool WriteSubKey(json &Node, const char *Key, const std::string &Sub, const json &Value)
+{
+    if (!WritableObject(Node, Key)) return false;
+    Node[Key][Sub] = Value;
+    return true;
+}
+
 //A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
 //editor is the cursor inverse-transformed into world space — so at 0.5x the tooltip lands twice as far from the
 //origin as the pointer that raised it and gets clamped into a corner of the screen, and at 3x it lands a third
@@ -94,6 +106,8 @@ struct EditorIoGuard
         : Io(I), VP(ImGui::GetMainViewport()), Pos(I.MousePos), Delta(I.MouseDelta),
           VPos(VP->Pos), VSize(VP->Size), VWorkPos(VP->WorkPos), VWorkSize(VP->WorkSize) {}
     void popClip() { if (Clip) { ImGui::PopClipRect(); Clip = false; } }
+    void restoreViewport()
+    { VP->Pos = VPos; VP->Size = VSize; VP->WorkPos = VWorkPos; VP->WorkSize = VWorkSize; }
     //The viewport is in here rather than relying on "there is no early return between" — SetupDrawData takes
     //the backend's projection straight from it, so reaching Render() with it still pointed at the world region
     //draws the WHOLE application frame at the wrong scale. Restoring it twice (here and after EndNodeEditor)
@@ -102,7 +116,7 @@ struct EditorIoGuard
     {
         popClip();
         Io.MousePos = Pos; Io.MouseDelta = Delta;
-        VP->Pos = VPos; VP->Size = VSize; VP->WorkPos = VWorkPos; VP->WorkSize = VWorkSize;
+        restoreViewport();
     }
     EditorIoGuard(const EditorIoGuard &) = delete;
     EditorIoGuard &operator=(const EditorIoGuard &) = delete;
@@ -224,10 +238,12 @@ struct PkgCanvasState
     std::vector<ImVec4> MiniBoxes;
     //The viewport rectangle in-node popups were placed against last frame (position + size).
     //The rectangle in-node popups were placed against last frame (position + size). In the editor's own units
-    //when the repoint applied, and the real screen viewport when it stood down — different spaces, so
-    //PopupExtentRepointed says which, and a caller that does not ask is reading one as the other.
+    //always in the editor's own units: it is the region enlarged to fit a dropdown, never the screen.
     ImVec4 PopupExtent{0, 0, 0, 0};
-    bool   PopupExtentRepointed = false;
+    //The main viewport and its work rect at the point post-editor windows are submitted — the minimap child
+    //and the delete-confirmation modal. Both must be back in SCREEN space by then.
+    ImVec4 PostEditorViewport{0, 0, 0, 0};
+    ImVec4 PostEditorWorkRect{0, 0, 0, 0};
     //The cursor position actually handed to the editor. Zoom scales the emitted geometry, so input must be
     //inverse-transformed on the way IN or every click lands where the node would have been drawn unzoomed.
     //Recorded because that mapping is otherwise invisible — and a click landing on the wrong node is the
@@ -458,7 +474,14 @@ int PkgCanvas::surfaceVertices() const { return m_s->SurfaceVertices; }
 int PkgCanvas::cachedNodeSizes() const { return (int)m_s->NodeDims.size(); }
 void PkgCanvas::popupExtent(float &X, float &Y, float &W, float &H) const
 { X = m_s->PopupExtent.x; Y = m_s->PopupExtent.y; W = m_s->PopupExtent.z; H = m_s->PopupExtent.w; }
-bool PkgCanvas::popupExtentFollowsEditor() const { return m_s->PopupExtentRepointed; }
+void PkgCanvas::postEditorViewport(float &X, float &Y, float &W, float &H, float &WX, float &WY,
+                                   float &WW, float &WH) const
+{
+    X = m_s->PostEditorViewport.x; Y = m_s->PostEditorViewport.y;
+    W = m_s->PostEditorViewport.z; H = m_s->PostEditorViewport.w;
+    WX = m_s->PostEditorWorkRect.x; WY = m_s->PostEditorWorkRect.y;
+    WW = m_s->PostEditorWorkRect.z; WH = m_s->PostEditorWorkRect.w;
+}
 void PkgCanvas::miniMapNodeBox(int Index, float &X, float &Y, float &W, float &H) const
 {
     X = Y = W = H = 0.0f;
@@ -472,8 +495,10 @@ void PkgCanvas::canvasViewport(float &MinX, float &MinY, float &MaxX, float &Max
 void PkgCanvas::writeFieldForTest(int Index, const char *Key, const char *Sub, const char *Value)
 {
     json &Ns = m_s->Nodes();
-    if (Index < 0 || Index >= (int)Ns.size() || !Ns[Index].is_object()) return;
-    if (WritableObject(Ns[Index], Key)) { Ns[Index][Key][Sub] = Value; m_s->MarkDirty(); }
+    if (Index < 0 || Index >= (int)Ns.size()) return;
+    //The SAME function the KeyValue and Cover writers call, not a copy of it — the previous version of this
+    //hook reimplemented the pattern, so deleting the guards at those two call sites left the suite green.
+    if (WriteSubKey(Ns[Index], Key, Sub, Value)) m_s->MarkDirty();
 }
 
 void PkgCanvas::selectNode(int index)
@@ -786,12 +811,12 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             if (WritableObject(Node, F.Key))
             {
                 Node[F.Key].erase(Rename.first);
-                Node[F.Key][Rename.second] = V;
-                m_s->MarkDirty();
+                if (WriteSubKey(Node, F.Key, Rename.second, V)) m_s->MarkDirty();
             }
         }
-        if (ImGui::SmallButton("+ add") && WritableObject(Node, F.Key))
-        { Node[F.Key][""] = F.Options.empty() ? "" : F.Options.front().first; m_s->MarkDirty(); }
+        if (ImGui::SmallButton("+ add")
+            && WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first))
+            m_s->MarkDirty();
         break;
     }
     case FieldKind::ObjArray:
@@ -826,7 +851,13 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         }
         if ((int)Arr.size() > Cap) ImGui::TextDisabled("... and %d more (edit in the JSON view)", (int)Arr.size() - Cap);
         if (Del >= 0) { Arr.erase(Del); m_s->MarkDirty(); }
-        if (ImGui::SmallButton("+ add entry"))
+        //Refuses rather than overwrites when the value is there but is not an array. The Cover and KeyValue
+        //writers next door were taught to refuse a malformed value in the same sweep that left this one
+        //destroying it: a hand-edited object here was replaced by an empty array on one click, MarkDirty'd,
+        //and saved — silent data loss in the editor you opened to REPAIR the package.
+        const bool Replaceable = !Node.contains(F.Key) || Node[F.Key].is_null() || Node[F.Key].is_array();
+        if (!Replaceable) ImGui::TextDisabled("(this field is not a list - fix it in the JSON view)");
+        else if (ImGui::SmallButton("+ add entry"))
         {
             if (!Present) Node[F.Key] = json::array();      // materialise only when something is added
             json E = json::object();
@@ -859,7 +890,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             //The `else` used to be unconditional, so a COVER that was a number, an array or a bool threw on
             //the FIRST KEYSTROKE — no click needed, and the comment above stopped at the string case.
             if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; m_s->MarkDirty(); }
-            else if (WritableObject(Node, F.Key))                { Node[F.Key]["PATH"] = P; m_s->MarkDirty(); }
+            else if (WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("browse")) m_s->Pending = {StrOf(Node, "NODE_ID"), "browse_cover"};
@@ -952,7 +983,11 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
         ImGui::PopID();
     }
     if (DelEntry >= 0) { Edits.erase(DelEntry); m_s->MarkDirty(); }
-    if (ImGui::SmallButton("+ group"))
+    //Same refusal: a hand-edited `"EDITS": {"HKLM": {...}}` lost its entire registry tree to one click here.
+    const bool EditsReplaceable = !Node.is_object() || !Node.contains("EDITS")
+                               || Node["EDITS"].is_null() || Node["EDITS"].is_array();
+    if (!EditsReplaceable) ImGui::TextDisabled("(EDITS is not a list - fix it in the JSON view)");
+    else if (ImGui::SmallButton("+ group"))
     {
         if (!HasEdits) Node["EDITS"] = json::array();
         Node["EDITS"].push_back(json::object({{"ARCHITECTURE", json::array({"32"})}}));
@@ -1078,9 +1113,24 @@ void PkgCanvas::drawPayload(json &Node, int Index)
 
 void PkgCanvas::drawNode(int Index, Graph &G)
 {
-    json &Node = m_s->Nodes()[Index];
-    const std::string Type = StrOf(Node, "TYPE", "Group");
-    const std::string Id   = StrOf(Node, "NODE_ID");
+    //Bounds FIRST. nlohmann's non-const operator[](size_type) GROWS the array with nulls up to the index — the
+    //hazard this file documents elsewhere — so binding the reference before the check made the check
+    //unfalsifiable and would have appended nulls to the document had it ever been reachable.
+    json &Ns = m_s->Nodes();
+    if (Index < 0 || Index >= (int)Ns.size()) return;
+
+    //A NODES entry that is not an object is kept as a placeholder so indices stay aligned (PkgGraph::Build),
+    //and it used to be rendered like any other node — where one character in the id box reaches
+    //`Ns[index]["NODE_ID"] = ...` and drawEnvelope reaches `Node.erase("TOGGLE")`, i.e. type_error.305 and
+    //307 out of paintGL, which has no catch. It draws as a box that says what is wrong and offers nothing to
+    //touch — but it is a NORMAL node in every other respect: same colour pushes and pops (an early return
+    //between the pushes and the pops leaked three ImNodesColElement per frame, forever, on a canvas left open
+    //with one malformed node in it), and the same position seeding, or it is drawn at the grid origin while
+    //the layout, the culling test and the overview all place it in its computed slot.
+    const bool Malformed = !Ns[Index].is_object();
+    json &Node = Ns[Index];
+    const std::string Type = Malformed ? std::string("Group") : StrOf(Node, "TYPE", "Group");
+    const std::string Id   = Malformed ? std::string()        : StrOf(Node, "NODE_ID");
 
     int R, Gc, B;
     TypeColour(Type, R, Gc, B);
@@ -1088,22 +1138,21 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     ImNodes::PushColorStyle(ImNodesCol_TitleBarHovered,  IM_COL32(R + 26, Gc + 26, B + 26, 255));
     ImNodes::PushColorStyle(ImNodesCol_TitleBarSelected, IM_COL32(R + 40, Gc + 40, B + 40, 255));
 
-    //A NODES entry that is not an object is kept as a placeholder so indices stay aligned (PkgGraph::Build),
-    //and it was then rendered like any other node — where one character in the id box reaches
-    //`Ns[index]["NODE_ID"] = ...` and drawEnvelope reaches `Node.erase("TOGGLE")`, i.e. type_error.305 and
-    //307 out of paintGL. It draws as a box that says what is wrong and offers nothing to touch.
-    if (Index < (int)m_s->Nodes().size() && !m_s->Nodes()[Index].is_object())
+    ImNodes::BeginNode(Index);
+    if (Malformed)
     {
-        ImNodes::BeginNode(Index);
         ImNodes::BeginNodeTitleBar();
         ImGui::TextUnformatted("malformed node");
         ImNodes::EndNodeTitleBar();
         ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
         ImGui::TextDisabled("this entry is not a JSON object - fix it in the JSON view");
         ImNodes::EndNode();
+        seedNodePosition(Index, G);
+        ImNodes::PopColorStyle();
+        ImNodes::PopColorStyle();
+        ImNodes::PopColorStyle();
         return;
     }
-    ImNodes::BeginNode(Index);
 
     ImNodes::BeginNodeTitleBar();
     ImGui::TextUnformatted(Type.c_str());
@@ -1152,14 +1201,24 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     ImNodes::PopColorStyle();
     ImNodes::PopColorStyle();
 
-    // Seed imnodes with this node's position the first time it is drawn, and re-seed if its index moved.
-    // Previously this ran only for nodes with NO stored position, so a saved layout was never restored: every
-    // node rendered at imnodes' default origin and the next mouse-release wrote [0,0] over the whole bundle.
+    seedNodePosition(Index, G);
+}
+
+// Seed imnodes with this node's position the first time it is drawn, and re-seed if its index moved.
+// Previously this ran only for nodes with NO stored position, so a saved layout was never restored: every
+// node rendered at imnodes' default origin and the next mouse-release wrote [0,0] over the whole bundle.
+//
+// Its own function because the malformed-node placeholder needs it too — it returns early, and without this
+// it was drawn at the grid origin while the layout, the viewport culling and the overview all placed it in
+// its computed slot: the box you could see vanished when you panned to where it supposedly was.
+void PkgCanvas::seedNodePosition(int Index, const Graph &G)
+{
+    const std::string Id = G.Nodes[(size_t)Index].Id;
     auto Sit = m_s->Seeded.find(Id);
     //Re-seed when the index moved (a different node now owns this id) OR when the node was not submitted last
-    //frame: in that case imnodes destroyed it and BeginNode above just created a fresh one at (0,0). Skipping
-    //the re-seed there is how a node that scrolled out and back collapsed to the origin — and the read-back
-    //then wrote that origin into the layout.
+    //frame: in that case imnodes destroyed it and BeginNode just created a fresh one at (0,0). Skipping the
+    //re-seed there is how a node that scrolled out and back collapsed to the origin — and the read-back then
+    //wrote that origin into the layout.
     if (Sit == m_s->Seeded.end() || Sit->second != Index || !m_s->DrawnLast.count(Id))
     {
         //UNSCALED. Zoom is a view transform applied to the emitted geometry, not to the coordinates —
@@ -1544,34 +1603,29 @@ void PkgCanvas::frame()
     //the toolbar, which is what it should do anyway. Skipping it there left a discontinuity at exactly 1.0
     //with no reason behind it.
     //
-    //Except when the region is too SHORT to hold a popup: FindBestWindowPosForPopupEx pins a popup taller
-    //than the allowed extent to that extent's top-left corner, so below the cap EVERY dropdown would land in
-    //the canvas corner regardless of its widget — far worse than the misplacement this fixes.
+    //A popup is placed against this rectangle and PINNED TO ITS CORNER if it does not fit, so the rectangle
+    //has to be at least as big as a dropdown: ~136 world units for a combo's eight items, and a field's own
+    //width. Both caps are in WORLD units — the editor lays out with an unscaled font — which an earlier
+    //version got backwards, demanding 300 SCREEN-equivalent units and so switching the whole repoint off at
+    //3x on an ordinary canvas.
     //
-    //Both sides of that comparison are in WORLD units. The editor lays out with an unscaled font and the
-    //transform runs afterwards, so a combo's eight-item cap is ~136 world units whatever the zoom, and the
-    //region is screen/zoom. An earlier version demanded 300 in both axes and described it as "a canvas
-    //shorter than 136 * zoom" — the inverse of what it did: on an ordinary 1400x900 canvas the region is 286
-    //units tall at 3x, so the repoint switched ITSELF OFF at the top of the zoom range, which is exactly
-    //where the misplacement is largest. Both axes, against the real caps: ~136 units for a combo's eight
-    //items, and a field's own width for how wide a dropdown gets — dropping the x half left a canvas narrower
-    //than ~684px at 3x corner-pinning every dropdown HORIZONTALLY, the same failure this guard exists for.
+    //ENLARGED to the cap rather than standing down. Standing down was a single boolean governing two
+    //independent caps: a narrow-but-tall canvas lost the vertical repoint it did not need to lose, putting
+    //every dropdown back in screen space. Growing the rectangle about the region's centre keeps the
+    //repoint in both axes at every zoom and on every canvas, and there is no branch left to be untested.
     ImGuiViewport *VPort = ImGui::GetMainViewport();
-    const ImVec2 VPosWas = VPort->Pos, VSizeWas = VPort->Size;
     const ImVec2 VWorld(SubClipMax.x - SubClipMin.x, SubClipMax.y - SubClipMin.y);
-    if (VWorld.y > 200.0f && VWorld.x > kFieldWidth + 80.0f)
-    {
-        VPort->Pos  = SubClipMin;
-        VPort->Size = VWorld;
-        //WorkPos/WorkSize describe the same viewport minus any menu bars, and leaving them in screen space
-        //while Pos/Size move to world space means GetMainRect() and GetWorkRect() answer in different
-        //coordinate systems. Nothing in the editor reads the work rect today; a landmine with no sign on it
-        //is worse than one extra pair of assignments.
-        VPort->WorkPos  = VPort->Pos;
-        VPort->WorkSize = VPort->Size;
-    }
+    const ImVec2 VMin(kFieldWidth + 80.0f, 200.0f);
+    const ImVec2 VSize(std::max(VWorld.x, VMin.x), std::max(VWorld.y, VMin.y));
+    VPort->Pos  = ImVec2(SubClipMin.x - (VSize.x - VWorld.x) * 0.5f,
+                         SubClipMin.y - (VSize.y - VWorld.y) * 0.5f);
+    VPort->Size = VSize;
+    //WorkPos/WorkSize describe the same viewport minus any menu bars, and leaving them in screen space while
+    //Pos/Size move to world space means GetMainRect() and GetWorkRect() answer in different coordinate
+    //systems — ImGui::Begin clamps against one while FindBestWindowPosForPopup reads the other.
+    VPort->WorkPos  = VPort->Pos;
+    VPort->WorkSize = VPort->Size;
     m_s->PopupExtent = ImVec4(VPort->Pos.x, VPort->Pos.y, VPort->Size.x, VPort->Size.y);
-    m_s->PopupExtentRepointed = (VWorld.y > 200.0f && VWorld.x > kFieldWidth + 80.0f);
     //The editor draws into the scrolling CHILD's draw list, not the parent's. Keep the pointer and the
     //high-water marks: everything appended between here and EndNodeEditor is the surface to transform.
     ImDrawList *Surface = ImGui::GetWindowDrawList();
@@ -1704,10 +1758,11 @@ void PkgCanvas::frame()
     IoGuard.popClip();
     ImNodes::EndNodeEditor();
     GImNodes->CanvasRectScreenSpace = CanvasRectWas;
-    //Pos/Size only. WorkPos/WorkSize are restored by the guard, which saved their real values — copying
-    //Pos/Size over them here wrote the wrong rect on any viewport with a menu bar, and did it even on the
-    //stand-down path where they had never been touched.
-    VPort->Pos = VPosWas; VPort->Size = VSizeWas;
+    //Both pairs, from what was actually saved. Restoring only Pos/Size left WorkPos/WorkSize pointing at the
+    //world region for the whole post-editor section — where the minimap child and the delete-confirmation
+    //modal are submitted, and where ImGui::Begin clamps a window against the work rect while
+    //FindBestWindowPosForPopup reads the main one: two coordinate systems inside one placement path.
+    IoGuard.restoreViewport();
     ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
     ZIO.MouseDelta = RealDelta;                     // (also the guard's job, on the path where this is skipped)
     //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
@@ -1873,6 +1928,16 @@ void PkgCanvas::frame()
     //(a draw list appended to the parent would end up UNDERNEATH the canvas background). Screen furniture:
     //its rectangle came from the canvas viewport, never from the zoom, so it holds its corner at 0.2x and 3x
     //alike — the built-in one rode the transform and slid off the screen.
+    //The viewport as it stands at the point post-editor windows are submitted. Recorded because that is the
+    //only place the restore is observable: imgui's NewFrame recomputes the main viewport every frame, so a
+    //viewport left in world space at the END of frame() is invisible from outside — while WITHIN the frame it
+    //is what ImGui::Begin clamps this child, and the delete-confirmation modal, against.
+    {
+        const ImGuiViewport *VPNow = ImGui::GetMainViewport();
+        m_s->PostEditorViewport = ImVec4(VPNow->Pos.x, VPNow->Pos.y, VPNow->Size.x, VPNow->Size.y);
+        m_s->PostEditorWorkRect = ImVec4(VPNow->WorkPos.x, VPNow->WorkPos.y,
+                                         VPNow->WorkSize.x, VPNow->WorkSize.y);
+    }
     if (MiniScale > 0.0f)
     {
         const ImVec2 Size(MiniRect.z - MiniRect.x, MiniRect.w - MiniRect.y);

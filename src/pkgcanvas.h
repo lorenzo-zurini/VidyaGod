@@ -121,10 +121,11 @@ public:
     //The rectangle in-node popups were placed against last frame, in the editor's own (world) units. A combo
     //dropdown is positioned from its widget's rect against this, and the two have to be the same space.
     void popupExtent(float &X, float &Y, float &W, float &H) const;
-    //Whether that rectangle is the editor's own region (true) or the real screen viewport, which is what it
-    //falls back to when the region is too small to hold a dropdown. The two are in different units, so a
-    //caller that does not ask is reading one as the other.
-    bool popupExtentFollowsEditor() const;
+    //The main viewport and its work rect at the moment post-editor windows (the overview, the delete modal)
+    //are submitted. Both have to be back in SCREEN space by then; imgui rebuilds the viewport every NewFrame,
+    //so this is the only point from which the restore is observable at all.
+    void postEditorViewport(float &X, float &Y, float &W, float &H,
+                            float &WX, float &WY, float &WW, float &WH) const;
     //The rectangle the overview drew for one node THIS FRAME, in screen pixels — all-zero if it drew none
     //(the overview is off, or the node was not reached). Exposed because
     //the alternative is guessing which quad in a draw list belongs to which node, and a test that guesses that
@@ -146,6 +147,7 @@ signals:
 private:
     void drawToolbar();
     void drawNode(int index, PkgGraph::Graph &g);
+    void seedNodePosition(int index, const PkgGraph::Graph &g);
     void drawEnvelope(nlohmann::ordered_json &node);
     void drawPayload(nlohmann::ordered_json &node, int index);
     void drawActions(nlohmann::ordered_json &node, int index, const PkgGraph::Graph &g);

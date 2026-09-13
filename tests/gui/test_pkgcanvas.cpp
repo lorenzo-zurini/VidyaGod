@@ -12,7 +12,9 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#define IMGUI_DEFINE_MATH_OPERATORS
 #include "imnodes.h"
+#include "imnodes_internal.h"   // the colour-modifier stack, which imnodes never clears per frame
 
 #include <QtTest>
 
@@ -2490,6 +2492,49 @@ private slots:
                             + survived.join("\n  ")));
     }
 
+    // Refusing to THROW is half of it; the other half is refusing to destroy. The same sweep that taught the
+    // Cover and KeyValue writers to refuse a malformed value left the two list "+ add" buttons replacing it
+    // with an empty array on one click — MarkDirty'd and saved, in the editor you opened to repair the
+    // package. Nothing about the value being wrong makes it disposable.
+    void addingToAMalformedListRefusesInsteadOfDestroyingIt()
+    {
+        Canvas->setMiniMap(false);
+        QStringList lost;
+        auto sweep = [&](const char *Type, const char *Key, const json &Bad) {
+            const int N = Canvas->addNode(Type, 300, 200);
+            Doc["NODES"][N][Key] = Bad;
+            Canvas->invalidateGraph();
+            runFrame(); runFrame();
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the node was culled");
+            // Click every row of the node: one of them is the "+ add"/"+ group" button.
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
+            const ImVec2 D = ImNodes::GetNodeDimensions(N);
+            for (float fy = 0.05f; fy < 0.99f; fy += 0.02f)
+                for (float fx : {0.12f, 0.4f, 0.8f}) {
+                    const ImVec2 At(P.x + D.x * fx, P.y + D.y * fy);
+                    if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                    clickAt(At);
+                    runFrame();
+                }
+            closeAnyPopup();
+            if (Doc["NODES"][N][Key] != Bad)
+                lost << QString("%1 %2: %3 became %4").arg(Type).arg(Key)
+                            .arg(QString::fromStdString(Bad.dump()))
+                            .arg(QString::fromStdString(Doc["NODES"][N][Key].dump()));
+            Canvas->removeNode(N);
+            Canvas->invalidateGraph();
+            runFrame();
+        };
+        sweep("BinaryPatch", "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
+        sweep("BinaryPatch", "EDITS", json("a string"));
+        sweep("RegEdit",     "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
+        sweep("DeclareExec", "ARGS",  json("not a list"));
+        QVERIFY2(lost.isEmpty(),
+                 qPrintable("a click destroyed a malformed value instead of refusing:\n  " + lost.join("\n  ")));
+    }
+
     // The popup extent repoint stands down when the region is too short to hold a dropdown, because below
     // that imgui pins every popup to the extent's corner. Both sides of that comparison are in WORLD units —
     // an earlier version demanded 300 in both axes and described it as the inverse, which switched the whole
@@ -2499,49 +2544,35 @@ private slots:
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 300, 300);
         QStringList outliers;
-        //A SMALL display as well as the usual one, so the stand-down branch is reached: at 3x on a 1400x900
-        //canvas the region is still 283 units tall, so every zoom this test can reach stays above the
-        //threshold and the branch was never executed.
-        for (const ImVec2 Disp : {ImVec2(1400, 900), ImVec2(700, 420)})
+        //Several display sizes, including ones small enough that the region alone could not hold a dropdown —
+        //that is the case the code has to handle, and an earlier version of this test skipped it with a
+        //`continue` and then asked the CODE which branch it had taken, which made the assertion a tautology:
+        //deleting the whole guard stayed green. The expectation here is derived from the display and the zoom
+        //only, so the code is never consulted about what it should have done.
+        for (const ImVec2 Disp : {ImVec2(1400, 900), ImVec2(700, 420), ImVec2(600, 1100)})
         for (float z : {0.5f, 1.0f, 2.0f, 3.0f}) {
             DisplayOverride = Disp;
             Canvas->setZoom(z);
             runFrame(); runFrame();
             float ax = 0, ay = 0, bx = 0, by = 0;
             Canvas->canvasViewport(ax, ay, bx, by);
-            // What the editor lays out in, in world units, and what a combo popup needs (8 items).
-            const float WorldH = (by - ay) / z;
+            const ImVec2 World((bx - ax) / z, (by - ay) / z);
+            //The rectangle a popup is placed against must be the editor's own region, ENLARGED where the
+            //region alone is too small to hold a dropdown — imgui pins a popup that does not fit to the
+            //rectangle's corner, which would put every dropdown in one place regardless of its widget.
+            const float WantW = std::max(World.x, 228.0f + 80.0f), WantH = std::max(World.y, 200.0f);
             float ex = 0, ey = 0, ew = 0, eh = 0;
             Canvas->popupExtent(ex, ey, ew, eh);
-            if (!Canvas->popupExtentFollowsEditor())
-            {
-                //The stand-down: it must be the REAL screen viewport, not a half-applied mixture, and it must
-                //only happen when the region really is too small. An earlier version skipped this case with a
-                //`continue`, which meant the branch its own comment was about had no coverage at all.
-                const ImVec2 Disp = ImGui::GetIO().DisplaySize;
-                if (WorldH > 220.0f && (bx - ax) / z > 320.0f)
-                    outliers << QString("zoom %1: the region is %2x%3 world units, big enough for a dropdown, "
-                                        "and the extent stood down anyway")
-                                    .arg(z).arg((bx - ax) / z).arg(WorldH);
-                else if (std::abs(ew - Disp.x) > 2.0f || std::abs(eh - Disp.y) > 2.0f)
-                    outliers << QString("zoom %1: stood down but the extent is %2x%3, not the %4x%5 display")
-                                    .arg(z).arg(ew).arg(eh).arg(Disp.x).arg(Disp.y);
-                continue;
-            }
-            //The whole rectangle, not just its height: a repoint that moved the origin somewhere else would
-            //place every dropdown wrong while the height matched perfectly.
-            //The whole rectangle, not just its height: a repoint that moved the origin would place every
-            //dropdown wrong while the height matched perfectly.
-            if (std::abs(eh - WorldH) > 2.0f || std::abs(ew - (bx - ax) / z) > 2.0f)
-                outliers << QString("zoom %1: the canvas is %2x%3 world units and the popup extent is %4x%5 - "
-                                    "in-node dropdowns are being placed against the wrong rectangle")
-                                .arg(z).arg((bx - ax) / z).arg(WorldH).arg(ew).arg(eh);
-            //The ORIGIN is the canvas origin at every zoom: the region is the viewport inverse-transformed
-            //ABOUT that origin, so the corner it is anchored at does not move. That is worth asserting
-            //separately from the size, because it is what decides WHERE a popup lands.
-            if (std::abs(ex - ax) > 2.0f || std::abs(ey - ay) > 2.0f)
-                outliers << QString("zoom %1: the popup extent starts at (%2,%3), not the canvas origin (%4,%5)")
-                                .arg(z).arg(ex).arg(ey).arg(ax).arg(ay);
+            if (std::abs(ew - WantW) > 2.0f || std::abs(eh - WantH) > 2.0f)
+                outliers << QString("display %1x%2 zoom %3: the region is %4x%5 world units so the extent "
+                                    "should be %6x%7, and it is %8x%9")
+                                .arg(Disp.x).arg(Disp.y).arg(z).arg(World.x).arg(World.y)
+                                .arg(WantW).arg(WantH).arg(ew).arg(eh);
+            //And it stays centred on the region, so enlarging it does not also move where popups land.
+            const float WantX = ax - (WantW - World.x) * 0.5f, WantY = ay - (WantH - World.y) * 0.5f;
+            if (std::abs(ex - WantX) > 2.0f || std::abs(ey - WantY) > 2.0f)
+                outliers << QString("display %1x%2 zoom %3: the extent starts at (%4,%5), not (%6,%7)")
+                                .arg(Disp.x).arg(Disp.y).arg(z).arg(ex).arg(ey).arg(WantX).arg(WantY);
         }
         DisplayOverride = ImVec2(0, 0);
         Canvas->setZoom(1.0f);
@@ -2622,6 +2653,78 @@ private slots:
         for (int i = 0; i < 3; ++i) { ImNodes::SetNodeGridSpacePos(B, ImVec2(7.0e9f, 7.0e9f)); runFrame(); }
         QVERIFY2(Warnings > Before,
                  "a second node's impossible position was swallowed by the first node's entry");
+    }
+
+    // The malformed-node placeholder returns early, and the two things an early return in drawNode can get
+    // wrong are exactly the two it did get wrong: it sat between the colour PUSHES and their POPS, and it
+    // skipped the position seeding. Neither is visible in anything the canvas draws, so neither was caught.
+    void theMalformedNodePlaceholderBehavesLikeANode()
+    {
+        Canvas->setMiniMap(false);
+        Canvas->addNode("Content", 100, 100);
+        Doc["NODES"].push_back("not a node");
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        const int Bad = (int)Doc["NODES"].size() - 1;
+
+        // 1. The colour-style stack must not grow. imnodes never clears it per frame, so three unpopped
+        // pushes per frame is unbounded growth for the life of the process — 180/second on an open canvas —
+        // and it leaves the style permanently holding the placeholder's colours.
+        const int Before = GImNodes->ColorModifierStack.Size;
+        for (int i = 0; i < 10; ++i) runFrame();
+        const int After = GImNodes->ColorModifierStack.Size;
+        QVERIFY2(After == Before,
+                 qPrintable(QString("ten frames grew imnodes' colour stack from %1 to %2 - the placeholder is "
+                                    "pushing styles it never pops").arg(Before).arg(After)));
+
+        // 2. It must sit where the layout put it. Culling submits it by its LAID-OUT position, so a
+        // placeholder drawn at the grid origin instead is a box that vanishes when you pan to where it says
+        // it is, and stacks with every other malformed node on top of whatever lives at (0,0).
+        const PkgGraph::Graph G = Canvas->graph();
+        QVERIFY2(Bad < (int)G.Nodes.size(), "the placeholder is not in the graph");
+        const ImVec2 At = ImNodes::GetNodeGridSpacePos(Bad);
+        QVERIFY2(std::abs(At.x - G.Nodes[(size_t)Bad].X) < 1.0f
+                     && std::abs(At.y - G.Nodes[(size_t)Bad].Y) < 1.0f,
+                 qPrintable(QString("the placeholder is drawn at (%1,%2) but laid out at (%3,%4)")
+                                .arg(At.x).arg(At.y).arg(G.Nodes[(size_t)Bad].X).arg(G.Nodes[(size_t)Bad].Y)));
+        Doc["NODES"].erase(Doc["NODES"].size() - 1);
+        Canvas->invalidateGraph();
+        runFrame();
+    }
+
+    // The canvas borrows imgui's main viewport for the duration of the editor, so that in-node popups place
+    // themselves in the space their widgets are laid out in. Every field of it has to come back: Pos and Size
+    // feed the backend's projection matrix, and WorkPos/WorkSize are what ImGui::Begin clamps a window
+    // against — leaving those two in world space while Pos/Size were screen meant the minimap child and the
+    // delete-confirmation modal were placed against two different coordinate systems at once.
+    void theEditorHandsTheWholeViewportBack()
+    {
+        Canvas->setMiniMap(true);
+        Canvas->addNode("Content", 300, 300);
+        QStringList outliers;
+        //Checked at the moment post-editor windows are submitted, NOT after frame() returns: imgui's NewFrame
+        //rebuilds the main viewport every frame, so a viewport left in world space is invisible from outside
+        //while being exactly what the overview and the delete modal get placed against inside.
+        for (float z : {1.0f, 0.5f, 2.0f, 3.0f}) {
+            Canvas->setZoom(z);
+            runFrame(); runFrame();
+            const ImVec2 Disp = ImGui::GetIO().DisplaySize;
+            float x = 0, y = 0, w = 0, h = 0, wx = 0, wy = 0, ww = 0, wh = 0;
+            Canvas->postEditorViewport(x, y, w, h, wx, wy, ww, wh);
+            if (std::abs(w - Disp.x) > 1.0f || std::abs(h - Disp.y) > 1.0f
+                || std::abs(x) > 1.0f || std::abs(y) > 1.0f)
+                outliers << QString("zoom %1: after the editor the viewport is (%2,%3 %4x%5), not the "
+                                    "%6x%7 display").arg(z).arg(x).arg(y).arg(w).arg(h).arg(Disp.x).arg(Disp.y);
+            if (std::abs(ww - Disp.x) > 1.0f || std::abs(wh - Disp.y) > 1.0f
+                || std::abs(wx) > 1.0f || std::abs(wy) > 1.0f)
+                outliers << QString("zoom %1: after the editor the WORK rect is (%2,%3 %4x%5), not the "
+                                    "%6x%7 display - ImGui::Begin clamps the overview and the delete modal "
+                                    "against this while popups read the main rect")
+                                .arg(z).arg(wx).arg(wy).arg(ww).arg(wh).arg(Disp.x).arg(Disp.y);
+        }
+        Canvas->setZoom(1.0f);
+        Canvas->setMiniMap(false);
+        QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
     }
 
     void zoomIsClampedAndDefaultsToUnity()

@@ -10,6 +10,7 @@
 #include "vgtest.h"
 #include "pkglayout.h"
 #include "pkggraph.h"
+#include <vector>
 
 #include <algorithm>
 #include <limits>
@@ -20,6 +21,7 @@
 #include <string>
 
 using ordered_json = nlohmann::ordered_json;
+
 
 namespace {
 

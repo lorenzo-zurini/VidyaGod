@@ -17,6 +17,7 @@
 #include "commonutils.h"
 
 #include <fstream>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,6 +41,80 @@ class PackageCatalogTest : public QObject
 {
     Q_OBJECT
 private slots:
+
+    // Publish is where a REFUSED declared position has its real consequence: PkgGraph::Build drops a position
+    // no layout could have produced, StampNodePositions then writes a computed one over it, the node file's
+    // bytes change and the package's Meta-CID with them. So the warning has to say which of those two things
+    // happened — and decide it from what was actually WRITTEN. Deciding it by matching the source label was
+    // wrong in both directions in turn (first "stamped over it" for a rejected local override that rewrites
+    // nothing, then "ignored" for a node that was rewritten), and neither version was caught by anything.
+    void thePublishWarningSaysWhatWasActuallyWritten()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        auto Write = [&](const char *Name, const nlohmann::ordered_json &J) {
+            std::ofstream F((Dir.path() + "/" + Name).toStdString());
+            F << J.dump(2);
+        };
+        // Its OWN POS is impossible: publish computes one and writes it, changing the file.
+        Write("bad.json",  nlohmann::ordered_json{{"NODE_ID", "bad"},  {"TYPE", "Group"},
+                                                  {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
+        // A good POS with an impossible LOCAL override: the node keeps its POS and nothing is rewritten.
+        Write("keep.json", nlohmann::ordered_json{{"NODE_ID", "keep"}, {"TYPE", "Group"},
+                                                  {"POS", nlohmann::ordered_json::array({60.0, 60.0})},
+                                                  {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
+        // NO POS of its own, plus an impossible local override. This is the case where the source label and
+        // the outcome DIVERGE: the label says "this machine's saved layout", which sounds like nothing in the
+        // package changed — but with no POS to fall back on the layout supplies one, the file GAINS a POS it
+        // never had, and the Meta-CID moves. Both earlier versions of this line got this case wrong, and a
+        // test built only from the two agreeing cases could not tell the difference.
+        Write("fresh.json", nlohmann::ordered_json{{"NODE_ID", "fresh"}, {"TYPE", "Group"},
+                                                   {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
+        nlohmann::ordered_json Override = nlohmann::ordered_json::object();
+        Override["keep"]  = nlohmann::ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 1.0});
+        Override["fresh"] = nlohmann::ordered_json::array({1e300, 2.0});
+
+        QStringList Warnings;
+        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
+            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
+                Warnings << QString::fromStdString(M);
+        });
+        std::string Err;
+        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Override, &Err),
+                 qPrintable(QString::fromStdString(Err)));
+
+        QString BadLine, KeepLine, FreshLine;
+        for (const QString &W : Warnings) {
+            if (W.contains("'bad'"))   BadLine = W;
+            if (W.contains("'keep'"))  KeepLine = W;
+            if (W.contains("'fresh'")) FreshLine = W;
+        }
+        QVERIFY2(!BadLine.isEmpty() && !KeepLine.isEmpty() && !FreshLine.isEmpty(),
+                 qPrintable("all three refusals should be reported; saw:\n  " + Warnings.join("\n  ")));
+        // The one that WAS rewritten says so, and names the consequence that matters at publish time.
+        QVERIFY2(BadLine.contains("written over it") && BadLine.contains("changing this package's bytes"),
+                 qPrintable("the rewritten node's line does not say so: " + BadLine));
+        // The one that was not says the opposite.
+        QVERIFY2(KeepLine.contains("nothing was rewritten"),
+                 qPrintable("the untouched node's line claims a rewrite: " + KeepLine));
+        // And the divergent one is worded by what HAPPENED, not by which declaration was bad.
+        QVERIFY2(FreshLine.contains("written over it") && FreshLine.contains("changing this package's bytes"),
+                 qPrintable("a node that gained a POS is reported as untouched: " + FreshLine));
+
+        // And the files agree with the lines.
+        auto Read = [&](const char *Name) {
+            nlohmann::ordered_json J;
+            std::ifstream F((Dir.path() + "/" + Name).toStdString());
+            F >> J;
+            return J;
+        };
+        const nlohmann::ordered_json B = Read("bad.json"), K = Read("keep.json"), Fr = Read("fresh.json");
+        QVERIFY2(Fr.contains("POS"), "the node with no POS did not gain one, so this case proves nothing");
+        QVERIFY2(B.contains("POS") && std::abs(B["POS"][0].get<double>()) < 1.0e6,
+                 "the impossible POS was kept or replaced with another impossible one");
+        QCOMPARE(K["POS"][0].get<double>(), 60.0);
+    }
     //The data root is PROCESS-GLOBAL and sticky, and PackageEditorModel::SaveLayout flushes GlobalConfig.JSON
     //to it — so a suite that does not claim it writes to AppPaths' fallback, which is the developer's REAL
     //~/.VidyaGod/GlobalConfig.JSON. Running a single slot by name replaced a 50 KB config (sources, CIDs,

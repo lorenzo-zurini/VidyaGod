@@ -146,23 +146,14 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     //Meta-CID with them — and the only line this function prints otherwise is "stamped POS into N file(s)",
     //which says nothing about why one of them moved. Build records rather than logs (it runs per keystroke in
     //the editor); this is the other caller, and it has to say so.
-    //The two sources have different consequences HERE, which is the whole reason the record carries which one
-    //it was. A bad POS in the package means the computed position is about to be written over it: the file's
-    //bytes change and the package's Meta-CID with them, and that is the fact worth printing at publish time.
-    //A bad override is this machine's own setting — the node keeps the author's POS and nothing is rewritten.
-    //An earlier version said "stamping a computed position over it" for both, which was wrong for the second;
-    //the correction then said "ignored" for both, which dropped the first. Say each one.
-    for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
-    {
-        const bool OwnPos = R.Source.find("own POS") != std::string::npos;
-        Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
-            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
-                + ", which no layout could have produced - "
-                + (OwnPos ? "stamping a computed position over it, which changes this package's bytes"
-                          : "that declaration is ignored; the node keeps the position the package declares"));
-    }
-
+    //Reported AFTER the stamp loop, and worded from what the loop actually WROTE — not from the source label.
+    //Deciding it by substring was wrong in both directions in turn: first "stamping over it" for a rejected
+    //local override that changes nothing, then "ignored" for a node with NO own POS and a bad override, where
+    //the layout supplies a position, the file gains one it never had, and its Meta-CID changes under a line
+    //saying the node keeps what the package declares. The only fact that settles it is whether this node's
+    //file was marked dirty, which is known one loop down.
     std::set<fs::path> Dirty;
+    std::set<std::string> Stamped;   // node ids whose file this loop actually rewrote
     for (size_t I = 0; I < Slots.size(); ++I)
     {
         nlohmann::ordered_json Pos = nlohmann::ordered_json::array({ G.Nodes[I].X, G.Nodes[I].Y });
@@ -171,7 +162,16 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
         if (Target.contains("POS") && Target["POS"] == Pos) continue;   //already correct: do not touch the bytes
         Target["POS"] = std::move(Pos);
         Dirty.insert(Slots[I].File);
+        Stamped.insert(G.Nodes[I].Id);
     }
+
+    for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
+        Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
+            "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
+                + ", which no layout could have produced - "
+                + (Stamped.count(R.NodeId)
+                       ? "a computed position was written over it, changing this package's bytes"
+                       : "that declaration is ignored; nothing was rewritten"));
     //Write to a sibling temp and rename. This rewrites EVERY node file of EVERY package in the library
     //(RemintLibrary calls it per package), and a node .json is the author's only copy: truncating in place
     //means a crash, a kill or ENOSPC part way through leaves a half-written file where their package was.
