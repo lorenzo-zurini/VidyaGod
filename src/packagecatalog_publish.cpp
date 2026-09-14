@@ -275,6 +275,16 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             for (auto &S : C["SUBCOMPONENTS"])
             {
                 if (!IsVfsLayer(LayerType(S))) continue;
+                //A RUNTIME-SOURCED layer has no package file and never will: its PATH carries a %VAR% that
+                //resolves to a live mount at launch (a proton prefix-assembly layer, PATH="%DefaultPfxDir%").
+                //It is not content this package ships, so it is neither seeded, nor counted as a layer walked
+                //for seeding, nor — the part that mattered — reported as an unfetchable gap. Every other pass
+                //already skips these through this same predicate; launchsources.cpp says why, having once
+                //printed three phantom "content unavailable" errors into the verdict on EVERY wine launch.
+                //This path was never taught it, so each mint ended with 15 UNFETCHABLE lines and a
+                //"PUBLISHED WITH GAPS ... the content will not be there" over the runners collection, which
+                //is exactly the un-ignorable summary those lines train you to ignore.
+                if (ManifestModel::IsRuntimeSourcedLayer(S)) continue;
                 ++Walked;
                 std::filesystem::path Local; std::string Cid;
                 LayerLocator(S, Pkg, Local, Cid);
@@ -338,6 +348,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             //Cover art lives on the DeclareLibraryItem node's COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
             if (S.contains("COVER") && S["COVER"].is_object()) SeedCover(S);
             if (!IsContentNode(S)) continue;
+            if (ManifestModel::IsRuntimeSourcedLayer(S)) continue;   // see the note in the COMPONENTS pass above
             ++Walked;
             std::filesystem::path Local; std::string Cid;
             LayerLocator(S, Pkg, Local, Cid);

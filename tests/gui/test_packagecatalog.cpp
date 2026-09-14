@@ -655,6 +655,105 @@ private slots:
                      "an already-addressed layer is the idempotent case and must not be reported as a gap");
     }
 
+    // A RUNTIME-SOURCED layer is not a gap. Its PATH carries a %VAR% that resolves to a live mount at launch
+    // (the proton runners' prefix-assembly layers, PATH="%DefaultPfxDir%"), so there is no package file to
+    // seed and there never will be. Publishing reported all 15 of them as UNFETCHABLE and closed the runners
+    // collection with "PUBLISHED WITH GAPS ... the content will not be there" on every single mint — a false
+    // alarm over the one summary written to be un-ignorable, and the exact failure launchsources.cpp records
+    // having fixed on the launch side (three phantom errors per wine launch) with this same predicate.
+    void publish_does_not_report_a_runtime_sourced_layer_as_a_gap()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/runner";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/node.json",
+                  NodeFixture::Chain("r", {NodeFixture::Content("dir", "%DefaultPfxDir%"),
+                                           NodeFixture::Content("dir", "%WineSys32Dir%")}));
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        for (const auto &E : Errors)
+        {
+            QVERIFY2(E.find("UNFETCHABLE") == std::string::npos,
+                     qPrintable(QString("a prefix-assembly layer was reported as an unfetchable gap: %1")
+                                    .arg(QString::fromStdString(E))));
+            QVERIFY2(E.find("PUBLISHED WITH GAPS") == std::string::npos,
+                     qPrintable(QString("a package whose only absent layers are runtime-sourced was reported "
+                                        "as published with gaps: %1").arg(QString::fromStdString(E))));
+        }
+    }
+
+    // ...and the half that keeps the fix honest. Skipping the %VAR% layers must not blanket-silence the check:
+    // a layer with a REAL path, no CID and no file, sitting in the same bundle, is still a reference to bytes
+    // that exist nowhere and must still be named. A guard written only to pass is not a guard.
+    void publish_still_reports_a_real_missing_layer_beside_a_runtime_sourced_one()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/mixed";
+        QDir().mkpath(bundle);
+        writeJson(bundle + "/node.json",
+                  NodeFixture::Chain("m", {NodeFixture::Content("dir", "%DefaultPfxDir%"),
+                                           NodeFixture::Content("zip", "never_existed.zip")}));
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool NamedReal = false, Summarised = false, NamedVar = false;
+        for (const auto &E : Errors)
+        {
+            if (E.find("UNFETCHABLE") != std::string::npos && E.find("never_existed.zip") != std::string::npos)
+                NamedReal = true;
+            if (E.find("PUBLISHED WITH GAPS") != std::string::npos) Summarised = true;
+            if (E.find("DefaultPfxDir") != std::string::npos) NamedVar = true;
+        }
+        QVERIFY2(NamedReal, "the genuinely absent layer must STILL be named — the %VAR% skip must not silence it");
+        QVERIFY2(Summarised, "and the publish must still end saying the CID will look healthy without the content");
+        QVERIFY2(!NamedVar, "the prefix-assembly layer must not be named alongside it");
+    }
+
+    // The SAME property on the legacy COMPONENTS/SUBCOMPONENTS fragment shape, which is NOT dead: the
+    // library still ships one (Baldur's Gate / gemrb_runner.json carries top-level COMPONENTS), and
+    // PublishPackage walks it in its own pass with its own copy of the seed logic. Removing the skip from
+    // that pass survived every other test in this suite, because the fixtures above all build node files.
+    void publish_does_not_report_a_runtime_sourced_subcomponent_as_a_gap()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/legacy";
+        QDir().mkpath(bundle);
+        // The on-disk shape, copied from the one the library still ships.
+        writeFile(bundle + "/legacy.json", R"({
+  "COMPONENTS": [
+    { "COMPONENTID": "c", "NAME": "c", "PARENTCOMPONENT": null,
+      "SUBCOMPONENTS": [
+        { "TYPE": "VFSDirLayer",  "PATH": "%DefaultPfxDir%" },
+        { "TYPE": "VFSFileLayer", "PATH": "never_existed.zip" }
+      ] } ]
+})");
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool NamedReal = false, NamedVar = false;
+        for (const auto &E : Errors)
+        {
+            if (E.find("UNFETCHABLE") != std::string::npos && E.find("never_existed.zip") != std::string::npos)
+                NamedReal = true;
+            if (E.find("DefaultPfxDir") != std::string::npos) NamedVar = true;
+        }
+        QVERIFY2(!NamedVar, "a prefix-assembly SUBCOMPONENT was reported as an unfetchable gap");
+        QVERIFY2(NamedReal, "...and the genuinely absent one beside it must still be named");
+    }
+
     // ---- StampNodePositions: the layout the author sees is what a peer receives -------------------------
     // Positions are the one thing allowed to enter the package's bytes only at publish time. These pin the
     // three properties that makes that safe: it writes POS for everything, it bakes the CURRENT layout (a
