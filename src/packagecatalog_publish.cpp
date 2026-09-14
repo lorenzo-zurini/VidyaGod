@@ -226,7 +226,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     //Publishing is the one operation whose mistakes travel: a fragment skipped here is missing from the CID every
     //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
     //that node". So both quiet skips below are counted and reported.
-    int Unparseable = 0;
+    int Unparseable = 0, BadCovers = 0;
     std::vector<std::string> Unfetchable;
 
     //A recorded CID is taken on FAITH by the mint (skipped as idempotent), the deliverability check (stat-only), and
@@ -268,20 +268,17 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         bool Mutated = false;
 
         //Cover art: content-address a DeclareLibraryItem's COVER like a layer — keep the filename in PATH, add
-        //SOURCE:{ipfs,CID}. Handles the bare-string form too; idempotent once a CID is present.
+        //SOURCE:{ipfs,CID}. Idempotent once a CID is present. OBJECT FORM ONLY: the bare-string COVER was
+        //reachable only through the deleted GAMES pass, so the branch that handled it went with it rather than
+        //staying as an unreachable kindness — the caller below now REFUSES a non-object instead.
         auto SeedCover = [&](nlohmann::ordered_json &Holder)
         {
             if (!Holder.contains("COVER")) return;
             nlohmann::ordered_json &Cover = Holder["COVER"];
-            std::string File;
-            if (Cover.is_string()) File = Cover.get<std::string>();
-            else if (Cover.is_object())
-            {
-                const std::string CoverCid = Cover["SOURCE"].is_object() ? Cover["SOURCE"].value("CID", std::string()) : std::string();
-                File = Cover.value("PATH", std::string());
-                if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File)) return;   // has a CID that still verifies its bytes — keep
-            }
-            else return;
+            if (!Cover.is_object()) return;                                       // refused and reported at the call site
+            const std::string CoverCid = Cover["SOURCE"].is_object() ? Cover["SOURCE"].value("CID", std::string()) : std::string();
+            const std::string File = Cover.value("PATH", std::string());
+            if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File)) return;        // has a CID that still verifies its bytes — keep
             if (File.empty()) return;
             std::error_code Rc;
             const std::filesystem::path Local = Pkg / File;
@@ -298,7 +295,16 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         {
             nlohmann::ordered_json &S = *Np;
             //Cover art lives on the DeclareLibraryItem node's COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
-            if (S.contains("COVER") && S["COVER"].is_object()) SeedCover(S);
+            //A COVER of any OTHER shape is content that will never be addressed: this was `is_object()` and
+            //nothing else, so a bare-string COVER — the pre-node form — was stepped over in total silence.
+            //One shipped that way (Tonic Trouble's library tile): the PNG sat in the bundle, was never seeded,
+            //and ManifestTargets and PackageCoverCids both require the object form, so no peer could ever
+            //receive the tile art and nothing anywhere said so. Counted as a gap, because that is what it is.
+            if (S.contains("COVER") && !S["COVER"].is_null())
+            {
+                if (S["COVER"].is_object()) SeedCover(S);
+                else ++BadCovers;
+            }
             if (!IsContentNode(S)) continue;
             ++Walked;
             std::filesystem::path Local; std::string Cid;
@@ -348,9 +354,14 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     for (const std::string &P : Unfetchable)
         LogErr("PackageCatalog::PublishPackage", "layer '" + P + "' has no CID and no local file — it will be "
                                                  "published as an UNFETCHABLE reference.");
-    if (Unparseable || !Unfetchable.empty())
+    if (BadCovers)
+        LogErr("PackageCatalog::PublishPackage", std::to_string(BadCovers) + " COVER field(s) in " + PackageDir
+                   + " are not objects ({PATH, SOURCE}) — cover art in any other shape is never content-addressed, "
+                     "so the tile ships with no image on every machine but this one.");
+    if (Unparseable || !Unfetchable.empty() || BadCovers)
         LogErr("PackageCatalog::PublishPackage", "PUBLISHED WITH GAPS: " + std::to_string(Unparseable)
-                   + " unparseable fragment(s), " + std::to_string(Unfetchable.size()) + " unfetchable layer(s) in "
+                   + " unparseable fragment(s), " + std::to_string(Unfetchable.size()) + " unfetchable layer(s), "
+                   + std::to_string(BadCovers) + " unaddressable cover(s) in "
                    + PackageDir + ". The CID will look healthy and the content will not be there.");
 
     //Export the dehydrated manifest, if requested — a clean manifest-only copy (no image bytes; covers travel as CIDs).

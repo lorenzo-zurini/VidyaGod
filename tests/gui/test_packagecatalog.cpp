@@ -762,6 +762,75 @@ private slots:
                                  "runtime-sourced. A scanner reading only PATH reports it as a gap.");
     }
 
+    // The predicate gates the REPORT and nothing else. Placed any earlier it also skips the VerifyCid drift
+    // repair and the seed itself, which would make "log-only" a property of the library's contents (today no
+    // token-bearing layer happens to have bytes) rather than of the code — and every other test here is blind
+    // to that, because they all use token-bearing layers with NO file.
+    //
+    // The discriminator needs no IPFS: a layer whose bytes ARE on disk must REACH the seed path, and in this
+    // harness the node is not running, so reaching it fails loudly and names the file. Asserting a FAILURE is
+    // the point — the mutant that skips the layer publishes "successfully" with the content silently absent,
+    // which is the exact outcome this whole area exists to prevent. `_off` is an identifier, so the name is a
+    // genuine %VAR% by PathVariableTokens' rule, not merely a string with percent signs in it.
+    void publish_still_seeds_a_token_bearing_layer_whose_bytes_are_present()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/probe";
+        QDir().mkpath(bundle);
+        writeFile(bundle + "/%Foo%", "real bytes behind a token-shaped name");
+        writeJson(bundle + "/node.json", NodeFixture::Chain("t", {NodeFixture::Content("file", "%Foo%")}));
+
+        std::vector<std::string> Msgs;
+        SetLogCallback([&](LogLevel, const std::string &, const std::string &M){ Msgs.push_back(M); });
+        const bool Ok = PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool Reached = false, CalledUnfetchable = false;
+        for (const auto &M : Msgs)
+        {
+            if (M.find("could not seed layer") != std::string::npos && M.find("%Foo%") != std::string::npos)
+                Reached = true;
+            if (M.find("UNFETCHABLE") != std::string::npos) CalledUnfetchable = true;
+        }
+        QVERIFY2(Reached, "a runtime-sourced layer whose file EXISTS must still reach the seed path — if the "
+                          "predicate gates anything but the report, this layer is skipped and its bytes never "
+                          "ship, while publish reports success");
+        QVERIFY2(!Ok, "...and that failure must propagate, not be swallowed");
+        QVERIFY2(!CalledUnfetchable, "it is present, so it is not an unfetchable gap either");
+    }
+
+    // A COVER that is not an object is content that can never be addressed, and it used to be stepped over in
+    // total silence: the call site was `is_object()` and nothing else. One package shipped that way — Tonic
+    // Trouble's library tile carried the pre-node bare-string form, the PNG sat in the bundle, it was never
+    // seeded, and both ManifestTargets and PackageCoverCids require the object form, so no peer could ever
+    // receive the tile art. Nothing logged it and --validate-nodes called the library clean.
+    void publish_reports_a_cover_that_can_never_be_addressed()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        const QString bundle = d.path() + "/tile";
+        QDir().mkpath(bundle);
+        writeFile(bundle + "/cover.png", "PNGBYTES");
+        json tile = NodeFixture::Tile("1234", "A Game");
+        tile["COVER"] = "cover.png";                       // the pre-node bare-string form, file present
+        writeJson(bundle + "/node.json", NodeFixture::Chain("t", {}, {}, tile));
+
+        std::vector<std::string> Errors;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
+            if (L == LogLevel::ERR) Errors.push_back(M); });
+        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+        ClearLogCallback();
+
+        bool Named = false, Summarised = false;
+        for (const auto &E : Errors)
+        {
+            if (E.find("COVER") != std::string::npos && E.find("not objects") != std::string::npos) Named = true;
+            if (E.find("PUBLISHED WITH GAPS") != std::string::npos
+                && E.find("unaddressable cover") != std::string::npos) Summarised = true;
+        }
+        QVERIFY2(Named, "a COVER that is not an object must be named — the art never reaches another machine");
+        QVERIFY2(Summarised, "and it must count toward the gaps summary, which is the line that gets read");
+    }
+
     // ---- StampNodePositions: the layout the author sees is what a peer receives -------------------------
     // Positions are the one thing allowed to enter the package's bytes only at publish time. These pin the
     // three properties that makes that safe: it writes POS for everything, it bakes the CURRENT layout (a
