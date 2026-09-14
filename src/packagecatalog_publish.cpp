@@ -267,48 +267,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
 
         bool Mutated = false;
 
-        //Content layers: keep PATH, add SOURCE:{ipfs,CID} (idempotent — skip those already carrying a CID).
-        if (Frag.contains("COMPONENTS") && Frag["COMPONENTS"].is_array())
-        for (auto &C : Frag["COMPONENTS"])
-        {
-            if (!C.is_object() || !C.contains("SUBCOMPONENTS") || !C["SUBCOMPONENTS"].is_array()) continue;
-            for (auto &S : C["SUBCOMPONENTS"])
-            {
-                if (!IsVfsLayer(LayerType(S))) continue;
-                //A RUNTIME-SOURCED layer has no package file and never will: its PATH carries a %VAR% that
-                //resolves to a live mount at launch (a proton prefix-assembly layer, PATH="%DefaultPfxDir%").
-                //It is not content this package ships, so it is neither seeded, nor counted as a layer walked
-                //for seeding, nor — the part that mattered — reported as an unfetchable gap. Every other pass
-                //already skips these through this same predicate; launchsources.cpp says why, having once
-                //printed three phantom "content unavailable" errors into the verdict on EVERY wine launch.
-                //This path was never taught it, so each mint ended with 15 UNFETCHABLE lines and a
-                //"PUBLISHED WITH GAPS ... the content will not be there" over the runners collection, which
-                //is exactly the un-ignorable summary those lines train you to ignore.
-                if (ManifestModel::IsRuntimeSourcedLayer(S)) continue;
-                ++Walked;
-                std::filesystem::path Local; std::string Cid;
-                LayerLocator(S, Pkg, Local, Cid);
-
-                std::error_code Rc;
-                if (!NeedsSeed(Cid, Local)) continue;                            // has a CID that still verifies — idempotent
-                if (!std::filesystem::exists(Local, Rc))                         // no local content to seed
-                { Unfetchable.push_back(Local.string()); continue; }
-                std::string Err;
-                const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
-                if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
-
-                nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object())
-                                                 ? S["SOURCE"] : nlohmann::ordered_json::object();
-                Src["TYPE"] = "ipfs";                                            // keep any existing SOURCE.PATH override
-                Src["CID"]  = NewCid;
-                S["SOURCE"] = std::move(Src);
-                Mutated = true;
-                ++Seeded;
-            }
-        }
-
-        //Cover art: content-address the curated GAMES[].METADATA.COVER like a layer — keep the filename in PATH, add
-        //SOURCE:{ipfs,CID}. Upgrades the legacy bare-string form; idempotent once a CID is present.
+        //Cover art: content-address a DeclareLibraryItem's COVER like a layer — keep the filename in PATH, add
+        //SOURCE:{ipfs,CID}. Handles the bare-string form too; idempotent once a CID is present.
         auto SeedCover = [&](nlohmann::ordered_json &Holder)
         {
             if (!Holder.contains("COVER")) return;
@@ -333,14 +293,6 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             Mutated = true;
             ++Covers;
         };
-        if (Frag.contains("GAMES") && Frag["GAMES"].is_array())
-        for (auto &G : Frag["GAMES"])
-        {
-            if (!G.is_object()) continue;
-            if (G.contains("METADATA") && G["METADATA"].is_object()) SeedCover(G["METADATA"]);
-            SeedCover(G);                                                         // legacy game-level COVER
-        }
-
         //Node files (everything-is-a-node): seed each Content node's bytes + the cover on a DeclareLibraryItem node.
         for (nlohmann::ordered_json *Np : NodeDocsOf(Frag))
         {
@@ -348,14 +300,33 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             //Cover art lives on the DeclareLibraryItem node's COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
             if (S.contains("COVER") && S["COVER"].is_object()) SeedCover(S);
             if (!IsContentNode(S)) continue;
-            if (ManifestModel::IsRuntimeSourcedLayer(S)) continue;   // see the note in the COMPONENTS pass above
             ++Walked;
             std::filesystem::path Local; std::string Cid;
             LayerLocator(S, Pkg, Local, Cid);
             std::error_code Rc;
             if (!NeedsSeed(Cid, Local)) continue;                                // has a CID that still verifies — idempotent
             if (!std::filesystem::exists(Local, Rc))                             // no local content to seed
-            { Unfetchable.push_back(Local.string()); continue; }
+            {
+                //A RUNTIME-SOURCED layer is absent because it is SUPPOSED to be: its PATH carries a %VAR%
+                //that resolves to a live mount at launch (a proton prefix-assembly layer, "%DefaultPfxDir%"),
+                //so there is no package file to ship and there never will be. It is not a gap, and saying it
+                //is put 30 UNFETCHABLE lines and a "PUBLISHED WITH GAPS ... the content will not be there"
+                //over the runners collection on every mint — the un-ignorable summary, crying wolf.
+                //launchsources.cpp records fixing the identical false alarm on the launch side with this same
+                //predicate, having printed three phantom errors per wine launch before it.
+                //
+                //The predicate gates ONLY THIS REPORT, deliberately. Placing it earlier also skipped the
+                //VerifyCid drift repair above and the seeding below, which made "log-only" a property of the
+                //library's current contents (no token-bearing layer happens to have bytes) rather than of the
+                //code. Here it cannot suppress a seed: anything with content or a CID has already been
+                //handled before this line is reached.
+                //LIMITATION, named because it is invisible otherwise: a CustomVar-templated PATH whose tokens
+                //all resolve to a real file (ResolvePathState treats that as real content) is absent HERE and
+                //is now silently not reported. No such node exists in the library; if one is ever authored,
+                //this report has to substitute defaults before deciding.
+                if (!ManifestModel::IsRuntimeSourcedLayer(S)) Unfetchable.push_back(Local.string());
+                continue;
+            }
             std::string Err;
             const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
             if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");

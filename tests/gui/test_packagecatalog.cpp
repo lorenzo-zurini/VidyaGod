@@ -670,12 +670,19 @@ private slots:
                   NodeFixture::Chain("r", {NodeFixture::Content("dir", "%DefaultPfxDir%"),
                                            NodeFixture::Content("dir", "%WineSys32Dir%")}));
 
-        std::vector<std::string> Errors;
+        std::vector<std::string> Errors; QString Walked;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
-            if (L == LogLevel::ERR) Errors.push_back(M); });
-        (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
+            if (L == LogLevel::ERR) Errors.push_back(M);
+            if (M.find("Dehydrated") != std::string::npos) Walked = QString::fromStdString(M); });
+        const bool Ok = PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
+        QVERIFY2(Ok, "publishing a runner bundle must SUCCEED - asserting only the absence of error text "
+                     "passes just as well when the function bailed out early");
+        QVERIFY2(Walked.contains("of 2 layer(s)"),
+                 qPrintable("the runtime-sourced layers must still be WALKED — the predicate gates the REPORT, "
+                            "not the seed path, or 'log-only' becomes a property of the library's contents "
+                            "rather than of the code. Saw: " + Walked));
         for (const auto &E : Errors)
         {
             QVERIFY2(E.find("UNFETCHABLE") == std::string::npos,
@@ -718,24 +725,24 @@ private slots:
         QVERIFY2(!NamedVar, "the prefix-assembly layer must not be named alongside it");
     }
 
-    // The SAME property on the legacy COMPONENTS/SUBCOMPONENTS fragment shape, which is NOT dead: the
-    // library still ships one (Baldur's Gate / gemrb_runner.json carries top-level COMPONENTS), and
-    // PublishPackage walks it in its own pass with its own copy of the seed logic. Removing the skip from
-    // that pass survived every other test in this suite, because the fixtures above all build node files.
-    void publish_does_not_report_a_runtime_sourced_subcomponent_as_a_gap()
+    // The call site must use THE predicate, not its own idea of one. A hand-rolled `PATH.find('%')` scanner
+    // passes every test above — and it is wrong twice over, in the two ways manifestmodel.h warns a second
+    // scanner always drifts:
+    //   * a '%' is not a variable. PathVariableTokens requires a MATCHED PAIR around an IDENTIFIER, because
+    //     URL-escaped filenames are ordinary in scraped content ("100%25%20done.zip" — "25" is not an
+    //     identifier). Treating that as a variable silently drops a REAL missing file from the report.
+    //   * the field is PATH *overridden by SOURCE.PATH*, so a layer carrying the token only on the override
+    //     is classified off the wrong string.
+    // Both directions are asserted here, so the only implementation that passes is the shared predicate.
+    void publish_classifies_runtime_sourced_by_the_predicate_not_by_a_percent_sign()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
-        const QString bundle = d.path() + "/legacy";
+        const QString bundle = d.path() + "/pct";
         QDir().mkpath(bundle);
-        // The on-disk shape, copied from the one the library still ships.
-        writeFile(bundle + "/legacy.json", R"({
-  "COMPONENTS": [
-    { "COMPONENTID": "c", "NAME": "c", "PARENTCOMPONENT": null,
-      "SUBCOMPONENTS": [
-        { "TYPE": "VFSDirLayer",  "PATH": "%DefaultPfxDir%" },
-        { "TYPE": "VFSFileLayer", "PATH": "never_existed.zip" }
-      ] } ]
-})");
+        json escaped   = NodeFixture::Content("zip", "100%25%20done.zip");   // matched pair, NOT an identifier
+        json overriden = NodeFixture::Content("dir", "placeholder");
+        overriden["SOURCE"] = json{{"TYPE", "ipfs"}, {"PATH", "%DefaultPfxDir%"}};   // token on the OVERRIDE
+        writeJson(bundle + "/node.json", NodeFixture::Chain("p", {escaped, overriden}));
 
         std::vector<std::string> Errors;
         SetLogCallback([&](LogLevel L, const std::string &, const std::string &M){
@@ -743,15 +750,16 @@ private slots:
         (void)PackageCatalog::PublishPackage(bundle.toStdString(), std::string(), nullptr);
         ClearLogCallback();
 
-        bool NamedReal = false, NamedVar = false;
+        bool NamedEscaped = false, NamedOverride = false;
         for (const auto &E : Errors)
         {
-            if (E.find("UNFETCHABLE") != std::string::npos && E.find("never_existed.zip") != std::string::npos)
-                NamedReal = true;
-            if (E.find("DefaultPfxDir") != std::string::npos) NamedVar = true;
+            if (E.find("100%25%20done.zip") != std::string::npos) NamedEscaped = true;
+            if (E.find("DefaultPfxDir") != std::string::npos)     NamedOverride = true;
         }
-        QVERIFY2(!NamedVar, "a prefix-assembly SUBCOMPONENT was reported as an unfetchable gap");
-        QVERIFY2(NamedReal, "...and the genuinely absent one beside it must still be named");
+        QVERIFY2(NamedEscaped, "a URL-escaped filename is NOT a runtime-sourced layer — it is a real missing "
+                               "file and must be reported. A scanner that only looks for '%' hides it.");
+        QVERIFY2(!NamedOverride, "SOURCE.PATH overrides PATH, so a token on the override makes the layer "
+                                 "runtime-sourced. A scanner reading only PATH reports it as a gap.");
     }
 
     // ---- StampNodePositions: the layout the author sees is what a peer receives -------------------------
