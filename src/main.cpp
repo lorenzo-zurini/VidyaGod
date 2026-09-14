@@ -378,11 +378,11 @@ int main(int argc, char *argv[])
 // umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
 // fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
 // package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "Qma9m3HcQ1iUzFUDxf71NZJh5o52JYGTJ3JFukPKHhWi6V"; }   // JSON-only runners Meta-CID (re-minted 2026-08-29)
+static std::string DefaultRunnerSourceCID() { return "QmRrDRz8NJLzMs8S36fxa47qTp7Eqh85Zx5ku3526mnZN6"; }   // JSON-only runners Meta-CID (re-minted 2026-09-14, flat schema + POS stamped by the height-aware layout)
 // Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
 // games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
 // exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
-static std::string DefaultLibrarySourceCID() { return "QmaewHAkgRNF4Erk3uWuQ1ZKgsoB91KcybDx827dBCQKgn"; }   // JSON-only libraries Meta-CID (re-minted 2026-08-30, dgVoodoo FPSLimit default 200)
+static std::string DefaultLibrarySourceCID() { return "QmdE6Ub62f8rYk3SbeWanwHA1kLXRE3Smh1d3ieiSnYmMo"; }   // JSON-only libraries Meta-CID (re-minted 2026-09-14, flat schema + POS stamped by the height-aware layout)
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
