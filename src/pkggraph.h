@@ -190,6 +190,18 @@ size_t CountRegRows(const nlohmann::ordered_json &Entry);
 //A NODE_ID rendered safe to put in a log line — C0 controls replaced, length capped. Ids come from arbitrary
 //on-disk or peer JSON and the log is this codebase's verdict channel.
 std::string SafeId(const std::string &Id);
+
+//Make Node[Key] safe to write an OBJECT into — materialising it when absent or null — and say whether that is
+//now possible. And the ONE guarded writer every UI path uses for Node[Key][Sub] = Value.
+//
+//nlohmann's operator[](string) throws type_error.305 on a value that is not an object, and the editor exists
+//to open packages that are wrong, including ones fetched from a peer: "COVER": 5 plus one keystroke used to
+//terminate the application out of paintGL. A guard at each write site can be deleted at that site with nothing
+//else noticing (a mutation proved it), so the guard and the write are one function, exported so the tests
+//drive this function rather than a copy of the pattern.
+bool WritableObject(nlohmann::ordered_json &Node, const char *Key);
+bool WriteSubKey(nlohmann::ordered_json &Node, const char *Key, const std::string &Sub,
+                 const nlohmann::ordered_json &Value);
 //Rebuild an entry's hive trees from rows, preserving ARCHITECTURE/OVERRIDE.
 void RegRowsInto(nlohmann::ordered_json &Entry, const std::vector<RegRow> &Rows);
 

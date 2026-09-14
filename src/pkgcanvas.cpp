@@ -29,44 +29,6 @@ inline int LinkSlot(int Id)                 { return Id % kMaxParents; }
 //External parents are drawn as chips; give them node ids past the real ones so imnodes keeps them distinct.
 constexpr int kExternalBase = 100000;
 
-//A node's last measured size, or a nominal box for one that culling has never let on screen. The minimap
-//draws EVERY node, those included, and a nominal box is an honest "about this big" — the alternative is
-//pretending a node we have never measured has no size, which makes the overview's bounds wrong.
-//The canvas hijacks several pieces of global imgui state for the duration of the editor — the cursor position
-//and delta it hands imnodes, a widened clip rect for submission, imnodes' canvas rectangle, and the main
-//viewport (so in-node popups place themselves in the space their widgets are laid out in). All of those must
-//be handed back on EVERY exit from frame(), including an early return, and everything except imnodes' own
-//rectangle is covered here — that one is imnodes state rather than imgui's, and is restored beside the call
-//that changes it. This guards exactly that and nothing more: a throw escaping frame()
-//still leaves imnodes mid-scope with its draw-list splitter split and imgui's window stack unbalanced, which
-//no RAII here can repair. The value is that the two pieces of state THIS file borrowed are always returned.
-//Make a node's key safe to write an OBJECT into, and say whether that is now possible.
-//
-//nlohmann's operator[](string) THROWS type_error.305 on a value that is not an object or null — and this
-//editor's whole purpose is opening packages that are wrong, including ones fetched from a peer. Every read
-//path here already guards; the WRITE paths did not, so `"COVER": 5` plus one keystroke, or `"ENV": "oops"`
-//plus one click, threw out of drawField, out of frame(), out of paintGL — which has no catch — and terminated
-//the application. Refusing the write leaves the bad value visible in the node and in the JSON view, which is
-//where the author can actually see and fix it.
-bool WritableObject(json &Node, const char *Key)
-{
-    if (!Node.is_object()) return false;
-    if (!Node.contains(Key) || Node[Key].is_null()) { Node[Key] = json::object(); return true; }
-    return Node[Key].is_object();
-}
-
-//Write Node[Key][Sub] = Value, or refuse. ONE function rather than a guard at each call site, because a guard
-//at a call site can be deleted there and nothing else notices — which is exactly what a mutation showed:
-//removing `&& WritableObject(...)` from the two writers left every suite green, so the test that was supposed
-//to cover them was testing a parallel copy of the pattern rather than the code the UI runs. There is no guard
-//to delete here; the write and the refusal are the same statement, and the tests drive THIS.
-bool WriteSubKey(json &Node, const char *Key, const std::string &Sub, const json &Value)
-{
-    if (!WritableObject(Node, Key)) return false;
-    Node[Key][Sub] = Value;
-    return true;
-}
-
 //A tooltip raised from INSIDE the editor. ImGui places a tooltip at io.MousePos, which for the duration of the
 //editor is the cursor inverse-transformed into world space — so at 0.5x the tooltip lands twice as far from the
 //origin as the pointer that raised it and gets clamped into a corner of the screen, and at 3x it lands a third
@@ -96,6 +58,13 @@ void EditorTooltip(const ImVec2 &RealMouse, const ImVec2 &ScreenPos, const ImVec
     VP->WorkPos = WasPos; VP->WorkSize = WasSize;
 }
 
+//The canvas borrows several pieces of global imgui state for the duration of the editor — the cursor position
+//and delta it hands imnodes, a widened clip rect for submission, and the main viewport (so in-node popups
+//place themselves in the space their widgets are laid out in) — and every one must be handed back on EVERY
+//exit from frame(). This guard is that. imnodes' own canvas rectangle is imnodes state rather than imgui's
+//and is restored beside the call that changes it. A throw escaping frame() still leaves imnodes mid-scope with
+//its draw-list splitter split, which no RAII here can repair; the value is that what THIS file borrowed is
+//always returned, and the viewport in particular feeds the backend's projection matrix.
 struct EditorIoGuard
 {
     ImGuiIO       &Io;
@@ -122,6 +91,8 @@ struct EditorIoGuard
     EditorIoGuard &operator=(const EditorIoGuard &) = delete;
 };
 
+//A node's size for the overview: its last MEASURED size, or the layout's estimate for one culling has never let
+//on screen. The minimap draws every node, those included, and after a document swap that is all of them.
 inline ImVec2 NodeSize(const std::map<std::string, ImVec2> &Dims, const PkgGraph::Node &N)
 {
     const auto It = Dims.find(N.Id);
@@ -236,9 +207,8 @@ struct PkgCanvasState
     int    SurfaceVertices = 0;
     //The rectangle the overview drew for each node this frame, by node index.
     std::vector<ImVec4> MiniBoxes;
-    //The viewport rectangle in-node popups were placed against last frame (position + size).
-    //The rectangle in-node popups were placed against last frame (position + size). In the editor's own units
-    //always in the editor's own units: it is the region enlarged to fit a dropdown, never the screen.
+    //The rectangle in-node popups were placed against last frame (position + size), in the editor's own
+    //units: the region being laid out, enlarged to fit a dropdown. Never the screen.
     ImVec4 PopupExtent{0, 0, 0, 0};
     //The main viewport and its work rect at the point post-editor windows are submitted — the minimap child
     //and the delete-confirmation modal. Both must be back in SCREEN space by then.
@@ -492,15 +462,6 @@ void PkgCanvas::miniMapNodeBox(int Index, float &X, float &Y, float &W, float &H
 void PkgCanvas::canvasViewport(float &MinX, float &MinY, float &MaxX, float &MaxY) const
 { MinX = m_s->ViewportRect.x; MinY = m_s->ViewportRect.y; MaxX = m_s->ViewportRect.z; MaxY = m_s->ViewportRect.w; }
 //VALIDATED: this is public, and a selection is an INDEX into a document that can be replaced underneath it.
-void PkgCanvas::writeFieldForTest(int Index, const char *Key, const char *Sub, const char *Value)
-{
-    json &Ns = m_s->Nodes();
-    if (Index < 0 || Index >= (int)Ns.size()) return;
-    //The SAME function the KeyValue and Cover writers call, not a copy of it — the previous version of this
-    //hook reimplemented the pattern, so deleting the guards at those two call sites left the suite green.
-    if (WriteSubKey(Ns[Index], Key, Sub, Value)) m_s->MarkDirty();
-}
-
 void PkgCanvas::selectNode(int index)
 {
     m_s->Selected = (index >= 0 && index < (int)m_s->Nodes().size()) ? index : -1;
@@ -808,14 +769,14 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         if (!Rename.first.empty())
         {
             json V = Node[F.Key][Rename.first];
-            if (WritableObject(Node, F.Key))
+            if (PkgGraph::WritableObject(Node, F.Key))
             {
                 Node[F.Key].erase(Rename.first);
-                if (WriteSubKey(Node, F.Key, Rename.second, V)) m_s->MarkDirty();
+                if (PkgGraph::WriteSubKey(Node, F.Key, Rename.second, V)) m_s->MarkDirty();
             }
         }
         if (ImGui::SmallButton("+ add")
-            && WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first))
+            && PkgGraph::WriteSubKey(Node, F.Key, "", F.Options.empty() ? "" : F.Options.front().first))
             m_s->MarkDirty();
         break;
     }
@@ -890,7 +851,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             //The `else` used to be unconditional, so a COVER that was a number, an array or a bool threw on
             //the FIRST KEYSTROKE — no click needed, and the comment above stopped at the string case.
             if (Node.contains(F.Key) && Node[F.Key].is_string()) { Node[F.Key] = P; m_s->MarkDirty(); }
-            else if (WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
+            else if (PkgGraph::WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("browse")) m_s->Pending = {StrOf(Node, "NODE_ID"), "browse_cover"};
@@ -1214,6 +1175,13 @@ void PkgCanvas::drawNode(int Index, Graph &G)
 void PkgCanvas::seedNodePosition(int Index, const Graph &G)
 {
     const std::string Id = G.Nodes[(size_t)Index].Id;
+    //A malformed placeholder has no id. Every such node would share Seeded[""] and DrawnLast[""] and re-seed
+    //each other every frame; it has nothing to read back anyway, so it is simply pushed to its layout slot.
+    if (Id.empty())
+    {
+        ImNodes::SetNodeGridSpacePos(Index, ImVec2(G.Nodes[(size_t)Index].X, G.Nodes[(size_t)Index].Y));
+        return;
+    }
     auto Sit = m_s->Seeded.find(Id);
     //Re-seed when the index moved (a different node now owns this id) OR when the node was not submitted last
     //frame: in that case imnodes destroyed it and BeginNode just created a fresh one at (0,0). Skipping the
@@ -1298,20 +1266,12 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
         if (!std::isfinite(P.x) || !std::isfinite(P.y)
             || std::abs(P.x) > 1.0e7f || std::abs(P.y) > 1.0e7f)
         {
-            //Refusing to WRITE it is only half the job: imnodes is still holding the bad value, the node is
-            //still submitted every frame (culling reads our own X/Y, which is fine), and so it would be drawn
-            //off at that coordinate for the rest of the session — invisible, unclickable, with the document
-            //looking perfectly healthy. Dropping the seed makes drawNode push our position back next frame.
-            //Once per node PER DISTINCT BAD COORDINATE — the value is in the key, so a node that keeps
-            //producing the same impossible position says it once, and one producing a new one each time would
-            //say it again. That is the right trade for a suppression cache (the set has no cap), and it is
-            //what stops a rename re-warning per character. With the id made safe: NODE_ID comes from arbitrary
-            //on-disk or peer JSON with no character validation, and this codebase's verdict channel IS the
-            //log — an id carrying a newline would forge records in it.
-            //The SAME composite shape the Build-rejection warning uses. Two producers writing two key shapes
-            //into one set is how the last round's fix inverted the bug it fixed: prefix maintenance covered
-            //one shape and silently ignored the other, so an entry from this path became immortal and
-            //suppressed a later node's warning. One shape, one maintenance rule.
+            //Refusing to WRITE it is only half the job: imnodes is still holding the bad value and the node is
+            //still submitted every frame (culling reads our own X/Y), so it would be drawn off at that
+            //coordinate for the rest of the session with the document looking healthy. Dropping the seed makes
+            //drawNode push our position back next frame. Said once per node per distinct bad coordinate, keyed
+            //in the SAME "<id>@<source>@<value>" shape the Build-rejection warning uses — two producers with
+            //two key shapes in one set is how prefix maintenance once covered one and missed the other.
             if (m_s->WarnedPos.insert(G.Nodes[I].Id + "@the editor@" + std::to_string(P.x) + "," + std::to_string(P.y)).second)
             {
                 Log(LogLevel::WARN, "PkgCanvas::flushPositions",
@@ -1585,11 +1545,12 @@ void PkgCanvas::frame()
     //roughly four fifths of the visible graph could not be clicked, hovered, dragged, box-selected or panned,
     //and a node dragged past that invisible edge triggered imnodes' auto-pan and ran away with the view. Tell
     //it where the canvas is in the space the cursor is actually in and all of that follows.
-    //Only while the two spaces actually differ, and restored after EndNodeEditor: at 1:1 imnodes' own rect is
-    //already right (its child's content region, inset by the 1px border), and leaving a WORLD-space rectangle
-    //in a global between frames is a trap for any later caller that compares it against a screen cursor.
+    //imnodes' rectangle only while the two spaces actually differ — at 1:1 its own is already right (the
+    //child's content region, inset by the 1px border) — and restored after EndNodeEditor, because a WORLD
+    //rectangle left in a global between frames is a trap for any later caller comparing it to a screen cursor.
     const ImRect CanvasRectWas = GImNodes->CanvasRectScreenSpace;
     if (ViewZoom != 1.0f) GImNodes->CanvasRectScreenSpace = ImRect(SubClipMin, SubClipMax);
+
     //And what "the screen" means while the editor lays out. A popup opened inside a node — every combo is one
     //— is positioned by imgui from the widget's rect, which in here is WORLD space, against the viewport rect,
     //which is SCREEN space. At any zoom but 1 those disagree, and imgui then decides there is no room below a
@@ -1597,11 +1558,9 @@ void PkgCanvas::frame()
     //view, a combo popup opened 245px away from the widget that owns it. Pointing the viewport at the region
     //the editor is actually laying out in puts that decision back in one space; the transform then maps the
     //result to where the widget is drawn. Restored immediately after the editor, before anything screen-space
-    //(the minimap) is drawn.
-    //Applied at EVERY zoom, 1.0 included — at 1.0 the region IS the canvas viewport, so the only change is
-    //that a dropdown opened near the bottom of the canvas is kept inside the canvas instead of hanging over
-    //the toolbar, which is what it should do anyway. Skipping it there left a discontinuity at exactly 1.0
-    //with no reason behind it.
+    //(the minimap) is drawn. Applied at EVERY zoom, 1.0 included: there the region IS the canvas viewport, so
+    //the only effect is that a dropdown near the bottom of the canvas stays inside the canvas instead of
+    //hanging over the toolbar, and skipping it would leave a discontinuity at exactly 1.0 for no reason.
     //
     //A popup is placed against this rectangle and PINNED TO ITS CORNER if it does not fit, so the rectangle
     //has to be at least as big as a dropdown: ~136 world units for a combo's eight items, and a field's own
@@ -1764,7 +1723,7 @@ void PkgCanvas::frame()
     //FindBestWindowPosForPopup reads the main one: two coordinate systems inside one placement path.
     IoGuard.restoreViewport();
     ZIO.MousePos   = RealMouse;                     // input goes back to screen space for everything else
-    ZIO.MouseDelta = RealDelta;                     // (also the guard's job, on the path where this is skipped)
+    ZIO.MouseDelta = RealDelta;                     // (the guard repeats this on any exit that skips it)
     //---- THE VIEW TRANSFORM ------------------------------------------------------------------------
     //Scale everything the editor just emitted, about the canvas origin. This is the whole of zoom: the
     //document is untouched and imnodes never hears about it, so "looking at the graph cannot edit it" holds

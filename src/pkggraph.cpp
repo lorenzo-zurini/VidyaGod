@@ -34,6 +34,20 @@ std::string SafeId(const std::string &Id)
     return Out;
 }
 
+bool WritableObject(json &Node, const char *Key)
+{
+    if (!Node.is_object()) return false;
+    if (!Node.contains(Key) || Node[Key].is_null()) { Node[Key] = json::object(); return true; }
+    return Node[Key].is_object();
+}
+
+bool WriteSubKey(json &Node, const char *Key, const std::string &Sub, const json &Value)
+{
+    if (!WritableObject(Node, Key)) return false;
+    Node[Key][Sub] = Value;
+    return true;
+}
+
 Graph Build(const json &NodesArray, const json *Layout)
 {
     Graph G;

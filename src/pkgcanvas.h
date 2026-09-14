@@ -134,10 +134,6 @@ public:
     bool  miniMap() const;
     void  setMiniMap(bool on);
     void selectNode(int index);
-    //Drive one field's WRITE path directly. Exposed for the malformed-package tests: the write is what throws
-    //on a value of the wrong type, and reaching it through synthetic clicks means a test can pass by never
-    //getting there — which is exactly how an earlier version of that test passed with the guards deleted.
-    void writeFieldForTest(int index, const char *key, const char *sub, const char *value);
 
 signals:
     void documentChanged();                       // the canvas mutated the document (already saved)

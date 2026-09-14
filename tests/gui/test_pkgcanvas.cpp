@@ -2459,13 +2459,17 @@ private slots:
             { survived << QString("%1: threw %2").arg(What).arg(E.what()); }
         };
 
+        // These call PkgGraph::WriteSubKey — the SAME function the KeyValue and Cover writers in drawField
+        // call, not a copy of the pattern and not a hook on the canvas. Reaching a write through synthetic
+        // clicks lets a test pass by never getting there (an earlier version did exactly that), and a
+        // parallel copy lets the call sites drift; calling the one exported writer does neither.
         // KeyValue: the "+ add" button and a rename both write Node[key][sub].
         for (const char *Bad : {"\"oops\"", "5", "[]", "true", "null"}) {
             const int N = Canvas->addNode("DllOverride", 200, 200);
             Doc["NODES"][N]["OVERRIDES"] = json::parse(Bad);
             Canvas->invalidateGraph(); runFrame();
             attempt(QString("DllOverride OVERRIDES=%1").arg(Bad).toUtf8().constData(),
-                    [&] { Canvas->writeFieldForTest(N, "OVERRIDES", "k", "v"); });
+                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N], "OVERRIDES", "k", "v")) Canvas->invalidateGraph(); });
             Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
         }
         // Cover: one KEYSTROKE reached Node[key]["PATH"].
@@ -2474,7 +2478,7 @@ private slots:
             Doc["NODES"][N]["COVER"] = json::parse(Bad);
             Canvas->invalidateGraph(); runFrame();
             attempt(QString("DeclareLibraryItem COVER=%1").arg(Bad).toUtf8().constData(),
-                    [&] { Canvas->writeFieldForTest(N, "COVER", "PATH", "x.png"); });
+                    [&] { if (PkgGraph::WriteSubKey(Doc["NODES"][N], "COVER", "PATH", "x.png")) Canvas->invalidateGraph(); });
             Canvas->removeNode(N); Canvas->invalidateGraph(); runFrame();
         }
         // A NODES entry that is not an object at all: renameNode and the envelope both write through it.
