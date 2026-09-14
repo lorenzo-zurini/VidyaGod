@@ -65,6 +65,11 @@ struct Link
 //package's own POS by editing the package, this machine's override by clearing a local setting.
 struct RejectedPosition
 {
+    //The INDEX as well as the id, because an id is not a key. A hand-edited bundle can carry two nodes named
+    //the same, or a node with no NODE_ID at all — and every such node collapses onto one id, so a consumer
+    //asking "was THIS node's file rewritten?" by id answers for a different node. The index addresses exactly
+    //one entry of NODES by construction.
+    int         Index = -1;
     std::string NodeId;
     std::string Source;
     std::string Value;
@@ -187,9 +192,27 @@ std::vector<RegRow> RegRowsOf(const nlohmann::ordered_json &Entry);
 //the_registry_row_count_matches_the_flattening, because a drift between them silently under-reserves height.
 size_t CountRegRows(const nlohmann::ordered_json &Entry);
 
-//A NODE_ID rendered safe to put in a log line — C0 controls replaced, length capped. Ids come from arbitrary
-//on-disk or peer JSON and the log is this codebase's verdict channel.
+//A NODE_ID rendered safe to put in a log line — C0 and C1 controls replaced, length capped on a UTF-8
+//character boundary. Ids come from arbitrary on-disk or peer JSON and the log is this codebase's verdict
+//channel.
 std::string SafeId(const std::string &Id);
+
+//Whether a StringList field's value can be edited as a list AT ALL, and if not, what is wrong with it.
+//
+//ONE predicate, because the renderer and the height estimator both need this answer and they must never
+//disagree: drawField draws one line for a value it refuses, FieldPx has to charge one line for it, and that
+//number is STAMPED into the package at publish. When the element scan lived only in drawField, a list holding
+//six strings and one number was drawn 437px and estimated 600px — a 163px hole in every peer's canvas.
+//Pass nullptr for an absent field.
+enum : int { kStringListOk = -1, kStringListNotAList = -2 };
+int StringListFault(const nlohmann::ordered_json *V);
+
+//What a value IS, in a handful of characters — for the places that have to SHOW the author a payload of the
+//wrong shape. Never serialises the value: a package fetched from a content source can carry megabytes in any
+//field, and both callers of this are on a per-FRAME path, so `dump()` there is a multi-megabyte allocation and
+//a multi-megabyte CalcTextSize sixty times a second. A long string is cut to `MaxChars` on a character
+//boundary; a container is described by its size instead of its contents. Output is SafeId-clean.
+std::string DescribeValue(const nlohmann::ordered_json &V, size_t MaxChars = 24);
 
 //Make Node[Key] safe to write an OBJECT into — materialising it when absent or null — and say whether that is
 //now possible. And the ONE guarded writer every UI path uses for Node[Key][Sub] = Value.

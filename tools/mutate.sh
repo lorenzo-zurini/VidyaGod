@@ -23,6 +23,14 @@ FILE="${1:?file to mutate}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# TRACKED, checked first: `git diff --quiet` passes for an UNTRACKED file, and `git checkout --` then fails
+# with a pathspec error that this script used to ignore — so the "restore" run executed the still-mutated file
+# and, if it happened to be green, printed "restored clean" and exited 0. A false SURVIVED on a permanently
+# mutated tree is the worst output this tool can produce.
+if ! git ls-files --error-unmatch -- "$FILE" >/dev/null 2>&1; then
+  echo "REFUSING: $FILE is not tracked by git, so there is nothing to restore it from." >&2
+  exit 2
+fi
 if ! git diff --quiet -- "$FILE"; then
   echo "REFUSING: $FILE has unstaged changes that 'git checkout --' would discard. Stage them first." >&2
   exit 2
@@ -46,13 +54,26 @@ DRIVER
 }
 
 # 0 = green, 1 = a suite failed, 2 = did not build.
+#
+# A suite that CRASHES must count as caught. Grepping a suite's stdout for "FAIL" cannot see an abort — the
+# process dies before it prints one — and ctest labels a crash "(Subprocess aborted)" or "(SEGFAULT)", never
+# "(Failed)". An earlier version checked only those, so `std::abort()` in SafeId killed two suites outright and
+# was reported "SURVIVED": blind to precisely the failure this codebase spent the changeset closing (an
+# exception out of paintGL). EXIT STATUS is the thing that cannot be faked, so it is what decides; the greps
+# only surface the useful detail.
 suites() {
   local log; log="$(cmake --build build -j"$(nproc)" 2>&1)" || { echo "$log" | grep -E " error" | head -5; return 2; }
   local bad=0
   # ctest covers every suite; the two are named so their per-test detail is in the output.
-  ./build/vg_tests 2>&1 | grep -E "^\[FAIL\]" && bad=1
-  QT_QPA_PLATFORM=offscreen ./build/test_pkgcanvas 2>&1 | grep -E "^FAIL" && bad=1
-  ctest --test-dir build 2>&1 | grep -E "\(Failed\)" && bad=1
+  # TIMED OUT, because a mutation can make a loop infinite — SafeId's byte walk is the obvious candidate — and
+  # a hung harness is not a result. ctest brings its own 1500s default; these two had none. `timeout` exits
+  # 124, which is non-zero, so a hang counts as caught exactly like a crash does.
+  timeout 600 ./build/vg_tests 2>&1 | grep -E "^\[FAIL\]"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || { bad=1; echo "  (vg_tests exited non-zero - failed, crashed or timed out)"; }
+  QT_QPA_PLATFORM=offscreen timeout 600 ./build/test_pkgcanvas 2>&1 | grep -E "^FAIL"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || { bad=1; echo "  (test_pkgcanvas exited non-zero - failed, crashed or timed out)"; }
+  ctest --test-dir build 2>&1 | grep -E "\(Failed\)|\(Subprocess aborted\)|\(SEGFAULT\)|\(Timeout\)"
+  [ "${PIPESTATUS[0]}" -eq 0 ] || bad=1
   return $bad
 }
 
@@ -67,6 +88,6 @@ case $RC in
 esac
 
 echo "--- restoring $FILE from git and re-verifying"
-git checkout -- "$FILE"
+git checkout -- "$FILE" || { echo "RESTORE FAILED - $FILE is still mutated. Fix the tree by hand." >&2; exit 3; }
 if suites; then echo "restored clean"; else echo "RESTORE IS NOT GREEN - the tree was already broken, or the restore did not take" >&2; exit 3; fi
 case $RC in 0) exit 0 ;; 1) exit 1 ;; *) exit 2 ;; esac

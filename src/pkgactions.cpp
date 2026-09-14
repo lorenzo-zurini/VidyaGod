@@ -114,6 +114,13 @@ void PkgActions::tell(const QString & Title, const QString & Body)
     QMessageBox::warning(Parent, Title, Body);
 }
 
+QString PkgActions::pick(const QString & Title, const QString & Dir, const QString & Filter, bool WantDir)
+{
+    if (Pick) return Pick(Title, Dir, Filter, WantDir);
+    return WantDir ? QFileDialog::getExistingDirectory(Parent, Title, Dir)
+                   : QFileDialog::getOpenFileName(Parent, Title, Dir, Filter);
+}
+
 bool PkgActions::ask(const QString & Title, const QString & Body)
 {
     if (Confirm) return Confirm(Title, Body);
@@ -226,8 +233,8 @@ void PkgActions::browsePath(const std::string & NodeId)
     const std::string Form = [&]{ const std::string F = StrOf(Model->doc()["NODES"][I], "FORM"); return F.empty() ? std::string("zip") : F; }();
 
     const QString Picked = (Form == "dir")
-        ? QFileDialog::getExistingDirectory(Parent, "Pick the folder this layer supplies", Bundle)
-        : QFileDialog::getOpenFileName(Parent, "Pick the file this layer supplies", Bundle);
+        ? pick("Pick the folder this layer supplies", Bundle, QString(), true)
+        : pick("Pick the file this layer supplies", Bundle, QString());
     if (Picked.isEmpty()) return;
 
     // A layer's PATH is relative to its bundle — content lives WITH the package. If the pick is from elsewhere,
@@ -252,8 +259,7 @@ void PkgActions::browseCover(const std::string & NodeId)
 {
     if (indexOf(NodeId) < 0) return;
     const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
-    const QString Picked = QFileDialog::getOpenFileName(Parent, "Pick the cover image", Bundle,
-                                                        "Images (*.png *.jpg *.jpeg *.webp)");
+    const QString Picked = pick("Pick the cover image", Bundle, "Images (*.png *.jpg *.jpeg *.webp)");
     if (Picked.isEmpty()) return;
     const QString Rel = QDir(Bundle).relativeFilePath(Picked);
     if (Rel.startsWith("..")) { tell("Outside the bundle", "The cover must live in the package folder."); return; }
@@ -615,8 +621,8 @@ std::vector<PkgGraph::RegRow> PkgActions::ParseRegExport(const QString & Text, i
 
 void PkgActions::importReg(const std::string & NodeId)
 {
-    const QString File = QFileDialog::getOpenFileName(Parent, "Import a .reg file", QDir::homePath(),
-                                                      "Registry exports (*.reg);;All files (*)");
+    const QString File = pick("Import a .reg file", QDir::homePath(),
+                              "Registry exports (*.reg);;All files (*)");
     if (File.isEmpty()) return;
     std::ifstream In(File.toStdString(), std::ios::binary);
     if (!In) { tell("Import .reg", "Could not read that file."); return; }
@@ -644,11 +650,40 @@ void PkgActions::importReg(const std::string & NodeId)
     const int I = indexOf(NodeId);
     if (I < 0) { tell("Import .reg", "That node is no longer in the package."); return; }
     json & N = Model->doc()["NODES"][I];
+    //A malformed EDITS is REFUSED, not replaced. The canvas already refuses to overwrite a hand-edited
+    //`"EDITS": {"HKLM": {...}}` from its "+ group" button — this path would have thrown the same registry tree
+    //away on one click and saved the loss, which is the harder failure to notice because the author reaches
+    //for Import precisely when the node is in a state they are trying to repair. Absent, null and empty are
+    //still materialised: those are "nothing to lose", not "something of the wrong shape".
+    if (N.contains("EDITS") && !N["EDITS"].is_null() && !N["EDITS"].is_array())
+    {
+        tell("Import .reg",
+             "This node's EDITS is not a list, so importing would replace it and lose what is there.\n\n"
+             "Fix it in the JSON view first.");
+        return;
+    }
     if (!N.contains("EDITS") || !N["EDITS"].is_array() || N["EDITS"].empty())
         //BOTH views, not 32 alone: a 64-bit-only import silently landing in the 32-bit view is the
         //silent-nothing this codebase's audit exists to catch, and the author has no way to see it.
         //Narrowing it afterwards is one checkbox; discovering it was wrong is a debugging session.
         N["EDITS"] = json::array({json::object({{"ARCHITECTURE", json::array({"32", "64"})}})});
+    //...and the ENTRY, one index deeper. RegRowsOf reads nothing out of a non-object and RegRowsInto then
+    //iterates it as one, so `"EDITS": ["x"]` — the exact shape drawRegEdits refuses to touch, printing
+    //"(malformed entry - fix it in the JSON view)" — came back as {"": "x", "HKLM": {...}} and was saved. A
+    //refusal that stops at the container and reshapes what is inside it is not a refusal.
+    //Nothing to lose, so materialised — but materialised INTO THE SAME THING the container rule below writes,
+    //views and all. `json::object()` here was not "the same rule": NodeLower turns a missing ARCHITECTURE into
+    //a single un-redirected view, so the import would have landed in one view instead of both and a 64-bit
+    //game would read nothing from a node that validates clean. That is the silent-nothing the comment under
+    //the container rule cites as the reason for writing both views in the first place.
+    if (N["EDITS"][0].is_null()) N["EDITS"][0] = json::object({{"ARCHITECTURE", json::array({"32", "64"})}});
+    if (!N["EDITS"][0].is_object())
+    {
+        tell("Import .reg",
+             "This node's first EDITS entry is not an object, so importing would rewrite it into one.\n\n"
+             "Fix it in the JSON view first.");
+        return;
+    }
     json & Entry = N["EDITS"][0];
     std::vector<PkgGraph::RegRow> Merged = PkgGraph::RegRowsOf(Entry);
     Merged.insert(Merged.end(), Rows.begin(), Rows.end());

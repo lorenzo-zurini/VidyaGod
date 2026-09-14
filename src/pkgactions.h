@@ -48,6 +48,13 @@ public:
     //refusal paths, which are exactly the ones that must not delete anything, were untestable.
     using NotifyFn = std::function<void(const QString &Title, const QString &Body)>;
     void setNotifyHandler(NotifyFn fn) { Notify = std::move(fn); }
+    //...and the same for the file dialogs. `getOpenFileName` blocks a headless run exactly like a question
+    //does, so every action that begins with a pick — browse, cover, import .reg — was unreachable from a test,
+    //including the paths that REFUSE the pick (outside the bundle, unreadable file, a payload of the wrong
+    //shape). `WantDir` distinguishes the folder pick from the file pick; empty means the author cancelled.
+    using PickFn = std::function<QString(const QString &Title, const QString &Dir, const QString &Filter,
+                                         bool WantDir)>;
+    void setPickHandler(PickFn fn) { Pick = std::move(fn); }
     //Point the conversions at different programs. Exists so a test can prove that a tool which cannot run
     //unlocks the node and leaves the source intact — the path that previously skipped the completion handler
     //entirely and left a node locked forever against an already-deleted file.
@@ -87,8 +94,10 @@ private:
     //Returns true to proceed. Defaults to a real modal question.
     bool ask(const QString & Title, const QString & Body);
     void tell(const QString & Title, const QString & Body);
+    QString pick(const QString & Title, const QString & Dir, const QString & Filter, bool WantDir = false);
     ConfirmFn            Confirm;
     NotifyFn             Notify;
+    PickFn               Pick;
     QString              ZipTool   = "zip";
     QString              UnzipTool = "unzip";
     PackageEditorModel * Model  = nullptr;

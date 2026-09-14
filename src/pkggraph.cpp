@@ -26,12 +26,80 @@ std::string SafeId(const std::string &Id)
 {
     std::string Out;
     Out.reserve(std::min<size_t>(Id.size(), 96));
-    for (char C : Id)
+    int Owed = 0;                       // continuation bytes the last lead byte still expects
+    for (size_t I = 0; I < Id.size(); ++I)
     {
-        if (Out.size() >= 96) { Out += "..."; break; }
-        Out += (static_cast<unsigned char>(C) < 0x20 || C == 0x7f) ? '?' : C;
+        const unsigned char C = static_cast<unsigned char>(Id[I]);
+        //Truncate only on a character BOUNDARY. Cutting at a fixed byte count can land inside a multi-byte
+        //sequence and emit a lone lead byte, which is invalid UTF-8 — a log line a JSON or terminal consumer
+        //downstream can choke on, produced BY the sanitiser.
+        //
+        //But a continuation byte is only allowed past the cap when a LEAD byte is still owed one. Exempting
+        //every 0x80..0xBF byte unconditionally meant 96 'x' followed by a thousand orphan continuations
+        //produced a 1096-byte output: no cap at all, and the tail was itself invalid UTF-8, passed through
+        //verbatim because those bytes are >= 0x20. Every caller today feeds an id that came through
+        //nlohmann::parse, which rejects invalid UTF-8 — but this function's own header calls its input hostile
+        //and promises a cap, so it keeps the promise without relying on who happens to call it.
+        //A byte that is not a continuation STARTS a character, so nothing is owed at it — including the case
+        //that closed the previous hole and opened this one: a run of lead bytes, each setting a debt the next
+        //one never paid, so `Owed` never returned to zero and the cap never fired. Measured before this fix:
+        //95 'x' followed by a thousand 0xF0 came back as 2095 bytes, the lone leads passed through verbatim
+        //because they are >= 0x20. Zero the debt FIRST, test the cap, then record what this byte owes.
+        const bool IsCont = (C & 0xC0) == 0x80;
+        if (!IsCont) Owed = 0;
+        if (Out.size() >= 96 && Owed == 0) { Out += "..."; break; }
+        if (IsCont)                  { if (Owed) --Owed; }
+        else if ((C & 0xE0) == 0xC0) Owed = 1;
+        else if ((C & 0xF0) == 0xE0) Owed = 2;
+        else if ((C & 0xF8) == 0xF0) Owed = 3;
+        //C1 controls too, not just C0. They arrive as UTF-8 (0xC2 0x80..0x9F) and 0x9B is CSI — the same
+        //escape introducer ESC-[ is, so an id carrying it can move the cursor and colour the terminal of
+        //anyone reading these logs. Filtering only bytes < 0x20 let every one of them straight through.
+        if (C == 0xC2 && I + 1 < Id.size()
+            && static_cast<unsigned char>(Id[I + 1]) >= 0x80 && static_cast<unsigned char>(Id[I + 1]) <= 0x9F)
+        { Out += '?'; ++I; Owed = 0; continue; }   //a whole character was consumed; it owes nothing
+        Out += (C < 0x20 || C == 0x7f) ? '?' : Id[I];
     }
     return Out;
+}
+
+int StringListFault(const json *V)
+{
+    //Absent and null are not faults: they are an unset field, which the editor materialises on the first
+    //keystroke because there is nothing there to lose.
+    if (!V || V->is_null()) return kStringListOk;
+    if (!V->is_array())     return kStringListNotAList;
+    //ELEMENTS too, because the ROUND TRIP is what destroys. ListToText silently drops an entry that is not a
+    //string, the author types one character, TextToList writes back what is left, and the dropped entry is
+    //gone — through the same widget, without the value ever having looked wrong.
+    //A null ENTRY is a fault like any other. Absent and null are "nothing to lose" for the FIELD, because
+    //there is no list there at all; inside a list, a null is an entry the author wrote and ListToText drops,
+    //which is the same silent destruction as any other wrong type.
+    for (int I = 0; I < (int)V->size(); ++I)
+        if (!V->at((size_t)I).is_string()) return I;
+    return kStringListOk;
+}
+
+std::string DescribeValue(const json &V, size_t MaxChars)
+{
+    if (V.is_object()) return "an object of " + std::to_string(V.size()) + " key(s)";
+    if (V.is_array())  return "a list of " + std::to_string(V.size()) + " entry(s)";
+    if (V.is_null())   return "null";
+    //Numbers and booleans are bounded by their own type, so dump() is safe on them and nothing else here.
+    //get_ref, not get<std::string>(): the latter COPIES, so a 10 MB malformed string field was a 10 MB
+    //allocation per frame per visible node — half the hazard this function exists to avoid, reintroduced
+    //inside it. Only the prefix is ever needed, so only the prefix is taken.
+    std::string S = V.is_string() ? V.get_ref<const std::string &>().substr(0, MaxChars + 4) : V.dump();
+    if (S.size() > MaxChars)
+    {
+        //Cut on a character boundary, for the same reason SafeId does: a lone lead byte is invalid UTF-8
+        //produced by the thing whose job is to make the value safe to show.
+        size_t Cut = MaxChars;
+        while (Cut > 0 && (static_cast<unsigned char>(S[Cut]) & 0xC0) == 0x80) --Cut;
+        S.resize(Cut);
+        S += "...";
+    }
+    return V.is_string() ? "\"" + SafeId(S) + "\"" : SafeId(S);
 }
 
 bool WritableObject(json &Node, const char *Key)
@@ -63,7 +131,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         //graph. (LoadNodes does not produce these; a hand-edited file can.)
         Node Nd;
         Nd.Index = (int)G.Nodes.size();
-        if (!N.is_object()) { G.Nodes.push_back(std::move(Nd)); continue; }
+        if (!N.is_object()) { Nd.Height = EstimateHeight(N); G.Nodes.push_back(std::move(Nd)); continue; }
         //TOTAL: the editor renders raw on-disk JSON, deliberately — it is the tool you open to fix a node the
         //format rejects — so any of these may be the wrong type, and value() throws on a mismatch.
         auto Str = [&](const char *K, const char *Def) {
@@ -86,7 +154,7 @@ Graph Build(const json &NodesArray, const json *Layout)
                 //content source can carry a megabytes-long array here — allocated on every cache rebuild,
                 //which is every keystroke. Describe the shape instead; the shape is the whole complaint.
                 G.RejectedPositions.push_back(
-                    {Nd.Id, Which, std::string("a ") + P.type_name()
+                    {Nd.Index, Nd.Id, Which, std::string("a ") + P.type_name()
                                        + (P.is_array() ? " of " + std::to_string(P.size()) + " element(s)" : "")
                                        + ", not two numbers"});
                 return false;
@@ -112,7 +180,7 @@ Graph Build(const json &NodesArray, const json *Layout)
                 //%g, not std::to_string: the latter prints 1e300 as 308 digits of peer-controlled text.
                 char Buf[64];
                 std::snprintf(Buf, sizeof(Buf), "%g, %g", Px, Py);
-                G.RejectedPositions.push_back({Nd.Id, Which, Buf});
+                G.RejectedPositions.push_back({Nd.Index, Nd.Id, Which, Buf});
                 return false;
             }
             Nd.X = (float)Px; Nd.Y = (float)Py; Nd.HasPos = true;
@@ -430,10 +498,14 @@ float FieldPx(const json &Node, const Field &F)
     case FieldKind::Cover:
         return kRowPx;
     case FieldKind::StringList:
-        return StringListPx(V ? *V : json(), false);
     case FieldKind::StringListKeepEmpty:
-        //Always a box: a blank line is data here, so drawField never collapses it to a single-line input.
-        return StringListPx(V ? *V : json(), true);
+        //A value of the wrong shape draws as ONE line — the label, then a short description as disabled text
+        //and no widget at all (drawField refuses to edit it). Through the SHARED predicate, so "wrong shape"
+        //cannot come to mean two different things on the two sides of it.
+        if (StringListFault(V) != kStringListOk) return kTextPx;
+        //KeepEmpty is ALWAYS a box: a blank line is data there, so drawField never collapses it to a
+        //single-line input.
+        return StringListPx(V ? *V : json(), F.Kind == FieldKind::StringListKeepEmpty);
     case FieldKind::KeyValue:
     {
         const size_t N = (V && V->is_object()) ? V->size() : 0;
@@ -496,6 +568,12 @@ float FieldPx(const json &Node, const Field &F)
 
 float EstimateHeight(const json &Node)
 {
+    //A NODES entry that is not an object is a PLACEHOLDER, and it draws as one: a title bar and a single
+    //disabled line saying so (see PkgCanvas::drawNode). Falling through to the payload arms below charged it
+    //a full Group's worth of chrome, and leaving Height at its default 0 — which is what Build did, since it
+    //push_backs the placeholder before this is ever called — gave PkgLayout no vertical space for it at all,
+    //so the next node in the column was stacked on top of it.
+    if (!Node.is_object()) return kChromePx + kTitlePx + kTextPx;
     const std::string Type = (Node.is_object() && Node.contains("TYPE") && Node["TYPE"].is_string())
                                  ? Node["TYPE"].get<std::string>() : std::string("Group");
     float Px = kChromePx + kTitlePx;
@@ -513,7 +591,18 @@ float EstimateHeight(const json &Node)
     //opening a collapsed node would make it 57px taller than the space the layout reserved, and it would
     //overlap its neighbour. Three rows of slack on every node is the price of that never happening.
     Px += kTextPx + 3.0f * kRowPx;
-    for (const Field &F : FieldsFor(Type)) Px += FieldPx(Node, F);
+    for (const Field &F : FieldsFor(Type))
+    {
+        //The same skip drawPayload makes, and for the same reason: BASE_TARGETS belongs to a delta, and a
+        //Content zip or dir never draws it. Charging it on every Content node reserved a row that nothing
+        //occupies — harmless for overlap, but this number is STAMPED into the package at publish, so an
+        //estimate that disagrees with what is drawn is a hole in the published layout on every peer's canvas.
+        //FORM is payload, so the skip stays as deterministic as the rest of this function.
+        if (F.Key == std::string("BASE_TARGETS")
+            && ((Node.contains("FORM") && Node["FORM"].is_string()) ? Node["FORM"].get<std::string>()
+                                                                    : std::string()) != "delta") continue;
+        Px += FieldPx(Node, F);
+    }
     //The action row: a Separator, then one SmallButton line per wrap. drawActions starts a new line whenever
     //the next button would pass the node width, and a Content zip with a deflate hint and a zip parent has
     //five of them — but how many actions a node offers depends on HOST facts (a hint saying this zip is
@@ -522,11 +611,15 @@ float EstimateHeight(const json &Node)
     Px += kSepPx + kBtnPx;
     //Room for a couple of the validation warnings the canvas draws ON a node. They are host state rather than
     //payload — the same node has none at publish time, which is when this number is stamped — and there can be
-    //any number of them, so they cannot be counted properly here. But the slack left over on a bare Group was
-    //measured at 15px against a warning line of 17px: ONE warning already pushed the commonest node type in a
-    //composition graph past its reserved height. Two lines is a THRESHOLD, not a bound — a node carrying six
-    //findings still overflows by 16px, and PackageEditor attaches errors and warnings to the same id with no
-    //cap. It buys the common case; a node that broken overlapping its neighbour is the least of its problems.
+    //any number of them, so they cannot be counted properly here.
+    //
+    //MEASURED, 2026-09-14 (theEstimatedNodeHeightMatchesTheDrawnOne prints every shape): the leftover slack is
+    //31px on the tightest shapes (a bare Group, any RegEdit) and 48-65px on the rest, against a warning line
+    //of 17px. So this reservation buys ONE warning outright and the second overruns the estimate by 3px on a
+    //Group — the "six findings" figure an earlier version of this comment gave was attached to the wrong
+    //quantity. Overrunning the ESTIMATE is not overlap: PkgLayout pitches by Height + RowGap, so a node has
+    //31 + 90 = 121px, about seven warning lines, before it reaches the node beneath it. That is the number
+    //that matters, and it is why two lines is the right reservation rather than a generous one.
     Px += 2.0f * kTextPx;
     return Px;
 }

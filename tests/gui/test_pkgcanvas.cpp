@@ -998,8 +998,11 @@ private slots:
         ImNodes::SetNodeGridSpacePos(0, ImVec2(1500, 900));
         runFrame();
         // ...then make a document edit before the button comes up, so both flags are live at the commit.
-        // (Editing first would not do: renameNode invalidates the graph, the node is re-seeded from the
-        // cache, and the position delta the read-back would have seen never exists.)
+        // (Editing first would not do, for the reason in the note above rather than the seeding one this
+        // comment used to give: a document edit commits on the FOLLOWING frame, so the frame the rename needs
+        // clears DocChanged before the drag is released, and the release then takes the layout-only path.
+        // Measured: LayoutSaves 1, not 0. renameNode does not drop the seed either — it MOVES the entry to
+        // the new id, which is the whole point of the Move() block in it.)
         Canvas->renameNode(0, "edited_and_moved");
         releaseMouse();
 
@@ -1041,11 +1044,13 @@ private slots:
     }
 
 
-    // THE ACTUAL GESTURE. setZoom() clears the seed map itself, so a test driving it cannot exercise the
-    // protection the WHEEL path depends on: the wheel handler assigns the zoom field directly and relies on
-    // the per-frame "zoom changed -> re-seed everything" check. Without that check imnodes keeps positions
-    // scaled by the OLD zoom while the read-back divides by the NEW one, and the difference is written to the
-    // layout — a position corrupted by scrolling.
+    // THE ACTUAL GESTURE, and worth keeping even though the test above drives the same numbers through
+    // setZoom(). The comment here used to say setZoom() clears the seed map and the wheel path does not; it
+    // no longer does (see setZoom — clearing it stomped in-flight drags and bought nothing once zoom became a
+    // view transform, because imnodes holds WORLD coordinates and a scale change does not invalidate them).
+    // What this still covers that setZoom does not is the handler itself: the wheel assigns through the
+    // easing fields, so a regression that reintroduces a scale into the pushed position, or that recentres
+    // against the wrong "from" zoom, reaches the layout here and not there.
     void wheelingOverTheCanvasDoesNotMoveAnyPosition()
     {
         Canvas->setMiniMap(false);
@@ -1439,6 +1444,23 @@ private slots:
         const QString Dump = QString::fromStdString(Layout.dump());
         QVERIFY2(!Dump.contains("e+3") && !Dump.contains("inf") && !Dump.contains("nan"),
                  qPrintable("an absurd coordinate reached the saved layout: " + Dump));
+        // WHERE it landed, not merely that it is finite. "Somewhere sane" is far too weak a claim: with the
+        // suppression applied mid-drag the node is parked at the off-canvas sentinel — about (-10040,-10008),
+        // comfortably inside every |v| < 1e6 bound above and comfortably "moved more than 20px" — and the
+        // layout is saved with it. A drag has a destination, so assert the destination: the node's grab point
+        // follows the cursor, so its origin must end within a node's width of where the cursor was released,
+        // in the same world units imnodes holds.
+        float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+        Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+        const ImVec2 Pan = ImNodes::EditorContextGetPanning();
+        const ImVec2 Release((mx0 + mx1) * 0.5f, (my0 + my1) * 0.5f);
+        const ImVec2 WantWorld(Release.x - vx0 - Pan.x, Release.y - vy0 - Pan.y);   // zoom is 1 here
+        const float Off = std::hypot(G.Nodes[0].X - WantWorld.x, G.Nodes[0].Y - WantWorld.y);
+        QVERIFY2(Off < 360.0f,
+                 qPrintable(QString("the drag released at world (%1,%2) and the node ended at (%3,%4) - %5 "
+                                    "units away, so it did not follow the cursor")
+                                .arg(WantWorld.x).arg(WantWorld.y)
+                                .arg(double(G.Nodes[0].X)).arg(double(G.Nodes[0].Y)).arg(Off)));
         // And it must have actually MOVED, or the guard is just refusing to drag at all.
         QVERIFY2(std::abs(G.Nodes[0].X - 200.0f) > 20.0f || std::abs(G.Nodes[0].Y - 200.0f) > 20.0f,
                  "the node did not move - the drag never happened, so this proves nothing");
@@ -1793,13 +1815,16 @@ private slots:
             //rows for it because the tree's state was whatever previous tests had left, and the measurement
             //above now takes both states, so that ambiguity is gone and so is the 57px it bought.
             //
-            //Measured worst case across every shape here: 94px (a Content with multiline lists), so 120 leaves
-            //room for a row's rounding. Note the ASYMMETRY that buys: the SHORT arm is tight to the pixel
-            //(kRowPx 19 -> 18 fails), while over-estimating has ~93px of headroom over a 27px baseline, so a
-            //single-pixel over-charge on a per-entry constant needs ~90 entries before it is caught. Doublings
-            //and the real per-entry mistakes are caught; a 1px over-charge on kSepPx or kBtnPx is not, and
-            //that is a deliberate trade against false positives on shapes the suite does not build.
-            else if (Est - Drawn > 120.0f)
+            //Measured across every shape here (2026-09-14, all 20 of them): 31px on a Group or a RegEdit,
+            //48px on most, 65px worst case on a DeclareExec. 90 leaves a row's rounding over that. It was 120
+            //against a claimed 94px worst case, which no shape in the suite has produced since the estimate
+            //was recalibrated — an unearned 55px of headroom. Note the ASYMMETRY even so: the SHORT arm is
+            //tight to the pixel (kRowPx 19 -> 18 fails), while over-estimating has ~59px of headroom over the
+            //31px baseline, so a single-pixel over-charge on a per-entry constant still needs ~59 entries
+            //before it is caught. Doublings and the real per-entry mistakes are caught; a 1px over-charge on
+            //kSepPx or kBtnPx is not, and that is a deliberate trade against false positives on shapes the
+            //suite does not build.
+            else if (Est - Drawn > 90.0f)
                 outliers << QString("%1 is drawn %2px but estimated %3px - %4px of slack, past the fixed "
                                     "reservations, so the layout will leave a hole")
                                 .arg(Who).arg(Drawn).arg(Est).arg(Est - Drawn);
@@ -1881,6 +1906,66 @@ private slots:
         measure("CustomVar", json{{"TOGGLE", "on"}, {"WHEN", "%x%==1"}});
         // A multi-line StringList becomes a multiline box rather than a single-line input.
         measure("Content", json{{"SUBMOUNTS", json::array({"a:b", "c:d", "e:f", "g:h"})}});
+
+        // MALFORMED StringLists, which drawField short-circuits to one disabled line. This is the shape that
+        // was drawing a node 477px WIDE — past the 430px column step, i.e. across its right-hand neighbour —
+        // because the arm printed the whole value with dump() on a single unwrapped line. A 2000-character
+        // value measured 14407px. Both checks in `measure` bear on it: the width one is what catches the
+        // overflow, and the height one pins the estimate's new kTextPx arm for this shape.
+        measure("DeclareExec", json{{"ARGS", json("not a list")}});
+        measure("DeclareExec", json{{"ARGS", json::object({{"looks", "structured"}})}});
+        measure("DeclareExec", json{{"ARGS", json(std::string(2000, 'w'))}});
+        measure("DeclareExec", json{{"ARGS", json::array({5})}});
+        // SEVERAL GOOD ENTRIES AND ONE BAD ONE. This is the shape that catches the renderer and the estimator
+        // drifting apart: [5] has no strings to measure either way, so it cannot. With the element scan in
+        // drawField only, this measured 437px drawn against 600px estimated — a 163px hole reserved in the
+        // stamped POS for a delta's BASE_TARGETS with one number in it.
+        measure("DeclareExec", json{{"ARGS", json::array({"a", "b", "c", "d", "e", "f", 5})}});
+        measure("Content", json{{"BASE_TARGETS", json::array({"", "x", 5})}, {"FORM", "delta"}});
+        // A container holding a real payload, with one entry of the wrong type so it actually REACHES the
+        // refusal arm: a list of 5000 strings is well-formed and takes the ordinary path. The describer must
+        // report the value's SIZE and never serialise it — this one dumps to over a megabyte, which on a
+        // per-frame path is the editor freezing on the package you opened to repair it.
+        {
+            json Huge = json::array();
+            for (int r = 0; r < 5000; ++r) Huge.push_back(std::string(200, 'q'));
+            Huge.push_back(7);
+            measure("DeclareExec", json{{"ARGS", Huge}});
+            json HugeStr = std::string(4 * 1024 * 1024, 'w');
+            measure("DeclareExec", json{{"ARGS", HugeStr}});
+            //A huge CONTAINER, which is the arm the list above does not reach: with a bad entry the canvas
+            //describes THAT ENTRY, so only a value that is not a list at all sends the container itself to
+            //the describer. This one dumps to ~1.5 MB.
+            json HugeObj = json::object();
+            for (int r = 0; r < 5000; ++r) HugeObj[std::to_string(r)] = std::string(200, 'q');
+            measure("DeclareExec", json{{"ARGS", HugeObj}});
+        }
+
+        // The malformed-NODES placeholder: a title bar and one disabled line, and the only node whose height
+        // PkgGraph::Build sets without going through the payload arms. Measured here because the layout test
+        // that covers it can only compare it against other estimates, never against what is drawn.
+        {
+            const int N = (int)Doc["NODES"].size();
+            Doc["NODES"].push_back("this entry is not an object");
+            Canvas->invalidateGraph();
+            runFrame(); runFrame();
+            QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(), "the placeholder was culled");
+            const float Drawn = ImNodes::GetNodeDimensions(N).y;
+            const float Est   = Canvas->graph().Nodes[(size_t)N].Height;
+            if (Est < Drawn)
+                outliers << QString("the malformed placeholder is drawn %1px but estimated only %2px - SHORT, "
+                                    "so the layout will overlap it").arg(Drawn).arg(Est);
+            else if (Est - Drawn > 20.0f)
+                outliers << QString("the malformed placeholder is drawn %1px but estimated %2px - %3px of "
+                                    "slack. It has no payload and no warnings, so the two should agree "
+                                    "closely").arg(Drawn).arg(Est).arg(Est - Drawn);
+            if (ImNodes::GetNodeDimensions(N).x >= 430.0f)
+                outliers << QString("the malformed placeholder is %1px wide, past the column step")
+                                .arg(ImNodes::GetNodeDimensions(N).x);
+            Doc["NODES"].erase(Doc["NODES"].size() - 1);
+            Canvas->invalidateGraph();
+            runFrame();
+        }
 
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
     }
@@ -2397,7 +2482,9 @@ private slots:
         });
         runFrame(); runFrame();
         QCOMPARE(Warnings, 1);
-        // Now rebuild the graph twenty times over, as twenty keystrokes would.
+        // Twenty graph rebuilds. NOTE this is invalidateGraph, the document-REPLACEMENT path — not what a
+        // keystroke does (that is MarkDirty, driven below). Both are covered because both rebuild the graph
+        // and both therefore re-run the rejection report.
         for (int i = 0; i < 20; ++i) { Canvas->invalidateGraph(); runFrame(); }
         // And twenty keystrokes into the ID BOX of the corrupt node itself, which is the path that actually
         // happens: renameNode runs per character, ends in MarkDirty, and the graph is rebuilt with a new id —
@@ -2519,8 +2606,14 @@ private slots:
                 for (float fx : {0.12f, 0.4f, 0.8f}) {
                     const ImVec2 At(P.x + D.x * fx, P.y + D.y * fy);
                     if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                    ImGui::ClearActiveID();
                     clickAt(At);
                     runFrame();
+                    //...AND TYPE. A button destroys on the click; a TEXT FIELD destroys on the first
+                    //character, and a click alone only focuses it. The StringList case below is exactly that
+                    //shape — a non-array ARGS rendered as an empty box, and one keystroke turned it into
+                    //["x"] — so a click-only sweep reported it clean. Harmless where nothing is focused.
+                    type("x");
                 }
             closeAnyPopup();
             if (Doc["NODES"][N][Key] != Bad)
@@ -2534,7 +2627,19 @@ private slots:
         sweep("BinaryPatch", "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
         sweep("BinaryPatch", "EDITS", json("a string"));
         sweep("RegEdit",     "EDITS", json::object({{"HKLM", json::object({{"Software", "x"}})}}));
+        //A StringList whose value is not a list. ListToText yields "" for it, so this used to draw an empty
+        //box that looked unset, and the keystroke above replaced the value. It is now printed and read-only.
         sweep("DeclareExec", "ARGS",  json("not a list"));
+        sweep("DeclareExec", "ARGS",  json::object({{"looks", "structured"}}));
+        //...and a list of the RIGHT shape holding one entry of the wrong one, which is the likelier case and
+        //the one the container check alone misses. ListToText DROPS a non-string entry, so the box showed
+        //"a" for ["a",5] and nothing at all for [5]; the keystroke then wrote back what was left and the
+        //dropped entry was gone.
+        sweep("DeclareExec", "ARGS",  json::array({5}));
+        sweep("DeclareExec", "ARGS",  json::array({"a", 5}));
+        sweep("DeclareExec", "ARGS",  json::array({"a", json::array({"nested"})}));
+        sweep("DeclareExec", "ARGS",  json::array({"a", nullptr}));
+        sweep("Content",     "SUBMOUNTS", json::array({json::object({{"k", "v"}})}));
         QVERIFY2(lost.isEmpty(),
                  qPrintable("a click destroyed a malformed value instead of refusing:\n  " + lost.join("\n  ")));
     }
@@ -2729,6 +2834,121 @@ private slots:
         Canvas->setZoom(1.0f);
         Canvas->setMiniMap(false);
         QVERIFY2(outliers.isEmpty(), qPrintable("\n  " + outliers.join("\n  ")));
+    }
+
+    // A RELOAD that changes a node's declared POS must reach the canvas. invalidateGraph is the one path a
+    // document replacement takes — the JSON view's Save, and PackageEditor's LoadNodes — and it did not clear
+    // the seed map, so imnodes kept the position from BEFORE the reload. Two frames later flushPositions read
+    // that stale origin, saw it differ from the freshly-built graph, and wrote it to the layout sidecar as
+    // though the author had dragged the node there: the edit silently reverted AND the old coordinate
+    // persisted into GlobalConfig, where it beats the package's own POS for good.
+    void aReloadedPositionReachesTheCanvasInsteadOfBeingOverwritten()
+    {
+        Canvas->setMiniMap(false);
+        Doc["NODES"] = json::array({json{{"NODE_ID", "a"}, {"TYPE", "Group"},
+                                         {"POS", json::array({100.0, 100.0})}}});
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        QCOMPARE(Canvas->graph().Nodes[0].X, 100.0f);
+
+        // The document is replaced under the canvas, exactly as a JSON-view save does.
+        Doc["NODES"][0]["POS"] = json::array({500.0, 400.0});
+        Canvas->invalidateGraph();
+        runFrame(); runFrame();
+        releaseMouse();
+
+        QCOMPARE(Canvas->graph().Nodes[0].X, 500.0f);
+        QCOMPARE(Canvas->graph().Nodes[0].Y, 400.0f);
+        const ImVec2 Held = ImNodes::GetNodeGridSpacePos(0);
+        QVERIFY2(std::abs(Held.x - 500.0f) < 1.0f && std::abs(Held.y - 400.0f) < 1.0f,
+                 qPrintable(QString("imnodes still holds the pre-reload position (%1,%2)")
+                                .arg(double(Held.x)).arg(double(Held.y))));
+        // And nothing was persisted: a reload is not a drag.
+        QVERIFY2(Layout.empty() || !Layout.contains("a"),
+                 qPrintable("the reload was written to the layout sidecar as if it were a drag: "
+                            + QString::fromStdString(Layout.dump())));
+    }
+
+    // The crash class, driven through the UI rather than through the helper. everyFieldWriteRefuses... calls
+    // PkgGraph::WriteSubKey directly, which pins the helper — but the guard the user meets is the CALL, and a
+    // call site can be swapped back to a bare Node[key][sub] with the helper still perfect and every suite
+    // still green. That is the predicate-pinned-instead-of-call-sites trap. So: a malformed value, a real
+    // click, a real keystroke, and the only thing asserted is that the editor is still alive and the value is
+    // untouched — which is exactly what the user gets.
+    void aMalformedFieldSurvivesRealClicksAndKeystrokes()
+    {
+        Canvas->setMiniMap(false);
+        QStringList died;
+
+        //Returns whether the sweep CHANGED the value. Run on a well-formed node that is the positive control:
+        //if a sweep cannot reach the widget that writes, then "the malformed value was not rewritten" is not
+        //evidence of anything, and the mutation that swaps the call site back sails through. Both the KeyValue
+        //"+ add" button and the Cover box have to be demonstrably reachable before the refusal means anything.
+        auto drive = [&](const char *Type, const char *Key, const json &Bad, bool Typing) {
+            const int N = Canvas->addNode(Type, 220, 180);
+            Doc["NODES"][N][Key] = Bad;
+            Canvas->invalidateGraph();
+            ImGui::ClearActiveID();
+            ImNodes::EditorContextResetPanning(ImVec2(0, 0));
+            runFrame(); runFrame();
+            if (Canvas->visibleNodes() != Canvas->nodeCount()) { died << "node culled"; return false; }
+
+            float vx0 = 0, vy0 = 0, vx1 = 0, vy1 = 0;
+            Canvas->canvasViewport(vx0, vy0, vx1, vy1);
+            const ImVec2 P = ImNodes::GetNodeScreenSpacePos(N);
+            const ImVec2 D = ImNodes::GetNodeDimensions(N);
+            const QString Who = QString("%1 %2=%3").arg(Type).arg(Key)
+                                    .arg(QString::fromStdString(Bad.dump()));
+            try {
+                // Every row of the node, both columns: one of them is the widget that writes through Key.
+                //Absolute x offsets, not fractions: a SmallButton sits at the node's content edge and is ~40px
+                //wide, so a fraction of the 346px body steps straight over it. The wider offsets are for the
+                //value column, where the text boxes are.
+                for (float dy = 4.0f; dy < D.y - 2.0f; dy += 3.0f)
+                    for (float dx : {14.0f, 26.0f, 38.0f, 52.0f, 0.45f * D.x, 0.8f * D.x}) {
+                        const ImVec2 At(P.x + dx, P.y + dy);
+                        if (At.x < vx0 || At.x > vx1 || At.y < vy0 || At.y > vy1) continue;
+                        //An item left ACTIVE by an earlier click in this sweep swallows the next press:
+                        //ButtonBehavior only takes it when ActiveId is free, and a text box focused two rows
+                        //up is still holding it. Without this the sweep never presses a single button, and
+                        //"the malformed value was not rewritten" becomes true for the wrong reason.
+                        ImGui::ClearActiveID();
+                        clickAt(At);
+                        runFrame();
+                        // A click focused something: type into it. The Cover write happens on the KEYSTROKE,
+                        // with no click needed beyond focusing the box, so a click-only sweep never reaches it.
+                        if (Typing && ImGui::GetActiveID() != 0) { type("z"); runFrame(); }
+                    }
+            } catch (const std::exception &E) {
+                died << QString("%1: threw %2").arg(Who).arg(E.what());
+            }
+            closeAnyPopup();
+            ImGui::ClearActiveID();
+            const bool Changed = !Doc["NODES"][N].contains(Key) || Doc["NODES"][N][Key] != Bad;
+            Canvas->removeNode(N);
+            Canvas->invalidateGraph();
+            runFrame();
+            return Changed;
+        };
+
+        // The positive controls FIRST: a well-formed value of each shape must be changed by the sweep, which
+        // is what proves the sweep reaches the widget that writes through the key.
+        if (!drive("DeclareLibraryItem", "COVER", json("cover.png"), true))
+            died << "the sweep never reached the Cover box - every Cover result below is vacuous";
+        if (!drive("DllOverride", "OVERRIDES", json::object(), false))
+            died << "the sweep never reached the KeyValue add button - every OVERRIDES result below is vacuous";
+
+        // Cover: Node[COVER]["PATH"] on every keystroke — no click beyond focusing the box.
+        for (const char *Bad : {"5", "[]", "true"})
+            if (drive("DeclareLibraryItem", "COVER", json::parse(Bad), true))
+                died << QString("DeclareLibraryItem COVER=%1: the malformed value was rewritten").arg(Bad);
+        // KeyValue: Node[OVERRIDES][""] on the "+ add" button.
+        for (const char *Bad : {"\"oops\"", "5", "[]", "true"})
+            if (drive("DllOverride", "OVERRIDES", json::parse(Bad), false))
+                died << QString("DllOverride OVERRIDES=%1: the malformed value was rewritten").arg(Bad);
+
+        QVERIFY2(died.isEmpty(),
+                 qPrintable("a malformed package did not survive being used:\n  " + died.join("\n  ")));
     }
 
     void zoomIsClampedAndDefaultsToUnity()

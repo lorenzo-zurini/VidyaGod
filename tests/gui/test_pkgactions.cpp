@@ -283,6 +283,98 @@ private slots:
         }
     }
 
+    // ------------------------------------------------------------------------------------------------
+    // import .reg — the only action that WRITES into a payload it did not create.
+    // ------------------------------------------------------------------------------------------------
+
+    // THE property, and the positive control for the one below: an import into a node with no registry rows
+    // yet materialises the entry and lands the rows in BOTH architecture views.
+    void importIntoAnEmptyRegEditLandsTheRows()
+    {
+        Fixture F(this);
+        const int n = F.addRegEditNode();
+        F.doc()["NODES"][n].erase("EDITS");                         // absent = nothing to lose
+        F.model->SaveNodes();
+
+        F.pickThisFile(F.writeReg("good.reg"));
+        F.act->perform(F.nodeId(n), "import_reg");
+        QTest::qWait(100);
+
+        const json &E = F.doc()["NODES"][n]["EDITS"];
+        QVERIFY2(E.is_array() && !E.empty(), E.dump().c_str());
+        QCOMPARE(E[0]["ARCHITECTURE"], json::array({"32", "64"}));
+        const std::string Dump = E.dump();
+        QVERIFY2(Dump.find("TONICT") != std::string::npos, Dump.c_str());
+        QVERIFY2(Dump.find("1.00")   != std::string::npos, Dump.c_str());
+    }
+
+    // A hand-written `"EDITS": {"HKLM": {...}}` is the shape the canvas ALREADY refuses to overwrite from its
+    // "+ group" button — but Import offered the same node the same destruction from a different button, and
+    // then SAVED it. It is the likelier of the two, because the author reaches for Import precisely when the
+    // node is in a state they are trying to repair. Refuse, say why, and change nothing on disk.
+    void importRefusesAMalformedEditsInsteadOfDestroyingIt()
+    {
+        Fixture F(this);
+        const int n = F.addRegEditNode();
+        const json Hand = json::parse(R"({"HKLM":{"Software":{"Mine":{"Keep":"precious"}}}})");
+        F.doc()["NODES"][n]["EDITS"] = Hand;                        // not an array — the author's own tree
+        F.model->SaveNodes();
+
+        F.pickThisFile(F.writeReg("good.reg"));
+        F.act->perform(F.nodeId(n), "import_reg");
+        QTest::qWait(100);
+
+        QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);               // in memory...
+        // ...and ON DISK, which is what the button used to lose: the destruction was followed by SaveNodes().
+        const json Saved = json::parse(F.read(F.path(F.nodeId(n) + ".json")).toStdString());
+        QCOMPARE(Saved["EDITS"], Hand);
+        QVERIFY(!F.notices.isEmpty());
+        QVERIFY2(F.notices.join(" ").contains("not a list"), qUtf8Printable(F.notices.join(" ")));
+    }
+
+    // The refusal has to hold at the ENTRY too, not just the container. `"EDITS": ["x"]` is a list, so it
+    // passed the check above — and RegRowsInto then iterated a string as an object and wrote it back as
+    // {"": "x", "HKLM": {...}}. That is the exact shape drawRegEdits refuses to touch, reshaped and saved by
+    // a different button on the same node.
+    void importRefusesAMalformedEditsEntry()
+    {
+        Fixture F(this);
+        const int n = F.addRegEditNode();
+        const json Hand = json::parse(R"(["a hand-written entry"])");
+        F.doc()["NODES"][n]["EDITS"] = Hand;
+        F.model->SaveNodes();
+
+        F.pickThisFile(F.writeReg("good.reg"));
+        F.act->perform(F.nodeId(n), "import_reg");
+        QTest::qWait(100);
+
+        QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);
+        const json Saved = json::parse(F.read(F.path(F.nodeId(n) + ".json")).toStdString());
+        QCOMPARE(Saved["EDITS"], Hand);
+        QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
+    }
+
+    // A null first entry IS materialised — there is nothing there to lose — but into the same thing the
+    // absent-EDITS rule writes, views and all. NodeLower turns a missing ARCHITECTURE into one un-redirected
+    // view, so materialising a bare {} would land the import in one view and a 64-bit game would read nothing
+    // from a node that validates clean.
+    void importIntoANullEntryLandsInBothViews()
+    {
+        Fixture F(this);
+        const int n = F.addRegEditNode();
+        F.doc()["NODES"][n]["EDITS"] = json::array({nullptr});
+        F.model->SaveNodes();
+
+        F.pickThisFile(F.writeReg("good.reg"));
+        F.act->perform(F.nodeId(n), "import_reg");
+        QTest::qWait(100);
+
+        const json &E = F.doc()["NODES"][n]["EDITS"];
+        QVERIFY2(E.is_array() && !E.empty() && E[0].is_object(), E.dump().c_str());
+        QCOMPARE(E[0]["ARCHITECTURE"], json::array({"32", "64"}));
+        QVERIFY2(E[0].dump().find("TONICT") != std::string::npos, E[0].dump().c_str());
+    }
+
 private:
     bool HaveZipTools = false;
 
@@ -309,6 +401,25 @@ private:
         json &doc() { return model->doc(); }
         QString path(const QString &rel) const { return dir->path() + "/" + rel; }
         QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["NODE_ID"].get<std::string>()); }
+
+        int addRegEditNode()
+        {
+            const int i = canvas->addNode("RegEdit");
+            model->SaveNodes();
+            return i;
+        }
+        // Answer the file dialog with a path instead of raising a modal nobody can click.
+        void pickThisFile(const QString &p)
+        { act->setPickHandler([p](const QString &, const QString &, const QString &, bool) { return p; }); }
+        // A small real regedit export, UTF-8 with CRLF the way wine writes one.
+        QString writeReg(const QString &name)
+        {
+            const QString P = dir->path() + "/" + name;
+            write(P, "Windows Registry Editor Version 5.00\r\n\r\n"
+                     "[HKEY_LOCAL_MACHINE\\Software\\Ubi Soft\\TONICT]\r\n"
+                     "\"Version\"=\"1.00\"\r\n");
+            return P;
+        }
 
         int addContentNode(const QString &p)
         {

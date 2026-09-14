@@ -353,9 +353,24 @@ void PkgCanvas::invalidateGraph()
     //so a second package's nodes would inherit the first one's boxes in the overview. Unlike the maps above
     //this one grows without bound, because nothing else ever removes an entry on this path.
     m_s->NodeDims.clear();
-    //NOT the warned-about set: this runs on every cache invalidation, which is every keystroke, so clearing it
-    //here made a single corrupt node warn per character typed. It is keyed by node, source AND value instead,
-    //so a different package's node can only be silenced by a message identical to one already printed.
+
+    //AND THE SEED MAP. This is the document-REPLACEMENT path — the JSON view's Save, PackageEditor's
+    //LoadNodes — so a node's declared POS can be different on the other side of it, while imnodes is still
+    //holding the position from before. seedNodePosition re-pushes only when the index moved or the node was
+    //not drawn last frame, and a reload changes neither: so imnodes kept the stale origin, flushPositions
+    //compared it against the freshly-built graph, decided the node had been DRAGGED there, wrote the old
+    //coordinate into the layout sidecar and marked it for saving. Editing a POS in the JSON view therefore
+    //reverted itself and persisted the value it had just replaced — into GlobalConfig, which outranks the
+    //package's own POS for the rest of that bundle's life. Clearing this makes the next frame push every
+    //drawn node from the rebuilt cache, which is what "the document changed underneath you" has to mean.
+    //
+    //Safe for a drag, because a drag does not come through here: the per-keystroke and per-edit path is
+    //MarkDirty(), which only drops CacheValid. This function has exactly one caller (PackageEditor::BuildUI).
+    m_s->Seeded.clear();
+    //NOT the warned-about set. The reason previously given for that — "this runs on every keystroke" — is
+    //false (that is MarkDirty); the real one is that its key carries the VALUE, so the only thing a stale
+    //entry can ever suppress is a message character-identical to one already printed. Clearing it here would
+    //buy a duplicate of that same line every time the editor rebuilds its UI, and nothing else.
 }
 
 void PkgCanvas::setNodeHints(const std::string &nodeId, const std::vector<std::string> &hints)
@@ -690,6 +705,39 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
     case FieldKind::StringListKeepEmpty:
     {
         const bool KeepEmpty = (F.Kind == FieldKind::StringListKeepEmpty);
+        //A value of the WRONG SHAPE is shown, not hidden. ListToText yields "" for anything that is not an
+        //array AND silently drops any entry that is not a string, so a hand-written `"ARGS": "not a list"` or
+        //`"ARGS": [5]` drew an EMPTY box — identical to an unset field — and the first character typed into it
+        //replaced the value. That is the same destruction the KeyValue and Cover writers were taught to
+        //refuse, arriving through a widget instead of a button, and it is worse here because the editor is the
+        //tool you open to REPAIR such a node: it showed you nothing was wrong.
+        //
+        //ELEMENTS as well as the container, because the round trip is what destroys: ListToText drops the
+        //entry, the author types, TextToList writes back what is left, and the dropped entry is gone. A list
+        //of the right shape with one wrong entry is not a lesser case of this — it is the likelier one.
+        const json *Val = (Node.is_object() && Node.contains(F.Key)) ? &Node[F.Key] : nullptr;
+        //THE SHARED PREDICATE, not a copy of it. PkgGraph::FieldPx has to charge one line for exactly the
+        //values this draws one line for, and when this scan lived only here the two disagreed by 163px on a
+        //list with one bad entry — a hole reserved in the POS stamped into the package at publish.
+        const int BadAt = PkgGraph::StringListFault(Val);
+        if (BadAt != PkgGraph::kStringListOk)
+        {
+            //DESCRIBED, never dumped. This runs on every frame of every visible node, and a package from a
+            //content source can carry megabytes in any field: `dump()` here is that many bytes allocated and
+            //measured sixty times a second, and the resulting single unwrapped line drew the node clean across
+            //the column to its right. Same hazard PkgGraph::Build refuses for the same reason, one path hotter.
+            const std::string What = (BadAt >= 0)
+                ? "entry " + std::to_string(BadAt) + " is " + PkgGraph::DescribeValue(Val->at((size_t)BadAt))
+                : PkgGraph::DescribeValue(*Val);   // kStringListNotAList: describe the value itself
+            ImGui::TextUnformatted(F.Label); ImGui::SameLine(kLabelCol);
+            ImGui::TextDisabled("%s", What.c_str());
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", BadAt >= 0
+                                      ? "Every entry of this list has to be a string. Fix it in the JSON view."
+                                      : "This is not a list. Fix it in the JSON view - editing here would "
+                                        "replace it.");
+            break;
+        }
         std::string T = ListToText(Node.contains(F.Key) ? Node[F.Key] : json::array());
         //A KeepEmpty field is ALWAYS multiline — not "when it has entries". A blank line cannot be typed into a
         //single-line input at all, so the field's own hint ("a blank line is the mount root") would be an
@@ -1455,7 +1503,14 @@ void PkgCanvas::frame()
     //Cleared whether or not the overview draws this frame. Left stale it hands back the LAST minimap frame's
     //rectangles, indexed by a node index that may now belong to a different node or to none — and a test that
     //forgot to switch the minimap on would read a previous test's geometry and pass.
-    m_s->MiniBoxes.assign(m_s->Cache.Nodes.size(), ImVec4(0, 0, 0, 0));
+    //
+    //But SIZED only when the overview is on. `assign` was zeroing one ImVec4 per node on every frame of every
+    //canvas, minimap or not — 44 KB of memset per frame on the Minecraft bundle's 2775 nodes, for an array
+    //whose only reader is miniMapNodeBox. clear() keeps the capacity, costs nothing, and is not weaker: the
+    //accessor is bounds-checked and an empty array answers all-zero, which is exactly what its contract
+    //promises for a frame the overview did not draw.
+    if (m_s->ShowMiniMap) m_s->MiniBoxes.assign(m_s->Cache.Nodes.size(), ImVec4(0, 0, 0, 0));
+    else                  m_s->MiniBoxes.clear();
     ImVec2 MiniWorldMin(0, 0), MiniWorldMax(0, 0);
     float  MiniScale   = 0.0f;
     bool   MiniHovered = false;

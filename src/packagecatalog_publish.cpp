@@ -153,7 +153,10 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     //saying the node keeps what the package declares. The only fact that settles it is whether this node's
     //file was marked dirty, which is known one loop down.
     std::set<fs::path> Dirty;
-    std::set<std::string> Stamped;   // node ids whose file this loop actually rewrote
+    //Keyed by INDEX, not by id: a bundle can hold two nodes with the same NODE_ID (or none at all), and every
+    //such node shared one key here — so the line below could say "written over it" about a node whose file was
+    //untouched, purely because a namesake's was.
+    std::set<size_t> Stamped;   // node SLOTS whose file this loop actually rewrote
     for (size_t I = 0; I < Slots.size(); ++I)
     {
         nlohmann::ordered_json Pos = nlohmann::ordered_json::array({ G.Nodes[I].X, G.Nodes[I].Y });
@@ -162,14 +165,14 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
         if (Target.contains("POS") && Target["POS"] == Pos) continue;   //already correct: do not touch the bytes
         Target["POS"] = std::move(Pos);
         Dirty.insert(Slots[I].File);
-        Stamped.insert(G.Nodes[I].Id);
+        Stamped.insert(I);
     }
 
     for (const PkgGraph::RejectedPosition &R : G.RejectedPositions)
         Log(LogLevel::WARN, "PackageCatalog::StampNodePositions",
             "node '" + PkgGraph::SafeId(R.NodeId) + "': " + R.Source + " gives " + R.Value
                 + ", which no layout could have produced - "
-                + (Stamped.count(R.NodeId)
+                + (R.Index >= 0 && Stamped.count((size_t)R.Index)
                        ? "a computed position was written over it, changing this package's bytes"
                        : "that declaration is ignored; nothing was rewritten"));
     //Write to a sibling temp and rename. This rewrites EVERY node file of EVERY package in the library

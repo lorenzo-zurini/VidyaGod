@@ -115,6 +115,71 @@ private slots:
                  "the impossible POS was kept or replaced with another impossible one");
         QCOMPARE(K["POS"][0].get<double>(), 60.0);
     }
+
+    //Two nodes with the SAME NODE_ID. A bundle is a folder of files, so nothing stops it, and a hand-edited
+    //or peer-authored one can hold a duplicate — the editor's rename guard only covers renames made THROUGH
+    //it. The publish line asks "was THIS node's file rewritten?", and it asked by id: one namesake being
+    //rewritten made the line claim the other's bytes had changed too, in the one message an author has
+    //telling them whether their declared layout survived publish.
+    void thePublishWarningDistinguishesTwoNodesSharingAName()
+    {
+        QTemporaryDir Dir;
+        QVERIFY(Dir.isValid());
+        auto Write = [&](const char *Name, const nlohmann::ordered_json &J) {
+            std::ofstream F((Dir.path() + "/" + Name).toStdString());
+            F << J.dump(2);
+        };
+        //Both called "same". The first carries an impossible POS, so publish computes one and REWRITES it.
+        Write("a.json", nlohmann::ordered_json{{"NODE_ID", "same"}, {"TYPE", "Group"},
+                                               {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
+        //The second carries a POS the layout would produce anyway, plus an impossible local OVERRIDE. It is
+        //refused like the first, but its file is left exactly as it was — 60,60 is where the layout puts the
+        //first node of the first layer, so "already correct: do not touch the bytes" fires.
+        Write("b.json", nlohmann::ordered_json{{"NODE_ID", "same"}, {"TYPE", "Group"},
+                                               {"POS", nlohmann::ordered_json::array({60.0, 60.0})}});
+        nlohmann::ordered_json Override = nlohmann::ordered_json::object();
+        Override["same"] = nlohmann::ordered_json::array({1e300, 2.0});
+
+        QStringList Warnings;
+        struct Sink { ~Sink() { ClearLogCallback(); } } SinkGuard;
+        SetLogCallback([&](LogLevel L, const std::string &, const std::string &M) {
+            if (L == LogLevel::WARN && M.find("no layout could have produced") != std::string::npos)
+                Warnings << QString::fromStdString(M);
+        });
+        std::string Err;
+        QVERIFY2(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Override, &Err),
+                 qPrintable(QString::fromStdString(Err)));
+
+        //One line per REFUSAL, and the two nodes are refused for different reasons — so the lines are
+        //distinguishable by their source even though the id is identical.
+        QString Own, Local;
+        for (const QString &W : Warnings) {
+            if (W.contains("its own POS")) Own = W;
+            if (W.contains("machine"))     Local = W;
+        }
+        QVERIFY2(!Own.isEmpty() && !Local.isEmpty(),
+                 qPrintable("both refusals should be reported; saw:\n  " + Warnings.join("\n  ")));
+
+        auto Read = [&](const char *Name) {
+            nlohmann::ordered_json J;
+            std::ifstream F((Dir.path() + "/" + Name).toStdString());
+            F >> J;
+            return J;
+        };
+        const nlohmann::ordered_json A = Read("a.json"), B = Read("b.json");
+        //Establish what actually happened on disk FIRST, so the assertions about the wording below are
+        //anchored to the files rather than to each other.
+        QVERIFY2(std::abs(A["POS"][0].get<double>()) < 1.0e6, "the impossible POS was not replaced");
+        QCOMPARE(B["POS"][0].get<double>(), 60.0);
+        QCOMPARE(B["POS"][1].get<double>(), 60.0);
+
+        //THE PROPERTY. Keyed by id, the untouched node's line inherited its namesake's rewrite.
+        QVERIFY2(Own.contains("written over it"),
+                 qPrintable("the rewritten node's line does not say so: " + Own));
+        QVERIFY2(Local.contains("nothing was rewritten"),
+                 qPrintable("a node whose file was NOT rewritten is reported as rewritten, because a node "
+                            "sharing its NODE_ID was: " + Local));
+    }
     //The data root is PROCESS-GLOBAL and sticky, and PackageEditorModel::SaveLayout flushes GlobalConfig.JSON
     //to it — so a suite that does not claim it writes to AppPaths' fallback, which is the developer's REAL
     //~/.VidyaGod/GlobalConfig.JSON. Running a single slot by name replaced a 50 KB config (sources, CIDs,
