@@ -44,7 +44,10 @@ bool DaemonRunning();
 // everything (game content, runner builds, covers) materializes in place at its local PATH inside the package's
 // LIBRARY dir. No-op (returns DestPath) if DestPath already exists. Returns DestPath on success, "" on failure
 // (with *Error set when provided). Reports lifecycle/progress through the TransferCallback.
-std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr);
+// TimeoutMs>0 makes this WAIT at most that long for the (retry-forever) fetch, then return empty while the fetch
+// CONTINUES in the background — for synchronous callers (launch materialization, covers) that must not hang a
+// user action. 0 (the default) waits forever, for background downloads. Returns the dest path on success.
+std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr, int TimeoutMs = 0);
 
 // Recursively materializes a UnixFS DIRECTORY CID (a folder of dehydrated packages) into DestDir — fetches the whole
 // small manifest tree (node JSON + covers, no content bytes) over the network and writes it to disk. Requires the IPFS

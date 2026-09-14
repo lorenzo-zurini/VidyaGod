@@ -40,6 +40,9 @@ private:
     explicit CoverCache(QObject * parent = nullptr);
     void request(const QString & Cid, const QString & DestPath);   // async fetch the cover to DestPath (deduped)
     QSet<QString> InFlight;                                          // dest paths currently being fetched (dedup)
+    QSet<QString> Failed;                                            // dest paths whose bounded fetch gave up — do
+                                                                     // NOT re-request (else one detached thread per
+                                                                     // repaint every 30s for stale/unpublished art)
 };
 
 #endif // COVERCACHE_H

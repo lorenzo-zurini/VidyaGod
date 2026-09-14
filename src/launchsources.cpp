@@ -134,7 +134,11 @@ bool LaunchSources::MaterializeLayers(struct ContainerParams &ContainerParams)
         if (std::filesystem::exists(Local, Ec)) continue;                        // already local — highest priority
         if (Cid.empty()) continue;                                              // no backend (flagged by EnsureSources)
         std::string Err;                                                        // fetch from IPFS to the expected path
-        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err).empty())
+        // BOUNDED WAIT (120s): launch is a synchronous user action that must not hang when a layer is genuinely
+        // unreachable. The fetch continues in the background on timeout (so a retry soon after may find it ready);
+        // launch just fails cleanly now. A hydrated game's layers are already local (the exists() check above), so
+        // this only runs for a self-heal of missing content.
+        if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err, /*TimeoutMs=*/120000).empty())
         {
             Ok = false;
             LogErr("LaunchSources::MaterializeLayers", "Could not fetch layer CID " + Cid + " -> " + Local.string() + " (" + Err + ")");

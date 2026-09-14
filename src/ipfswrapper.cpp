@@ -175,24 +175,32 @@ std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
     return CidS;
 }
 
-std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error)
+std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error, int TimeoutMs)
 {
     if (Cid.empty())         { if (Error) *Error = "empty CID";              return std::string(); }
     if (DestPathStr.empty()) { if (Error) *Error = "empty destination path"; return std::string(); }
 
-    // Already materialized — no work, no transfer events (the common case during launch of installed content).
-    if (QFileInfo::exists(QString::fromStdString(DestPathStr)))
+    // Already materialized → no work — BUT only when there is no resume sidecar. A `<dest>.part` sitting next to a
+    // complete dest is the signature of a fetch that crashed mid-finalize (bytes renamed into place, but not yet
+    // referenced/pinned — unseedable + GC-vulnerable). In that case we must call into the node so it runs the
+    // idempotent finalize repair instead of falsely reporting "already present" and leaving the content broken.
+    if (QFileInfo::exists(QString::fromStdString(DestPathStr))
+        && !QFileInfo::exists(QString::fromStdString(DestPathStr + ".part")))
     {
         LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr);
         return DestPathStr;
     }
 
     // The node fetches write-through to DestPath (no blockstore duplication), seeds it from there, and reports
-    // Started/Progress/Finished through the transfer callback installed below.
+    // Started/Progress/Finished through the transfer callback installed below. TimeoutMs>0 bounds how long we WAIT
+    // (SYNCHRONOUS callers — launch, covers — that must not hang); the fetch itself continues in the background on
+    // timeout so a later attempt finds it progressed. 0 = wait forever (background downloads).
     LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
     FetchDbg("FetchToPath ENTER (blocking VgFetchToPath call) cid=" + Cid + " dest=" + DestPathStr);
     char *Err = nullptr;
-    const int Rc = VgFetchToPath(Cid.c_str(), DestPathStr.c_str(), &Err);
+    const int Rc = (TimeoutMs > 0)
+                       ? VgFetchToPathBounded(Cid.c_str(), DestPathStr.c_str(), TimeoutMs, &Err)
+                       : VgFetchToPath(Cid.c_str(), DestPathStr.c_str(), &Err);
     const std::string ErrS = TakeStr(Err);
     FetchDbg("FetchToPath RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
     if (Rc != 0)

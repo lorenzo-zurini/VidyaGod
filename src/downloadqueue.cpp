@@ -114,9 +114,11 @@ bool AnyQueued()
 // then materializes into the others, and records the terminal state.
 void RunJob(const std::string &Cid, std::vector<std::string> Dests)
 {
-    // Primary = the first destination not already on disk (so a partial/missing one drives the fetch); else the first.
+    // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
+    // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
+    // the fetch — pick it over a plain-existing dest so the repair is not skipped. Fall back to the first.
     std::string Primary = Dests.empty() ? std::string() : Dests.front();
-    for (const std::string &D : Dests) if (!PathExists(D)) { Primary = D; break; }
+    for (const std::string &D : Dests) if (!PathExists(D) || PathExists(D + ".part")) { Primary = D; break; }
 
     std::string Err;
     const bool Ok = !FetchToPath(Cid, Primary, &Err).empty();

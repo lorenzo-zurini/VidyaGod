@@ -44,14 +44,21 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
 
 void CoverCache::request(const QString & Cid, const QString & DestPath)
 {
-    if (Cid.isEmpty() || DestPath.isEmpty() || InFlight.contains(DestPath)) return;
+    if (Cid.isEmpty() || DestPath.isEmpty() || InFlight.contains(DestPath) || Failed.contains(DestPath)) return;
     InFlight.insert(DestPath);
     const std::string C = Cid.toStdString(), D = DestPath.toStdString();
     std::thread([this, C, D, Cid, DestPath]{
         std::string Err;
-        IpfsWrapper::FetchToPath(C, D, &Err);           // fetch the cover in place next to the manifest + seed
-        QMetaObject::invokeMethod(this, [this, Cid, DestPath]{
+        // BOUNDED WAIT (30s): a cover is optional cosmetic content on a detached thread. Waiting forever would
+        // leak one thread per unfetchable cover (stale/unpublished art). Give up after 30s.
+        const bool Ok = !IpfsWrapper::FetchToPath(C, D, &Err, /*TimeoutMs=*/30000).empty();
+        QMetaObject::invokeMethod(this, [this, Cid, DestPath, Ok]{
             InFlight.remove(DestPath);
+            // NEGATIVE-CACHE a give-up so a repaint does not immediately re-request it — that would spawn a fresh
+            // detached thread every 30s forever for a cover nobody seeds. It is retried when CoverCache is rebuilt
+            // (a catalog reload / re-sync, e.g. after a re-mint). On success the tile paints; on failure it shows
+            // no art but stops churning.
+            if (!Ok) Failed.insert(DestPath);
             emit coverReady(Cid);                       // GUI thread: callers re-resolve + repaint
         }, Qt::QueuedConnection);
     }).detach();
