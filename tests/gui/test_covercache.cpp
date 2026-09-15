@@ -85,9 +85,9 @@ private slots:
             QueueSpy Spy;
             cc->sweepNow();
             QVERIFY2(Spy.Saw("CID_COVER_SWEEP"), "the online sweep must enqueue the recorded miss");
-            // BOUNDED: one attempt per sweep — a cover nobody seeds gives its DownloadSlot back at the deadline
-            // (the reviewed CRITICAL); the sweep itself is the retry loop. Teeth: enqueue covers unbounded → 0.
-            QCOMPARE(IpfsWrapper::DebugJobTimeoutMs("CID_COVER_SWEEP"), 30000);
+            // Covers are ORDINARY items, bumped to the front on add (small, on-screen). The rolling scheduler — not a
+            // cover-specific bound — frees the slot when a dead cover stalls. Teeth: drop the PrioritizeDownload → false.
+            QVERIFY2(IpfsWrapper::DebugJobPrioritized("CID_COVER_SWEEP"), "a swept cover must be bumped to the front");
         }
     }
 
@@ -125,26 +125,6 @@ private slots:
         QueueSpy Spy;
         cc->sweepNow();
         QVERIFY2(Spy.Saw("CID_COVER_RETRY"), "the next sweep must retry the failed cover");
-    }
-
-    // The other half of the reviewed CRITICAL: a cover that already FAILED once keeps normal queue priority on its
-    // re-sweeps — dead art must not keep jumping ahead of game downloads. Observable through the job's Priority
-    // via the queue's own ordering: after a failure, re-sweeping must NOT bump the job again. Teeth (each caught):
-    // drop the FailedOnce gate in sweepNow → prioritized again; drop the insert on failure → same.
-    void a_failed_cover_is_not_reprioritized_on_resweep()
-    {
-        auto * cc = CoverCache::instance();
-        cc->setOnlineProbe([]{ return true; });
-        QTemporaryDir miss; QVERIFY(miss.isValid());
-        const QString Dest = QDir::cleanPath(miss.path() + "/cover.png");
-        QVERIFY(cc->resolve(CoverJson("CID_COVER_DEMOTE"), miss.path()).isEmpty());
-        cc->sweepNow();                                        // first sweep: prioritized (fresh miss) + dispatched
-        // Let the QUEUE run the job to its real Failed (no node → fails fast): the requeue path is the one under test.
-        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_COVER_DEMOTE", Dest.toStdString(), true, 1}})));
-        cc->onTransferFinished("CID_COVER_DEMOTE", false, "no providers");
-        cc->sweepNow();                                        // re-sweep: requeues the Failed job (priority resets)…
-        QVERIFY2(!IpfsWrapper::DebugJobPrioritized("CID_COVER_DEMOTE"),
-                 "a failed cover must keep DEFAULT priority on re-sweeps");   // …and the demotion gate must not re-bump
     }
 
     // The wiring the hand-driven slots can't see: the 60 s timer exists and fires sweepNow; the first new miss

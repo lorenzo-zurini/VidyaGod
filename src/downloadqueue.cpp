@@ -3,11 +3,13 @@
 #include "commonutils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -21,32 +23,34 @@ namespace fs = std::filesystem;
 
 // One queued/active/finished fetch, keyed by CID. Dests is every destination path that wants this content — the
 // dispatcher fetches ONCE (to the first missing dest) and hard-links/copies the result into the rest.
+using SteadyTP = std::chrono::steady_clock::time_point;
+
 struct Job {
     std::string              Cid;
     std::vector<std::string> Dests;
     bool                     Optional = true;   // required if ANY requester is required (AND of requesters' Optional)
+    bool                     Dir      = false;  // directory (meta) CID
     enum State : std::uint8_t { Queued, Active, Done, Failed } State = Queued;
     int                      Priority = 0;       // higher dispatches sooner; Prioritize bumps it above all queued
     long long                Seq = 0;            // insertion order — tiebreak within a priority (FIFO)
-    int                      TimeoutMs = 0;      // 0 = unbounded; >0 = one bounded attempt (covers). If ANY requester
-                                                 // is unbounded the job is unbounded — a game layer must never be cut
-                                                 // short because a cover also wants the CID. A bounded give-up frees
-                                                 // the DownloadSlot; the requester's own cadence (the cover sweep)
-                                                 // is the retry loop.
+    int                      Attempts = 0;       // completed attempts — drives the retry backoff
+    SteadyTP                 ReadyAt;            // not eligible to (re)dispatch until now >= ReadyAt (rotation backoff)
     std::string              Error;
 };
 
-// Merge a new requester's bound into a job: unbounded (0) is sticky; otherwise keep the larger bound.
-void MergeTimeout(Job &J, int TimeoutMs)
+// Exponential retry backoff after a rotated (stalled/exhausted) attempt: 2s,4s,8s,16s, capped at 30s.
+std::chrono::milliseconds RetryBackoff(int attempts)
 {
-    if (J.TimeoutMs == 0 || TimeoutMs == 0) J.TimeoutMs = 0;
-    else J.TimeoutMs = std::max(J.TimeoutMs, TimeoutMs);
+    const int shift = std::min(attempts > 0 ? attempts - 1 : 0, 4);
+    return std::chrono::milliseconds(std::min(30000, 2000 << shift));
 }
 
 struct QState {
     std::mutex                        Mu;
     std::condition_variable           Cv;        // signalled on enqueue / completion / prioritize / cancel
     std::map<std::string, Job>        Jobs;      // CID → job (live + terminal; terminal jobs double as a session cache)
+    std::set<std::string>             Preempting;    // CIDs whose active fetch we cancelled to free a slot (rotate, not fail)
+    std::set<std::string>             UserCancelled;  // CIDs a user cancelled while ACTIVE (fail, even if also preempted)
     long long                         Seq = 0;
     int                               TopPriority = 0;
     bool                              DispatcherStarted = false;
@@ -109,27 +113,37 @@ std::string FirstExisting(const Job &J)
     return false;
 }
 
-// Pick the highest-priority queued job (FIFO within a priority). Returns nullptr if none is queued. Caller holds Mu.
-Job *PickQueued()
+// Highest-priority queued job that is READY (its rotation backoff has elapsed), FIFO within a priority. A queued job
+// still backing off is skipped — that is stall-demotion: it waits its turn while healthy work runs. Caller holds Mu.
+Job *PickReady()
 {
+    const SteadyTP Now = std::chrono::steady_clock::now();
     Job *Best = nullptr;
     for (auto &Kv : Q().Jobs) {
         Job &J = Kv.second;
-        if (J.State != Job::Queued) continue;
+        if (J.State != Job::Queued || J.ReadyAt > Now) continue;
         if (!Best || J.Priority > Best->Priority || (J.Priority == Best->Priority && J.Seq < Best->Seq)) Best = &J;
     }
     return Best;
 }
 
-bool AnyQueued()
+bool AnyReady() { return PickReady() != nullptr; }
+
+// The soonest a currently-queued (backing-off) job becomes eligible — so the dispatcher sleeps exactly until then
+// instead of spinning when every queued job is still in backoff (the all-stalled case). Caller holds Mu.
+bool EarliestReadyAt(SteadyTP &Out)
 {
-    for (const auto &Kv : Q().Jobs) if (Kv.second.State == Job::Queued) return true;
-    return false;
+    bool Any = false;
+    for (const auto &Kv : Q().Jobs) {
+        if (Kv.second.State != Job::Queued) continue;
+        if (!Any || Kv.second.ReadyAt < Out) { Out = Kv.second.ReadyAt; Any = true; }
+    }
+    return Any;
 }
 
 // Perform one job's fetch (off the dispatcher, holding a DownloadSlot). Fetches the CID to the first missing dest,
 // then materializes into the others, and records the terminal state.
-void RunJob(const std::string &Cid, std::vector<std::string> Dests, int TimeoutMs)
+void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir)
 {
     // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
     // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
@@ -138,43 +152,72 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, int TimeoutM
     for (const std::string &D : Dests) if (!PathExists(D) || PathExists(D + ".part")) { Primary = D; break; }
 
     std::string Err;
-    bool Ok = !FetchToPath(Cid, Primary, &Err, TimeoutMs).empty();
-    if (Ok)
+    const int Rc = FetchOnce(Cid, Primary, Dir, &Err);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
+    bool MatFail = false;
+    if (Rc == 0)
         for (const std::string &D : Dests)
-            if (D != Primary && !PathExists(D) && !Materialize(Primary, D, &Err)) Ok = false;   // every dest, or Failed
+            if (D != Primary && !PathExists(D) && !Materialize(Primary, D, &Err)) MatFail = true;   // every dest, or fail
 
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
+        const bool Preempted   = Q().Preempting.erase(Cid) > 0;
+        const bool UserCancel   = Q().UserCancelled.erase(Cid) > 0;
         auto It = Q().Jobs.find(Cid);
         if (It != Q().Jobs.end()) {
-            It->second.State = Ok ? Job::Done : Job::Failed;
-            It->second.Error = Ok ? std::string() : Err;
+            Job &J = It->second;
+            if (UserCancel) {
+                // A user cancel of this ACTIVE job wins over everything (incl. a concurrent preemption): terminal.
+                ClearCancel(Cid);
+                J.State = Job::Failed; J.Error = "cancelled";
+            } else if (Rc == 0 && !MatFail) {
+                J.State = Job::Done; J.Error.clear();
+            } else if (Preempted) {
+                // We cancelled this active fetch to free a slot for a higher-priority item — NOT a failure. Clear the
+                // cancel flag we set (else its next attempt would self-classify Terminal), then rotate it back with NO
+                // penalty so it competes again the moment a slot frees; .part is preserved.
+                ClearCancel(Cid);
+                J.State = Job::Queued; J.Priority = 0; J.Seq = ++Q().Seq; J.ReadyAt = std::chrono::steady_clock::now();
+            } else if (Rc == 2 || MatFail) {
+                J.State = Job::Failed; J.Error = Err;   // terminal: cancel / bad CID / disk / unwritable dest
+            } else {
+                // Retryable (stall / no providers / offline): ROTATE — strict back-of-queue + exponential backoff.
+                // This IS the retry loop; the slot is freed (this worker returns) so healthy work runs meanwhile.
+                J.Attempts++;
+                J.State = Job::Queued; J.Priority = 0; J.Seq = ++Q().Seq;
+                J.ReadyAt = std::chrono::steady_clock::now() + RetryBackoff(J.Attempts);
+            }
         }
     }
-    Q().Cv.notify_all();   // wake WaitBatch (result available) + the dispatcher (a slot just freed)
+    Q().Cv.notify_all();   // wake WaitBatch (result available) + the dispatcher (a slot just freed / a backoff set)
 }
 
 void DispatcherLoop()
 {
     for (;;) {
         std::unique_lock<std::mutex> Lk(Q().Mu);
-        Q().Cv.wait(Lk, [] { return AnyQueued(); });   // sleep until there's something to fetch
+        // Wait until a READY job exists. If jobs are only backing off (all-stalled), sleep exactly until the earliest
+        // becomes eligible instead of spinning; a wake (enqueue/completion/prioritize/cancel) rechecks immediately.
+        while (!AnyReady()) {
+            SteadyTP Next;
+            if (EarliestReadyAt(Next)) Q().Cv.wait_until(Lk, Next);
+            else Q().Cv.wait(Lk);
+        }
         Lk.unlock();
 
         DownloadSlot Slot;   // blocks until a concurrency slot frees — MUST NOT hold Mu while waiting
 
         Lk.lock();
-        Job *J = PickQueued();          // a queued job may have been cancelled/taken while we waited for the slot
-        if (!J) { Lk.unlock(); continue; }   // nothing to do now — release the slot (RAII) and re-wait
+        Job *J = PickReady();           // a job may have been taken / cancelled / re-backed-off while we waited
+        if (!J) { Lk.unlock(); continue; }   // nothing ready now — release the slot (RAII) and re-wait
         J->State = Job::Active;
         const std::string Cid = J->Cid;
-        const int TimeoutMs = J->TimeoutMs;
+        const bool Dir = J->Dir;
         std::vector<std::string> Dests = J->Dests;
         Lk.unlock();
 
         // Hand the slot to a detached worker; loop back to fill the next slot (up to MaxConcurrentDownloads workers).
-        std::thread([Cid, Dests = std::move(Dests), TimeoutMs, Slot = std::move(Slot)]() mutable {
-            RunJob(Cid, Dests, TimeoutMs);
+        std::thread([Cid, Dests = std::move(Dests), Dir, Slot = std::move(Slot)]() mutable {
+            RunJob(Cid, Dests, Dir);
         }).detach();
     }
 }
@@ -200,11 +243,11 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
         std::lock_guard<std::mutex> Lk(Q().Mu);
         for (const FetchTarget &T : Targets) {
             Handle.Items.emplace_back(T.Cid, T.Optional);
+            ClearCancel(T.Cid);   // a fresh request clears any prior user-cancel so a re-download is not pre-aborted
             auto It = Q().Jobs.find(T.Cid);
             if (It != Q().Jobs.end()) {
                 Job &J = It->second;
                 J.Optional = J.Optional && T.Optional;   // required if any requester is required
-                MergeTimeout(J, T.TimeoutMs);            // unbounded is sticky (a game layer outranks a cover's bound)
                 switch (J.State) {
                     case Job::Queued:
                     case Job::Active:
@@ -218,9 +261,10 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                         break;
                     }
                     case Job::Failed:                      // retry a previously-failed CID — as a FRESH queue entry:
-                        // Priority resets, else a once-prioritized dead CID (a cover) keeps outranking every queued
-                        // job on every retry forever (the requester re-bumps if it still wants the front).
-                        J.State = Job::Queued; J.Error.clear(); J.Priority = 0; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
+                        // priority + backoff reset (a re-request is a fresh start; the requester re-bumps if it still
+                        // wants the front); the requester re-arms the retry the rolling scheduler stopped at Failed.
+                        J.State = Job::Queued; J.Error.clear(); J.Priority = 0; J.Attempts = 0; J.ReadyAt = {};
+                        J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
                         break;
                 }
                 continue;
@@ -230,7 +274,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Cid = T.Cid;
             NewJob.Dests = { T.LocalPath };
             NewJob.Optional = T.Optional;
-            NewJob.TimeoutMs = T.TimeoutMs;
+            NewJob.Dir = T.Dir;
             if (PathExists(T.LocalPath)) { NewJob.State = Job::Done; }
             else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));
@@ -254,11 +298,34 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
     return Handle;
 }
 
-int DebugJobTimeoutMs(const std::string & Cid)
+int DebugJobState(const std::string & Cid)
 {
     std::lock_guard<std::mutex> Lk(Q().Mu);
     auto It = Q().Jobs.find(Cid);
-    return It == Q().Jobs.end() ? -1 : It->second.TimeoutMs;
+    return It == Q().Jobs.end() ? -1 : (int)It->second.State;
+}
+
+bool DebugJobBackingOff(const std::string & Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    return It != Q().Jobs.end() && It->second.State == Job::Queued
+           && It->second.ReadyAt > std::chrono::steady_clock::now();
+}
+
+bool DebugIsPreempting(const std::string & Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    return Q().Preempting.count(Cid) > 0;
+}
+
+void DebugResetQueue()
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    Q().Jobs.clear();          // in-flight detached workers then find() nothing → no-op (they never re-create a job)
+    Q().Preempting.clear();
+    Q().UserCancelled.clear();
+    Q().TopPriority = 0;
 }
 
 bool DebugJobPrioritized(const std::string & Cid)
@@ -268,9 +335,11 @@ bool DebugJobPrioritized(const std::string & Cid)
     return It != Q().Jobs.end() && It->second.Priority > 0;
 }
 
-bool WaitBatch(const BatchHandle &Handle, std::string *Error)
+bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error)
 {
     std::unique_lock<std::mutex> Lk(Q().Mu);
+    const bool Bounded = TimeoutMs > 0;
+    const SteadyTP Deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TimeoutMs);
     for (;;) {
         bool AllTerminal = true;
         for (const auto &[Cid, Optional] : Handle.Items) {
@@ -284,9 +353,18 @@ bool WaitBatch(const BatchHandle &Handle, std::string *Error)
             if (J.State != Job::Done && J.State != Job::Failed) AllTerminal = false;
         }
         if (AllTerminal) return true;
-        Q().Cv.wait(Lk);
+        if (Bounded) {
+            if (Q().Cv.wait_until(Lk, Deadline) == std::cv_status::timeout) {
+                if (Error) *Error = "timed out waiting for the download to finish";
+                return false;   // NOT terminal — the jobs stay in the queue and keep rolling (launch semantic)
+            }
+        } else {
+            Q().Cv.wait(Lk);
+        }
     }
 }
+
+bool WaitBatch(const BatchHandle &Handle, std::string *Error) { return WaitBatch(Handle, 0, Error); }
 
 void CancelDownload(const std::string &Cid)
 {
@@ -294,13 +372,17 @@ void CancelDownload(const std::string &Cid)
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
         auto It = Q().Jobs.find(Cid);
-        if (It != Q().Jobs.end() && It->second.State == Job::Queued) {
-            It->second.State = Job::Failed;              // queued-but-not-started → drop it (waiters see a failure)
-            It->second.Error = "cancelled";
-            WasQueued = true;
+        if (It != Q().Jobs.end()) {
+            if (It->second.State == Job::Queued) {
+                It->second.State = Job::Failed;          // queued-but-not-started → drop it (waiters see a failure)
+                It->second.Error = "cancelled";
+                WasQueued = true;
+            } else if (It->second.State == Job::Active) {
+                Q().UserCancelled.insert(Cid);           // active → RunJob must FAIL it (not rotate, even if preempted)
+            }
         }
+        RequestCancel(Cid);   // abort the active fetch at its next checkpoint (under Mu: no interleave with RunJob)
     }
-    RequestCancel(Cid);       // active fetch → abort at its next checkpoint (harmless if already gone)
     Q().Cv.notify_all();
     if (WasQueued) notifyQueued({ Cid }, false);   // it never started → drop its queued row in the UI
 }
@@ -309,13 +391,63 @@ void SetQueueCallback(QueueStateCallback Cb) { g_QueueCb = std::move(Cb); }
 
 void PrioritizeDownload(const std::string &Cid)
 {
-    {
-        std::lock_guard<std::mutex> Lk(Q().Mu);
-        auto It = Q().Jobs.find(Cid);
-        if (It == Q().Jobs.end() || It->second.State != Job::Queued) return;   // only queued jobs can jump
-        It->second.Priority = ++Q().TopPriority;         // above every currently-queued job
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    if (It == Q().Jobs.end() || It->second.State != Job::Queued) return;   // only queued jobs can jump
+    Job &J = It->second;
+    // Suppress re-bumping ONLY for an OPTIONAL job that has already had a turn: the cover sweep re-requests every
+    // lap, and re-bumping a rotated dead cover would annul its backoff and let dead art perpetually outrank real
+    // downloads. A REQUIRED job (a launch layer) and every EXPLICIT user "Prioritize" must always take effect —
+    // keying the suppression on history alone silently no-op'd the GUI action (the codebase's worst failure mode).
+    if (J.Optional && J.Attempts != 0) return;
+    J.Priority = ++Q().TopPriority;   // above every currently-queued job
+    J.ReadyAt = {};                   // eligible now
+
+    // Preemption is for REQUIRED work only (a launch layer). An Optional job (a cover) never cancels an active
+    // download — dead art must never evict a game mid-transfer. If all slots are busy and this required, fresh job
+    // outranks the lowest-priority active one, cancel that one so its slot frees now; RunJob rotates the victim
+    // (Preempting → not Failed), keeping its .part.
+    if (J.Optional) { Q().Cv.notify_all(); return; }
+    int Active = 0; Job *Lowest = nullptr;
+    for (auto &Kv : Q().Jobs) {
+        if (Kv.second.State != Job::Active) continue;
+        ++Active;
+        if (!Lowest || Kv.second.Priority < Lowest->Priority) Lowest = &Kv.second;
+    }
+    if (Active >= MaxConcurrentDownloads() && Lowest && J.Priority > Lowest->Priority) {
+        Q().Preempting.insert(Lowest->Cid);
+        RequestCancel(Lowest->Cid);   // under Mu: RunJob's completion cannot interleave between insert and cancel
     }
     Q().Cv.notify_all();
+}
+
+// FetchToPath / FetchDirToPath — the blocking convenience wrappers, now thin over the ONE queue: enqueue a single
+// job and wait. TimeoutMs>0 bounds only THIS caller's WAIT (a launch's 120 s); on timeout the job STAYS in the queue
+// and keeps rolling (it is ready when the caller next looks), so a slow layer turns "launch failed, retry" into
+// "launch when ready". A dir sync fast-fails while offline (unchanged), else waits bounded so startup never hangs on
+// a wedged source — the job keeps rolling and the next catalog sync picks it up.
+constexpr int DirSyncWaitMs = 120000;
+
+std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error, int TimeoutMs)
+{
+    if (Cid.empty())         { if (Error) *Error = "empty CID";               return std::string(); }
+    if (DestPathStr.empty()) { if (Error) *Error = "empty destination path"; return std::string(); }
+    const BatchHandle H = EnqueueBatch({ FetchTarget{ Cid, DestPathStr, /*Optional=*/false, /*Dir=*/false } });
+    if (TimeoutMs > 0) PrioritizeDownload(Cid);   // a bounded (launch) caller must not starve behind a bulk batch
+    if (!WaitBatch(H, TimeoutMs, Error)) return std::string();
+    LogSucc("IpfsWrapper::FetchToPath", "Materialized CID " + Cid + " at " + DestPathStr);
+    return DestPathStr;
+}
+
+std::string FetchDirToPath(const std::string &Cid, const std::string &DestDirStr, std::string *Error)
+{
+    if (Cid.empty())        { if (Error) *Error = "empty CID";              return std::string(); }
+    if (DestDirStr.empty()) { if (Error) *Error = "empty destination dir"; return std::string(); }
+    if (!DaemonRunning())   { if (Error) *Error = "IPFS networking is offline"; return std::string(); }
+    const BatchHandle H = EnqueueBatch({ FetchTarget{ Cid, DestDirStr, /*Optional=*/false, /*Dir=*/true } });
+    if (!WaitBatch(H, DirSyncWaitMs, Error)) return std::string();
+    LogSucc("IpfsWrapper::FetchDirToPath", "Materialized folder CID " + Cid + " at " + DestDirStr);
+    return DestDirStr;
 }
 
 // The batch download entry point, now backed by the queue: enqueue every target (deduped by CID + already-seeded) and
@@ -323,6 +455,10 @@ void PrioritizeDownload(const std::string &Cid)
 // and its runner) is fetched exactly once, and global concurrency stays bounded by the single dispatcher's slots.
 bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string *Error)
 {
+    // Fail LOUD when offline: an unbounded WaitBatch would otherwise block forever (every attempt rotates as
+    // Retryable) with no signal — the old node-backed API returned "node not started". Callers here (CLI,
+    // --download-all, the download manager) run with the node up; a genuine offline is a real error to surface.
+    if (!DaemonRunning()) { if (Error) *Error = "IPFS networking is offline"; return false; }
     const BatchHandle Handle = EnqueueBatch(Targets);
     return WaitBatch(Handle, Error);
 }

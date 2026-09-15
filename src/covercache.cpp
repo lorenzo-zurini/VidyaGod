@@ -9,9 +9,6 @@
 namespace {
 constexpr int SweepPeriodMs   = 60'000;   // the steady cadence: a minuscule stat-sweep of recorded misses
 constexpr int SweepDebounceMs = 2'000;    // first miss after quiet → sweep soon, so a fresh catalog isn't blank for a minute
-constexpr int CoverAttemptMs  = 30'000;   // ONE bounded attempt per sweep. Unbounded would park a cover nobody seeds
-                                          // on a DownloadSlot forever (3 dead covers = every game download wedged);
-                                          // the sweep itself is the retry-forever loop, one attempt per lap.
 }
 
 CoverCache * CoverCache::instance()
@@ -78,23 +75,18 @@ void CoverCache::sweepNow()
     std::vector<IpfsWrapper::FetchTarget> Batch;
     for (auto It = MissDest.begin(); It != MissDest.end(); )
     {
-        if (QFileInfo::exists(It.key())) { FailedOnce.remove(It.value()); It = MissDest.erase(It); continue; }   // landed since recorded
-        if (!QFileInfo(It.key()).dir().exists())                                  // package deleted → the miss is a
-        { FailedOnce.remove(It.value()); It = MissDest.erase(It); continue; }     // ghost; fetching would resurrect the dir
-        Batch.push_back({It.value().toStdString(), It.key().toStdString(), /*Optional=*/true, CoverAttemptMs});
+        if (QFileInfo::exists(It.key())) { It = MissDest.erase(It); continue; }   // landed since recorded
+        if (!QFileInfo(It.key()).dir().exists()) { It = MissDest.erase(It); continue; } // package deleted → ghost miss
+        Batch.push_back({ It.value().toStdString(), It.key().toStdString(), /*Optional=*/true });
         ++It;
     }
     if (Batch.empty()) return;
-    // ONE batch through the one queue all content uses: deduped by CID against in-flight jobs (a re-sweep of a
-    // still-downloading cover just joins it), a previously-failed CID is requeued — that IS the retry policy.
+    // Covers are ORDINARY queue items — no special-casing. Enqueue them (optional, deduped against in-flight jobs) and
+    // bump each to the front (small files the user is looking at). The rolling scheduler handles a dead cover exactly
+    // like any item: it stalls, is demoted to the back with a backoff, and a healthy download runs — and a requeue
+    // resets a rotated job's priority, so dead art can never keep outranking games.
     (void)IpfsWrapper::EnqueueBatch(Batch);
-    // Front of the queue for FIRST-time misses only (small files the user is staring at). A cover that already
-    // failed once keeps normal priority on its re-sweeps, so dead art can never keep jumping ahead of games.
-    for (const auto & T : Batch)
-    {
-        const QString Cid = QString::fromStdString(T.Cid);
-        if (!FailedOnce.contains(Cid)) IpfsWrapper::PrioritizeDownload(T.Cid);
-    }
+    for (const auto & T : Batch) IpfsWrapper::PrioritizeDownload(T.Cid);
 }
 
 void CoverCache::onTransferFinished(const QString & Cid, bool Ok, const QString & /*Error*/)
@@ -103,10 +95,8 @@ void CoverCache::onTransferFinished(const QString & Cid, bool Ok, const QString 
     // and the miss entries clear there; on failure the miss stays recorded and rides the next sweep.
     bool Ours = false;
     for (const QString & C : MissDest) if (C == Cid) { Ours = true; break; }
-    if (!Ours) return;
-    if (Ok) { FailedOnce.remove(Cid); emit coverReady(Cid); }
-    else FailedOnce.insert(Cid);       // demote its re-sweeps to normal priority (see sweepNow) — NOT a negative cache
-
+    if (Ours && Ok) emit coverReady(Cid);   // on success the file is on disk (resolve() clears the miss); a failure
+                                            // just leaves the miss recorded to ride the next sweep — retry, batched.
 }
 
 void CoverCache::onNetworkOnline()

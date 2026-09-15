@@ -134,11 +134,11 @@ bool LaunchSources::MaterializeLayers(struct ContainerParams &ContainerParams)
         if (std::filesystem::exists(Local, Ec)) continue;                        // already local — highest priority
         if (Cid.empty()) continue;                                              // no backend (flagged by EnsureSources)
         std::string Err;                                                        // fetch from IPFS to the expected path
-        // BOUNDED WAIT (120s): launch is a synchronous user action that must not hang when a layer is genuinely
-        // unreachable. On timeout launch fails cleanly and the partial (+ .part) stays on disk, so a retry soon
-        // after resumes from there (and if the user also started a background download of this layer, that download
-        // continues via leadership handoff). A hydrated game's layers are already local (the exists() check above),
-        // so this only runs for a self-heal of missing content.
+        // BOUNDED WAIT (120s): launch is a synchronous user action that must not hang. FetchToPath enqueues the
+        // layer into the rolling queue, PRIORITIZES it (a bounded caller preempts a lower-priority active download so
+        // it isn't starved), and waits up to 120 s. On timeout launch fails cleanly BUT the job KEEPS ROLLING in the
+        // queue (partial + .part on disk), so it is ready when the user retries the launch. A hydrated game's layers
+        // are already local (the exists() check above), so this only runs to self-heal missing content.
         if (IpfsWrapper::FetchToPath(Cid, Local.string(), &Err, /*TimeoutMs=*/120000).empty())
         {
             Ok = false;

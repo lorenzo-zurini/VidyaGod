@@ -180,66 +180,41 @@ std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
     return CidS;
 }
 
-std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, std::string *Error, int TimeoutMs)
+// FetchOnce — the rolling queue's node primitive: ONE fetch attempt, classified. FetchToPath/FetchDirToPath (the
+// blocking convenience wrappers) and the batch entry point now live in downloadqueue.cpp and route through the queue,
+// whose dispatcher calls THIS to run each attempt and reads the rc to decide Done / rotate-and-retry / fail.
+static std::mutex     g_FetchOnceHookMu;
+static FetchOnceHook g_FetchOnceHook;
+void SetFetchOnceHook(FetchOnceHook Hook)
 {
-    if (Cid.empty())         { if (Error) *Error = "empty CID";              return std::string(); }
-    if (DestPathStr.empty()) { if (Error) *Error = "empty destination path"; return std::string(); }
-
-    // Already materialized → no work — BUT only when there is no resume sidecar. A `<dest>.part` sitting next to a
-    // complete dest is the signature of a fetch that crashed mid-finalize (bytes renamed into place, but not yet
-    // referenced/pinned — unseedable + GC-vulnerable). In that case we must call into the node so it runs the
-    // idempotent finalize repair instead of falsely reporting "already present" and leaving the content broken.
-    if (QFileInfo::exists(QString::fromStdString(DestPathStr))
-        && !QFileInfo::exists(QString::fromStdString(DestPathStr + ".part")))
-    {
-        LogOut("IpfsWrapper::FetchToPath", "Already present: " + DestPathStr);
-        return DestPathStr;
-    }
-
-    // The node fetches write-through to DestPath (no blockstore duplication), seeds it from there, and reports
-    // Started/Progress/Finished through the transfer callback installed below. TimeoutMs>0 bounds how long we WAIT
-    // (SYNCHRONOUS callers — launch, covers — that must not hang). On timeout the partial file + its .part sidecar
-    // stay on disk, so a later attempt resumes from there; the fetch only keeps running if an unbounded background
-    // download of the same dest is also waiting (leadership passes to it). 0 = wait forever (background downloads).
-    LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
-    FetchDbg("FetchToPath ENTER (blocking VgFetchToPath call) cid=" + Cid + " dest=" + DestPathStr);
-    char *Err = nullptr;
-    const int Rc = (TimeoutMs > 0)
-                       ? VgFetchToPathBounded(Cid.c_str(), DestPathStr.c_str(), TimeoutMs, &Err)
-                       : VgFetchToPath(Cid.c_str(), DestPathStr.c_str(), &Err);
-    const std::string ErrS = TakeStr(Err);
-    FetchDbg("FetchToPath RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
-    if (Rc != 0)
-    {
-        const std::string Msg = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
-        LogErr("IpfsWrapper::FetchToPath", Msg);
-        if (Error) *Error = Msg;
-        return std::string();
-    }
-    LogSucc("IpfsWrapper::FetchToPath", "Materialized CID " + Cid + " at " + DestPathStr);
-    return DestPathStr;
+    std::lock_guard<std::mutex> Lk(g_FetchOnceHookMu);
+    g_FetchOnceHook = std::move(Hook);
 }
 
-std::string FetchDirToPath(const std::string &Cid, const std::string &DestDirStr, std::string *Error)
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)
 {
-    if (Cid.empty())        { if (Error) *Error = "empty CID";            return std::string(); }
-    if (DestDirStr.empty()) { if (Error) *Error = "empty destination dir"; return std::string(); }
+    // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
+    // test swaps it (check-then-call UB). No-op in production (hook unset).
+    FetchOnceHook Hook;
+    { std::lock_guard<std::mutex> Lk(g_FetchOnceHookMu); Hook = g_FetchOnceHook; }
+    if (Hook) return Hook(Cid, Dest, Dir, Error);
+    if (Cid.empty())  { if (Error) *Error = "empty CID";              return 2; }
+    if (Dest.empty()) { if (Error) *Error = "empty destination path"; return 2; }
 
-    // Recursively materialize a folder CID (the dehydrated package set) — the node fetches the whole small tree
-    // (manifests + covers) over bitswap and writes it to DestDir. Requires networking to be up (checked node-side).
-    LogOut("IpfsWrapper::FetchDirToPath", "Fetching folder CID " + Cid + " -> " + DestDirStr);
+    // File already materialized (and not a crashed mid-finalize, which leaves a `<dest>.part`) → Done with no node
+    // call. A rotated job can re-enter here after another dest of the same CID landed it. Dir fetches always call in
+    // (a partial tree has no single-file marker).
+    if (!Dir && QFileInfo::exists(QString::fromStdString(Dest))
+        && !QFileInfo::exists(QString::fromStdString(Dest + ".part")))
+        return 0;
+
+    FetchDbg("FetchOnce ENTER cid=" + Cid + " dest=" + Dest + (Dir ? " [dir]" : ""));
     char *Err = nullptr;
-    const int Rc = VgFetchDirToPath(Cid.c_str(), DestDirStr.c_str(), &Err);
+    const int Rc = VgFetchOnce(Cid.c_str(), Dest.c_str(), Dir ? 1 : 0, &Err);
     const std::string ErrS = TakeStr(Err);
-    if (Rc != 0)
-    {
-        const std::string Msg = ErrS.empty() ? ("folder fetch failed for CID " + Cid) : ErrS;
-        LogErr("IpfsWrapper::FetchDirToPath", Msg);
-        if (Error) *Error = Msg;
-        return std::string();
-    }
-    LogSucc("IpfsWrapper::FetchDirToPath", "Materialized folder CID " + Cid + " at " + DestDirStr);
-    return DestDirStr;
+    FetchDbg("FetchOnce RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
+    if (Rc != 0 && Error) *Error = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
+    return Rc;   // 0/1/2 straight through to the dispatcher
 }
 
 // FetchTargetsConcurrent now lives in downloadqueue.cpp — it enqueues the batch into the shared CID-addressed

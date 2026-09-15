@@ -49,6 +49,17 @@ bool DaemonRunning();
 // user action. 0 (the default) waits forever, for background downloads. Returns the dest path on success.
 std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std::string *Error = nullptr, int TimeoutMs = 0);
 
+// ONE fetch attempt for a CID to Dest via the node (VgFetchOnce). Returns the classified outcome the rolling queue
+// dispatches on: 0 = Done, 1 = Retryable (stall / no providers / offline — rotate + back off), 2 = Terminal
+// (cancelled / bad CID / disk). Dir fetches a directory (meta) CID. This is the queue's primitive; app code uses the
+// queue (EnqueueBatch) or the FetchToPath/FetchDirToPath convenience wrappers, never this directly.
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr);
+
+// Test seam: override FetchOnce with a scripted outcome (return 0/1/2, optionally sleeping/blocking to simulate a
+// slow or stalled attempt). Set to {} to restore the real node-backed path. Production never touches this.
+using FetchOnceHook = std::function<int(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)>;
+void SetFetchOnceHook(FetchOnceHook Hook);
+
 // Recursively materializes a UnixFS DIRECTORY CID (a folder of dehydrated packages) into DestDir — fetches the whole
 // small manifest tree (node JSON + covers, no content bytes) over the network and writes it to disk. Requires the IPFS
 // node's networking to be up. Returns DestDir on success, "" on failure (with *Error set). Used to add a package set by
@@ -89,11 +100,8 @@ private:
 struct FetchTarget {
     std::string Cid;
     std::string LocalPath;
-    bool        Optional  = false;
-    int         TimeoutMs = 0;      // 0 = unbounded (retry forever). A bounded target (covers: one attempt per
-                                    // sweep) frees its DownloadSlot at the deadline instead of holding one of the
-                                    // MaxConcurrentDownloads slots forever on content nobody seeds. If the SAME CID
-                                    // is also requested unbounded (a game layer), unbounded wins.
+    bool        Optional = false;   // a failure is tolerable (covers)
+    bool        Dir      = false;   // fetch a UnixFS DIRECTORY (meta) CID rather than a file
 };
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once

@@ -67,8 +67,6 @@ private:
     explicit CoverCache(QObject * parent = nullptr);
     std::function<bool()> OnlineProbe;      // "is the node online?" (injectable for tests)
     QHash<QString, QString> MissDest;       // dest path → cid, every cover seen missing and not yet landed
-    QSet<QString> FailedOnce;               // cids whose bounded attempt failed at least once → re-sweeps keep
-                                            // normal queue priority (dead art must not keep outranking games)
     bool SweepSoon = false;                 // a debounced near-term sweep is already scheduled
 };
 

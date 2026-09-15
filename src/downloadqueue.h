@@ -32,6 +32,9 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets);
 // Block until every job named by Handle is finished; returns false (with *Error) as soon as a REQUIRED job fails
 // (optional-job failures are logged and tolerated) — same contract the old FetchTargetsConcurrent had.
 bool WaitBatch(const BatchHandle &Handle, std::string *Error = nullptr);
+// Bounded wait: block up to TimeoutMs for the batch to finish; on timeout return false and LEAVE the jobs in the
+// queue (they keep rolling) — the launch semantic. TimeoutMs<=0 waits forever.
+bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error = nullptr);
 
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.
@@ -42,7 +45,11 @@ void PrioritizeDownload(const std::string &Cid);
 
 // Test observability: a job's effective fetch bound (ms; 0 = unbounded), or -1 if the CID has no job. The merge
 // rule under test: unbounded is STICKY — a cover's bound must never cut a game layer's fetch short.
-int DebugJobTimeoutMs(const std::string & Cid);
+// Test observability for the rolling scheduler.
+int  DebugJobState(const std::string & Cid);       // -1 none, 0 Queued, 1 Active, 2 Done, 3 Failed
+bool DebugJobBackingOff(const std::string & Cid);  // Queued AND its retry backoff has not yet elapsed (rotated)
+bool DebugIsPreempting(const std::string & Cid);   // the scheduler has cancelled this active job to free a slot
+void DebugResetQueue();                            // TEST ONLY: drop all jobs + preemption/cancel state (isolation)
 
 // Test observability: whether a CID's job carries a bumped (non-default) priority.
 bool DebugJobPrioritized(const std::string & Cid);

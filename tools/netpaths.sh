@@ -110,7 +110,7 @@ run() {
   local gw=$(gwServed "$log"); local viaGW=0; [ -n "$gw" ] && viaGW=1
   local r0=$(routerMax "$log" 0); local r1=$(routerMax "$log" 1); local r2=$(routerMax "$log" 2); local r3=$(routerMax "$log" 3)
   local idx=$(( ${r2:-0} > ${r3:-0} ? ${r2:-0} : ${r3:-0} ))
-  local attempts=$(grep -c "attempt .* START" "$log")
+  local attempts=$(grep -c "FetchOnce ENTER" "$log")   # each queue dispatch = one attempt (rolling retries)
   local size=$(stat -c%s "$dd/out.bin" 2>/dev/null || echo 0); local fs=$(fetchSecs "$log")
   say "  rc=$rc wall=${dt}s fetch=${fs:-n/a}s ok=$ok size=$size gateway=${gw:-none} attempts=$attempts | providers: friend=${r0:-0} dht=${r1:-0} idxA=${r2:-0} idxB=${r3:-0}"
   local v="FAIL"
