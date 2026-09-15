@@ -1,7 +1,7 @@
 ---
 name: adversary
 description: The pre-push adversarial reviewer. Run it on EVERY commit (or coherent commit range) BEFORE pushing — it exists to tear the change apart. Give it the repo(s) and the commit range; it reads the diffs itself.
-model: fable
+model: claude-fable-5
 tools: Read, Bash, Grep, Glob
 ---
 

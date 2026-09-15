@@ -1,0 +1,39 @@
+NETWORK-PATH MATRIX  2026-09-15T17:36:40+03:00  cid=QmU1v8RnPEx8REbvkzaaVaUv9pawysPPCNyNhovSjhcRkm  bin=/home/lorenzo-zurini/Code/VidyaGod/build/VidyaGod
+(seeder must be OFF: 0 other VidyaGod proc(s) running)
+=======================================================================
+
+--- baseline  (env: VG_NOOP=1) ---
+  rc=0 wall=46s fetch=38.079934s ok=1 size=9787896 gateway=gateway.pinata.cloud attempts=1 | providers: friend=0 dht=4 idxA=3 idxB=1
+  => baseline: PASS
+
+--- gateway-any  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_CIDRS=0.0.0.0/0,::/0) ---
+  rc=0 wall=73s fetch=43.438570s ok=1 size=9787896 gateway=gateway.pinata.cloud attempts=2 | providers: friend=0 dht=0 idxA=3 idxB=1
+  => gateway-any: PASS
+
+--- gw-pinata  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_CIDRS=0.0.0.0/0,::/0 VG_BENCH_BLOCK_HOSTS=ipfs.io,gateway.ipfs.io,w3s.link,dweb.link,trustless-gateway.link,trustless-gateway.net) ---
+  rc=0 wall=41s fetch=11.019234s ok=1 size=9787896 gateway=gateway.pinata.cloud attempts=1 | providers: friend=0 dht=0 idxA=3 idxB=1
+  => gw-pinata: PASS
+
+--- gw-public  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_CIDRS=0.0.0.0/0,::/0 VG_BENCH_BLOCK_HOSTS=gateway.pinata.cloud) ---
+  rc=124 wall=180s fetch=n/as ok=0 size=0 gateway=none attempts=3 | providers: friend=0 dht=0 idxA=3 idxB=1
+  => gw-public: FAIL
+
+--- indexer-a-only  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_HOSTS=bootstrap.libp2p.io,gateway.pinata.cloud,ipfs.io,gateway.ipfs.io,w3s.link,dweb.link,trustless-gateway.link,trustless-gateway.net,cid.contact VG_BENCH_BLOCK_CIDRS=104.131.131.82/32) ---
+  rc=0 wall=37s fetch=6.294377s ok=1 size=9787896 gateway=none attempts=1 | providers: friend=0 dht=0 idxA=3 idxB=0
+  => indexer-a-only: PASS
+
+--- indexer-b-only  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_HOSTS=bootstrap.libp2p.io,gateway.pinata.cloud,ipfs.io,gateway.ipfs.io,w3s.link,dweb.link,trustless-gateway.link,trustless-gateway.net,delegated-ipfs.dev VG_BENCH_BLOCK_CIDRS=104.131.131.82/32) ---
+  rc=0 wall=35s fetch=5.733226s ok=1 size=9787896 gateway=none attempts=1 | providers: friend=0 dht=0 idxA=0 idxB=1
+  => indexer-b-only: PASS
+
+--- dht-only-neg  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_HOSTS=delegated-ipfs.dev,cid.contact,gateway.pinata.cloud,ipfs.io,gateway.ipfs.io,w3s.link,dweb.link,trustless-gateway.link,trustless-gateway.net) ---
+  rc=124 wall=100s fetch=n/as ok=0 size=0 gateway=none attempts=4 | providers: friend=0 dht=4 idxA=0 idxB=0
+  note: the DHT did return 4 provider(s) — a stale record (our own seeder), not Pinata
+  => dht-only-neg: PASS
+
+--- nothing  (env: VG_BENCH_NO_TUNNEL=1 VG_BENCH_BLOCK_CIDRS=0.0.0.0/0,::/0 VG_BENCH_BLOCK_HOSTS=bootstrap.libp2p.io,delegated-ipfs.dev,cid.contact,gateway.pinata.cloud,ipfs.io,gateway.ipfs.io,w3s.link,dweb.link,trustless-gateway.link,trustless-gateway.net) ---
+  rc=124 wall=100s fetch=n/as ok=0 size=0 gateway=none attempts=10 | providers: friend=0 dht=0 idxA=0 idxB=0
+  => nothing: PASS
+
+=======================================================================
+MATRIX: 7 passed, 1 failed   (logs: /home/lorenzo-zurini/.cache/vgnetpaths/*.log)

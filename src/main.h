@@ -55,6 +55,7 @@ struct LaunchParameters
     std::string FetchCid;                                                 //--fetch <CID> <DEST>: fetch a CID to DEST then exit (download throughput test)
     std::string FetchDest;
     bool FetchDirMode = false;                                            //--fetch-dir <CID> <DEST>: recursively materialize a FOLDER CID to DEST (add-by-CID verify)
+    bool DownloadAll = false;                                             //--download-all: sync sources, then hydrate EVERY catalog package (content + runner chains) via the real DownloadQueue, then exit
     bool PrintPeerId = false;                                             //--peer-id: print this node's peer ID + dialable addrs, then exit
     bool PrintPinLs = false;                                              //--pin-ls: print the recursively-pinned (seeded) CIDs in this repo, then exit
     std::string UnpinCid;                                                 //--unpin <cid>: drop a recursive pin (stop seeding/showing it) then exit

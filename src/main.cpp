@@ -284,6 +284,7 @@ int main(int argc, char *argv[])
         LaunchParameters.PrintPeerId || LaunchParameters.PrintPinLs || !LaunchParameters.UnpinCid.empty()
         || !LaunchParameters.DropRefCid.empty()
         || !LaunchParameters.FetchCid.empty() || !LaunchParameters.SeedDir.empty() || LaunchParameters.HealPins
+        || LaunchParameters.DownloadAll
         || LaunchParameters.NetTest
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
@@ -632,6 +633,13 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             RuntimeParameters.FetchDest        = argv[++i];
             RuntimeParameters.FetchDirMode     = true;
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--download-all")
+        {
+            //Sync all package sources then hydrate EVERY catalog package (content + resolved runner chains) through
+            //the real DownloadQueue, then exit. Full-mirror / pre-seed of an install from its sources.
+            RuntimeParameters.DownloadAll     = true;
+            RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--peer-id")
         {

@@ -23,9 +23,107 @@
 namespace fs = std::filesystem;
 #include "runnerinstall.h"
 
+void CliModes::CollectCatalogTargets(const NodeIndex &Idx,
+                                     std::vector<IpfsWrapper::FetchTarget> &Out, CatalogTargetStats *Stats,
+                                     const std::function<void(const std::string &, const std::string &)> &OnSourceless)
+{
+    CatalogTargetStats St;
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        ++St.Nodes;
+        std::string Err;
+        if (!PackageCatalog::CollectContentTargets(Idx, Id, {}, Out, &Err))
+        {
+            ++St.SourcelessNodes;                       // counted, reported, never fatal (see climodes.h)
+            if (OnSourceless) OnSourceless(Id, Err);
+        }
+        if (N.IsLaunchable()) ++St.Launchables;   // (its runner chain's builds are catalog nodes → the IsRunner branch)
+        if (N.IsRunner()) { ++St.Runners; (void)RunnerInstall::CollectRunnerNodeTargets(Idx, Id, Out, &Err); }
+    }
+    if (Stats) *Stats = St;
+}
+
 int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)
 {
     (void)GlobalConfigJSON; (void)AppDataDir;
+    // ── --download-all : the real download path (DownloadManager::beginDownload), applied to the WHOLE catalog.
+    // Syncs every package source, then pools EVERY node's content targets + every launchable's resolved runner chain
+    // + every runner node's build into ONE concurrent batch through the real DownloadQueue. Full mirror / pre-seed. ──
+    if (LaunchParameters.DownloadAll)
+    {
+        for (int i = 0; i < 30 && IpfsWrapper::PeerCount() < 20; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogOut("download-all", std::string("online=") + (IpfsWrapper::DaemonRunning() ? "yes" : "no")
+               + " peers=" + std::to_string(IpfsWrapper::PeerCount()) + " — syncing sources");
+        // Sync sources; the many-small-block meta trees can need several passes on a slow (Pinata-only) network —
+        // each pass PERSISTS blocks and resumes, so retry until every configured source has indexed (bounded).
+        // "Every source synced" = the sync's OWN predicate (PackageCatalog::SourceDirSynced: exists, readable,
+        // non-empty) on the catalog's OWN path rule (PackageSourceDir: honours Settings.Paths.LibraryRoot and the
+        // sanitized / CID-derived source name) — not a hand-built AppData/LIBRARY/<NAME> that an empty NAME or a
+        // custom root would make trivially true, or never true.
+        const auto Sources = GlobalConfigJSON["Settings"].value("PackageSources", nlohmann::ordered_json::array());
+        size_t WantSources = 0;
+        for (const auto &Src : Sources) if (!PackageCatalog::PackageSourceCID(Src).empty()) ++WantSources;
+        if (WantSources == 0) { LogErr("download-all", "no CID-bearing package source configured — nothing to mirror"); return 1; }
+        auto SyncedSources = [&]{
+            std::error_code Ec; size_t Have = 0;
+            for (const auto &Src : Sources)
+            {
+                if (PackageCatalog::PackageSourceCID(Src).empty()) continue;
+                const std::string Dir = PackageCatalog::PackageSourceDir(GlobalConfigJSON, Src);
+                if (PackageCatalog::SourceDirSynced(Dir, Ec)) ++Have;
+                else if (Ec) LogWarn("download-all", "source dir " + Dir + ": " + Ec.message());
+            }
+            return Have;
+        };
+        NodeIndex Index; size_t HaveSources = 0;
+        for (int pass = 1; pass <= 12; ++pass)
+        {
+            std::string SErr;
+            PackageCatalog::SyncPackageSources(GlobalConfigJSON, &SErr);
+            Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);
+            HaveSources = SyncedSources();
+            LogOut("download-all", "sync pass " + std::to_string(pass) + ": " + std::to_string(HaveSources) + "/"
+                   + std::to_string(WantSources) + " source(s), " + std::to_string(Index.Nodes.size()) + " node(s)"
+                   + (SErr.empty() ? "" : "  (last: " + SErr + ")"));
+            if (HaveSources == WantSources) break;   // sync completeness is the only gate (a runner-only catalog has 0 launchables)
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+        if (HaveSources < WantSources)
+        {
+            LogErr("download-all", "only " + std::to_string(HaveSources) + "/" + std::to_string(WantSources)
+                   + " source(s) synced — refusing to call a partial catalog a mirror");
+            return 1;
+        }
+        // Collect targets for EVERYTHING (CollectCatalogTargets — the testable half of this mode: no fetches).
+        std::vector<IpfsWrapper::FetchTarget> Targets; std::string Err;
+        CliModes::CatalogTargetStats St;
+        int reported = 0;
+        CliModes::CollectCatalogTargets(Index, Targets, &St,
+            [&reported](const std::string &Id, const std::string &E){ if (++reported <= 20) LogWarn("download-all", "content collect '" + Id + "': " + E); });
+        LogOut("download-all", "collected " + std::to_string(Targets.size()) + " fetch target(s) (pre-dedup) from "
+               + std::to_string(St.Nodes) + " node(s) [" + std::to_string(St.Launchables) + " launchable, "
+               + std::to_string(St.Runners) + " runner]" + (St.SourcelessNodes ? ("; " + std::to_string(St.SourcelessNodes) + " node(s) had a missing/sourceless layer") : std::string()));
+        if (Targets.empty()) { LogErr("download-all", "no fetch targets — sources did not sync?"); return 1; }
+        const auto T0 = std::chrono::steady_clock::now();
+        const bool Ok = IpfsWrapper::FetchTargetsConcurrent(Targets, &Err);
+        const double Secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - T0).count();
+        // Tally what actually landed on disk.
+        std::error_code Ec; std::uintmax_t Bytes = 0; int Present = 0;
+        for (const auto &T : Targets)
+            if (std::filesystem::is_regular_file(T.LocalPath, Ec))
+            {
+                const std::uintmax_t Sz = std::filesystem::file_size(T.LocalPath, Ec);
+                if (Ec) continue;                       // unreadable: not "present" (file_size returns uintmax_t(-1) on error)
+                ++Present; Bytes += Sz;
+            }
+        LogOut("download-all", "materialized " + std::to_string(Present) + "/" + std::to_string(Targets.size())
+               + " target(s), " + std::to_string(Bytes) + " bytes in " + std::to_string(Secs) + "s");
+        if (!Ok) { LogErr("download-all", "batch reported a failure: " + Err); return 1; }
+        LogSucc("download-all", "full mirror complete: " + std::to_string(Present) + " file(s), "
+                + std::to_string(Bytes) + " bytes");
+        return 0;
+    }
     if (!LaunchParameters.FetchCid.empty())
     {
         LogOut("main.cpp", "Fetch test: " + LaunchParameters.FetchCid + " -> " + LaunchParameters.FetchDest);

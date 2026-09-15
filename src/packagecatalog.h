@@ -52,6 +52,9 @@ int PruneMovedLocalPackages(nlohmann::ordered_json &GlobalConfigJSON);
 // A package source is a `Settings.PackageSources[]` entry `{ "CID": "…", "NAME": "optional" }` — an IPFS folder CID of
 // DEHYDRATED packages (manifests + covers, no content). Fetched into `<DataRoot>/LIBRARY/<name>` (LIBRARY IS the
 // CID-source root now that git is gone), scanned as catalog roots, and hydrated on demand.
+std::string PackageSourceCID(const nlohmann::ordered_json &Source);                     // the source's folder CID ("" = none)
+std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Source); // where a source syncs to
+bool SourceDirSynced(const std::string &Dir, std::error_code &Ec);                          // exists, readable, non-empty
 std::vector<std::string> PackageSourceDirs(const nlohmann::ordered_json &GlobalConfigJSON);   // existing source dirs
 // True if BundleDir lives under a package-source dir (a CID-source package, vs a locally-added one).
 bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir);

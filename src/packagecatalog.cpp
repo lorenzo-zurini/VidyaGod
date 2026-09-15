@@ -95,7 +95,7 @@ static bool PathUnder(const std::filesystem::path &Base, const std::filesystem::
 
 // ----- package sources (IPFS folder CIDs) -----
 //A source's CID (object {CID,NAME} or a bare CID string) and its on-disk name (NAME, else a filesystem-safe CID prefix).
-static std::string PackageSourceCID(const nlohmann::ordered_json &S)
+std::string PackageSourceCID(const nlohmann::ordered_json &S)
 {
     if (S.is_object() && S.contains("CID") && S["CID"].is_string()) return std::string(S["CID"]);
     if (S.is_string()) return std::string(S);
@@ -114,7 +114,7 @@ static std::string PackageSourcesRoot(const nlohmann::ordered_json &GlobalConfig
 {
     return LibraryDir(GlobalConfigJSON);
 }
-static std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &S)
+std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &S)
 {
     return QDir::cleanPath(QString::fromStdString(PackageSourcesRoot(GlobalConfigJSON) + "/" + PackageSourceName(S))).toStdString();
 }
@@ -258,9 +258,24 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON)
     {
         if (PackageSourceCID(Src).empty()) continue;
         const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
-        if (!std::filesystem::is_directory(Dir, Ec) || std::filesystem::is_empty(Dir, Ec)) return true;
+        if (!SourceDirSynced(Dir, Ec)) return true;
     }
     return false;
+}
+
+bool SourceDirSynced(const std::string &Dir, std::error_code &Ec)
+{
+    //One predicate for "this source has been fetched", shared by the sync, the missing-sources check and
+    //--download-all: a directory that exists, is READABLE and is non-empty. On any error Ec is set and the answer is
+    //no — an unreadable dir is not synced, and the caller can say why.
+    Ec.clear();
+    if (!std::filesystem::is_directory(Dir, Ec) || Ec)
+    {
+        if (Ec == std::errc::no_such_file_or_directory) Ec.clear();   // not-yet-synced is a clean "no", not an error
+        return false;
+    }
+    const bool Empty = std::filesystem::is_empty(Dir, Ec);
+    return !Ec && !Empty;
 }
 
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
@@ -282,7 +297,15 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
         const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
 
         //A CID is immutable → fetch the dehydrated folder once (dehydrated only; content hydrates later per-layer).
-        const bool Have = std::filesystem::is_directory(Dir, Ec) && !std::filesystem::is_empty(Dir, Ec);
+        const bool Have = SourceDirSynced(Dir, Ec);
+        if (!Have && Ec)
+        {
+            //A real filesystem error (EACCES, EIO — ENOENT is a clean "not yet synced") cannot be fixed by fetching:
+            //materializing into an unreadable dir just fails the final rename, forever. Refuse loudly and skip.
+            LogErr("PackageCatalog::SyncPackageSources", "Source dir " + Dir + " is unusable ("
+                   + Ec.message() + ") — fix it and re-sync; skipping");
+            continue;
+        }
         if (!Have)
         {
             LogOut("PackageCatalog::SyncPackageSources", "Fetching CID package source " + Cid + " -> " + Dir);

@@ -1,0 +1,19 @@
+GATEWAY HEADER-LATENCY PROBE 2026-09-15T17:28:28+03:00  max-time=70s  (code / bytes-before-abort / seconds-to-first-byte / total)
+# NOTE: hand-edited after the run — the only-if-cached label column was blank (script printf bug, since fixed)
+# and PROBE_DONE was appended by the runner, not the script (now it is). Numbers verbatim. The 200s on ipfs.io and
+# w3s.link 'small' are CUT streams (7.9/9.8 MB and 6.3/9.8 MB delivered before the server closed) — see netpaths.sh.
+# Query used here lacked car-order=dfs, which the node sends (added to the script since).
+gateway.pinata.cloud   small                    200 9791381 5.995020 6.946616
+gateway.pinata.cloud   1GB                      200 682840048 7.079518 70.000257
+gateway.pinata.cloud   absent                   404 89 61.650162 61.650204
+ipfs.io                small                    200 7867493 7.330666 62.343680
+ipfs.io                1GB                      520 16 28.171259 28.171468
+ipfs.io                absent                   520 16 28.200072 28.200199
+w3s.link               small                    200 6294395 1.078979 49.726267
+w3s.link               1GB                      520 16 28.213999 28.214136
+w3s.link               absent                   520 16 28.175097 28.175246
+gateway.pinata.cloud   small   only-if-cached   200 9791381 6.127164 6.982787
+gateway.pinata.cloud   absent  only-if-cached   412 78 34.125775 34.125991
+ipfs.io                small   only-if-cached   412 78 0.170357 0.170497
+ipfs.io                absent  only-if-cached   412 78 0.185498 0.185693
+PROBE_DONE

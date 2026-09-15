@@ -11,12 +11,14 @@
 #include "packageeditormodel.h"
 #include "manifestmodel.h"
 #include "nodefixture.h"
+#include "cli/climodes.h"
 #include "runnerinstall.h"
 #include "ipfswrapper.h"
 #include "apppaths.h"
 #include "commonutils.h"
 
 #include <fstream>
+#include <filesystem>
 #include <limits>
 #include <set>
 #include <string>
@@ -307,6 +309,75 @@ private slots:
         QVERIFY(hasGame);                       // game content target
         QVERIFY(hasWine);                       // runner build target — in the SAME batch
         QVERIFY(targets.size() >= 2);
+    }
+
+    // --download-all's pump: CollectCatalogTargets must reach EVERY node's content — launchables' closures, runner
+    // builds, AND catalog nodes no launchable or runner references (an orphan library still belongs to a full
+    // mirror) — while a node whose layer has no source is COUNTED, not fatal. Teeth (each caught): skip the IsRunner
+    // branch → CID_WINE missing; collect only launchables/runners → CID_ORPHAN missing; abort on the first sourceless
+    // node → later targets missing; stop counting → the stats assertions fail.
+    void download_all_collects_every_catalog_node_and_tolerates_sourceless()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        writeJson(dir.path() + "/game1.json",
+                  NodeFixture::Chain("game1", {NodeFixture::Tile("g1"), NodeFixture::Exec("win32", "g1.exe")}, {"content1", "lib"}));
+        writeJson(dir.path() + "/content1.json", NodeFixture::Chain("content1", {NodeFixture::ContentCid("zip", "g1.zip", "CID_G1")}));
+        writeJson(dir.path() + "/lib.json",      NodeFixture::Chain("lib",      {NodeFixture::ContentCid("zip", "lib.zip", "CID_LIB")}));
+        writeJson(dir.path() + "/game2.json",
+                  NodeFixture::Chain("game2", {NodeFixture::Tile("g2"), NodeFixture::Exec("win32", "g2.exe")}, {"content2"}));
+        writeJson(dir.path() + "/content2.json", NodeFixture::Chain("content2", {NodeFixture::ContentCid("zip", "g2.zip", "CID_G2")}));
+        // A runner + its dehydrated build (reached only via the IsRunner branch).
+        writeJson(dir.path() + "/wine.json",
+                  NodeFixture::Chain("wine", {NodeFixture::Runner(ManifestModel::MachinePlatform(), {"win32"}, "x")}, {"winebuild"}));
+        writeJson(dir.path() + "/winebuild.json", NodeFixture::Chain("winebuild", {NodeFixture::ContentCid("zip", "wine.zip", "CID_WINE")}));
+        // An ORPHAN library node: nothing parents it, no runner uses it — a full mirror must still fetch it.
+        writeJson(dir.path() + "/orphanlib.json", NodeFixture::Chain("orphanlib", {NodeFixture::ContentCid("zip", "orphan.zip", "CID_ORPHAN")}));
+        // A node whose content is missing WITH NO SOURCE (a runtime-generated path) — must be counted, never fatal.
+        writeJson(dir.path() + "/sourceless.json", NodeFixture::Chain("sourceless", {NodeFixture::Content("zip", "nowhere.zip")}));
+
+        NodeIndex idx; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx);
+        // 9 files, 11 nodes: NodeFixture::Chain writes a two-layer chain (Tile + Exec) as TWO nodes (a private
+        // "<id>__l0" link + the tail), and game1/game2 are the only two-layer chains here.
+        QCOMPARE((int)idx.Nodes.size(), 11);
+
+        std::vector<IpfsWrapper::FetchTarget> targets;
+        CliModes::CatalogTargetStats st; int sourcelessCalls = 0; std::string sourcelessId;
+        CliModes::CollectCatalogTargets(idx, targets, &st,
+            [&](const std::string &id, const std::string &){ ++sourcelessCalls; sourcelessId = id; });
+
+        std::set<std::string> cids; for (const auto & t : targets) cids.insert(t.Cid);
+        const std::set<std::string> want{"CID_G1", "CID_LIB", "CID_G2", "CID_WINE", "CID_ORPHAN"};
+        QCOMPARE(cids, want);                   // every catalog node's content, nothing invented
+        QCOMPARE(st.Nodes, 11);                 // every indexed node visited, link nodes included
+        QCOMPARE(st.Launchables, 2);
+        QCOMPARE(st.Runners, 1);
+        QCOMPARE(st.SourcelessNodes, 1);        // counted…
+        QCOMPARE(sourcelessCalls, 1);           // …and reported once
+        QCOMPARE(sourcelessId, std::string("sourceless"));
+    }
+
+    // SourceDirSynced is the ONE "this source has been fetched" predicate (sync, missing-check, --download-all).
+    // Teeth (each caught): treat ENOENT as an error → the absent assert fails; drop the !Ec on is_empty → the
+    // unreadable case reports synced=false with a CLEAN Ec and the loud-skip in SyncPackageSources never fires.
+    void sourceDirSyncedDistinguishesAbsentEmptyUnreadableAndSynced()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Base = dir.path().toStdString();
+        std::error_code Ec;
+        QVERIFY(!PackageCatalog::SourceDirSynced(Base + "/absent", Ec));
+        QVERIFY(!Ec);                                              // not yet synced: a clean "no"
+        std::filesystem::create_directory(Base + "/empty");
+        QVERIFY(!PackageCatalog::SourceDirSynced(Base + "/empty", Ec));
+        QVERIFY(!Ec);                                              // fetched nothing yet: re-fetch, not an error
+        std::filesystem::create_directory(Base + "/full");
+        { std::ofstream(Base + "/full/x.json") << "{}"; }
+        QVERIFY(PackageCatalog::SourceDirSynced(Base + "/full", Ec));
+        QVERIFY(!Ec);
+        std::filesystem::permissions(Base + "/full", std::filesystem::perms::none);
+        const bool Synced = PackageCatalog::SourceDirSynced(Base + "/full", Ec);
+        std::filesystem::permissions(Base + "/full", std::filesystem::perms::owner_all);   // restore before asserts
+        QVERIFY(!Synced);
+        QVERIFY(Ec);                                               // unreadable: a LOUD no — the sync must refuse it
     }
 
     // Hydration asks the LAYER whether it is runtime-sourced, never the resolved absolute path. Two ways the

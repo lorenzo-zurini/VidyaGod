@@ -282,6 +282,7 @@ Add a source CID, download a game, launch it. Author or import your own via the 
 | `--remint-library <dir>` | Re-seed and re-mint a library tree. **Lazy** — strip a layer's `SOURCE.CID` first to pick up changed bytes, and re-derive every CID afterwards to prove nothing drifted. |
 | `--seed <dir>` / `--seed-covers` | Re-establish seeding from a publisher's master. |
 | `--fetch <cid>` / `--fetch-dir <cid> <dir>` | Fetch a CID (used to verify a mint round-trips). |
+| `--download-all` | Sync every package source, then materialize EVERY node's content + every runner build through the real download batch — a full mirror / pre-seed. Exits non-zero if a source never synced. |
 | `--verify-cid` / `--pin-ls` / `--unpin` / `--drop-ref` / `--heal` | Content-store inspection and repair. |
 | `--convert-delta-chain <dir>` | Convert a chain of full archives into `.vgdelta` layers. |
 | `--fix-case-conflicts` | Canonicalise cross-layer case collisions to the base layer's case. |
