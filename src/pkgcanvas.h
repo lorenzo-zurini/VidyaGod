@@ -51,6 +51,11 @@ public:
     void setKnownIds(KnownIdsFn fn);
     //The document changed behind the canvas's back (a reload, an action's writeback) — drop the cached graph.
     void invalidateGraph();
+
+    //The document content changed underneath the canvas (a live JSON edit) — rebuild the cached graph next frame
+    //but KEEP the selection/positions (unlike invalidateGraph, which is the full document-swap reset).
+    void refreshFromDocument();
+    //NODE_ID of the currently selected node, or "" if none (for the live JSON panel to follow selection).
     //Per-node problems, keyed by NODE_ID — drawn ON the node that is wrong, not in a separate report.
     void setIssues(const std::vector<std::pair<std::string, std::string>> &issues);
     //Node actions the host performs (file dialogs, zip/dir/delta conversion, capture, test launch): the canvas
@@ -84,6 +89,7 @@ public:
     bool renameNode(int index, const std::string &newId);
     int  nodeCount() const;
     int  indexOf(const std::string &nodeId) const;
+    std::string selectedNodeId() const;
     PkgGraph::Graph graph() const;
 
     //Drops the selection everywhere it is held: ours, imnodes' own index set, and the snapshot that
@@ -97,6 +103,7 @@ public:
     void  setZoom(float z);
     //How many nodes the last frame actually submitted (viewport culling) — the rest were off-screen.
     int   visibleNodes() const;
+    int   visibleLinks() const;   // links drawn this frame (a crossing wire counts even if both nodes are culled)
     //Screen-space bounds of the drawn surface from the last frame. Zoom is a view transform over the emitted
     //geometry, so this is what actually changes when you zoom — imnodes' own reported node sizes and style
     //stay unscaled by design. Plain floats so this header keeps its zero imgui dependency.
@@ -149,6 +156,7 @@ private:
     void drawActions(nlohmann::ordered_json &node, int index, const PkgGraph::Graph &g);
     void drawField(nlohmann::ordered_json &node, const PkgGraph::Field &f, int index);
     void drawRegEdits(nlohmann::ordered_json &node, int index);
+    void drawCustomVarUI(nlohmann::ordered_json &node);
     //`Drawn` marks the nodes submitted THIS frame (viewport culling) — a wire can only be drawn
     //between two endpoints that exist, so culled nodes take their wires with them.
     void syncLinks(const PkgGraph::Graph &g, const std::vector<char> &Drawn);

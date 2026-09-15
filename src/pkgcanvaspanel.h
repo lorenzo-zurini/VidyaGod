@@ -15,6 +15,8 @@ class QTimer;
 class PkgCanvasPanel : public QOpenGLWidget
 {
     Q_OBJECT
+signals:
+    void nodeSelected(const QString &nodeId);   // canvas selection changed (drives the live JSON panel)
 
 public:
     //`saveLayoutOnly` runs instead of `save` when a frame changed ONLY positions — see PkgCanvas.
@@ -45,6 +47,7 @@ private:
     QTimer *m_repaint = nullptr;   // ~60fps so edits are live
     QElapsedTimer m_clock;
     qint64 m_lastNs = 0;
+    QString m_lastSelected;
 };
 
 #endif // PKGCANVASPANEL_H

@@ -7,6 +7,7 @@ class PackageEditorModel;
 class QComboBox;
 class QTextEdit;
 class QPushButton;
+class QTimer;
 
 // ---------------------------------------------------------------------------
 // JsonRawEditor — the "JSON" tab: pick a node from the combo and edit its raw JSON, then Save Node. Validates the
@@ -20,7 +21,12 @@ class JsonRawEditor : public QWidget
 public:
     explicit JsonRawEditor(PackageEditorModel * model, QWidget * parent = nullptr);
 
+public slots:
+    void showNode(const QString & nodeId);   // canvas selected a node → show its JSON (selection-driven)
+    void rebuildCombo();                     // repopulate the node list (structural change), keep the pick
+
 private slots:
+    void onApplyTimeout(); // debounced live apply: valid edits flow to the node without a Save click
     void refreshText();    // re-show the selected node's JSON (was PackageEditor::RefreshJSONView)
     void onTextChanged();  // live JSON validity → style + Save enabled (was JSONQTextEditChanged)
     void onSavePressed();  // parse + replace the node through the model (was SaveJSONButtonPressed)
@@ -30,6 +36,8 @@ private:
     QComboBox *          FileCombo = nullptr;
     QTextEdit *          Text = nullptr;
     QPushButton *        SaveBtn = nullptr;
+    QTimer *             ApplyTimer = nullptr;   // debounce (~300 ms) so every keystroke doesn't write to disk
+    bool                 ApplyingLocally = false; // guard: our own live apply must not clobber the text being typed
 };
 
 #endif // JSONRAWEDITOR_H

@@ -201,6 +201,15 @@ void PackageEditorModel::replaceNodeJson(int nodeIndex, nlohmann::ordered_json n
     emit documentReloaded();
 }
 
+void PackageEditorModel::updateNodeLive(int nodeIndex, nlohmann::ordered_json node)
+{
+    if (nodeIndex < 0 || nodeIndex >= (int)Doc["NODES"].size()) return;
+    if (Doc["NODES"][nodeIndex].contains("__FILE__")) node["__FILE__"] = Doc["NODES"][nodeIndex]["__FILE__"];
+    Doc["NODES"][nodeIndex] = std::move(node);
+    SaveNodes();                 // persist + revalidate (SaveNodes emits savedToDisk + validationChanged)
+    emit nodeContentChanged();   // canvas repaints from the doc; NO documentReloaded → the JSON editor survives
+}
+
 void PackageEditorModel::SaveNodes()
 {
     if (!PackageDir) return;

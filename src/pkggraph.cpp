@@ -402,6 +402,20 @@ std::vector<Field> MakeFields(const std::string &Type)
 
 } // namespace
 
+void SetVarVisible(nlohmann::ordered_json &node, bool visible)
+{
+    if (!node.is_object()) return;
+    if (visible)
+    {
+        if (!node.contains("UI") || !node["UI"].is_object())
+            node["UI"] = nlohmann::ordered_json{{"CONTROL", "text"}, {"LABEL", node.value("KEY", std::string())}};
+    }
+    else
+    {
+        node.erase("UI");
+    }
+}
+
 const std::vector<Field> &FieldsFor(const std::string &Type)
 {
     static std::map<std::string, std::vector<Field>> Cache;

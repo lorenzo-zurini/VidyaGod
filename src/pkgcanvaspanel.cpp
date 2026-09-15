@@ -124,6 +124,9 @@ void PkgCanvasPanel::paintGL()
     ImGui_ImplOpenGL3_NewFrame();
     ImGui::NewFrame();
     m_canvas->frame();
+    // Selection follows the canvas: emit when it changes so the live JSON panel can show the picked node.
+    const QString Sel = QString::fromStdString(m_canvas->selectedNodeId());
+    if (Sel != m_lastSelected) { m_lastSelected = Sel; if (!Sel.isEmpty()) emit nodeSelected(Sel); }
     ImGui::Render();
 
     const int fbw = static_cast<int>(width() * dpr), fbh = static_cast<int>(height() * dpr);

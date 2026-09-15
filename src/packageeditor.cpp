@@ -163,7 +163,8 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     QVBoxLayout * RightLayout = new QVBoxLayout(RightPanel);
     RightLayout->setContentsMargins(0, 0, 0, 0);
     RightLayout->setSpacing(1);
-    RightLayout->addWidget(new JsonRawEditor(Model, RightPanel), 1);
+    Json = new JsonRawEditor(Model, RightPanel);
+    RightLayout->addWidget(Json, 1);
     RightLayout->addWidget(new ValidationPanel(Model, RightPanel), 0);
 
     QSplitter * Split = new QSplitter(Qt::Horizontal, this);
@@ -183,6 +184,13 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
     // React to the model: structural change → rebuild tabs; validation update → repaint the panel; a disk write →
     // relay to packageSaved (so library tiles / prelaunch dialogs reload).
     connect(Model, &PackageEditorModel::documentReloaded, this, [this]{ BuildUI(); });
+    // Canvas selection → the JSON panel shows that node (selection-driven, live both ways).
+    connect(Canvas, &PkgCanvasPanel::nodeSelected, Json, &JsonRawEditor::showNode);
+    // A live JSON edit changed a node's CONTENT → rebuild the canvas graph cache + repaint, WITHOUT a shell
+    // rebuild (which would recreate the JSON panel mid-keystroke).
+    connect(Model, &PackageEditorModel::nodeContentChanged, this, [this]{
+        if (Canvas && Canvas->canvas()) { Canvas->canvas()->refreshFromDocument(); Canvas->update(); }
+    });
     connect(Model, &PackageEditorModel::savedToDisk, this, &PackageEditor::packageSaved);
 
     BuildUI();

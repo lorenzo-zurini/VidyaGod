@@ -1083,6 +1083,26 @@ private slots:
     // style, and the vertices it produces are scaled about the canvas origin afterwards. So the thing to
     // assert is the GEOMETRY, not imnodes' own reported sizes — those stay unscaled on purpose, which is
     // exactly why the document can no longer be touched by looking at it.
+    // SetVarVisible IS the visibility contract (UI-facet presence). A hidden var carries no UI and resolves from
+    // DEFAULT; making it visible adds a minimal UI (control+label) without clobbering an existing facet. Teeth:
+    // make "hidden" keep UI, or "visible" overwrite an existing UI — each flips an assertion here.
+    void setVarVisibleTogglesTheUiFacet()
+    {
+        nlohmann::ordered_json V{{"TYPE", "CustomVar"}, {"KEY", "tt_width"}, {"DEFAULT", "%ScreenWidth%"}};
+        QVERIFY(!V.contains("UI"));
+        PkgGraph::SetVarVisible(V, true);
+        QVERIFY(V.contains("UI") && V["UI"].is_object());
+        QCOMPARE(V["UI"].value("LABEL", std::string()), std::string("tt_width"));   // defaults label to the key
+        QCOMPARE(V["UI"].value("CONTROL", std::string()), std::string("text"));
+        V["UI"]["LABEL"] = "Width"; V["UI"]["CONTROL"] = "int";                      // author customised it
+        PkgGraph::SetVarVisible(V, true);                                           // idempotent: must NOT clobber
+        QCOMPARE(V["UI"].value("LABEL", std::string()), std::string("Width"));
+        QCOMPARE(V["UI"].value("CONTROL", std::string()), std::string("int"));
+        PkgGraph::SetVarVisible(V, false);                                          // hide → UI gone, DEFAULT kept
+        QVERIFY(!V.contains("UI"));
+        QCOMPARE(V.value("DEFAULT", std::string()), std::string("%ScreenWidth%"));
+    }
+
     void zoomScalesTheEmittedGeometry()
     {
         Canvas->setMiniMap(false);
@@ -3005,6 +3025,35 @@ private slots:
         runFrame();
         QCOMPARE(Canvas->nodeCount(), 2);
         QCOMPARE(Canvas->visibleNodes(), 1);
+    }
+
+    // A wire whose ENDPOINTS are both culled but which CROSSES the viewport must still be drawn — you should see
+    // the link even when neither node it joins is on screen. Teeth: remove the crossing-link proxy pass → the link
+    // is culled with its endpoints and visibleLinks drops to 0.
+    void aLinkCrossingTheViewportIsDrawnThoughBothNodesAreCulled()
+    {
+        Canvas->setMiniMap(false);
+        const int p = Canvas->addNode("Content", -90000, -90000);   // far top-left, off-screen
+        const int c = Canvas->addNode("DeclareExec", 90000, 90000); // far bottom-right, off-screen
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["NODE_ID"].get<std::string>() });
+        Canvas->invalidateGraph();
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 0);   // both nodes are culled...
+        QCOMPARE(Canvas->visibleLinks(), 1);   // ...but the wire between them crosses the view, so it is drawn
+    }
+
+    // The complement — the geometric cull still WORKS: two culled nodes on the same side, whose wire never enters
+    // the viewport, cost nothing to draw. Teeth: make the segment test always-true → this link is drawn (1).
+    void aLinkThatMissesTheViewportIsNotDrawn()
+    {
+        Canvas->setMiniMap(false);
+        const int p = Canvas->addNode("Content", 90000, 90000);
+        const int c = Canvas->addNode("DeclareExec", 95000, 95000);   // both far bottom-right; wire stays off-screen
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["NODE_ID"].get<std::string>() });
+        Canvas->invalidateGraph();
+        runFrame();
+        QCOMPARE(Canvas->visibleNodes(), 0);
+        QCOMPARE(Canvas->visibleLinks(), 0);   // wire misses the viewport → correctly culled
     }
 
     // ...and a culled node must not have its position rewritten. imnodes was never told where it goes, so

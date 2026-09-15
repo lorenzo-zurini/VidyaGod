@@ -16,7 +16,8 @@
 // authoring runs); the editor owns the model, rebuilds its tabs on documentReloaded, and relays savedToDisk →
 // packageSaved. The per-concern widgets talk only to the model — never to each other or back to this shell.
 // ---------------------------------------------------------------------------
-class PackageEditorModel;   // the state/signal hub (packageeditormodel.h) — owned by PackageEditor
+class PackageEditorModel;
+class JsonRawEditor;   // the state/signal hub (packageeditormodel.h) — owned by PackageEditor
 class PkgCanvasPanel;       // the blueprint canvas — the editing surface
 class PkgActions;           // performs the node actions the canvas asks for
 
@@ -56,6 +57,7 @@ private:
 
     QDir *           PackageDir = nullptr;             // non-owning alias of Model->packageDir()
     PkgCanvasPanel * Canvas  = nullptr;                // the editing surface
+    JsonRawEditor  * Json    = nullptr;                // the live, selection-driven raw-JSON panel
     PkgActions *     Actions = nullptr;                // node-action executor
 
     //The state/signal hub: owns the working document, node I/O, validation, authoring. PackageEditor is the thin

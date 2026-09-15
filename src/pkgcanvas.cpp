@@ -111,6 +111,11 @@ constexpr float kNodeWidth  = 330.0f;
 constexpr float kLabelCol   = 96.0f;
 constexpr float kFieldWidth = 228.0f;
 
+//A node-width separator. ImGui::Separator() DRAWS across the window's content-region (not the imnodes node's), so
+//inside a node the line shot hundreds of px past the box — but its LAYOUT cost is width-0 + ItemSpacing.y, which the
+//height estimator (pkggraph kSepPx) models exactly. So keep the real Separator (height + zoom-scaling unchanged) and
+//just CLIP its drawing to kNodeWidth: the overrun is cut, nothing else moves.
+
 //TOTAL readers. The editor loads raw JSON off disk — deliberately, since it is the tool you open to FIX a
 //node the format rejects — so every field here may be any type. nlohmann's value() THROWS on a mismatch, and
 //a throw out of frame() escapes with ImGui scopes still open: the next paint then segfaults on the half-open
@@ -235,6 +240,7 @@ struct PkgCanvasState
     std::set<int>         SelectedLast;
     bool  ShowMiniMap = true;
     int  VisibleNodes = 0;
+    int  VisibleLinks = 0;   // links actually submitted this frame (incl. via a crossing-link proxy)
     //Measured node sizes by NODE_ID. The minimap draws the WHOLE graph, including the nodes culling never
     //submitted — and a node that was never submitted has no size imnodes can be asked for. Whatever was
     //measured the last time it WAS on screen is kept here; a node never yet seen falls back to a nominal box.
@@ -438,7 +444,20 @@ void  PkgCanvas::setZoom(float Z)
     //setZoom(2) followed by setZoom(0.5) in the same frame, against 0px when a frame runs between them.
     if (m_s->RecentreFromZoom <= 0.0f) m_s->RecentreFromZoom = Old;
 }
+std::string PkgCanvas::selectedNodeId() const
+{
+    auto &Ns = m_s->Nodes();
+    if (m_s->Selected < 0 || m_s->Selected >= (int)Ns.size()) return std::string();
+    return Ns[m_s->Selected].value("NODE_ID", std::string());
+}
+
+//A live JSON edit already persisted the change; the canvas only needs to rebuild its cached graph from the doc,
+//keeping the selection index (a content edit does not move the node). MarkDirty is per-frame private; this is its
+//public, selection-preserving cousin for an external editor.
+void PkgCanvas::refreshFromDocument() { m_s->CacheValid = false; }
+
 int  PkgCanvas::visibleNodes() const { return m_s->VisibleNodes; }
+int  PkgCanvas::visibleLinks() const { return m_s->VisibleLinks; }
 void PkgCanvas::editorMouse(float &X, float &Y) const { X = m_s->EditorMouse.x; Y = m_s->EditorMouse.y; }
 
 void PkgCanvas::surfaceBounds(float &MinX, float &MinY, float &MaxX, float &MaxY) const
@@ -1064,7 +1083,7 @@ void PkgCanvas::drawEnvelope(json &Node)
     const bool Interesting   = HasToggle || !When.empty() || HasExclude;
 
     if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (!ImGui::TreeNodeEx("node options", ImGuiTreeNodeFlags_SpanAvailWidth)) return;
+    if (!ImGui::TreeNodeEx("node options")) return;   // no SpanAvailWidth: it spans the WINDOW, overrunning the node
 
     const char *ToggleLabel = !HasToggle     ? "always on (not a toggle)"
                             : Toggle == "off" ? "toggle, starts OFF"
@@ -1116,6 +1135,109 @@ void PkgCanvas::drawPayload(json &Node, int Index)
         if (F.Key == std::string("BASE_TARGETS") && StrOf(Node, "FORM") != "delta") continue;
         drawField(Node, F, Index);
     }
+    if (Type == "CustomVar") drawCustomVarUI(Node);   // the UI facet: visibility + how it renders in the launch dialog
+}
+
+//The CustomVar UI facet — the thing whose PRESENCE makes the var user-facing (08-variables.md). The generic field
+//table is flat (KEY→one JSON key) and can't express a nested object that toggles in and out, so it is drawn here,
+//the way RegEdit's hive is. "Visible" is the presence of the UI object; unchecking it removes UI (→ hidden, the var
+//resolves from DEFAULT). This restores editor control over visibility, which was JSON-only after the refactor.
+void PkgCanvas::drawCustomVarUI(json &Node)
+{
+    ImGui::PushID("uifacet");
+    bool Visible = Node.contains("UI") && Node["UI"].is_object();
+    if (ImGui::Checkbox("Visible in launcher", &Visible))
+    {
+        PkgGraph::SetVarVisible(Node, Visible);
+        m_s->MarkDirty();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Shown as a control in the pre-launch dialog. Off = internal binding: it resolves from "
+                          "DEFAULT (or another var) and never appears.");
+    if (!Visible) { ImGui::PopID(); return; }
+
+    json &UI = Node["UI"];
+    auto TextRow = [&](const char *Key, const char *Label, const char *Hint) {
+        std::string V = UI.value(Key, std::string());
+        ImGui::TextUnformatted(Label); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
+        if (ImGui::InputTextWithHint((std::string("##") + Key).c_str(), Hint, &V)) { UI[Key] = V; m_s->MarkDirty(); }
+    };
+    TextRow("LABEL", "Label", "shown in the dialog");
+
+    static const char *Controls[] = {"text", "bool", "int", "float", "enum", "secret"};
+    std::string Ctl = UI.value("CONTROL", std::string("text"));
+    ImGui::TextUnformatted("Control"); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
+    if (ImGui::BeginCombo("##ctl", Ctl.c_str()))
+    {
+        for (const char *C : Controls) if (ImGui::Selectable(C, Ctl == C)) { UI["CONTROL"] = std::string(C); m_s->MarkDirty(); }
+        ImGui::EndCombo();
+    }
+    Ctl = UI.value("CONTROL", std::string("text"));
+
+    auto IntRow = [&](const char *Key, const char *Label) {
+        int V = UI.contains(Key) && UI[Key].is_number_integer() ? UI[Key].get<int>() : 0;
+        ImGui::TextUnformatted(Label); ImGui::SameLine(kLabelCol); ImGui::SetNextItemWidth(kFieldWidth);
+        if (ImGui::InputInt((std::string("##") + Key).c_str(), &V)) { UI[Key] = V; m_s->MarkDirty(); }
+    };
+    if (Ctl == "int" || Ctl == "float") { IntRow("MIN", "Min"); IntRow("MAX", "Max"); }
+    else if (Ctl == "text" || Ctl == "secret") TextRow("PATTERN", "Pattern", "regex the value must match (optional)");
+    if (Ctl == "secret")
+    {
+        //POOL: seed values one per line (a CD-key list). The runtime draws one at first launch; the user can
+        //overwrite. Stored as a string array.
+        std::string Text;
+        if (UI.contains("POOL") && UI["POOL"].is_array())
+            for (const auto &V : UI["POOL"]) if (V.is_string()) Text += V.get<std::string>() + "\n";
+        ImGui::TextUnformatted("Pool"); ImGui::SameLine(kLabelCol);
+        const int Lines = (int)std::count(Text.begin(), Text.end(), '\n') + 1;
+        if (ImGui::InputTextMultiline("##pool", &Text, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
+        {
+            nlohmann::ordered_json Arr = nlohmann::ordered_json::array();
+            std::stringstream SS(Text); std::string Line;
+            while (std::getline(SS, Line)) { if (!Line.empty() && Line.back() == '\r') Line.pop_back();
+                                             if (!Line.empty()) Arr.push_back(Line); }
+            UI["POOL"] = std::move(Arr); m_s->MarkDirty();
+        }
+    }
+    else if (Ctl == "enum")
+    {
+        //CHOICES editor: one "value" or "Label = value" per line ↔ the array of {LABEL,VALUE} (bare string = both).
+        std::string Text;
+        if (UI.contains("CHOICES") && UI["CHOICES"].is_array())
+            for (const auto &O : UI["CHOICES"])
+            {
+                if (O.is_string()) Text += O.get<std::string>() + "\n";
+                else if (O.is_object())
+                {
+                    const std::string L = O.value("LABEL", std::string()), Va = O.value("VALUE", std::string());
+                    Text += (L.empty() || L == Va) ? (Va + "\n") : (L + " = " + Va + "\n");
+                }
+            }
+        ImGui::TextUnformatted("Choices"); ImGui::SameLine(kLabelCol);
+        int Lines = (int)std::count(Text.begin(), Text.end(), '\n') + 1;
+        if (ImGui::InputTextMultiline("##choices", &Text, ImVec2(kFieldWidth, 16.0f * (float)std::min(Lines + 1, 6))))
+        {
+            json Arr = json::array();
+            std::stringstream SS(Text); std::string Line;
+            while (std::getline(SS, Line))
+            {
+                //trim
+                size_t A = Line.find_first_not_of(" \t"); if (A == std::string::npos) continue;
+                size_t B = Line.find_last_not_of(" \t\r"); Line = Line.substr(A, B - A + 1);
+                const size_t Eq = Line.find('=');
+                if (Eq == std::string::npos) Arr.push_back(Line);
+                else
+                {
+                    auto Trim = [](std::string X){ size_t a=X.find_first_not_of(" \t"); size_t b=X.find_last_not_of(" \t");
+                                                   return a==std::string::npos?std::string():X.substr(a,b-a+1); };
+                    Arr.push_back(json{{"LABEL", Trim(Line.substr(0, Eq))}, {"VALUE", Trim(Line.substr(Eq + 1))}});
+                }
+            }
+            UI["CHOICES"] = std::move(Arr); m_s->MarkDirty();
+        }
+    }
+    TextRow("GROUP", "Group", "collapsible section in the dialog");
+    ImGui::PopID();
 }
 
 // ---- node rendering -------------------------------------------------------
@@ -1246,6 +1368,7 @@ void PkgCanvas::seedNodePosition(int Index, const Graph &G)
 
 void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
 {
+    m_s->VisibleLinks = 0;
     //A link can only be submitted when BOTH of its endpoints were submitted this frame: imnodes resolves a
     //link through the attribute ids, and an id that was never begun this frame has no position to draw to.
     auto EndsDrawn = [&](const Link &L) {
@@ -1285,6 +1408,7 @@ void PkgCanvas::syncLinks(const Graph &G, const std::vector<char> &Drawn)
                                               : OutPin(kExternalBase + (int)(std::find(G.Externals.begin(),
                                                     G.Externals.end(), L.ExternalId) - G.Externals.begin()));
         ImNodes::Link(LinkId(L.ChildIndex, S), From, InPin(L.ChildIndex));
+        ++m_s->VisibleLinks;
     }
 }
 
@@ -1346,16 +1470,34 @@ void PkgCanvas::flushPositions(Graph &G, const std::vector<char> &Drawn)
 
 void PkgCanvas::drawToolbar()
 {
-    ImGui::TextUnformatted("add:");
-    for (const std::string &T : AllTypes())
+    // ＋ Add ▾ — one dropdown, types grouped (payload / declare / composition), each with its help tooltip.
+    // Replaces the old inline spew of a SmallButton per type, which ran off the toolbar.
+    if (ImGui::Button("+ Add")) ImGui::OpenPopup("##addnode");
+    if (ImGui::BeginPopup("##addnode"))
     {
-        ImGui::SameLine();
-        if (ImGui::SmallButton(T.c_str()))
+        struct Grp { const char *Title; std::vector<const char *> Types; };
+        static const std::vector<Grp> Groups = {
+            {"Payload",     {"Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "Persist", "CustomVar"}},
+            {"Declare",     {"DeclareExec", "DeclareLibraryItem"}},
+            {"Composition", {"Group"}},
+        };
+        std::string Pick;
+        for (const Grp &Gp : Groups)
+        {
+            ImGui::SeparatorText(Gp.Title);
+            for (const char *T : Gp.Types)
+            {
+                if (ImGui::Selectable(T)) Pick = T;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
+            }
+        }
+        if (!Pick.empty())
         {
             const ImVec2 Origin = ImNodes::EditorContextGetPanning();
-            m_s->Selected = addNode(T, 80.0f - Origin.x, 80.0f - Origin.y);
+            m_s->Selected = addNode(Pick, 80.0f - Origin.x, 80.0f - Origin.y);
+            ImGui::CloseCurrentPopup();
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
+        ImGui::EndPopup();
     }
     ImGui::SameLine();
     ImGui::TextDisabled("|");
@@ -1684,10 +1826,14 @@ void PkgCanvas::frame()
         const ImU32  Col   = ImNodes::GetStyle().Colors[ImNodesCol_GridLine];
         const ImVec2 Pan0  = ImNodes::EditorContextGetPanning();
         const float  X0    = CanvasOrigin.x + Pan0.x, Y0 = CanvasOrigin.y + Pan0.y;
-        //A hard cap on the line count: zoomed far out the mapped region is large, and a pitch of 32 world
-        //units across it is thousands of lines for no legibility at all.
-        const float SpanX = SubClipMax.x - SubClipMin.x, SpanY = SubClipMax.y - SubClipMin.y;
-        const float Step  = Pitch * std::max(1.0f, std::ceil(std::max(SpanX, SpanY) / (Pitch * 220.0f)));
+        //The grid is scaled by the view transform below (on-screen pitch = Step * ViewZoom), so a FIXED world
+        //Step mapped to sub-pixel spacing when zoomed out — which moiréd — and the old line-count cap made the
+        //density POP in coarse jumps. Instead pick the world Step by DOUBLING from the base pitch until its
+        //on-screen spacing clears a floor (~24 px): density stays in a stable ~24-48 px band at every zoom, and
+        //because each step is a power-of-two multiple of the base the coarser grid is a strict, aligned SUBSET
+        //of the finer one (lines drop out cleanly, nothing shifts).
+        float Step = Pitch;
+        while (Step * ViewZoom < 24.0f) Step *= 2.0f;
         for (float X = X0 + Step * std::ceil((SubClipMin.x - X0) / Step); X <= SubClipMax.x; X += Step)
             Surface->AddLine(ImVec2(X, SubClipMin.y), ImVec2(X, SubClipMax.y), Col);
         for (float Y = Y0 + Step * std::ceil((SubClipMin.y - Y0) / Step); Y <= SubClipMax.y; Y += Step)
@@ -1766,6 +1912,57 @@ void PkgCanvas::frame()
         ImNodes::EndOutputAttribute();
         ImNodes::EndNode();
         ImNodes::PopColorStyle();
+    }
+
+    //---- keep links visible independent of node culling (geometric, Minecraft-style frustum cull) --------------
+    //imnodes only draws a link between SUBMITTED pins, so a wire whose endpoint node was culled vanished — even
+    //when the wire itself crosses the viewport (two far-apart nodes both off-screen, the link passing through the
+    //middle). For any link whose SEGMENT crosses the viewport but whose endpoint is culled, submit a minimal
+    //off-screen proxy so the pin exists and imnodes draws the wire (correctly transformed — a hand-drawn line is
+    //not). Cost: one cheap segment/viewport test per link (O(links), the order node culling already is); a proxy
+    //is submitted only for a culled endpoint of a CROSSING link, never for one whose wire misses the view.
+    {
+        const float VX0 = -MarginX, VY0 = -MarginY, VX1 = Canvas.x + MarginX, VY1 = Canvas.y + MarginY;
+        auto Center = [&](int I) {
+            const ImVec2 D = NodeSize(m_s->NodeDims, G.Nodes[I]);
+            return ImVec2((G.Nodes[I].X + D.x * 0.5f + Pan.x) * m_s->Zoom,
+                          (G.Nodes[I].Y + D.y * 0.5f + Pan.y) * m_s->Zoom);
+        };
+        //Liang-Barsky: does the segment A-B touch the viewport rect at all?
+        auto SegHitsView = [&](ImVec2 A, ImVec2 B) {
+            float t0 = 0.0f, t1 = 1.0f; const float dx = B.x - A.x, dy = B.y - A.y;
+            const float p[4] = {-dx, dx, -dy, dy};
+            const float q[4] = {A.x - VX0, VX1 - A.x, A.y - VY0, VY1 - A.y};
+            for (int i = 0; i < 4; ++i) {
+                if (p[i] == 0.0f) { if (q[i] < 0.0f) return false; }
+                else { const float r = q[i] / p[i];
+                       if (p[i] < 0.0f) { if (r > t1) return false; if (r > t0) t0 = r; }
+                       else             { if (r < t0) return false; if (r < t1) t1 = r; } }
+            }
+            return true;
+        };
+        auto SubmitProxy = [&](int I) {
+            if (I < 0 || I >= (int)Drawn.size() || Drawn[(size_t)I]) return;
+            //Sized with the layout estimate so the readback records a sensible dimension (an empty node would
+            //stamp a tiny size into NodeDims and shrink the node in the minimap); it is off-screen so unseen.
+            ImNodes::SetNodeGridSpacePos(I, ImVec2(G.Nodes[I].X, G.Nodes[I].Y));
+            ImNodes::BeginNode(I);
+            ImNodes::BeginInputAttribute(InPin(I)); ImNodes::EndInputAttribute();
+            ImGui::Dummy(NodeSize(m_s->NodeDims, G.Nodes[I]));
+            ImNodes::BeginOutputAttribute(OutPin(I)); ImNodes::EndOutputAttribute();
+            ImNodes::EndNode();
+            Drawn[(size_t)I] = 1;
+        };
+        for (const Link &L : G.Links) {
+            if (L.ChildIndex < 0 || L.ChildIndex >= (int)G.Nodes.size()) continue;
+            const bool ChildDrawn  = Drawn[(size_t)L.ChildIndex];
+            const bool ParentExt   = L.ParentIndex < 0;                       // external chip — always submitted
+            const bool ParentDrawn = ParentExt || (L.ParentIndex < (int)Drawn.size() && Drawn[(size_t)L.ParentIndex]);
+            if ((ChildDrawn && ParentDrawn) || ParentExt) continue;          // already drawable / nothing to proxy
+            if (!SegHitsView(Center(L.ChildIndex), Center(L.ParentIndex))) continue;   // wire misses the view → skip
+            SubmitProxy(L.ChildIndex);
+            SubmitProxy(L.ParentIndex);
+        }
     }
 
     syncLinks(G, Drawn);

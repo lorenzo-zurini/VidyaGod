@@ -143,6 +143,11 @@ struct Field
 //The rows to render for a node of this TYPE, in order. Empty for "Group" (pure composition).
 const std::vector<Field> &FieldsFor(const std::string &Type);
 
+//Toggle a CustomVar's launch-dialog visibility, which the format expresses as the PRESENCE of the UI facet
+//(08-variables.md): visible adds a minimal UI object (keeping any existing one), hidden removes it so the var
+//resolves from DEFAULT and never renders. Pure — the editor's Visible checkbox and tests both call it.
+void SetVarVisible(nlohmann::ordered_json &node, bool visible);
+
 //How tall this node will be drawn, in canvas units. Derived from the SAME declared field table the canvas
 //renders from, so it tracks a schema change instead of drifting away from one, and from the payload's own
 //sizes (registry rows, patch entries, list lines) because that is what actually makes a node tall.

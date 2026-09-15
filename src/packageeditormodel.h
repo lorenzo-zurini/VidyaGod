@@ -61,6 +61,10 @@ public:
     //Replace one node's whole JSON (preserving its __FILE__ tag), persist, and request a structural rebuild. Used
     //by the raw-JSON tab's Save Node.
     void replaceNodeJson(int nodeIndex, nlohmann::ordered_json node);
+    //Live content edit from the JSON panel: replace the node, persist, and signal a CONTENT change — NOT a
+    //structural documentReloaded (which rebuilds the shell and would destroy the JSON editor mid-keystroke). The
+    //canvas repaints from the doc; only the graph cache needs poking.
+    void updateNodeLive(int nodeIndex, nlohmann::ordered_json node);
     //Ask the views to rebuild (emit documentReloaded) — used by a widget after a structural edit it made directly
     //on doc() (node move/remove, layer add/remove, role change, …).
     void requestReload() { emit documentReloaded(); }
@@ -90,6 +94,7 @@ public:
 
 signals:
     void documentReloaded();                       // structural change — views rebuild
+    void nodeContentChanged();                     // a node's CONTENT changed (live JSON edit); repaint, no rebuild
     void validationChanged();                      // ValErrors/ValWarnings updated
     void savedToDisk(const QString & packagePath); // node files written (relayed to PackageEditor::packageSaved)
 
