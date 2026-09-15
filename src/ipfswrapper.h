@@ -86,7 +86,15 @@ private:
 };
 
 // One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
-struct FetchTarget { std::string Cid; std::string LocalPath; bool Optional = false; };
+struct FetchTarget {
+    std::string Cid;
+    std::string LocalPath;
+    bool        Optional  = false;
+    int         TimeoutMs = 0;      // 0 = unbounded (retry forever). A bounded target (covers: one attempt per
+                                    // sweep) frees its DownloadSlot at the deadline instead of holding one of the
+                                    // MaxConcurrentDownloads slots forever on content nobody seeds. If the SAME CID
+                                    // is also requested unbounded (a game layer), unbounded wins.
+};
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once
 // across the whole batch (the dispatcher acquires a slot before spawning each worker; a freed slot starts the next).
@@ -220,11 +228,12 @@ bool Unpin(const std::string &Cid);
 // FetchSync (which may run on a worker thread) reports its lifecycle through an optional callback —
 // mirrors the Log() callback hook. IpfsManager installs one to marshal events onto the GUI thread.
 struct TransferEvent {
-    enum Kind { Started, Progress, Finished, Finalizing } Kind;   // Finalizing: bytes down, re-referencing ("pinning")
+    enum Kind { Started, Progress, Finished, Finalizing, Phase } Kind;   // Finalizing: bytes down, re-referencing ("pinning")
     std::string Cid;
     double      Percent = -1.0;   // 0..100 for Progress; -1 if unknown
     bool        Ok = false;       // Finished only
     std::string Error;            // Finished+!Ok: the failure reason (e.g. the ipfs error: "no space left on device")
+    std::string Text;             // Phase only: what the transfer is DOING right now, shown verbatim on its row
 };
 using TransferCallback = std::function<void(const TransferEvent &)>;
 void SetTransferCallback(TransferCallback Callback);
@@ -346,6 +355,7 @@ signals:
     void transferProgress(QString cid, double percent);
     void transferFinalizing(QString cid, double percent);         // all bytes down; "pinning" (re-reference) step; percent 0..100, -1 if indeterminate
     void transferFinished(QString cid, bool ok, QString error);   // error is the reason when !ok (else empty)
+    void transferPhase(QString cid, QString text);                // the transfer's own narration ("attempt 3 — connecting to providers")
     void queueEnqueued(QString cid);                              // the download queue queued a CID (pre-show it)
     void queueRemoved(QString cid);                              // a still-queued CID was cancelled before starting
 

@@ -1,9 +1,18 @@
 #include "covercache.h"
+#include "downloadqueue.h"
 #include "ipfswrapper.h"
 
-#include <QFileInfo>
 #include <QDir>
-#include <thread>
+#include <QFileInfo>
+#include <QTimer>
+
+namespace {
+constexpr int SweepPeriodMs   = 60'000;   // the steady cadence: a minuscule stat-sweep of recorded misses
+constexpr int SweepDebounceMs = 2'000;    // first miss after quiet → sweep soon, so a fresh catalog isn't blank for a minute
+constexpr int CoverAttemptMs  = 30'000;   // ONE bounded attempt per sweep. Unbounded would park a cover nobody seeds
+                                          // on a DownloadSlot forever (3 dead covers = every game download wedged);
+                                          // the sweep itself is the retry-forever loop, one attempt per lap.
+}
 
 CoverCache * CoverCache::instance()
 {
@@ -11,7 +20,14 @@ CoverCache * CoverCache::instance()
     return Inst;
 }
 
-CoverCache::CoverCache(QObject * parent) : QObject(parent), OnlineProbe([]{ return IpfsWrapper::DaemonRunning(); }) {}
+CoverCache::CoverCache(QObject * parent) : QObject(parent), OnlineProbe([]{ return IpfsWrapper::DaemonRunning(); })
+{
+    // Completion feed: the SAME transfer events every download emits (queued through IpfsManager onto this thread).
+    connect(IpfsManager::instance(), &IpfsManager::transferFinished, this, &CoverCache::onTransferFinished);
+    auto * T = new QTimer(this);
+    connect(T, &QTimer::timeout, this, &CoverCache::sweepNow);
+    T->start(SweepPeriodMs);
+}
 
 void CoverCache::setOnlineProbe(std::function<bool()> Probe) { OnlineProbe = std::move(Probe); }
 
@@ -35,60 +51,66 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
     Locate(Cover, File, Cid);
     if (File.isEmpty()) return QString();
 
-    // Local-first: the cover lives next to the manifest at PackageDir/<PATH> (authoring, or once hydrated).
-    const QString Local = QDir::cleanPath(PackageDir + "/" + File);
-    if (QFileInfo::exists(Local)) return Local;
-
-    // Not here yet — fetch it there in the background; coverReady(cid) fires when it lands.
-    if (!Cid.isEmpty()) request(Cid, Local);
+    QString Local = QDir::cleanPath(PackageDir + "/" + File);
+    if (QFileInfo::exists(Local))
+    {
+        MissDest.remove(Local);            // landed (by us or anyone) — stop tracking
+        return Local;
+    }
+    // Not on disk → the tile paints BLANK. The only side effect here is remembering the miss for the sweep.
+    if (!Cid.isEmpty() && !MissDest.contains(Local))
+    {
+        MissDest.insert(Local, Cid);
+        if (!SweepSoon)
+        {
+            SweepSoon = true;
+            QTimer::singleShot(SweepDebounceMs, this, &CoverCache::sweepNow);
+        }
+    }
     return QString();
 }
 
-bool CoverCache::ShouldNegativeCache(bool FetchOk, bool NodeOnline)
+void CoverCache::sweepNow()
 {
-    // Remember ONLY a give-up that happened while ONLINE. A failure while offline/pre-online says nothing about
-    // whether the content is obtainable — it will be retried once the network is up (onNetworkOnline re-nudges).
-    return !FetchOk && NodeOnline;
+    SweepSoon = false;
+    if (MissDest.isEmpty() || !OnlineProbe()) return;   // offline: an enqueue would fail terminally, not wait
+
+    std::vector<IpfsWrapper::FetchTarget> Batch;
+    for (auto It = MissDest.begin(); It != MissDest.end(); )
+    {
+        if (QFileInfo::exists(It.key())) { FailedOnce.remove(It.value()); It = MissDest.erase(It); continue; }   // landed since recorded
+        if (!QFileInfo(It.key()).dir().exists())                                  // package deleted → the miss is a
+        { FailedOnce.remove(It.value()); It = MissDest.erase(It); continue; }     // ghost; fetching would resurrect the dir
+        Batch.push_back({It.value().toStdString(), It.key().toStdString(), /*Optional=*/true, CoverAttemptMs});
+        ++It;
+    }
+    if (Batch.empty()) return;
+    // ONE batch through the one queue all content uses: deduped by CID against in-flight jobs (a re-sweep of a
+    // still-downloading cover just joins it), a previously-failed CID is requeued — that IS the retry policy.
+    (void)IpfsWrapper::EnqueueBatch(Batch);
+    // Front of the queue for FIRST-time misses only (small files the user is staring at). A cover that already
+    // failed once keeps normal priority on its re-sweeps, so dead art can never keep jumping ahead of games.
+    for (const auto & T : Batch)
+    {
+        const QString Cid = QString::fromStdString(T.Cid);
+        if (!FailedOnce.contains(Cid)) IpfsWrapper::PrioritizeDownload(T.Cid);
+    }
 }
 
-void CoverCache::recordFetchResult(const QString & DestPath, bool FetchOk, bool NodeOnline)
+void CoverCache::onTransferFinished(const QString & Cid, bool Ok, const QString & /*Error*/)
 {
-    if (ShouldNegativeCache(FetchOk, NodeOnline)) Failed.insert(DestPath);
+    // Ours? (The feed carries every download's completions.) On success the file is on disk — surfaces re-resolve
+    // and the miss entries clear there; on failure the miss stays recorded and rides the next sweep.
+    bool Ours = false;
+    for (const QString & C : MissDest) if (C == Cid) { Ours = true; break; }
+    if (!Ours) return;
+    if (Ok) { FailedOnce.remove(Cid); emit coverReady(Cid); }
+    else FailedOnce.insert(Cid);       // demote its re-sweeps to normal priority (see sweepNow) — NOT a negative cache
+
 }
 
 void CoverCache::onNetworkOnline()
 {
-    // Networking just came up. Any give-up recorded while it was down (or any real give-up worth a fresh try now
-    // that providers are reachable) should not keep the tile blank — clear the negative cache and ask every cover
-    // surface to re-resolve (the coverReady handlers ignore the cid and kick a debounced repaint).
-    if (Failed.isEmpty()) { emit coverReady(QString()); return; }
-    Failed.clear();
-    emit coverReady(QString());
-}
-
-void CoverCache::request(const QString & Cid, const QString & DestPath)
-{
-    if (Cid.isEmpty() || DestPath.isEmpty() || InFlight.contains(DestPath) || Failed.contains(DestPath)) return;
-    // A cover can only be fetched over the network. While the node is offline/pre-online the fetch would fail
-    // instantly (and, before this guard, poison the negative cache); skip it — onNetworkOnline re-nudges a
-    // re-resolve once networking is up, which starts the fetch then.
-    if (!OnlineProbe()) return;
-    InFlight.insert(DestPath);
-    const std::string C = Cid.toStdString(), D = DestPath.toStdString();
-    std::thread([this, C, D, Cid, DestPath]{
-        std::string Err;
-        // BOUNDED WAIT (30s): a cover is optional cosmetic content on a detached thread. Waiting forever would
-        // leak one thread per unfetchable cover (stale/unpublished art). Give up after 30s.
-        const bool Ok = !IpfsWrapper::FetchToPath(C, D, &Err, /*TimeoutMs=*/30000).empty();
-        QMetaObject::invokeMethod(this, [this, Cid, DestPath, Ok]{
-            InFlight.remove(DestPath);
-            // NEGATIVE-CACHE a give-up so a repaint does not immediately re-request it — that would spawn a fresh
-            // detached thread every 30s forever for a cover nobody seeds — but ONLY when the node was ONLINE at the
-            // give-up. A failure while the network was down (or dropped mid-fetch) is not a verdict on the content,
-            // so it is not cached and is retried once online. On success the tile paints; on an online give-up it
-            // shows no art but stops churning. Retried on the online transition (onNetworkOnline) or a catalog reload.
-            recordFetchResult(DestPath, Ok, OnlineProbe());
-            emit coverReady(Cid);                       // GUI thread: callers re-resolve + repaint
-        }, Qt::QueuedConnection);
-    }).detach();
+    sweepNow();                    // the misses that piled up while offline go into the queue now
+    emit coverReady(QString());    // nudge every surface to re-resolve (handlers ignore the cid, repaint debounced)
 }

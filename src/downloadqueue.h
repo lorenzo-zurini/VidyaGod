@@ -40,6 +40,13 @@ void CancelDownload(const std::string &Cid);
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);
 
+// Test observability: a job's effective fetch bound (ms; 0 = unbounded), or -1 if the CID has no job. The merge
+// rule under test: unbounded is STICKY — a cover's bound must never cut a game layer's fetch short.
+int DebugJobTimeoutMs(const std::string & Cid);
+
+// Test observability: whether a CID's job carries a bumped (non-default) priority.
+bool DebugJobPrioritized(const std::string & Cid);
+
 // Queued-state sink for the UI (installed by IpfsManager): fired with queued=true when a NEW job enters the queue,
 // queued=false when a still-queued job is dropped (cancelled). Active/progress/done flow through the transfer
 // callback instead. Fired off the enqueue/cancel thread — the installer marshals to the GUI thread.

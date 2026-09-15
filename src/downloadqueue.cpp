@@ -28,8 +28,20 @@ struct Job {
     enum State : std::uint8_t { Queued, Active, Done, Failed } State = Queued;
     int                      Priority = 0;       // higher dispatches sooner; Prioritize bumps it above all queued
     long long                Seq = 0;            // insertion order — tiebreak within a priority (FIFO)
+    int                      TimeoutMs = 0;      // 0 = unbounded; >0 = one bounded attempt (covers). If ANY requester
+                                                 // is unbounded the job is unbounded — a game layer must never be cut
+                                                 // short because a cover also wants the CID. A bounded give-up frees
+                                                 // the DownloadSlot; the requester's own cadence (the cover sweep)
+                                                 // is the retry loop.
     std::string              Error;
 };
+
+// Merge a new requester's bound into a job: unbounded (0) is sticky; otherwise keep the larger bound.
+void MergeTimeout(Job &J, int TimeoutMs)
+{
+    if (J.TimeoutMs == 0 || TimeoutMs == 0) J.TimeoutMs = 0;
+    else J.TimeoutMs = std::max(J.TimeoutMs, TimeoutMs);
+}
 
 struct QState {
     std::mutex                        Mu;
@@ -79,17 +91,22 @@ std::string FirstExisting(const Job &J)
 }
 
 // Cross-dest materialize: put the fetched file From at To without re-fetching. Hard-link when possible (same inode →
-// seeded once, survives either name being deleted), else copy across filesystems. Best-effort; logged on failure.
-void Materialize(const std::string &From, const std::string &To)
+// seeded once, survives either name being deleted), else copy across filesystems. A failure (unwritable dest,
+// ENOSPC) is the JOB's failure: a dedup'd CID promised bytes at EVERY dest, and "logged but Done" made
+// --download-all print "full mirror complete" over a hole.
+[[nodiscard]] bool Materialize(const std::string &From, const std::string &To, std::string *Error = nullptr)
 {
     std::error_code Ec;
     fs::create_directories(fs::path(To).parent_path(), Ec);
     Ec.clear();
     fs::create_hard_link(From, To, Ec);
-    if (!Ec) return;
+    if (!Ec) return true;
     std::error_code Ec2;
     fs::copy_file(From, To, fs::copy_options::overwrite_existing, Ec2);
-    if (Ec2) LogWarn("DownloadQueue::Materialize", "could not place " + To + " from " + From + " (" + Ec2.message() + ")");
+    if (!Ec2) return true;
+    LogWarn("DownloadQueue::Materialize", "could not place " + To + " from " + From + " (" + Ec2.message() + ")");
+    if (Error) *Error = "could not place " + To + " (" + Ec2.message() + ")";
+    return false;
 }
 
 // Pick the highest-priority queued job (FIFO within a priority). Returns nullptr if none is queued. Caller holds Mu.
@@ -112,7 +129,7 @@ bool AnyQueued()
 
 // Perform one job's fetch (off the dispatcher, holding a DownloadSlot). Fetches the CID to the first missing dest,
 // then materializes into the others, and records the terminal state.
-void RunJob(const std::string &Cid, std::vector<std::string> Dests)
+void RunJob(const std::string &Cid, std::vector<std::string> Dests, int TimeoutMs)
 {
     // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
     // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
@@ -121,10 +138,10 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests)
     for (const std::string &D : Dests) if (!PathExists(D) || PathExists(D + ".part")) { Primary = D; break; }
 
     std::string Err;
-    const bool Ok = !FetchToPath(Cid, Primary, &Err).empty();
+    bool Ok = !FetchToPath(Cid, Primary, &Err, TimeoutMs).empty();
     if (Ok)
         for (const std::string &D : Dests)
-            if (D != Primary && !PathExists(D)) Materialize(Primary, D);
+            if (D != Primary && !PathExists(D) && !Materialize(Primary, D, &Err)) Ok = false;   // every dest, or Failed
 
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
@@ -151,12 +168,13 @@ void DispatcherLoop()
         if (!J) { Lk.unlock(); continue; }   // nothing to do now — release the slot (RAII) and re-wait
         J->State = Job::Active;
         const std::string Cid = J->Cid;
+        const int TimeoutMs = J->TimeoutMs;
         std::vector<std::string> Dests = J->Dests;
         Lk.unlock();
 
         // Hand the slot to a detached worker; loop back to fill the next slot (up to MaxConcurrentDownloads workers).
-        std::thread([Cid, Dests = std::move(Dests), Slot = std::move(Slot)]() mutable {
-            RunJob(Cid, Dests);
+        std::thread([Cid, Dests = std::move(Dests), TimeoutMs, Slot = std::move(Slot)]() mutable {
+            RunJob(Cid, Dests, TimeoutMs);
         }).detach();
     }
 }
@@ -175,6 +193,9 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
     BatchHandle Handle;
     bool Woke = false;
     std::vector<std::string> NewlyQueued;
+    struct Pending { std::string Cid, Src, Dest; };
+    std::vector<Pending> Late;   // Done-join materializes, performed OUTSIDE the lock (a copy can be a large file,
+                                 // and EnqueueBatch runs on the GUI thread via the cover sweep)
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
         for (const FetchTarget &T : Targets) {
@@ -183,6 +204,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             if (It != Q().Jobs.end()) {
                 Job &J = It->second;
                 J.Optional = J.Optional && T.Optional;   // required if any requester is required
+                MergeTimeout(J, T.TimeoutMs);            // unbounded is sticky (a game layer outranks a cover's bound)
                 switch (J.State) {
                     case Job::Queued:
                     case Job::Active:
@@ -191,12 +213,14 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                     case Job::Done: {
                         if (PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
-                        if (!Src.empty()) { Materialize(Src, T.LocalPath); AddDest(J, T.LocalPath); }
+                        if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath}); }
                         else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); }
                         break;
                     }
-                    case Job::Failed:                      // retry a previously-failed CID
-                        J.State = Job::Queued; J.Error.clear(); J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
+                    case Job::Failed:                      // retry a previously-failed CID — as a FRESH queue entry:
+                        // Priority resets, else a once-prioritized dead CID (a cover) keeps outranking every queued
+                        // job on every retry forever (the requester re-bumps if it still wants the front).
+                        J.State = Job::Queued; J.Error.clear(); J.Priority = 0; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid);
                         break;
                 }
                 continue;
@@ -206,15 +230,42 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Cid = T.Cid;
             NewJob.Dests = { T.LocalPath };
             NewJob.Optional = T.Optional;
+            NewJob.TimeoutMs = T.TimeoutMs;
             if (PathExists(T.LocalPath)) { NewJob.State = Job::Done; }
             else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));
         }
         EnsureDispatcher();
     }
+    // Materialize the Done-joins now, lock-free; a failure marks the job Failed so batches SEE the hole.
+    // (KNOWN, accepted: the per-CID Failed state is visible to EVERY batch waiting on that CID, so another batch's
+    // unwritable dest can fail a batch whose own dest is fine — per-dest completion state is the real fix, tracked.)
+    for (const Pending &P : Late) {
+        std::string MErr;
+        if (!Materialize(P.Src, P.Dest, &MErr)) {
+            std::lock_guard<std::mutex> Lk(Q().Mu);
+            auto It = Q().Jobs.find(P.Cid);
+            if (It != Q().Jobs.end()) { It->second.State = Job::Failed; It->second.Error = MErr; }
+        }
+    }
+    if (!Late.empty()) Q().Cv.notify_all();   // WaitBatch may be blocked on a job we just finalized/failed
     if (Woke) Q().Cv.notify_all();
     notifyQueued(NewlyQueued, true);   // outside the lock: surface the new queued rows in the UI
     return Handle;
+}
+
+int DebugJobTimeoutMs(const std::string & Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    return It == Q().Jobs.end() ? -1 : It->second.TimeoutMs;
+}
+
+bool DebugJobPrioritized(const std::string & Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    return It != Q().Jobs.end() && It->second.Priority > 0;
 }
 
 bool WaitBatch(const BatchHandle &Handle, std::string *Error)

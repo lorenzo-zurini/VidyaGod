@@ -120,6 +120,14 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         LogOut("download-all", "materialized " + std::to_string(Present) + "/" + std::to_string(Targets.size())
                + " target(s), " + std::to_string(Bytes) + " bytes in " + std::to_string(Secs) + "s");
         if (!Ok) { LogErr("download-all", "batch reported a failure: " + Err); return 1; }
+        // A mirror is EVERY target on disk. The batch can report success while a dest is missing (an Optional
+        // target's fetch gave up) — the tally is the verdict, not the batch flag.
+        if (Present != (int)Targets.size())
+        {
+            LogErr("download-all", "NOT a full mirror: " + std::to_string((int)Targets.size() - Present)
+                   + " of " + std::to_string(Targets.size()) + " target(s) missing on disk");
+            return 1;
+        }
         LogSucc("download-all", "full mirror complete: " + std::to_string(Present) + " file(s), "
                 + std::to_string(Bytes) + " bytes");
         return 0;

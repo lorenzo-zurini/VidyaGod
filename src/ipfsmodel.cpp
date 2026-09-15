@@ -120,7 +120,7 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
     connect(mgr, &IpfsManager::transferStarted,    this, [this](const QString & cid){
         ensureLabels(cid);
         CidState & s = Cids[cid];
-        s.phase = CidState::Downloading; s.pct = -1.0; s.speedBps = -1.0; s.error.clear();
+        s.phase = CidState::Downloading; s.pct = -1.0; s.speedBps = -1.0; s.error.clear(); s.activity.clear();
         const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
         Speed.insert(cid, qMakePair((qlonglong)0, Now));
         LastProgress.insert(cid, Now);
@@ -157,11 +157,16 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         }
         emit cidChanged(cid);
     });
+    connect(mgr, &IpfsManager::transferPhase, this, [this](const QString & cid, const QString & text){
+        if (!Cids.contains(cid)) return;
+        Cids[cid].activity = text;                 // narration verbatim; the view prefers it over generic labels
+        emit cidChanged(cid);
+    });
     connect(mgr, &IpfsManager::transferFinalizing, this, [this](const QString & cid, double pct){
         Speed.remove(cid); LastProgress.remove(cid);
         if (!Cids.contains(cid)) return;
         CidState & s = Cids[cid];
-        s.phase = CidState::Pinning; s.pct = pct; s.speedBps = -1.0;
+        s.phase = CidState::Pinning; s.pct = pct; s.speedBps = -1.0; s.activity.clear();
         emit cidChanged(cid);
     });
     connect(mgr, &IpfsManager::transferFinished,   this, [this](const QString & cid, bool ok, const QString & error){
@@ -169,6 +174,7 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         if (Cids.contains(cid)) {
             CidState & s = Cids[cid];
             s.speedBps = -1.0;
+            s.activity.clear();
             if (ok) { s.phase = CidState::Seeded; s.pct = 100.0; s.error.clear(); emit cidChanged(cid); }
             else {
                 const QString Tail = error.section('\n', -1).trimmed();

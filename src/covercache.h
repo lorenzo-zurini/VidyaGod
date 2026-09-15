@@ -3,55 +3,61 @@
 
 #include <QObject>
 #include <QString>
+#include <QHash>
 #include <QSet>
 #include <functional>
 
 #include "nlohmann/json.hpp"
 
 // ---------------------------------------------------------------------------
-// CoverCache — resolves a package's cover art to a loadable image path, LOCAL-FIRST with lazy IPFS fallback.
+// CoverCache — resolves a package's cover art to a loadable image path. PAINT NEVER FETCHES.
 //
 // METADATA.COVER is dual-form, exactly like a content layer: a bare filename (authoring) or an object
-// { "PATH": "<filename>", "SOURCE": { "TYPE": "ipfs", "CID": "<cid>" } } (published). resolve():
-//   1. returns PackageDir/PATH if that file exists (offline, zero-fetch);
-//   2. else, if a CID is present and already cached, returns its cache path;
-//   3. else returns "" and kicks an async fetch (deduped) — emitting coverReady(cid) when it lands so the
-//      caller can re-resolve and repaint.
+// { "PATH": "<filename>", "SOURCE": { "TYPE": "ipfs", "CID": "<cid>" } } (published).
 //
-// A single shared instance (instance()) is used by every cover surface (Library/Store cards, prelaunch, editor).
-// Reuses IpfsWrapper's fetch/cache/seed machinery; adds no new IPFS plumbing.
+// resolve() is a pure disk check: PackageDir/PATH if it exists, else "" (blank tile) — its only side effect is
+// RECORDING the miss (cid → dest), never fetching. A periodic SWEEP (~1/min, plus a short debounce after the
+// first new miss and one on the online transition) batches every recorded miss into the ONE DownloadQueue all
+// content uses — same path, same retry behavior, deduped by CID against in-flight jobs, prioritized (covers are
+// small and the user is looking at the blank tile right now). When a cover's transfer finishes, coverReady(cid)
+// fires so surfaces re-resolve and repaint; a failed cover simply stays in the miss set and rides the next sweep.
+//
+// This replaced a detached thread per cover with a 30 s deadline and a negative cache — all three were artifacts
+// of not using the queue, and all three are gone.
 // ---------------------------------------------------------------------------
+class IpfsManager;
+
 class CoverCache : public QObject
 {
     Q_OBJECT
 public:
     static CoverCache * instance();
 
-    // Returns a loadable image path for Cover (a JSON COVER value: string or {PATH,SOURCE}), or "" if not yet
-    // available — in which case an async fetch is started (when a CID is known) and coverReady(cid) will fire.
+    // Pure lookup: a loadable image path for Cover (string or {PATH,SOURCE}), or "" (paint it blank). A miss with
+    // a known CID is recorded for the sweep; NOTHING is fetched here.
     QString resolve(const nlohmann::ordered_json &Cover, const QString &PackageDir);
 
     // Extracts the (filename, cid) locators from a COVER value. Either may be empty.
     static void Locate(const nlohmann::ordered_json &Cover, QString &File, QString &Cid);
 
-    // A cover fetch give-up is remembered ONLY when it happened while the node was ONLINE. An offline / pre-online
-    // failure is not evidence the content is unavailable — there was simply no network to fetch over — and caching
-    // it would blank the tile until the app restarts even after networking comes up (the pass-4 poisoning bug).
-    static bool ShouldNegativeCache(bool FetchOk, bool NodeOnline);
+    // Enqueue every still-missing recorded cover as ONE batch (no-op while offline / nothing missing). Runs on the
+    // periodic timer; public so the online transition and tests can drive it directly.
+    void sweepNow();
 
-    // Record a fetch outcome for DestPath (negative-caches per ShouldNegativeCache). Public so the decision +
-    // conservation are unit-testable without a live node.
-    void recordFetchResult(const QString & DestPath, bool FetchOk, bool NodeOnline);
-
-    // Called on the node's offline→online transition: a cover that could not be fetched while the network was down
-    // deserves a fresh attempt now that it is up. Clears the negative cache and nudges every surface to re-resolve.
+    // Called on the node's offline→online transition: sweep the misses that piled up while there was no network,
+    // and nudge every surface to re-resolve.
     void onNetworkOnline();
 
-    // Test observability: how many dest paths are currently negative-cached.
-    int negativeCacheCount() const { return Failed.size(); }
+    // Transfer completion from IpfsManager (any CID; non-cover CIDs are ignored). Public slot so tests can drive
+    // it without a live node. A success emits coverReady(cid) and drops the miss; a failure keeps the miss for the
+    // next sweep — retry-forever, batched, no negative cache.
+    void onTransferFinished(const QString & Cid, bool Ok, const QString & Error);
 
-    // Test seam: override the "is the node online?" probe (defaults to IpfsWrapper::DaemonRunning). Lets tests
-    // drive request()/recordFetchResult through the offline→online sequence without a live node.
+    // Test observability: how many (cid,dest) misses are currently recorded.
+    int missCount() const { return MissDest.size(); }
+
+    // Test seam: override the "is the node online?" probe (defaults to IpfsWrapper::DaemonRunning) — the sweep
+    // skips while offline (a pre-online enqueue would fail terminally instead of waiting).
     void setOnlineProbe(std::function<bool()> Probe);
 
 signals:
@@ -59,12 +65,11 @@ signals:
 
 private:
     explicit CoverCache(QObject * parent = nullptr);
-    void request(const QString & Cid, const QString & DestPath);   // async fetch the cover to DestPath (deduped)
-    std::function<bool()> OnlineProbe;                              // "is the node online?" (injectable for tests)
-    QSet<QString> InFlight;                                          // dest paths currently being fetched (dedup)
-    QSet<QString> Failed;                                            // dest paths whose bounded fetch gave up — do
-                                                                     // NOT re-request (else one detached thread per
-                                                                     // repaint every 30s for stale/unpublished art)
+    std::function<bool()> OnlineProbe;      // "is the node online?" (injectable for tests)
+    QHash<QString, QString> MissDest;       // dest path → cid, every cover seen missing and not yet landed
+    QSet<QString> FailedOnce;               // cids whose bounded attempt failed at least once → re-sweeps keep
+                                            // normal queue priority (dead art must not keep outranking games)
+    bool SweepSoon = false;                 // a debounced near-term sweep is already scheduled
 };
 
 #endif // COVERCACHE_H

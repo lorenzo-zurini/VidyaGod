@@ -57,19 +57,24 @@ extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, in
     E.Kind = kind == 0 ? TransferEvent::Started
            : kind == 1 ? TransferEvent::Progress
            : kind == 3 ? TransferEvent::Finalizing
+           : kind == 4 ? TransferEvent::Phase
                        : TransferEvent::Finished;
     E.Cid     = cid ? cid : "";
     E.Percent = percent;
     E.Ok      = ok != 0;
-    E.Error   = err ? err : "";
+    if (E.Kind == TransferEvent::Phase) E.Text = err ? err : "";   // the phase text rides the err parameter
+    else                                E.Error = err ? err : "";
     if (g_FetchDbg) {
         const char *K = E.Kind == TransferEvent::Started    ? "Started"
                       : E.Kind == TransferEvent::Progress    ? "Progress"
                       : E.Kind == TransferEvent::Finalizing  ? "Finalizing"
+                      : E.Kind == TransferEvent::Phase       ? "Phase"
                                                              : "Finished";
         char Buf[256];
-        std::snprintf(Buf, sizeof Buf, "TransferEvent %s cid=%s pct=%.1f ok=%d err=%s",
-                      K, E.Cid.c_str(), E.Percent, E.Ok ? 1 : 0, E.Error.c_str());
+        std::snprintf(Buf, sizeof Buf, "TransferEvent %s cid=%s pct=%.1f ok=%d %s=%s",
+                      K, E.Cid.c_str(), E.Percent, E.Ok ? 1 : 0,
+                      E.Kind == TransferEvent::Phase ? "text" : "err",
+                      E.Kind == TransferEvent::Phase ? E.Text.c_str() : E.Error.c_str());
         FetchDbg(Buf);
     }
     Emit(E);
@@ -706,6 +711,23 @@ bool OverlayActive() { return VgOverlayActive() != 0; }
 // ---------------------------------------------------------------------------
 // IpfsManager
 // ---------------------------------------------------------------------------
+namespace {
+// Per-CID last narration line, for dedup of consecutive identical phase events. Entries live ONLY while a transfer
+// is in flight (forgotten on Started and Finished), so the map is bounded and a retry is never deduped against the
+// previous run. Touched from the node's fetch threads.
+std::mutex g_PhaseMu;
+std::unordered_map<std::string, std::string> g_LastPhase;
+bool phaseChanged(const std::string & Cid, const std::string & Text)
+{
+    std::lock_guard<std::mutex> Lk(g_PhaseMu);
+    auto It = g_LastPhase.find(Cid);
+    if (It != g_LastPhase.end() && It->second == Text) return false;
+    g_LastPhase[Cid] = Text;
+    return true;
+}
+void phaseForget(const std::string & Cid) { std::lock_guard<std::mutex> Lk(g_PhaseMu); g_LastPhase.erase(Cid); }
+} // namespace
+
 IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
 {
     //Relay backend transfer events (which fire on the node's fetch thread) onto this object's thread
@@ -715,6 +737,8 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
         switch (E.Kind)
         {
         case IpfsWrapper::TransferEvent::Started:
+            phaseForget(E.Cid);   // a new lifecycle narrates from scratch (a retry's first line must not be deduped
+                                  // against the previous run's last one — Started just cleared the row's activity)
             QMetaObject::invokeMethod(this, [this, Cid]{ emit transferStarted(Cid); }, Qt::QueuedConnection);
             break;
         case IpfsWrapper::TransferEvent::Progress: {
@@ -735,11 +759,19 @@ IpfsManager::IpfsManager(QObject * parent) : QObject(parent)
             }
             QMetaObject::invokeMethod(this, [this, Cid, Pct]{ emit transferProgress(Cid, Pct); }, Qt::QueuedConnection);
             break; }
+        case IpfsWrapper::TransferEvent::Phase: {
+            // One narration line per STATE CHANGE: consecutive identical texts per CID are dropped here so a
+            // re-emitting loop can never spam the GUI queue. Runs on the node's fetch thread(s).
+            const QString Text = QString::fromStdString(E.Text);
+            if (!phaseChanged(E.Cid, E.Text)) break;
+            QMetaObject::invokeMethod(this, [this, Cid, Text]{ emit transferPhase(Cid, Text); }, Qt::QueuedConnection);
+            break; }
         case IpfsWrapper::TransferEvent::Finalizing: {
             const double Pct = E.Percent;
             QMetaObject::invokeMethod(this, [this, Cid, Pct]{ emit transferFinalizing(Cid, Pct); }, Qt::QueuedConnection);
             break; }
         case IpfsWrapper::TransferEvent::Finished: {
+            phaseForget(E.Cid);   // no per-CID residue: the map is bounded by transfers currently IN FLIGHT
             const bool Ok = E.Ok;
             const QString Err = QString::fromStdString(E.Error);
             QMetaObject::invokeMethod(this, [this, Cid, Ok, Err]{ emit transferFinished(Cid, Ok, Err); }, Qt::QueuedConnection);

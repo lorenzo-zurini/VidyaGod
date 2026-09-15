@@ -18,6 +18,9 @@
 #include "commonutils.h"
 
 #include <fstream>
+#ifndef Q_OS_WIN
+#include <unistd.h>
+#endif
 #include <filesystem>
 #include <limits>
 #include <set>
@@ -373,11 +376,16 @@ private slots:
         { std::ofstream(Base + "/full/x.json") << "{}"; }
         QVERIFY(PackageCatalog::SourceDirSynced(Base + "/full", Ec));
         QVERIFY(!Ec);
-        std::filesystem::permissions(Base + "/full", std::filesystem::perms::none);
-        const bool Synced = PackageCatalog::SourceDirSynced(Base + "/full", Ec);
-        std::filesystem::permissions(Base + "/full", std::filesystem::perms::owner_all);   // restore before asserts
-        QVERIFY(!Synced);
-        QVERIFY(Ec);                                               // unreadable: a LOUD no — the sync must refuse it
+#if !defined(Q_OS_WIN)
+        if (geteuid() != 0)   // root (and Windows) ignore directory permission bits — the premise doesn't hold there
+        {
+            std::filesystem::permissions(Base + "/full", std::filesystem::perms::none);
+            const bool Synced = PackageCatalog::SourceDirSynced(Base + "/full", Ec);
+            std::filesystem::permissions(Base + "/full", std::filesystem::perms::owner_all);   // restore before asserts
+            QVERIFY(!Synced);
+            QVERIFY(Ec);                                           // unreadable: a LOUD no — the sync must refuse it
+        }
+#endif
     }
 
     // Hydration asks the LAYER whether it is runtime-sourced, never the resolved absolute path. Two ways the

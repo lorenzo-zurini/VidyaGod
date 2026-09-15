@@ -405,10 +405,16 @@ void IpfsTab::renderLeaf(const QString & cid)
     case P::Queued:      Role = StQueued;      Status = QStringLiteral("Queued"); break;
     // Before the first byte arrives (pct < 0) the wait is provider discovery — DHT walk, relay dial, holepunch —
     // not a transfer; say so instead of showing a frozen "Fetching…" bar (a source sync can sit here for minutes).
-    case P::Downloading: Role = StDownloading; Status = st.pct < 0 ? QStringLiteral("Searching providers…")
-                                                                   : QStringLiteral("Fetching…"); break;
+    case P::Downloading: Role = StDownloading;
+                         // The transfer NARRATES itself (IpfsModel::CidState::activity): "attempt 3 — connecting to
+                         // providers", "downloading from gateway.pinata.cloud", … — always preferred over a generic
+                         // label, so a hunting/falling-back fetch never LOOKS stuck.
+                         Status = !st.activity.isEmpty() ? st.activity
+                                : st.pct < 0             ? QStringLiteral("Searching providers…")
+                                                         : QStringLiteral("Fetching…"); break;
     case P::Pinning:     Role = StPinning;     Status = QStringLiteral("Pinning…"); break;
-    case P::Stalled:     Role = StStalled;     Status = QStringLiteral("Stalled — waiting for peers…"); break;
+    case P::Stalled:     Role = StStalled;     Status = !st.activity.isEmpty() ? st.activity
+                                                                               : QStringLiteral("Stalled — waiting for peers…"); break;
     case P::Errored: {
         Role = StErrored; Fg = QColor("#c0726a");
         const QString Tail = st.error.section('\n', -1).trimmed();

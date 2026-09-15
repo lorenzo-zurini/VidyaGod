@@ -75,9 +75,12 @@ IDX_A="delegated-ipfs.dev"; IDX_B="cid.contact"; INDEXERS="$IDX_A,$IDX_B"
 BOOTSTRAP_HOST="bootstrap.libp2p.io"; BOOTSTRAP_LITERAL="104.131.131.82/32"
 ALL_PEERS="0.0.0.0/0,::/0"
 
-# Only ever wipe a directory this script made (its results.txt is the marker) — never an arbitrary VG_NETPATHS_DIR.
-if [ -e "$BASE" ] && [ ! -f "$OUT" ]; then echo "refusing to wipe $BASE: not a netpaths results dir" >&2; exit 2; fi
-if [ -f "$OUT" ]; then rm -rf "$PREV"; mv "$BASE" "$PREV"; fi   # run-6's 20.3 s data point died because run-7 wiped it
+# Only ever wipe/rotate a directory THIS SCRIPT made. A results.txt filename is not proof of ownership (any dir can
+# contain one) — the marker is a magic first line only we write. Anything else at $BASE is refused untouched.
+OWNED=0
+[ -f "$OUT" ] && head -1 "$OUT" | grep -q '^NETWORK-PATH MATRIX ' && OWNED=1
+if [ -e "$BASE" ] && [ "$OWNED" != 1 ]; then echo "refusing to touch $BASE: not a directory this script created" >&2; exit 2; fi
+if [ "$OWNED" = 1 ]; then rm -rf "$PREV"; mv "$BASE" "$PREV"; fi   # previous run's evidence survives one generation
 mkdir -p "$BASE"; : > "$OUT"
 say() { printf '%s\n' "$*" | tee -a "$OUT"; }
 say "NETWORK-PATH MATRIX  $(date -Is)  cid=$CID  bin=$BIN"

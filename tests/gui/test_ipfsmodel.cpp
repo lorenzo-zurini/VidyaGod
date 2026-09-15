@@ -22,6 +22,7 @@ void started (const QString & c)                 { QMetaObject::invokeMethod(Ipf
 void progress(const QString & c, double p)       { QMetaObject::invokeMethod(IpfsManager::instance(), "transferProgress",  Qt::DirectConnection, Q_ARG(QString, c), Q_ARG(double, p)); }
 void finished(const QString & c, bool ok, const QString & e = QString())
                                                  { QMetaObject::invokeMethod(IpfsManager::instance(), "transferFinished",  Qt::DirectConnection, Q_ARG(QString, c), Q_ARG(bool, ok), Q_ARG(QString, e)); }
+void phaseEv (const QString & c, const QString & t){ QMetaObject::invokeMethod(IpfsManager::instance(), "transferPhase",   Qt::DirectConnection, Q_ARG(QString, c), Q_ARG(QString, t)); }
 }
 
 class IpfsModelTest : public QObject
@@ -32,6 +33,26 @@ class IpfsModelTest : public QObject
     json          Cfg = json{{"Settings", json::object()}, {"LIBRARY", json::array()}};
 
 private slots:
+    // The transfer's NARRATION lands on its row verbatim (activity), and never outlives the transfer: Started
+    // clears any stale line, Finished clears it again. Teeth (each caught): drop the transferPhase connect → the
+    // set assert fails; drop the clear in Started or Finished → the matching clear assert fails.
+    void narration_lands_on_the_row_and_never_outlives_the_transfer()
+    {
+        AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+        const QString cid = "QmNarrated";
+        started(cid);
+        phaseEv(cid, "attempt 2 — connecting to providers");
+        QCOMPARE(im.state(cid).activity, QString("attempt 2 — connecting to providers"));
+        started(cid);                                              // a NEW attempt lifecycle starts clean
+        QVERIFY(im.state(cid).activity.isEmpty());
+        phaseEv(cid, "downloading from gateway.pinata.cloud");
+        QCOMPARE(im.state(cid).activity, QString("downloading from gateway.pinata.cloud"));
+        finished(cid, true);
+        QVERIFY(im.state(cid).activity.isEmpty());                 // Seeded rows carry no stale narration
+        phaseEv("QmNeverSeen", "text for an unknown row");         // no row → ignored, no crash, none created
+        QVERIFY(!im.has("QmNeverSeen"));
+    }
+
     void mark_queued_sets_state_and_signals()
     {
         AppModel m(&Cfg, &AppDir); IpfsModel im(m);

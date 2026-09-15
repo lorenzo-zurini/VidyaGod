@@ -44,6 +44,8 @@ public:
         bool      uploading = false;  // a peer is pulling it right now
         bool      announced = false;  // Seeded only: its DHT announce completed (→ "seeding") vs still "queued for seeding"
         QString   error;              // failure reason (Errored)
+        QString   activity;           // the transfer's own narration ("attempt 3 — connecting to providers"); shown
+                                      // verbatim while Downloading/Stalled so a hunting fetch never LOOKS stuck
     };
 
     // Node status strip.

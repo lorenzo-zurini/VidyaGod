@@ -8,7 +8,8 @@
 
 extern "C" {
 
-// Transfer lifecycle callback: kind 0=Started 1=Progress 2=Finished. err is non-NULL only on a failed Finished.
+// Transfer lifecycle callback: kind 0=Started 1=Progress 2=Finished 3=Finalizing 4=Phase. err carries the
+// failure reason on a failed Finished — and, for kind 4, the phase TEXT (what the transfer is doing right now).
 // Mirrors IpfsWrapper::TransferEvent. Invoked on the calling (worker) thread; the C++ side marshals to the GUI.
 typedef void (*VgTransferCb)(const char *cid, int kind, double percent, int ok, const char *err);
 
