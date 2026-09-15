@@ -136,7 +136,11 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         s.pct = pct;
         const qlonglong Now = QDateTime::currentMSecsSinceEpoch();
         LastProgress.insert(cid, Now);
-        if (s.phase == CidState::Stalled) s.phase = CidState::Downloading;   // peers came back
+        // Progress means blocks are arriving NOW, so the transfer is live: heal a transient error/stall label. A
+        // bounded caller (launch/cover) that gave up on its deadline stamps Errored, but if an unbounded background
+        // download then takes over the same CID via leadership handoff, its progress ticks land here and clear that
+        // Errored — while a genuinely failed CID (no provider) emits no further progress, so it stays Errored.
+        if (s.phase == CidState::Stalled || s.phase == CidState::Errored) { s.phase = CidState::Downloading; s.error.clear(); }
         // Speed from bytes-since-last-sample (needs the size).
         if (s.size > 0) {
             const qlonglong Bytes = (qlonglong)(pct / 100.0 * double(s.size));

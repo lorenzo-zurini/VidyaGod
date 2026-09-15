@@ -193,8 +193,9 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPathStr, 
 
     // The node fetches write-through to DestPath (no blockstore duplication), seeds it from there, and reports
     // Started/Progress/Finished through the transfer callback installed below. TimeoutMs>0 bounds how long we WAIT
-    // (SYNCHRONOUS callers — launch, covers — that must not hang); the fetch itself continues in the background on
-    // timeout so a later attempt finds it progressed. 0 = wait forever (background downloads).
+    // (SYNCHRONOUS callers — launch, covers — that must not hang). On timeout the partial file + its .part sidecar
+    // stay on disk, so a later attempt resumes from there; the fetch only keeps running if an unbounded background
+    // download of the same dest is also waiting (leadership passes to it). 0 = wait forever (background downloads).
     LogOut("IpfsWrapper::FetchToPath", "Fetching CID " + Cid + " -> " + DestPathStr);
     FetchDbg("FetchToPath ENTER (blocking VgFetchToPath call) cid=" + Cid + " dest=" + DestPathStr);
     char *Err = nullptr;

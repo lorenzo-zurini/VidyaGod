@@ -253,6 +253,10 @@ const Node* PreLaunchWindow::CurrentLaunch() const
 
 void PreLaunchWindow::RebuildCover()
 {
+    // Drop any cover still pending from a PREVIOUS variant: otherwise switching to a variant with no cover (or a
+    // different one) leaves the old CID pending, and when it lands the handler paints the old variant's cover onto
+    // this one. Re-set below iff THIS variant has a not-yet-local cover.
+    PendingCoverCid.clear();
     const Node* L = CurrentLaunch();
     if (!L) return;
     const std::string Title = L->Meta.is_object() ? L->Meta.value("TITLE", LaunchNodeId) : LaunchNodeId;
@@ -282,14 +286,19 @@ void PreLaunchWindow::RebuildCover()
         {
             CoverReadyConnected = true;
             connect(CoverCache::instance(), &CoverCache::coverReady, this, [this](const QString &Ready){
-                if (Ready != PendingCoverCid || PendingCoverCid.isEmpty()) return;
+                // An empty Ready is the broadcast nudge (e.g. the offline→online transition cleared the negative
+                // cache): re-resolve our pending cover. A non-empty Ready must match the one we're waiting for.
+                if (PendingCoverCid.isEmpty()) return;
+                if (!Ready.isEmpty() && Ready != PendingCoverCid) return;
                 const QString P = CoverCache::instance()->resolve(PendingCoverNode, PendingCoverPkg);
                 if (!P.isEmpty())
                 {
                     QPixmap Pix(P);
                     if (!Pix.isNull()) { CoverPixmap = Pix; UpdateCoverScaled(); }
+                    PendingCoverCid.clear();   // painted — stop listening
                 }
-                PendingCoverCid.clear();
+                // If P is empty the cover isn't here yet (the online nudge only just kicked the fetch, or it is
+                // still in flight): KEEP PendingCoverCid set so the later coverReady(cid) can still paint it.
             });
         }
     }

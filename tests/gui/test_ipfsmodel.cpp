@@ -68,6 +68,23 @@ private slots:
         QVERIFY(im.state(cid).error.contains("missing files"));
     }
 
+    // A bounded caller (launch/cover) that gives up on its deadline stamps Errored; if an unbounded background
+    // download then takes over the same CID via leadership handoff, its progress ticks must HEAL the row back to
+    // Downloading (and clear the error) rather than leave a red row on a healthy, progressing transfer. Teeth:
+    // drop the `|| Errored` heal in IpfsModel's progress handler and the phase stays Errored → this fails.
+    void progress_heals_a_handed_off_errored_row()
+    {
+        AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+        const QString cid = "QmHandoff";
+        started(cid);
+        finished(cid, false, "fetch of QmHandoff did not complete before its deadline"); // bounded leader gave up
+        QCOMPARE(im.state(cid).phase, P::Errored);
+        progress(cid, 55.0);                                    // unbounded successor took over → live again
+        QCOMPARE(im.state(cid).phase, P::Downloading);
+        QVERIFY(im.state(cid).error.isEmpty());
+        QCOMPARE(im.pct(cid), 55.0);
+    }
+
     void cancelled_before_local_drops_entry()
     {
         AppModel m(&Cfg, &AppDir); IpfsModel im(m);

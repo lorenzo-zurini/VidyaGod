@@ -152,7 +152,13 @@ void MainWindow::BuildStaticUI()
     ResumeTimer = new QTimer(this);
     ResumeTimer->setInterval(1500);
     connect(ResumeTimer, &QTimer::timeout, this, [this]{
-        if (IpfsWrapper::DaemonRunning()) { ResumeTimer->stop(); DownloadMgr->resumeAll(); }
+        if (IpfsWrapper::DaemonRunning()) {
+            ResumeTimer->stop();
+            DownloadMgr->resumeAll();
+            // The network is up now: retry any cover whose fetch gave up while it was down (else those tiles stay
+            // blank until the app restarts). Clears the negative cache and re-resolves every cover surface.
+            CoverCache::instance()->onNetworkOnline();
+        }
     });
 
     // Networking is opt-in (Settings → IPFS). Grey the network-dependent tabs until it's on, and react to the toggle
