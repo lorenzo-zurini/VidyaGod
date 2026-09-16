@@ -46,6 +46,9 @@ signals:
     //Emitted whenever the bundle's node files are written to disk, so open library tiles / prelaunch dialogs
     //can reload and re-render. Carries the bundle directory path.
     void packageSaved(const QString &PackagePath);
+    //Emitted when the author asks to publish the just-dehydrated package to their IPNS library. The opener wires this
+    //to AppModel::publishLibraries (off-thread re-mint + DHT put); an opener without an AppModel leaves it unconnected.
+    void publishToLibraryRequested();
 
 private:
     static PackageEditor *Live;      // the one open editor, or null

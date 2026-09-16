@@ -289,6 +289,8 @@ int main(int argc, char *argv[])
         || !LaunchParameters.ImportRunnerId.empty() || !LaunchParameters.ImportPackageUid.empty()
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
+        || !LaunchParameters.PublishLibraryDir.empty() || !LaunchParameters.IpnsResolveName.empty()
+        || !LaunchParameters.IpnsPublishCid.empty()
         || !LaunchParameters.UpgradeSourceName.empty() || !LaunchParameters.VerifyCidArg.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
@@ -791,6 +793,21 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         else if (arg == "--publish-meta" && i + 1 < argc)
         {
             RuntimeParameters.PublishMetaSrc = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--publish-library" && i + 1 < argc)
+        {
+            RuntimeParameters.PublishLibraryDir = argv[++i];
+            RuntimeParameters.RunningHeadless   = true;
+        }
+        else if (arg == "--ipns-resolve" && i + 1 < argc)
+        {
+            RuntimeParameters.IpnsResolveName = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--ipns-publish" && i + 1 < argc)
+        {
+            RuntimeParameters.IpnsPublishCid  = argv[++i];
             RuntimeParameters.RunningHeadless = true;
         }
         else if (arg == "--runner" && i + 1 < argc)

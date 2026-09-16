@@ -158,6 +158,8 @@ set(SHARED_SOURCES
 
     src/friendstab.h
     src/friendstab.cpp
+    src/sharingtab.h
+    src/sharingtab.cpp
 
     src/fileedits.h
     src/fileedits.cpp

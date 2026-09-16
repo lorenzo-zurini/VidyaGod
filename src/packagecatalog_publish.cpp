@@ -809,12 +809,154 @@ bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Confi
         std::string E;
         const std::string ColCid = PublishMetaCid(SrcDir.string(), &E);
         if (ColCid.empty()) return Fail("collection " + SrcDir.string() + ": " + E);
+        //Update the matching STATIC source's CID by NAME — but NEVER an IPNS/FRIEND source: a friend whose nick equals
+        //a collection dir name would otherwise have its "/ipns/<peerID>" CID field overwritten with a folder CID,
+        //bricking the subscription (resolve fails; unsubscribe/toggle can't find it by "/ipns/…" any more).
         if (Settings.contains("PackageSources") && Settings["PackageSources"].is_array())
             for (auto &Src : Settings["PackageSources"])
-                if (Src.is_object() && Src.value("NAME", std::string()) == SrcName) Src["CID"] = ColCid;
+                if (Src.is_object() && !IsIpnsSource(Src) && Src.value("NAME", std::string()) == SrcName) Src["CID"] = ColCid;
         Out.push_back({ "collection", SrcName, ColCid });
     }
     return true;
+}
+
+// ----- IPNS library indexes: the mutable top-level address over the immutable per-package CIDs (project_ipns_friendcode_library) -----
+
+// Reads a dehydrated bundle's RICH index entry (title, cover CID, total content size, version) by scanning its node
+// JSONs — so a subscriber can draw a placeholder catalog row and diff for updates without fetching the package. CID
+// is the per-package meta-CID from the remint. Runtime subtrees (DEFPREFIX/USERDATA) are skipped, as in MirrorDehydrated.
+static nlohmann::ordered_json BundleIndexEntry(const std::string &BundleDir, const std::string &Uid,
+                                               const std::string &Title, const std::string &Cid)
+{
+    nlohmann::ordered_json E;
+    E["packageUID"] = Uid;
+    E["cid"]        = Cid;
+    E["title"]      = Title;
+    std::string Version, CoverCID;
+    uint64_t Size = 0;
+    std::error_code Ec;
+    for (const auto &F : std::filesystem::recursive_directory_iterator(BundleDir, Ec))
+    {
+        if (!F.is_regular_file() || F.path().extension() != ".json") continue;
+        bool Runtime = false;   // skip per-machine build/runtime state (matches MirrorDehydrated)
+        for (const auto &Part : std::filesystem::relative(F.path(), BundleDir, Ec).parent_path())
+            if (const std::string P = Part.string(); P == "DEFPREFIX" || P == "USERDATA") { Runtime = true; break; }
+        if (Runtime) continue;
+        std::ifstream In(F.path());
+        nlohmann::ordered_json Doc;
+        try { In >> Doc; } catch (const std::exception &) { continue; }
+        if (!Doc.is_array()) continue;
+        for (const auto &N : Doc)
+        {
+            if (!N.is_object()) continue;
+            if (N.value("TYPE", std::string()) == "DeclareLibraryItem")
+            {
+                if (CoverCID.empty() && N.contains("COVER") && N["COVER"].is_object()
+                    && N["COVER"].contains("SOURCE") && N["COVER"]["SOURCE"].is_object())
+                    CoverCID = N["COVER"]["SOURCE"].value("CID", std::string());
+                if (Version.empty() && N.contains("META") && N["META"].is_object() && N["META"]["EDITION"].is_string())
+                    Version = N["META"].value("EDITION", std::string());
+            }
+            if (N.contains("SOURCE") && N["SOURCE"].is_object() && N["SOURCE"]["SIZE"].is_number_unsigned())
+                Size += N["SOURCE"].value("SIZE", (uint64_t)0);
+        }
+    }
+    E["version"]  = Version;
+    E["size"]     = Size;
+    E["coverCID"] = CoverCID;
+    return E;
+}
+
+std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    auto Fail = [&](const std::string &M) -> std::string { if (Error) *Error = M; LogErr("PackageCatalog::PublishLibraries", M); return {}; };
+
+    // 1. Re-mint: content-address every dirty package (Level-1) + each package's meta-CID (Level-2) + each collection
+    //    (Level-3). Writes SOURCE.CID/SIZE into the node JSONs and Settings.PackageCids/PackageSources[].CID — the
+    //    stale-CID guard is feedback_verify_after_mint's job inside PublishMetaCid/PublishPackage.
+    std::vector<RemintEntry> Reminted;
+    if (!RemintLibrary(LibraryRoot, Config, Reminted, Error)) return {};
+
+    // A friend's mirrored library (a FRIEND/IPNS source) lives under the same LibraryRoot but is NOT ours to publish —
+    // re-advertising it under OUR identity would republish someone else's games as if they were ours. Collect those
+    // collection names (their source dir basenames) and exclude them from the index we sign. (RemintLibrary's mint of
+    // them is idempotent — it keeps their existing CIDs — so the only thing to prevent is INCLUSION in our index.)
+    std::set<std::string> Foreign;
+    if (Config.contains("Settings") && Config["Settings"].is_object()
+        && Config["Settings"].contains("PackageSources") && Config["Settings"]["PackageSources"].is_array())
+        for (const auto &Src : Config["Settings"]["PackageSources"])
+            if (IsIpnsSource(Src))
+            {
+                const std::string Dir = PackageSourceDir(Config, Src);
+                Foreign.insert(fs::path(Dir).filename().string());
+            }
+
+    // Group the reminted per-package CIDs by their collection (library) name, preserving order; skip foreign mirrors.
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> ByLib;   // libName -> [(pkgDirName, cid)]
+    for (const RemintEntry &R : Reminted)
+        if (R.Level == "package")
+        {
+            const auto Slash = R.Name.find('/');
+            if (Slash == std::string::npos) continue;
+            const std::string LibName = R.Name.substr(0, Slash);
+            if (Foreign.count(LibName)) continue;   // a friend's mirrored library — not ours to advertise
+            ByLib[LibName].push_back({ R.Name.substr(Slash + 1), R.Cid });
+        }
+
+    const std::string PeerID = IpfsWrapper::PeerID();
+    if (PeerID.empty()) return Fail("node offline — cannot publish (no peer ID / identity)");
+
+    // 2. Build ONE signed index doc — the friend id IS the entry point. There is NO per-library CID layer: the
+    //    libraries (several per user) are inline SECTIONS, each listing its packages by their immutable per-package
+    //    dehydrated CID. Touching one package moves one entry in this doc (and thus the doc's CID, re-pointed by IPNS
+    //    in one hop); the per-package CIDs never churn. The index file lives under <LibraryRoot>/.ipnsindex/ and is
+    //    seeded IN PLACE (AddNoCopy references it), so it must persist to keep serving its CID.
+    const fs::path IndexDir = fs::path(LibraryRoot) / ".ipnsindex";
+    std::error_code Ec;
+    fs::create_directories(IndexDir, Ec);
+    if (Ec) return Fail("cannot create index dir " + IndexDir.string() + ": " + Ec.message());
+
+    nlohmann::ordered_json Libraries = nlohmann::ordered_json::array();
+    for (const auto &[LibName, Pkgs] : ByLib)
+    {
+        nlohmann::ordered_json Lib;
+        Lib["name"]     = LibName;
+        Lib["packages"] = nlohmann::ordered_json::array();
+        for (const auto &[PkgDir, Cid] : Pkgs)
+        {
+            const std::string BundleDir = (fs::path(LibraryRoot) / LibName / PkgDir).string();
+            const BundleIdentity Id = ScanBundleIdentity(BundleDir);
+            if (!Id.Valid) continue;
+            Lib["packages"].push_back(BundleIndexEntry(BundleDir, Id.Uid, Id.Name, Cid));
+        }
+        Libraries.push_back(std::move(Lib));
+        LogSucc("PackageCatalog::PublishLibraries", "library '" + LibName + "': "
+                + std::to_string(Libraries.back()["packages"].size()) + " package(s)");
+    }
+
+    // 3. The index (what the IPNS name points at): publisher + nick + the inline libraries. AddNoCopy → the one CID.
+    nlohmann::ordered_json Top;
+    Top["publisher"] = PeerID;
+    Top["nick"]      = IpfsWrapper::GetProfile().Nick;
+    Top["libraries"] = std::move(Libraries);
+    const fs::path TopFile = IndexDir / "index.json";
+    { std::ofstream Out(TopFile); Out << Top.dump(2) << "\n"; }
+    std::string E;
+    const std::string TopCid = IpfsWrapper::AddNoCopy(TopFile.string(), &E);
+    if (TopCid.empty()) return Fail("add index " + TopFile.string() + ": " + E);
+
+    // 4. Point OUR IPNS name at the top-level index. A publish failure (offline) is NOT fatal to the mint — the CIDs
+    //    are valid and seeded — but the advertised address won't move until a later online publish; report it soft.
+    std::string PubErr;
+    if (!IpfsWrapper::IpnsPublish(TopCid, 0, &PubErr))
+    {
+        LogWarn("PackageCatalog::PublishLibraries", "indexes minted (top " + TopCid + ") but IPNS record NOT published: " + PubErr);
+        if (Error) *Error = "minted but not yet advertised (IPNS publish failed: " + PubErr + ")";
+    }
+    else
+        LogSucc("PackageCatalog::PublishLibraries", "published /ipns/" + PeerID + " -> " + TopCid);
+    return TopCid;
 }
 
 } // namespace PackageCatalog

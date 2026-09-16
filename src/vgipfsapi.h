@@ -37,6 +37,11 @@ char *VgVerifyCid(const char *cid);            // "" if the whole DAG READS back
                                                // Catches what VgCidMissing cannot: backing file present but bytes changed.
 int  VgHasLocal(const char *cid);              // 1 if the node holds the block locally (ref or block), 0 no, -1 n/a
 int  VgPeerID(char **outId);                   // this node's libp2p peer ID
+// IPNS (ipns.go): the peer's identity key (== friend code) signs a tiny mutable record pointing its NAME at a CID.
+int  VgIpnsPublish(const char *cid, int ttlSeconds, char **errOut); // publish/refresh OUR name -> /ipfs/<cid> (long EOL, auto-republished)
+int  VgIpnsResolve(const char *name, char **out, char **errOut);    // /ipns/<name or friend code> -> /ipfs/<cid>; DHT then HTTPS-gateway fallback, signature-verified
+int  VgExportIdentity(const char *destPath, char **errOut);         // back up identity.key (== friend code + library address) — loss is permanent
+int  VgImportIdentity(const char *srcPath, char **errOut);          // install a backed-up identity.key; RESTART required to re-key
 int  VgListenAddrs(char **outJson);            // JSON array of dialable /p2p/ multiaddrs (for peering/diagnostics)
 int  VgConnect(const char *multiaddr, char **errOut); // dial + hold a connection to a peer at a full /p2p/ multiaddr
 int  VgDropRef(const char *cid, char **errOut);// delete a CID's closure (filestore refs + blocks) + unpin, so it can be re-referenced

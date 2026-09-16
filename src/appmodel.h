@@ -67,6 +67,14 @@ public:
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
     void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
+    // Friend library subscription (IPNS): "Receive library" ON adds the friend's /ipns/<peerID> as a FRIEND source
+    // (their catalog mirrors as its own section); OFF drops it. friendLibraryOn reflects the current toggle state.
+    bool subscribeFriendLibrary(const QString & peerID, const QString & nick);  // false if empty/already subscribed
+    void unsubscribeFriendLibrary(const QString & peerID);
+    bool friendLibraryOn(const QString & peerID) const;
+    // Publish side (Sharing tab): re-mint your library tree, rebuild the IPNS index, and point your friend code at it.
+    // Runs off-thread (a DHT put); emits libraryPublished / libraryPublishFailed.
+    void publishLibraries();
     // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
     // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
     // and deprecated) before any content is relocated. Just rewriting the CID would be a silent no-op — the sync
@@ -80,6 +88,8 @@ signals:
     void coversReady();             // lazy cover load(s) landed — repaint visible cards
     void packageSourcesChanged();   // a CID package source was added/removed/synced — refresh the Sources page + catalog
     void packageSourceFailed(QString message);   // a CID source fetch failed (e.g. node offline) — the dialog shows it
+    void libraryPublished(QString ipnsName, QString topCid, QString note);  // Verify & Publish finished (note = soft warning, "" if clean)
+    void libraryPublishFailed(QString message);                             // Verify & Publish failed (mint error / offline)
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
     void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health

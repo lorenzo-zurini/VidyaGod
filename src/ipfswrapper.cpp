@@ -192,6 +192,14 @@ void SetFetchOnceHook(FetchOnceHook Hook)
     g_FetchOnceHook = std::move(Hook);
 }
 
+// True when a scripted FetchOnce hook is installed (test mode). The dir/batch fetch paths consult this to bypass their
+// DaemonRunning() offline-gate — under a hook there is no daemon, but the hook services the fetch. Production: false.
+bool FetchOnceHookActive()
+{
+    std::lock_guard<std::mutex> Lk(g_FetchOnceHookMu);
+    return static_cast<bool>(g_FetchOnceHook);
+}
+
 int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)
 {
     // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
@@ -390,6 +398,62 @@ bool DropCached(const std::string &Cid)
     char *Err = nullptr;
     const int Rc = VgDropCached(Cid.c_str(), &Err);
     TakeStr(Err);
+    return Rc == 0;
+}
+
+bool IpnsPublish(const std::string &Cid, int TtlSeconds, std::string *Error)
+{
+    if (Cid.empty()) { if (Error) *Error = "empty CID"; return false; }
+    char *Err = nullptr;
+    const int Rc = VgIpnsPublish(Cid.c_str(), TtlSeconds, &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0 && Error) *Error = ErrS.empty() ? ("IPNS publish failed for " + Cid) : ErrS;
+    return Rc == 0;
+}
+
+static std::mutex       g_IpnsResolveHookMu;
+static IpnsResolveHook  g_IpnsResolveHook;
+void SetIpnsResolveHook(IpnsResolveHook Hook)
+{
+    std::lock_guard<std::mutex> Lk(g_IpnsResolveHookMu);
+    g_IpnsResolveHook = std::move(Hook);
+}
+
+std::string IpnsResolve(const std::string &Name, std::string *Error)
+{
+    if (Name.empty()) { if (Error) *Error = "empty IPNS name"; return {}; }
+    { IpnsResolveHook Hook;
+      { std::lock_guard<std::mutex> Lk(g_IpnsResolveHookMu); Hook = g_IpnsResolveHook; }
+      if (Hook) return Hook(Name, Error); }
+    char *Out = nullptr, *Err = nullptr;
+    const int Rc = VgIpnsResolve(Name.c_str(), &Out, &Err);
+    const std::string ErrS = TakeStr(Err);
+    std::string Path = TakeStr(Out);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("IPNS resolve failed for " + Name) : ErrS; return {}; }
+    // The node returns a full "/ipfs/<cid>" path; hand callers the bare CID (the first path segment after /ipfs/).
+    const std::string Prefix = "/ipfs/";
+    if (Path.rfind(Prefix, 0) == 0) Path = Path.substr(Prefix.size());
+    if (const auto Slash = Path.find('/'); Slash != std::string::npos) Path = Path.substr(0, Slash);
+    return Path;
+}
+
+bool ExportIdentity(const std::string &DestPath, std::string *Error)
+{
+    if (DestPath.empty()) { if (Error) *Error = "empty destination path"; return false; }
+    char *Err = nullptr;
+    const int Rc = VgExportIdentity(DestPath.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0 && Error) *Error = ErrS.empty() ? "identity export failed" : ErrS;
+    return Rc == 0;
+}
+
+bool ImportIdentity(const std::string &SrcPath, std::string *Error)
+{
+    if (SrcPath.empty()) { if (Error) *Error = "empty source path"; return false; }
+    char *Err = nullptr;
+    const int Rc = VgImportIdentity(SrcPath.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0 && Error) *Error = ErrS.empty() ? "identity import failed" : ErrS;
     return Rc == 0;
 }
 

@@ -59,6 +59,13 @@ int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::st
 // slow or stalled attempt). Set to {} to restore the real node-backed path. Production never touches this.
 using FetchOnceHook = std::function<int(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)>;
 void SetFetchOnceHook(FetchOnceHook Hook);
+// True when a FetchOnce hook is installed (test mode) — the dir/batch fetch paths bypass their offline-gate then.
+bool FetchOnceHookActive();
+
+// Test seam: override IpnsResolve with a scripted name→CID map (return "" + set Error to simulate a resolve failure).
+// Set to {} to restore the real DHT/gateway path. Lets the subscribe-mirror flow be driven without a live network.
+using IpnsResolveHook = std::function<std::string(const std::string &Name, std::string *Error)>;
+void SetIpnsResolveHook(IpnsResolveHook Hook);
 
 // Recursively materializes a UnixFS DIRECTORY CID (a folder of dehydrated packages) into DestDir — fetches the whole
 // small manifest tree (node JSON + covers, no content bytes) over the network and writes it to disk. Requires the IPFS
@@ -214,6 +221,19 @@ std::string ComputeCid(const std::string &Path, std::string *Error = nullptr);
 // Purges a CID's locally-CACHED (bitswap) blocks — the partial data left by a cancelled/aborted download — and
 // compacts to reclaim the disk. Offline (never fetches); only touches plain cached blocks, not filestore references.
 bool DropCached(const std::string &Cid);
+
+// ----- IPNS: the mutable library-address layer (ipns.go) -----
+// Publish/refresh OUR name (the identity key = friend code) -> /ipfs/<Cid>, with a long EOL; the node re-publishes it
+// before expiry for as long as it stays online. Blocks on the DHT put — call off the UI thread. False on failure.
+bool IpnsPublish(const std::string &Cid, int TtlSeconds = 0, std::string *Error = nullptr);
+// Resolve /ipns/<Name> (a peer ID / friend code, with or without the /ipns/ prefix) to its current CID. DHT first,
+// then the HTTPS-gateway fallback; the record signature is verified against the name, so a forged record is rejected.
+// Returns the bare CID ("" on failure) — the "/ipfs/" prefix is stripped for callers that want a plain CID.
+std::string IpnsResolve(const std::string &Name, std::string *Error = nullptr);
+// Back up / restore the Ed25519 identity key (== your friend code + library address). Loss is PERMANENT (a new key is a
+// new address nobody has). ImportIdentity installs the key but the node keeps the old one until RESTARTED — warn hard.
+bool ExportIdentity(const std::string &DestPath, std::string *Error = nullptr);
+bool ImportIdentity(const std::string &SrcPath, std::string *Error = nullptr);
 
 // ----- peer identity + explicit connectivity (diagnostics + direct peering) -----
 // This node's libp2p peer ID ("" if offline).

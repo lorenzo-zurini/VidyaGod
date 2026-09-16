@@ -358,6 +358,83 @@ void AppModel::removePackageSource(int index)
     emit packageSourcesChanged();
 }
 
+bool AppModel::subscribeFriendLibrary(const QString & peerID, const QString & nick)
+{
+    if (peerID.trimmed().isEmpty()) return false;
+    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
+    // FRIEND source: the friend's IPNS library address, rendered as its own catalog section (PackageSourceNameForPath).
+    if (!PackageCatalog::AddPackageSource(*Config, Addr, nick.trimmed().toStdString(), /*Friend=*/true))
+        return false;   // already subscribed
+    save();
+    emit packageSourcesChanged();   // instant: the section appears (pending); the off-thread mirror re-emits below
+    auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Err = std::make_shared<std::string>();
+    AsyncWork::Run(this,
+        [Cfg, Err]{ PackageCatalog::SyncPackageSources(*Cfg, Err.get()); },
+        [this, Cfg, Err]{
+            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
+            save();
+            rebuildCatalog();
+            emit packageSourcesChanged();
+            pushSeedLevels();
+            if (!Err->empty()) emit packageSourceFailed(QString::fromStdString(*Err));
+        });
+    return true;
+}
+
+void AppModel::unsubscribeFriendLibrary(const QString & peerID)
+{
+    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
+    const int Idx = PackageCatalog::PackageSourceIndexForCID(*Config, Addr);
+    if (Idx >= 0) removePackageSource(Idx);   // reuses the full teardown (config + fetched dir + LIBRARY entries)
+}
+
+bool AppModel::friendLibraryOn(const QString & peerID) const
+{
+    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
+    return PackageCatalog::PackageSourceIndexForCID(*Config, Addr) >= 0;
+}
+
+void AppModel::publishLibraries()
+{
+    const std::string LibRoot = PackageCatalog::LibraryRootDir(*Config);
+    auto Cfg    = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto TopCid = std::make_shared<std::string>();
+    auto Err    = std::make_shared<std::string>();
+    AsyncWork::Run(this,
+        [Cfg, TopCid, Err, LibRoot]{ *TopCid = PackageCatalog::PublishLibraries(*Cfg, LibRoot, Err.get()); },
+        [this, Cfg, TopCid, Err]{
+            if (TopCid->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
+            // Adopt ONLY what the publish actually wrote — the reminted CIDs — merged into the LIVE Settings. Do NOT
+            // assign the whole Settings snapshot back: the re-mint took minutes, and the user may have subscribed/
+            // unsubscribed a friend or edited a path meanwhile; clobbering with the pre-publish snapshot would
+            // resurrect a removed source (whose dir was already deleted) or drop a new one. So: (1) take PackageCids
+            // wholesale (a derived map), (2) copy each reminted collection CID back only onto a source that STILL
+            // exists live, matched by NAME.
+            auto &LiveS = (*Config)["Settings"];
+            const auto &SnapS = (*Cfg)["Settings"];
+            if (SnapS.is_object() && SnapS.contains("PackageCids"))
+                LiveS["PackageCids"] = SnapS["PackageCids"];
+            if (LiveS.contains("PackageSources") && LiveS["PackageSources"].is_array()
+                && SnapS.is_object() && SnapS.contains("PackageSources") && SnapS["PackageSources"].is_array())
+                for (auto &Live : LiveS["PackageSources"])
+                {
+                    if (!Live.is_object() || PackageCatalog::IsIpnsSource(Live)) continue;   // never a friend's /ipns/ CID
+                    const std::string LN = Live.value("NAME", std::string());
+                    if (LN.empty()) continue;
+                    for (const auto &Snap : SnapS["PackageSources"])
+                        if (Snap.is_object() && Snap.value("NAME", std::string()) == LN
+                            && Snap.contains("CID")) { Live["CID"] = Snap["CID"]; break; }
+                }
+            save();
+            rebuildCatalog();
+            pushSeedLevels();
+            emit libraryPublished(QString::fromStdString("/ipns/" + IpfsWrapper::PeerID()),
+                                  QString::fromStdString(*TopCid),
+                                  QString::fromStdString(*Err));   // Err holds a soft "minted but not advertised" note, if any
+        });
+}
+
 void AppModel::planSourceUpgrade(const QString & name, const QString & cid)
 {
     // Planning FETCHES the new manifest tree (to a staging dir) and diffs it — network + disk, so off the GUI thread.

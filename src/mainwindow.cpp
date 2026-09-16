@@ -8,6 +8,7 @@
 #include "settingstab.h"
 #include "ipfstab.h"
 #include "friendstab.h"
+#include "sharingtab.h"
 #include "ipfsmodel.h"
 #include "covercache.h"
 #include "ipfswrapper.h"       // IpfsManager (transfer progress signals) + StartNode/StopNode
@@ -100,12 +101,14 @@ void MainWindow::BuildStaticUI()
     SettingsTabPtr = new SettingsTab(*Model, MainWindowTabWidget);
     IpfsTabPtr     = new IpfsTab(*IpfsModelPtr, MainWindowTabWidget);
     FriendsTabPtr  = new FriendsTab(*Model, MainWindowTabWidget);
+    SharingTabPtr  = new SharingTab(*Model, MainWindowTabWidget);
 
     MainWindowTabWidget->addTab(LibraryTabPtr,  "Library");
     MainWindowTabWidget->addTab(CatalogTabPtr,  "Catalog");
     MainWindowTabWidget->addTab(SettingsTabPtr, "Settings");
     MainWindowTabWidget->addTab(IpfsTabPtr,     "IPFS");
     MainWindowTabWidget->addTab(FriendsTabPtr,  "Friends");
+    MainWindowTabWidget->addTab(SharingTabPtr,  "Sharing");
 
     // ── Cross-controller wiring (the only place a signal crosses between two components) ──
 
@@ -113,6 +116,7 @@ void MainWindow::BuildStaticUI()
     connect(MainWindowTabWidget, &QTabWidget::currentChanged, this, [this](int){
         IpfsTabPtr->setActive(MainWindowTabWidget->currentWidget() == IpfsTabPtr);
         FriendsTabPtr->setActive(MainWindowTabWidget->currentWidget() == FriendsTabPtr);
+        SharingTabPtr->setActive(MainWindowTabWidget->currentWidget() == SharingTabPtr);
     });
 
     // Catalog card clicks → the download controller.

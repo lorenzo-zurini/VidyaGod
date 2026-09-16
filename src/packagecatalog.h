@@ -76,7 +76,9 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
 bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 // Append a source (dedup on CID) — caller then SyncPackageSources + reindex + persists. Returns false if CID is empty
 // or already present.
-[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name);
+[[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
+// Index of the PackageSources entry whose CID/name field == Cid, or -1. (Used to drop a friend's /ipns/ source.)
+int PackageSourceIndexForCID(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid);
 // Remove source [index]: drop its config entry, delete its LIBRARY/<name> dir, and drop LIBRARY entries under it.
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
 
@@ -239,6 +241,16 @@ const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &Glob
 struct RemintEntry { std::string Level, Name, Cid; };
 [[nodiscard]] bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
                    std::vector<RemintEntry> &Out, std::string *Error = nullptr);
+
+// IPNS publish (project_ipns_friendcode_library): re-mint the library tree, build the RICH per-library indexes + a
+// top-level library-list index (text-only, content-addressed), and point OUR IPNS name (the identity key = friend
+// code) at the top-level index. Returns the top-level index CID ("" on a mint failure; on an IPNS-record failure the
+// CID is returned and *Error carries a soft "minted but not advertised" note). Call OFF the UI thread (DHT put).
+std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error = nullptr);
+
+// True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
+// content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.
+bool IsIpnsSource(const nlohmann::ordered_json &Source);
 
 // ----- node-graph catalog (everything-is-a-node) -----
 // Build the global cross-bundle node graph from the configured CID package sources + locally-added bundles — the

@@ -116,7 +116,13 @@ void LibraryTab::buildUi()
     connect(edBtn, &QPushButton::clicked, this, [this]{
         bool Created = false;
         auto * Ed = PackageEditor::OpenFor(Model.config(), this, "", &Created);
-        if (Ed && Created) connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
+        if (Ed && Created)
+        {
+            connect(Ed, &PackageEditor::packageSaved, &MainWindow::RefreshPackage);
+            // Per-package Publish → republish the IPNS library OFF the GUI thread (AppModel owns the re-mint + DHT put
+            // + correct Settings merge + persistence). The editor only requests it.
+            connect(Ed, &PackageEditor::publishToLibraryRequested, this, [this]{ Model.publishLibraries(); });
+        }
     });
     connect(addBtn, &QPushButton::clicked, this, [this]{
         const QString sel = QFileDialog::getExistingDirectory(this, "Select package or directory…");

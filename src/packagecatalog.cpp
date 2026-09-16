@@ -102,6 +102,14 @@ std::string PackageSourceCID(const nlohmann::ordered_json &S)
     if (S.is_string()) return std::string(S);
     return std::string();
 }
+// An IPNS-name source (a friend, or a manually-added /ipns/ address) resolves to a mutable top-level index rather than
+// being a static folder CID: an explicit IPNS/FRIEND flag, or a CID field carrying the /ipns/ prefix.
+bool IsIpnsSource(const nlohmann::ordered_json &S)
+{
+    if (!S.is_object()) return false;
+    if (S.value("IPNS", false) || S.value("FRIEND", false)) return true;
+    return PackageSourceCID(S).rfind("/ipns/", 0) == 0;
+}
 static std::string PackageSourceName(const nlohmann::ordered_json &S)
 {
     std::string N = S.is_object() ? S.value("NAME", std::string()) : std::string();
@@ -115,9 +123,27 @@ static std::string PackageSourcesRoot(const nlohmann::ordered_json &GlobalConfig
 {
     return LibraryDir(GlobalConfigJSON);
 }
+// The on-disk DIR SEGMENT for a source — distinct from the display NAME. For an IPNS/FRIEND source the display name is
+// the friend's NICK, which is ATTACKER-CHOSEN: keying the dir by it lets a friend name themselves "Games" (or an
+// official collection) and hijack/delete your own collection dir on subscribe/unsubscribe/mirror. So an IPNS source's
+// dir is derived from its CID (the /ipns/<peerID> — unique per peer, not attacker-meaningful) under a reserved
+// "_friend_" prefix that a real collection name can never produce. Static folder-CID sources keep their NAME.
+static std::string PackageSourceDirSegment(const nlohmann::ordered_json &S)
+{
+    if (IsIpnsSource(S))
+    {
+        std::string Peer = PackageSourceCID(S);
+        if (Peer.rfind("/ipns/", 0) == 0) Peer = Peer.substr(6);
+        std::string San;
+        for (char c : Peer) San.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.') ? c : '_');
+        if (San.empty()) San = "peer";
+        return "_friend_" + San;
+    }
+    return PackageSourceName(S);
+}
 std::string PackageSourceDir(const nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &S)
 {
-    return QDir::cleanPath(QString::fromStdString(PackageSourcesRoot(GlobalConfigJSON) + "/" + PackageSourceName(S))).toStdString();
+    return QDir::cleanPath(QString::fromStdString(PackageSourcesRoot(GlobalConfigJSON) + "/" + PackageSourceDirSegment(S))).toStdString();
 }
 
 bool IsPackageSourcePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
@@ -230,14 +256,17 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir)   // decl + Bund
     return Id;
 }
 
-//Upsert a LIBRARY entry for a CID-source package: PATH + name + CIDSOURCE (its source's CID). Removal is explicit via
-//RemovePackageSource (an immutable source's contents never change, so there is no reconcile/auto-prune).
+//Upsert a LIBRARY entry for a static CID-source package: PATH + name + CIDSOURCE (its source's CID). Removal is
+//explicit via RemovePackageSource (an immutable source's contents never change, so there is no reconcile/auto-prune).
+//SKIPS entries tagged with a "SOURCE" (an IPNS/friend mirror owns those, keyed by PATH) so a friend package whose
+//UID collides with a static one can never repoint — or be repointed by — the static entry.
 static void UpsertCidEntry(nlohmann::ordered_json &Arr, const std::string &Uid, const std::string &SourceCid,
                            const std::string &Dir, const std::string &Name)
 {
     for (auto &E : Arr)
     {
         if (E.value("PACKAGEUID", std::string()) != Uid) continue;
+        if (E.contains("SOURCE")) continue;   // an IPNS-mirror entry — not this (static) upsert's to touch
         E["PACKAGENAME"] = Name; E["PATH"] = Dir; E["CIDSOURCE"] = SourceCid;
         return;
     }
@@ -279,6 +308,175 @@ bool SourceDirSynced(const std::string &Dir, std::error_code &Ec)
     return !Ec && !Empty;
 }
 
+// The CIDSOURCE of the mirror entry AT this exact PkgDir ("" if none). The mirror is keyed BY PATH (its own dir),
+// never by bare UID, so a friend's package can neither repoint nor be repointed by an entry from another source even
+// on a UID collision (the static UpsertCidEntry skips SOURCE-tagged entries; this only ever touches its own).
+static std::string MirrorCidForPath(const nlohmann::ordered_json &Library, const std::string &PkgDir)
+{
+    if (Library.is_array())
+        for (const auto &E : Library)
+            if (E.is_object() && E.value("PATH", std::string()) == PkgDir) return E.value("CIDSOURCE", std::string());
+    return {};
+}
+// Upsert a mirror entry keyed by PATH, tagged with SOURCE (so the static upsert leaves it alone).
+static void UpsertMirrorEntry(nlohmann::ordered_json &Arr, const std::string &PkgDir, const std::string &Uid,
+                              const std::string &Cid, const std::string &Name, const std::string &SourceKey)
+{
+    for (auto &E : Arr)
+        if (E.is_object() && E.value("PATH", std::string()) == PkgDir)
+        { E["PACKAGEUID"] = Uid; E["PACKAGENAME"] = Name; E["CIDSOURCE"] = Cid; E["SOURCE"] = SourceKey; return; }
+    Arr.push_back(nlohmann::ordered_json{{"PACKAGEUID", Uid}, {"PACKAGENAME", Name}, {"PATH", PkgDir},
+                                         {"CIDSOURCE", Cid}, {"SOURCE", SourceKey}});
+}
+
+// A hostile /ipns/ source is untrusted input: bound the index doc and its entry count so it cannot OOM the parser or
+// spawn an unbounded fetch/dir loop on every sync.
+static constexpr long long kMaxIpnsIndexBytes = 8LL * 1024 * 1024;   // a text index of thousands of pkgs is ≪ this
+static constexpr int       kMaxIpnsPackages   = 20000;               // across all of one source's libraries
+
+// Subscribe path for an IPNS-name source (a friend / a manual /ipns/ address): resolve the name → the ONE inline
+// index doc → mirror each package's dehydrated bundle (its OWN per-package meta-CID) into the source dir, PATH-scoped
+// and SOURCE-tagged. A package whose CID is unchanged is left in place (the index diff); a changed CID is fetched to
+// STAGING and swapped only on success (never destroy the current copy before the new bytes are in hand). Packages that
+// vanished from the index are pruned (entry + dir). Covers stay lazy (their content CIDs travel in the JSON). Returns
+// the number of LAUNCHABLE packages indexed.
+static int MirrorIpnsSource(nlohmann::ordered_json &GlobalConfigJSON, const nlohmann::ordered_json &Src, std::string *Error)
+{
+    const std::string Name = PackageSourceCID(Src);
+    if (Name.empty()) return 0;
+    std::string RErr;
+    const std::string TopCid = IpfsWrapper::IpnsResolve(Name, &RErr);
+    if (TopCid.empty())
+    {
+        LogErr("PackageCatalog::SyncPackageSources", "IPNS resolve of " + Name + " failed: " + RErr);
+        if (Error && Error->empty()) *Error = RErr;
+        return 0;   // leave whatever is already mirrored in place — a resolve failure never destroys prior state
+    }
+
+    const std::string BaseDir   = PackageSourceDir(GlobalConfigJSON, Src);
+    const std::string SourceKey = std::filesystem::path(BaseDir).filename().string();   // the SOURCE tag (per-source)
+    std::error_code Ec;
+    std::filesystem::create_directories(BaseDir, Ec);
+
+    // A single safe path segment: alnum/._-/space only, no separators, no "."/".." — so a hostile packageUID or
+    // library name can never traverse out of the source dir.
+    auto SanSeg = [](const std::string &S) {
+        std::string O;
+        for (unsigned char C : S)
+            O.push_back((std::isalnum(C) || C == '.' || C == '_' || C == '-' || C == ' ') ? static_cast<char>(C) : '_');
+        while (!O.empty() && (O.back() == '.' || O.back() == ' ')) O.pop_back();
+        return (O.empty() || O == "." || O == "..") ? std::string("_") : O;
+    };
+
+    // Refuse an oversized index BEFORE fetching it (CidSize resolves over the network) so a hostile source can't fill
+    // the disk during the fetch; then fetch, size-check the file too, and parse.
+    if (const long long Sz = IpfsWrapper::CidSize(TopCid); Sz > kMaxIpnsIndexBytes)
+    { LogErr("PackageCatalog::SyncPackageSources", "IPNS index " + TopCid + " is " + std::to_string(Sz)
+             + " bytes — refusing (max " + std::to_string(kMaxIpnsIndexBytes) + ")"); return 0; }
+
+    nlohmann::ordered_json Top;
+    {
+        const std::string Tmp = BaseDir + "/.ipnsfetch.json";
+        std::string FErr;
+        if (IpfsWrapper::FetchToPath(TopCid, Tmp, &FErr).empty())
+        { LogErr("PackageCatalog::SyncPackageSources", "fetch IPNS index " + TopCid + ": " + FErr); return 0; }
+        const auto FileSz = std::filesystem::file_size(Tmp, Ec);
+        if (!Ec && (long long)FileSz > kMaxIpnsIndexBytes)
+        { std::error_code Re; std::filesystem::remove(Tmp, Re);
+          LogErr("PackageCatalog::SyncPackageSources", "IPNS index doc exceeds the size cap — refusing"); return 0; }
+        bool Ok = false;
+        { std::ifstream In(Tmp); try { In >> Top; Ok = true; } catch (const std::exception &E)
+            { LogErr("PackageCatalog::SyncPackageSources", "bad IPNS index JSON: " + std::string(E.what())); } }
+        std::error_code Re; std::filesystem::remove(Tmp, Re);
+        if (!Ok || !Top.is_object() || !Top["libraries"].is_array())
+        { LogErr("PackageCatalog::SyncPackageSources", "IPNS source " + Name + ": malformed index"); return 0; }
+    }
+
+    int Indexed = 0, Seen = 0;
+    std::set<std::string> KeepDirs;   // PkgDirs present in this sync — everything else of ours is an orphan to prune
+    bool Overflow = false;
+    for (const auto &Lib : Top["libraries"])
+    {
+        if (Overflow) break;
+        if (!Lib.is_object() || !Lib["packages"].is_array()) continue;
+        const std::string LibName = SanSeg(Lib.value("name", std::string()));
+        for (const auto &P : Lib["packages"])
+        {
+            if (++Seen > kMaxIpnsPackages)
+            { LogWarn("PackageCatalog::SyncPackageSources", "IPNS source " + Name + " lists more than "
+                      + std::to_string(kMaxIpnsPackages) + " packages — truncating"); Overflow = true; break; }
+            if (!P.is_object()) continue;
+            const std::string Uid = P.value("packageUID", std::string());
+            const std::string Cid = P.value("cid", std::string());
+            if (Uid.empty() || Cid.empty()) continue;
+            const std::string PkgDir = QDir::cleanPath(QString::fromStdString(
+                BaseDir + "/" + LibName + "/" + SanSeg(Uid))).toStdString();
+            KeepDirs.insert(PkgDir);
+
+            const bool Synced = SourceDirSynced(PkgDir, Ec);
+            const std::string Was = MirrorCidForPath(GlobalConfigJSON["LIBRARY"], PkgDir);
+            if (!Synced || Was != Cid)
+            {
+                // Fetch to STAGING; swap only on success. A transient failure never leaves the current copy deleted.
+                const std::string Staging = PkgDir + ".new";
+                std::error_code Re; std::filesystem::remove_all(Staging, Re);
+                std::string FErr;
+                if (IpfsWrapper::FetchDirToPath(Cid, Staging, &FErr).empty())
+                { LogErr("PackageCatalog::SyncPackageSources", "mirror package " + Uid + " (" + Cid + "): " + FErr);
+                  std::filesystem::remove_all(Staging, Re);
+                  if (Error && Error->empty()) *Error = FErr; continue; }   // keep the existing copy + entry
+                // The staging fetch is the DEHYDRATED meta tree (*.json only). CARRY OVER already-HYDRATED content
+                // (the non-.json layer bytes CollectContentTargets wrote into the bundle) from the old dir so a
+                // metadata-only upstream change doesn't force a multi-GB re-download; a layer whose CID actually
+                // changed is caught + re-fetched by the launch-time CID verify. Then swap atomically.
+                if (Synced)
+                {
+                    for (const auto &F : std::filesystem::recursive_directory_iterator(PkgDir, Re))
+                    {
+                        if (Re || !F.is_regular_file() || F.path().extension() == ".json") continue;
+                        std::error_code Ce;
+                        const std::filesystem::path Rel = std::filesystem::relative(F.path(), PkgDir, Ce);
+                        if (Ce || Rel.empty()) continue;
+                        const std::filesystem::path Dst = std::filesystem::path(Staging) / Rel;
+                        if (std::filesystem::exists(Dst, Ce)) continue;   // the new tree already has it
+                        std::filesystem::create_directories(Dst.parent_path(), Ce);
+                        std::filesystem::rename(F.path(), Dst, Ce);       // move (same fs: cheap; no copy of GBs)
+                    }
+                }
+                std::filesystem::remove_all(PkgDir, Re);
+                std::filesystem::rename(Staging, PkgDir, Re);
+                if (Re) { LogErr("PackageCatalog::SyncPackageSources", "swap-in of " + Uid + " failed: " + Re.message());
+                          std::filesystem::remove_all(Staging, Re); continue; }
+            }
+            const BundleIdentity Id = ScanBundleIdentity(PkgDir);
+            if (!Id.Valid) { LogWarn("PackageCatalog::SyncPackageSources", "mirrored " + Uid + " is not a valid bundle — skipping"); continue; }
+            UpsertMirrorEntry(GlobalConfigJSON["LIBRARY"], PkgDir, Id.Uid, Cid, Id.Name, SourceKey);
+            if (Id.HasLaunchable) ++Indexed;
+        }
+    }
+
+    // Prune orphans: a package removed from the friend's index (and not merely truncated by the cap) should not linger
+    // in LIBRARY or on disk forever. Drop THIS source's entries whose dir is gone from the index + remove their dirs.
+    if (!Overflow && GlobalConfigJSON["LIBRARY"].is_array())
+    {
+        auto &Lib = GlobalConfigJSON["LIBRARY"];
+        for (int i = (int)Lib.size() - 1; i >= 0; --i)
+        {
+            const auto &E = Lib[i];
+            if (!E.is_object() || E.value("SOURCE", std::string()) != SourceKey) continue;
+            const std::string P = E.value("PATH", std::string());
+            if (KeepDirs.count(P)) continue;
+            std::error_code Re; std::filesystem::remove_all(P, Re);
+            LogOut("PackageCatalog::SyncPackageSources", "pruned orphaned mirror entry " + E.value("PACKAGEUID", std::string()));
+            Lib.erase(Lib.begin() + i);
+        }
+    }
+
+    LogOut("PackageCatalog::SyncPackageSources", "Mirrored IPNS source '" + PackageSourceName(Src) + "' ("
+           + std::to_string(Indexed) + " launchable) <- " + Name);
+    return Indexed;
+}
+
 int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Error)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return 0;
@@ -295,6 +493,9 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
     {
         const std::string Cid = PackageSourceCID(Src);
         if (Cid.empty()) continue;
+        //An IPNS-name source (a friend / a manual /ipns/ address) resolves to a MUTABLE top-level index and mirrors
+        //per-package meta-CIDs — a different flow from a static folder CID (handled just below).
+        if (IsIpnsSource(Src)) { Indexed += MirrorIpnsSource(GlobalConfigJSON, Src, Error); continue; }
         const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
 
         //A CID is immutable → fetch the dehydrated folder once (dehydrated only; content hydrates later per-layer).
@@ -349,7 +550,7 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
     return Indexed;
 }
 
-bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name)
+bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend)
 {
     if (Cid.empty()) return false;
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object())
@@ -361,8 +562,22 @@ bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::strin
     nlohmann::ordered_json Src;
     Src["CID"] = Cid;
     if (!Name.empty()) Src["NAME"] = Name;
+    // A friend source is an IPNS-name subscription (the friend's /ipns/<peerID> library address). FRIEND marks it in
+    // the UI as "a friend's library, added by accepting them" vs a manually-pasted source; IPNS makes the resolve
+    // path fire even without the /ipns/ prefix (belt-and-braces with IsIpnsSource).
+    if (Friend) { Src["FRIEND"] = true; Src["IPNS"] = true; }
     S["PackageSources"].push_back(std::move(Src));
     return true;
+}
+
+int PackageSourceIndexForCID(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid)
+{
+    if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return -1;
+    const auto &S = GlobalConfigJSON["Settings"];
+    if (!S.contains("PackageSources") || !S["PackageSources"].is_array()) return -1;
+    for (int i = 0; i < (int)S["PackageSources"].size(); ++i)
+        if (PackageSourceCID(S["PackageSources"][i]) == Cid) return i;
+    return -1;
 }
 
 namespace {

@@ -5,6 +5,7 @@
 
 #include <QtTest>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 
 #include "packagecatalog.h"
 #include "pkggraph.h"
@@ -46,6 +47,93 @@ class PackageCatalogTest : public QObject
 {
     Q_OBJECT
 private slots:
+
+    // IPNS subscribe: a FRIEND source ({CID:"/ipns/<name>"}) resolves to ONE index doc holding libraries inline, each
+    // with per-package dehydrated CIDs; SyncPackageSources mirrors each package + upserts LIBRARY. The CID-diff must
+    // skip an unchanged package on re-sync and RE-FETCH a changed one. Drives the whole flow through injected hooks
+    // (no live network). Teeth: (a) resolve→"" ⇒ nothing mirrored (the resolve step is load-bearing); (b) a changed
+    // package CID re-fetches while an unchanged one does not (the diff is real).
+    void ipns_source_mirrors_and_diffs()
+    {
+        QTemporaryDir Ud; QVERIFY(Ud.isValid());
+        json Cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", Ud.path().toStdString()}}},
+                                       {"PackageSources", json::array({
+                                           json{{"CID","/ipns/testfriend"},{"NAME","Friend"},{"FRIEND",true}} })}}}};
+
+        // Reset the injected hooks on ANY exit — a QVERIFY/QCOMPARE failure `return`s from the slot, so a manual reset
+        // at the end would leak the hooks into later tests. qScopeGuard fires regardless.
+        auto HookGuard = qScopeGuard([]{ IpfsWrapper::SetIpnsResolveHook({}); IpfsWrapper::SetFetchOnceHook({}); });
+
+        IpfsWrapper::SetIpnsResolveHook([](const std::string & Name, std::string *) {
+            // accept both "testfriend" and "/ipns/testfriend"
+            return (Name == "testfriend" || Name == "/ipns/testfriend") ? std::string("TOPCID_v1") : std::string();
+        });
+
+        // Which package CID the index advertises this run (flip to simulate an update), + a fetch counter per CID.
+        std::string PkgCid = "PKGCID_A";
+        std::map<std::string,int> Fetches;
+        IpfsWrapper::SetFetchOnceHook([&](const std::string & Cid, const std::string & Dest, bool Dir, std::string *Err) -> int {
+            Fetches[Cid]++;
+            if (!Dir)   // a single-file index fetch (top index doc)
+            {
+                json Index = json{{"publisher","testfriend"},{"nick","Friend"},
+                    {"libraries", json::array({ json{{"name","Games"},{"packages", json::array({
+                        json{{"packageUID","pkg1"},{"cid",PkgCid},{"title","Game One"}} })}} })}};
+                writeFile(QString::fromStdString(Dest), Index.dump(2));
+                return 0;
+            }
+            // a package meta-CID: materialize a minimal valid dehydrated bundle (tile + launchable).
+            std::filesystem::create_directories(Dest);
+            json Nodes = json::array({
+                json{{"NODE_ID","pkg1_tile"},{"TYPE","DeclareLibraryItem"},{"UID","pkg1"},{"TITLE","Game One"},{"PARENTS",json::array()}},
+                json{{"NODE_ID","pkg1_exec"},{"TYPE","DeclareExec"},{"HOST","linux64"},{"PATH","run.sh"},{"PARENTS",json::array({"pkg1_tile"})}} });
+            writeFile(QString::fromStdString(Dest) + "/pkg1.json", Nodes.dump(2));
+            (void)Err;
+            return 0;
+        });
+
+        // First sync → the package is mirrored + indexed.
+        const int Indexed = PackageCatalog::SyncPackageSources(Cfg);
+        QCOMPARE(Indexed, 1);
+        QVERIFY(Cfg.contains("LIBRARY") && Cfg["LIBRARY"].is_array() && !Cfg["LIBRARY"].empty());
+        const auto & E = Cfg["LIBRARY"][0];
+        QCOMPARE(E.value("PACKAGEUID", std::string()), std::string("pkg1"));
+        QCOMPARE(E.value("CIDSOURCE",  std::string()), std::string("PKGCID_A"));
+        // The source dir is keyed by the peerID (_friend_<peer>), NOT the attacker-chosen nick — so it can't collide
+        // with your own collections. The mirror entry is SOURCE-tagged so the static upsert never captures it.
+        QVERIFY2(E.value("PATH", std::string()).find("_friend_") != std::string::npos,
+                 "mirrored under the peerID-keyed friend source dir");
+        QVERIFY2(!E.value("SOURCE", std::string()).empty(), "mirror entry must be SOURCE-tagged");
+        const int FetchesA = Fetches["PKGCID_A"];
+        QVERIFY(FetchesA >= 1);
+
+        // Re-sync, SAME package CID → the diff skips the re-fetch (still one launchable indexed).
+        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg), 1);
+        QCOMPARE(Fetches["PKGCID_A"], FetchesA);   // no additional fetch of the unchanged package
+
+        // Simulate hydrated content (a large non-.json layer file the launcher wrote into the bundle) before the update.
+        const QString PkgPath = QString::fromStdString(Cfg["LIBRARY"][0].value("PATH", std::string()));
+        writeFile(PkgPath + "/content.bin", "HYDRATED-GAME-BYTES");
+
+        // Now the friend publishes an update: the index advertises a NEW package CID → re-fetch exactly that one...
+        PkgCid = "PKGCID_B";
+        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg), 1);
+        QVERIFY2(Fetches["PKGCID_B"] >= 1, "a changed package CID must be re-fetched (the update path)");
+        QCOMPARE(Cfg["LIBRARY"][0].value("CIDSOURCE", std::string()), std::string("PKGCID_B"));
+        // ...and the hydrated content survives the swap (a metadata update must NOT force a multi-GB re-download).
+        // Teeth: drop the non-.json carry-over in the swap and this file is gone after the update.
+        QVERIFY2(std::filesystem::exists((PkgPath + "/content.bin").toStdString()),
+                 "hydrated content must be carried across a package update, not discarded");
+
+        // Teeth: a failed resolve mirrors nothing (the resolve step is load-bearing, not incidental).
+        json Cfg2 = json{{"Settings", {{"Paths", {{"UserDataRoot", Ud.path().toStdString()}}},
+                                        {"PackageSources", json::array({
+                                            json{{"CID","/ipns/unknownfriend"},{"FRIEND",true}} })}}}};
+        IpfsWrapper::SetIpnsResolveHook([](const std::string &, std::string * Err) { if (Err) *Err = "no record"; return std::string(); });
+        QCOMPARE(PackageCatalog::SyncPackageSources(Cfg2), 0);
+        QVERIFY(!Cfg2.contains("LIBRARY") || Cfg2["LIBRARY"].empty());
+        // hooks reset by HookGuard on scope exit
+    }
 
     // Mint stamps SOURCE.SIZE (payload bytes) beside the CID for a FILE layer, a DIRECTORY layer (recursive sum),
     // and a COVER; and BACKFILLS it on re-mint for a package that already carries a valid CID but no size, via the

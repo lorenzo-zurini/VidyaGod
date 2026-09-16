@@ -469,6 +469,56 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         return 0;
     }
 
+    //HEADLESS: remint a whole library AND publish it under our IPNS identity — build the rich per-library indexes +
+    //the top-level library-list index, point /ipns/<peerID> at the top index, print the top CID. This is the
+    //maintainer's one-time official publish and the client's "Verify Library"; also the E2E publish step.
+    if (!LaunchParameters.PublishLibraryDir.empty())
+    {
+        LogOut("main.cpp", "Publishing library to IPNS: " + LaunchParameters.PublishLibraryDir);
+        //The IPNS record is a DHT PutValue — it needs a bootstrapped routing table. A one-shot headless process must
+        //wait for peers first, or the put fails with "no peer in table".
+        for (int i = 0; i < 60 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogOut("main.cpp", "peers=" + std::to_string(IpfsWrapper::PeerCount()) + " — publishing");
+        std::string Err;
+        const std::string TopCid = PackageCatalog::PublishLibraries(GlobalConfigJSON, LaunchParameters.PublishLibraryDir, &Err);
+        if (TopCid.empty()) { LogErr("main.cpp", "publish-library failed: " + Err); return 1; }
+        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
+        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
+            LogWarn("main.cpp", "published but saving GlobalConfig.JSON failed — the printed CID is still valid");
+        //Wait for the top-level index to have a provider (self) so a short-lived process doesn't exit before the
+        //announce lands — same DHT-propagation wait the remint uses for collection CIDs.
+        for (int i = 0; i < 45 && IpfsWrapper::ProviderCount(TopCid) < 1; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!Err.empty()) LogWarn("main.cpp", "note: " + Err);   // e.g. "minted but not yet advertised"
+        LogSucc("main.cpp", "Published /ipns/" + IpfsWrapper::PeerID() + " -> " + TopCid);
+        std::cout << "/ipns/" << IpfsWrapper::PeerID() << "\t" << TopCid << "\n";   // machine-readable
+        return 0;
+    }
+
+    //HEADLESS: resolve an IPNS name (peer ID / friend code, ± /ipns/ prefix) to its current CID — E2E + diagnostics.
+    if (!LaunchParameters.IpnsResolveName.empty())
+    {
+        std::string Err;
+        const std::string Cid = IpfsWrapper::IpnsResolve(LaunchParameters.IpnsResolveName, &Err);
+        if (Cid.empty()) { LogErr("main.cpp", "ipns-resolve failed: " + Err); return 1; }
+        LogSucc("main.cpp", LaunchParameters.IpnsResolveName + " -> " + Cid);
+        std::cout << Cid << "\n";
+        return 0;
+    }
+
+    //HEADLESS: publish OUR name -> /ipfs/<cid> (the low-level primitive; --publish-library is the usual path).
+    if (!LaunchParameters.IpnsPublishCid.empty())
+    {
+        for (int i = 0; i < 60 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::string Err;
+        if (!IpfsWrapper::IpnsPublish(LaunchParameters.IpnsPublishCid, 0, &Err))
+        { LogErr("main.cpp", "ipns-publish failed: " + Err); return 1; }
+        for (int i = 0; i < 30 && IpfsWrapper::ProviderCount(LaunchParameters.IpnsPublishCid) < 1; ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogSucc("main.cpp", "Published /ipns/" + IpfsWrapper::PeerID() + " -> /ipfs/" + LaunchParameters.IpnsPublishCid);
+        return 0;
+    }
+
     //HEADLESS: validate the node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...). Bare form
     //scans the WHOLE catalog; `--validate-nodes <pkg>` scopes to one package (UID / bundle dir / node id) + its
     //PARENTS closure — a fast pre-publish check that never pays the cross-package content scan (e.g. a huge

@@ -443,7 +443,7 @@ std::string FetchDirToPath(const std::string &Cid, const std::string &DestDirStr
 {
     if (Cid.empty())        { if (Error) *Error = "empty CID";              return std::string(); }
     if (DestDirStr.empty()) { if (Error) *Error = "empty destination dir"; return std::string(); }
-    if (!DaemonRunning())   { if (Error) *Error = "IPFS networking is offline"; return std::string(); }
+    if (!DaemonRunning() && !FetchOnceHookActive()) { if (Error) *Error = "IPFS networking is offline"; return std::string(); }
     const BatchHandle H = EnqueueBatch({ FetchTarget{ Cid, DestDirStr, /*Optional=*/false, /*Dir=*/true } });
     if (!WaitBatch(H, DirSyncWaitMs, Error)) return std::string();
     LogSucc("IpfsWrapper::FetchDirToPath", "Materialized folder CID " + Cid + " at " + DestDirStr);

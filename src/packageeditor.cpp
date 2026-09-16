@@ -5,7 +5,7 @@
 #include "pkgactions.h"           // performs the node actions the canvas asks for
 #include "jsonraweditor.h"        // raw-JSON view
 #include "validationpanel.h"      // docked validation panel
-#include "packagecatalog.h"       // PackageCatalog::PublishPackage (the Publish button)
+#include "packagecatalog.h"       // PackageCatalog::PublishPackage (dehydrate) + IsPackageSourcePath (own-library check)
 #include "commonutils.h"
 
 #include <QGuiApplication>
@@ -13,8 +13,10 @@
 #include <QFileDialog>
 #include <QDir>
 #include <QMessageBox>
+#include <QMetaMethod>
 #include <filesystem>
 #include <QPushButton>
+#include <QFile>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QVBoxLayout>
@@ -102,9 +104,38 @@ PackageEditor::PackageEditor(nlohmann::ordered_json * GlobalConfigJSON, QWidget 
         if (Ok)
         {
             Model->LoadNodes(); BuildUI();
-            QMessageBox::information(this, "Publish",
-                Dest.isEmpty() ? "Bundle dehydrated (content seeded, CIDs written into the node files)."
-                               : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
+            //Per-package publish to your IPNS library: if this bundle is in YOUR OWN library (not a friend's mirrored
+            //source), offer to republish your signed index so the edit is live under your friend code. The heavy work
+            //(whole-library re-mint + a DHT put) MUST run off the GUI thread — so we REQUEST it via a signal that the
+            //opener wires to AppModel::publishLibraries (off-thread + correct Settings merge + persistence). The editor
+            //never blocks the UI or persists config itself. (An opener without an AppModel, e.g. the prelaunch window,
+            //simply doesn't connect it — publishing is then done from the Sharing tab.)
+            nlohmann::ordered_json *Cfg = Model->globalConfig();
+            const bool OwnLibrary = Cfg && PackageCatalog::IsPackageSourcePath(
+                                        *Cfg, std::filesystem::path(PackageDir->path().toStdString()));
+            //Only OFFER the publish when something is actually wired to carry it out — the signal is connected by an
+            //opener that has an AppModel (the Library tab), NOT by the prelaunch window. Prompting where nothing
+            //listens would emit into the void and then claim success — a silent no-op behind an explicit success
+            //message. Where it isn't connected, publishing is done from the Sharing tab instead.
+            const bool CanPublish = isSignalConnected(QMetaMethod::fromSignal(&PackageEditor::publishToLibraryRequested));
+            bool RequestedPublish = false;
+            if (OwnLibrary && CanPublish &&
+                QMessageBox::question(this, "Publish to your library",
+                    "Bundle dehydrated. Publish it to your friend-code library now so friends see the update?\n\n"
+                    "(This rebuilds your signed index and points your friend code at it — runs in the background; "
+                    "networking must be on. Watch the Sharing tab for the result.)",
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+            {
+                emit publishToLibraryRequested();
+                RequestedPublish = true;
+            }
+            if (RequestedPublish)
+                QMessageBox::information(this, "Publishing",
+                    "Publishing to your library in the background — the Sharing tab shows the result.");
+            else
+                QMessageBox::information(this, "Publish",
+                    Dest.isEmpty() ? "Bundle dehydrated (content seeded, CIDs written into the node files)."
+                                   : ("Bundle published.\nManifest-only copy exported to:\n" + Dest));
         }
         else QMessageBox::critical(this, "Publish", "Publish failed:\n" + QString::fromStdString(Err));
     });
