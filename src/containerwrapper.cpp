@@ -193,13 +193,12 @@ bool ContainerWrapper::BuildContainerRuntime()
 
     {
         StepScope Step(8, "Seeding persisted saves (registry + files)");
-        //Seed any persisted KEEP hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
-        //No-op when PersistAll (durable RW branch already holds the reg files).
+        //Seed any persisted whole hives into the ephemeral WRITELAYER so they shadow DEFPREFIX.
         if (!ContainerParams.KeepRegHives.empty() && !RegistryLayer::SeedPersistRegistry(this->ContainerParams))
             LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted registry seed reported failures — saved settings may be missing this session.");
 
-        //Seed any persisted KEEP files into the WRITELAYER so they shadow their lower layers.
-        //No-op when PersistAll or when none are declared.
+        //Seed any persisted single files into the WRITELAYER so they shadow their lower layers.
+        //No-op when none are declared.
         if (!ContainerParams.KeepFiles.empty() && !PersistLayer::SeedPersistFiles(this->ContainerParams))
             LogWarn("ContainerWrapper::BuildContainerRuntime", "Persisted file seed reported failures — saved files may be missing this session.");
     }
@@ -670,16 +669,16 @@ bool ContainerWrapper::Cleanup()
 {
     std::error_code ec;
 
-    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted. No-op when PersistAll.
+    //1. Registry + file capture must read RUNTIME/<...> before anything is unmounted (no-op when none declared).
     //A capture failure means the user's session state was NOT saved — say so loudly (still proceed with
     //cleanup: the runtime must come down regardless).
-    if (!ContainerParams.KeepRegHives.empty() && !ContainerParams.PersistAll
+    if (!ContainerParams.KeepRegHives.empty()
         && !RegistryLayer::CapturePersistRegistry(this->ContainerParams))
         LogErr("ContainerWrapper::Cleanup", "Registry persistence capture FAILED — this session's registry changes were not saved.");
-    if (!ContainerParams.KeepFiles.empty() && !ContainerParams.PersistAll
+    if (!ContainerParams.KeepFiles.empty()
         && !PersistLayer::CapturePersistFiles(this->ContainerParams))
         LogErr("ContainerWrapper::Cleanup", "File persistence capture FAILED — this session's saved files were not stored.");
-    if (!ContainerParams.KeepRegKeys.empty() && !ContainerParams.PersistAll
+    if (!ContainerParams.KeepRegKeys.empty()
         && !RegistryLayer::CapturePersistRegKeys(this->ContainerParams))
         LogErr("ContainerWrapper::Cleanup", "Registry-key persistence capture FAILED — this session's key state was not stored.");
 

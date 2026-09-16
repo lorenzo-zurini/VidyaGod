@@ -1477,7 +1477,7 @@ void PkgCanvas::drawToolbar()
     {
         struct Grp { const char *Title; std::vector<const char *> Types; };
         static const std::vector<Grp> Groups = {
-            {"Payload",     {"Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "Persist", "CustomVar"}},
+            {"Payload",     {"Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "DeclarePersist", "CustomVar"}},
             {"Declare",     {"DeclareExec", "DeclareLibraryItem"}},
             {"Composition", {"Group"}},
         };

@@ -297,7 +297,7 @@ TEST(lower_node_when_reaches_every_gated_type)
         {{"NODE_ID", "d"}, {"TYPE", "BinaryPatch"}, {"FILE", "g.exe"}, {"EDITS", ordered_json::array({
             ordered_json{{"MODE", "Replace"}, {"OFFSET", "0x1"}, {"EXPECT", "01"}, {"REPLACE", "00"}}})}},
         {{"NODE_ID", "e"}, {"TYPE", "DllOverride"}, {"OVERRIDES", {{"d3d8", "n,b"}}}},
-        {{"NODE_ID", "f"}, {"TYPE", "Persist"}, {"KEEP", ordered_json::array({"a"})}},
+        {{"NODE_ID", "f"}, {"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "a"}, {"TARGET", "a"}},
         {{"NODE_ID", "g"}, {"TYPE", "CustomVar"}, {"KEY", "K"}, {"DEFAULT", "1"}},
     };
     for (ordered_json N : Nodes)
@@ -404,36 +404,31 @@ TEST(lower_dlloverride_preserves_an_empty_order)
     CHECK(Refused(ordered_json{{"NODE_ID", "d"}, {"TYPE", "DllOverride"}, {"OVERRIDES", {{"d3d8", 7}}}}));
 }
 
-// Persist was the ONE branch that refused nothing: a non-array KEEP, a non-string entry or an empty string
-// all lowered "successfully" to zero layers — and a Persist node emitting zero layers is legitimate
-// ("DROP": [] ships on every runner), so nothing downstream could tell "keeps nothing on purpose" from
-// "keeps nothing because I could not read it". Silent save loss, reached from the authoring side.
-//
-// The dangerous shape is the PRE-FLAT SPELLING — `"KEEP": "pfx/drive_c/users"` as a bare string — which is
-// exactly what a hand-written flat node reaches for.
-TEST(lower_persist_refuses_a_malformed_keepset)
+// DeclarePersist is one-node = one-persist (no arrays to expand): every field is type-checked and a malformed one
+// is REFUSED like every other branch, rather than lowering "successfully" to a garbage layer that silently loses
+// saves at capture time.
+TEST(lower_declarepersist_refuses_a_malformed_field)
 {
-    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","Persist"}, {"KEEP", "pfx/drive_c/MySaves"}}));
-    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","Persist"}, {"DROP", "cache"}}));
-    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","Persist"},
-                               {"KEEP", ordered_json::array({"ok", 5})}}));
-    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","Persist"},
-                               {"KEEP", ordered_json::array({""})}}));
-    // ...and the legitimate empty list still lowers to nothing, without complaint.
-    CHECK(!Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","Persist"}, {"DROP", ordered_json::array()}}));
+    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","DeclarePersist"}, {"SCOPE", 5}}));
+    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","DeclarePersist"}, {"PATH", ordered_json::array()}}));
+    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","DeclarePersist"}, {"TARGET", 7}}));
+    CHECK(Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","DeclarePersist"}, {"CLOUD", "yes"}}));
+    // ...and a well-formed persist lowers without complaint.
+    CHECK(!Refused(ordered_json{{"NODE_ID","p"}, {"TYPE","DeclarePersist"},
+                                {"SCOPE","file"}, {"PATH","drive_c/Saves"}, {"TARGET","Saves"}, {"CLOUD",true}}));
 }
 
-TEST(lower_persist_emits_one_layer_per_kept_or_dropped_target)
+TEST(lower_declarepersist_emits_one_layer_passing_the_fields_through)
 {
-    ordered_json N{{"NODE_ID", "p"}, {"TYPE", "Persist"},
-                   {"KEEP", ordered_json::array({"drive_c/Saves", "HKCU"})},
-                   {"DROP", ordered_json::array({"drive_c/cache"})}};
+    ordered_json N{{"NODE_ID", "p"}, {"TYPE", "DeclarePersist"},
+                   {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Game"}, {"TARGET", "Game"}, {"CLOUD", false}};
     const ordered_json L = Lower(N);
-    CHECK_EQ((int)L.size(), 3);
-    int Keeps = 0, Drops = 0;
-    for (const auto &E : L) { if (E.contains("KEEP")) ++Keeps; if (E.contains("DROP")) ++Drops; }
-    CHECK_EQ(Keeps, 2);
-    CHECK_EQ(Drops, 1);
+    CHECK_EQ((int)L.size(), 1);
+    CHECK_EQ(L[0].value("TYPE", std::string()), std::string("DeclarePersist"));
+    CHECK_EQ(L[0].value("SCOPE", std::string()), std::string("registry"));
+    CHECK_EQ(L[0].value("PATH", std::string()), std::string("HKCU\\Software\\Game"));
+    CHECK_EQ(L[0].value("TARGET", std::string()), std::string("Game"));
+    CHECK_EQ(L[0].value("CLOUD", true), false);
 }
 
 // CustomVar's UI facet IS the pre-launch control — the label, the kind, the enum choices. Dropping it leaves a

@@ -71,9 +71,9 @@ static std::string ZipFirstCompressedEntry(const std::string &Path)
 
 //Builds the vidyagodfs JSON layer-spec from the resolved container: the DEFPREFIX base (when the runner
 //generates a prefix), every VFS subcomponent rooted at CONTENT_ROOT + its TARGET (logically — no staging
-//dirs), the KEEP dirs as durable RW passthrough layers, the DROP paths as ephemeral RW shadows, and the
-//writable top branch (the durable UserDataPath when the whole runtime is kept, else the ephemeral WRITELAYER).
-//Array order is union priority (lowest first).
+//dirs), the persisted directories as durable RW passthrough layers (each UserDataPath/<Target> unioned at its
+//runtime <Path>), and the always-ephemeral writable top branch (WRITELAYER). Array order is union priority
+//(lowest first).
 //Every DECLARED delta base must name a target that an EARLIER layer of THIS plan composes bytes at. When it
 //does not, vidyagodfs prints one line to its own stderr and SKIPS the layer — so the mount succeeds, the game
 //starts, and that content is simply absent. This runs on the assembled plan (not on the node list) because the
@@ -193,11 +193,11 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         Spec["writelayer"] = nullptr;
     else
     {
-        //NAMED, not created — see ReportMissingSources: building a plan must not touch the filesystem. Under
-        //PersistAll this path is the user's DURABLE data dir, and --audit-packages builds 960 plans it never
-        //mounts; creating it here littered that directory with one entry per audited package.
-        const std::filesystem::path RW = ContainerParams.PersistAll ? ContainerParams.UserDataPath : ContainerParams.WriteLayerPath;
-        Spec["writelayer"] = RW.string();
+        //The RW upper is ALWAYS the ephemeral write layer (in /tmp). Durable state reaches the game only through
+        //named KEEP-dir passthroughs below (each UserDataPath/<Target> unioned at its runtime <Path>) — there is no
+        //whole-runtime "PersistAll makes the upper durable" mode any more, which is what keeps the instance config
+        //(a sibling of the Target dirs) out of every game-writable mount.
+        Spec["writelayer"] = ContainerParams.WriteLayerPath.string();
     }
 
     nlohmann::ordered_json Layers = nlohmann::ordered_json::array();
@@ -349,23 +349,14 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
         && std::filesystem::exists(ContainerParams.DefaultDataPath))
         Layers.push_back({{"type", "dir"}, {"source", ContainerParams.DefaultDataPath.string()}, {"target", ""}, {"rw", false}});
 
-    //KEEP dirs → durable RW passthrough layers (high priority, appended after content). The dir unions over the lower
-    //layers at its target (so a prefix skeleton stays visible) while writes land in UserDataPath/<rel> — live, durable.
-    //Skipped when the whole runtime is kept (the writable branch is already the durable UserDataPath).
-    if (!ContainerParams.PersistAll)
-        for (const std::string &Rel : ContainerParams.KeepDirs)
-            Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.UserDataPath / Rel).string()},
-                              {"target", Rel}, {"rw", true}});
-
-    //DROP paths → ephemeral RW shadow layers (highest priority, appended LAST so they win). The source is an empty
-    //per-launch dir under TempPath, so writes to <rel> go nowhere durable — carving an ephemeral hole in a whole-runtime
-    //keep, or in an enclosing KEEP dir. Always emitted (harmless when nothing durable encloses it).
-    //The RW sources are CREATED by MountVFS, not here: building a plan must not touch the filesystem, or the
-    //plan cannot be inspected without side effects — which is why the audit used to re-implement this function
-    //approximately instead of just calling it, and then disagreed with it about what mounts where.
-    for (const std::string &Rel : ContainerParams.DropPaths)
-        Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.TempPath / "DROPS" / Rel).string()},
-                          {"target", Rel}, {"rw", true}});
+    //DIR persists → durable RW passthrough layers (high priority, appended after content). Each unions the durable
+    //UserDataPath/<Target> over the lower layers AT its runtime <Path> (so a prefix skeleton stays visible) while
+    //writes land in the durable Target dir — live. A Path=="" persist (file PersistAll) passes the Target dir
+    //through at the runtime ROOT (target ""). The durable source is UserDataPath/<Target>, a NAMED sibling of the
+    //instance config, never the instance-dir root — so instance.json is never inside a game-writable mount.
+    for (const PersistTarget &D : ContainerParams.KeepDirs)
+        Layers.push_back({{"type", "dir"}, {"source", (ContainerParams.UserDataPath / D.Target).string()},
+                          {"target", D.Path}, {"rw", true}});
 
     //The mount plan IS the game's filesystem, and its ORDER IS PRIORITY — yet until now it was assembled and handed
     //to the FUSE helper without ever being stated. Print it: index, type, rw, target, source, and whether the source
@@ -389,14 +380,14 @@ nlohmann::ordered_json VfsMount::BuildLayerSpec(struct ContainerParams &Containe
 //unionfs+fuse-zip+bindfs+staging pipeline with a single FUSE mount. The helper daemonizes once the
 //mount is live, so the spawn returns; we then poll mountinfo to confirm readiness before proceeding.
 //RuntimePath registers for the non-lazy save-safe unmount whenever durable data is reachable through
-//the mount (a whole-runtime keep's writelayer or any KEEP-dir RW passthrough), else the lazy path.
+//the mount (any directory-persist RW passthrough), else the lazy path.
 //A layer whose source is gone mounts EMPTY and succeeds, so the game just quietly misses those files — the same
 //silence class as a FileEdit that never applied. A pure question about a plan and the filesystem, so it is named
 //and callable: the MOUNT asks it (where "does this exist yet" is meaningful), a test asks it directly, and the
 //plan BUILDER deliberately does not — --audit-packages builds 960 plans it will never mount, and there the
 //runtime-sourced layers legitimately do not exist yet.
-//Creates the writable paths a built plan NAMES: the write branch and every RW passthrough source (KEEP dirs,
-//DROP shadows). The counterpart to building a plan without side effects — the plan says what it needs, the
+//Creates the writable paths a built plan NAMES: the write branch and every RW passthrough source (the durable
+//persist-dir sources). The counterpart to building a plan without side effects — the plan says what it needs, the
 //mount provides it. Named and callable so the two halves can be tested apart: nothing else in the suite can
 //mount, so without this a mount that stopped creating them would break only on real hardware.
 void VfsMount::MaterializePlanPaths(const nlohmann::ordered_json &Spec)
@@ -451,7 +442,7 @@ size_t VfsMount::ReportMissingSources(const nlohmann::ordered_json &Spec, bool S
 
 //Gets a built plan ready to hand to the FS: create what it NAMES, then report what is still missing.
 //The ORDER is the point and is why this is one function rather than two calls at the call site: the RW
-//passthrough sources (KEEP dirs, DROP shadows) are created BY the mount, so sweeping first reports layers that
+//passthrough sources (the durable persist-dir sources) are created BY the mount, so sweeping first reports layers that
 //are about to appear — a false "N of M layer source(s) do not exist" on the one diagnostic that exists to catch
 //genuinely absent content. Splitting the plan builder from the mount inverted this order once already; as two
 //statements in MountVFS nothing could pin the sequence, because no test can mount.
@@ -505,9 +496,9 @@ bool VfsMount::MountVFS(struct ContainerParams &ContainerParams)
     }
     if (HelperPid > 0) ContainerParams.VfsHelperPids.push_back(HelperPid);   // Windows: terminated on Cleanup
 
-    //Durable-backed when a live RW path reaches USERDATA through the mount: a whole-runtime keep (writelayer IS
-    //UserDataPath) or any KEEP-dir passthrough. KEEP files/registry are copy-captured before unmount, not live.
-    if (ContainerParams.PersistAll || !ContainerParams.KeepDirs.empty())
+    //Durable-backed when a live RW path reaches USERDATA through the mount: any dir persist is a live passthrough of
+    //UserDataPath/<Target>. KEEP files/registry are copy-captured before unmount, not live.
+    if (!ContainerParams.KeepDirs.empty())
         ContainerParams.CleanupPersistPaths.push_back(ContainerParams.RuntimePath);
     else
         ContainerParams.CleanupUnmountPaths.push_back(ContainerParams.RuntimePath);

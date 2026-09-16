@@ -10,15 +10,16 @@
 // ---------------------------------------------------------------------------
 // InstanceStore — PrismLauncher-style per-game INSTANCES, the single owner of instance discovery + config I/O.
 //
-// An instance is one self-contained config + its own durable userdata tree for one game, living at
+// An instance is one self-contained config + its own durable state for one game, living FLAT at
 //   <root>/USERDATA/<PackageUID>/<InstanceName>/
-//     ├─ instance.json   ← the config blob (ex-GlobalConfig LIBRARY[i].USERSETTINGS: VARIABLES / PREFERRED_RUNNER /
-//     │                     RUNNER_CHAIN / MODULES / SKIP_LAUNCH_DIALOG, + soft SELECTED_VARIANT + LASTRUN)
-//     └─ USERDATA/        ← the durable userdata tree (what used to be PackagePath/USERDATA/*, incl. REGISTRY/, REGKEYS/)
-// The config is a SIBLING of the USERDATA/ subdir, NOT inside it: a whole-runtime-KEEP (PersistAll) launch mounts
-// UserDataDir() as the game's writable root, so the config MUST stay out of that tree or a sandboxed game could
-// read persisted secrets and tamper RUNNER_CHAIN/VARIABLES (which feed the next launch's runner + arg/env). The
-// PackageUID is SANITIZED to a single safe path segment (it is peer-authored) so it can never escape <root>.
+//     ├─ instance.json    ← the config blob (ex-GlobalConfig LIBRARY[i].USERSETTINGS: VARIABLES / PREFERRED_RUNNER /
+//     │                      RUNNER_CHAIN / MODULES / SKIP_LAUNCH_DIALOG, + soft SELECTED_VARIANT + LASTRUN)
+//     ├─ <TARGET>/ …      ← one NAMED durable subdir per DeclarePersist (e.g. Saves/, AllData/, REGISTRY/, REGKEYS/)
+// UserDataPath (the durable root) IS the instance dir; each persist maps a runtime PATH to <instdir>/<TARGET>.
+// SAFETY: nothing ever mounts the instance-dir ROOT — every game-writable mount is a NAMED child (a persist TARGET),
+// so instance.json at the root is never inside a mount and a sandboxed game can't read its secrets or tamper
+// RUNNER_CHAIN/VARIABLES. (Ephemeral TEMP lives in /tmp, not here.) The PackageUID is SANITIZED to a single safe
+// path segment (it is peer-authored) so it can never escape <root>.
 //
 // FILESYSTEM-AS-TRUTH: instances are DISCOVERED by scanning the package dir — there is no registry in GlobalConfig.
 // If none exist, "DefaultInstance" is auto-created. The last-active / pre-selected instance is the one whose
@@ -37,11 +38,9 @@ inline constexpr const char *ConfigFile      = "instance.json";
 std::filesystem::path Root(const nlohmann::ordered_json &Cfg);
 // <root>/<PackageUID> — the parent of a game's instances.
 std::filesystem::path PackageDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID);
-// <root>/<PackageUID>/<Instance> — one instance's directory (holds instance.json + the USERDATA/ subdir).
+// <root>/<PackageUID>/<Instance> — the instance dir; this IS UserDataPath (persist TARGETs are its named subdirs).
 std::filesystem::path InstanceDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance);
-// <root>/<PackageUID>/<Instance>/USERDATA — the durable, game-writable userdata tree (what the launch engine mounts).
-std::filesystem::path UserDataDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance);
-// <root>/<PackageUID>/<Instance>/instance.json — the config, a SIBLING of USERDATA/ (never inside the mounted tree).
+// <root>/<PackageUID>/<Instance>/instance.json — the config, at the instance-dir root (never inside a persist TARGET).
 std::filesystem::path ConfigPath(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance);
 
 // Reduce a peer-authored PackageUID to a single safe path segment (each char not in [A-Za-z0-9._-] → '_', and

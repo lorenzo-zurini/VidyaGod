@@ -371,6 +371,7 @@ add_executable(vg_tests
     tests/test_fileedits.cpp
     tests/test_binarypatch.cpp
     tests/test_registrylayer.cpp
+    tests/test_persistlayer.cpp
     tests/test_depcheck.cpp
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp

@@ -80,7 +80,8 @@ int main(int argc, char ** argv)
                                               {{"Resolution", "1920x1080"}, {"Windowed", "0"}}}}}}}}}} })}},
         json{{"TYPE", "CustomVar"}, {"KEY", "FPS_CAP"}, {"DEFAULT", "60"},
              {"UI", {{"LABEL", "FPS cap"}, {"CONTROL", "enum"}}}},
-        json{{"TYPE", "Persist"}, {"KEEP", json::array({"drive_c/users/steamuser/Saved Games/aoe2"})}},
+        json{{"TYPE", "DeclarePersist"}, {"SCOPE", "file"},
+             {"PATH", "drive_c/users/steamuser/Saved Games/aoe2"}, {"TARGET", "aoe2"}},
         tile, exec}, {"wine-ge", "aoe2-base"}));
 
     json runner = NodeFixture::Runner("linux64", {"win32", "win64"}, "%RunnerMount%/proton");

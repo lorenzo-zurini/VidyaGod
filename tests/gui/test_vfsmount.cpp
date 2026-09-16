@@ -172,7 +172,7 @@ private slots:
     {
         ContainerParams CP = Make();
         CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
-        CP.KeepDirs = {"game/save"};
+        CP.KeepDirs = { {"game/save", "save", true} };
 
         const json Spec = VfsMount::BuildLayerSpec(CP);
         const int K = IndexOfTarget(Spec, "game/save");
@@ -181,27 +181,8 @@ private slots:
         const std::string Src = Spec["layers"][K].value("source", std::string());
         QVERIFY2(Src.find("USERDATA") != std::string::npos,
                  "a KEEP dir must be backed by the DURABLE UserDataPath, not by TEMP");
-    }
-
-    // DROP carves an ephemeral hole in a keep; if anything outranked it, the write it is meant to discard would
-    // land in durable storage instead.
-    void drop_paths_are_last_and_ephemeral()
-    {
-        ContainerParams CP = Make();
-        CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
-        CP.DefaultDataPath = std::filesystem::path(Root.path().toStdString()) / "DEFAULTDATA";
-        std::filesystem::create_directories(CP.DefaultDataPath);
-        CP.KeepDirs   = {"game/save"};
-        CP.DropPaths  = {"game/save/cache"};
-
-        const json Spec = VfsMount::BuildLayerSpec(CP);
-        const auto T = Targets(Spec);
-        QCOMPARE(T.back(), std::string("game/save/cache"));
-        const auto &Last = Spec["layers"].back();
-        QVERIFY(Last.value("rw", false));
-        const std::string Src = Last.value("source", std::string());
-        QVERIFY2(Src.find("TEMP") != std::string::npos && Src.find("DROPS") != std::string::npos,
-                 "a DROP must be backed by ephemeral TEMP storage — that is the whole point");
+        QVERIFY2(Src.find("save") != std::string::npos,
+                 "a KEEP dir's durable source is UserDataPath/<Target>, a NAMED sibling of the instance config");
     }
 
     // ---- the writable branch ----
@@ -216,17 +197,23 @@ private slots:
         QCOMPARE(Spec.value("readonly", true), false);
     }
 
-    void persist_all_makes_the_write_branch_durable_and_drops_the_keep_layers()
+    // A whole-runtime persist (PATH "") is no longer a magic "make the write branch durable" flag — it is a plain
+    // KEEP dir whose runtime <Path> is the ROOT (target "") and whose durable source is UserDataPath/<Target>, a
+    // NAMED sibling of the instance config. The write layer stays ephemeral (so instance.json never lands in a
+    // game-writable mount); the root persist rides above it as an ordinary durable RW passthrough.
+    void a_whole_runtime_persist_is_a_root_keep_dir_over_an_ephemeral_write_layer()
     {
         ContainerParams CP = Make();
-        CP.PersistAll = true;
-        CP.KeepDirs   = {"game/save"};
+        CP.KeepDirs = { {"", "AllData", true} };
         const json Spec = VfsMount::BuildLayerSpec(CP);
-        QVERIFY2(Spec.value("writelayer", std::string()).find("USERDATA") != std::string::npos,
-                 "a whole-runtime keep writes straight into the durable store");
-        QVERIFY2(IndexOfTarget(Spec, "game/save") < 0,
-                 "KEEP passthroughs are redundant once the whole branch is durable — emitting them anyway would "
-                 "stack a second durable source over the same target");
+        QVERIFY2(Spec.value("writelayer", std::string()).find("WRITELAYER") != std::string::npos,
+                 "the write layer stays ephemeral even under a whole-runtime persist");
+        const int K = IndexOfTarget(Spec, "");
+        QVERIFY2(K >= 0, "a PATH \"\" persist mounts a durable RW dir at the runtime ROOT (target \"\")");
+        QVERIFY(Spec["layers"][K].value("rw", false));
+        const std::string Src = Spec["layers"][K].value("source", std::string());
+        QVERIFY2(Src.find("USERDATA") != std::string::npos && Src.find("AllData") != std::string::npos,
+                 "its durable source is UserDataPath/<Target>, a NAMED sibling of the instance config");
     }
 
     void readonly_vfs_has_no_write_layer()
@@ -686,30 +673,19 @@ private slots:
     {
         ContainerParams CP = Make();
         CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
-        CP.KeepDirs   = {"game/save"};
-        CP.DropPaths  = {"game/temp"};
+        CP.KeepDirs   = { {"game/save", "save", true} };
         VfsMount::BuildLayerSpec(CP);
-        QVERIFY2(!std::filesystem::exists(CP.UserDataPath / "game/save"),
-                 "a KEEP dir must be created by the MOUNT, not by building the plan");
-        QVERIFY2(!std::filesystem::exists(CP.TempPath / "DROPS" / "game/temp"),
-                 "a DROP shadow must be created by the MOUNT, not by building the plan");
+        QVERIFY2(!std::filesystem::exists(CP.UserDataPath / "save"),
+                 "a KEEP dir's durable source must be created by the MOUNT, not by building the plan");
         QVERIFY2(!std::filesystem::exists(CP.WriteLayerPath),
-                 "nor the write layer — under PersistAll that path is the user's DURABLE data dir");
-
-        CP.PersistAll = true;
-        const json Persisted = VfsMount::BuildLayerSpec(CP);
-        QVERIFY2(!std::filesystem::exists(CP.UserDataPath),
-                 "PersistAll points the write branch AT the durable data dir; an audit must not create it");
+                 "nor the ephemeral write layer");
 
         // ...and the MOUNT's half of the split: everything the plan named must then actually appear, or the
         // mount fails on real hardware with nothing in the suite able to notice.
-        CP.PersistAll = false;
         const json Spec = VfsMount::BuildLayerSpec(CP);
         VfsMount::MaterializePlanPaths(Spec);
         QVERIFY(std::filesystem::exists(CP.WriteLayerPath));
-        QVERIFY(std::filesystem::exists(CP.UserDataPath / "game/save"));
-        QVERIFY(std::filesystem::exists(CP.TempPath / "DROPS" / "game/temp"));
-        (void)Persisted;
+        QVERIFY(std::filesystem::exists(CP.UserDataPath / "save"));
     }
 
     // MaterializePlanPaths sits in SpawnVidyagodfs, which every mount goes through — INCLUDING the read-only
@@ -738,20 +714,19 @@ private slots:
     }
 
     // The sweep must run AFTER the mount has created what the plan names, or it reports the RW passthrough
-    // sources (KEEP dirs, DROP shadows) as missing on every first launch — a false alarm on the one diagnostic
-    // that exists to catch genuinely absent content, which is how a real one stops being believed.
+    // sources (KEEP dirs) as missing on every first launch — a false alarm on the one diagnostic that exists to
+    // catch genuinely absent content, which is how a real one stops being believed.
     void the_missing_source_sweep_does_not_flag_paths_the_mount_creates()
     {
         ContainerParams CP = Make();
         CP.SubComponentsArray = json::array({ DirLayer("content", "game") });
         //Paths unique to this test: the fixture's temp root is shared, so reusing a name another test already
         //materialised would make the "before" assertion pass or fail on test ORDER rather than on behaviour.
-        CP.KeepDirs  = {"game/save_sweep_only"};
-        CP.DropPaths = {"game/temp_sweep_only"};
+        CP.KeepDirs  = { {"game/save_sweep_only", "save_sweep_only", true} };
         const json Spec = VfsMount::BuildLayerSpec(CP);
 
-        // before the mount touches anything they are legitimately absent...
-        QCOMPARE(VfsMount::ReportMissingSources(Spec), size_t(2));
+        // before the mount touches anything its durable source is legitimately absent...
+        QCOMPARE(VfsMount::ReportMissingSources(Spec), size_t(1));
 
         // ...and PrepareMount — what MountVFS actually calls — must leave nothing missing. Asserting the two
         // halves separately would pass with the calls in EITHER order; the order is the whole bug.

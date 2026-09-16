@@ -49,6 +49,11 @@ using namespace PackageCatalog;
 //the spine's AbsLayers and the chain TU's BuildLink.
 void LaunchResolver::AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path &BundleDir)
 {
+    //A DeclarePersist's PATH is a RUNTIME-relative location or a registry key (e.g. "HKCU") — NOT a bundle file.
+    //It must not be joined against the package dir the way a Content layer's payload PATH is (that would turn
+    //"HKCU" into "<bundle>/HKCU" and every persist target into an absolute mess). Its PATH is %var%-substituted
+    //and normalized by DerivePersistence, which is the only consumer.
+    if (L.is_object() && L.value("TYPE", std::string()) == "DeclarePersist") return;
     if (L.contains("PATH") && L["PATH"].is_string())
     { std::filesystem::path P = std::string(L["PATH"]); if (!P.is_absolute()) L["PATH"] = (BundleDir / P).string(); }
     if (L.contains("SOURCE") && L["SOURCE"].is_object() && L["SOURCE"].contains("PATH") && L["SOURCE"]["PATH"].is_string())
@@ -161,7 +166,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         ManifestModel::ForEachClosureNode(Idx, Lnk.NodeId, CP.ModuleStates, [&](const Node &N) {
             if (!N.Layers.is_array()) return;
             for (const auto &L : N.Layers)
-                if (L.is_object() && L.value("TYPE", std::string()) == "Persist") RunnerKeep.push_back(L);
+                if (L.is_object() && L.value("TYPE", std::string()) == "DeclarePersist") RunnerKeep.push_back(L);
         });
     }
     CP.RunnerPersistLayers = std::move(RunnerKeep);

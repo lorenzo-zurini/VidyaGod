@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <filesystem>
+#ifndef _WIN32
+#include <unistd.h>          // getuid — per-user TEMP root in the world-writable system temp
+#endif
 #include <map>
 #include <queue>
 #include <random>
@@ -265,24 +268,34 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
             LogWarn("DerivePaths", "No display to size the game against — defaulting to 1280x720.");
         }
     }
-    std::filesystem::path TempRoot = AppPaths::DataRoot() / "TEMP";
-    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object())
-    {
-        const auto &S = GlobalConfigJSON["Settings"];
-        if (S.contains("Paths") && S["Paths"].is_object()
-            && S["Paths"].contains("TempRoot") && S["Paths"]["TempRoot"].is_string()
-            && !std::string(S["Paths"]["TempRoot"]).empty())
-            TempRoot = std::filesystem::path(std::string(S["Paths"]["TempRoot"]));
-    }
-    //INSTANCE: durable USERDATA + ephemeral TEMP are both keyed by the instance, so two instances of one game are
-    //fully independent installs and never collide in RUNTIME/WRITELAYER/DEFPREFIX. Resolve WITHOUT creating (a dry
-    //--resolve-only / --audit must not materialise a dir); the dir is created lazily by the first persist capture /
-    //config write. Record the resolved name so a real launch's TouchLastRun and the UI agree.
+    //TEMP is pure ephemeral scratch (FUSE mount points + the unmapped-writes upper layer + a ~42MB prefix delta), so
+    //it lives in the SYSTEM temp — /tmp on Linux, %TEMP% on Windows — in ALL modes (portable included: TEMP is
+    //throwaway, so it doesn't affect the portable footprint). There is NO override: if something writes a lot, the
+    //fix is to MAP it as a persist, not to relocate TEMP. Auto-cleaned by the OS on reboot as a bonus.
+    //PER-USER root: the system temp is world-writable and the path is predictable, so a shared "VidyaGod" dir would let
+    //two users collide on RUNTIME/WRITELAYER and let a hostile local user pre-create/symlink the mount targets. Keying
+    //the root by the real UID makes each user's tree private (POSIX; %TEMP% is already per-user on Windows).
+    std::error_code TmpEc;
+    std::string TempLeaf = "VidyaGod";
+#ifndef _WIN32
+    TempLeaf += "-" + std::to_string(static_cast<unsigned long>(getuid()));
+#endif
+    std::filesystem::path TempRoot = std::filesystem::temp_directory_path(TmpEc) / TempLeaf;
+    if (TmpEc) TempRoot = std::filesystem::path("/tmp") / TempLeaf;
+    //ADVERSARY-TODO (MEDIUM-LOW, single-user desktop = out of scope for now): the per-uid leaf closes the accidental
+    //cross-user COLLISION, but a hostile local user could still PRE-CREATE `<tmp>/VidyaGod-<uid>` (or a symlink of
+    //that name) before first launch. Full close = at the create site, lstat the root: is-a-dir, not-a-symlink,
+    //owner==getuid(), mode 0700, else refuse. Not added here to avoid erroring the resolve/audit path over a threat
+    //that doesn't apply to a single-user box.
+    //INSTANCE: durable state (the instance dir) + ephemeral TEMP are both keyed by the instance, so two instances of
+    //one game are fully independent installs and never collide in RUNTIME/WRITELAYER/DEFPREFIX. Resolve WITHOUT
+    //creating (a dry --resolve-only / --audit must not materialise a dir); the dir is created lazily by the first
+    //persist capture / config write. Record the resolved name so a real launch's TouchLastRun and the UI agree.
     if (ContainerParams.InstanceName.empty())
         ContainerParams.InstanceName = InstanceStore::ResolveActive(GlobalConfigJSON, ContainerParams.PackageUID);
     const std::string &Inst = ContainerParams.InstanceName;
     // SanitizeUid: the PackageUID is peer-authored and lands in these paths — never let it carry a separator, "..",
-    // or an absolute path that escapes TempRoot (matches InstanceStore's own sanitisation of the USERDATA side).
+    // or an absolute path that escapes TempRoot (matches InstanceStore's own sanitisation of the durable side).
     const std::string SanUid = InstanceStore::SanitizeUid(ContainerParams.PackageUID);
     ContainerParams.TempPath = TempRoot / SanUid / Inst;
     if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
@@ -290,9 +303,9 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
     ContainerParams.RuntimePath     = ContainerParams.TempPath / "RUNTIME";
     ContainerParams.WriteLayerPath  = ContainerParams.TempPath / "WRITELAYER";
     ContainerParams.DefaultDataPath = ContainerParams.TempPath / "DEFAULTDATA";
-    // The MOUNTED, game-writable durable tree is the USERDATA/ subdir — instance.json is a sibling OUTSIDE it, so a
-    // whole-runtime-KEEP launch can't expose/tamper the config (secrets, RUNNER_CHAIN) to the sandboxed game.
-    ContainerParams.UserDataPath    = InstanceStore::UserDataDir(GlobalConfigJSON, ContainerParams.PackageUID, Inst);
+    // The durable root IS the instance dir (flat). Persist TARGETs are its named subdirs; instance.json sits at the
+    // root, which NOTHING mounts — so a sandboxed game can never reach the config (secrets, RUNNER_CHAIN).
+    ContainerParams.UserDataPath    = InstanceStore::InstanceDir(GlobalConfigJSON, ContainerParams.PackageUID, Inst);
     //CLI / in-package overrides (--runtime-dir / --userdata-dir): point these exact paths wherever asked (in-package
     //sets both = the package dir, making the package a self-contained, portable runnable unit — instances bypassed).
     if (!AppPaths::RuntimePathOverride().empty())  ContainerParams.RuntimePath  = AppPaths::RuntimePathOverride();

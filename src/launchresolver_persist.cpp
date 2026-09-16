@@ -45,37 +45,20 @@ using namespace PackageCatalog;
 // P6 split: the unified Persist derivation (KEEP/DROP) — see launchresolver.cpp for the spine.
 bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
-    ContainerParams.PersistAll = false;        // set true only by a KEEP of the runtime root (whole-runtime persist)
     ContainerParams.KeepDirs.clear();
     ContainerParams.KeepFiles.clear();
     ContainerParams.KeepRegKeys.clear();
     ContainerParams.KeepRegHives.clear();
-    ContainerParams.DropPaths.clear();
 
     const std::map<std::string, std::string> Vars = ContainerParams.GetVariablesMap();
 
-    auto ToUpper = [](std::string S){ for (char &C : S) C = (char)std::toupper((unsigned char)C); return S; };
     auto ToLower = [](std::string S){ for (char &C : S) C = (char)std::tolower((unsigned char)C); return S; };
     auto AddUnique = [](std::vector<std::string> &V, const std::string &S){ if (std::find(V.begin(), V.end(), S) == V.end()) V.push_back(S); };
-
-    //A registry hive root → its Wine .reg file (HKCU→user, HKLM/HKCR/HKCC→system, HKU→userdef). "" if not a root.
-    auto HiveRootFile = [&](const std::string &Root) -> std::string {
-        const std::string R = ToUpper(Root);
-        if (R == "HKCU" || R == "HKEY_CURRENT_USER")   return "user.reg";
-        if (R == "HKLM" || R == "HKEY_LOCAL_MACHINE")  return "system.reg";
-        if (R == "HKCR" || R == "HKEY_CLASSES_ROOT")   return "system.reg";
-        if (R == "HKCC" || R == "HKEY_CURRENT_CONFIG") return "system.reg";
-        if (R == "HKU"  || R == "HKEY_USERS")          return "userdef.reg";
-        return "";
-    };
-    //A runtime-root-relative path: directory (→ live RW passthrough) or single file (→ copy). Trailing slash or an
-    //existing dir ⇒ directory; an existing file ⇒ file; otherwise a dotted leaf (an extension) ⇒ file, else directory.
+    //A runtime-root-relative PATH: directory (→ live RW passthrough) or single file (→ copy). Decided by shape only
+    //(the durable store now lives at UserDataPath/<TARGET>, not mirrored at UserDataPath/<PATH>, so there is nothing
+    //to stat here): a trailing slash ⇒ directory; a dotted last component (an extension) ⇒ file; otherwise directory.
     auto IsDirTarget = [&](const std::string &T) -> bool {
         if (!T.empty() && (T.back() == '/' || T.back() == '\\')) return true;
-        std::error_code Ec;
-        const std::filesystem::path Abs = ContainerParams.UserDataPath / T;
-        if (std::filesystem::is_directory(Abs, Ec))    return true;
-        if (std::filesystem::is_regular_file(Abs, Ec)) return false;
         const auto Slash = T.find_last_of("/\\");
         const std::string Leaf = (Slash == std::string::npos) ? T : T.substr(Slash + 1);
         return Leaf.find('.') == std::string::npos;   // no extension ⇒ directory
@@ -85,55 +68,86 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         while (!T.empty() && (T.front() == '/' || T.front() == '\\')) T.erase(T.begin());
         return T;
     };
-    auto StripTrail = [](std::string S){ while (S.size() > 1 && (S.back() == '/' || S.back() == '\\')) S.pop_back(); return S; };
-    //A KEEP target that names the runtime mount root itself (`%RuntimePath%`, or the bare root "."/"/") ⇒ persist the
-    //WHOLE runtime: the durable UserDataPath becomes the writable branch. The elegant replacement for the old MODE:all.
-    auto IsRuntimeRoot = [&](const std::string &T) -> bool {
-        if (T == "." || T == "/" || T == "./") return true;
-        if (ContainerParams.RuntimePath.empty()) return false;
-        return StripTrail(T) == StripTrail(ContainerParams.RuntimePath.string());
+    //The last path component (the durable-name default): "pfx/.../Saved Games/Foo" → "Foo".
+    auto Leaf = [](std::string T){ while (!T.empty() && (T.back() == '/' || T.back() == '\\')) T.pop_back();
+        const auto S = T.find_last_of("/\\"); return S == std::string::npos ? T : T.substr(S + 1); };
+    //A durable TARGET must be a single safe path segment (it names a subdir directly under the instance dir). Trailing
+    //dots/spaces are STRIPPED: Win32 silently drops them at the filesystem, so "instance.json." or "registry " would
+    //otherwise sail past the reserved/dedup guards below yet land on the reserved sibling on disk (Windows port).
+    auto SanSeg = [](const std::string &S){ std::string O; for (unsigned char C : S)
+        O.push_back((std::isalnum(C) || C == '.' || C == '_' || C == '-' || C == ' ') ? static_cast<char>(C) : '_');
+        while (!O.empty() && (O.back() == '.' || O.back() == ' ')) O.pop_back();
+        return (O.empty() || O == "." || O == "..") ? std::string("_") : O; };
+
+    //Every file/dir persist lands at UserDataPath/<TARGET> — a NAMED sibling of the instance's OWN state
+    //(instance.json + the REGISTRY/REGKEYS stores). Two guards make that namespace safe:
+    //  (a) RESERVED names are refused, so a persist can never seed the launcher's secrets into a game-visible mount
+    //      or overwrite the instance config / registry stores (SanSeg keeps the segment shape but not the identity).
+    //  (b) DUPLICATE targets are refused (case-insensitively — durable dirs travel to case-insensitive filesystems),
+    //      so two persists can never clobber one file at capture or mount the same durable dir RW twice and corrupt it.
+    //Registry keys/hives live under REGISTRY//REGKEYS/ (a disjoint namespace), so only the file/dir targets share one.
+    std::map<std::string, std::string> UsedFileTargets;   // Target(lower) → the Path that claimed it
+    static const std::set<std::string> Reserved = { "instance.json", "registry", "regkeys" };
+    auto ClaimFileTarget = [&](const std::string &Target, const std::string &Path) -> bool {
+        std::string Low = ToLower(Target);
+        if (Reserved.count(Low))
+        { LogErr("DerivePersistence", "  persist TARGET '" + Target + "' (for PATH '" + Path + "') is RESERVED for the instance's own state — skipped (choose another TARGET)."); return false; }
+        auto It = UsedFileTargets.find(Low);
+        if (It != UsedFileTargets.end())
+        {
+            //An IDENTICAL (Path, Target) re-declaration is harmless (a game repeating its runner's keep-set) — accept
+            //it as an idempotent no-op, silently. Only a SAME-target/DIFFERENT-path collision is the clobber hazard.
+            if (It->second == Path) { LogOut("DerivePersistence", "  persist TARGET '" + Target + "' already declared for the same PATH — skipping duplicate."); return false; }
+            LogErr("DerivePersistence", "  persist TARGET '" + Target + "' (for PATH '" + Path + "') COLLIDES with an earlier persist of a DIFFERENT path ('" + It->second + "') — skipped to avoid clobbering saved data (give it a distinct TARGET)."); return false;
+        }
+        UsedFileTargets.emplace(Low, Path);
+        return true;
     };
 
-    auto ClassifyKeep = [&](std::string T){
-        VarSubst::StringVariableSubstitution(T, Vars);
-        if (T.empty()) { LogWarn("DerivePersistence", "  KEEP with empty target (skipped)."); return; }
-        if (T.rfind("host:", 0) == 0) { LogWarn("DerivePersistence", "  KEEP host: target not yet supported (reserved for native containment): " + T); return; }
-        if (IsRuntimeRoot(T)) { ContainerParams.PersistAll = true; LogWarn("DerivePersistence", "  KEEP %RuntimePath% (whole-runtime PersistAll) — DISCOURAGED: it makes the entire USERDATA the game's writable mount root, so a sandboxed game can read/tamper the instance config beside it. Prefer granular KEEP targets (specific dirs/files)."); return; }
-        if (ToLower(T) == "registry")
-        { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg"); LogOut("DerivePersistence", "  KEEP registry (all hives)"); return; }
-        const auto Sep = T.find_first_of("\\/");
-        const std::string Root = (Sep == std::string::npos) ? T : T.substr(0, Sep);
-        if (const std::string Hive = HiveRootFile(Root); !Hive.empty())
+    //Parse one DeclarePersist node. SCOPE=file|registry; PATH = runtime source ("" = the whole runtime / all hives,
+    //an AUTHORING aid that warns); TARGET = durable subdir under UserDataPath (defaults to PATH's last component,
+    //REQUIRED when PATH is empty); CLOUD (default true) is the future Cloud-Saves flag (false = machine-specific).
+    auto ParsePersist = [&](const nlohmann::ordered_json &S){
+        const std::string Scope = ToLower(S.value("SCOPE", std::string("file")));
+        std::string Path = S.value("PATH", std::string());
+        VarSubst::StringVariableSubstitution(Path, Vars);
+        const bool Cloud = S.value("CLOUD", true);
+        if (Scope == "registry")
         {
-            if (Sep == std::string::npos) { AddUnique(ContainerParams.KeepRegHives, Hive); LogOut("DerivePersistence", "  KEEP hive " + Root + " (" + Hive + ")"); }
-            else                          { AddUnique(ContainerParams.KeepRegKeys, T);     LogOut("DerivePersistence", "  KEEP regkey " + T); }
+            if (Path.empty())   // whole-hive registry persist — authoring aid
+            { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg");
+              LogWarn("DerivePersistence", "  registry persist PATH \"\" (all hives) — AUTHORING AID: persists EVERY hive so you can discover what to keep; narrow to specific keys before shipping."); return; }
+            AddUnique(ContainerParams.KeepRegKeys, Path); LogOut("DerivePersistence", "  persist regkey " + Path); return;
+        }
+        // SCOPE=file
+        const std::string DeclaredTarget = S.value("TARGET", std::string());
+        std::string Target = SanSeg(DeclaredTarget.empty() ? Leaf(Path) : DeclaredTarget);
+        if (Path.empty())   // whole-runtime persist — authoring aid; no leaf to default the TARGET from → require it
+        {
+            if (DeclaredTarget.empty())
+            { LogErr("DerivePersistence", "  file persist PATH \"\" (whole runtime) requires an explicit TARGET (the durable subdir name) — skipped."); return; }
+            if (!ClaimFileTarget(Target, "")) return;
+            ContainerParams.KeepDirs.push_back({ std::string(), Target, Cloud });
+            LogWarn("DerivePersistence", "  file persist PATH \"\" → TARGET '" + Target + "' — AUTHORING AID: persists the WHOLE runtime; narrow to specific dirs/files before shipping.");
             return;
         }
-        if (IsDirTarget(T)) { AddUnique(ContainerParams.KeepDirs,  NormalizeRel(T)); LogOut("DerivePersistence", "  KEEP dir  " + NormalizeRel(T)); }
-        else                { AddUnique(ContainerParams.KeepFiles, NormalizeRel(T)); LogOut("DerivePersistence", "  KEEP file " + NormalizeRel(T)); }
-    };
-    auto ClassifyDrop = [&](std::string T){
-        VarSubst::StringVariableSubstitution(T, Vars);
-        if (T.empty()) { LogWarn("DerivePersistence", "  DROP with empty target (skipped)."); return; }
-        if (ToLower(T) == "registry" || !HiveRootFile((T.find_first_of("\\/") == std::string::npos) ? T : T.substr(0, T.find_first_of("\\/"))).empty())
-        { LogWarn("DerivePersistence", "  DROP of a registry target is not supported (paths only): " + T); return; }
-        AddUnique(ContainerParams.DropPaths, NormalizeRel(T)); LogOut("DerivePersistence", "  DROP path " + NormalizeRel(T));
+        const std::string Rel = NormalizeRel(Path);
+        if (!ClaimFileTarget(Target, Rel)) return;
+        if (IsDirTarget(Path)) { ContainerParams.KeepDirs.push_back({ Rel, Target, Cloud });  LogOut("DerivePersistence", "  persist dir  " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
+        else                   { ContainerParams.KeepFiles.push_back({ Rel, Target, Cloud }); LogOut("DerivePersistence", "  persist file " + Rel + " → " + Target + (Cloud ? "" : " (local-only)")); }
     };
 
     auto Scan = [&](const nlohmann::ordered_json &S){
-        if (!S.is_object() || S.value("TYPE", std::string()) != "Persist") return;
-        //A WHEN gates this layer like any other. BuildSubComponentsArray's gate deliberately SKIPS Persist
-        //(it is consumed here, not mounted), which left a conditional Persist node applying unconditionally —
-        //inert-looking in the file, live at launch. The condition is evaluated against the same resolved var
-        //map the targets are substituted with.
+        if (!S.is_object() || S.value("TYPE", std::string()) != "DeclarePersist") return;
+        //A WHEN gates this layer (it is consumed HERE, not mounted — the general layer gate deliberately skips
+        //DeclarePersist, which once left a conditional persist applying unconditionally). Same resolved var map.
         if (S.contains("WHEN") && S["WHEN"].is_string()
             && !VarSubst::EvaluateCondition(S["WHEN"].get<std::string>(), Vars))
         {
             LogOut("DerivePersistence", "  skipped (WHEN false: " + S["WHEN"].get<std::string>() + ")");
             return;
         }
-        if (S.contains("KEEP") && S["KEEP"].is_string()) ClassifyKeep(S["KEEP"]);
-        if (S.contains("DROP") && S["DROP"].is_string()) ClassifyDrop(S["DROP"]);
+        ParsePersist(S);
     };
 
     LogOut("DerivePersistence", "Resolving Persist policy (runner keep-set + Recipe)...");
@@ -151,12 +165,10 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
     }
 
     LogSucc("DerivePersistence",
-            "PERSIST: ALL=" + std::string(ContainerParams.PersistAll ? "true" : "false") +
-            " KEEP[dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
+            "PERSIST: dirs=" + std::to_string(ContainerParams.KeepDirs.size()) +
             " files=" + std::to_string(ContainerParams.KeepFiles.size()) +
             " hives=" + std::to_string(ContainerParams.KeepRegHives.size()) +
-            " regkeys=" + std::to_string(ContainerParams.KeepRegKeys.size()) + "]" +
-            " DROP=" + std::to_string(ContainerParams.DropPaths.size()));
+            " regkeys=" + std::to_string(ContainerParams.KeepRegKeys.size()));
     return true;
 }
 

@@ -1,5 +1,5 @@
 {
-  "Content": "<DATA>/TEMP/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
+  "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
   "ContentPath": "drive_c/90000000000001/probe.sh",
   "ContentRoot": "",
   "CustomVariables": {
@@ -17,28 +17,36 @@
     "lm_text": "hello"
   },
   "DLLOverrides": [],
-  "DropPaths": [
-    "drive_c/90000000000001/game/saves/cache"
-  ],
   "ExeArgs": [
     "--matrix",
     "hello-beta"
   ],
   "GameName": "Launch Matrix",
   "KeepDirs": [
-    "drive_c/90000000000001/game/saves"
+    {
+      "cloud": true,
+      "path": "drive_c/90000000000001/game/saves",
+      "target": "Saves"
+    },
+    {
+      "cloud": false,
+      "path": "drive_c/90000000000001/game/shadercache",
+      "target": "ShaderCache"
+    }
   ],
   "KeepFiles": [
-    "drive_c/90000000000001/game/config.ini"
+    {
+      "cloud": true,
+      "path": "drive_c/90000000000001/game/config.ini",
+      "target": "Config"
+    }
   ],
-  "KeepRegHives": [
-    "user.reg"
-  ],
+  "KeepRegHives": [],
   "KeepRegKeys": [
+    "HKCU",
     "HKLM\\Software\\LaunchMatrix"
   ],
   "PackageUID": "90000000000001",
-  "PersistAll": false,
   "Platform": "linux64",
   "PrefixGenerate": false,
   "PrefixRoot": "",
@@ -67,7 +75,11 @@
     "lm_bp",
     "lm_reg",
     "lm_dll",
-    "lm_persist",
+    "lm_persist_saves",
+    "lm_persist_config",
+    "lm_persist_cache",
+    "lm_persist_hkcu",
+    "lm_persist_hklm",
     "lm_group",
     "lm_c_remote",
     "lm_unhydrated",

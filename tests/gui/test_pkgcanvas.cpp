@@ -1173,7 +1173,7 @@ private slots:
     void noElementGeometryDependsOnTheZoom()
     {
         Canvas->setMiniMap(false);
-        const char *kinds[] = {"Content", "DeclareExec", "RegEdit", "FileEdit", "CustomVar", "Persist"};
+        const char *kinds[] = {"Content", "DeclareExec", "RegEdit", "FileEdit", "CustomVar", "DeclarePersist"};
         for (int i = 0; i < 6; ++i) Canvas->addNode(kinds[i], 500.0f + i * 60.0f, 300.0f + i * 40.0f);
         runFrame();
 
@@ -1694,7 +1694,7 @@ private slots:
         Canvas->setMiniMap(false);
         Canvas->addNode("Content", 100, 100);
         Canvas->addNode("DeclareExec", 500, 100);
-        Canvas->addNode("Persist", 900, 100);
+        Canvas->addNode("DeclarePersist", 900, 100);
         runFrame(); runFrame();
         QCOMPARE(Canvas->cachedNodeSizes(), 3);
 
@@ -2199,7 +2199,6 @@ private slots:
         QStringList outliers;
         const std::vector<std::pair<const char *, json>> Cases = {
             {"DeclareExec", json{{"GUEST", Multi}, {"ARGS", Multi}, {"ENV_REMOVE", Multi}}},
-            {"Persist",     json{{"KEEP", Multi}, {"DROP", Multi}}},
             {"Content",     json{{"SUBMOUNTS", Multi}, {"BASE_TARGETS", Multi}}},
         };
         for (const auto &C : Cases) {

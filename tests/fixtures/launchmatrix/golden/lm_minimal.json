@@ -1,5 +1,5 @@
 {
-  "Content": "<DATA>/TEMP/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
+  "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
   "ContentPath": "drive_c/90000000000001/game/data.txt",
   "ContentRoot": "",
   "CustomVariables": {
@@ -12,7 +12,6 @@
     "VIDYAGOD_SUBNET": "<volatile>"
   },
   "DLLOverrides": [],
-  "DropPaths": [],
   "ExeArgs": [],
   "GameName": "Launch Matrix",
   "KeepDirs": [],
@@ -20,7 +19,6 @@
   "KeepRegHives": [],
   "KeepRegKeys": [],
   "PackageUID": "90000000000001",
-  "PersistAll": false,
   "Platform": "linux64",
   "PrefixGenerate": false,
   "PrefixRoot": "",

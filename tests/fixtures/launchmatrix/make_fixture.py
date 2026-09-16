@@ -315,13 +315,20 @@ def nodes():
     dll = add(NODE_ID="lm_dll", TYPE="DllOverride", PARENTS=[reg],
               OVERRIDES={"ddraw": "n,b", "dinput8": "n,b", "winmm": "b,n", "broken": ""})
 
-    # ---- Persist: every classification KEEP can produce, plus a DROP hole ------------------------------
-    per = add(NODE_ID="lm_persist", TYPE="Persist", PARENTS=[dll],
-              KEEP=["%PrefixRoot%/drive_c/%PackageUID%/game/saves/",
-                    "%PrefixRoot%/drive_c/%PackageUID%/game/config.ini",
-                    "HKCU",
-                    "HKLM\\Software\\LaunchMatrix"],
-              DROP=["%PrefixRoot%/drive_c/%PackageUID%/game/saves/cache/"])
+    # ---- DeclarePersist: one node = one persist, exercising every classification the parser produces -----
+    #   file dir  → KeepDirs ;  file single-file → KeepFiles ;  registry key → KeepRegKeys (x2).
+    #   TARGET names the durable subdir under the instance; CLOUD=false marks machine-specific data (shader cache).
+    per_dir = add(NODE_ID="lm_persist_saves", TYPE="DeclarePersist", PARENTS=[dll],
+                  SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/saves/", TARGET="Saves")
+    per_file = add(NODE_ID="lm_persist_config", TYPE="DeclarePersist", PARENTS=[per_dir],
+                   SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini", TARGET="Config")
+    per_cache = add(NODE_ID="lm_persist_cache", TYPE="DeclarePersist", PARENTS=[per_file],
+                    SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/shadercache/",
+                    TARGET="ShaderCache", CLOUD=False)
+    per_reg1 = add(NODE_ID="lm_persist_hkcu", TYPE="DeclarePersist", PARENTS=[per_cache],
+                   SCOPE="registry", PATH="HKCU")
+    per = add(NODE_ID="lm_persist_hklm", TYPE="DeclarePersist", PARENTS=[per_reg1],
+              SCOPE="registry", PATH="HKLM\\Software\\LaunchMatrix")
 
     # ---- Group: payload-less composition --------------------------------------------------------------
     grp = add(NODE_ID="lm_group", TYPE="Group", PARENTS=[per])

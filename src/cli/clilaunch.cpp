@@ -51,12 +51,10 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
     J["Content"]           = CP.ExePathComplete.string();
     J["ExeArgs"]           = CP.ExeArgs;
     J["DLLOverrides"]      = CP.DLLOverrides;
-    J["PersistAll"]        = CP.PersistAll;
-    J["KeepDirs"]          = CP.KeepDirs;
-    J["KeepFiles"]         = CP.KeepFiles;
+    J["KeepDirs"]          = CP.KeepDirs;    // [{path,target,cloud}] — file dir persists ("" path = whole runtime)
+    J["KeepFiles"]         = CP.KeepFiles;   // [{path,target,cloud}] — file single-file persists
     J["KeepRegHives"]      = CP.KeepRegHives;
     J["KeepRegKeys"]       = CP.KeepRegKeys;
-    J["DropPaths"]         = CP.DropPaths;
     J["CustomVariables"]   = CP.CustomVariables;
     J["RunnerShipsBuild"]  = CP.RunnerShipsBuild;
     J["UnifiedRuntime"]    = CP.UnifiedRuntime;

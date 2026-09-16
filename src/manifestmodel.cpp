@@ -1118,15 +1118,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 Warnings.push_back("node '" + Owner + "': option %" + K
                                    + "% has a UI but is referenced nowhere (dead knob)");
 
-    //----- Persist lint: the unified persistence primitive (KEEP/DROP, purely additive). A target is self-describing,
-    //so the only structural mistakes are an empty/no-op layer, a DROP aimed at the registry (paths only), and a host:
-    //target (reserved for the future bubblewrap native-containment, not implemented yet). -----
-    auto LooksRegistryTarget = [](const std::string &T) -> bool {
-        if (T.empty()) return false;
-        std::string Root = T.substr(0, T.find_first_of("\\/"));
-        for (char &C : Root) C = (char)std::toupper((unsigned char)C);
-        return Root.rfind("HK", 0) == 0 || ToLowerAscii(T) == "registry";
-    };
+    //----- DeclarePersist lint: the unified persistence primitive. Each layer promotes a file path or registry key
+    //to a durable TARGET under the instance. PATH "" persists the WHOLE scope (a PersistAll) — legal but discouraged
+    //(it drags the instance's own config into the game-writable mount), so it's an authoring warning; nothing should
+    //rely on it. An unknown SCOPE is a structural mistake. -----
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (OnlyNodes && !OnlyNodes->count(Id)) continue;
@@ -1134,15 +1129,23 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         const std::string Tag = "node '" + Id + "'";
         for (const auto &L : N.Layers)
         {
-            if (!L.is_object() || L.value("TYPE", std::string()) != "Persist") continue;
-            const std::string Keep = (L.contains("KEEP") && L["KEEP"].is_string()) ? std::string(L["KEEP"]) : std::string();
-            const std::string Drop = (L.contains("DROP") && L["DROP"].is_string()) ? std::string(L["DROP"]) : std::string();
-            if (Keep.empty() && Drop.empty())
-                Warnings.push_back(Tag + ": a Persist layer declares no KEEP/DROP — it does nothing");
-            if (Keep.rfind("host:", 0) == 0 || Drop.rfind("host:", 0) == 0)
-                Warnings.push_back(Tag + ": Persist host: target is reserved but not implemented (native containment is a future bubblewrap feature) — ignored");
-            if (!Drop.empty() && LooksRegistryTarget(Drop))
-                Warnings.push_back(Tag + ": Persist DROP '" + Drop + "' targets the registry — DROP supports runtime paths only");
+            if (!L.is_object() || L.value("TYPE", std::string()) != "DeclarePersist") continue;
+            const std::string Scope = ToLowerAscii(L.value("SCOPE", std::string("file")));
+            const std::string Path  = L.value("PATH", std::string());
+            if (Scope != "file" && Scope != "registry")
+                Warnings.push_back(Tag + ": DeclarePersist SCOPE '" + Scope + "' is not 'file' or 'registry'");
+            if (Path.empty())
+                Warnings.push_back(Tag + ": a DeclarePersist with an empty PATH persists the ENTIRE " + Scope
+                                   + " scope — prefer mapping named TARGETs (nothing should need a catch-all persist)");
+            //A file TARGET names a subdir directly under the instance, beside its OWN state — so instance.json /
+            //REGISTRY / REGKEYS are off-limits (the resolver refuses them at launch; flag it at authoring time too).
+            if (Scope == "file" && L.contains("TARGET") && L["TARGET"].is_string())
+            {
+                const std::string T = ToLowerAscii(L["TARGET"].get<std::string>());
+                if (T == "instance.json" || T == "registry" || T == "regkeys")
+                    Warnings.push_back(Tag + ": DeclarePersist TARGET '" + L["TARGET"].get<std::string>()
+                                       + "' is RESERVED for the instance's own state — it will be refused at launch");
+            }
         }
     }
 }

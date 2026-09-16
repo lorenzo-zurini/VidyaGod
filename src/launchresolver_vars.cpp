@@ -207,24 +207,25 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
     return true;
 }
 
-//Derives the persistence policy from the unified Persist primitive — ONE LAYERS type, purely ADDITIVE (no mode flag):
+//Derives the persistence policy from the unified DeclarePersist primitive — ONE LAYERS type, purely ADDITIVE:
 //
-//  { "TYPE":"Persist", "KEEP":"<target>" }   persist this target (durable)
-//  { "TYPE":"Persist", "DROP":"<path>"   }   make this path ephemeral (writes discarded)
+//  { "TYPE":"DeclarePersist", "SCOPE":"file"|"registry", "PATH":"<runtime source>",
+//    "TARGET":"<durable subdir>", "CLOUD":true }
 //
-//A KEEP target is SELF-DESCRIBING (the dir/file/registry kind is derived, not a separate type):
-//  - "%RuntimePath%" (the mount root)→ persist the WHOLE runtime (the durable UserDataPath becomes the writable
-//                                     branch) — the elegant replacement for the old MODE:all
-//  - "registry" (sentinel)          → all prefix hives (user/system/userdef.reg)
-//  - a registry root ("HKCU", ...)  → that whole hive (its .reg file)            [was RegPersist, scoped]
-//  - a deeper registry path         → that key's subtree only                   [was RegKeyPersist]
-//  - a runtime-root-relative path   → a directory (live RW passthrough) [was PersistDir] or a single file
-//                                     (copy seed/capture) [was PersistFile], by shape
+//Each node promotes ONE runtime location to a NAMED durable subdir under the instance (UserDataPath/<TARGET>):
+//  - SCOPE=file,  PATH a dir  → a directory (live RW passthrough)                 [was PersistDir]
+//  - SCOPE=file,  PATH a file → a single file (copy seed/capture), by shape       [was PersistFile]
+//  - SCOPE=file,  PATH ""     → the WHOLE runtime, TARGET-mapped (authoring aid, warns; TARGET required)
+//  - SCOPE=registry, PATH key → that key's subtree only                           [was RegKeyPersist]
+//  - SCOPE=registry, PATH ""  → all prefix hives (user/system/userdef.reg) (authoring aid, warns)
+//TARGET defaults to PATH's last component; CLOUD (default true) is the future Cloud-Saves flag (false = machine-
+//specific data like a shader cache, excluded from cloud sync). There is NO DROP and NO whole-runtime "PersistAll"
+//flag — the durable store is always a NAMED sibling of the instance config, so instance.json is never inside a
+//game-writable mount.
 //
-//DEFAULT (no Persist anywhere): a PRISTINE runtime each launch; only KEEP targets persist. The active runner
-//contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard save/config
-//locations survive with no per-game work. Persistence is purely additive: KEEP adds, DROP removes — there is no
-//mode to override, and "keep everything" is just `KEEP %RuntimePath%`. Targets are %VARIABLE%-substituted.
+//DEFAULT (no DeclarePersist anywhere): a PRISTINE runtime each launch; only mapped TARGETs persist. The active
+//runner contributes a platform keep-set (RunnerPersistLayers: e.g. the user profile + HKCU) so the standard
+//save/config locations survive with no per-game work. PATHs are %VARIABLE%-substituted.
 
 bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIFESTJSON, struct ContainerParams &ContainerParams)
 {
@@ -247,7 +248,7 @@ bool LaunchResolver::BuildSubComponentsArray(const nlohmann::ordered_json &MANIF
             if (Subs[j].is_object())
             {
                 std::string T = Subs[j].value("TYPE", std::string());
-                if (T == "CustomVar" || T == "Persist"
+                if (T == "CustomVar" || T == "DeclarePersist"
                     || T == "DeclareExec" || T == "DeclareLibraryItem" || T == "DeclareRunner") continue;
                 //A WHEN condition gates whether the layer is applied at all: false → the layer is inert (not mounted,
                 //not edited). Evaluated against the resolved var map — the data-driven "this only applies when that".

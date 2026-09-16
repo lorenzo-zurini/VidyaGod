@@ -174,27 +174,20 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
             Out.push_back({{"TYPE", "DllOverride"}, {"DLLOVERRIDE", Spec}});
         }
     }
-    else if (T == "Persist")
+    else if (T == "DeclarePersist")
     {
-        //REFUSES, where every other branch already did. Persist was the one type that silently skipped a
-        //malformed payload — and the shape it skipped is the PRE-FLAT SPELLING, `"KEEP": "path"` as a bare
-        //string, which is exactly what an author hand-writing a flat node reaches for. A Persist node that
-        //emits zero layers is legitimate (`"DROP": []` ships on every runner), so nothing downstream could
-        //tell "keeps nothing on purpose" from "keeps nothing because I could not read it" — the same silent
-        //save loss, arrived at from the authoring side instead of the engine side.
-        for (const char *Which : {"KEEP", "DROP"})
-        {
-            if (!J.contains(Which)) continue;
-            if (!J[Which].is_array())
-                return Fail(std::string(Which) + " must be an ARRAY of targets, not "
-                            + J[Which].type_name() + " (a single target is a one-element array)");
-            for (const auto &P : J[Which])
-            {
-                if (!P.is_string()) return Fail(std::string(Which) + " entries must be strings");
-                if (P.get<std::string>().empty()) return Fail(std::string(Which) + " has an empty target");
-                Out.push_back({{"TYPE", "Persist"}, {Which, P}});
-            }
-        }
+        //One node = one persist (no arrays to expand): validate the fields and pass them through. SCOPE=file|registry
+        //(default file); PATH is the runtime source, "" = the whole runtime / all hives (an authoring aid); TARGET is
+        //the durable subdir (defaults downstream to PATH's last component); CLOUD (default true) is the future
+        //Cloud-Saves flag. REFUSES a malformed field, like every other branch.
+        nlohmann::ordered_json P = {{"TYPE", "DeclarePersist"}};
+        if (J.contains("SCOPE"))  { if (!J["SCOPE"].is_string())  return Fail("SCOPE must be a string (file|registry)"); P["SCOPE"]  = J["SCOPE"]; }
+        if (J.contains("PATH"))   { if (!J["PATH"].is_string())   return Fail("PATH must be a string");                  P["PATH"]   = J["PATH"]; }
+        if (J.contains("TARGET")) { if (!J["TARGET"].is_string()) return Fail("TARGET must be a string");                P["TARGET"] = J["TARGET"]; }
+        if (J.contains("CLOUD"))  { if (!J["CLOUD"].is_boolean()) return Fail("CLOUD must be a boolean");                P["CLOUD"]  = J["CLOUD"]; }
+        //WHEN is validated and applied at the tail (like every other branch); copying it here too would double the
+        //node's own condition back on itself — "(A) && (A)" — see the tail's note.
+        Out.push_back(std::move(P));
     }
     else if (T == "CustomVar")
     {
@@ -324,10 +317,10 @@ const std::map<std::string, Kind> &Table()
         {"FILE",Str},{"MODE",Str},{"OFFSET",Str},{"EXPECT",Str},{"REPLACE",Str},{"VALUE",Str},{"PAYLOAD",Str},
         {"CAVE",Str},{"ANCHOR",Str},{"APPLY",Str},{"KEY",Str},{"DEFAULT",Str},{"COMMENT",Str},{"WHEN",Str},
         {"PLATFORM",Str},{"HOST",Str},{"EXECUTABLE",Str},{"CONTENTPATH",Str},{"WORKDIR",Str},{"LABEL",Str},
-        {"RUNNER",Str},{"UID",Str},{"TITLE",Str},{"CONTENT_ROOT",Str},{"ARCHITECTURE",Str},{"KEEP",Str},
-        {"DROP",Str},{"CID",Str},{"CONTROL",Str},{"GROUP",Str},
+        {"RUNNER",Str},{"UID",Str},{"TITLE",Str},{"CONTENT_ROOT",Str},{"ARCHITECTURE",Str},
+        {"CID",Str},{"CONTROL",Str},{"GROUP",Str},{"SCOPE",Str},
         {"MIN",Num},{"MAX",Num},{"SIZE",Num},
-        {"OVERRIDE",Bool},{"RECOMMENDED",Bool},{"PREFIX_GENERATE",Bool},{"UNIFIED_RUNTIME",Bool},
+        {"OVERRIDE",Bool},{"RECOMMENDED",Bool},{"PREFIX_GENERATE",Bool},{"UNIFIED_RUNTIME",Bool},{"CLOUD",Bool},
         {"GUEST",StrArr},{"EXEARGS",StrArr},{"ARGS",StrArr},{"REMOVE_ENV",StrArr},{"SUBMOUNTS",StrArr},
         {"BASE_TARGETS",StrArr},{"CHOICES",Arr},
         {"SOURCE",Obj},{"ENV",Obj},{"KEYVALUES",Obj},{"UI",Obj},

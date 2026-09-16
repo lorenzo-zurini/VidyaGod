@@ -55,6 +55,20 @@ struct RunnerLink
     bool Passthrough() const { return Executable.empty(); }
 };
 
+// One resolved file-persist mapping (from a DeclarePersist node). The durable store lives at UserDataPath/<Target>
+// (a single named subdir of the instance dir) and is mounted/copied at the runtime location <Path>. Path=="" means
+// the WHOLE runtime (PersistAll — an authoring aid): the durable Target dir is passed through at the runtime root.
+// Cloud is a forward-looking flag for the future Cloud-Saves sync (false = machine-specific, e.g. a shader cache).
+struct PersistTarget
+{
+    std::string Path;         // runtime-root-relative source location; "" = the whole runtime (PersistAll)
+    std::string Target;       // durable subdir name under UserDataPath (single safe segment)
+    bool        Cloud = true; // sync to cloud saves later? false = local-only (machine-specific)
+};
+// ADL serializer so a PersistTarget (and vectors of them) can be dumped straight into the resolution JSON.
+inline void to_json(nlohmann::ordered_json &J, const PersistTarget &P)
+{ J = nlohmann::ordered_json{{"path", P.Path}, {"target", P.Target}, {"cloud", P.Cloud}}; }
+
 //All resolved parameters needed to build and launch a single container session.
 //Populated in two stages:
 //  1. ContainerParams constructor — stores only the PASSED values (PackagePath, IDs).
@@ -114,12 +128,14 @@ public:
     //(PersistDir/PersistFile/RegPersist/RegKeyPersist) collapsed into one self-describing layer; KEEP targets are
     //classified by shape into the buckets below. Purely additive (KEEP adds, DROP removes) — no mode; DEFAULT is
     //pristine (only KEEPs persist), and runner keep-sets capture the standard saves.
-    bool PersistAll = false;                                        //a KEEP named the runtime root (`%RuntimePath%`) — RW union branch IS the durable UserDataPath (whole-runtime persist). Default false (pristine).
-    std::vector<std::string> KeepDirs;                              //KEEP dir targets — runtime-root-relative dirs unioned as durable RW passthroughs from UserDataPath/<rel> (live)
-    std::vector<std::string> KeepFiles;                             //KEEP file targets — runtime-root-relative single files seeded/captured by copy via UserDataPath/<rel>
-    std::vector<std::string> KeepRegKeys;                           //KEEP registry-subtree targets (HKCU\Software\..) — partial-hive merge seed/capture (Wine-only)
-    std::vector<std::string> KeepRegHives;                          //KEEP registry-hive targets — whole .reg filenames to persist (user/system/userdef.reg), copied whole (Wine-only)
-    std::vector<std::string> DropPaths;                             //DROP path targets — runtime-root-relative paths shadowed by an ephemeral RW layer (writes discarded)
+    //PERSIST (DeclarePersist nodes). Pristine-by-default: nothing survives a launch unless a DeclarePersist maps it
+    //to a named durable TARGET under UserDataPath. There is NO whole-runtime "PersistAll" flag any more — a
+    //Path=="" file persist is just a KeepDir passed through at the runtime root into its named Target (so the
+    //instance config, which sits OUTSIDE any Target, is never in a game-writable mount). DROP was removed.
+    std::vector<PersistTarget> KeepDirs;                            //file dir persists — durable UserDataPath/<Target> unioned RW at runtime <Path> ("" = whole runtime)
+    std::vector<PersistTarget> KeepFiles;                           //file single-file persists — seeded/captured by copy: UserDataPath/<Target> <-> runtime <Path>
+    std::vector<std::string> KeepRegKeys;                           //registry key-subtree persists (SCOPE registry, PATH HKCU\..) — partial-hive merge (Wine-only)
+    std::vector<std::string> KeepRegHives;                          //registry whole-hive persist (SCOPE registry, PATH "" — authoring): the three .reg files (Wine-only)
     nlohmann::ordered_json RunnerPersistLayers = nlohmann::ordered_json::array(); //RESOLVED — every Persist layer in the runner CHAIN's closures (its platform keep-set: where user-state lives), folded into DerivePersistence before the game's. NOT the boundary node's own layers: a node is one layer of one TYPE, so a DeclareExec node cannot also carry a Persist
 
     //Custom variables (from CustomVar subcomponents):

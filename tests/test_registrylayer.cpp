@@ -80,15 +80,20 @@ TEST(reglayer_capture_roundtrips_with_seed)
     fs::remove_all(d);
 }
 
-// PersistAll short-circuits both directions (the durable RW branch already holds the files).
-TEST(reglayer_persistall_is_noop)
+// Registry persist no-ops gracefully when there's nothing stored yet (never crashes) — PersistAll is gone, so
+// there is no whole-branch shortcut: seed + capture both run their real path and simply find nothing to move.
+TEST(reglayer_registry_persist_graceful_when_empty)
 {
     auto d = RlTmp("pall");
     ContainerParams CP(d);
-    CP.PersistAll   = true;
-    CP.KeepRegHives = { "user.reg" };
-    CHECK(RegistryLayer::SeedPersistRegistry(CP));
-    CHECK(RegistryLayer::CapturePersistRegistry(CP));
+    CP.UserDataPath   = d / "USERDATA";
+    CP.WriteLayerPath = d / "WRITELAYER";
+    CP.RuntimePath    = d / "RUNTIME";
+    CP.KeepRegHives   = { "user.reg" };
+    CP.KeepRegKeys    = { "HKCU\\Software\\Nothing" };
+    CHECK(RegistryLayer::SeedPersistRegistry(CP));       // no stored hive → nothing seeded, still OK
+    CHECK(RegistryLayer::CapturePersistRegistry(CP));    // no runtime hive → nothing captured, still OK
+    CHECK(RegistryLayer::CapturePersistRegKeys(CP));     // key never created → kept prior, still OK
     fs::remove_all(d);
 }
 

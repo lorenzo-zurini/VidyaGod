@@ -69,10 +69,6 @@ std::filesystem::path InstanceDir(const nlohmann::ordered_json &Cfg, const std::
 {
     return PackageDir(Cfg, PackageUID) / Instance;
 }
-std::filesystem::path UserDataDir(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance)
-{
-    return InstanceDir(Cfg, PackageUID, Instance) / "USERDATA";
-}
 std::filesystem::path ConfigPath(const nlohmann::ordered_json &Cfg, const std::string &PackageUID, const std::string &Instance)
 {
     return InstanceDir(Cfg, PackageUID, Instance) / ConfigFile;

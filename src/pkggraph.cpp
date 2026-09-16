@@ -241,7 +241,7 @@ const std::vector<std::string> &AllTypes()
 {
     static const std::vector<std::string> T = {
         "Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride",
-        "Persist", "CustomVar", "DeclareExec", "DeclareLibraryItem", "Group"
+        "DeclarePersist", "CustomVar", "DeclareExec", "DeclareLibraryItem", "Group"
     };
     return T;
 }
@@ -253,7 +253,7 @@ const char *TypeHelp(const std::string &Type)
     if (Type == "FileEdit")           return "Text edits applied to a file in the runtime (whole-file, key=value, or append).";
     if (Type == "BinaryPatch")        return "Byte patches over the PRISTINE executable, guarded by an EXPECT check.";
     if (Type == "DllOverride")        return "Which DLLs resolve native vs builtin (wine's n,b notation).";
-    if (Type == "Persist")            return "What survives the run: KEEP promotes paths/registry keys, DROP makes them ephemeral.";
+    if (Type == "DeclarePersist")     return "What survives the run: a file path or registry key is promoted to a named durable TARGET under the instance.";
     if (Type == "CustomVar")          return "A variable the player sets before launch; substituted as %KEY% wherever it is used.";
     if (Type == "DeclareExec")        return "What to run. No GUEST => this is a launchable; with GUEST => it is a runner providing those platforms.";
     if (Type == "DeclareLibraryItem") return "The library tile: title, UID and cover. Parent of the launchables it groups.";
@@ -267,7 +267,7 @@ void TypeColour(const std::string &Type, int &R, int &G, int &B)
     if (Type == "Content")                                       { R = 46;  G = 96;  B = 148; return; }
     if (Type == "RegEdit" || Type == "FileEdit" ||
         Type == "BinaryPatch" || Type == "DllOverride")          { R = 136; G = 92;  B = 36;  return; }
-    if (Type == "Persist" || Type == "CustomVar")                { R = 92;  G = 68;  B = 128; return; }
+    if (Type == "DeclarePersist" || Type == "CustomVar")         { R = 92;  G = 68;  B = 128; return; }
     if (Type == "DeclareExec" || Type == "DeclareLibraryItem")   { R = 46;  G = 118; B = 78;  return; }
     R = 74; G = 80; B = 88;
 }
@@ -288,8 +288,8 @@ json NewPayload(const std::string &Type)
         return json::object({{"TYPE","BinaryPatch"},{"FILE",""},{"EDITS", json::array()}});
     if (Type == "DllOverride")
         return json::object({{"TYPE","DllOverride"},{"OVERRIDES", json::object()}});
-    if (Type == "Persist")
-        return json::object({{"TYPE","Persist"},{"KEEP", json::array()},{"DROP", json::array()}});
+    if (Type == "DeclarePersist")
+        return json::object({{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}});
     if (Type == "CustomVar")
         return json::object({{"TYPE","CustomVar"},{"KEY",""},{"DEFAULT",""}});
     if (Type == "DeclareExec")
@@ -314,6 +314,7 @@ const std::vector<std::pair<const char *, const char *>> FModeOpts  = {{"ConfigW
 const std::vector<std::pair<const char *, const char *>> BModeOpts  = {{"Replace","Replace"},{"Cave","Cave"},{"Poke","Poke"}};
 const std::vector<std::pair<const char *, const char *>> ApplyOpts  = {{"prefix","on disk (writelayer)"},{"memory","live process"}};
 const std::vector<std::pair<const char *, const char *>> CtrlOpts   = {{"enum","dropdown"},{"int","number"},{"text","text"}};
+const std::vector<std::pair<const char *, const char *>> ScopeOpts  = {{"file","file path"},{"registry","registry key"}};
 
 std::vector<Field> MakeFields(const std::string &Type)
 {
@@ -361,10 +362,12 @@ std::vector<Field> MakeFields(const std::string &Type)
         };
     if (Type == "DllOverride")
         return {{"OVERRIDES", "Overrides", FieldKind::KeyValue, "dll -> resolution order", DllOpts, {}}};
-    if (Type == "Persist")
+    if (Type == "DeclarePersist")
         return {
-            {"KEEP", "Keep", FieldKind::StringList, "path, or HKCU\\Software\\... - one per line", {}, {}},
-            {"DROP", "Drop", FieldKind::StringList, "paths made ephemeral", {}, {}},
+            {"SCOPE",  "Scope",  FieldKind::Enum,  "", ScopeOpts, {}},
+            {"PATH",   "Path",   FieldKind::Text,  "runtime path, or HKCU\\Software\\... - empty = the whole runtime", {}, {}},
+            {"TARGET", "Target", FieldKind::Text,  "durable name under the instance (defaults to the path's last segment)", {}, {}},
+            {"CLOUD",  "Cloud sync", FieldKind::Check, "include in Cloud Saves (off for machine-specific data like shader caches)", {}, {}},
         };
     if (Type == "CustomVar")
         return {

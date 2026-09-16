@@ -23,40 +23,9 @@ PathsPage::PathsPage(AppModel &model, QWidget *parent)
     QFormLayout * form = new QFormLayout();
     pl->addLayout(form);
 
-    const QString defaultTempRoot = QDir::cleanPath(QString::fromStdString((AppPaths::DataRoot() / "TEMP").string()));
-
-    // Temporary / runtime root — Settings.Paths.TempRoot (empty = default).
-    QWidget * rootRow = new QWidget(this);
-    QHBoxLayout * rl = new QHBoxLayout(rootRow); rl->setContentsMargins(0,0,0,0);
-    rootRow->setLayout(rl);
-    QLineEdit * rootEdit = new QLineEdit(rootRow);
-    rootEdit->setPlaceholderText(defaultTempRoot + "  (default)");
-    {
-        auto & S = (*Model.config())["Settings"];
-        if (S.contains("Paths") && S["Paths"].is_object()
-            && S["Paths"].contains("TempRoot") && S["Paths"]["TempRoot"].is_string())
-            rootEdit->setText(QString::fromStdString(std::string(S["Paths"]["TempRoot"])));
-    }
-    auto writeTempRoot = [this,rootEdit]{
-        auto & S = (*Model.config())["Settings"];
-        QString t = rootEdit->text().trimmed();
-        if (t.isEmpty()) {
-            if (S.contains("Paths") && S["Paths"].is_object()) S["Paths"].erase("TempRoot");
-        } else {
-            if (!S.contains("Paths") || !S["Paths"].is_object()) S["Paths"] = nlohmann::ordered_json::object();
-            S["Paths"]["TempRoot"] = t.toStdString();
-        }
-        Model.save();
-    };
-    connect(rootEdit, &QLineEdit::editingFinished, this, writeTempRoot);
-    rl->addWidget(rootEdit, 1);
-    QPushButton * browse = new QPushButton("Browse…", rootRow);
-    connect(browse, &QPushButton::clicked, this, [this,rootEdit,writeTempRoot]{
-        QString d = QFileDialog::getExistingDirectory(this, "Select temporary / runtime root");
-        if (!d.isEmpty()) { rootEdit->setText(d); writeTempRoot(); }
-    });
-    rl->addWidget(browse);
-    form->addRow("Temporary / runtime root:", rootRow);
+    // (Temporary / runtime root is no longer configurable: ephemeral TEMP always lives in the system temp
+    //  (/tmp, %TEMP%) — pure throwaway mount points + unmapped-writes scratch. Durable state is what a package's
+    //  DeclarePersist targets map into the instance dir; if something writes a lot, map it, don't relocate TEMP.)
 
     // Library folder — Settings.Paths.LibraryRoot (empty = default). Imported packages are hydrated here,
     // one subfolder per repo.
