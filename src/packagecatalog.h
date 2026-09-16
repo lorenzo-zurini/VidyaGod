@@ -246,7 +246,11 @@ struct RemintEntry { std::string Level, Name, Cid; };
 // top-level library-list index (text-only, content-addressed), and point OUR IPNS name (the identity key = friend
 // code) at the top-level index. Returns the top-level index CID ("" on a mint failure; on an IPNS-record failure the
 // CID is returned and *Error carries a soft "minted but not advertised" note). Call OFF the UI thread (DHT put).
-std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error = nullptr);
+// ReuseExistingContent (default true): recompute only the cheap JSON-only meta-CIDs, trusting content seeded by prior
+// mints — a changed node JSON still yields a fresh CID, but the whole library is not re-verified (which OOMs on large
+// delta packages). Pass false for a full re-seed+verify re-mint (equivalent to --remint-library then publish).
+std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error = nullptr,
+                             bool ReuseExistingContent = true);
 
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.

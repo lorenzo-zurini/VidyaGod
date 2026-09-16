@@ -867,45 +867,62 @@ static nlohmann::ordered_json BundleIndexEntry(const std::string &BundleDir, con
     return E;
 }
 
-std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error)
+std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error,
+                             bool ReuseExistingContent)
 {
     namespace fs = std::filesystem;
     auto Fail = [&](const std::string &M) -> std::string { if (Error) *Error = M; LogErr("PackageCatalog::PublishLibraries", M); return {}; };
+    std::error_code Ec;
+    if (!fs::is_directory(LibraryRoot, Ec)) return Fail("not a directory: " + LibraryRoot);
 
-    // 1. Re-mint: content-address every dirty package (Level-1) + each package's meta-CID (Level-2) + each collection
-    //    (Level-3). Writes SOURCE.CID/SIZE into the node JSONs and Settings.PackageCids/PackageSources[].CID — the
-    //    stale-CID guard is feedback_verify_after_mint's job inside PublishMetaCid/PublishPackage.
-    std::vector<RemintEntry> Reminted;
-    if (!RemintLibrary(LibraryRoot, Config, Reminted, Error)) return {};
+    // 1. Content addressing. FULL mode re-mints (re-seeds + re-verifies) every package's content — correct but it
+    //    reconstructs large delta packages in RAM and, over a big library, OOMs a memory-pressured box. REUSE mode
+    //    (the default, and what per-package publish / an incremental republish want) trusts the content already seeded
+    //    by prior mints and recomputes only each package's META-CID, which is a JSON-ONLY add-by-reference (KBs, no
+    //    content hashing) — so a changed node JSON (e.g. a migrated persist) yields a fresh meta-CID while unchanged
+    //    packages resolve to the identical CID, cheaply. A full re-verify is available separately via --remint-library.
+    if (!ReuseExistingContent)
+    {
+        std::vector<RemintEntry> Reminted;
+        if (!RemintLibrary(LibraryRoot, Config, Reminted, Error)) return {};
+    }
 
     // A friend's mirrored library (a FRIEND/IPNS source) lives under the same LibraryRoot but is NOT ours to publish —
-    // re-advertising it under OUR identity would republish someone else's games as if they were ours. Collect those
-    // collection names (their source dir basenames) and exclude them from the index we sign. (RemintLibrary's mint of
-    // them is idempotent — it keeps their existing CIDs — so the only thing to prevent is INCLUSION in our index.)
+    // re-advertising it under OUR identity would republish someone else's games as if they were ours. Exclude those
+    // collection dirs (by basename) from the index we sign.
     std::set<std::string> Foreign;
     if (Config.contains("Settings") && Config["Settings"].is_object()
         && Config["Settings"].contains("PackageSources") && Config["Settings"]["PackageSources"].is_array())
         for (const auto &Src : Config["Settings"]["PackageSources"])
             if (IsIpnsSource(Src))
-            {
-                const std::string Dir = PackageSourceDir(Config, Src);
-                Foreign.insert(fs::path(Dir).filename().string());
-            }
-
-    // Group the reminted per-package CIDs by their collection (library) name, preserving order; skip foreign mirrors.
-    std::map<std::string, std::vector<std::pair<std::string, std::string>>> ByLib;   // libName -> [(pkgDirName, cid)]
-    for (const RemintEntry &R : Reminted)
-        if (R.Level == "package")
-        {
-            const auto Slash = R.Name.find('/');
-            if (Slash == std::string::npos) continue;
-            const std::string LibName = R.Name.substr(0, Slash);
-            if (Foreign.count(LibName)) continue;   // a friend's mirrored library — not ours to advertise
-            ByLib[LibName].push_back({ R.Name.substr(Slash + 1), R.Cid });
-        }
+                Foreign.insert(fs::path(PackageSourceDir(Config, Src)).filename().string());
 
     const std::string PeerID = IpfsWrapper::PeerID();
     if (PeerID.empty()) return Fail("node offline — cannot publish (no peer ID / identity)");
+
+    // Build ByLib by scanning each collection subdir → each package bundle → its (cheap, JSON-only) meta-CID.
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> ByLib;   // libName -> [(pkgDirName, cid)]
+    std::vector<fs::path> Cols;
+    for (const auto &C : fs::directory_iterator(LibraryRoot, Ec))
+        if (C.is_directory()) Cols.push_back(C.path());
+    std::sort(Cols.begin(), Cols.end());
+    for (const auto &Col : Cols)
+    {
+        const std::string LibName = Col.filename().string();
+        if (LibName.empty() || LibName[0] == '.' || Foreign.count(LibName)) continue;   // skip .ipnsindex + friend mirrors
+        std::vector<fs::path> Pkgs;
+        for (const auto &P : fs::directory_iterator(Col, Ec))
+            if (P.is_directory() && ScanBundleIdentity(P.path().string()).Valid) Pkgs.push_back(P.path());
+        std::sort(Pkgs.begin(), Pkgs.end());
+        for (const auto &Pkg : Pkgs)
+        {
+            std::string E;
+            const std::string Cid = IpfsWrapper::AddNoCopyMeta(Pkg.string(), &E);   // JSON-only meta-CID (cheap)
+            if (Cid.empty()) return Fail("meta-CID for " + Pkg.string() + ": " + E);
+            Config["Settings"]["PackageCids"][Pkg.filename().string()] = Cid;
+            ByLib[LibName].push_back({ Pkg.filename().string(), Cid });
+        }
+    }
 
     // 2. Build ONE signed index doc — the friend id IS the entry point. There is NO per-library CID layer: the
     //    libraries (several per user) are inline SECTIONS, each listing its packages by their immutable per-package
@@ -913,7 +930,6 @@ std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &
     //    in one hop); the per-package CIDs never churn. The index file lives under <LibraryRoot>/.ipnsindex/ and is
     //    seeded IN PLACE (AddNoCopy references it), so it must persist to keep serving its CID.
     const fs::path IndexDir = fs::path(LibraryRoot) / ".ipnsindex";
-    std::error_code Ec;
     fs::create_directories(IndexDir, Ec);
     if (Ec) return Fail("cannot create index dir " + IndexDir.string() + ": " + Ec.message());
 
