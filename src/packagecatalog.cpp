@@ -972,11 +972,16 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
 
     // Required content layers: fetch any that aren't already on disk; a missing layer with no IPFS source is fatal.
     bool MissingSource = false; std::string MissingErr;
-    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json&, const std::filesystem::path &Local, const std::string &Cid){
+    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &L, const std::filesystem::path &Local, const std::string &Cid){
         if (MissingSource) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present
         if (Cid.empty()) { MissingSource = true; MissingErr = "missing local content with no IPFS source: " + Local.string(); return; }
+        // Push the stamped SOURCE.SIZE to the node so a gateway-fallback fetch of this layer reports a real % (and a
+        // pre-fetch total). Done HERE — at fetch-build, on the shared path for the GUI download, --fetch AND
+        // --download-all — so it works headless with no GUI model, and before getRoot's gateway phase runs.
+        if (L.contains("SOURCE") && L["SOURCE"].is_object())
+        { const long long Sz = L["SOURCE"].value("SIZE", (long long)0); if (Sz > 0) IpfsWrapper::SetExpectedSize(Cid, Sz); }
         Out.push_back({Cid, Local.string(), false});
     });
     if (MissingSource) return Fail(MissingErr);
@@ -991,7 +996,12 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
         if (!Cid.empty() && Local != Launch->BundleDir)
         {
             if (!std::filesystem::exists(Local, Ec))
+            {
+                const auto &Cv = Launch->Meta["COVER"];                      // register the cover's stamped SIZE too
+                if (Cv.contains("SOURCE") && Cv["SOURCE"].is_object())
+                { const long long Sz = Cv["SOURCE"].value("SIZE", (long long)0); if (Sz > 0) IpfsWrapper::SetExpectedSize(Cid, Sz); }
                 Out.push_back({Cid, Local.string(), true});                 // not local → fetch over IPFS (FetchToPath seeds it)
+            }
             else if (!IpfsWrapper::HasLocal(Cid) || IpfsWrapper::CidMissing(Cid))
             {
                 if (IpfsWrapper::CidMissing(Cid)) IpfsWrapper::DropRef(Cid);   // re-point a stale reference

@@ -47,6 +47,73 @@ class PackageCatalogTest : public QObject
     Q_OBJECT
 private slots:
 
+    // Mint stamps SOURCE.SIZE (payload bytes) beside the CID for a FILE layer, a DIRECTORY layer (recursive sum),
+    // and a COVER; and BACKFILLS it on re-mint for a package that already carries a valid CID but no size, via the
+    // idempotent branch (CID unchanged — the branch runs precisely because NeedsSeed's VerifyCid passed, so the
+    // bytes were not re-added). SIZE is what lets a fetch show a real % and a pre-fetch total instantly. Teeth:
+    // drop `Src["SIZE"]=LocalPayloadSize(Local)` at the seed site → the file/dir QCOMPAREs fail; drop the cover
+    // stamp → the cover QCOMPARE fails; drop the idempotent-backfill branch → the re-mint QCOMPARE fails.
+    void publish_stamps_and_backfills_source_size()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());   // offline (ctest env)
+
+        QTemporaryDir Pkg; QVERIFY(Pkg.isValid());
+        // (a) a plain FILE layer,
+        writeFile(Pkg.path() + "/game.zip", std::string(4096, 'Z'));
+        writeJson(Pkg.path() + "/game.json", NodeFixture::Chain("game", {NodeFixture::Content("zip", "game.zip")}));
+        // (b) a DIRECTORY layer (SIZE must be the recursive sum: 1000 + 2000 = 3000),
+        QDir().mkpath(Pkg.path() + "/datadir");
+        writeFile(Pkg.path() + "/datadir/a.bin", std::string(1000, 'A'));
+        writeFile(Pkg.path() + "/datadir/b.bin", std::string(2000, 'B'));
+        writeJson(Pkg.path() + "/data.json", NodeFixture::Chain("data", {NodeFixture::Content("dir", "datadir")}));
+        // (c) a tile with a COVER.
+        writeFile(Pkg.path() + "/cover.png", std::string(777, 'C'));
+        writeJson(Pkg.path() + "/tile.json", json::array({ json{
+            {"NODE_ID", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"UID", "9001"},
+            {"COVER", {{"PATH", "cover.png"}}} } }));
+
+        // The SOURCE of the (only) content node in a fragment file, or the COVER's SOURCE for the tile.
+        auto srcIn = [&](const QString & file, bool cover) -> json {
+            std::ifstream in((Pkg.path() + "/" + file).toStdString());
+            const json Frag = json::parse(in, nullptr, false);
+            if (Frag.is_array())
+                for (const auto & N : Frag) {
+                    if (!N.is_object()) continue;
+                    if (cover) { if (N.contains("COVER") && N["COVER"].is_object() && N["COVER"].contains("SOURCE")) return N["COVER"]["SOURCE"]; }
+                    else if (N.contains("SOURCE") && N["SOURCE"].is_object()) return N["SOURCE"];
+                }
+            return json::object();
+        };
+
+        // 1) Fresh mint → CID + SIZE stamped on every content path.
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
+        const json File = srcIn("game.json", false), Dir = srcIn("data.json", false), Cov = srcIn("tile.json", true);
+        QVERIFY2(!File.value("CID", std::string()).empty(), "mint must stamp a CID");
+        QCOMPARE((qulonglong)File.value("SIZE", (qulonglong)0), (qulonglong)4096);
+        QCOMPARE((qulonglong)Dir.value("SIZE",  (qulonglong)0), (qulonglong)3000);   // recursive dir sum
+        QCOMPARE((qulonglong)Cov.value("SIZE",  (qulonglong)0), (qulonglong)777);    // cover
+        const std::string Cid = File.value("CID", std::string());
+
+        // 2) Simulate a pre-SIZE package: strip the file layer's SIZE, re-mint → backfilled, CID UNCHANGED (the
+        //    idempotent branch stamped SIZE without re-adding the bytes).
+        {
+            std::ifstream in((Pkg.path() + "/game.json").toStdString());
+            json Frag = json::parse(in);
+            for (auto & N : Frag)
+                if (N.is_object() && N.contains("SOURCE") && N["SOURCE"].is_object()) N["SOURCE"].erase("SIZE");
+            writeJson(Pkg.path() + "/game.json", Frag);
+        }
+        QVERIFY2(!srcIn("game.json", false).contains("SIZE"), "precondition: SIZE stripped");
+        QVERIFY2(PackageCatalog::PublishPackage(Pkg.path().toStdString(), "", &Err), Err.c_str());
+        const json S2 = srcIn("game.json", false);
+        QCOMPARE((qulonglong)S2.value("SIZE", (qulonglong)0), (qulonglong)4096);     // backfilled
+        QCOMPARE(S2.value("CID", std::string()), Cid);                               // same bytes → same CID
+
+        IpfsWrapper::StopNode();
+    }
+
     // Publish is where a REFUSED declared position has its real consequence: PkgGraph::Build drops a position
     // no layout could have produced, StampNodePositions then writes a computed one over it, the node file's
     // bytes change and the package's Meta-CID with them. So the warning has to say which of those two things

@@ -45,7 +45,8 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                                               QHash<QString, QString> * OutPackages,
                                               QHash<QString, QString> * OutCategory,
                                               QHash<QString, QString> * OutPkgDirs = nullptr,
-                                              QHash<QString, QString> * OutSource = nullptr)
+                                              QHash<QString, QString> * OutSource = nullptr,
+                                              QHash<QString, qlonglong> * OutSizes = nullptr)
 {
     QHash<QString, QString> Labels;
     for (const auto & [NodeId, N] : Idx.Nodes)
@@ -75,6 +76,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                     QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
                 if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatContent);
                 if (OutSource)   OutSource->insert(QString::fromStdString(Cid), Src.isEmpty() ? QStringLiteral("Other") : Src);
+                if (OutSizes) { const long long Sz = L["SOURCE"].value("SIZE", (long long)0); if (Sz > 0) OutSizes->insert(QString::fromStdString(Cid), (qlonglong)Sz); }
             }
 
         if (N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())
@@ -89,6 +91,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                     if (OutPackages) OutPackages->insert(QString::fromStdString(Cid), QString::fromStdString(PkgName));
                     if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatAssets);
                     if (OutSource)   OutSource->insert(QString::fromStdString(Cid), Src.isEmpty() ? QStringLiteral("Other") : Src);
+                    if (OutSizes) { const long long Sz = Cv["SOURCE"].value("SIZE", (long long)0); if (Sz > 0) OutSizes->insert(QString::fromStdString(Cid), (qlonglong)Sz); }
                 }
             }
         }
@@ -245,13 +248,19 @@ void IpfsModel::ensureLabels(const QString & cid)
 void IpfsModel::rebuildLabels()
 {
     QHash<QString, QString> Pkgs, Cats, Srcs;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs);
+    QHash<QString, qlonglong> Sizes;
+    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs, &Sizes);
+    ManifestSizes = Sizes;   // for the Size column + per-item speed (display). The NODE registration for gateway
+                             // progress happens at fetch-build in PackageCatalog::CollectContentTargets (GUI + CLI),
+                             // not here — this model only exists in the GUI, and a fetch can precede a refresh.
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
         it->label    = Labels.value(cid, it->label.isEmpty() ? QStringLiteral("(unknown)") : it->label);
         it->package  = Pkgs.value(cid, it->package.isEmpty() ? QStringLiteral("Unknown / not in your library") : it->package);
         it->category = Cats.value(cid, it->category.isEmpty() ? CatContent : it->category);
         it->source   = Srcs.value(cid, it->source);
+        // Prefer the manifest size — instant and exact — over the ~35 s network CidSize; only when we have no size yet.
+        if (it->size < 0 && Sizes.contains(cid)) it->size = Sizes.value(cid);
     }
 }
 
@@ -396,6 +405,9 @@ void IpfsModel::tick()
 void IpfsModel::ensureSize(const QString & cid)
 {
     if (Cids.value(cid).size >= 0) return;
+    // The manifest's stamped SOURCE.SIZE is instant and exact — use it and skip the network CidSize entirely.
+    if (ManifestSizes.contains(cid) && Cids.contains(cid))
+    { Cids[cid].size = ManifestSizes.value(cid); emit cidChanged(cid); return; }
     if (!IpfsWrapper::Available()) return;   // no node → the size stat can't run (and would outlive a short-lived model)
     std::thread([this, cid, A = Alive]{
         const long long S = IpfsWrapper::CidSize(cid.toStdString());
@@ -433,6 +445,20 @@ void IpfsModel::refresh()
         St.repo      = QString::fromStdString(IpfsWrapper::RepoSizeHuman());
         const IpfsWrapper::BandwidthRates Bw = IpfsWrapper::Bandwidth();
         St.downBps = Bw.DownBps; St.upBps = Bw.UpBps;
+        // Publish LIVENESS immediately — the status-row fields (available/daemon/peers/bandwidth) are all known now,
+        // before the (possibly slow) pin size + deliverability walks below. Without this the tab stayed "off" for the
+        // whole walk (and, since RefreshInFlight skips overlapping refreshes, could stay off indefinitely if it
+        // wedged) even though the node was up. The full applySnapshot posts the rest when the walk completes.
+        {
+            const bool Avail = St.available, Daemon = St.daemon; const int Peers = St.peers;
+            const double Down = St.downBps, Up = St.upBps;
+            if (A->load())
+                QMetaObject::invokeMethod(this, [this, Avail, Daemon, Peers, Down, Up]{
+                    Status.available = Avail; Status.daemon = Daemon; Status.peers = Peers;
+                    Status.downBps = Down;    Status.upBps = Up;
+                    emit nodeStatusChanged();
+                }, Qt::QueuedConnection);
+        }
         const std::vector<IpfsWrapper::PinEntry> Pins = IpfsWrapper::Pins();
         St.pinCount = (int)Pins.size();
         QSet<QString> Uploading;

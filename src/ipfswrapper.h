@@ -117,6 +117,10 @@ bool FetchTargetsConcurrent(const std::vector<FetchTarget> &Targets, std::string
 void RequestCancel(const std::string &Cid);
 void ClearCancel(const std::string &Cid);
 
+// Register a CID's known payload byte size (the manifest's stamped SOURCE.SIZE) so a gateway-fallback fetch can
+// report a real progress % without walking the DAG. Size <= 0 clears it. Idempotent; a pure hint.
+void SetExpectedSize(const std::string &Cid, long long Size);
+
 // ----- best-effort status helpers for the IPFS tab (empty/0 when offline) -----
 
 // Number of connected swarm peers, 0 if offline.

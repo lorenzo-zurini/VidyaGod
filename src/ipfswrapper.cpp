@@ -125,6 +125,7 @@ DownloadSlot::~DownloadSlot()
 
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }
 void ClearCancel(const std::string &Cid)   { VgClearCancel(Cid.c_str()); }
+void SetExpectedSize(const std::string &Cid, long long Size) { VgSetExpectedSize(Cid.c_str(), Size); }
 
 bool StartNode(const std::string &RepoPath, std::string *Error)
 {

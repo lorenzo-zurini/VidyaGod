@@ -326,7 +326,7 @@ const std::map<std::string, Kind> &Table()
         {"PLATFORM",Str},{"HOST",Str},{"EXECUTABLE",Str},{"CONTENTPATH",Str},{"WORKDIR",Str},{"LABEL",Str},
         {"RUNNER",Str},{"UID",Str},{"TITLE",Str},{"CONTENT_ROOT",Str},{"ARCHITECTURE",Str},{"KEEP",Str},
         {"DROP",Str},{"CID",Str},{"CONTROL",Str},{"GROUP",Str},
-        {"MIN",Num},{"MAX",Num},
+        {"MIN",Num},{"MAX",Num},{"SIZE",Num},
         {"OVERRIDE",Bool},{"RECOMMENDED",Bool},{"PREFIX_GENERATE",Bool},{"UNIFIED_RUNTIME",Bool},
         {"GUEST",StrArr},{"EXEARGS",StrArr},{"ARGS",StrArr},{"REMOVE_ENV",StrArr},{"SUBMOUNTS",StrArr},
         {"BASE_TARGETS",StrArr},{"CHOICES",Arr},

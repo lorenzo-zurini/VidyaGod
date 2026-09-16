@@ -209,6 +209,28 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     return true;
 }
 
+// Payload byte size of a layer's local content: a plain file's size, or the recursive sum of a directory's
+// regular files. This matches the UnixFS logical size the fetch progress path counts (fetch.go rdr.Size()), so a
+// stamped SOURCE.SIZE is directly usable as the download total for progress %/ETA and pre-fetch estimation.
+// Instant (local stat/walk, content is on disk at mint); 0 on any error (treated as "unknown" downstream).
+static uint64_t LocalPayloadSize(const std::filesystem::path &P)
+{
+    std::error_code Ec;
+    if (std::filesystem::is_directory(P, Ec))
+    {
+        uint64_t Sum = 0;
+        for (auto It = std::filesystem::recursive_directory_iterator(P, Ec);
+             !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+        {
+            std::error_code Fc;
+            if (It->is_regular_file(Fc)) { const auto S = std::filesystem::file_size(It->path(), Fc); if (!Fc) Sum += S; }
+        }
+        return Sum;
+    }
+    const auto S = std::filesystem::file_size(P, Ec);
+    return Ec ? 0 : static_cast<uint64_t>(S);
+}
+
 bool PublishPackage(const std::string &PackageDir, const std::string &DehydratedDestDir, std::string *Error)
 {
 
@@ -222,7 +244,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         LogWarn("PackageCatalog::PublishPackage",
                 "IPFS node not online yet — CIDs will be computed but content seeds to peers only once it connects.");
 
-    int Seeded = 0, Walked = 0, Covers = 0, Repaired = 0;
+    int Seeded = 0, Walked = 0, Covers = 0, Repaired = 0, SizesStamped = 0;
     //Publishing is the one operation whose mistakes travel: a fragment skipped here is missing from the CID every
     //peer then fetches, and it is missing in a way nothing downstream can distinguish from "the author never wrote
     //that node". So both quiet skips below are counted and reported.
@@ -276,9 +298,23 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             if (!Holder.contains("COVER")) return;
             nlohmann::ordered_json &Cover = Holder["COVER"];
             if (!Cover.is_object()) return;                                       // refused and reported at the call site
-            const std::string CoverCid = Cover["SOURCE"].is_object() ? Cover["SOURCE"].value("CID", std::string()) : std::string();
+            //CONST-SAFE: a bare Cover["SOURCE"] would INSERT a null "SOURCE" member on a cover that has none, and the
+            //SIZE backfill below now saves fragments that used to be left untouched — writing that null out, which the
+            //node validator then rejects (whole tile vanishes). Read through contains(), never operator[].
+            const std::string CoverCid = (Cover.contains("SOURCE") && Cover["SOURCE"].is_object())
+                                       ? Cover["SOURCE"].value("CID", std::string()) : std::string();
             const std::string File = Cover.value("PATH", std::string());
-            if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File)) return;        // has a CID that still verifies its bytes — keep
+            if (!File.empty() && !NeedsSeed(CoverCid, Pkg / File))                // has a CID that still verifies its bytes — keep
+            {
+                //Idempotent CID — but backfill SOURCE.SIZE if absent (no re-seed of bytes needed), so an existing
+                //library gains sizes on the next --remint-library without re-adding every layer.
+                const std::filesystem::path CLocal = Pkg / File;
+                std::error_code Sc;
+                if (Cover.contains("SOURCE") && Cover["SOURCE"].is_object() && !Cover["SOURCE"].contains("SIZE")
+                    && std::filesystem::exists(CLocal, Sc))
+                { Cover["SOURCE"]["SIZE"] = LocalPayloadSize(CLocal); Mutated = true; ++SizesStamped; }
+                return;
+            }
             if (File.empty()) return;
             std::error_code Rc;
             const std::filesystem::path Local = Pkg / File;
@@ -286,7 +322,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             std::string Err;
             const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
             if (NewCid.empty()) { LogWarn("PackageCatalog::PublishPackage", "could not seed cover " + Local.string() + " (" + Err + ")"); return; }
-            Cover = nlohmann::ordered_json{ {"PATH", File}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", NewCid}}} };
+            Cover = nlohmann::ordered_json{ {"PATH", File}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", NewCid}, {"SIZE", LocalPayloadSize(Local)}}} };
             Mutated = true;
             ++Covers;
         };
@@ -310,7 +346,15 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             std::filesystem::path Local; std::string Cid;
             LayerLocator(S, Pkg, Local, Cid);
             std::error_code Rc;
-            if (!NeedsSeed(Cid, Local)) continue;                                // has a CID that still verifies — idempotent
+            if (!NeedsSeed(Cid, Local))                                          // has a CID that still verifies — idempotent
+            {
+                //Backfill SOURCE.SIZE if absent (no re-seed): existing packages gain the download-size hint on the
+                //next --remint-library without re-adding bytes. Skips CID-only refs (no local file to measure).
+                std::error_code Sc;
+                if (S["SOURCE"].is_object() && !S["SOURCE"].contains("SIZE") && std::filesystem::exists(Local, Sc))
+                { S["SOURCE"]["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
+                continue;
+            }
             if (!std::filesystem::exists(Local, Rc))                             // no local content to seed
             {
                 //A RUNTIME-SOURCED layer is absent because it is SUPPOSED to be: its PATH carries a %VAR%
@@ -337,7 +381,7 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
             const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
             if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
             nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object()) ? S["SOURCE"] : nlohmann::ordered_json::object();
-            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; S["SOURCE"] = std::move(Src);
+            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; Src["SIZE"] = LocalPayloadSize(Local); S["SOURCE"] = std::move(Src);
             Mutated = true; ++Seeded;
         }
 
@@ -346,7 +390,8 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     }
     LogSucc("PackageCatalog::PublishPackage", "Dehydrated " + PackageDir + " (" + std::to_string(Seeded)
             + " of " + std::to_string(Walked) + " layer(s) + " + std::to_string(Covers) + " cover(s) newly seeded"
-            + (Repaired ? ", " + std::to_string(Repaired) + " re-seeded after DRIFT" : "") + ")");
+            + (Repaired ? ", " + std::to_string(Repaired) + " re-seeded after DRIFT" : "")
+            + (SizesStamped ? ", " + std::to_string(SizesStamped) + " SIZE backfilled" : "") + ")");
 
     //A layer with neither a CID nor local content is published as a reference to bytes that exist NOWHERE: the
     //package resolves, the download reports nothing to fetch, and the game is missing files on the first machine

@@ -128,6 +128,9 @@ private:
                                                                   // serve failure. Replaces the per-5s UI-thread filestore DAG-walk that froze the app.
     QHash<QString, QPair<qlonglong,qlonglong>> Speed;             // CID → {sampleBytes, sampleMs} for the rate calc
     QHash<QString, qlonglong>                  LastProgress;      // CID → ms of last forward progress (stall detection)
+    QHash<QString, qlonglong>                  ManifestSizes;     // CID → stamped SOURCE.SIZE from the catalog (instant, no network CidSize).
+                                                                  // Rebuilt in rebuildLabels; feeds the Size column + per-item speed and is
+                                                                  // pushed to the node (SetExpectedSize) so a gateway fetch shows real progress.
 
     QTimer * RefreshTimer = nullptr;
     QTimer * StallTimer   = nullptr;

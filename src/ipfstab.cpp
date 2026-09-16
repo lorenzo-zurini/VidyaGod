@@ -401,7 +401,12 @@ void IpfsTab::renderLeaf(const QString & cid)
     int Role = StSeeded; QString Status; QColor Fg("#c6d4df");
     switch (st.phase)
     {
-    case P::Pending:     Role = StQueued;      Status = QStringLiteral("Not fetched — will sync when online"); Fg = QColor("#8f98a0"); break;
+    case P::Pending:     Role = StQueued;
+                         // "will sync when online" reads as "you are offline" — a lie while another source is
+                         // actively downloading. Say what is true: queued when online, waiting when offline.
+                         Status = IpfsWrapper::DaemonRunning() ? QStringLiteral("Queued — waiting to sync")
+                                                              : QStringLiteral("Not fetched — will sync when online");
+                         Fg = QColor("#8f98a0"); break;
     case P::Queued:      Role = StQueued;      Status = QStringLiteral("Queued"); break;
     // Before the first byte arrives (pct < 0) the wait is provider discovery — DHT walk, relay dial, holepunch —
     // not a transfer; say so instead of showing a frozen "Fetching…" bar (a source sync can sit here for minutes).

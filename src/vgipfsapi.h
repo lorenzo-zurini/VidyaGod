@@ -55,6 +55,7 @@ int  VgUnservableRefs(char **outJson);                // JSON [{cid,path,status,
 
 void VgRequestCancel(const char *cid);
 void VgClearCancel(const char *cid);
+void VgSetExpectedSize(const char *cid, long long size); // manifest SOURCE.SIZE hint → real gateway progress %; size<=0 clears
 void VgSetTransferCb(VgTransferCb cb);
 
 // ---- friends / multiplayer social layer (see VidyaGodIPFS/social.go + friend.go) ----
