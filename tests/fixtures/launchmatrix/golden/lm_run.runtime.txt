@@ -2,7 +2,7 @@
   [0] --matrix
   [1] hello-beta
 === cwd
-  <DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001
+  <DATA>/TEMP/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
   LM_EXEC_ENV=arrived
   LM_FROM_VAR=hello-beta

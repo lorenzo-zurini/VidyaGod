@@ -97,6 +97,8 @@ set(SHARED_SOURCES
 
     src/apppaths.h
     src/apppaths.cpp
+    src/instancestore.h
+    src/instancestore.cpp
 
     # OS-abstraction seam (host-specific bits). platform_posix.cpp on Linux; platform_win.cpp on Windows.
     src/platform/platform.h
@@ -444,6 +446,7 @@ add_gui_test(test_tray)
 add_gui_test(test_networking)
 add_gui_test(test_launchresolver)
 add_gui_test(test_packagecatalog)
+add_gui_test(test_instancestore)
 add_gui_test(test_appmodel)
 add_gui_test(test_ipfsmodel)
 add_gui_test(test_covercache)

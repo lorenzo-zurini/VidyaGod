@@ -48,7 +48,7 @@ bool LaunchResolver::ResolveCustomVariables(const nlohmann::ordered_json &MANIFE
 {
     //ONE snapshot of the package's persisted VARIABLES for the whole resolve. The old code re-ran the
     //O(LIBRARY) settings scan (with a deep USERSETTINGS copy) for EVERY custom-var key.
-    const nlohmann::ordered_json SavedVars = GetPackageVariables(GlobalConfigJSON, ContainerParams.PackageUID);
+    const nlohmann::ordered_json SavedVars = GetPackageVariables(GlobalConfigJSON, ContainerParams.PackageUID, ContainerParams.InstanceName);
 
     //Helper: resolve a single bare KEY/DEFAULT pair through the priority chain.
     auto ResolveOne = [&](const std::string &Key, const std::string &DefaultValue) -> std::string

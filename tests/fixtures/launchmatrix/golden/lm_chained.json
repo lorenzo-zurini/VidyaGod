@@ -1,5 +1,5 @@
 {
-  "Content": "<DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001/probe.sh",
+  "Content": "<DATA>/TEMP/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
   "ContentPath": "probe.sh",
   "ContentRoot": "/drive_c/90000000000001",
   "CustomVariables": {

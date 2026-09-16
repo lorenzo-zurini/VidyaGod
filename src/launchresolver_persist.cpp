@@ -98,7 +98,7 @@ bool LaunchResolver::DerivePersistence(const nlohmann::ordered_json &MANIFESTJSO
         VarSubst::StringVariableSubstitution(T, Vars);
         if (T.empty()) { LogWarn("DerivePersistence", "  KEEP with empty target (skipped)."); return; }
         if (T.rfind("host:", 0) == 0) { LogWarn("DerivePersistence", "  KEEP host: target not yet supported (reserved for native containment): " + T); return; }
-        if (IsRuntimeRoot(T)) { ContainerParams.PersistAll = true; LogOut("DerivePersistence", "  KEEP %RuntimePath% (whole runtime durable)"); return; }
+        if (IsRuntimeRoot(T)) { ContainerParams.PersistAll = true; LogWarn("DerivePersistence", "  KEEP %RuntimePath% (whole-runtime PersistAll) — DISCOURAGED: it makes the entire USERDATA the game's writable mount root, so a sandboxed game can read/tamper the instance config beside it. Prefer granular KEEP targets (specific dirs/files)."); return; }
         if (ToLower(T) == "registry")
         { AddUnique(ContainerParams.KeepRegHives, "user.reg"); AddUnique(ContainerParams.KeepRegHives, "system.reg"); AddUnique(ContainerParams.KeepRegHives, "userdef.reg"); LogOut("DerivePersistence", "  KEEP registry (all hives)"); return; }
         const auto Sep = T.find_first_of("\\/");

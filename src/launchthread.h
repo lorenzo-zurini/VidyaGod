@@ -25,6 +25,7 @@ public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
     std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run
+    std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)
     std::vector<std::string>           RunnerChain;       // Runner daisy-chain (innermost→outermost node ids); empty = auto-resolve
     std::map<std::string, std::string> VariableOverrides; // CustomVar values from picker / variant FORCEVARS seeds

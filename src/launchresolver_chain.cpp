@@ -49,7 +49,7 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
 {
     std::string Preferred;
     {
-        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID);
+        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             Preferred = std::string(US["PREFERRED_RUNNER"]);
     }
@@ -64,6 +64,12 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     };
     if (!CP.RunnerID.empty()) { const Node *N = Idx.Find(CP.RunnerID); if (N && Qualifies(*N)) return N; }
     if (!Preferred.empty())   { const Node *N = Idx.Find(Preferred);   if (N && Qualifies(*N)) return N; }
+    // The launchable's DECLARED runner (DeclareExec.RUNNER → Launch.RecommendedRunner): honoured after an explicit
+    // pin / persisted preference, before the generic default. Restores what the removed appmodel PREFERRED_RUNNER
+    // seed did — a package that names a specific runner gets it — but at the resolver, so a FRESH (un-persisted)
+    // game honours it too. (Distinct from the runner NODE's own Recommended flag used in the default rank below.)
+    if (!Launch.RecommendedRunner.empty())
+    { const Node *N = Idx.Find(Launch.RecommendedRunner); if (N && Qualifies(*N)) return N; }
 
     //Default pick — rank by (RECOMMENDED, package-local, node-id).
     auto Local  = [&](const Node &N) { return !Launch.BundleDir.empty() && N.BundleDir == Launch.BundleDir; };
@@ -234,9 +240,17 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     std::vector<std::string> Pinned = CP.RunnerChainIds;
     if (Pinned.empty())
     {
-        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID);
+        auto US = GetPackageUserSettings(GlobalConfigJSON, CP.PackageUID, CP.InstanceName);
         if (US.contains("RUNNER_CHAIN") && US["RUNNER_CHAIN"].is_array())
             for (const auto &X : US["RUNNER_CHAIN"]) if (X.is_string()) Pinned.push_back(std::string(X));
+    }
+    //Nothing pinned → fall back to the launchable's DECLARED runner (DeclareExec.RUNNER) as a SOFT pin, so a package
+    //that names a specific runner gets it on a fresh launch (the removed appmodel seed's job, now at the resolver).
+    //The pin-validation below vets it and appends a terminal; if it doesn't reach the machine it falls to the BFS.
+    if (Pinned.empty() && !Launch.RecommendedRunner.empty())
+    {
+        const Node *R = Idx.Find(Launch.RecommendedRunner);
+        if (R && R->IsRunner()) Pinned.push_back(Launch.RecommendedRunner);
     }
     //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH (below), not a per-node pin: e.g. each
     //Minecraft version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so

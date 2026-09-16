@@ -1,9 +1,9 @@
 === argv
-  [0] <DATA>/TEMP/90000000000001/RUNNER/runner/fakerunner.sh
+  [0] <DATA>/TEMP/90000000000001/DefaultInstance/RUNNER/runner/fakerunner.sh
   [1] --run
   [2] --chained
 === cwd
-  <DATA>/TEMP/90000000000001/RUNTIME/drive_c/90000000000001
+  <DATA>/TEMP/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
   LM_EXEC_ENV=game-beats-the-outer-link
   LM_FROM_VAR=hello

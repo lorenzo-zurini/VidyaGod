@@ -71,6 +71,7 @@ public:
     std::filesystem::path PackagePath;   //Root of the package directory on disk
     std::string PackageName;             //Human-readable name from MANIFEST["PACKAGENAME"]
     std::string PackageUID;              //Unique package identifier from MANIFEST["PACKAGEUID"]
+    std::string InstanceName;            //Which INSTANCE to launch (config + USERDATA); "" ⇒ the active (newest-LASTRUN) one. See InstanceStore.
 
     //Game specific:
     std::string GameName;                //Title of the selected game

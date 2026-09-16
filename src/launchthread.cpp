@@ -1,5 +1,7 @@
 #include "launchthread.h"
 #include "containerwrapper.h"
+#include "instancestore.h"   // TouchLastRun — mark the launched instance as last-played
+#include "apppaths.h"        // UserDataPathOverride — bypass instances in in-package/CLI mode
 #include "manifestmodel.h"
 #include "packagecatalog.h"
 #include "commonutils.h"
@@ -110,6 +112,7 @@ void LaunchThread::run()
     Params.NodeIdx      = Index.get();
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
+    Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
 
     nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();
     ContainerWrapper* LocalWrapper = new ContainerWrapper(GlobalConfigJSON, UnusedManifest, Params);
@@ -150,6 +153,13 @@ void LaunchThread::run()
         emit launchFinished(false, "Failed to build container runtime.\nCheck that all components are defined and their zip files exist.");
         return;
     }
+
+    // Runtime built → this is a real launch: stamp the instance's LASTRUN so it becomes the active / last-played one
+    // for the picker. AFTER the build (not right after resolve), so a failed build doesn't steal "active"; skipped
+    // for a DRY RUN and in the --userdata-dir/in-package override mode (instances bypassed — no DefaultInstance litter).
+    if (!this->DryRun && AppPaths::UserDataPathOverride().empty())
+        InstanceStore::TouchLastRun(GlobalConfigJSON, LocalWrapper->ContainerParams.PackageUID,
+                                    LocalWrapper->ContainerParams.InstanceName);
 
     // -----------------------------------------------------------------
     // Step 3: Execute game (blocks until process exits or is killed).

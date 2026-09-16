@@ -1,6 +1,7 @@
 #include "packagecatalog.h"
 #include "packagecatalog_p.h"
 #include "apppaths.h"
+#include "instancestore.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
 #include "jsonoperations.h"
@@ -28,41 +29,41 @@ namespace PackageCatalog {
 
 // ----- per-package user settings -----
 
-nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID)
+// Per-package config now lives in the INSTANCE file (<root>/USERDATA/<uid>/<instance>/instance.json), NOT in
+// GlobalConfig — see InstanceStore. The GlobalConfigJSON arg is kept ONLY to locate the USERDATA root
+// (Settings.Paths.UserDataRoot); it is no longer read from / written to for these keys. Instance="" ⇒ the active
+// instance (a WRITE creates DefaultInstance if the game has none; a READ never creates one).
+nlohmann::ordered_json GetPackageUserSettings(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
+                                              const std::string &Instance)
 {
-    if (!GlobalConfigJSON.contains("LIBRARY")) return nlohmann::ordered_json::object();
-    for (auto &Entry : GlobalConfigJSON["LIBRARY"])
-        if (Entry.contains("PACKAGEUID") && std::string(Entry["PACKAGEUID"]) == PackageUID)
-            return Entry.contains("USERSETTINGS") ? Entry["USERSETTINGS"] : nlohmann::ordered_json::object();
-    return nlohmann::ordered_json::object();
+    return InstanceStore::ReadConfig(GlobalConfigJSON, PackageUID, Instance);
 }
 
-nlohmann::ordered_json GetPackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID)
+nlohmann::ordered_json GetPackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
+                                           const std::string &Instance)
 {
-    nlohmann::ordered_json US = GetPackageUserSettings(GlobalConfigJSON, PackageUID);
+    const nlohmann::ordered_json US = InstanceStore::ReadConfig(GlobalConfigJSON, PackageUID, Instance);
     if (US.contains("VARIABLES") && US["VARIABLES"].is_object()) return US["VARIABLES"];
     return nlohmann::ordered_json::object();
 }
 
-void MergePackageVariables(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::map<std::string, std::string> &NewVars)
+void MergePackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
+                           const std::map<std::string, std::string> &NewVars, const std::string &Instance)
 {
     if (NewVars.empty()) return;
-    nlohmann::ordered_json Vars = GetPackageVariables(GlobalConfigJSON, PackageUID);
+    nlohmann::ordered_json Vars = GetPackageVariables(GlobalConfigJSON, PackageUID, Instance);
     for (const auto &[K, V] : NewVars) Vars[K] = V;
-    SetPackageUserSetting(GlobalConfigJSON, PackageUID, "VARIABLES", Vars);
+    SetPackageUserSetting(GlobalConfigJSON, PackageUID, "VARIABLES", Vars, Instance);
 }
 
-void SetPackageUserSetting(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID, const std::string &Key, const nlohmann::ordered_json &Value)
+void SetPackageUserSetting(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &PackageUID,
+                           const std::string &Key, const nlohmann::ordered_json &Value, const std::string &Instance)
 {
-    if (!GlobalConfigJSON.contains("LIBRARY")) return;
-    for (auto &Entry : GlobalConfigJSON["LIBRARY"])
-        if (Entry.contains("PACKAGEUID") && std::string(Entry["PACKAGEUID"]) == PackageUID)
-        {
-            if (!Entry.contains("USERSETTINGS") || !Entry["USERSETTINGS"].is_object())
-                Entry["USERSETTINGS"] = nlohmann::ordered_json::object();
-            Entry["USERSETTINGS"][Key] = Value;
-            return;
-        }
+    nlohmann::ordered_json C = InstanceStore::ReadConfig(GlobalConfigJSON, PackageUID, Instance);
+    C[Key] = Value;
+    std::string Err;
+    if (!InstanceStore::WriteConfig(GlobalConfigJSON, PackageUID, Instance, C, &Err))
+        LogErr("PackageCatalog::SetPackageUserSetting", "could not persist " + Key + " for " + PackageUID + " (" + Err + ")");
 }
 
 // ----- on-disk locations -----

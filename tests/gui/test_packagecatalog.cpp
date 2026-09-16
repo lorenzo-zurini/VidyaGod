@@ -320,11 +320,12 @@ private slots:
         QVERIFY(QFile::exists(dir.path() + "/game.json"));       // manifest kept → returns to Catalog
     }
 
-    // Per-package user settings persist into the GlobalConfig and read back.
+    // Per-package user settings persist into the INSTANCE file (InstanceStore) and read back. The temp UserDataRoot
+    // isolates the write from the real ~/.VidyaGod; a write to the active instance auto-creates DefaultInstance.
     void package_user_settings_roundtrip()
     {
-        // User settings live inside the package's LIBRARY entry (USERSETTINGS), so the entry must exist first.
-        json cfg = json{{"LIBRARY", json::array({ json{{"PACKAGEUID", "pkg1"}} })}};
+        QTemporaryDir ud; QVERIFY(ud.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
         PackageCatalog::SetPackageUserSetting(cfg, "pkg1", "PREFERRED_RUNNER", "wine-ge");
         json us = PackageCatalog::GetPackageUserSettings(cfg, "pkg1");
         QCOMPARE(us.value("PREFERRED_RUNNER", std::string()), std::string("wine-ge"));

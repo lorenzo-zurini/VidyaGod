@@ -1,6 +1,7 @@
 #include "cli/climodes.h"
 #include "main.h"
 #include "apppaths.h"
+#include "instancestore.h"   // TouchLastRun on a real CLI launch
 #include "platform/platform.h"
 #include "commonutils.h"
 #include "manifestmodel.h"
@@ -123,11 +124,12 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
             && !NewContainerWrapper.ContainerParams.PackageUID.empty())
         {
             const std::string &Uid = NewContainerWrapper.ContainerParams.PackageUID;
-            PackageCatalog::MergePackageVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets);
-            QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
-            if (JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
-                LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())
-                                   + " pool-seeded secret(s) for package " + Uid + ".");
+            // MergePackageVariables now persists to the launched INSTANCE's instance.json (not GlobalConfig) — no
+            // GlobalConfig SaveJSON needed (that was a dead write, and its success gated a lying "persisted" log).
+            PackageCatalog::MergePackageVariables(GlobalConfigJSON, Uid, NewContainerWrapper.ContainerParams.PickedSecrets,
+                                                  NewContainerWrapper.ContainerParams.InstanceName);
+            LogOut("main.cpp", "Persisted " + std::to_string(NewContainerWrapper.ContainerParams.PickedSecrets.size())
+                               + " pool-seeded secret(s) for package " + Uid + ".");
         }
 
         //Bail if the runtime couldn't be built (no compatible runner, unmountable/compressed layers, missing
@@ -137,6 +139,11 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         { LogErr("main.cpp", "Failed to build the container runtime for '" + LaunchParameters.LaunchNodeId
                  + "' — aborting launch (check the log above)."); NewContainerWrapper.Cleanup();
           Diagnostics::ReportVerdict("Launch of '" + LaunchParameters.LaunchNodeId + "'"); return 1; }
+        // Real launch (runtime built) → mark the instance last-played. Skipped in the --userdata-dir/in-package
+        // override mode (instances are bypassed there — don't litter <root>/USERDATA with a DefaultInstance).
+        if (AppPaths::UserDataPathOverride().empty() && !NewContainerWrapper.ContainerParams.PackageUID.empty())
+            InstanceStore::TouchLastRun(GlobalConfigJSON, NewContainerWrapper.ContainerParams.PackageUID,
+                                        NewContainerWrapper.ContainerParams.InstanceName);
         NewContainerWrapper.Execute();
         if (NewContainerWrapper.LastCrashed || NewContainerWrapper.LastExitCode != 0)
             LogWarn("main.cpp", "Game did not exit cleanly (code " + std::to_string(NewContainerWrapper.LastExitCode) + ").");

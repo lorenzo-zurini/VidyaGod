@@ -7,6 +7,8 @@
 #include "launchresolver.h"
 #include "launchparams.h"
 #include "manifestmodel.h"
+#include "instancestore.h"
+#include <QTemporaryDir>
 
 using json = nlohmann::ordered_json;
 
@@ -552,11 +554,36 @@ private slots:
         idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
         Node launch = launchNode("game", "win32", {});
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
-        const json cfg = json{{"LIBRARY", json::array({ json{{"PACKAGEUID", "pkg"},
-            {"USERSETTINGS", {{"RUNNER_CHAIN", json::array({"protonB"})}}}} })}};
+        // The persisted pin now lives in the INSTANCE file, not GlobalConfig — write it there (temp UserDataRoot
+        // isolates the test from the real ~/.VidyaGod). cp.InstanceName is empty ⇒ the resolver reads the active
+        // instance, which is the DefaultInstance we just wrote.
+        QTemporaryDir ud; QVERIFY(ud.isValid());
+        const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
+        QVERIFY(InstanceStore::WriteConfig(cfg, "pkg", "DefaultInstance", json{{"RUNNER_CHAIN", json::array({"protonB"})}}));
         auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
         QCOMPARE((int)ids.size(), 2);
         QCOMPARE(ids[0], std::string("protonB"));              // pin beats default (protonA sorts first)
+        QCOMPARE(ids.back(), std::string("nativerun"));
+    }
+
+    // A launchable's DECLARED runner (DeclareExec.RUNNER → Node.RecommendedRunner) is honoured with NO persisted
+    // pin — the job the removed appmodel PREFERRED_RUNNER seed used to do, now at the resolver so a FRESH game gets
+    // it. Teeth: drop the RecommendedRunner soft-pin in ResolveChainIds → the BFS default picks protonA (sorts
+    // first, same node-Recommended flag) and this fails.
+    void chain_honours_declared_runner()
+    {
+        NodeIndex idx;
+        idx.Nodes["protonA"]   = chainRunner("protonA", {"win32"}, kMachine);   // sorts first by node-id
+        idx.Nodes["protonB"]   = chainRunner("protonB", {"win32"}, kMachine);
+        idx.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");
+        Node launch = launchNode("game", "win32", {});
+        launch.RecommendedRunner = "protonB";                  // the DeclareExec.RUNNER the package declares
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "pkg";
+        QTemporaryDir ud; QVERIFY(ud.isValid());               // no pin persisted (temp root, empty instance)
+        const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QCOMPARE((int)ids.size(), 2);
+        QCOMPARE(ids[0], std::string("protonB"));              // declared runner beats the default
         QCOMPARE(ids.back(), std::string("nativerun"));
     }
 
@@ -714,13 +741,15 @@ private slots:
         json pool = json{{"COMPONENTS", json::array({ json{{"COMPONENTID", "c1"}, {"SUBCOMPONENTS", json::array({
             json{{"TYPE", "CustomVar"}, {"KEY", "MYVAR"}, {"DEFAULT", "def"}, {"VARTYPE", "string"}} })}} })}};
 
-        // default
+        // temp UserDataRoot isolates every read/write here from the real ~/.VidyaGod (the accessors now hit disk).
+        QTemporaryDir ud; QVERIFY(ud.isValid());
+        const json cfg = json{{"Settings", {{"Paths", {{"UserDataRoot", ud.path().toStdString()}}}}}};
+        // default (no instance config written yet → empty → the CustomVar DEFAULT)
         { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
-          LaunchResolver::ResolveCustomVariables(pool, cp, json{{"Settings", json::object()}});
+          LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("def")); }
-        // user setting (lives in the package's LIBRARY entry → USERSETTINGS → VARIABLES)
-        const json cfg = json{{"LIBRARY", json::array({ json{{"PACKAGEUID", "pkg"},
-            {"USERSETTINGS", {{"VARIABLES", {{"MYVAR", "cfg"}}}}}} })}};
+        // user setting (now lives in the INSTANCE file — write it there)
+        QVERIFY(InstanceStore::WriteConfig(cfg, "pkg", "DefaultInstance", json{{"VARIABLES", {{"MYVAR", "cfg"}}}}));
         { ContainerParams cp("/tmp/vg_bundle"); cp.Recipe = {"c1"}; cp.PackageUID = "pkg";
           LaunchResolver::ResolveCustomVariables(pool, cp, cfg);
           QCOMPARE(cp.CustomVariables["MYVAR"], std::string("cfg")); }

@@ -92,7 +92,10 @@ private slots:
     // Registering a package whose launchable declares DeclareExec.RUNNER seeds the package's PREFERRED_RUNNER
     // (a soft, package-side runner recommendation the user later overrides). A fresh entry only — never clobbers a
     // user's existing choice.
-    void register_seeds_preferred_runner_from_declareexec_runner()
+    // Per-package config (incl. PREFERRED_RUNNER) now lives in the INSTANCE file, not the LIBRARY entry — register
+    // must leave the entry PACKAGE-FREE. The recommended runner is still applied at launch by PickRunnerNode's
+    // RECOMMENDED-first default (see test_launchresolver::pick_runner_prefers_recommended), not by a seed here.
+    void register_leaves_library_entry_package_free()
     {
         QTemporaryDir d; QVERIFY(d.isValid());
         QDir appDir(d.path());
@@ -108,8 +111,7 @@ private slots:
         auto [added, skipped] = m.importPackagesFromDir(pkg.path());
         QCOMPARE(added, 1);
         QCOMPARE((int)cfg["LIBRARY"].size(), 1);
-        QCOMPARE(cfg["LIBRARY"][0]["USERSETTINGS"]["PREFERRED_RUNNER"].get<std::string>(),
-                 std::string("geproton_10_20_runner"));
+        QVERIFY2(!cfg["LIBRARY"][0].contains("USERSETTINGS"), "the LIBRARY entry must carry no per-package config");
     }
 
     // The ctor applies the persisted CardPixelWidth (so a restart restores the user's zoom).

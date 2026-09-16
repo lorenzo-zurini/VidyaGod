@@ -1,5 +1,6 @@
 #include "launchresolver.h"
 #include "apppaths.h"        // AppPaths::DataRoot — the app data root the launch TEMP hangs off of
+#include "instancestore.h"   // per-instance USERDATA + TEMP keying (ResolveActive / InstanceDir)
 #include "varsubst.h"        // VarSubst::StringVariableSubstitution / RenderValue
 #include "packagecatalog.h"  // GetPackageUserSettings (catalog/user-settings service)
 #include "runnerwrapper.h"   // RunnerWrapper::ExecutableAvailable / DefPrefixDir
@@ -273,15 +274,27 @@ bool LaunchResolver::DerivePaths(struct ContainerParams &ContainerParams, const 
             && !std::string(S["Paths"]["TempRoot"]).empty())
             TempRoot = std::filesystem::path(std::string(S["Paths"]["TempRoot"]));
     }
-    ContainerParams.TempPath = TempRoot / ContainerParams.PackageUID;
+    //INSTANCE: durable USERDATA + ephemeral TEMP are both keyed by the instance, so two instances of one game are
+    //fully independent installs and never collide in RUNTIME/WRITELAYER/DEFPREFIX. Resolve WITHOUT creating (a dry
+    //--resolve-only / --audit must not materialise a dir); the dir is created lazily by the first persist capture /
+    //config write. Record the resolved name so a real launch's TouchLastRun and the UI agree.
+    if (ContainerParams.InstanceName.empty())
+        ContainerParams.InstanceName = InstanceStore::ResolveActive(GlobalConfigJSON, ContainerParams.PackageUID);
+    const std::string &Inst = ContainerParams.InstanceName;
+    // SanitizeUid: the PackageUID is peer-authored and lands in these paths — never let it carry a separator, "..",
+    // or an absolute path that escapes TempRoot (matches InstanceStore's own sanitisation of the USERDATA side).
+    const std::string SanUid = InstanceStore::SanitizeUid(ContainerParams.PackageUID);
+    ContainerParams.TempPath = TempRoot / SanUid / Inst;
     if (ContainerParams.RunnerShipsBuild && !ContainerParams.UnifiedRuntime)
         ContainerParams.RunnerMountPath = ContainerParams.TempPath / "RUNNER";
     ContainerParams.RuntimePath     = ContainerParams.TempPath / "RUNTIME";
     ContainerParams.WriteLayerPath  = ContainerParams.TempPath / "WRITELAYER";
     ContainerParams.DefaultDataPath = ContainerParams.TempPath / "DEFAULTDATA";
-    ContainerParams.UserDataPath    = ContainerParams.PackagePath / "USERDATA";
+    // The MOUNTED, game-writable durable tree is the USERDATA/ subdir — instance.json is a sibling OUTSIDE it, so a
+    // whole-runtime-KEEP launch can't expose/tamper the config (secrets, RUNNER_CHAIN) to the sandboxed game.
+    ContainerParams.UserDataPath    = InstanceStore::UserDataDir(GlobalConfigJSON, ContainerParams.PackageUID, Inst);
     //CLI / in-package overrides (--runtime-dir / --userdata-dir): point these exact paths wherever asked (in-package
-    //sets both = the package dir, making the package a self-contained, portable runnable unit).
+    //sets both = the package dir, making the package a self-contained, portable runnable unit — instances bypassed).
     if (!AppPaths::RuntimePathOverride().empty())  ContainerParams.RuntimePath  = AppPaths::RuntimePathOverride();
     if (!AppPaths::UserDataPathOverride().empty()) ContainerParams.UserDataPath = AppPaths::UserDataPathOverride();
     VarSubst::StringVariableSubstitution(ContainerParams.ContentRoot, ContainerParams.GetVariablesMap());
