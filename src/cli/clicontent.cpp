@@ -498,6 +498,11 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
     //HEADLESS: resolve an IPNS name (peer ID / friend code, ± /ipns/ prefix) to its current CID — E2E + diagnostics.
     if (!LaunchParameters.IpnsResolveName.empty())
     {
+        //The DHT leg needs a bootstrapped routing table; a cold one-shot must wait for peers or it falls straight to
+        //the gateways (which can't serve a freshly-published record they never resolved). Bounded — on a filtered net
+        //peers may never come and the gateway fallback still runs.
+        for (int i = 0; i < 40 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
+        LogOut("main.cpp", "ipns-resolve: peers=" + std::to_string(IpfsWrapper::PeerCount()));
         std::string Err;
         const std::string Cid = IpfsWrapper::IpnsResolve(LaunchParameters.IpnsResolveName, &Err);
         if (Cid.empty()) { LogErr("main.cpp", "ipns-resolve failed: " + Err); return 1; }
