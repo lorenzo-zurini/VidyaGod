@@ -345,8 +345,8 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
             LogErr("main.cpp", "UNREPAIRABLE — content is gone or unreadable: " + U);
         if (!R.Drift.empty())
             LogErr("main.cpp", std::to_string(R.Drift.size()) + " node file(s) publish a CID nobody can fetch. "
-                   "Repoint each SOURCE.CID to the actual content shown above, re-seed that package, then "
-                   "--remint-library (this changes the collection CID, so it is deliberately NOT automatic).");
+                   "Repoint each SOURCE.CID to the actual content shown above and re-seed that package; the catalog "
+                   "re-derives its CIDs on load, and re-publishing (Sharing tab) re-seeds the node blocks.");
         if (R.Ok()) { LogSucc("main.cpp", "Heal done — every referenced CID is servable."); return 0; }
         LogErr("main.cpp", "Heal finished with " + std::to_string(R.Drift.size() + R.Unrepaired.size())
                + " UNRESOLVED problem(s) — see above.");
@@ -428,71 +428,6 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (Cid.empty()) { LogErr("main.cpp", "publish-meta failed: " + Err); return 1; }
         LogSucc("main.cpp", "Meta-CID: " + Cid);
         std::cout << Cid << "\n";   // machine-readable on stdout
-        return 0;
-    }
-
-    //HEADLESS: re-mint ALL CIDs of a whole library (a dir of source-collection subdirs) across the 3-level schema in
-    //one node session — content CIDs (per file), package meta-CIDs (per package, into Settings.PackageCids), collection
-    //meta-CIDs (per source, into Settings.PackageSources) — persist the config, then print the list.
-    if (!LaunchParameters.RemintLibraryDir.empty())
-    {
-        LogOut("main.cpp", "Re-minting all CIDs (3-level schema) for library: " + LaunchParameters.RemintLibraryDir);
-        std::vector<PackageCatalog::RemintEntry> Rows;
-        std::string Err;
-        if (!PackageCatalog::RemintLibrary(LaunchParameters.RemintLibraryDir, GlobalConfigJSON, Rows, &Err))
-        { LogErr("main.cpp", "remint-library failed: " + Err); return 1; }
-        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
-        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
-            LogWarn("main.cpp", "remint done but saving GlobalConfig.JSON failed — CIDs printed below are still valid");
-        // The mint's per-CID announce (provider.Provide) is async; this short-lived process must WAIT for the records
-        // to actually propagate to the DHT before exiting, or the provides are cancelled mid-flight and peers can't
-        // find us (exactly the "laptop can't fetch the meta-CID" case). Poll each collection CID until we're a
-        // provider (self) — the shareable unit others fetch. Package/content CIDs ride the same announce window +
-        // the long-lived node's reprovide afterwards.
-        for (const auto &R : Rows)
-        {
-            if (R.Level != "collection") continue;
-            LogOut("main.cpp", "announcing " + R.Name + " (" + R.Cid + ") to the DHT…");
-            for (int i = 0; i < 45 && IpfsWrapper::ProviderCount(R.Cid) < 1; ++i)
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-            LogSucc("main.cpp", R.Name + ": providers=" + std::to_string(IpfsWrapper::ProviderCount(R.Cid)));
-        }
-        // Machine-readable list on stdout: "<level>\t<name>\t<cid>".
-        std::cout << "\n===== RE-MINTED CIDs (level\tname\tcid) =====\n";
-        int Pkgs = 0, Cols = 0;
-        for (const auto &R : Rows)
-        {
-            std::cout << R.Level << "\t" << R.Name << "\t" << R.Cid << "\n";
-            (R.Level == "collection") ? ++Cols : ++Pkgs;
-        }
-        LogSucc("main.cpp", "Re-minted " + std::to_string(Pkgs) + " package + " + std::to_string(Cols)
-                + " collection meta-CID(s); content CIDs written into the node JSONs (SOURCE.CID).");
-        return 0;
-    }
-
-    //HEADLESS: remint a whole library AND publish it under our IPNS identity — build the rich per-library indexes +
-    //the top-level library-list index, point /ipns/<peerID> at the top index, print the top CID. This is the
-    //maintainer's one-time official publish and the client's "Verify Library"; also the E2E publish step.
-    if (!LaunchParameters.PublishLibraryDir.empty())
-    {
-        LogOut("main.cpp", "Publishing library to IPNS: " + LaunchParameters.PublishLibraryDir);
-        //The IPNS record is a DHT PutValue — it needs a bootstrapped routing table. A one-shot headless process must
-        //wait for peers first, or the put fails with "no peer in table".
-        for (int i = 0; i < 60 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
-        LogOut("main.cpp", "peers=" + std::to_string(IpfsWrapper::PeerCount()) + " — publishing");
-        std::string Err;
-        const std::string TopCid = PackageCatalog::PublishLibraries(GlobalConfigJSON, LaunchParameters.PublishLibraryDir, &Err);
-        if (TopCid.empty()) { LogErr("main.cpp", "publish-library failed: " + Err); return 1; }
-        QFile CfgFile(AppDataDir.filePath("GlobalConfig.JSON"));
-        if (!JSONOps::SaveJSON(&GlobalConfigJSON, &CfgFile))
-            LogWarn("main.cpp", "published but saving GlobalConfig.JSON failed — the printed CID is still valid");
-        //Wait for the top-level index to have a provider (self) so a short-lived process doesn't exit before the
-        //announce lands — same DHT-propagation wait the remint uses for collection CIDs.
-        for (int i = 0; i < 45 && IpfsWrapper::ProviderCount(TopCid) < 1; ++i)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (!Err.empty()) LogWarn("main.cpp", "note: " + Err);   // e.g. "minted but not yet advertised"
-        LogSucc("main.cpp", "Published /ipns/" + IpfsWrapper::PeerID() + " -> " + TopCid);
-        std::cout << "/ipns/" << IpfsWrapper::PeerID() << "\t" << TopCid << "\n";   // machine-readable
         return 0;
     }
 
@@ -580,35 +515,6 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (Dir.empty()) { LogErr("main.cpp", "hydrate failed: " + Err); return 1; }
         LogSucc("main.cpp", "Hydrated to " + Dir);
         std::cout << Dir << "\n";
-        return 0;
-    }
-
-    //HEADLESS: resolve an IPNS name (peer ID / friend code, ± /ipns/ prefix) to its current CID — E2E + diagnostics.
-    if (!LaunchParameters.IpnsResolveName.empty())
-    {
-        //The DHT leg needs a bootstrapped routing table; a cold one-shot must wait for peers or it falls straight to
-        //the gateways (which can't serve a freshly-published record they never resolved). Bounded — on a filtered net
-        //peers may never come and the gateway fallback still runs.
-        for (int i = 0; i < 40 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
-        LogOut("main.cpp", "ipns-resolve: peers=" + std::to_string(IpfsWrapper::PeerCount()));
-        std::string Err;
-        const std::string Cid = IpfsWrapper::IpnsResolve(LaunchParameters.IpnsResolveName, &Err);
-        if (Cid.empty()) { LogErr("main.cpp", "ipns-resolve failed: " + Err); return 1; }
-        LogSucc("main.cpp", LaunchParameters.IpnsResolveName + " -> " + Cid);
-        std::cout << Cid << "\n";
-        return 0;
-    }
-
-    //HEADLESS: publish OUR name -> /ipfs/<cid> (the low-level primitive; --publish-library is the usual path).
-    if (!LaunchParameters.IpnsPublishCid.empty())
-    {
-        for (int i = 0; i < 60 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
-        std::string Err;
-        if (!IpfsWrapper::IpnsPublish(LaunchParameters.IpnsPublishCid, 0, &Err))
-        { LogErr("main.cpp", "ipns-publish failed: " + Err); return 1; }
-        for (int i = 0; i < 30 && IpfsWrapper::ProviderCount(LaunchParameters.IpnsPublishCid) < 1; ++i)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        LogSucc("main.cpp", "Published /ipns/" + IpfsWrapper::PeerID() + " -> /ipfs/" + LaunchParameters.IpnsPublishCid);
         return 0;
     }
 

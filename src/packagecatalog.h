@@ -233,24 +233,8 @@ const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &Glob
                                       const nlohmann::ordered_json *LocalOverride = nullptr,
                                       std::string *Error = nullptr);
 
-// Re-mint every CID of a whole LIBRARY (a dir of source-collection subdirs, e.g. ~/.VidyaGod/LIBRARY) in ONE node
-// session, across the 3-level schema: content CIDs (per file, written as SOURCE.CID into the node JSONs), package
-// meta-CIDs (per package folder — recorded in Settings.PackageCids), and collection meta-CIDs (per source — updated
-// into the matching Settings.PackageSources entry). Deterministic: unchanged content re-produces the same CID. Fills
-// Out with {Level, Name, Cid} rows (Level = "package" | "collection") for listing. Returns false on the first failure.
+// {Level, Name, Cid} rows for a re-mint listing (Level = "package" | "collection"). Used by the per-package mint path.
 struct RemintEntry { std::string Level, Name, Cid; };
-[[nodiscard]] bool RemintLibrary(const std::string &LibraryRoot, nlohmann::ordered_json &Config,
-                   std::vector<RemintEntry> &Out, std::string *Error = nullptr);
-
-// IPNS publish (project_ipns_friendcode_library): re-mint the library tree, build the RICH per-library indexes + a
-// top-level library-list index (text-only, content-addressed), and point OUR IPNS name (the identity key = friend
-// code) at the top-level index. Returns the top-level index CID ("" on a mint failure; on an IPNS-record failure the
-// CID is returned and *Error carries a soft "minted but not advertised" note). Call OFF the UI thread (DHT put).
-// ReuseExistingContent (default true): recompute only the cheap JSON-only meta-CIDs, trusting content seeded by prior
-// mints — a changed node JSON still yields a fresh CID, but the whole library is not re-verified (which OOMs on large
-// delta packages). Pass false for a full re-seed+verify re-mint (equivalent to --remint-library then publish).
-std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error = nullptr,
-                             bool ReuseExistingContent = true);
 
 // PublishLibrary (gigagraph): freeze the whole on-disk library into dag-json blocks and STORE them (DagPut → pinned,
 // announced, seedable) so peers can fetch the node graph, and record the shareable list of launchable root CIDs in

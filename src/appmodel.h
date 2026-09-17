@@ -67,11 +67,6 @@ public:
     // Package sources by IPFS folder CID (dehydrated package sets; content hydrates on demand).
     bool addPackageSource(const QString & cid, const QString & name);   // append + fetch dehydrated tree off-thread; false if empty/duplicate
     void removePackageSource(int index);               // drop the source: config entry + fetched dir + LIBRARY entries
-    // Friend library subscription (IPNS): "Receive library" ON adds the friend's /ipns/<peerID> as a FRIEND source
-    // (their catalog mirrors as its own section); OFF drops it. friendLibraryOn reflects the current toggle state.
-    bool subscribeFriendLibrary(const QString & peerID, const QString & nick);  // false if empty/already subscribed
-    void unsubscribeFriendLibrary(const QString & peerID);
-    bool friendLibraryOn(const QString & peerID) const;
     // Publish side (Sharing tab): freeze your library into content-addressed blocks and seed them, and record the
     // shareable launchable-CID list. Runs off-thread; emits libraryPublished / libraryPublishFailed.
     void publishLibraries();

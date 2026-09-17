@@ -359,43 +359,6 @@ void AppModel::removePackageSource(int index)
     emit packageSourcesChanged();
 }
 
-bool AppModel::subscribeFriendLibrary(const QString & peerID, const QString & nick)
-{
-    if (peerID.trimmed().isEmpty()) return false;
-    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
-    // FRIEND source: the friend's IPNS library address, rendered as its own catalog section (PackageSourceNameForPath).
-    if (!PackageCatalog::AddPackageSource(*Config, Addr, nick.trimmed().toStdString(), /*Friend=*/true))
-        return false;   // already subscribed
-    save();
-    emit packageSourcesChanged();   // instant: the section appears (pending); the off-thread mirror re-emits below
-    auto Cfg = std::make_shared<nlohmann::ordered_json>(*Config);
-    auto Err = std::make_shared<std::string>();
-    AsyncWork::Run(this,
-        [Cfg, Err]{ PackageCatalog::SyncPackageSources(*Cfg, Err.get()); },
-        [this, Cfg, Err]{
-            (*Config)["LIBRARY"] = (*Cfg)["LIBRARY"];
-            save();
-            rebuildCatalog();
-            emit packageSourcesChanged();
-            pushSeedLevels();
-            if (!Err->empty()) emit packageSourceFailed(QString::fromStdString(*Err));
-        });
-    return true;
-}
-
-void AppModel::unsubscribeFriendLibrary(const QString & peerID)
-{
-    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
-    const int Idx = PackageCatalog::PackageSourceIndexForCID(*Config, Addr);
-    if (Idx >= 0) removePackageSource(Idx);   // reuses the full teardown (config + fetched dir + LIBRARY entries)
-}
-
-bool AppModel::friendLibraryOn(const QString & peerID) const
-{
-    const std::string Addr = "/ipns/" + peerID.trimmed().toStdString();
-    return PackageCatalog::PackageSourceIndexForCID(*Config, Addr) >= 0;
-}
-
 void AppModel::addGameByCid(const QString & launchableCid)
 {
     const std::string Cid = launchableCid.trimmed().toStdString();

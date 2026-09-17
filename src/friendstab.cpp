@@ -188,21 +188,8 @@ void FriendsTab::refresh()
         }
         else
         {
-            if (C.State == "accepted")
-            {
-                // "Receive library" = subscribe to the friend's /ipns/<peerID> library address (their catalog appears
-                // as its own section). The friend code IS the library address, so accepting + subscribing is the flow.
-                auto * Recv = new QCheckBox("Receive library", Actions);
-                Recv->setToolTip("Subscribe to this friend's shared library — their games appear as a catalog section.\n"
-                                 "Bytes are content-addressed, so a game they published is fetchable from anyone who has it.");
-                Recv->setChecked(Model.friendLibraryOn(Peer));
-                const QString Nick = QString::fromStdString(C.Nick);
-                connect(Recv, &QCheckBox::toggled, this, [this, Peer, Nick](bool On){
-                    if (On) Model.subscribeFriendLibrary(Peer, Nick);
-                    else    Model.unsubscribeFriendLibrary(Peer);
-                });
-                AL->addWidget(Recv);
-            }
+            // (Friend library subscription via IPNS was retired with the gigagraph: games are shared by pasting a
+            // launchable CID — Sharing tab → "Add a friend's game" — not by subscribing to a friend's IPNS address.)
             auto * Remove = new QPushButton("Remove", Actions);
             connect(Remove, &QPushButton::clicked, this, [this, Peer]{ IpfsWrapper::FriendRemove(Peer.toStdString()); refresh(); });
             AL->addWidget(Remove);
