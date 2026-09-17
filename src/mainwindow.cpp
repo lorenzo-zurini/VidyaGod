@@ -327,6 +327,16 @@ void MainWindow::onNodeReady()
     // Fetch/index any not-yet-present CID package sources now the node is up — this is what bootstraps the default
     // runners source on a first run (git repos, which needed no node, previously did this at config-init time).
     if (Model) Model->syncSources();
+
+    // Re-arm friend-library shares: Go's share table is in-memory (empty on every start), config["Sharing"] is the
+    // durable record. Replay it now the friend service is live, else the seeder half is silently dead until the user
+    // toggles a share again. Also refresh what friends share WITH us so the friend catalog is current after a restart.
+    if (Model)
+    {
+        Model->reRegisterShares();
+        for (const auto & C : IpfsWrapper::FriendList())
+            if (C.State == "accepted") Model->requestFriendLibraries(QString::fromStdString(C.PeerID));
+    }
 }
 
 void MainWindow::restoreFromTray()

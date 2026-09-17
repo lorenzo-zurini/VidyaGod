@@ -45,6 +45,10 @@ void MergePackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const
 // The managed library root (hydrated content + disk-space checks): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
 
+// The library (named collection dir under the LIBRARY root) a bundle belongs to — the first path segment of BundleDir
+// relative to Root; "" if the package sits directly under the root. A package's library is chosen at publish time.
+std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesystem::path &Root);
+
 // ----- locally-added (external) packages -----
 // A LIBRARY entry is a "local package" when its PATH is a bundle dir OUTSIDE every package-source dir (added via the
 // Library's "Add Local Package", not fetched from a CID source). The bundle dirs of every such entry whose PATH still

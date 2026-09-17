@@ -672,7 +672,9 @@ private slots:
         const Node * v = idx.Find("variant");
         QVERIFY(v != nullptr);                                     // indexed despite living outside any repo
         QVERIFY(v->Presentable());                                 // linked to its tile → shows in the library
-        QCOMPARE(v->GameKey(), std::string("tile"));
+        const Node * tile = idx.Find("tile");                      // gigagraph: the grouping key is the TILE's identity
+        QVERIFY(tile != nullptr);                                  // (its CID in the catalog), reached via the LIBRARYITEM
+        QCOMPARE(v->GameKey(), tile->Key());                       // edge — no longer the tile's NODE_ID label
     }
 
     // Startup prune drops a LIBRARY entry for a local bundle whose PATH no longer exists (moved/deleted), keeps the
@@ -717,7 +719,9 @@ private slots:
         const Node * v = idx.Find("cidvariant");
         QVERIFY(v != nullptr);                                             // indexed via the CID-source root
         QVERIFY(v->Presentable());                                         // grouped under its tile
-        QCOMPARE(v->GameKey(), std::string("cidtile"));
+        const Node * tile = idx.Find("cidtile");                           // grouping key = the tile's identity (its CID)
+        QVERIFY(tile != nullptr);
+        QCOMPARE(v->GameKey(), tile->Key());
     }
 
     // A PER-PACKAGE CID: the fetched source dir is ITSELF a bundle (node JSON at its top level, no package subdirs).

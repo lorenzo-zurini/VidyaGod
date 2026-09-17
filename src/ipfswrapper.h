@@ -321,11 +321,22 @@ bool FriendRemove(const std::string &PeerID);
 // Actively probe reachability now: 1 online, 0 offline, -1 n/a (offline node).
 int FriendPing(const std::string &PeerID);
 
+// Friend library sharing (bilateral, per-(friend,library)). ShareLibrary hands a friend a named library's launchable
+// CIDs (the seeder's "share" toggle; re-call to update); UnshareLibrary withdraws it; RequestFriendLibraries asks a
+// friend for everything they share with us. A friend's shared libraries arrive via FriendsManager::friendLibrary.
+bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const std::vector<std::string> &Cids, std::string *Error = nullptr);
+bool UnshareLibrary(const std::string &PeerID, const std::string &Lib, std::string *Error = nullptr);
+bool RequestFriendLibraries(const std::string &PeerID, std::string *Error = nullptr);
+
 // Inbound friend event (mirrors friend.go evFriend*). Delivered on a node thread; the FriendsManager marshals it
 // to the GUI thread as Qt signals.
 struct FriendEvent {
-    enum Kind { Request, Accept, Decline, Presence, Profile, Removed } Kind;
-    Contact C;   // the affected contact; for Removed only PeerID is populated
+    enum Kind { Request, Accept, Decline, Presence, Profile, Removed, Library } Kind;
+    Contact C;             // the affected contact (Request..Removed); for Removed/Library only PeerID is set
+    std::string LibsJson;  // Library: the friend's COMPLETE shared set as {libName:[launchable CIDs]} JSON — a snapshot
+                           // to replace wholesale ("{}" = they share nothing / withdrew everything)
+    quint64 LibSeq = 0;    // Library: the sender's monotonic snapshot stamp — the receiver keeps only the highest per
+                           // peer (last-writer-wins), so a reordered stale snapshot delivered late can't win
 };
 using FriendCallback = std::function<void(const FriendEvent &)>;
 void SetFriendCallback(FriendCallback Callback);
@@ -424,6 +435,7 @@ signals:
     void friendPresence(QString peer, bool online);                // a friend's reachability changed
     void friendProfile(QString peer, QString nick, QString pic);   // a friend updated their nickname/picture
     void friendRemoved(QString peer);                              // local removal (echoed for UI symmetry)
+    void friendLibrary(QString peer, QString libsJson, quint64 seq); // friend's COMPLETE shared set {name:[cids]}; seq orders snapshots
 
 private:
     explicit FriendsManager(QObject * parent = nullptr);

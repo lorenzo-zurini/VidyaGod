@@ -41,6 +41,14 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
 
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // node-native catalog source
 
+    // A friend sent us their COMPLETE shared set (a snapshot, per the bilateral protocol — pushed on any share change
+    // and on our explicit requestFriendLibraries). We REPLACE our record for that peer wholesale: this is the only way
+    // a withdraw can't be lost (a missed single "unshare" would otherwise leave a phantom entry). "{}" = they share
+    // nothing with us → drop the peer. Persist + refresh the friend-catalog view ONLY when something actually changed,
+    // so a redundant snapshot (e.g. a periodic re-push) doesn't churn the disk or the UI.
+    connect(FriendsManager::instance(), &FriendsManager::friendLibrary, this,
+        [this](const QString & peer, const QString & libsJson, quint64 seq) { applyFriendLibrarySnapshot(peer, libsJson, seq); });
+
     // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
     // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
     // Cheap when nothing is wrong (a filestore path scan, no re-seed); no-op while the node is offline.
@@ -376,6 +384,144 @@ void AppModel::addGameByCid(const QString & launchableCid)
         });
 }
 
+QStringList AppModel::myLibraryNames() const
+{
+    QStringList Out;
+    if (Config->contains("Libraries") && (*Config)["Libraries"].is_object())
+        for (const auto & [Name, _] : (*Config)["Libraries"].items()) Out << QString::fromStdString(Name);
+    return Out;
+}
+
+void AppModel::shareLibraryWithFriend(const QString & peer, const QString & lib)
+{
+    const std::string P = peer.toStdString(), L = lib.toStdString();
+    std::vector<std::string> Cids;   // the library's launchable CIDs (from the last publish)
+    if (Config->contains("Libraries") && (*Config)["Libraries"].is_object()
+        && (*Config)["Libraries"].contains(L) && (*Config)["Libraries"][L].is_array())
+        for (const auto & C : (*Config)["Libraries"][L]) if (C.is_string()) Cids.push_back(C.get<std::string>());
+    std::string Err;
+    if (!IpfsWrapper::ShareLibrary(P, L, Cids, &Err))
+    { LogWarn("AppModel::shareLibraryWithFriend", "share '" + L + "' with " + P + " failed: " + Err); return; }
+    auto & Sh = (*Config)["Sharing"][P];
+    if (!Sh.is_array()) Sh = nlohmann::ordered_json::array();
+    bool Found = false;
+    for (const auto & X : Sh) if (X == L) { Found = true; break; }
+    if (!Found) Sh.push_back(L);
+    save();
+}
+
+void AppModel::stopSharingWithFriend(const QString & peer, const QString & lib)
+{
+    const std::string P = peer.toStdString(), L = lib.toStdString();
+    std::string Err;
+    IpfsWrapper::UnshareLibrary(P, L, &Err);
+    if ((*Config).contains("Sharing") && (*Config)["Sharing"].contains(P) && (*Config)["Sharing"][P].is_array())
+    {
+        auto & Sh = (*Config)["Sharing"][P];
+        for (auto It = Sh.begin(); It != Sh.end(); ++It) if (*It == L) { Sh.erase(It); break; }
+        if (Sh.empty()) (*Config)["Sharing"].erase(P);
+    }
+    save();
+}
+
+bool AppModel::isSharingWithFriend(const QString & peer, const QString & lib) const
+{
+    const std::string P = peer.toStdString(), L = lib.toStdString();
+    if (!Config->contains("Sharing") || !(*Config)["Sharing"].is_object()
+        || !(*Config)["Sharing"].contains(P) || !(*Config)["Sharing"][P].is_array())
+        return false;
+    for (const auto & X : (*Config)["Sharing"][P]) if (X == L) return true;
+    return false;
+}
+
+void AppModel::requestFriendLibraries(const QString & peer)
+{
+    std::string Err;
+    if (!IpfsWrapper::RequestFriendLibraries(peer.toStdString(), &Err))
+        LogWarn("AppModel::requestFriendLibraries", "request to " + peer.toStdString() + " failed: " + Err);
+}
+
+void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & libsJson, quint64 seq)
+{
+    const std::string P = peer.toStdString();
+    // SEQ AUTHORITY (last-writer-wins): snapshots ride independent, concurrently-handled streams, so a stale one can be
+    // delivered/emitted after a fresher one. Keep only the highest stamp per peer; drop anything older. seq==0
+    // (unstamped) always applies. This is where ordering is enforced — a Go-side receive gate can't (its emit is
+    // off-lock). Update the high-water mark only after the payload validates, so a malformed stale message can't bump it.
+    if (seq != 0)
+    {
+        const auto It = FriendLibSeq.find(P);
+        if (It != FriendLibSeq.end() && seq <= It->second) return;   // reordered straggler / duplicate → ignore
+    }
+    nlohmann::ordered_json Libs;                        // {name:[cid,…]} — parse + sanitize the snapshot
+    try { Libs = nlohmann::ordered_json::parse(libsJson.toStdString()); }
+    catch (const std::exception & Ex)
+    { LogWarn("AppModel::friendLibrary", "bad snapshot from " + P + ": " + Ex.what()); return; }
+    if (!Libs.is_object()) return;                      // malformed → ignore, keep what we have
+    if (seq != 0) FriendLibSeq[P] = seq;                // payload is well-formed → advance the high-water mark
+    nlohmann::ordered_json Clean = nlohmann::ordered_json::object();
+    for (const auto & [Name, Arr] : Libs.items())
+    {
+        if (!Arr.is_array()) continue;
+        nlohmann::ordered_json C = nlohmann::ordered_json::array();
+        for (const auto & X : Arr) if (X.is_string()) C.push_back(X.get<std::string>());
+        if (!C.empty()) Clean[Name] = std::move(C);
+    }
+    auto & FL = (*Config)["FriendLibraries"];
+    if (!FL.is_object()) FL = nlohmann::ordered_json::object();
+    const bool Had = FL.contains(P);
+    if (Clean.empty())
+    {
+        if (!Had) return;                               // nothing to drop, nothing changed
+        FL.erase(P);
+    }
+    else
+    {
+        if (Had && FL[P] == Clean) return;              // identical snapshot → no-op (no disk/UI churn)
+        FL[P] = std::move(Clean);
+    }
+    save();
+    emit friendCatalogChanged();
+}
+
+void AppModel::reRegisterShares()
+{
+    // Go's per-friend share table is in-memory only; config["Sharing"] = {peer:[lib,…]} is the durable record. Replay
+    // it into Go with the current config["Libraries"] CIDs so a restart or a re-publish (which can move launchable CIDs)
+    // keeps the seeder half alive. A share whose library no longer exists pushes an EMPTY set (an authoritative
+    // "nothing here" snapshot for that lib name — harmless; the friend just sees it empty until we re-populate).
+    if (!Config->contains("Sharing") || !(*Config)["Sharing"].is_object()) return;
+    const auto & Libs = (*Config)["Libraries"];
+    for (const auto & [P, Names] : (*Config)["Sharing"].items())
+    {
+        if (!Names.is_array()) continue;
+        for (const auto & N : Names)
+        {
+            if (!N.is_string()) continue;
+            const std::string L = N.get<std::string>();
+            std::vector<std::string> Cids;
+            if (Libs.is_object() && Libs.contains(L) && Libs[L].is_array())
+                for (const auto & C : Libs[L]) if (C.is_string()) Cids.push_back(C.get<std::string>());
+            std::string Err;
+            if (!IpfsWrapper::ShareLibrary(P, L, Cids, &Err))
+                LogWarn("AppModel::reRegisterShares", "re-share '" + L + "' with " + P + " failed: " + Err);
+        }
+    }
+}
+
+void AppModel::forgetFriend(const QString & peer)
+{
+    const std::string P = peer.toStdString();
+    bool Changed = false;
+    if (Config->contains("Sharing") && (*Config)["Sharing"].is_object() && (*Config)["Sharing"].contains(P))
+    { (*Config)["Sharing"].erase(P); Changed = true; }   // Go already dropped its side via VgFriendRemove→purgeShares
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P))
+    { (*Config)["FriendLibraries"].erase(P); Changed = true; }
+    FriendLibSeq.erase(P);   // forget the seq high-water mark too, so a re-add starts fresh (no stale-drop of the first snapshot)
+    if (Changed) { save(); emit friendCatalogChanged(); }
+}
+
 void AppModel::publishLibraries()
 {
     // Gigagraph publish: freeze the on-disk library into dag-json blocks and STORE them (DagPut → pinned/announced/
@@ -387,9 +533,11 @@ void AppModel::publishLibraries()
         [Cfg, Cids, Err]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get()); },
         [this, Cfg, Cids, Err]{
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
-            (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt only the freshly-written list
+            (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
+            (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
             save();
             pushSeedLevels();
+            reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)
             emit libraryPublished(QString::fromStdString(IpfsWrapper::FriendCode()),
                                   QString::number(static_cast<int>(Cids->size())) + " game(s)",
                                   QString());

@@ -877,22 +877,52 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
 
 // ----- node-graph catalog (everything-is-a-node) -----
 
+// The library a bundle belongs to: the first path segment of its dir relative to the LIBRARY root — i.e. the named
+// collection dir it lives under. "" if the package sits directly under the root (no collection). A "library" is such
+// a named dir; a package's library is chosen at publish time (the editor writes it into that dir).
+std::string LibraryOf(const std::filesystem::path &BundleDir, const std::filesystem::path &Root)
+{
+    std::error_code Ec;
+    const std::filesystem::path Rel = std::filesystem::relative(BundleDir, Root, Ec);
+    if (Ec || Rel.empty()) return {};
+    auto It = Rel.begin();
+    const std::filesystem::path First = *It;
+    if (++It == Rel.end()) return {};   // one segment = the package dir itself → no enclosing collection
+    return First.string();
+}
+
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error)
 {
+    const std::filesystem::path Root = LibraryRootDir(Config);
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
-    NodeGraph::GatherWorkingTree(LibraryRootDir(Config), Tree, Dirs);
-    if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + LibraryRootDir(Config); return {}; }
+    NodeGraph::GatherWorkingTree(Root, Tree, Dirs);
+    if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
     NodeGraph::LiftLibraryItemEdge(Tree);
     NodeGraph::MintResult MR;
     if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
 
-    // Record the shareable list of launchable root CIDs (off-IPFS VidyaGod app data; shared directly / pasted).
-    nlohmann::ordered_json List = nlohmann::ordered_json::array();
-    for (const auto &C : MR.Launchables) List.push_back(C);
-    Config["PublishedList"] = std::move(List);
+    // Group launchable CIDs by LIBRARY (the collection dir the package lives in), so sharing is per-library. A GUEST-
+    // bearing DeclareExec is a runner, not a game — excluded. `Libraries` = {libName: [launchable CID]}; a flat
+    // `PublishedList` stays for convenience. These are off-IPFS VidyaGod app data, exchanged over the friend channel.
+    nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
+    nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
+    for (const auto &[Handle, Doc] : Tree)
+    {
+        if (Doc.value("TYPE", std::string()) != "DeclareExec") continue;
+        if (Doc.contains("GUEST") && Doc["GUEST"].is_array() && !Doc["GUEST"].empty()) continue;
+        const auto CidIt = MR.HandleToCid.find(Handle);
+        if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
+        std::string LibName = LibraryOf(Dirs[Handle], Root);
+        if (LibName.empty()) LibName = "Library";
+        Libs[LibName].push_back(CidIt->second);
+        Flat.push_back(CidIt->second);
+    }
+    Config["Libraries"]     = std::move(Libs);
+    Config["PublishedList"] = std::move(Flat);
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
-            + " node block(s), " + std::to_string(MR.Launchables.size()) + " shareable launchable(s)");
+            + " node block(s), " + std::to_string(Config["Libraries"].size()) + " library(ies), "
+            + std::to_string(Config["PublishedList"].size()) + " launchable(s)");
     return MR.Launchables;
 }
 

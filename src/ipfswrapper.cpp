@@ -580,21 +580,36 @@ extern "C" void IpfsNodeFriendCb(int kind, const char *json)
     //UNKNOWN kinds are DROPPED, never defaulted. The catch-all used to be `: Removed`, so the first event kind a
     //newer Go build adds would arrive as a contact REMOVAL and quietly delete contacts — a documented historical
     //bug this mapping re-armed once already (adversarial M4). Kind 5 is matched explicitly; anything else logs.
-    if (kind < 0 || kind > 5)
+    // EVERY kind is mapped EXPLICITLY; anything with no case is DROPPED, never defaulted. The catch-all used to be
+    // `: Removed`, so the first event kind a newer Go build adds would arrive as a contact REMOVAL and quietly delete
+    // contacts — a documented historical bug (adversarial M4). A ternary catch-all for Library re-armed the same trap
+    // (M7): the NEXT new kind would masquerade as a library event. So switch, no fall-through default.
+    switch (kind)
     {
+    case 0: E.Kind = FriendEvent::Request;  break;
+    case 1: E.Kind = FriendEvent::Accept;   break;
+    case 2: E.Kind = FriendEvent::Decline;  break;
+    case 3: E.Kind = FriendEvent::Presence; break;
+    case 4: E.Kind = FriendEvent::Profile;  break;
+    case 5: E.Kind = FriendEvent::Removed;  break;
+    case 6: E.Kind = FriendEvent::Library;  break;
+    default:
         LogWarn("IpfsWrapper::FriendEventTrampoline", "unknown friend event kind " + std::to_string(kind) + " — dropped");
         return;
     }
-    E.Kind = kind == 0 ? FriendEvent::Request
-           : kind == 1 ? FriendEvent::Accept
-           : kind == 2 ? FriendEvent::Decline
-           : kind == 3 ? FriendEvent::Presence
-           : kind == 4 ? FriendEvent::Profile
-                       : FriendEvent::Removed;
     try
     {
         const nlohmann::json J = nlohmann::json::parse(json ? json : "{}");
-        E.C = ContactFromJson(J);
+        if (E.Kind == FriendEvent::Library)
+        {
+            // {peer, libs:{name:[cid,…]}, seq} — a friend's COMPLETE shared set (a snapshot we replace wholesale), not
+            // a contact. Carry the libs object verbatim as JSON; AppModel parses + replaces its record for this peer,
+            // ordered by seq (last-writer-wins) so a stale snapshot delivered late can't overwrite a fresher one.
+            E.C.PeerID = J.value("peer", std::string());
+            E.LibsJson = (J.contains("libs") && J["libs"].is_object()) ? J["libs"].dump() : "{}";
+            if (J.contains("seq") && J["seq"].is_number_unsigned()) E.LibSeq = J["seq"].get<quint64>();
+        }
+        else E.C = ContactFromJson(J);
     }
     catch (const std::exception &Ex) { LogWarn("IpfsWrapper::FriendEventTrampoline", std::string("bad JSON from node: ") + Ex.what()); }
     g_FriendCb(E);
@@ -681,6 +696,34 @@ int FriendPing(const std::string &PeerID)
 {
     if (PeerID.empty()) return -1;
     return VgFriendPing(PeerID.c_str());
+}
+
+bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const std::vector<std::string> &Cids, std::string *Error)
+{
+    const nlohmann::json CidsJson = Cids;   // JSON array of strings
+    char *Err = nullptr;
+    const int Rc = VgShareLibrary(PeerID.c_str(), Lib.c_str(), CidsJson.dump().c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "share library failed" : ErrS; return false; }
+    return true;
+}
+
+bool UnshareLibrary(const std::string &PeerID, const std::string &Lib, std::string *Error)
+{
+    char *Err = nullptr;
+    const int Rc = VgUnshareLibrary(PeerID.c_str(), Lib.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "unshare library failed" : ErrS; return false; }
+    return true;
+}
+
+bool RequestFriendLibraries(const std::string &PeerID, std::string *Error)
+{
+    char *Err = nullptr;
+    const int Rc = VgRequestFriendLibraries(PeerID.c_str(), &Err);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "request friend libraries failed" : ErrS; return false; }
+    return true;
 }
 
 // ----- virtual LAN of friends (host-less; each peer's vIP is a pure function of its peer ID — friendlan.go) -----
@@ -913,6 +956,13 @@ FriendsManager::FriendsManager(QObject * parent) : QObject(parent)
         case IpfsWrapper::FriendEvent::Removed:
             QMetaObject::invokeMethod(this, [this, Peer]{ emit friendRemoved(Peer); }, Qt::QueuedConnection);
             break;
+        case IpfsWrapper::FriendEvent::Library:
+        {
+            const QString LibsJson = QString::fromStdString(E.LibsJson);
+            const quint64 Seq = E.LibSeq;
+            QMetaObject::invokeMethod(this, [this, Peer, LibsJson, Seq]{ emit friendLibrary(Peer, LibsJson, Seq); }, Qt::QueuedConnection);
+            break;
+        }
         }
     });
 

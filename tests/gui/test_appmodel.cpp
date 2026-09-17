@@ -202,6 +202,138 @@ private slots:
         m.rebuildCatalog();
         QCOMPARE(cat.count(), 1);
     }
+
+    // A friend's library snapshot REPLACES that peer's record wholesale — the core of the bilateral protocol's
+    // "receiver". This is what makes a withdrawn library un-loseable: a snapshot that no longer lists a library drops
+    // it, even if the specific "unshare" push was never received. An empty snapshot drops the peer entirely; an
+    // identical snapshot is a no-op (no disk write, no UI refresh).
+    void friend_snapshot_replaces_wholesale_and_dedups()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
+
+        // First snapshot: two libraries recorded under the peer.
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX","cidY"],"Retro":["cidZ"]})");
+        QCOMPARE(chg.count(), 1);
+        QVERIFY(cfg.contains("FriendLibraries"));
+        QCOMPARE((int)cfg["FriendLibraries"][peer.toStdString()].size(), 2);
+        QCOMPARE(cfg["FriendLibraries"][peer.toStdString()]["Games"].size(), (size_t)2);
+
+        // Withdraw "Games" by sending a snapshot that omits it — wholesale replace, so "Games" is gone even though no
+        // explicit unshare was delivered. THE regression this whole redesign exists to prevent.
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})");
+        QCOMPARE(chg.count(), 2);
+        QVERIFY(!cfg["FriendLibraries"][peer.toStdString()].contains("Games"));
+        QVERIFY(cfg["FriendLibraries"][peer.toStdString()].contains("Retro"));
+
+        // Identical snapshot again → no change, no signal, no churn.
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})");
+        QCOMPARE(chg.count(), 2);
+
+        // Empty snapshot → the peer is dropped entirely.
+        m.applyFriendLibrarySnapshot(peer, R"({})");
+        QCOMPARE(chg.count(), 3);
+        QVERIFY(!cfg["FriendLibraries"].contains(peer.toStdString()));
+
+        // Empty again with nothing to drop → still a no-op.
+        m.applyFriendLibrarySnapshot(peer, R"({})");
+        QCOMPARE(chg.count(), 3);
+    }
+
+    // The seq authority (last-writer-wins): snapshots ride independent, concurrently-handled streams and can be applied
+    // out of order. A stamp lower than or equal to the highest already seen for a peer is a reordered straggler and MUST
+    // be dropped, so a stale snapshot delivered late can't resurrect a withdrawn library. seq==0 (unstamped) always
+    // applies. This is the receiver-side fix for the emit-off-lock race the Go side structurally can't close.
+    void friend_snapshot_last_writer_wins_by_seq()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
+
+        // seq 10: the fresh state (Retro only).
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})", 10);
+        QCOMPARE(chg.count(), 1);
+        QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
+
+        // seq 5 arrives LATE (a big stale snapshot that still listed Games) → must be dropped, Games stays gone.
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"],"Retro":["cidZ"]})", 5);
+        QCOMPARE(chg.count(), 1);                                   // no change emitted
+        QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));      // the stale withdraw-loser did NOT resurrect Games
+
+        // An equal stamp (duplicate) is also dropped.
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"]})", 10);
+        QCOMPARE(chg.count(), 1);
+        QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));
+
+        // A higher stamp is accepted.
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"]})", 11);
+        QCOMPARE(chg.count(), 2);
+        QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
+
+        // A malformed message must NOT advance the high-water mark: after it, a valid seq-12 still applies.
+        m.applyFriendLibrarySnapshot(peer, "garbage", 99);          // parse error — ignored, mark stays at 11
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})", 12);
+        QCOMPARE(chg.count(), 3);
+        QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
+    }
+
+    // Malformed snapshots must never corrupt the store: bad JSON / a non-object is ignored (record untouched), and
+    // within a valid snapshot non-array libraries and non-string CIDs are dropped, empty libraries elided.
+    void friend_snapshot_sanitizes_malformed_input()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
+
+        m.applyFriendLibrarySnapshot(peer, "not json at all");   // parse error → ignored
+        QCOMPARE(chg.count(), 0);
+        m.applyFriendLibrarySnapshot(peer, R"(["array","not","object"])");  // wrong shape → ignored
+        QCOMPARE(chg.count(), 0);
+        QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
+
+        // Mixed valid/invalid: "Good" keeps only its string CIDs; "Bad" (non-array) and "Empty" (no strings) are elided.
+        m.applyFriendLibrarySnapshot(peer, R"({"Good":["ok",42,"ok2"],"Bad":"nope","Empty":[7,8]})");
+        QCOMPARE(chg.count(), 1);
+        QCOMPARE((int)cfg["FriendLibraries"][P].size(), 1);
+        QCOMPARE(cfg["FriendLibraries"][P]["Good"].size(), (size_t)2);
+        QVERIFY(!cfg["FriendLibraries"][P].contains("Bad"));
+        QVERIFY(!cfg["FriendLibraries"][P].contains("Empty"));
+    }
+
+    // Ending a friendship forgets BOTH directions of sharing state: what we serve them (config["Sharing"]) and what
+    // they shared with us (config["FriendLibraries"]) — and only signals when something was actually forgotten.
+    void forget_friend_clears_both_directions()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        const std::string P = "12D3KooWFriend", Q = "12D3KooWOther";
+        json cfg = json{{"Settings", json::object()},
+                        {"Sharing", json{{P, json::array({"Games"})}, {Q, json::array({"Retro"})}}},
+                        {"FriendLibraries", json{{P, json{{"Games", json::array({"cidX"})}}}}}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
+
+        m.forgetFriend(QString::fromStdString(P));
+        QCOMPARE(chg.count(), 1);
+        QVERIFY(!cfg["Sharing"].contains(P));            // our side dropped
+        QVERIFY(!cfg["FriendLibraries"].contains(P));    // their side dropped
+        QVERIFY(cfg["Sharing"].contains(Q));             // the OTHER friend is untouched
+
+        m.forgetFriend(QString::fromStdString(P));       // already gone → no-op, no signal
+        QCOMPARE(chg.count(), 1);
+    }
 };
 
 QTEST_MAIN(AppModelTest)

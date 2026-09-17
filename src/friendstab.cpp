@@ -14,6 +14,9 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QMessageBox>
+#include <QMenu>
+#include <QAction>
+#include <QTimer>
 
 // See friendstab.h. The tab talks to the backend only through IpfsWrapper's Friends free functions (mutations) and
 // the FriendsManager signals (live updates) — every inbound friend event just triggers a full refresh(), which is
@@ -36,6 +39,7 @@ FriendsTab::FriendsTab(AppModel & model, QWidget * parent)
     connect(FM, &FriendsManager::friendPresence, this, [this]{ refresh(); });
     connect(FM, &FriendsManager::friendProfile,  this, [this]{ refresh(); });
     connect(FM, &FriendsManager::friendRemoved,  this, [this]{ refresh(); });
+    connect(&Model, &AppModel::friendCatalogChanged, this, [this]{ refresh(); });   // a friend shared/withdrew games
 
     // Networking coming up/down changes whether we have a friend code + can act.
     connect(&Model, &AppModel::networkingChanged, this, [this]{ refresh(); });
@@ -139,6 +143,20 @@ void FriendsTab::setNickClicked()
 
 void FriendsTab::refresh()
 {
+    // A friend event can fire while a Share ▾ / Install ▾ menu is open — those run a nested event loop (QMenu::exec).
+    // Rebuilding the table now calls setCellWidget, which deletes the cell widget that OWNS the open menu, freeing it
+    // while its exec() frame is still on the stack (use-after-free on unwind). Defer until the popup closes; coalesce
+    // repeated events into one pending retry. (activePopupWidget() is the open menu; NickEdit etc. are not popups.)
+    if (QApplication::activePopupWidget())
+    {
+        if (!RefreshQueued)
+        {
+            RefreshQueued = true;
+            QTimer::singleShot(200, this, [this]{ RefreshQueued = false; refresh(); });
+        }
+        return;
+    }
+
     const std::string Code = IpfsWrapper::FriendCode();
     const bool Online = IpfsWrapper::Available() && !Code.empty();
 
@@ -188,10 +206,67 @@ void FriendsTab::refresh()
         }
         else
         {
-            // (Friend library subscription via IPNS was retired with the gigagraph: games are shared by pasting a
-            // launchable CID — Sharing tab → "Add a friend's game" — not by subscribing to a friend's IPNS address.)
+            // Library sharing is offered ONLY for an ACCEPTED friend — never a pending/blocked contact. (The Go layer
+            // also refuses to push to / serve a non-accepted peer; this keeps the UI from implying otherwise, and from
+            // toggling a share onto a blocked peer.) A non-accepted row gets Remove only.
+            if (C.State == "accepted")
+            {
+                // Share ▾ — pick which of MY libraries to share with this friend. Bilateral: they must also receive.
+                auto * Share = new QPushButton("Share ▾", Actions);
+                auto * SM = new QMenu(Share);
+                const QStringList Libs = Model.myLibraryNames();
+                if (Libs.isEmpty()) SM->addAction("Publish a library first")->setEnabled(false);
+                for (const QString & L : Libs)
+                {
+                    QAction * A = SM->addAction(L);
+                    A->setCheckable(true);
+                    A->setChecked(Model.isSharingWithFriend(Peer, L));
+                    connect(A, &QAction::toggled, this, [this, Peer, L](bool on){
+                        if (on) Model.shareLibraryWithFriend(Peer, L); else Model.stopSharingWithFriend(Peer, L);
+                    });
+                }
+                Share->setMenu(SM);
+                AL->addWidget(Share);
+
+                // Get games — ask this friend for the libraries they share with us (→ friendCatalogChanged → refresh).
+                auto * Get = new QPushButton("Get games", Actions);
+                connect(Get, &QPushButton::clicked, this, [this, Peer]{ Model.requestFriendLibraries(Peer); });
+                AL->addWidget(Get);
+
+                // Install ▾ — games this friend has shared with us (browse-then-install; each pulls the graph on demand).
+                // Read via contains() throughout: a bare operator[] on a missing key would INSERT a null into the live
+                // config during a refresh (a read mutating state).
+                const auto & Cfg = *Model.config();
+                const std::string P = Peer.toStdString();
+                if (Cfg.contains("FriendLibraries") && Cfg["FriendLibraries"].is_object()
+                    && Cfg["FriendLibraries"].contains(P) && Cfg["FriendLibraries"][P].is_object()
+                    && !Cfg["FriendLibraries"][P].empty())
+                {
+                    auto * Inst = new QPushButton("Install ▾", Actions);
+                    auto * IM = new QMenu(Inst);
+                    for (const auto & [Lib, Cids] : Cfg["FriendLibraries"][P].items())
+                    {
+                        if (!Cids.is_array()) continue;
+                        IM->addSection(QString::fromStdString(Lib));
+                        for (const auto & C : Cids)
+                            if (C.is_string())
+                            {
+                                const QString Cid = QString::fromStdString(C.get<std::string>());
+                                connect(IM->addAction("game " + Cid.left(12) + "…"), &QAction::triggered,
+                                        this, [this, Cid]{ Model.installFriendGame(Cid); });
+                            }
+                    }
+                    Inst->setMenu(IM);
+                    AL->addWidget(Inst);
+                }
+            }
+
             auto * Remove = new QPushButton("Remove", Actions);
-            connect(Remove, &QPushButton::clicked, this, [this, Peer]{ IpfsWrapper::FriendRemove(Peer.toStdString()); refresh(); });
+            connect(Remove, &QPushButton::clicked, this, [this, Peer]{
+                IpfsWrapper::FriendRemove(Peer.toStdString());   // Go: drops the contact + purgeShares (stops serving)
+                Model.forgetFriend(Peer);                        // C++: forget our share record + what they shared with us
+                refresh();
+            });
             AL->addWidget(Remove);
         }
         AL->addStretch();

@@ -86,6 +86,11 @@ int  VgFriendDecline(const char *peerID, char **errOut);
 int  VgFriendBlock(const char *peerID, char **errOut);
 int  VgFriendRemove(const char *peerID);
 int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1 n/a
+// Friend library sharing (bilateral, per-(friend,library)): the seeder shares a named library's launchable CIDs with a
+// friend; the leecher requests them. A friend's shared libraries arrive as friend-callback events (kind 6, evFriendLibrary).
+int  VgShareLibrary(const char *peerID, const char *lib, const char *cidsJson, char **errOut);  // cidsJson = JSON string array
+int  VgUnshareLibrary(const char *peerID, const char *lib, char **errOut);
+int  VgRequestFriendLibraries(const char *peerID, char **errOut);
 void VgSetFriendCb(VgFriendCb cb);
 
 // ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----

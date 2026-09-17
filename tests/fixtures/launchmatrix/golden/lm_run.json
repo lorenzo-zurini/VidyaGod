@@ -81,7 +81,6 @@
     "lm_persist_hkcu",
     "lm_persist_hklm",
     "lm_group",
-    "lm_tile",
     "lm_run__self"
   ],
   "RunnerArgs": [

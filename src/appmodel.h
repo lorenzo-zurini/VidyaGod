@@ -7,6 +7,7 @@
 #include <utility>
 #include <atomic>
 #include <set>
+#include <map>
 #include <string>
 #include <memory>
 
@@ -74,6 +75,36 @@ public:
     // closure into the pretty on-disk checkout (NodeGraph::HydratePackage) off-thread, then rebuilds the catalog so
     // it appears in the Library. Emits gameAdded / gameAddFailed.
     void addGameByCid(const QString & launchableCid);
+
+    // Friend library sharing (bilateral, per-(friend, library)). Seeder side: share/withdraw a named library's
+    // launchable CIDs with one friend (from config["Libraries"], produced by publishLibraries). Leecher side: ask a
+    // friend for what they share with us (replies arrive via FriendsManager::friendLibrary → stored in
+    // config["FriendLibraries"][peer][lib]); install pulls a friend's game on demand (→ addGameByCid).
+    void shareLibraryWithFriend(const QString & peer, const QString & lib);
+    void stopSharingWithFriend(const QString & peer, const QString & lib);
+    bool isSharingWithFriend(const QString & peer, const QString & lib) const;
+    void requestFriendLibraries(const QString & peer);
+    void installFriendGame(const QString & launchableCid) { addGameByCid(launchableCid); }
+    // Apply a friend's COMPLETE shared set (a snapshot, {name:[cids]} JSON) to config["FriendLibraries"][peer]: parse +
+    // sanitize, then REPLACE that peer's record wholesale (empty ⇒ drop the peer). Persists + emits friendCatalogChanged
+    // ONLY when something actually changed. The receiver half of the bilateral protocol — wired to the friend service in
+    // the ctor; exposed so the snapshot semantics (wholesale-replace, drop-on-empty, dedup) are directly testable.
+    //
+    // seq is the sender's monotonic snapshot stamp: this is the SEQ AUTHORITY (last-writer-wins). Snapshots ride
+    // independent, concurrently-handled streams, so a stale one can be delivered/emitted after a fresher one; we keep
+    // only the highest seq seen per peer and drop anything older. seq==0 (unstamped) always applies. The high-water
+    // marks are in-memory/session-scoped (they reset on restart, which is safe: the sender's stamps are clock-seeded).
+    void applyFriendLibrarySnapshot(const QString & peer, const QString & libsJson, quint64 seq = 0);
+    // The names of the libraries this node currently exposes (config["Libraries"] keys). Empty until publishLibraries.
+    QStringList myLibraryNames() const;
+    // Re-push every active share (config["Sharing"]) into the Go layer with the CURRENT config["Libraries"] CIDs. Go's
+    // share table is in-memory (rebuilt every launch); config["Sharing"] is the durable record. Called on startup (to
+    // re-arm shares after a restart) and after a re-publish (the launchable CIDs may have moved). Without it the two
+    // halves split-brain: the UI shows a friend as shared-with, but Go serves them nothing.
+    void reRegisterShares();
+    // Consent with a friend ended (remove/block): forget both directions of the relationship's sharing state — stop
+    // serving them (config["Sharing"][peer]) and drop what they shared with us (config["FriendLibraries"][peer]).
+    void forgetFriend(const QString & peer);
     // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
     // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
     // and deprecated) before any content is relocated. Just rewriting the CID would be a silent no-op — the sync
@@ -91,6 +122,7 @@ signals:
     void libraryPublishFailed(QString message);                             // Verify & Publish failed (mint error / offline)
     void gameAdded(QString dir);                 // addGameByCid succeeded — the checkout dir; Library now shows it
     void gameAddFailed(QString message);         // addGameByCid failed (bad CID / offline / fetch error)
+    void friendCatalogChanged();                 // a friend shared/updated/withdrew a library — refresh the friend view
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
     void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health
@@ -113,6 +145,7 @@ private:
     bool                     SyncRetryPending = false;    // a re-sync is scheduled for a source that failed to fetch
     std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
+    std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
 };
 
 #endif // APPMODEL_H

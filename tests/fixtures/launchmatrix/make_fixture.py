@@ -240,10 +240,14 @@ def nodes():
     # Un-hydrated content: present only as a CID, never fetched. The engine REFUSES to launch a closure with
     # missing sources, which is correct and is why this hangs off a SIDE BRANCH — only the plan-level
     # launchables pull it in. Putting it in the runnable closure would test nothing but the refusal.
+    # A REAL, well-formed CIDv1 (dag-raw sha2-256) whose blocks are simply never in the local store — the accurate
+    # shape of un-hydrated remote content in the gigagraph, where a SOURCE.CID is a live IPLD link the freeze must be
+    # able to decode. (A bogus non-CID string used to sit here; it parsed fine when a CID was an opaque field, but the
+    # content-addressed freeze now decodes every link, so it made this node — and its whole downstream — unindexable.)
     remote = add(NODE_ID="lm_c_remote", TYPE="Content", PARENTS=[probe], FORM="zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/remote",
                  SOURCE={"PATH": "never_fetched.zip",
-                         "CID": "bafkreiabsentabsentabsentabsentabsentabsentabsentabsentabsentab"})
+                         "CID": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"})
     add(NODE_ID="lm_unhydrated", TYPE="Group", PARENTS=[remote])
 
     # ---- CustomVar: defaults, UI kinds, cross-reference, WHEN, format spec ------------------------------

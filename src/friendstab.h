@@ -39,6 +39,7 @@ private:
     QLabel *       StatusHint  = nullptr;
     QTableWidget * Table       = nullptr;
     bool           NickEdited  = false;   // don't clobber the field the user is typing in on a refresh
+    bool           RefreshQueued = false; // a refresh is deferred because a menu popup is open (coalesces retries)
 };
 
 #endif // FRIENDSTAB_H

@@ -24,7 +24,6 @@
   "PrefixRoot": "",
   "Recipe": [
     "lm_minimal_content",
-    "lm_tile",
     "lm_minimal__self"
   ],
   "RunnerArgs": [
