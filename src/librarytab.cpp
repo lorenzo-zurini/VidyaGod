@@ -4,6 +4,7 @@
 #include "manifestmodel.h"
 #include "packageeditor.h"     // the authoring entry points moved here from Settings
 #include "mainwindow.h"        // MainWindow::RefreshPackage (app-wide "package edited" hook)
+#include "commonutils.h"       // LogOut — surface the shown-card count (the "empty library" diagnostic)
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -163,8 +164,8 @@ void LibraryTab::buildCards()
         bool AllHydrated = true, HasContent = false;
         for (const Node * N : Group)
         {
-            Ids.push_back(N->NodeId);
-            auto H = Hyd.find(N->NodeId);
+            Ids.push_back(N->Key());
+            auto H = Hyd.find(N->Key());
             if (H == Hyd.end() || !H->second.Hydrated) AllHydrated = false;
             if (H != Hyd.end() && H->second.HasContent) HasContent = true;
         }
@@ -173,6 +174,7 @@ void LibraryTab::buildCards()
         c->InitializeClassVariables();
         LibraryGameCards->append(c);
     }
+    LogOut("LibraryTab", "Library shows " + std::to_string(LibraryGameCards->size()) + " hydrated game(s).");
 }
 
 void LibraryTab::sortAndFilter()

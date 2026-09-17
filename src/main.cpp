@@ -290,6 +290,7 @@ int main(int argc, char *argv[])
         || !LaunchParameters.PublishPackageDir.empty() || !LaunchParameters.PublishCidDir.empty()
         || !LaunchParameters.PublishMetaSrc.empty() || !LaunchParameters.RemintLibraryDir.empty()
         || !LaunchParameters.PublishLibraryDir.empty() || !LaunchParameters.IpnsResolveName.empty()
+        || !LaunchParameters.MintDir.empty() || !LaunchParameters.HydrateCid.empty()
         || !LaunchParameters.IpnsPublishCid.empty()
         || !LaunchParameters.UpgradeSourceName.empty() || !LaunchParameters.VerifyCidArg.empty()
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
@@ -760,6 +761,20 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.PublishLibraryDir = argv[++i];
             RuntimeParameters.RunningHeadless   = true;
+        }
+        else if (arg == "--mint" && i + 1 < argc)
+        {
+            RuntimeParameters.MintDir         = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--hydrate" && i + 1 < argc)
+        {
+            RuntimeParameters.HydrateCid      = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--hydrate-dest" && i + 1 < argc)
+        {
+            RuntimeParameters.HydrateDest     = argv[++i];
         }
         else if (arg == "--ipns-resolve" && i + 1 < argc)
         {

@@ -30,6 +30,12 @@ long long VgCidSize(const char *cid);          // CumulativeSize, -1 if unknown 
 long long VgCidSizeLocal(const char *cid);     // CumulativeSize from the LOCAL store only — fast -1 when unreadable
 int  VgCidMissing(const char *cid);            // 1 if a pinned CID's backing file is gone (orphaned ref), 0 ok, -1 n/a
 int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's CID with NO side effects (nothing seeded/pinned)
+// dag-json node graph (the gigagraph: one node = one dag-json block, identity = CID; dag.go). Deterministic — any
+// key order in the JSON yields the same CID.
+int  VgDagPut(const char *json, char **outCid, char **errOut); // store a node block (direct-pinned + announced) -> its CID
+int  VgDagGet(const char *cid, char **outJson, char **errOut); // node block's canonical dag-json bytes (fetches over bitswap if remote)
+int  VgDagHas(const char *cid);                                // 1 if the node block is local, 0 no, -1 n/a / bad CID
+int  VgDagCid(const char *json, char **outCid, char **errOut); // the CID a node's JSON WOULD have, NO side effects
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown
 char *VgCidServeStatus(const char *cid); // "" if deliverable (cheap: stat only), else the reason (caller frees)
 int  VgServeFailures(char **outJson); // JSON [{cid,err,when}] of blocks a PEER asked for that we could not deliver (drains)

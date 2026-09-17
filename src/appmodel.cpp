@@ -1,6 +1,7 @@
 #include "appmodel.h"
 #include "asyncwork.h"   // guarded detached workers (P7: replaces raw std::thread(...).detach() with `this` captures)
 #include "packagecatalog.h"
+#include "nodegraph.h"   // HydratePackage — add a game by launchable CID (gigagraph sharing consumer)
 #include "manifestmodel.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
@@ -395,43 +396,40 @@ bool AppModel::friendLibraryOn(const QString & peerID) const
     return PackageCatalog::PackageSourceIndexForCID(*Config, Addr) >= 0;
 }
 
+void AppModel::addGameByCid(const QString & launchableCid)
+{
+    const std::string Cid = launchableCid.trimmed().toStdString();
+    if (Cid.empty()) { emit gameAddFailed("empty CID"); return; }
+    const std::filesystem::path Dest = PackageCatalog::LibraryRootDir(*Config);
+    auto Dir = std::make_shared<std::string>();
+    auto Err = std::make_shared<std::string>();
+    AsyncWork::Run(this,
+        [Dest, Cid, Dir, Err]{ *Dir = NodeGraph::HydratePackage(Dest, Cid, Err.get()); },
+        [this, Dir, Err]{
+            if (Dir->empty()) { emit gameAddFailed(QString::fromStdString(*Err)); return; }
+            rebuildCatalog();     // the new checkout is on-disk → it appears in the Library
+            pushSeedLevels();     // seed its content so we become a provider too
+            emit gameAdded(QString::fromStdString(*Dir));
+        });
+}
+
 void AppModel::publishLibraries()
 {
-    const std::string LibRoot = PackageCatalog::LibraryRootDir(*Config);
-    auto Cfg    = std::make_shared<nlohmann::ordered_json>(*Config);
-    auto TopCid = std::make_shared<std::string>();
-    auto Err    = std::make_shared<std::string>();
+    // Gigagraph publish: freeze the on-disk library into dag-json blocks and STORE them (DagPut → pinned/announced/
+    // seedable), then record the shareable list of launchable root CIDs. No IPNS — the list is off-IPFS VidyaGod data.
+    auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Cids = std::make_shared<std::vector<std::string>>();
+    auto Err  = std::make_shared<std::string>();
     AsyncWork::Run(this,
-        [Cfg, TopCid, Err, LibRoot]{ *TopCid = PackageCatalog::PublishLibraries(*Cfg, LibRoot, Err.get()); },
-        [this, Cfg, TopCid, Err]{
-            if (TopCid->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
-            // Adopt ONLY what the publish actually wrote — the reminted CIDs — merged into the LIVE Settings. Do NOT
-            // assign the whole Settings snapshot back: the re-mint took minutes, and the user may have subscribed/
-            // unsubscribed a friend or edited a path meanwhile; clobbering with the pre-publish snapshot would
-            // resurrect a removed source (whose dir was already deleted) or drop a new one. So: (1) take PackageCids
-            // wholesale (a derived map), (2) copy each reminted collection CID back only onto a source that STILL
-            // exists live, matched by NAME.
-            auto &LiveS = (*Config)["Settings"];
-            const auto &SnapS = (*Cfg)["Settings"];
-            if (SnapS.is_object() && SnapS.contains("PackageCids"))
-                LiveS["PackageCids"] = SnapS["PackageCids"];
-            if (LiveS.contains("PackageSources") && LiveS["PackageSources"].is_array()
-                && SnapS.is_object() && SnapS.contains("PackageSources") && SnapS["PackageSources"].is_array())
-                for (auto &Live : LiveS["PackageSources"])
-                {
-                    if (!Live.is_object() || PackageCatalog::IsIpnsSource(Live)) continue;   // never a friend's /ipns/ CID
-                    const std::string LN = Live.value("NAME", std::string());
-                    if (LN.empty()) continue;
-                    for (const auto &Snap : SnapS["PackageSources"])
-                        if (Snap.is_object() && Snap.value("NAME", std::string()) == LN
-                            && Snap.contains("CID")) { Live["CID"] = Snap["CID"]; break; }
-                }
+        [Cfg, Cids, Err]{ *Cids = PackageCatalog::PublishLibrary(*Cfg, Err.get()); },
+        [this, Cfg, Cids, Err]{
+            if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
+            (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt only the freshly-written list
             save();
-            rebuildCatalog();
             pushSeedLevels();
-            emit libraryPublished(QString::fromStdString("/ipns/" + IpfsWrapper::PeerID()),
-                                  QString::fromStdString(*TopCid),
-                                  QString::fromStdString(*Err));   // Err holds a soft "minted but not advertised" note, if any
+            emit libraryPublished(QString::fromStdString(IpfsWrapper::FriendCode()),
+                                  QString::number(static_cast<int>(Cids->size())) + " game(s)",
+                                  QString());
         });
 }
 

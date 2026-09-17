@@ -181,6 +181,50 @@ std::string AddNoCopyMeta(const std::string &PathStr, std::string *Error)
     return CidS;
 }
 
+// ---- dag-json node graph (the gigagraph: one node = one dag-json block, identity = CID) ----
+// The node's JSON is canonicalized in Go (deterministic — any key order yields the same CID); the block is
+// direct-pinned and announced. Links (PARENTS/SOURCE.CID/COVER) travel as dag-json links {"/":cid} in the stored
+// block; the caller passes/receives that form (nodegraph.cpp normalizes ↔ plain-string CIDs at the ingest/mint edge).
+
+std::string DagPut(const std::string &Json, std::string *Error)
+{
+    if (Json.empty()) { if (Error) *Error = "empty node JSON"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgDagPut(Json.c_str(), &Cid, &Err);
+    const std::string CidS = TakeStr(Cid);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "dag put failed" : ErrS; return std::string(); }
+    return CidS;
+}
+
+std::string DagGet(const std::string &Cid, std::string *Error)
+{
+    if (Cid.empty()) { if (Error) *Error = "empty CID"; return std::string(); }
+    char *Json = nullptr, *Err = nullptr;
+    const int Rc = VgDagGet(Cid.c_str(), &Json, &Err);
+    const std::string JsonS = TakeStr(Json);
+    const std::string ErrS  = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? ("dag get failed: " + Cid) : ErrS; return std::string(); }
+    return JsonS;
+}
+
+bool DagHas(const std::string &Cid)
+{
+    if (Cid.empty()) return false;
+    return VgDagHas(Cid.c_str()) == 1;
+}
+
+std::string DagCid(const std::string &Json, std::string *Error)
+{
+    if (Json.empty()) { if (Error) *Error = "empty node JSON"; return std::string(); }
+    char *Cid = nullptr, *Err = nullptr;
+    const int Rc = VgDagCid(Json.c_str(), &Cid, &Err);
+    const std::string CidS = TakeStr(Cid);
+    const std::string ErrS = TakeStr(Err);
+    if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "dag cid failed" : ErrS; return std::string(); }
+    return CidS;
+}
+
 // FetchOnce — the rolling queue's node primitive: ONE fetch attempt, classified. FetchToPath/FetchDirToPath (the
 // blocking convenience wrappers) and the batch entry point now live in downloadqueue.cpp and route through the queue,
 // whose dispatcher calls THIS to run each attempt and reads the rc to decide Done / rotate-and-retry / fail.

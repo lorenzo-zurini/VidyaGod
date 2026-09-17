@@ -5,6 +5,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QGroupBox>
 #include <QApplication>
@@ -31,6 +32,15 @@ SharingTab::SharingTab(AppModel & model, QWidget * parent)
         PublishButton->setEnabled(true);
         PublishStatus->setText("Publish failed: " + m);
     });
+    connect(&Model, &AppModel::gameAdded, this, [this](const QString & dir){
+        if (AddButton) AddButton->setEnabled(true);
+        if (AddCidEdit) AddCidEdit->clear();
+        if (AddStatus) AddStatus->setText("Added → " + dir);
+    });
+    connect(&Model, &AppModel::gameAddFailed, this, [this](const QString & m){
+        if (AddButton) AddButton->setEnabled(true);
+        if (AddStatus) AddStatus->setText("Add failed: " + m);
+    });
     refresh();
 }
 
@@ -39,15 +49,15 @@ void SharingTab::buildUi()
     auto * Root = new QVBoxLayout(this);
 
     // --- Your library address ---
-    auto * AddrBox = new QGroupBox("Your library address", this);
+    auto * AddrBox = new QGroupBox("Your friend code", this);
     auto * AddrLayout = new QVBoxLayout(AddrBox);
-    auto * Hint = new QLabel("Your friend code IS your library address. Friends who receive your library resolve this "
-                             "name to your current catalog. It never changes — it is derived from your identity key.", AddrBox);
+    auto * Hint = new QLabel("Your friend code identifies you to friends — share it so they can connect. It never "
+                             "changes; it is derived from your identity key.", AddrBox);
     Hint->setWordWrap(true);
     Hint->setStyleSheet("color: palette(mid);");
     AddrLayout->addWidget(Hint);
     auto * Row = new QHBoxLayout();
-    Row->addWidget(new QLabel("Address:", AddrBox));
+    Row->addWidget(new QLabel("Friend code:", AddrBox));
     AddressValue = new QLabel(AddrBox);
     AddressValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
     AddressValue->setStyleSheet("font-family: monospace;");
@@ -55,7 +65,7 @@ void SharingTab::buildUi()
     CopyButton = new QPushButton("Copy", AddrBox);
     connect(CopyButton, &QPushButton::clicked, this, []{
         const std::string Code = IpfsWrapper::FriendCode();
-        if (!Code.empty()) QApplication::clipboard()->setText(QString::fromStdString("/ipns/" + Code));
+        if (!Code.empty()) QApplication::clipboard()->setText(QString::fromStdString(Code));
     });
     Row->addWidget(CopyButton);
     AddrLayout->addLayout(Row);
@@ -64,9 +74,9 @@ void SharingTab::buildUi()
     // --- Publish ---
     auto * PubBox = new QGroupBox("Publish your libraries", this);
     auto * PubLayout = new QVBoxLayout(PubBox);
-    LibrariesLabel = new QLabel("Verify & Publish re-mints every package in your libraries (the collections under your "
-                                "LIBRARY folder), rebuilds your signed index, and points your address at it. Touching one "
-                                "game moves only that entry — subscribers see just that update.", PubBox);
+    LibrariesLabel = new QLabel("Publish freezes every game in your library into content-addressed blocks and seeds "
+                                "them, so friends can fetch any of them by CID. Each game's CID changes only when that "
+                                "game changes — everything else stays put and de-duplicates automatically.", PubBox);
     LibrariesLabel->setWordWrap(true);
     PubLayout->addWidget(LibrariesLabel);
     PublishButton = new QPushButton("Verify && Publish", PubBox);
@@ -79,11 +89,36 @@ void SharingTab::buildUi()
     PubLayout->addWidget(PublishStatus);
     Root->addWidget(PubBox);
 
+    // --- Add a friend's game (by launchable CID) ---
+    auto * AddBox = new QGroupBox("Add a friend's game", this);
+    auto * AddLayout = new QVBoxLayout(AddBox);
+    auto * AddHint = new QLabel("Paste a game's CID (a friend shares one from their published library). It downloads "
+                                "into your library and appears in the Library tab — de-duplicating anything you already "
+                                "have.", AddBox);
+    AddHint->setWordWrap(true);
+    AddHint->setStyleSheet("color: palette(mid);");
+    AddLayout->addWidget(AddHint);
+    auto * AddRow = new QHBoxLayout();
+    AddCidEdit = new QLineEdit(AddBox);
+    AddCidEdit->setPlaceholderText("bafy… (game CID)");
+    AddRow->addWidget(AddCidEdit, 1);
+    AddButton = new QPushButton("Add game", AddBox);
+    connect(AddButton, &QPushButton::clicked, this, &SharingTab::addGameClicked);
+    connect(AddCidEdit, &QLineEdit::returnPressed, this, &SharingTab::addGameClicked);
+    AddRow->addWidget(AddButton);
+    AddLayout->addLayout(AddRow);
+    AddStatus = new QLabel(AddBox);
+    AddStatus->setWordWrap(true);
+    AddStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    AddStatus->setStyleSheet("font-family: monospace; color: palette(mid);");
+    AddLayout->addWidget(AddStatus);
+    Root->addWidget(AddBox);
+
     // --- Identity backup ---
     auto * IdBox = new QGroupBox("Identity backup", this);
     auto * IdLayout = new QVBoxLayout(IdBox);
-    auto * IdHint = new QLabel("Your identity key is your friend code AND your library address. If you lose it there is "
-                               "no recovery — back it up somewhere safe and never share it.", IdBox);
+    auto * IdHint = new QLabel("Your identity key is your friend code. If you lose it there is no recovery — back it up "
+                               "somewhere safe and never share it.", IdBox);
     IdHint->setWordWrap(true);
     IdHint->setStyleSheet("color: palette(mid);");
     IdLayout->addWidget(IdHint);
@@ -107,18 +142,27 @@ void SharingTab::refresh()
 {
     const std::string Code = IpfsWrapper::FriendCode();
     const bool Online = IpfsWrapper::Available() && !Code.empty();
-    AddressValue->setText(Online ? QString::fromStdString("/ipns/" + Code) : QStringLiteral("— (networking off)"));
+    AddressValue->setText(Online ? QString::fromStdString(Code) : QStringLiteral("— (networking off)"));
     CopyButton->setEnabled(Online);
     PublishButton->setEnabled(Online);
     if (!Online)
-        PublishStatus->setText("Enable networking (IPFS tab) to publish — a publish needs the DHT.");
+        PublishStatus->setText("Enable networking (IPFS tab) to publish and seed your library.");
 }
 
 void SharingTab::publishClicked()
 {
     PublishButton->setEnabled(false);
-    PublishStatus->setText("Verifying & publishing… (re-minting packages, this can take a while)");
+    PublishStatus->setText("Publishing… (freezing packages into content-addressed blocks and seeding them)");
     Model.publishLibraries();
+}
+
+void SharingTab::addGameClicked()
+{
+    const QString Cid = AddCidEdit->text().trimmed();
+    if (Cid.isEmpty()) { AddStatus->setText("Paste a game CID first."); return; }
+    AddButton->setEnabled(false);
+    AddStatus->setText("Fetching " + Cid.left(20) + "… (downloading the game and its content)");
+    Model.addGameByCid(Cid);
 }
 
 void SharingTab::backupIdentityClicked()

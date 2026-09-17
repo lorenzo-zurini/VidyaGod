@@ -252,6 +252,12 @@ struct RemintEntry { std::string Level, Name, Cid; };
 std::string PublishLibraries(nlohmann::ordered_json &Config, const std::string &LibraryRoot, std::string *Error = nullptr,
                              bool ReuseExistingContent = true);
 
+// PublishLibrary (gigagraph): freeze the whole on-disk library into dag-json blocks and STORE them (DagPut → pinned,
+// announced, seedable) so peers can fetch the node graph, and record the shareable list of launchable root CIDs in
+// Config["PublishedList"]. Returns that list ("" / empty on failure). No IPNS — a list is off-IPFS VidyaGod data,
+// shared directly. Call OFF the UI thread + with the node online (DagPut stores blocks). Supersedes PublishLibraries.
+std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr);
+
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.
 bool IsIpnsSource(const nlohmann::ordered_json &Source);

@@ -50,6 +50,11 @@ struct VariantInfo {
 //One node, parsed from a <node_id>.json file. Edges are bare global NODE_IDs in Parents (later = higher
 //CFS priority). Selection attributes (Optional/Default/Exclude) live on the node itself, not on the edge.
 struct Node {
+    // Cid — the node's IDENTITY in the gigagraph: the CID of its canonical dag-json block, computed recursively over
+    // the CIDs it links (PARENTS/SOURCE/COVER). Empty for a working-tree node not yet frozen. When set, the index is
+    // keyed by this (NodeId demotes to a human label). Set by the DAG traversal / disk ingest, never parsed from the
+    // block (a block does not contain its own CID). See [[gigagraph]] plan + nodegraph.cpp.
+    std::string Cid;
     std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine")
     //Non-empty when the node's payload could not be lowered (unknown TYPE, unknown FORM, malformed EDITS…).
     //Such a node is STILL INDEXED, deliberately: dropping it made the whole node vanish, so a leaf mistake —
@@ -82,10 +87,19 @@ struct Node {
     bool Default  = true;                    // DEFAULT — initial enabled state when OPTIONAL
     std::vector<std::string> Exclude;        // EXCLUDE — node ids mutually exclusive with this one (symmetric)
     std::vector<std::string> Parents;        // PARENTS — bare global node ids (load order: later = higher priority)
+    // LIBRARYITEM — a DeclareExec's dedicated link to its DeclareLibraryItem tile, SEPARATE from Parents. The tile is
+    // a layer-less metadata node off the composition graph — only DeclareExecs reference it, and only through this
+    // field (never PARENTS). Drives %PackageUID%, Meta inheritance, tile grouping, and browse (all O(1), no ancestor
+    // walk). A CID when frozen, a NODE_ID handle in a working tree; "" if none. See [[gigagraph]] + nodegraph.cpp.
+    std::string LibraryItem;
     nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects, incl. Declare*)
     std::filesystem::path File;              // source <node_id>.json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
 
+    // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its NODE_ID in a legacy single-
+    // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog
+    // (hydration maps, launch ids, download ids), or a CID-keyed index and a NodeId lookup silently miss.
+    std::string Key() const { return Cid.empty() ? NodeId : Cid; }
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return HasRunner; }
     bool IsLaunchable() const { return HasExec; }

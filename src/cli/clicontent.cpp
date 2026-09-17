@@ -4,6 +4,7 @@
 #include "platform/platform.h"
 #include "commonutils.h"
 #include "manifestmodel.h"
+#include "nodegraph.h"        // gigagraph mint / frozen-DAG read-back (--mint)
 #include "packagecatalog.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
@@ -492,6 +493,93 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (!Err.empty()) LogWarn("main.cpp", "note: " + Err);   // e.g. "minted but not yet advertised"
         LogSucc("main.cpp", "Published /ipns/" + IpfsWrapper::PeerID() + " -> " + TopCid);
         std::cout << "/ipns/" << IpfsWrapper::PeerID() << "\t" << TopCid << "\n";   // machine-readable
+        return 0;
+    }
+
+    //HEADLESS: MINT a working-tree bundle into the gigagraph — freeze its nodes to dag-json blocks (identity = CID),
+    //print the launchable root CIDs (the library-list entries), then verify by re-reading the frozen DAG back. The
+    //end-to-end proof of Mint + FreezeNodeJson + BuildFrozenIndex + LinkGames on real data.
+    if (!LaunchParameters.MintDir.empty())
+    {
+        const std::string Dir = LaunchParameters.MintDir;
+        LogOut("main.cpp", "Minting working tree: " + Dir);
+        std::error_code Ec;
+        if (!fs::is_directory(Dir, Ec)) { LogErr("main.cpp", "not a directory: " + Dir); return 1; }
+
+        // Gather the working tree RECURSIVELY (whole-library): cross-package edges (e.g. a game's content PARENTing a
+        // shared node in ANOTHER bundle) only resolve when the whole library is gathered, since handles are globally
+        // unique. This is the migration's model.
+        std::map<std::string, nlohmann::ordered_json> Tree;
+        std::map<std::string, fs::path> Dirs;   // NODE_ID handle -> the on-disk bundle it lives in (for BundleDir)
+        NodeGraph::GatherWorkingTree(Dir, Tree, Dirs);
+        if (Tree.empty()) { LogErr("main.cpp", "no nodes found in " + Dir); return 1; }
+        LogOut("main.cpp", "gathered " + std::to_string(Tree.size()) + " node(s)");
+
+        // Lift the metadata edge (PARENTS tile -> LIBRARYITEM), then freeze deps-first.
+        NodeGraph::LiftLibraryItemEdge(Tree);
+        NodeGraph::MintResult MR;
+        std::string Err;
+        if (!NodeGraph::Mint(Tree, MR, &Err)) { LogErr("main.cpp", "mint failed: " + Err); return 1; }
+        LogSucc("main.cpp", "minted " + std::to_string(MR.HandleToCid.size()) + " node(s), "
+                + std::to_string(MR.Launchables.size()) + " launchable(s)");
+        for (const auto &Cid : MR.Launchables) std::cout << Cid << "\n";   // machine-readable: the list entries
+
+        // Verify: re-read the frozen DAG from the launchable roots. No unresolved blocks == a coherent, self-contained
+        // closure. (ValidateNodeGraph errors about a missing runner are EXPECTED here — runners are minted separately.)
+        std::vector<std::string> Missing;
+        NodeIndex Frozen = NodeGraph::BuildFrozenIndex(MR.Launchables, &Missing);
+        std::vector<std::string> ValErrs, ValWarns;
+        ManifestModel::ValidateNodeGraph(Frozen, ValErrs, ValWarns);
+        LogOut("main.cpp", "frozen read-back: " + std::to_string(Frozen.Nodes.size()) + " node(s), "
+               + std::to_string(Missing.size()) + " unresolved block(s), "
+               + std::to_string(ValErrs.size()) + " validate error(s) (runner-absent expected)");
+        for (const auto &M : Missing) LogErr("main.cpp", "  unresolved: " + M);
+
+        // Launch-readiness: derive the CID-keyed catalog straight from the on-disk working tree (FreezeToIndex, no
+        // block writes) with BundleDir wired, and resolve a launchable's closure. This also proves the two freeze
+        // paths agree — Mint's DagPut CIDs are keys in the DagCid-built catalog (same canonical encoding → same CID).
+        std::string FErr;
+        NodeIndex Cat = NodeGraph::FreezeToIndex(Tree, Dirs, &FErr);
+        if (Cat.Nodes.empty()) { LogErr("main.cpp", "FreezeToIndex failed: " + FErr); return 1; }
+        int WithDir = 0, DirPresent = 0;
+        for (const auto &[C, N] : Cat.Nodes)
+        {
+            (void)C;
+            if (N.BundleDir.empty()) continue;
+            ++WithDir;
+            std::error_code De;
+            if (std::filesystem::is_directory(N.BundleDir, De)) ++DirPresent;
+        }
+        LogOut("main.cpp", "FreezeToIndex: " + std::to_string(Cat.Nodes.size()) + " CID-keyed node(s), "
+               + std::to_string(WithDir) + " with BundleDir (" + std::to_string(DirPresent) + " present on disk)");
+        if (!MR.Launchables.empty())
+        {
+            const std::string &L = MR.Launchables.front();
+            const bool InCat = Cat.Find(L) != nullptr;   // Mint (DagPut) CID must be a key in the DagCid catalog
+            std::vector<std::string> RMissing;
+            const auto Order = ManifestModel::ResolveNodeOrder(Cat, L, {}, &RMissing);
+            LogOut("main.cpp", "resolve " + L.substr(0, 20) + "…: in-catalog=" + std::string(InCat ? "yes" : "NO")
+                   + ", closure=" + std::to_string(Order.size()) + " node(s), "
+                   + std::to_string(RMissing.size()) + " missing edge(s)");
+            if (!InCat) { LogErr("main.cpp", "CID MISMATCH: Mint and FreezeToIndex disagree — canonical encoding drift"); return 1; }
+        }
+        return Missing.empty() ? 0 : 1;
+    }
+
+    //HEADLESS: HYDRATE a launchable's closure from IPFS into the pretty on-disk checkout — the sharing CONSUMER: a
+    //friend's / pasted launchable CID becomes a playable, locally-hydrated game. Prints the checkout dir.
+    if (!LaunchParameters.HydrateCid.empty())
+    {
+        //DHT/bitswap need a bootstrapped routing table for a not-yet-local closure; a one-shot must wait for peers.
+        for (int i = 0; i < 40 && IpfsWrapper::PeerCount() < 3; ++i) std::this_thread::sleep_for(std::chrono::seconds(1));
+        const std::string Dest = LaunchParameters.HydrateDest.empty()
+                               ? PackageCatalog::LibraryRootDir(GlobalConfigJSON) : LaunchParameters.HydrateDest;
+        LogOut("main.cpp", "Hydrating " + LaunchParameters.HydrateCid + " -> " + Dest);
+        std::string Err;
+        const std::string Dir = NodeGraph::HydratePackage(Dest, LaunchParameters.HydrateCid, &Err);
+        if (Dir.empty()) { LogErr("main.cpp", "hydrate failed: " + Err); return 1; }
+        LogSucc("main.cpp", "Hydrated to " + Dir);
+        std::cout << Dir << "\n";
         return 0;
     }
 

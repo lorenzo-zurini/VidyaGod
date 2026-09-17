@@ -18,10 +18,19 @@
 #include <cctype>
 #include <zip.h>   // node-graph validation reads content zips to case-check CONTENTPATH against real files
 
-const Node *NodeIndex::Find(const std::string &NodeId) const
+const Node *NodeIndex::Find(const std::string &Key) const
 {
-    auto It = Nodes.find(NodeId);
-    return It == Nodes.end() ? nullptr : &It->second;
+    // Primary key = the map key. In the gigagraph catalog that is a node's CID (identity); the resolver walks edges
+    // by CID, so every internal Find hits this fast path. (A NODE_ID-keyed index — a single working-tree bundle scan —
+    // hits it too.)
+    auto It = Nodes.find(Key);
+    if (It != Nodes.end()) return &It->second;
+    // Fallback alias: resolve a human NODE_ID label to its node. Only entry points (a GUI launch id, a persisted
+    // reference) look up by NODE_ID against a CID-keyed index; it is never on the resolver's hot path, so the linear
+    // scan is cheap in practice. NODE_IDs are unique within a local library (first match wins).
+    for (const auto &[K, N] : Nodes)
+        if (N.NodeId == Key) return &N;
+    return nullptr;
 }
 
 namespace ManifestModel {
@@ -153,6 +162,10 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         for (const auto &E : J["EXCLUDE"]) if (E.is_string() && !std::string(E).empty()) Out.Exclude.push_back(E.get<std::string>());
     if (J.contains("PARENTS") && J["PARENTS"].is_array())
         for (const auto &P : J["PARENTS"]) if (P.is_string() && !std::string(P).empty()) Out.Parents.push_back(P.get<std::string>());
+    //LIBRARYITEM — a DeclareExec's dedicated tile link, off the composition graph (never a PARENT). A CID when frozen,
+    //a NODE_ID handle in a working tree (links are normalized to plain strings before ParseNode, so it reads as one).
+    if (J.contains("LIBRARYITEM") && J["LIBRARYITEM"].is_string() && !J["LIBRARYITEM"].get<std::string>().empty())
+        Out.LibraryItem = J["LIBRARYITEM"].get<std::string>();
     Out.File      = File;
     Out.BundleDir = BundleDir;
     return true;
@@ -296,9 +309,24 @@ void LinkGames(NodeIndex &Idx)
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (!N.IsLaunchable() || N.Presentable()) continue;                  // not a variant needing a game link
+        Node &Nn = Idx.Nodes[Id];
+        //Gigagraph form: the launchable carries an explicit LIBRARYITEM edge to its tile — grouping/Meta/UID come
+        //straight from that node (O(1), no ancestor walk). This is the dedicated metadata edge that keeps PARENTS
+        //pure composition; see nodegraph.h. Falls through to the legacy PARENTS ancestor-walk when absent (a working
+        //tree or pre-cutover data whose tile is still a PARENT).
+        if (!N.LibraryItem.empty())
+        {
+            const Node *Tile = Idx.Find(N.LibraryItem);
+            if (Tile && Tile->Presentable())
+            {
+                Nn.Game = N.LibraryItem;                                     // grouping key = the tile's id/CID
+                Nn.Meta = Tile->Meta;
+                if (Nn.Uid.empty()) Nn.Uid = Tile->Meta.value("UID", std::string());
+            }
+            continue;
+        }
         const G &g = Compose(Id);
         if (g.Meta.empty() || g.Nearest.empty()) continue;                   // no presentable ancestor → not a variant
-        Node &Nn = Idx.Nodes[Id];
         Nn.Game = g.Nearest;                                                 // nearest presentable ancestor (the tile key)
         Nn.Meta = g.Meta;                                                    // the closure-composed tile metadata
         if (Nn.Uid.empty()) Nn.Uid = g.Meta.value("UID", std::string());
@@ -324,19 +352,20 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
     //sets over the tree-based std::set: on a deep chain these are probed millions of times and string-key tree
     //compares were a top validate-pass cost.
     std::unordered_set<std::string> Enabled;
-    std::unordered_set<std::string> Kept;                                  // for symmetric EXCLUDE (first-kept wins)
+    std::unordered_set<std::string> KeptNodeIds;                           // NODE_ID labels of kept nodes — EXCLUDE names nodes
     std::unordered_set<std::string> ExcludedByKept;                        // ∪ of Exclude targets of every kept node
     //Keep a node: record it, and fold its Exclude list into ExcludedByKept so the symmetric check below is O(1).
+    //EXCLUDE lists (and toggles) name nodes by NODE_ID, while the index/traversal keys by CID — so EXCLUDE is matched
+    //in NODE_ID space (KeptNodeIds), never against the CID-keyed Enabled set.
     auto Keep = [&](const std::string &Id, const Node *N) {
-        Enabled.insert(Id); Kept.insert(Id);
-        if (N) for (const auto &E : N->Exclude) ExcludedByKept.insert(E);
+        Enabled.insert(Id);
+        if (N) { KeptNodeIds.insert(N->NodeId); for (const auto &E : N->Exclude) ExcludedByKept.insert(E); }
     };
-    //A candidate conflicts if it excludes an already-kept node, OR an already-kept node excludes it. The second
-    //arm was an O(|Kept|·log N) scan-with-Find (the validate-pass hot spot on deep chains); ExcludedByKept makes
-    //it an O(1) membership test — the union is maintained incrementally as nodes are kept.
+    //A candidate conflicts if it excludes an already-kept node, OR an already-kept node excludes it. Both arms match
+    //in NODE_ID space (EXCLUDE entries and NODE_IDs), never against CIDs.
     auto Conflicts = [&](const Node &N) {
-        for (const auto &E : N.Exclude) if (Kept.count(E)) return true;    // this node excludes a kept one
-        return ExcludedByKept.count(N.NodeId) != 0;                        // a kept node excludes this one
+        for (const auto &E : N.Exclude) if (KeptNodeIds.count(E)) return true;   // this node excludes a kept one
+        return ExcludedByKept.count(N.NodeId) != 0;                             // a kept node excludes this one
     };
     // Index-based head instead of erase(begin()): popping a vector's front shifts every element, turning a deep
     // chain's walk quadratic (a 900-deep delta chain = ~400k string moves per resolve).
@@ -352,7 +381,14 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
         //conflicting DEFAULT-on sibling (first-kept wins the EXCLUDE). Otherwise toggling a mutually-exclusive
         //option on would be silently dropped in favour of the other option's default. Stable: order is otherwise
         //preserved (PARENTS list order).
-        auto ExplicitOn = [&](const std::string &Id) { auto It = Toggles.find(Id); return It != Toggles.end() && It->second; };
+        //Toggles are keyed by NODE_ID (what the picker/CLI store), while Parents are CIDs — resolve each to its node
+        //and look the toggle up by NODE_ID, or every toggle silently misses in the CID-keyed catalog.
+        auto ExplicitOn = [&](const std::string &Id) {
+            const Node *P = Idx.Find(Id);
+            if (!P) return false;
+            auto It = Toggles.find(P->NodeId);
+            return It != Toggles.end() && It->second;
+        };
         std::vector<std::string> Parents(N->Parents.begin(), N->Parents.end());
         std::stable_sort(Parents.begin(), Parents.end(),
                          [&](const std::string &A, const std::string &B) { return ExplicitOn(A) && !ExplicitOn(B); });
@@ -363,7 +399,7 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
             if (!P || !P->LowerError.empty()) { if (Missing) Missing->push_back(Pid); continue; }
             if (P->Optional)
             {
-                const bool On = Toggles.count(Pid) ? Toggles.at(Pid) : P->Default;
+                const bool On = Toggles.count(P->NodeId) ? Toggles.at(P->NodeId) : P->Default;   // toggles keyed by NODE_ID
                 if (!On) continue;
             }
             if (Conflicts(*P)) continue;

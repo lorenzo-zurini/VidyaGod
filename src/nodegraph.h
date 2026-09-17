@@ -1,0 +1,103 @@
+#ifndef NODEGRAPH_H
+#define NODEGRAPH_H
+
+#include "manifestmodel.h"   // NodeIndex, Node
+#include <nlohmann/json.hpp>
+#include <map>
+#include <string>
+#include <vector>
+
+// NodeGraph — the gigagraph's IPFS boundary: reading a frozen node DAG (dag-json blocks addressed by CID) into a
+// CID-keyed NodeIndex, and MINTING a working tree into blocks. manifestmodel stays pure/local. Links travel in
+// dag-json form ({"/":cid}) but are normalized to plain-string CIDs at ingest, so ParseNode and the whole resolver
+// keep operating on plain strings unchanged.
+//
+// Two layers: the PURE transforms (normalize / linkify / freeze / topo-order — no IPFS, no Qt; nodegraphpure.cpp,
+// unit-tested) and the I/O orchestration (BuildFrozenIndex / Mint — call the node; nodegraph.cpp).
+namespace NodeGraph {
+
+// ---- pure transforms (nodegraphpure.cpp) ----
+
+// Normalize dag-json links IN PLACE: any object of the exact shape {"/":"<string>"} becomes that string, recursively.
+// After this, PARENTS entries and SOURCE.CID / COVER.SOURCE.CID / LIBRARYITEM read as plain CID strings — what
+// ParseNode and every consumer expect. A dag-json byte value ({"/":{"bytes":...}}) is left alone (non-string "/").
+void NormalizeLinks(nlohmann::ordered_json &J);
+
+// Freeze one working-tree node's raw JSON into its canonical-intent dag-json form: strip POS (canvas coords — the one
+// non-semantic field), rewrite intra-tree PARENTS/LIBRARYITEM handles → their frozen CIDs (via HandleToCid; a ref not
+// in HandleToCid is an already-frozen external dep and passes through), and linkify every CID-bearing field
+// (PARENTS[], LIBRARYITEM, and any SOURCE.CID) into {"/":cid}. The returned JSON is handed to DagPut/DagCid (which
+// canonicalizes, so C++ key order is irrelevant). Pure — no node required.
+nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
+                                      const std::map<std::string, std::string> &HandleToCid);
+
+// Read every *.json node under Root (RECURSIVELY) into a working tree: NODE_ID handle → raw node JSON, and handle →
+// the bundle dir it came from (for BundleDir). A file holds one node or an array of them; FIRST-seen wins on a
+// duplicate handle (and warns). Recursion is required so a package's cross-package edges resolve against the whole library (handles
+// are globally unique). Pure — filesystem + JSON only, no IPFS.
+void GatherWorkingTree(const std::filesystem::path &Root,
+                       std::map<std::string, nlohmann::ordered_json> &Tree,
+                       std::map<std::string, std::filesystem::path> &Dirs);
+
+// Lift the metadata edge (flat → gigagraph): for each DeclareExec in the tree, move a PARENTS entry that names a
+// DeclareLibraryItem node (present in the tree) into the exec's LIBRARYITEM field, removing it from PARENTS — so the
+// tile stops being a composition parent and becomes the dedicated metadata link. Idempotent (a node that already has
+// LIBRARYITEM is left alone). Pure — the core transform of both `--mint` gathering and the migration.
+void LiftLibraryItemEdge(std::map<std::string, nlohmann::ordered_json> &Tree);
+
+// Deps-first (post-order) freeze order over the working tree: a node is ordered AFTER every intra-tree node it links
+// (PARENTS + LIBRARYITEM), because its frozen CID embeds theirs. Refs not in WorkingTree are external (already frozen)
+// and impose no order. A cycle is BROKEN (back edge dropped, warned), not fatal — the cyclic nodes stay in the order
+// but fail to freeze downstream and are skipped, so one bad edge never aborts the whole freeze. Always returns true. Pure.
+bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
+                      std::vector<std::string> &Order, std::string *Error = nullptr);
+
+// ---- I/O orchestration (nodegraph.cpp) ----
+
+// Build a CID-keyed index by walking the frozen node DAG from RootCids: dagGet each block, normalize its links,
+// ParseNode it (NodeId = human label, Cid = the block CID = identity, Parents = CID strings), then recurse into its
+// PARENTS (composition) AND its LIBRARYITEM (the tile — reachable ONLY this way now, never via PARENTS). Content-leaf
+// CIDs (SOURCE/COVER) are NOT recursed — they are dag-pb blobs fetched lazily at hydrate. A shared node reached many
+// times is fetched once. A block that cannot be fetched/parsed, or is not a node, is recorded in Missing (if given)
+// and skipped. Runs LinkGames. Frozen nodes carry no BundleDir (browse-before-download); local content location is
+// filled in at hydrate.
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr);
+
+// Freeze a gathered working tree directly into a CID-keyed NodeIndex (identity = CID) WITHOUT storing blocks — uses
+// DagCid (side-effect-free), so it is safe at catalog-build time. Resolves PARENTS/LIBRARYITEM handles → CIDs, sets
+// each node's Cid, and sets BundleDir from Dirs (the on-disk bundle each node came from) so the launch engine finds
+// local content. This is how the pretty, handle-based on-disk library becomes the CID-addressed gigagraph in memory
+// with NO on-disk rewrite (git-style: the working tree is the source of truth, the CID index is derived on load).
+// Runs LinkGames. RESILIENT: a node that can't freeze (dangling ref / bad link) is skipped and cycles are broken —
+// one bad node never empties the index; the rest of the library is intact.
+NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &WorkingTree,
+                        const std::map<std::string, std::filesystem::path> &Dirs, std::string *Error = nullptr);
+
+// The result of minting a working tree.
+struct MintResult {
+    std::map<std::string, std::string> HandleToCid; // every node's NODE_ID handle → its frozen CID
+    std::vector<std::string>           Launchables;  // the list entries: DeclareExec nodes with NO GUEST (a game's
+                                                     // playable variants; GUEST-bearing DeclareExecs are runners)
+};
+
+// Hydrate a launchable's closure from IPFS into the pretty on-disk checkout under DestRoot: fetch the frozen DAG
+// (BuildFrozenIndex), name the bundle dir from the tile ([uid] title), write each node's JSON there (readable
+// plain-CID form — re-freezes to the identical CID), and fetch every content leaf to its PATH. After this the package
+// is local + hydrated, so GatherWorkingTree picks it up and it launches like any local game. This is the sharing
+// CONSUMER: a pasted/friend launchable CID becomes a playable game. Requires the node online for not-yet-local blocks.
+// Returns the checkout dir ("" + Error on failure — e.g. a block that could not be fetched). NOTE (MVP): a launchable's
+// whole closure (game content + its small shared libraries) lands in one dir; shared-lib content may duplicate across
+// games until a shared-bundle layout lands. Runners are separate roots, hydrated on their own.
+std::string HydratePackage(const std::filesystem::path &DestRoot, const std::string &LaunchableCid,
+                           std::string *Error = nullptr);
+
+// Mint a working tree (NODE_ID handle → raw node JSON) into dag-json blocks, deps-first: FreezeNodeJson each node,
+// DagPut it (stored, direct-pinned, announced), record its CID for its referrers. Requires a started node. Resilient:
+// a node that can't freeze (dangling ref / bad link) is skipped, cycles are broken. On success Out.HandleToCid maps
+// every frozen node and Out.Launchables lists the playable roots to add to the library list.
+bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, MintResult &Out,
+          std::string *Error = nullptr);
+
+} // namespace NodeGraph
+
+#endif // NODEGRAPH_H

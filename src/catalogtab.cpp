@@ -177,7 +177,7 @@ void CatalogTab::rebuild()
         for (const Node * N : Group)
         {
             Ids.push_back(N->NodeId);
-            auto H = Hyd.find(N->NodeId);
+            auto H = Hyd.find(N->Key());
             if (H == Hyd.end() || !H->second.Hydrated)   // only an un-hydrated edition needs its (closure-walked) CIDs checked
             {
                 AnyMissing = true;

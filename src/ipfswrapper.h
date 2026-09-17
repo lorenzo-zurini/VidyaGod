@@ -82,6 +82,17 @@ std::string AddNoCopy(const std::string &Path, std::string *Error = nullptr);
 // staging mirror), skipping content + DEFPREFIX/USERDATA. Same CID as adding a JSON-only mirror of the tree.
 std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr);
 
+// ----- dag-json node graph (the gigagraph: one node = one dag-json block, identity = its CID) -----
+// A VidyaGod node is one dag-json IPLD block; its CID is its identity, computed recursively over the CIDs it links
+// (PARENTS/SOURCE.CID/COVER). Encoding is CANONICAL, so the same node yields the same CID on every machine (dag.go).
+// DagPut stores + direct-pins + announces a node block and returns its CID; DagGet returns a block's canonical
+// dag-json bytes (fetching over bitswap when remote); DagCid computes the CID with no side effects. Links travel in
+// dag-json form ({"/":cid}); nodegraph.cpp normalizes ↔ plain-string CIDs at the ingest/mint boundary.
+std::string DagPut(const std::string &Json, std::string *Error = nullptr);
+std::string DagGet(const std::string &Cid, std::string *Error = nullptr);
+bool        DagHas(const std::string &Cid);
+std::string DagCid(const std::string &Json, std::string *Error = nullptr);
+
 // ----- concurrency throttle: cap how many FetchToPath calls run at once (configurable) -----
 // A single global limit shared across all downloads (every package's hydrate worker draws from it), so the user can
 // trade bandwidth/peer-connections against parallelism. Changing it takes effect immediately for fetches not yet

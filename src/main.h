@@ -79,6 +79,9 @@ struct LaunchParameters
     std::string PublishMetaSrc;                                          //--publish-meta <dir>: mint a JSON-only Meta-CID (bundle or collection) seeded in place from its *.json, print it, then exit
     std::string RemintLibraryDir;                                        //--remint-library <dir>: re-mint ALL 3 CID levels (content/package/collection) for a whole LIBRARY of source subdirs in one session, print the list, then exit
     std::string PublishLibraryDir;                                       //--publish-library <dir>: remint + build the IPNS rich indexes + publish the top-level index under our identity, print the top CID, then exit
+    std::string MintDir;                                                 //--mint <dir>: freeze a working-tree bundle (gigagraph dag-json blocks), print the launchable root CIDs, verify by re-reading the frozen DAG, then exit
+    std::string HydrateCid;                                              //--hydrate <cid>: fetch a launchable's closure from IPFS into the pretty on-disk checkout (sharing consumer), print the dir, then exit
+    std::string HydrateDest;                                             //--hydrate-dest <dir>: where --hydrate writes the checkout (default: the LIBRARY root)
     std::string IpnsResolveName;                                         //--ipns-resolve <name>: resolve /ipns/<name or friend code> to its current CID, print it, then exit
     std::string IpnsPublishCid;                                          //--ipns-publish <cid>: publish OUR name -> /ipfs/<cid>, then exit
     // ---- friends / multiplayer social layer (headless test harness) ----

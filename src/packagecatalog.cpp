@@ -3,6 +3,7 @@
 #include "apppaths.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
+#include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / LiftLibraryItemEdge / FreezeToIndex
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "ipfswrapper.h"
@@ -876,18 +877,46 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
 
 // ----- node-graph catalog (everything-is-a-node) -----
 
+std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error)
+{
+    std::map<std::string, nlohmann::ordered_json> Tree;
+    std::map<std::string, std::filesystem::path>  Dirs;
+    NodeGraph::GatherWorkingTree(LibraryRootDir(Config), Tree, Dirs);
+    if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + LibraryRootDir(Config); return {}; }
+    NodeGraph::LiftLibraryItemEdge(Tree);
+    NodeGraph::MintResult MR;
+    if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
+
+    // Record the shareable list of launchable root CIDs (off-IPFS VidyaGod app data; shared directly / pasted).
+    nlohmann::ordered_json List = nlohmann::ordered_json::array();
+    for (const auto &C : MR.Launchables) List.push_back(C);
+    Config["PublishedList"] = std::move(List);
+    LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
+            + " node block(s), " + std::to_string(MR.Launchables.size()) + " shareable launchable(s)");
+    return MR.Launchables;
+}
+
+// The gigagraph catalog: the on-disk library is the pretty, handle-based working tree (LIBRARY/[uid] Title/…); we
+// derive the CID-addressed node graph from it in memory (NodeGraph::FreezeToIndex) — identity = each node's dag-json
+// CID, NODE_ID demotes to a label, cross-package edges resolve to CIDs, and every node carries its on-disk BundleDir
+// so launch mounts local content. No on-disk rewrite (git model: working tree is truth, CID index is derived on load;
+// DagPut only happens when publishing). The tile edge is lifted (PARENTS → LIBRARYITEM) before freezing.
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
-    std::vector<std::filesystem::path> Roots;
-    std::vector<std::filesystem::path> Extra = LocalPackageDirs(GlobalConfigJSON);     // externally-added bundles (dir IS a bundle)
-    //A CID package source is EITHER a collection (scan its subdirs) OR a single per-package bundle (the dir IS the
-    //bundle — a per-package CID). Route each accordingly. (Git repos were removed — CID sources are the only channel.)
-    for (const auto &D : PackageSourceDirs(GlobalConfigJSON))
-    {
-        if (ScanBundleIdentity(D).Valid) Extra.emplace_back(D);   // per-package CID → the dir itself is one bundle
-        else                             Roots.emplace_back(D);   // collection CID → scan its package subdirs
-    }
-    return ManifestModel::BuildNodeIndex(Roots, Extra);
+    std::map<std::string, nlohmann::ordered_json> Tree;
+    std::map<std::string, std::filesystem::path>  Dirs;
+    NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);
+    for (const auto &D : LocalPackageDirs(GlobalConfigJSON))   // externally-added bundles that live OUTSIDE LIBRARY
+        NodeGraph::GatherWorkingTree(D, Tree, Dirs);
+    NodeGraph::LiftLibraryItemEdge(Tree);
+    std::string Err;
+    NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
+    if (Idx.Nodes.empty() && !Tree.empty())
+        LogErr("PackageCatalog::BuildCatalogIndex", "freeze failed (" + std::to_string(Tree.size()) + " node(s)): " + Err);
+    else
+        LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
+               + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON));
+    return Idx;
 }
 
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)

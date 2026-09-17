@@ -56,7 +56,7 @@ void GamePicker::buildCards()
     {
         std::vector<std::string> Ids;
         Ids.reserve(Group.size());
-        for (const Node * N : Group) Ids.push_back(N->NodeId);
+        for (const Node * N : Group) Ids.push_back(N->Key());
         if (Ids.empty()) continue;
         auto * c = new LibraryGameCard(Config, Index, std::move(Ids));
         c->InitializeClassVariables();

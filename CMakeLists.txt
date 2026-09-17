@@ -191,6 +191,10 @@ set(SHARED_SOURCES
     src/manifestmodel.h
     src/manifestmodel.cpp
 
+    src/nodegraph.h
+    src/nodegraph.cpp
+    src/nodegraphpure.cpp
+
     src/nodelower.h
     src/nodelower.cpp
 
@@ -367,6 +371,7 @@ enable_testing()
 add_executable(vg_tests
     tests/main.cpp
     tests/test_manifestmodel.cpp
+    tests/test_nodegraph.cpp
     tests/test_nodelower.cpp
     tests/test_varsubst.cpp
     tests/test_registrywrapper.cpp
@@ -378,6 +383,7 @@ add_executable(vg_tests
     tests/test_pkglayout.cpp
     tests/test_vgdelta.cpp
     src/manifestmodel.cpp
+    src/nodegraphpure.cpp   # gigagraph PURE transforms (normalize/linkify/freeze/topo) — no IPFS/Qt
     src/nodelower.cpp
     src/varsubst.cpp
     src/registrywrapper.cpp

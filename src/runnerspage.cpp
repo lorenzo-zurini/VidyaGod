@@ -87,7 +87,7 @@ void RunnersPage::rebuild()
         const QString Desc = QString::fromStdString(R->HostPlatform) + " → [" + guest + "]";
 
         const bool Avail = RunnerWrapper::ExecutableAvailable(R->Exec);
-        auto Hit = Hyd.find(rid);
+        auto Hit = Hyd.find(R->Key());
         const bool HasContent = (Hit != Hyd.end()) && Hit->second.HasContent;   // ships a downloadable build (== a game's content)
         const bool Hydrated   = (Hit == Hyd.end()) || Hit->second.Hydrated;     // build fully fetched (fetch-based, same as games)
 
