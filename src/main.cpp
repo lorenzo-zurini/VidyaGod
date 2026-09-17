@@ -377,15 +377,10 @@ int main(int argc, char *argv[])
 }
 
 
-// The default package source: an IPFS folder CID of the dehydrated built-in runner packages (ge-proton / wine /
-// umu-proton / snes9x / native-passthrough). Seeded into Settings.PackageSources so a fresh install has runners;
-// fetched by PackageCatalog::SyncPackageSources once the IPFS node is online, then hydrated on install like any
-// package. Immutable — bumping the runner set = a new CID here (and an app release). (Git repos were removed.)
-static std::string DefaultRunnerSourceCID() { return "QmRrDRz8NJLzMs8S36fxa47qTp7Eqh85Zx5ku3526mnZN6"; }   // JSON-only runners Meta-CID (re-minted 2026-09-14, flat schema + POS stamped by the height-aware layout)
-// Same contract for the built-in LIBRARIES source: shared dependency nodes (DirectPlay, future codecs/redists) that
-// games reference via PARENTS. It MUST always be present or a game's library-parent would dangle on a fresh install —
-// exactly like the runners source. Immutable — bumping the library set = a new CID here (and an app release).
-static std::string DefaultLibrarySourceCID() { return "QmdE6Ub62f8rYk3SbeWanwHA1kLXRE3Smh1d3ieiSnYmMo"; }   // JSON-only libraries Meta-CID (re-minted 2026-09-14, flat schema + POS stamped by the height-aware layout)
+// NO built-in package sources. Runners, shared libraries and games all arrive as IPNS sources the user ADDS — their
+// own library (their friend code, which carries Games + Libraries + Runners in one signed index) on a new machine, or
+// a friend's. The old compiled-in DefaultRunner/LibrarySourceCID constants are gone: content ships completely
+// independently of the binary, so there is nothing here that a new content set would ever bump (project_ipns_friendcode_library).
 
 //Guarantees the GlobalConfig has the shape the app actually uses, seeding any missing piece:
 //  LIBRARY (array of packages), Settings (object), Settings.PackageSources (the CID package sources).
@@ -400,48 +395,14 @@ static bool EnsureGlobalConfigDefaults(nlohmann::ordered_json & gc)
     //Migration: git repositories were removed — drop any legacy Settings.Repositories (its LIBRARY/<repo> clones, if
     //any, become inert local dirs). Sharing is now solely via CID package sources.
     if (gc["Settings"].contains("Repositories")) { gc["Settings"].erase("Repositories"); Changed = true; }
-    //PackageSources: ordered list of IPFS folder CIDs of dehydrated packages, fetched into <DataRoot>/LIBRARY/<name>
-    //and indexed.
+    //PackageSources: ordered list of sources (IPNS friend-code addresses, or legacy folder CIDs) of dehydrated
+    //packages, fetched into <DataRoot>/LIBRARY/<name> and indexed. NOTHING is seeded here: there are no built-in
+    //sources any more. A fresh install starts empty; the user adds their own library (their friend code — it carries
+    //runners, shared libraries and games in one signed index) or a friend's. Content ships independently of the binary.
     if (!gc["Settings"].contains("PackageSources") || !gc["Settings"]["PackageSources"].is_array())
     {
         gc["Settings"]["PackageSources"] = nlohmann::ordered_json::array();
         Changed = true;
-    }
-    //ALWAYS guarantee the built-in runners source is present and points at the CURRENT hardcoded CID. Keyed by its
-    //reserved NAME "VidyaGodRunners" (not the CID), so: a fresh config gets it, a user who never had it (or removed it)
-    //gets it back, and a release that bumps DefaultRunnerSourceCID() re-points the existing entry — otherwise the
-    //runners default only ever seeded on a config with NO PackageSources at all (e.g. one carrying only a library
-    //source would silently lack the runners source, and its CID would never surface in Sources / the IPFS tab).
-    {
-        auto & Sources = gc["Settings"]["PackageSources"];
-        auto It = std::find_if(Sources.begin(), Sources.end(), [](const nlohmann::ordered_json & S) {
-            return S.is_object() && S.value("NAME", std::string()) == "VidyaGodRunners"; });
-        if (It == Sources.end())
-        {
-            Sources.push_back(nlohmann::ordered_json{ {"NAME", "VidyaGodRunners"}, {"CID", DefaultRunnerSourceCID()} });
-            Changed = true;
-        }
-        else if ((*It).value("CID", std::string()) != DefaultRunnerSourceCID())
-        {
-            (*It)["CID"] = DefaultRunnerSourceCID();
-            Changed = true;
-        }
-    }
-    //Same guarantee for the built-in LIBRARIES source (shared dependency nodes like DirectPlay that games PARENT).
-    {
-        auto & Sources = gc["Settings"]["PackageSources"];
-        auto It = std::find_if(Sources.begin(), Sources.end(), [](const nlohmann::ordered_json & S) {
-            return S.is_object() && S.value("NAME", std::string()) == "VidyaGodLibraries"; });
-        if (It == Sources.end())
-        {
-            Sources.push_back(nlohmann::ordered_json{ {"NAME", "VidyaGodLibraries"}, {"CID", DefaultLibrarySourceCID()} });
-            Changed = true;
-        }
-        else if ((*It).value("CID", std::string()) != DefaultLibrarySourceCID())
-        {
-            (*It)["CID"] = DefaultLibrarySourceCID();
-            Changed = true;
-        }
     }
     return Changed;
 }
