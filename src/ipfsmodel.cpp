@@ -112,6 +112,25 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             if (OutCategory) OutCategory->insert(QCid, CatMeta);
             if (OutSource)   OutSource->insert(QCid, QString::fromStdString(Name));
         }
+
+    // Per-package META-CIDs. A mirrored (IPNS/friend) package's CIDSOURCE is its own per-package meta-CID — a
+    // text-only JSON tree, NOT a content layer — so none of the loops above named it, and the mirror's metadata
+    // transfers showed as a wall of "(unknown)". Name each from its LIBRARY entry (the friend's published titles).
+    // Skip a CID already labeled as content/cover/source; also skips a static collection CID shared by many entries
+    // (labelling it once as its source name is fine — but a distinct per-package meta-CID gets the package name).
+    if (Config.contains("LIBRARY") && Config["LIBRARY"].is_array())
+        for (const auto & E : Config["LIBRARY"])
+        {
+            if (!E.is_object()) continue;
+            const std::string Cid  = E.value("CIDSOURCE", std::string());
+            const std::string Name = E.value("PACKAGENAME", std::string());
+            if (Cid.empty() || Name.empty()) continue;
+            const QString QCid = QString::fromStdString(Cid);
+            if (Labels.contains(QCid)) continue;   // already named (content/cover/source) — don't override
+            Labels.insert(QCid, QString::fromStdString(Name + " (package)"));
+            if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Name));
+            if (OutCategory) OutCategory->insert(QCid, CatMeta);
+        }
     return Labels;
 }
 
