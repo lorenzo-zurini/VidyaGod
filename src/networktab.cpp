@@ -44,6 +44,7 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
     connect(&Model, &AppModel::libraryPublished, this, [this](const QString & addr, const QString & top, const QString &){
         if (PublishButton) PublishButton->setEnabled(true);
         if (PublishStatus) PublishStatus->setText("Published " + addr + " — " + top);
+        scheduleRefresh();   // a publish can add libraries (e.g. VidyaGodRunners) → rebuild the matrix so the new Share column shows
     });
     connect(&Model, &AppModel::libraryPublishFailed, this, [this](const QString & m){
         if (PublishButton) PublishButton->setEnabled(true);
