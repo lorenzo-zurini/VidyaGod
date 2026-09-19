@@ -56,6 +56,46 @@ static bool PathWithin(const std::filesystem::path &Base, const std::filesystem:
 NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing, bool Shallow)
 {
     NodeIndex Idx;
+    if (Shallow)
+    {
+        // Browse: batch-fetch the roots + their tiles via the windowed session (the SAME rolling want-window +
+        // friend-provider routing content uses) — NOT serial single-block gets; 900+ tiny blocks must not be 900
+        // round-trips. Two rounds: the published roots, then their distinct LIBRARYITEM tiles.
+        const std::map<std::string, std::string> RootBlocks = IpfsWrapper::DagGetMany(RootCids);
+        std::set<std::string> TileCids;
+        for (const std::string &C : RootCids)
+        {
+            if (C.empty() || Idx.Nodes.count(C)) continue;
+            const auto It = RootBlocks.find(C);
+            if (It == RootBlocks.end()) { if (Missing) Missing->push_back(C); continue; }
+            nlohmann::ordered_json J;
+            if (!ParseBlockBounded(It->second, J)) { if (Missing) Missing->push_back(C); continue; }
+            NormalizeLinks(J);
+            Node N;
+            if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
+            N.Cid = C;
+            auto [Nit, Ins] = Idx.Nodes.emplace(C, std::move(N));
+            (void)Ins;
+            if (!Nit->second.LibraryItem.empty()) TileCids.insert(Nit->second.LibraryItem);
+        }
+        std::vector<std::string> TV(TileCids.begin(), TileCids.end());
+        const std::map<std::string, std::string> TileBlocks = IpfsWrapper::DagGetMany(TV);
+        for (const std::string &C : TV)
+        {
+            if (Idx.Nodes.count(C)) continue;
+            const auto It = TileBlocks.find(C);
+            if (It == TileBlocks.end()) continue;   // tile unfetchable → the card renders plainer; not fatal
+            nlohmann::ordered_json J;
+            if (!ParseBlockBounded(It->second, J)) continue;
+            NormalizeLinks(J);
+            Node N;
+            if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
+            N.Cid = C;
+            Idx.Nodes.emplace(C, std::move(N));
+        }
+        ManifestModel::LinkGames(Idx);
+        return Idx;
+    }
     std::set<std::string> Seen;
     std::deque<std::string> Q(RootCids.begin(), RootCids.end());
     while (!Q.empty())

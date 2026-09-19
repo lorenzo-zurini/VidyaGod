@@ -54,6 +54,12 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     connect(FriendsManager::instance(), &FriendsManager::friendRequest, this,
         [this](const QString & peer, const QString &, const QString &) { if (autoAcceptEnabled()) acceptPeer(peer); });
 
+    // A peer can become accepted WITHOUT our local acceptPeer() — a mutual-add "crossing" that auto-converges to
+    // accepted (TestFriendMutualCrossingConverges). The New-Peer defaults (Receive/Presence/vLAN/Share) still must
+    // apply, else e.g. Receive-on-by-default never kicks in. applyNewPeerDefaults is idempotent (toggles no-op if set).
+    connect(FriendsManager::instance(), &FriendsManager::friendAccepted, this,
+        [this](const QString & peer, const QString &, const QString &) { applyNewPeerDefaults(peer); });
+
     // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
     // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
     // Cheap when nothing is wrong (a filestore path scan, no re-seed); no-op while the node is offline.

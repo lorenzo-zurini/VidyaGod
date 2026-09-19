@@ -90,6 +90,9 @@ std::string AddNoCopyMeta(const std::string &Path, std::string *Error = nullptr)
 // dag-json form ({"/":cid}); nodegraph.cpp normalizes ↔ plain-string CIDs at the ingest/mint boundary.
 std::string DagPut(const std::string &Json, std::string *Error = nullptr);
 std::string DagGet(const std::string &Cid, std::string *Error = nullptr);
+// Batched dag-get: fetch many node blocks at once through the windowed session (the same rolling want-window + friend
+// providers content uses). Returns cid -> canonical dag-json for those fetched (missing ones absent). For the browse path.
+std::map<std::string, std::string> DagGetMany(const std::vector<std::string> &Cids);
 bool        DagHas(const std::string &Cid);
 std::string DagCid(const std::string &Json, std::string *Error = nullptr);
 

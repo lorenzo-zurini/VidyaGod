@@ -80,7 +80,10 @@ def process_package(pkg, apply):
                 print(f"  + PUBLISH  {pkg.name}/{jf.name}  ::  {n['NODE_ID']}")
         if changed and apply:
             with open(jf, "w") as f:
-                json.dump(nodes if was_array else nodes[0], f, indent=2, sort_keys=True)
+                # Preserve the original key order (byte-fidelity) and only APPEND PUBLISH. sort_keys reordered content
+                # (e.g. RegEdit rows), breaking the round-trip byte-identity guarantee for no benefit — the CID is
+                # computed from CANONICAL dag-json (sorted) at mint time regardless of on-disk pretty order.
+                json.dump(nodes if was_array else nodes[0], f, indent=2)
                 f.write("\n")
     return stamped
 
@@ -94,10 +97,13 @@ def main():
         print(f"no LIBRARY directory at {root}")
         return 2
     if apply:
-        backup = root.parent / f"LIBRARY.pre-publish-{time.strftime('%Y%m%d-%H%M%S')}.tar"
-        print(f"backing up {root}  ->  {backup}")
+        # Back up node JSON ONLY (not the multi-GB hydrated content — the migration edits only *.json). A whole-tree
+        # tar was 59 GB of redundant content; the JSON is a few MB and is all that can change.
+        backup = root.parent / f"LIBRARY-json.pre-publish-{time.strftime('%Y%m%d-%H%M%S')}.tar"
+        print(f"backing up node JSON only  {root}  ->  {backup}")
         with tarfile.open(backup, "w") as t:
-            t.add(root, arcname="LIBRARY")
+            for jf in sorted(root.rglob("*.json")):
+                t.add(jf, arcname=str(jf.relative_to(root.parent)))
     total, pkgs = 0, 0
     for pkg in package_dirs(root):
         pkgs += 1
