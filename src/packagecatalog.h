@@ -83,8 +83,9 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON);
 [[nodiscard]] bool AddPackageSource(nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid, const std::string &Name, bool Friend = false);
 // Index of the PackageSources entry whose CID/name field == Cid, or -1. (Used to drop a friend's /ipns/ source.)
 int PackageSourceIndexForCID(const nlohmann::ordered_json &GlobalConfigJSON, const std::string &Cid);
-// Remove source [index]: drop its config entry, delete its LIBRARY/<name> dir, and drop LIBRARY entries under it.
-void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index);
+// PreserveInstalled (friend sources): never rm a package the user has INSTALLED — convert dirs with hydrated content to
+// local (clear their SOURCE tag, keep files), delete only stub-only packages. Default false = full removal (CID sources).
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled = false);
 
 // ----- upgrading a source to a new collection CID -----
 // Editing a source's CID in config does NOTHING on its own: SyncPackageSources fetches only when the source's
@@ -245,6 +246,15 @@ struct RemintEntry { std::string Level, Name, Cid; };
 // Config["PublishedList"]. Returns that list ("" / empty on failure). No IPNS — a list is off-IPFS VidyaGod data,
 // shared directly. Call OFF the UI thread + with the node online (DagPut stores blocks). Supersedes PublishLibraries.
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr);
+
+// Receiver: write a friend's shared libraries as browsable, metadata-only STUBS so they appear in the Catalog as
+// un-hydrated tiles grouped per (peer, library) ("Nick · Lib"), WITHOUT downloading content. `Libs` = {libName:
+// [PUBLISH'd root CID]} (a friend's snapshot). Per library: adds/refreshes a "friend:<peer>:<lib>" source, shallow-
+// fetches each root + its tile, groups by tile (many variants -> one package dir), writes each node's plain-CID JSON,
+// and upserts a SOURCE-tagged LIBRARY entry. Prunes packages/libraries withdrawn from the snapshot. Content is fetched
+// only when the user clicks (hydrate). Requires the node online (DagGet). Returns the number of packages written.
+int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PeerID, const std::string &Nick,
+                     const std::map<std::string, std::vector<std::string>> &Libs);
 
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.

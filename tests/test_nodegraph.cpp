@@ -58,6 +58,7 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
         {"NODE_ID", "exec"},
         {"TYPE", "DeclareExec"},
         {"POS", ordered_json::array({100.0, 200.0})},
+        {"PUBLISH", true},
         {"PARENTS", ordered_json::array({"content_node", "external_already_a_cid"})},
         {"LIBRARYITEM", "tile_node"},
         {"COVER", {{"PATH", "c.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "cidCover"}, {"SIZE", 9}}}}},
@@ -65,6 +66,8 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
     const ordered_json F = NodeGraph::FreezeNodeJson(Raw, HandleToCid);
 
     CHECK(!F.contains("POS"));                                   // non-semantic canvas coords dropped
+    CHECK(F.contains("PUBLISH") && F["PUBLISH"] == true);       // PUBLISH is minted IN (identity-bearing): unlike POS it
+                                                               // is NOT stripped, so shareability travels with the node
     // intra-tree handle → CID, then linkified; external ref passes through, linkified
     CHECK(F["PARENTS"][0] == ordered_json({{"/", "cidContent"}}));
     CHECK(F["PARENTS"][1] == ordered_json({{"/", "external_already_a_cid"}}));

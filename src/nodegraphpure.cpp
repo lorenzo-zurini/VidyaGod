@@ -101,7 +101,8 @@ static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node
 
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
-                       std::map<std::string, std::filesystem::path> &Dirs)
+                       std::map<std::string, std::filesystem::path> &Dirs,
+                       bool SkipReserved)
 {
     namespace fs = std::filesystem;
     std::error_code Ec;
@@ -112,6 +113,10 @@ void GatherWorkingTree(const std::filesystem::path &Root,
     for (; !Ec && It != End; It.increment(Ec))
     {
         const auto &E = *It;
+        // Reserved received-stub dirs ("_friend_*"): never descend when SkipReserved (PublishLibrary must not mint a
+        // friend's stub, and a hostile stub NODE_ID must not shadow our handle by winning first-seen).
+        if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
+        { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
         std::ifstream In(E.path(), std::ios::binary);
         nlohmann::ordered_json J;

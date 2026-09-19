@@ -202,6 +202,282 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // The share list is driven by the PUBLISH flag, decoupled from node type: a game (launchable exec), a runner
+    // (GUEST-bearing exec) AND a no-exec library head all publish when flagged; an unflagged launchable never does.
+    // Grouping is by the collection dir. Teeth: the OLD predicate ("DeclareExec && !GUEST") dropped the runner and the
+    // library head and published the unflagged game — every QCOMPARE below fails under it.
+    void publish_share_list_is_driven_by_the_PUBLISH_flag()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[1] Game");
+        QDir().mkpath(R + "/VidyaGod/[2] Unshared");
+        QDir().mkpath(R + "/VidyaGodRunners/wine");
+        QDir().mkpath(R + "/VidyaGodLibraries/dgvoodoo");
+
+        // A shared game: tile + a launchable exec flagged PUBLISH.
+        writeJson(R + "/VidyaGod/[1] Game/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "Game")}));
+        writeJson(R + "/VidyaGod/[1] Game/game.json",
+                  NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}, {{"PUBLISH", true}}));
+        // A runner: a GUEST-bearing exec flagged PUBLISH (the old predicate EXCLUDED this).
+        writeJson(R + "/VidyaGodRunners/wine/wine.json",
+                  NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}, {}, {{"PUBLISH", true}}));
+        // A library head: NO exec at all, flagged PUBLISH (the old predicate EXCLUDED this — not a DeclareExec).
+        writeJson(R + "/VidyaGodLibraries/dgvoodoo/dg.json",
+                  NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}, {}, {{"PUBLISH", true}}));
+        // An UNSHARED launchable: a valid game exec but NOT flagged (the old predicate would have published it).
+        writeJson(R + "/VidyaGod/[2] Unshared/u.json",
+                  NodeFixture::Chain("u_exec", {NodeFixture::Exec("win32", "u.exe")}));
+
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        const std::vector<std::string> Published = PackageCatalog::PublishLibrary(cfg, &Err);
+
+        QVERIFY2(cfg.contains("Libraries") && cfg["Libraries"].is_object(), "PublishLibrary writes config[\"Libraries\"]");
+        const auto & Libs = cfg["Libraries"];
+        QVERIFY2(Libs.contains("VidyaGod"),          "a flagged game publishes under its collection");
+        QVERIFY2(Libs.contains("VidyaGodRunners"),   "a flagged GUEST-bearing runner publishes (old predicate dropped it)");
+        QVERIFY2(Libs.contains("VidyaGodLibraries"), "a flagged no-exec library head publishes (old predicate dropped it)");
+        QCOMPARE((int)Libs["VidyaGod"].size(), 1);          // only the flagged game — not the unshared exec
+        QCOMPARE((int)Libs["VidyaGodRunners"].size(), 1);
+        QCOMPARE((int)Libs["VidyaGodLibraries"].size(), 1);
+        QCOMPARE((int)cfg["PublishedList"].size(), 3);      // exactly the three flagged roots
+        QCOMPARE((int)Published.size(), 3);                 // return value == the share list
+
+        IpfsWrapper::StopNode();
+    }
+
+    // Receiver: a friend's shared libraries become browsable, un-hydrated catalog STUBS grouped per (peer, library),
+    // with many variants collapsing to one card, and a withdrawn library pruned. Teeth: publish a 2-variant game + a
+    // runner (real CIDs), feed them to WriteFriendStubs as a friend's snapshot, and index the receiver's catalog.
+    void receiver_writes_browsable_stubs_grouped_per_source()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+
+        // Seeder side: a working tree with a 2-variant game (shared tile) + a runner, all PUBLISH'd, minted -> real CIDs.
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[7] Multi");
+        QDir().mkpath(R + "/VidyaGodRunners/wine");
+        writeJson(R + "/VidyaGod/[7] Multi/tile.json", NodeFixture::Chain("m_tile", {NodeFixture::Tile("7", "Multi")}));
+        writeJson(R + "/VidyaGod/[7] Multi/v1.json",
+                  NodeFixture::Chain("m_v1", {NodeFixture::Exec("win32", "v1.exe")}, {"m_tile"}, {{"PUBLISH", true}}));
+        writeJson(R + "/VidyaGod/[7] Multi/v2.json",
+                  NodeFixture::Chain("m_v2", {NodeFixture::Exec("win32", "v2.exe")}, {"m_tile"}, {{"PUBLISH", true}}));
+        writeJson(R + "/VidyaGodRunners/wine/wine.json",
+                  NodeFixture::Chain("m_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}, {}, {{"PUBLISH", true}}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(seeder, &Err);
+        QVERIFY(seeder.contains("Libraries") && seeder["Libraries"].is_object());
+
+        // Receiver side (same blockstore, so DagGet resolves): treat the seeder's Libraries as a friend's snapshot.
+        std::map<std::string, std::vector<std::string>> Libs;
+        for (auto & lib : seeder["Libraries"].items())
+        {
+            std::vector<std::string> v;
+            for (auto & c : lib.value()) if (c.is_string()) v.push_back(c.get<std::string>());
+            Libs[lib.key()] = v;
+        }
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        const int Written = PackageCatalog::WriteFriendStubs(rx, "12D3KooWPeer", "Alice", Libs);
+        QCOMPARE(Written, 2);                                          // the multi-variant game + the runner = 2 packages
+
+        // One friend source per (peer, library), named "Nick · Lib", scheme "friend:".
+        QVERIFY(rx["Settings"].contains("PackageSources"));
+        bool haveGames = false, haveRunners = false;
+        for (auto & s : rx["Settings"]["PackageSources"])
+        {
+            QVERIFY2(s.value("CID", std::string()).rfind("friend:", 0) == 0, "friend source scheme");
+            const std::string n = s.value("NAME", std::string());
+            if (n == std::string("Alice \xc2\xb7 VidyaGod"))        haveGames = true;
+            if (n == std::string("Alice \xc2\xb7 VidyaGodRunners")) haveRunners = true;
+        }
+        QVERIFY2(haveGames,   "a 'Nick · VidyaGod' source is created");
+        QVERIFY2(haveRunners, "a 'Nick · VidyaGodRunners' source is created (runners are shareable now)");
+
+        // The 2 variants collapse to ONE card (shared tile); both indexed as un-hydrated browsable stubs.
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(Idx.Find("m_v1") != nullptr && Idx.Find("m_v2") != nullptr, "received variants index as stubs");
+        QCOMPARE(Idx.Find("m_v1")->GameKey(), Idx.Find("m_v2")->GameKey());   // same tile -> one card
+        QVERIFY2(Idx.Find("m_wine") != nullptr, "the received runner indexes too");
+
+        // Reconcile: withdraw the runner library wholesale -> its source + stubs are pruned; the game stays.
+        Libs.erase("VidyaGodRunners");
+        PackageCatalog::WriteFriendStubs(rx, "12D3KooWPeer", "Alice", Libs);
+        NodeIndex Idx2 = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(Idx2.Find("m_wine") == nullptr, "a withdrawn library's stubs are pruned");
+        QVERIFY2(Idx2.Find("m_v1") != nullptr,   "the still-shared game remains");
+
+        IpfsWrapper::StopNode();
+    }
+
+    // Helper: publish two distinct PUBLISH'd games in one collection and return their two launchable CIDs.
+    std::vector<std::string> publishTwoGames(const QString & root)
+    {
+        std::string Err;
+        QDir().mkpath(root + "/VidyaGod/[1] A");
+        QDir().mkpath(root + "/VidyaGod/[2] B");
+        writeJson(root + "/VidyaGod/[1] A/tile.json", NodeFixture::Chain("a_tile", {NodeFixture::Tile("1", "A")}));
+        writeJson(root + "/VidyaGod/[1] A/a.json",
+                  NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_tile"}, {{"PUBLISH", true}}));
+        writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
+        writeJson(root + "/VidyaGod/[2] B/b.json",
+                  NodeFixture::Chain("b_exec", {NodeFixture::Exec("win32", "b.exe")}, {"b_tile"}, {{"PUBLISH", true}}));
+        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(seeder, &Err);
+        std::vector<std::string> Cids;
+        if (seeder["Libraries"].contains("VidyaGod"))
+            for (auto & c : seeder["Libraries"]["VidyaGod"]) if (c.is_string()) Cids.push_back(c.get<std::string>());
+        return Cids;
+    }
+
+    // DATA-LOSS GUARD 1: a package withdrawn from a still-shared library is NOT deleted if the user has INSTALLED it
+    // (its stub dir holds hydrated content). Teeth: without DirHasContent the withdrawn dir is rm'd — asserts fail.
+    void receiver_prune_preserves_installed_content()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const std::vector<std::string> Cids = publishTwoGames(Root.path());
+        QCOMPARE((int)Cids.size(), 2);
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+
+        // Run 1: share only the first game → one stub package. Then "install" it (drop a content file in its dir).
+        std::map<std::string, std::vector<std::string>> Libs{{"VidyaGod", {Cids[0]}}};
+        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
+        std::string dir0;
+        for (auto & e : rx["LIBRARY"])
+            if (e.is_object() && e.value("SOURCE", std::string()) == "friend:peerX:VidyaGod") dir0 = e.value("PATH", std::string());
+        QVERIFY2(!dir0.empty(), "the first game wrote a stub package");
+        { std::ofstream f(dir0 + "/game.bin"); f << "installed-content"; }
+
+        // Run 2: snapshot now shares only the SECOND game → the first is withdrawn from a still-shared library, but it
+        // has installed content, so it MUST be preserved (entry + dir + the content file).
+        Libs["VidyaGod"] = {Cids[1]};
+        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
+        QVERIFY2(QFile::exists(QString::fromStdString(dir0 + "/game.bin")), "installed content must NOT be deleted on withdrawal");
+        bool kept = false;
+        for (auto & e : rx["LIBRARY"]) if (e.is_object() && e.value("PATH", std::string()) == dir0) kept = true;
+        QVERIFY2(kept, "the installed package's LIBRARY entry must survive withdrawal");
+
+        IpfsWrapper::StopNode();
+    }
+
+    // DATA-LOSS GUARD 2: a snapshot with an UNFETCHABLE root (partial fetch) must not prune anything — "couldn't fetch"
+    // is never "withdrawn". Teeth: without the Missing-empty guard, the earlier stub is pruned — the assert fails.
+    void receiver_unfetchable_root_does_not_prune()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const std::vector<std::string> Cids = publishTwoGames(Root.path());
+        QVERIFY(Cids.size() >= 1);
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        std::map<std::string, std::vector<std::string>> Libs{{"VidyaGod", {Cids[0]}}};
+        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
+        std::string dir0;
+        for (auto & e : rx["LIBRARY"])
+            if (e.is_object() && e.value("SOURCE", std::string()) == "friend:peerX:VidyaGod") dir0 = e.value("PATH", std::string());
+        QVERIFY(!dir0.empty());
+
+        // A well-formed but ABSENT CIDv1 → unfetchable → Missing non-empty → prune must be skipped entirely.
+        Libs["VidyaGod"] = {"bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"};
+        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
+        QVERIFY2(QDir(QString::fromStdString(dir0)).exists(), "a stub must NOT be pruned on a partial (unfetchable) snapshot");
+
+        IpfsWrapper::StopNode();
+    }
+
+    // Friend-share sources ("friend:<peer>:<lib>") are disk-only: SyncPackageSources / HasMissingSources must skip them
+    // (never IPNS-resolve or fetch). Teeth: without the friend: skip, the source routes to MirrorIpnsSource → the
+    // IpnsResolve hook fires — the QVERIFY(!resolved) fails.
+    void sync_skips_friend_sources()
+    {
+        auto resolved = std::make_shared<bool>(false);
+        IpfsWrapper::SetIpnsResolveHook([resolved](const std::string &, std::string * e){ *resolved = true; if (e) *e = "x"; return std::string(); });
+        json cfg = json{{"Settings", {{"PackageSources", json::array({
+                            json{{"CID", "friend:12D3KooWPeer:Games"}, {"NAME", "Alice \xc2\xb7 Games"}, {"FRIEND", true}, {"IPNS", true}} })}}},
+                        {"LIBRARY", json::array()}};
+        QCOMPARE(PackageCatalog::SyncPackageSources(cfg), 0);
+        QVERIFY2(!*resolved, "a friend: source must NOT be IPNS-resolved / synced");
+        QVERIFY2(!PackageCatalog::HasMissingSources(cfg), "a friend: source is disk-only — never 'missing'");
+        IpfsWrapper::SetIpnsResolveHook({});
+    }
+
+    // DATA-LOSS GUARD 3: removing a friend source with PreserveInstalled must delete a STUB-only package but KEEP a
+    // package the user INSTALLED (a dir with hydrated content) — converting it to a local package (SOURCE cleared,
+    // files intact). Covers every friend-removal path (per-library withdraw, Receive-off, unfriend) since all call
+    // RemovePackageSource(..., PreserveInstalled=true). Teeth: without the branch, remove_all nukes the install.
+    void remove_friend_source_preserves_installed_content()
+    {
+        QTemporaryDir data; QVERIFY(data.isValid());
+        AppPaths::SetDataRoot(data.path().toStdString());
+        json cfg = json{{"Settings", {{"PackageSources", json::array({
+                            json{{"CID", "friend:peerX:Games"}, {"NAME", "Alice"}, {"FRIEND", true}, {"IPNS", true}} })}}},
+                        {"LIBRARY", json::array()}};
+        const std::string srcDir = PackageCatalog::PackageSourceDir(cfg, cfg["Settings"]["PackageSources"][0]);
+        const QString stubDir = QString::fromStdString(srcDir) + "/[1] Stub";
+        const QString instDir = QString::fromStdString(srcDir) + "/[2] Installed";
+        QDir().mkpath(stubDir);
+        QDir().mkpath(instDir);
+        { std::ofstream f((stubDir + "/n.json").toStdString()); f << "{}"; }              // stub-only (metadata)
+        { std::ofstream f((instDir + "/n.json").toStdString()); f << "{}"; }              // installed: metadata +
+        { std::ofstream f((instDir + "/game.bin").toStdString()); f << "installed"; }     //   hydrated content
+        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "1"}, {"PATH", stubDir.toStdString()}, {"SOURCE", "friend:peerX:Games"}});
+        cfg["LIBRARY"].push_back(json{{"PACKAGEUID", "2"}, {"PATH", instDir.toStdString()}, {"SOURCE", "friend:peerX:Games"}});
+
+        PackageCatalog::RemovePackageSource(cfg, 0, /*PreserveInstalled=*/true);
+
+        QVERIFY2(!QDir(stubDir).exists(), "a stub-only friend package is removed");
+        QVERIFY2(QFile::exists(instDir + "/game.bin"), "installed content must be preserved, never rm'd");
+        bool keptLocal = false;
+        for (auto & e : cfg["LIBRARY"])
+            if (e.is_object() && e.value("PATH", std::string()) == instDir.toStdString())
+            { keptLocal = true; QVERIFY2(!e.contains("SOURCE"), "the kept install becomes a local package (SOURCE cleared)"); }
+        QVERIFY2(keptLocal, "the installed package's LIBRARY entry survives");
+        QCOMPARE((int)cfg["Settings"]["PackageSources"].size(), 0);   // the source config entry is gone
+    }
+
+    // SECURITY GUARD: a received friend STUB (under a "_friend_*" dir), even flagged PUBLISH, must NEVER enter the mint
+    // when the user publishes — so it can't be re-shared as our own nor shadow our handles. Teeth: without the
+    // GatherWorkingTree SkipReserved exclusion, the stub is minted and appears as an extra "_friend_*" library key.
+    void publish_excludes_friend_stubs_from_the_mint()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        // Our own PUBLISH'd game.
+        QDir().mkpath(R + "/VidyaGod/[1] Mine");
+        writeJson(R + "/VidyaGod/[1] Mine/tile.json", NodeFixture::Chain("mytile", {NodeFixture::Tile("1", "Mine")}));
+        writeJson(R + "/VidyaGod/[1] Mine/g.json",
+                  NodeFixture::Chain("mygame", {NodeFixture::Exec("win32", "g.exe")}, {"mytile"}, {{"PUBLISH", true}}));
+        // A received friend stub, flagged PUBLISH, under a reserved _friend_ dir — must be excluded from our publish.
+        QDir().mkpath(R + "/_friend_peerX_deadbeef/[9] Evil");
+        writeJson(R + "/_friend_peerX_deadbeef/[9] Evil/x.json",
+                  json::array({ json{{"NODE_ID", "friendevil"}, {"TYPE", "DeclareExec"}, {"HOST", "win32"},
+                                     {"PATH", "evil.exe"}, {"PUBLISH", true}} }));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(cfg, &Err);
+        QVERIFY(cfg.contains("Libraries") && cfg["Libraries"].is_object());
+        QVERIFY2(cfg["Libraries"].contains("VidyaGod"), "our own library publishes");
+        QCOMPARE((int)cfg["Libraries"].size(), 1);   // ONLY VidyaGod — the _friend_ stub never entered the mint
+        IpfsWrapper::StopNode();
+    }
+
     // Publish is where a REFUSED declared position has its real consequence: PkgGraph::Build drops a position
     // no layout could have produced, StampNodePositions then writes a computed one over it, the node file's
     // bytes change and the package's Meta-CID with them. So the warning has to say which of those two things

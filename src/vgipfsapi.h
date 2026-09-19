@@ -91,6 +91,7 @@ int  VgFriendPing(const char *peerID);                 // 1 reachable, 0 not, -1
 int  VgShareLibrary(const char *peerID, const char *lib, const char *cidsJson, char **errOut);  // cidsJson = JSON string array
 int  VgUnshareLibrary(const char *peerID, const char *lib, char **errOut);
 int  VgRequestFriendLibraries(const char *peerID, char **errOut);
+int  VgSetPresenceDeny(const char *jsonArr);           // peers we hide our online presence from (JSON string array)
 void VgSetFriendCb(VgFriendCb cb);
 
 // ---- virtual LAN of friends (see VidyaGodIPFS/friendlan.go) ----

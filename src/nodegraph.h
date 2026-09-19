@@ -35,9 +35,12 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 // the bundle dir it came from (for BundleDir). A file holds one node or an array of them; FIRST-seen wins on a
 // duplicate handle (and warns). Recursion is required so a package's cross-package edges resolve against the whole library (handles
 // are globally unique). Pure — filesystem + JSON only, no IPFS.
+// SkipReserved: skip reserved "_friend_*" received-stub dirs (used by PublishLibrary so a friend's stub can never enter
+// the mint tree — no re-share, no hostile NODE_ID shadowing our handles). Default false (the catalog gather wants them).
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
-                       std::map<std::string, std::filesystem::path> &Dirs);
+                       std::map<std::string, std::filesystem::path> &Dirs,
+                       bool SkipReserved = false);
 
 // Lift the metadata edge (flat → gigagraph): for each DeclareExec in the tree, move a PARENTS entry that names a
 // DeclareLibraryItem node (present in the tree) into the exec's LIBRARYITEM field, removing it from PARENTS — so the
@@ -61,7 +64,12 @@ bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &Worki
 // times is fetched once. A block that cannot be fetched/parsed, or is not a node, is recorded in Missing (if given)
 // and skipped. Runs LinkGames. Frozen nodes carry no BundleDir (browse-before-download); local content location is
 // filled in at hydrate.
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr);
+// Shallow=false: the full closure (PARENTS + LIBRARYITEM) — for launch/hydrate. Shallow=true: fetch each root plus
+// ONLY its LIBRARYITEM tile, NOT the PARENTS composition graph — the cheap BROWSE view for a friend's shared library
+// (the tile's title/cover is enough to render a card; the full graph is walked only on install). Content leaves are
+// never fetched either way, so Shallow bounds only the node-block fan-out.
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr,
+                           bool Shallow = false);
 
 // Freeze a gathered working tree directly into a CID-keyed NodeIndex (identity = CID) WITHOUT storing blocks — uses
 // DagCid (side-effect-free), so it is safe at catalog-build time. Resolves PARENTS/LIBRARYITEM handles → CIDs, sets
@@ -76,8 +84,11 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
 // The result of minting a working tree.
 struct MintResult {
     std::map<std::string, std::string> HandleToCid; // every node's NODE_ID handle → its frozen CID
-    std::vector<std::string>           Launchables;  // the list entries: DeclareExec nodes with NO GUEST (a game's
-                                                     // playable variants; GUEST-bearing DeclareExecs are runners)
+    std::vector<std::string>           Launchables;  // LAUNCH axis: DeclareExec nodes with NO GUEST (a game's playable
+                                                     // variants; GUEST-bearing DeclareExecs are runners) — used for
+                                                     // launch/CLI semantics, NOT the share list
+    std::vector<std::string>           Published;    // SHARE axis: nodes carrying PUBLISH=true (games, runners AND
+                                                     // no-exec library heads) — the share-list roots
 };
 
 // Hydrate a launchable's closure from IPFS into the pretty on-disk checkout under DestRoot: fetch the frozen DAG

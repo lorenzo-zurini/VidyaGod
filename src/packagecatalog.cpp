@@ -131,6 +131,31 @@ static std::string PackageSourcesRoot(const nlohmann::ordered_json &GlobalConfig
 // "_friend_" prefix that a real collection name can never produce. Static folder-CID sources keep their NAME.
 static std::string PackageSourceDirSegment(const nlohmann::ordered_json &S)
 {
+    // A friend-share source (scheme "friend:<peerID>:<lib>"): derive the dir from the peer ID + library — NEVER the
+    // attacker-chosen nick — under the reserved "_friend_" prefix a real collection name can't produce. The library
+    // name is attacker-chosen, so HEX-encode it: two lib names that would sanitize to the same string must not collide
+    // into one dir (which would make each library's prune rm the other's packages).
+    {
+        const std::string Fc = PackageSourceCID(S);
+        if (Fc.rfind("friend:", 0) == 0)
+        {
+            const std::string Rest = Fc.substr(7);
+            const std::string::size_type Colon = Rest.find(':');
+            const std::string Peer = (Colon == std::string::npos) ? Rest : Rest.substr(0, Colon);
+            const std::string Lib  = (Colon == std::string::npos) ? std::string() : Rest.substr(Colon + 1);
+            std::string PeerSan;
+            for (char c : Peer) PeerSan.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.') ? c : '_');
+            if (PeerSan.empty()) PeerSan = "peer";
+            // Hash the (attacker-chosen, up-to-256-byte) lib name to a fixed 16-hex tail: unambiguous (no sanitize
+            // collision) AND bounded (a raw hex-encode of a long lib name could overflow NAME_MAX).
+            std::uint64_t H = 1469598103934665603ULL;                 // FNV-1a/64
+            for (unsigned char c : Lib) { H ^= (std::uint64_t)c; H *= 1099511628211ULL; }
+            static const char *Hx = "0123456789abcdef";
+            std::string Tail(16, '0');
+            for (int k = 15; k >= 0; --k) { Tail[k] = Hx[H & 0xFULL]; H >>= 4; }
+            return "_friend_" + PeerSan + "_" + Tail;
+        }
+    }
     if (IsIpnsSource(S))
     {
         std::string Peer = PackageSourceCID(S);
@@ -288,6 +313,7 @@ bool HasMissingSources(const nlohmann::ordered_json &GlobalConfigJSON)
     for (const auto &Src : S["PackageSources"])
     {
         if (PackageSourceCID(Src).empty()) continue;
+        if (PackageSourceCID(Src).rfind("friend:", 0) == 0) continue;   // friend-share sources are disk-only, never fetched
         const std::string Dir = PackageSourceDir(GlobalConfigJSON, Src);
         if (!SourceDirSynced(Dir, Ec)) return true;
     }
@@ -494,6 +520,9 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
     {
         const std::string Cid = PackageSourceCID(Src);
         if (Cid.empty()) continue;
+        //Friend-share sources (scheme "friend:<peer>:<lib>") are DISK-ONLY: WriteFriendStubs writes their metadata
+        //stubs and click-hydrate fetches content. They must never be fetched / IPNS-resolved here.
+        if (Cid.rfind("friend:", 0) == 0) continue;
         //An IPNS-name source (a friend / a manual /ipns/ address) resolves to a MUTABLE top-level index and mirrors
         //per-package meta-CIDs — a different flow from a static folder CID (handled just below).
         if (IsIpnsSource(Src)) { Indexed += MirrorIpnsSource(GlobalConfigJSON, Src, Error); continue; }
@@ -831,7 +860,9 @@ std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConf
     return Cids;
 }
 
-void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
+static bool DirHasContent(const std::string &Dir);   // defined below, near WriteFriendStubs
+
+void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled)
 {
     if (!GlobalConfigJSON.contains("Settings") || !GlobalConfigJSON["Settings"].is_object()) return;
     auto &S = GlobalConfigJSON["Settings"];
@@ -840,6 +871,28 @@ void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index)
     if (Index < 0 || Index >= (int)Arr.size()) return;
 
     const std::string Dir = PackageSourceDir(GlobalConfigJSON, Arr[Index]);
+
+    if (PreserveInstalled)
+    {
+        // Friend-share source removal must NEVER rm a package the user has INSTALLED. Convert dirs with hydrated
+        // content to LOCAL (clear the SOURCE tag, keep files); delete only stub-only packages. No un-seed here: stubs
+        // seed nothing, and a kept install must stay seeded. The source dir itself is removed only if it ends up empty.
+        if (GlobalConfigJSON.contains("LIBRARY") && GlobalConfigJSON["LIBRARY"].is_array())
+        {
+            auto &Lib = GlobalConfigJSON["LIBRARY"];
+            for (int i = (int)Lib.size() - 1; i >= 0; --i)
+            {
+                if (!Lib[i].is_object()) continue;
+                const std::string P = Lib[i].value("PATH", std::string());
+                if (P.empty() || !PathUnder(Dir, P)) continue;
+                if (DirHasContent(P)) Lib[i].erase("SOURCE");            // installed → keep as a local package
+                else { std::error_code EcP; std::filesystem::remove_all(P, EcP); Lib.erase(Lib.begin() + i); }
+            }
+        }
+        std::error_code EcD; std::filesystem::remove(Dir, EcD);          // removes the source dir only if now empty
+        Arr.erase(Arr.begin() + Index);
+        return;
+    }
 
     //Un-seed BEFORE deleting the directory. A removed source's pins otherwise outlive it in the IPFS table, and the
     //moment the dir below is deleted every one of its no-copy references points at a gone file — so we keep
@@ -896,21 +949,25 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     const std::filesystem::path Root = LibraryRootDir(Config);
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
-    NodeGraph::GatherWorkingTree(Root, Tree, Dirs);
+    NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
     NodeGraph::LiftLibraryItemEdge(Tree);
     NodeGraph::MintResult MR;
     if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
 
-    // Group launchable CIDs by LIBRARY (the collection dir the package lives in), so sharing is per-library. A GUEST-
-    // bearing DeclareExec is a runner, not a game — excluded. `Libraries` = {libName: [launchable CID]}; a flat
-    // `PublishedList` stays for convenience. These are off-IPFS VidyaGod app data, exchanged over the friend channel.
+    // Group PUBLISH'd CIDs by LIBRARY (the collection dir the package lives in), so sharing is per-library. The share
+    // axis is the author's PUBLISH flag, decoupled from type — so runners (GUEST exec) and libraries (no exec) are
+    // shareable too, not just games. `Libraries` = {libName: [CID]}; a flat `PublishedList` stays for convenience.
+    // These are off-IPFS VidyaGod app data, exchanged over the friend channel.
     nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
     for (const auto &[Handle, Doc] : Tree)
     {
-        if (Doc.value("TYPE", std::string()) != "DeclareExec") continue;
-        if (Doc.contains("GUEST") && Doc["GUEST"].is_array() && !Doc["GUEST"].empty()) continue;
+        if (!Doc.value("PUBLISH", false)) continue;    // SHARE axis: only nodes the author flagged PUBLISH=true.
+                                                       // Replaces the old "DeclareExec && !GUEST" filter (which
+                                                       // silently excluded runners and no-exec library heads).
+                                                       // (Received friend stubs never reach here: the GatherWorkingTree
+                                                       // above skips "_friend_*" dirs, so they never enter the mint.)
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
         std::string LibName = LibraryOf(Dirs[Handle], Root);
@@ -923,7 +980,162 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
             + " node block(s), " + std::to_string(Config["Libraries"].size()) + " library(ies), "
             + std::to_string(Config["PublishedList"].size()) + " launchable(s)");
-    return MR.Launchables;
+    return MR.Published;   // the share list (PUBLISH'd roots), not the launch axis
+}
+
+// Bounds + helpers for the friend-stub receiver (a friend's snapshot is UNTRUSTED input).
+static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library root set (Go caps at 100k)
+static constexpr size_t kMaxFriendRootsTotal  = 100000;   // snapshot-wide cap across all of one peer's libraries
+
+// True if a dir holds any HYDRATED content (a file that isn't a node stub *.json) — i.e. the user has INSTALLED this
+// package. The stub-prune must never delete such a dir: a friend un-sharing (or a transient fetch failure) must never
+// rm a user's installed game.
+static bool DirHasContent(const std::string &Dir)
+{
+    std::error_code Ec;
+    if (!std::filesystem::is_directory(Dir, Ec)) return false;
+    for (auto It = std::filesystem::recursive_directory_iterator(Dir, Ec);
+         !Ec && It != std::filesystem::recursive_directory_iterator(); It.increment(Ec))
+    {
+        if (It->is_regular_file(Ec))
+        {
+            const std::string Name = It->path().filename().string();
+            if (Name.size() < 5 || Name.compare(Name.size() - 5, 5, ".json") != 0) return true;
+        }
+    }
+    return Ec ? true : false;   // couldn't fully inspect (permission/IO) → assume content; never rm what we can't read
+}
+
+int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PeerID, const std::string &Nick,
+                     const std::map<std::string, std::vector<std::string>> &Libs)
+{
+    namespace fs = std::filesystem;
+    auto San = [](const std::string &In) {
+        std::string O;
+        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
+                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
+        return O.empty() ? std::string("x") : O;
+    };
+    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
+        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
+    const std::string Label = Nick.empty() ? PeerID : Nick;
+
+    int Written = 0;
+    size_t TotalRoots = 0;   // snapshot-wide bound (a hostile friend could send many libs x many roots)
+    for (const auto &[LibName, Cids] : Libs)
+    {
+        if (Cids.empty()) continue;
+        if (TotalRoots >= kMaxFriendRootsTotal)
+        {
+            LogWarn("PackageCatalog::WriteFriendStubs", "snapshot from " + PeerID + " exceeds "
+                    + std::to_string(kMaxFriendRootsTotal) + " total roots — ignoring the rest");
+            break;
+        }
+        TotalRoots += Cids.size();
+        const std::string SourceKey   = "friend:" + PeerID + ":" + LibName;
+        const std::string DisplayName = Label + " \xc2\xb7 " + LibName;   // "Nick · Lib" (middle dot = U+00B7)
+        (void)AddPackageSource(GlobalConfigJSON, SourceKey, DisplayName, /*Friend=*/true);   // no-op if already present
+        const int SrcIdx = PackageSourceIndexForCID(GlobalConfigJSON, SourceKey);
+        if (SrcIdx < 0) continue;
+        GlobalConfigJSON["Settings"]["PackageSources"][SrcIdx]["NAME"] = DisplayName;        // keep the label fresh
+        const std::string SourceDir = PackageSourceDir(GlobalConfigJSON, GlobalConfigJSON["Settings"]["PackageSources"][SrcIdx]);
+        std::error_code Ec; fs::create_directories(SourceDir, Ec);
+
+        // Bound a hostile/huge snapshot: cap roots per library (a friend controls the CID count within Go's 100k limit).
+        std::vector<std::string> Roots = Cids;
+        if (Roots.size() > kMaxFriendRootsPerLib)
+        {
+            LogWarn("PackageCatalog::WriteFriendStubs", "library '" + LibName + "' from " + PeerID + " has "
+                    + std::to_string(Roots.size()) + " roots — capping at " + std::to_string(kMaxFriendRootsPerLib));
+            Roots.resize(kMaxFriendRootsPerLib);
+        }
+        // Shallow browse-fetch: each published root + its LIBRARYITEM tile only (title/cover) — never the content graph.
+        std::vector<std::string> Missing;
+        NodeIndex Idx = NodeGraph::BuildFrozenIndex(Roots, &Missing, /*Shallow=*/true);
+        if (!Missing.empty())
+            LogWarn("PackageCatalog::WriteFriendStubs", std::to_string(Missing.size()) + " root block(s) of '"
+                    + LibName + "' from " + PeerID + " unfetchable right now — they will NOT be pruned");
+
+        // Group published roots by tile CID (LIBRARYITEM); a tile-less root (runner / library head) stands alone.
+        std::map<std::string, std::vector<std::string>> Group;
+        for (const std::string &Root : Roots)
+        {
+            const Node *R = Idx.Find(Root);
+            if (!R) continue;                                  // unfetchable (offline / withdrawn block) -> skipped
+            Group[R->LibraryItem.empty() ? Root : R->LibraryItem].push_back(Root);
+        }
+
+        std::set<std::string> KeepDirs;
+        for (const auto &[GroupKey, Members] : Group)
+        {
+            const Node *Tile  = Idx.Find(GroupKey);
+            const bool  Card  = Tile && Tile->Presentable();
+            const Node *First = Idx.Find(Members.front());
+            const std::string Uid   = Card ? (Tile->Uid.empty() ? Tile->NodeId : Tile->Uid)
+                                           : (First ? (First->Uid.empty() ? First->NodeId : First->Uid) : GroupKey);
+            const std::string Title = Card ? Tile->Meta.value("TITLE", Tile->NodeId)
+                                           : (First ? First->NodeId : GroupKey);
+            const std::string PkgDir = QDir::cleanPath(QString::fromStdString(
+                                           SourceDir + "/" + San("[" + Uid + "] " + Title))).toStdString();
+            fs::create_directories(PkgDir, Ec);
+
+            std::set<std::string> Used;
+            auto WriteStub = [&](const std::string &NodeCid) {
+                std::string Err;
+                const std::string Js = IpfsWrapper::DagGet(NodeCid, &Err);
+                if (Js.empty()) { LogWarn("PackageCatalog::WriteFriendStubs", "stub fetch failed " + NodeCid + ": " + Err); return; }
+                nlohmann::ordered_json J = nlohmann::ordered_json::parse(Js, nullptr, false);
+                if (J.is_discarded() || !J.is_object()) { LogWarn("PackageCatalog::WriteFriendStubs", "unparseable stub block " + NodeCid); return; }
+                NodeGraph::NormalizeLinks(J);   // {"/":cid} -> plain CID strings (readable; re-freezes to the same CID)
+                std::string Base = San(J.value("NODE_ID", NodeCid.substr(0, 12)));
+                if (!Used.insert(Base).second) Base += "_" + NodeCid.substr(0, 12);   // NODE_ID collision -> disambiguate
+                std::ofstream Out(PkgDir + "/" + Base + ".json");
+                if (!Out) { LogWarn("PackageCatalog::WriteFriendStubs", "cannot write stub " + Base + ".json in " + PkgDir); return; }
+                Out << J.dump(2) << "\n";
+            };
+            if (Card) WriteStub(GroupKey);                     // the tile stub (title/cover)
+            for (const std::string &M : Members) WriteStub(M); // the launchable / root stubs
+
+            UpsertMirrorEntry(GlobalConfigJSON["LIBRARY"], PkgDir, Uid, GroupKey, Title, SourceKey);
+            KeepDirs.insert(PkgDir);
+            ++Written;
+        }
+
+        // Prune packages withdrawn from THIS library's snapshot — SAFELY. Two hard data-loss rules:
+        //  (1) Only on a FULLY-RESOLVED snapshot (Missing empty): a partial fetch must never be read as "withdrawn",
+        //      or a friend's transiently-unreachable blocks would delete real entries.
+        //  (2) NEVER delete a dir holding hydrated content (an installed game the user keeps): a remote un-share, or
+        //      any prune, must not rm a user's install — such a package keeps its entry + files (stays launchable).
+        if (Missing.empty())
+        {
+            auto &Lib = GlobalConfigJSON["LIBRARY"];
+            for (int i = (int)Lib.size() - 1; i >= 0; --i)
+            {
+                if (!Lib[i].is_object() || Lib[i].value("SOURCE", std::string()) != SourceKey) continue;
+                const std::string P = Lib[i].value("PATH", std::string());
+                if (KeepDirs.count(P)) continue;
+                if (DirHasContent(P)) continue;   // installed content → preserve entry + files; never rm an install
+                fs::remove_all(P, Ec);
+                Lib.erase(Lib.begin() + i);
+            }
+        }
+    }
+
+    // Drop friend sources for THIS peer whose library is no longer shared at all (withdrawn wholesale).
+    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object()
+        && GlobalConfigJSON["Settings"].contains("PackageSources") && GlobalConfigJSON["Settings"]["PackageSources"].is_array())
+    {
+        const std::string Prefix = "friend:" + PeerID + ":";
+        auto &Arr = GlobalConfigJSON["Settings"]["PackageSources"];
+        for (int i = (int)Arr.size() - 1; i >= 0; --i)
+        {
+            const std::string C = PackageSourceCID(Arr[i]);
+            if (C.rfind(Prefix, 0) != 0) continue;
+            if (Libs.count(C.substr(Prefix.size()))) continue;   // still shared -> keep
+            RemovePackageSource(GlobalConfigJSON, i, /*PreserveInstalled=*/true);   // withdrawn -> drop source, KEEP installs
+        }
+    }
+    return Written;
 }
 
 // The gigagraph catalog: the on-disk library is the pretty, handle-based working tree (LIBRARY/[uid] Title/…); we

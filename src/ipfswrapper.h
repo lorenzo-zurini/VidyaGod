@@ -376,6 +376,8 @@ std::vector<NetCheck> NetworkTest(bool *NodeOffline = nullptr);
 std::vector<NetCheck> ServiceHealth();
 // Replace the GLOBAL LAN roster's excluded set (the launch window's un-ticked members). Immediate, mid-game too.
 void SetLanExcluded(const std::vector<std::string> &PeerIds);
+// Replace the set of peers we hide our online presence from (the Network tab's per-peer "Presence" toggle, off).
+bool SetPresenceDeny(const std::vector<std::string> &PeerIds);
 
 // ----- overlay tunnel (VidyaGodIPFS/overlay.go) -----
 // Bring up the friend-LAN: a TUN configured from lanConfig() (each friend's vIP = f(peerID)) forwarding IP packets

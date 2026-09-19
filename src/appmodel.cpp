@@ -49,6 +49,11 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     connect(FriendsManager::instance(), &FriendsManager::friendLibrary, this,
         [this](const QString & peer, const QString & libsJson, quint64 seq) { applyFriendLibrarySnapshot(peer, libsJson, seq); });
 
+    // Auto-accept ("server mode"): if enabled, accept every incoming friend request automatically and apply the
+    // New-Peer defaults. Runs whether or not the Network tab is open.
+    connect(FriendsManager::instance(), &FriendsManager::friendRequest, this,
+        [this](const QString & peer, const QString &, const QString &) { if (autoAcceptEnabled()) acceptPeer(peer); });
+
     // Background serve-reliability sweep: periodically re-point any orphaned no-copy reference so content that was
     // moved/re-created MID-SESSION is repaired before (or shortly after) a peer requests it — not only on next launch.
     // Cheap when nothing is wrong (a filestore path scan, no re-seed); no-op while the node is offline.
@@ -482,6 +487,7 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
     }
     save();
     emit friendCatalogChanged();
+    if (isReceivingFrom(peer)) writeFriendStubsAsync(peer);   // materialise/refresh their browsable catalog stubs
 }
 
 void AppModel::reRegisterShares()
@@ -512,14 +518,251 @@ void AppModel::reRegisterShares()
 void AppModel::forgetFriend(const QString & peer)
 {
     const std::string P = peer.toStdString();
+    stopReceivingFromFriend(peer);   // drop their browsable stub sources + LIBRARY entries (saves + rebuilds if any)
     bool Changed = false;
     if (Config->contains("Sharing") && (*Config)["Sharing"].is_object() && (*Config)["Sharing"].contains(P))
     { (*Config)["Sharing"].erase(P); Changed = true; }   // Go already dropped its side via VgFriendRemove→purgeShares
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
     { (*Config)["FriendLibraries"].erase(P); Changed = true; }
+    auto EraseFrom = [&](const char * Key, nlohmann::ordered_json & Root) {
+        if (Root.contains(Key) && Root[Key].is_array())
+            for (auto It = Root[Key].begin(); It != Root[Key].end(); ++It)
+                if (*It == P) { Root[Key].erase(It); Changed = true; break; }
+    };
+    EraseFrom("ReceiveFrom", *Config);
+    bool DenyChanged = false;
+    if (Config->contains("PresenceDeny") && (*Config)["PresenceDeny"].is_array())
+        for (auto It = (*Config)["PresenceDeny"].begin(); It != (*Config)["PresenceDeny"].end(); ++It)
+            if (*It == P) { (*Config)["PresenceDeny"].erase(It); Changed = true; DenyChanged = true; break; }
+    if (Config->contains("Settings") && (*Config)["Settings"].is_object())
+        EraseFrom("LanExcludedPeers", (*Config)["Settings"]);
     FriendLibSeq.erase(P);   // forget the seq high-water mark too, so a re-add starts fresh (no stale-drop of the first snapshot)
+    if (DenyChanged) pushPresenceDeny();
     if (Changed) { save(); emit friendCatalogChanged(); }
+}
+
+// ── Network tab per-peer toggles ─────────────────────────────────────────────
+
+static bool ArrHas(const nlohmann::ordered_json & Arr, const std::string & V)
+{
+    if (!Arr.is_array()) return false;
+    for (const auto & X : Arr) if (X == V) return true;
+    return false;
+}
+
+bool AppModel::isReceivingFrom(const QString & peer) const
+{
+    return Config->contains("ReceiveFrom") && ArrHas((*Config)["ReceiveFrom"], peer.toStdString());
+}
+
+void AppModel::setReceivingFrom(const QString & peer, bool on)
+{
+    const std::string P = peer.toStdString();
+    auto & RF = (*Config)["ReceiveFrom"];
+    if (!RF.is_array()) RF = nlohmann::ordered_json::array();
+    const bool Present = ArrHas(RF, P);
+    if (on == Present) return;                       // no change
+    if (on) RF.push_back(P);
+    else    for (auto It = RF.begin(); It != RF.end(); ++It) if (*It == P) { RF.erase(It); break; }
+    save();
+    if (on) requestFriendLibraries(peer);            // pull their current snapshot → stubs written on arrival
+    else    stopReceivingFromFriend(peer);           // drop what we've already materialised
+}
+
+void AppModel::stopReceivingFromFriend(const QString & peer)
+{
+    const std::string Prefix = "friend:" + peer.toStdString() + ":";
+    bool Changed = false;
+    if (Config->contains("Settings") && (*Config)["Settings"].is_object()
+        && (*Config)["Settings"].contains("PackageSources") && (*Config)["Settings"]["PackageSources"].is_array())
+    {
+        auto & Arr = (*Config)["Settings"]["PackageSources"];
+        for (int i = (int)Arr.size() - 1; i >= 0; --i)
+        {
+            const std::string C = (Arr[i].is_object() && Arr[i].contains("CID") && Arr[i]["CID"].is_string())
+                                  ? Arr[i]["CID"].get<std::string>() : std::string();
+            if (C.rfind(Prefix, 0) != 0) continue;
+            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);   // drop source, KEEP any installed game
+            Changed = true;
+        }
+    }
+    if (Changed) { save(); rebuildCatalog(); emit friendCatalogChanged(); }
+}
+
+bool AppModel::isPresenceSharedWith(const QString & peer) const
+{
+    return !(Config->contains("PresenceDeny") && ArrHas((*Config)["PresenceDeny"], peer.toStdString()));
+}
+
+void AppModel::setPresenceSharedWith(const QString & peer, bool on)
+{
+    const std::string P = peer.toStdString();
+    auto & D = (*Config)["PresenceDeny"];
+    if (!D.is_array()) D = nlohmann::ordered_json::array();
+    const bool Denied = ArrHas(D, P);
+    if (on && Denied)  { for (auto It = D.begin(); It != D.end(); ++It) if (*It == P) { D.erase(It); break; } }
+    else if (!on && !Denied) D.push_back(P);
+    else return;                                     // no change
+    save();
+    pushPresenceDeny();
+}
+
+void AppModel::pushPresenceDeny()
+{
+    std::vector<std::string> D;
+    if (Config->contains("PresenceDeny") && (*Config)["PresenceDeny"].is_array())
+        for (const auto & X : (*Config)["PresenceDeny"]) if (X.is_string()) D.push_back(X.get<std::string>());
+    IpfsWrapper::SetPresenceDeny(D);
+}
+
+bool AppModel::isInVlan(const QString & peer) const
+{
+    if (!Config->contains("Settings") || !(*Config)["Settings"].is_object()) return true;
+    return !ArrHas((*Config)["Settings"].value("LanExcludedPeers", nlohmann::ordered_json::array()), peer.toStdString());
+}
+
+void AppModel::setInVlan(const QString & peer, bool on)
+{
+    const std::string P = peer.toStdString();
+    auto & E = (*Config)["Settings"]["LanExcludedPeers"];
+    if (!E.is_array()) E = nlohmann::ordered_json::array();
+    const bool Excluded = ArrHas(E, P);
+    if (on && Excluded)  { for (auto It = E.begin(); It != E.end(); ++It) if (*It == P) { E.erase(It); break; } }
+    else if (!on && !Excluded) E.push_back(P);
+    else return;                                     // no change
+    save();
+    pushLanRoster();
+}
+
+void AppModel::acceptPeer(const QString & peer)
+{
+    std::string Err;
+    if (!IpfsWrapper::FriendAccept(peer.toStdString(), &Err))
+    { LogWarn("AppModel::acceptPeer", "accept " + peer.toStdString() + " failed: " + Err); return; }
+    applyNewPeerDefaults(peer);
+}
+
+void AppModel::applyNewPeerDefaults(const QString & peer)
+{
+    setPresenceSharedWith(peer, newPeerDefault("presence"));
+    setInVlan(peer, newPeerDefault("vlan"));
+    for (const QString & Lib : newPeerShareDefaults()) shareLibraryWithFriend(peer, Lib);
+    if (newPeerDefault("receive")) setReceivingFrom(peer, true);
+}
+
+bool AppModel::autoAcceptEnabled() const { return Config->value("AutoAcceptPeers", false); }
+
+void AppModel::setAutoAcceptEnabled(bool on)
+{
+    if (on == autoAcceptEnabled()) return;
+    (*Config)["AutoAcceptPeers"] = on;
+    save();
+}
+
+bool AppModel::newPeerDefault(const QString & key) const
+{
+    const std::string K = key.toStdString();
+    const bool Fallback = (K == "presence");         // presence ON by default; receive / vlan OFF
+    if (!Config->contains("NewPeerDefaults") || !(*Config)["NewPeerDefaults"].is_object()) return Fallback;
+    return (*Config)["NewPeerDefaults"].value(K, Fallback);
+}
+
+void AppModel::setNewPeerDefault(const QString & key, bool on)
+{
+    auto & D = (*Config)["NewPeerDefaults"];
+    if (!D.is_object()) D = nlohmann::ordered_json::object();
+    D[key.toStdString()] = on;
+    save();
+}
+
+QStringList AppModel::newPeerShareDefaults() const
+{
+    QStringList Out;
+    if (Config->contains("NewPeerDefaults") && (*Config)["NewPeerDefaults"].is_object()
+        && (*Config)["NewPeerDefaults"].contains("share") && (*Config)["NewPeerDefaults"]["share"].is_array())
+        for (const auto & X : (*Config)["NewPeerDefaults"]["share"])
+            if (X.is_string()) Out << QString::fromStdString(X.get<std::string>());
+    return Out;
+}
+
+void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
+{
+    auto & D = (*Config)["NewPeerDefaults"];
+    if (!D.is_object()) D = nlohmann::ordered_json::object();
+    auto & Sh = D["share"];
+    if (!Sh.is_array()) Sh = nlohmann::ordered_json::array();
+    const std::string L = lib.toStdString();
+    const bool In = ArrHas(Sh, L);
+    if (on && !In) Sh.push_back(L);
+    else if (!on && In) { for (auto It = Sh.begin(); It != Sh.end(); ++It) if (*It == L) { Sh.erase(It); break; } }
+    else return;
+    save();
+}
+
+void AppModel::writeFriendStubsAsync(const QString & peer)
+{
+    const std::string P = peer.toStdString();
+    // Serialize per peer: two concurrent workers would write/rm the SAME _friend_<peer> dirs and race the config. If one
+    // is already running for this peer, note that a fresh snapshot arrived and re-run once it finishes.
+    if (StubInFlight.count(P)) { StubRerun.insert(P); return; }
+    StubInFlight.insert(P);
+
+    std::string Nick;
+    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+    std::map<std::string, std::vector<std::string>> Libs;
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
+        for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
+        {
+            std::vector<std::string> V;
+            if (Arr.is_array()) for (const auto & X : Arr) if (X.is_string()) V.push_back(X.get<std::string>());
+            if (!V.empty()) Libs[Lib] = std::move(V);
+        }
+    auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
+    auto Done = std::make_shared<bool>(false);
+    AsyncWork::Run(this,
+        [Cfg, Done, P, Nick, Libs]{ PackageCatalog::WriteFriendStubs(*Cfg, P, Nick, Libs); *Done = true; },
+        [this, Cfg, Done, P, peer]{
+            StubInFlight.erase(P);
+            if (*Done)
+            {
+                // Replace ONLY this peer's "friend:<peer>:*" slice in the LIVE config from the worker's copy — never
+                // adopt PackageSources/LIBRARY wholesale (that would clobber changes made to OTHER sources / entries
+                // during the off-thread write, and resurrect a source the user removed meanwhile).
+                const std::string Prefix = "friend:" + P + ":";
+                auto SrcCid = [](const nlohmann::ordered_json & S) {
+                    return (S.is_object() && S.contains("CID") && S["CID"].is_string()) ? S["CID"].get<std::string>() : std::string();
+                };
+                auto & LiveSrc = (*Config)["Settings"]["PackageSources"];
+                if (!LiveSrc.is_array()) LiveSrc = nlohmann::ordered_json::array();
+                for (int i = (int)LiveSrc.size() - 1; i >= 0; --i)
+                    if (SrcCid(LiveSrc[i]).rfind(Prefix, 0) == 0) LiveSrc.erase(LiveSrc.begin() + i);
+                auto & LiveLib = (*Config)["LIBRARY"];
+                if (!LiveLib.is_array()) LiveLib = nlohmann::ordered_json::array();
+                for (int i = (int)LiveLib.size() - 1; i >= 0; --i)
+                    if (LiveLib[i].is_object() && LiveLib[i].value("SOURCE", std::string()).rfind(Prefix, 0) == 0)
+                        LiveLib.erase(LiveLib.begin() + i);
+                // Re-add the worker's slice ONLY if Receive is still on for this peer (a mid-write toggle-off must not
+                // resurrect the stubs it just tore down).
+                if (isReceivingFrom(peer))
+                {
+                    if ((*Cfg).contains("Settings") && (*Cfg)["Settings"].contains("PackageSources")
+                        && (*Cfg)["Settings"]["PackageSources"].is_array())
+                        for (const auto & Sc : (*Cfg)["Settings"]["PackageSources"])
+                            if (SrcCid(Sc).rfind(Prefix, 0) == 0) LiveSrc.push_back(Sc);
+                    if ((*Cfg).contains("LIBRARY") && (*Cfg)["LIBRARY"].is_array())
+                        for (const auto & E : (*Cfg)["LIBRARY"])
+                            if (E.is_object() && E.value("SOURCE", std::string()).rfind(Prefix, 0) == 0) LiveLib.push_back(E);
+                }
+                save();
+                rebuildCatalog();
+                emit friendCatalogChanged();
+            }
+            if (StubRerun.erase(P) && isReceivingFrom(peer))       // a snapshot arrived mid-write → apply it, UNLESS the
+                writeFriendStubsAsync(peer);                       // user turned Receive off meanwhile (no ghost stubs)
+            else StubRerun.erase(P);                               // (drop a pending rerun that Receive-off obsoleted)
+        });
 }
 
 void AppModel::publishLibraries()

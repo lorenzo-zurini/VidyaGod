@@ -53,7 +53,7 @@ static bool PathWithin(const std::filesystem::path &Base, const std::filesystem:
     return Rel.begin()->native() != "..";                // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
 }
 
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing)
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing, bool Shallow)
 {
     NodeIndex Idx;
     std::set<std::string> Seen;
@@ -99,8 +99,9 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         // Recurse into PARENTS (composition edges) AND the LIBRARYITEM link (the tile — reachable ONLY this way now,
         // never via PARENTS). SOURCE/COVER are content-leaf (dag-pb) CIDs fetched lazily at hydrate — dagGet would
         // (correctly) refuse them — so they are never enqueued here.
-        for (const std::string &P : It->second.Parents) Q.push_back(P);
-        if (!It->second.LibraryItem.empty()) Q.push_back(It->second.LibraryItem);
+        if (!Shallow)                                                    // full closure: composition edges too
+            for (const std::string &P : It->second.Parents) Q.push_back(P);
+        if (!It->second.LibraryItem.empty()) Q.push_back(It->second.LibraryItem);   // the tile — always (browse needs it)
     }
     ManifestModel::LinkGames(Idx);
     return Idx;
@@ -266,10 +267,15 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
         Out.HandleToCid[Handle] = Cid;
 
         // A playable list root: a DeclareExec with NO GUEST. A GUEST-bearing DeclareExec is a runner (it provides
-        // platforms) — distributed via a runner tile, not listed as a game.
+        // platforms) — distributed via a runner tile, not listed as a game. This is the LAUNCH axis (launch/CLI).
         if (Raw.value("TYPE", std::string()) == "DeclareExec"
             && !(Raw.contains("GUEST") && Raw["GUEST"].is_array() && !Raw["GUEST"].empty()))
             Out.Launchables.push_back(Cid);
+
+        // The SHARE axis, decoupled from type: a node the author flagged PUBLISH=true is a shareable root (a game's
+        // launchable, a runner exec, or a no-exec library head). This — not the launch axis — drives the share list.
+        if (Raw.value("PUBLISH", false))
+            Out.Published.push_back(Cid);
     }
     if (Skipped) LogWarn("NodeGraph::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
     LogSucc("NodeGraph::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "

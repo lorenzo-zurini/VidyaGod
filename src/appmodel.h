@@ -105,6 +105,31 @@ public:
     // Consent with a friend ended (remove/block): forget both directions of the relationship's sharing state — stop
     // serving them (config["Sharing"][peer]) and drop what they shared with us (config["FriendLibraries"][peer]).
     void forgetFriend(const QString & peer);
+
+    // ── Network tab: per-peer toggles (config-backed; save + push on change) ──
+    // Receive = accept the friend's shared libraries as browsable catalog stubs (config["ReceiveFrom"]); Presence =
+    // share MY online presence with them (false ⇒ in config["PresenceDeny"]); vLAN = include them in the Virtual-LAN
+    // (false ⇒ in Settings.LanExcludedPeers). acceptPeer = FriendAccept + apply the New-Peer defaults. Auto-accept
+    // (config["AutoAcceptPeers"]) applies acceptPeer to every incoming request automatically ("server mode").
+    bool isReceivingFrom(const QString & peer) const;
+    void setReceivingFrom(const QString & peer, bool on);
+    bool isPresenceSharedWith(const QString & peer) const;
+    void setPresenceSharedWith(const QString & peer, bool on);
+    bool isInVlan(const QString & peer) const;
+    void setInVlan(const QString & peer, bool on);
+    void acceptPeer(const QString & peer);
+    bool autoAcceptEnabled() const;
+    void setAutoAcceptEnabled(bool on);
+    // The "New Peers" defaults row, applied the instant a peer is accepted. key ∈ {receive,presence,vlan}.
+    bool newPeerDefault(const QString & key) const;
+    void setNewPeerDefault(const QString & key, bool on);
+    QStringList newPeerShareDefaults() const;
+    void setNewPeerShareDefault(const QString & lib, bool on);
+    void stopReceivingFromFriend(const QString & peer);   // drop the friend's stub sources + LIBRARY entries
+    void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
+    void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
+    void writeFriendStubsAsync(const QString & peer);     // off-thread WriteFriendStubs → adopt sources+LIBRARY → rebuild
+
     // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
     // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
     // and deprecated) before any content is relocated. Just rewriting the CID would be a silent no-op — the sync
@@ -146,6 +171,8 @@ private:
     std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
+    std::set<std::string>          StubInFlight;         // peers whose friend-stub write is running off-thread (serialize per peer)
+    std::set<std::string>          StubRerun;            // a snapshot arrived mid-write → re-run once the current write finishes
 };
 
 #endif // APPMODEL_H

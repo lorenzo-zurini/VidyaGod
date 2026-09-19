@@ -17,7 +17,7 @@
 
 #include "ipfswrapper.h"
 #include "appmodel.h"
-#include "friendstab.h"
+#include "networktab.h"
 
 // The node→C++ event bridges (extern "C" in ipfswrapper.cpp). Calling them directly exercises the real kind-mapping +
 // JSON parsing + queued signal emission that FriendsManager / SessionManager install.
@@ -103,10 +103,10 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    void friendstab_renders_saved_contacts()
+    void networktab_renders_saved_contacts()
     {
         // Seed a social.json with one accepted contact, start the (offline) node so it loads, and confirm the
-        // FriendsTab renders that contact — the read/render path from the address book to the table.
+        // NetworkTab renders that contact — the read/render path from the address book to the table.
         QTemporaryDir Dir;
         const QString Repo = Dir.path() + "/ipfs";
         QDir().mkpath(Repo);
@@ -121,14 +121,17 @@ private slots:
                                                             {"LIBRARY", nlohmann::ordered_json::array()}};
         QDir AppDir(Dir.path());
         AppModel M(&Cfg, &AppDir);
-        FriendsTab Tab(M);
+        NetworkTab Tab(M);
         Tab.setActive(true);
 
         auto * Table = Tab.findChild<QTableWidget *>();
         QVERIFY(Table);
-        QCOMPARE(Table->rowCount(), 1);
-        QCOMPARE(Table->item(0, 0)->text(), QStringLiteral("savedpal"));
-        QCOMPARE(Table->item(0, 2)->text(), QStringLiteral("accepted"));
+        // Row 0 is the "New peers" defaults row; the saved contact follows it.
+        QVERIFY(Table->rowCount() >= 2);
+        bool Found = false;
+        for (int R = 0; R < Table->rowCount(); ++R)
+            if (Table->item(R, 0) && Table->item(R, 0)->text().contains("savedpal")) Found = true;
+        QVERIFY2(Found, "the saved contact must render in the Network matrix");
 
         IpfsWrapper::StopNode();
     }

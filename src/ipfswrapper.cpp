@@ -808,6 +808,13 @@ void SetLanExcluded(const std::vector<std::string> &PeerIds)
     VgLanSetExcluded(Csv.c_str());
 }
 
+bool SetPresenceDeny(const std::vector<std::string> &PeerIds)
+{
+    nlohmann::json Arr = nlohmann::json::array();
+    for (const std::string &P : PeerIds) Arr.push_back(P);
+    return VgSetPresenceDeny(Arr.dump().c_str()) == 0;
+}
+
 // ----- overlay tunnel -----
 
 std::string OverlayStart(std::string *Error)

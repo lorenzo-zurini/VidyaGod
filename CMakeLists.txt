@@ -156,10 +156,8 @@ set(SHARED_SOURCES
     src/sandboxlayer_win.cpp   # Windows Sandboxie backend (Available/Wrap); #ifdef _WIN32, empty on Linux
     src/sandboxinit.cpp
 
-    src/friendstab.h
-    src/friendstab.cpp
-    src/sharingtab.h
-    src/sharingtab.cpp
+    src/networktab.h
+    src/networktab.cpp
 
     src/fileedits.h
     src/fileedits.cpp

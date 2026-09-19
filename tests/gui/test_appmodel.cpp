@@ -334,6 +334,66 @@ private slots:
         m.forgetFriend(QString::fromStdString(P));       // already gone → no-op, no signal
         QCOMPARE(chg.count(), 1);
     }
+    // Network-tab per-peer toggles are config-backed with the correct inversions (Receive default off; Presence
+    // SHARED by default = not in PresenceDeny; vLAN IN by default = not in LanExcludedPeers), and auto-accept persists.
+    // (Go pushes are safe no-ops offline; we assert the config state, which is the durable source of truth.)
+    void network_per_peer_toggles_roundtrip()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWPeerAAA";
+
+        QVERIFY(!m.isReceivingFrom(peer));                 // receive: off by default
+        m.setReceivingFrom(peer, true);  QVERIFY(m.isReceivingFrom(peer));
+        m.setReceivingFrom(peer, false); QVERIFY(!m.isReceivingFrom(peer));
+
+        QVERIFY(m.isPresenceSharedWith(peer));             // presence: shared by default
+        m.setPresenceSharedWith(peer, false);
+        QVERIFY(!m.isPresenceSharedWith(peer));            // hidden → in PresenceDeny
+        m.setPresenceSharedWith(peer, true);
+        QVERIFY(m.isPresenceSharedWith(peer));
+
+        QVERIFY(m.isInVlan(peer));                         // vLAN: in by default
+        m.setInVlan(peer, false);
+        QVERIFY(!m.isInVlan(peer));                        // left → in LanExcludedPeers
+        m.setInVlan(peer, true);
+        QVERIFY(m.isInVlan(peer));
+
+        QVERIFY(!m.autoAcceptEnabled());                   // auto-accept: off by default, persists
+        m.setAutoAcceptEnabled(true);
+        QVERIFY(m.autoAcceptEnabled());
+        QVERIFY(cfg.value("AutoAcceptPeers", false));
+    }
+
+    // New-Peer defaults: presence ON, receive/vLAN OFF out of the box; applyNewPeerDefaults stamps a peer; forgetFriend
+    // clears the per-peer records.
+    void new_peer_defaults_and_apply()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+
+        QCOMPARE(m.newPeerDefault("presence"), true);
+        QCOMPARE(m.newPeerDefault("receive"), false);
+        QCOMPARE(m.newPeerDefault("vlan"), false);
+        m.setNewPeerDefault("receive", true);
+        m.setNewPeerShareDefault("Games", true);
+        QCOMPARE(m.newPeerDefault("receive"), true);
+        QVERIFY(m.newPeerShareDefaults().contains("Games"));
+        m.setNewPeerShareDefault("Games", false);
+        QVERIFY(!m.newPeerShareDefaults().contains("Games"));   // toggle back off (exercises the fixed else-if branch)
+
+        const QString peer = "12D3KooWNewBBB";
+        m.applyNewPeerDefaults(peer);
+        QVERIFY(m.isReceivingFrom(peer));                       // receive default applied
+        QVERIFY(m.isPresenceSharedWith(peer));                 // presence default (on) applied
+
+        m.forgetFriend(peer);
+        QVERIFY(!m.isReceivingFrom(peer));                     // forgetFriend clears the per-peer records
+    }
 };
 
 QTEST_MAIN(AppModelTest)
