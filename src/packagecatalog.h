@@ -259,6 +259,11 @@ struct ReceivedFetch { std::string Cid; std::string Dest; };
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
+// Fetch a launchable's missing closure node blocks into its package dir, through the ONE rolling queue (plain
+// FetchTargets, wave by wave), renaming landed files to their NODE_ID. Synchronous — call OFF the GUI thread.
+// After it returns true, a fresh catalog index resolves the full closure (content CIDs, optionals, sizes).
+[[nodiscard]] bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error = nullptr);
+
 // True when a node's PARENTS reference ids missing from the index — a received package whose composition graph is
 // not fetched yet. Such a node always has something to download (hydration fetches the closure) even though
 // NodeContentCids can enumerate nothing from the incomplete graph.

@@ -276,9 +276,14 @@ private slots:
         writeJson(root + "/VidyaGod/[1] A/tile.json", NodeFixture::Chain("a_tile", {NodeFixture::Tile("1", "A")}));
         // Real games carry content in PARENT nodes; a share ships only exec+tile, so a receiver's copy has an
         // INCOMPLETE closure until install — exactly what the vacuous-hydration guard must classify as NOT hydrated.
-        writeJson(root + "/VidyaGod/[1] A/content.json",
-                  NodeFixture::Chain("a_content", {NodeFixture::ContentCid("File", "data.bin",
+        // TWO content levels below the exec: closure completion must converge over WAVES (a_content's block only
+        // reveals a_base once fetched), not stop at the first frontier.
+        writeJson(root + "/VidyaGod/[1] A/base.json",
+                  NodeFixture::Chain("a_base", {NodeFixture::ContentCid("file", "base.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}));
+        writeJson(root + "/VidyaGod/[1] A/content.json",
+                  NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
+                      "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
                   NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
@@ -382,6 +387,49 @@ private slots:
         QCOMPARE(R0.value("tilenode", std::string()), std::string("a_tile"));
         QCOMPARE(R0.value("tilecid", std::string()), Items[0].value("tilecid", std::string()));
 
+        IpfsWrapper::StopNode();
+    }
+
+    // Install on a RECEIVED card: the closure is incomplete (only exec + tile were shared), so the download pipeline
+    // used to collect NOTHING ("nothing happens"). CompleteClosure fetches the missing node blocks — plain
+    // FetchTargets through the SAME rolling queue, wave by wave (a_content's block only reveals a_base once fetched)
+    // — into the package dir, NODE_ID-named; a fresh scan then resolves real content targets and sizes. Teeth: break
+    // the wave loop, the rename, the queue routing, or the frontier discovery and the asserts below fail.
+    void install_completes_a_received_closure_via_the_queue()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const json Items = publishTwoGames(SeedRoot.path());
+        QCOMPARE((int)Items.size(), 2);
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        {   // Receive: exec + tile land at their final library paths through the queue (the share flow).
+            std::vector<IpfsWrapper::FetchTarget> B;
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}}))
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
+        }
+
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(PackageCatalog::NodeClosureIncomplete(Idx, "a_exec"), "precondition: a received card is incomplete");
+        QVERIFY2(PackageCatalog::NodeContentCids(Idx, "a_exec").empty(), "precondition: nothing to download yet");
+
+        QVERIFY2(PackageCatalog::CompleteClosure(Idx, "a_exec", &Err), Err.c_str());
+
+        const QString Pkg = RxData.path() + "/Alice - Games/[1] A";
+        QVERIFY2(QFile::exists(Pkg + "/a_content.json"), "wave 1 landed NODE_ID-named in the package dir");
+        QVERIFY2(QFile::exists(Pkg + "/a_base.json"),    "wave 2 landed (frontier discovered from wave 1's block)");
+
+        NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Fresh, "a_exec"), "the closure is complete after the fetch");
+        QVERIFY2(!PackageCatalog::NodeContentCids(Fresh, "a_exec").empty(),
+                 "content targets (and thus sizes) now resolve — the Download button has something to do");
+
+        IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 

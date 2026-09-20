@@ -99,7 +99,11 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     for (LibraryGameCard * sc : card->Secondaries)
         if (sc && !sc->RepNodeId.empty()) Secondaries.push_back({ sc->RepNodeId, sc->GameTitle });
 
-    auto Snap  = std::make_shared<const NodeIndex>(Model.catalogIndex());   // immutable view for every async walk
+    // Snapshot handle for every async walk. Double indirection: *Snap is REPLACED (GUI thread only) after a received
+    // package's closure completes mid-dialog, so sizes/optionals/endpoints re-derive against the full graph; each
+    // derivation copies the inner pointer on the GUI thread before handing it to its worker (no cross-thread swap race).
+    auto Snap  = std::make_shared<std::shared_ptr<const NodeIndex>>(
+                     std::make_shared<const NodeIndex>(Model.catalogIndex()));
     auto Alive = std::make_shared<std::atomic<bool>>(true);                 // false once the dialog closes
 
     QDialog Dlg(DialogParent);
@@ -137,7 +141,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         std::vector<VariantPicker::Entry> Es;
         for (const std::string & Lid : Variants)
         {
-            const Node * N = Snap->Find(Lid);
+            const Node * N = (*Snap)->Find(Lid);
             std::string Lbl = (N && !N->Label.empty()) ? N->Label
                               : (N && N->Meta.is_object() ? N->Meta.value("TITLE", Lid) : Lid);
             Es.push_back({ Lid, QString::fromStdString(Lbl), N && N->Recommended });
@@ -262,12 +266,13 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         for (const auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) SelR.push_back(Rid);
         auto Tg  = std::make_shared<std::map<std::string, bool>>(*OptStates);
         auto Out = std::make_shared<std::set<std::string>>();
+        const std::shared_ptr<const NodeIndex> S = *Snap;   // GUI-thread copy — the worker never touches the handle
         AsyncWork::Run(&Dlg,
-            [Snap, SelL, SelR, Tg, Out]{
+            [S, SelL, SelR, Tg, Out]{
                 for (const std::string & Lid : SelL)
-                    for (const auto & C : PackageCatalog::NodeContentCids(*Snap, Lid, *Tg)) Out->insert(C);
+                    for (const auto & C : PackageCatalog::NodeContentCids(*S, Lid, *Tg)) Out->insert(C);
                 for (const std::string & Rid : SelR)
-                    for (const auto & C : PackageCatalog::NodeContentCids(*Snap, Rid)) Out->insert(C);
+                    for (const auto & C : PackageCatalog::NodeContentCids(*S, Rid)) Out->insert(C);
             },
             [this, Out, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce]{
                 long long Sum = 0; bool AllKnown = true;
@@ -305,11 +310,12 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         struct OptEntry { std::string Id; std::string Label; bool Default; };
         const std::vector<std::string> SelL = SelectedLaunchIds();
         auto Found = std::make_shared<std::vector<OptEntry>>();
+        const std::shared_ptr<const NodeIndex> S = *Snap;   // GUI-thread copy
         AsyncWork::Run(&Dlg,
-            [Snap, SelL, Found]{
+            [S, SelL, Found]{
                 std::set<std::string> Seen;
                 for (const std::string & Lid : SelL)
-                    for (const Node * O : ManifestModel::OptionalNodes(*Snap, Lid))
+                    for (const Node * O : ManifestModel::OptionalNodes(*S, Lid))
                         if (Seen.insert(O->NodeId).second)
                             Found->push_back({ O->NodeId, O->Label.empty() ? O->NodeId : O->Label, O->Default });
             },
@@ -339,13 +345,19 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     (*RebuildOptionals)(); (*RecomputeSize)();   // initial async fill — the dialog itself shows instantly
 
     // Derive the endpoints off-thread and materialize their checkboxes (all ticked = the default "everything").
-    {
+    // Re-runnable: a received package's closure completing mid-dialog re-derives against the full graph.
+    auto DeriveEndpoints = std::make_shared<std::function<void()>>();
+    *DeriveEndpoints = [&Dlg, Snap, Variants, EpChecks, EpReady, EpBox, EpL, Debounce]{
         auto Found = std::make_shared<std::vector<ManifestModel::EndpointInfo>>();
+        const std::shared_ptr<const NodeIndex> S = *Snap;   // GUI-thread copy
         AsyncWork::Run(&Dlg,
-            [Snap, Variants, Found]{ *Found = ManifestModel::TileEndpoints(*Snap, Variants); },
-            [Found, EpChecks, EpReady, EpBox, EpL, EpPending, Debounce]{
-                // Keep TileEndpoints' order: greedy picks best-first, the "Everything else" fold last.
-                EpPending->deleteLater();
+            [S, Variants, Found]{ *Found = ManifestModel::TileEndpoints(*S, Variants); },
+            [Found, EpChecks, EpReady, EpBox, EpL, Debounce]{
+                // Keep TileEndpoints' order: greedy picks best-first, the "Everything else" fold last. A re-derive
+                // (closure completed) replaces the rows wholesale — all ticked again, the "everything" default.
+                QLayoutItem * It;
+                while ((It = EpL->takeAt(0)) != nullptr) { if (QWidget * W = It->widget()) W->deleteLater(); delete It; }
+                EpChecks->clear();
                 for (const ManifestModel::EndpointInfo & E : *Found)
                 {
                     QString Lbl = QString::fromStdString(E.Label);
@@ -361,6 +373,36 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 *EpReady = true;
                 Debounce->start();
             });
+    };
+    (*DeriveEndpoints)();
+
+    // A RECEIVED package opens with an INCOMPLETE closure (only its exec + tile were shared) — nothing below it to
+    // size or enumerate. Complete it NOW, through the same rolling queue (CompleteClosure — the node blocks are
+    // KBs), then swap the snapshot and re-derive everything: real sizes, real optionals, real endpoints, and the
+    // Download button resolves real content targets. No wire change, no size stamping — the graph itself arrives.
+    {
+        bool AnyIncomplete = false;
+        for (const std::string & V : Variants)
+            if (PackageCatalog::NodeClosureIncomplete(**Snap, V)) { AnyIncomplete = true; break; }
+        if (AnyIncomplete)
+        {
+            const std::shared_ptr<const NodeIndex> S = *Snap;
+            std::thread([this, S, Variants, Snap, Alive, DeriveEndpoints, Debounce]{
+                for (const std::string & V : Variants)
+                {
+                    std::string CErr;
+                    if (PackageCatalog::NodeClosureIncomplete(*S, V) && !PackageCatalog::CompleteClosure(*S, V, &CErr))
+                        LogWarn("DownloadManager::startDownload", "closure completion for '" + V + "': " + CErr);
+                }
+                QMetaObject::invokeMethod(this, [this, Snap, Alive, DeriveEndpoints, Debounce]{
+                    Model.rebuildCatalog();                       // the landed node files are ordinary tree packages
+                    if (!Alive->load()) return;                   // dialog closed meanwhile — catalog is fresh anyway
+                    *Snap = std::make_shared<const NodeIndex>(Model.catalogIndex());
+                    (*DeriveEndpoints)();
+                    Debounce->start();                            // sizes + optionals re-derive on the full graph
+                }, Qt::QueuedConnection);
+            }).detach();
+        }
     }
 
     QHBoxLayout * BR = new QHBoxLayout(); DL->addLayout(BR); BR->addStretch();
@@ -417,25 +459,41 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
     nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
     std::thread([this, LaunchIds, RunnerIds, Toggles, Key, Snapshot = std::move(Snapshot), ConfigSnap = std::move(ConfigSnap)]{
         std::string Err; bool Ok = true;
+        // A RECEIVED package's closure is incomplete (only its exec + tile were shared) — complete it FIRST, through
+        // the same rolling queue (CompleteClosure: each missing node block is a plain FetchTarget into the package
+        // dir), then resolve targets against a FRESH index: the snapshot predates the just-landed blocks.
+        NodeIndex Idx = Snapshot;
+        {
+            bool Completed = false;
+            std::vector<std::string> All = LaunchIds;
+            All.insert(All.end(), RunnerIds.begin(), RunnerIds.end());
+            for (const std::string & Lid : All)
+                if (PackageCatalog::NodeClosureIncomplete(Idx, Lid))
+                {
+                    if (!PackageCatalog::CompleteClosure(Idx, Lid, &Err)) { Ok = false; break; }
+                    Completed = true;
+                }
+            if (Ok && Completed) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
+        }
         // Pool EVERY fetch — all selected launchables' content layers + each launchable's RESOLVED runner chain build +
         // any extra runners the user ticked — into ONE concurrent batch, so a game downloads TOGETHER with the runtime
         // it needs (bounded by MaxConcurrentDownloads). Auto-pooling the resolved chain makes a downloaded game
         // immediately playable regardless of the runner checklist (dedup handles overlap with a ticked runner).
         std::vector<IpfsWrapper::FetchTarget> Targets;
-        for (const std::string & Lid : LaunchIds)
+        if (Ok) for (const std::string & Lid : LaunchIds)
         {
-            if (!PackageCatalog::CollectContentTargets(Snapshot, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
+            if (!PackageCatalog::CollectContentTargets(Idx, Lid, Toggles, Targets, &Err)) { Ok = false; break; }
             //Best-effort by design — a game whose runtime cannot be resolved should still download. But silently
             //best-effort meant the download finished green and the game then would not launch, with nothing
             //anywhere connecting the two. Still non-fatal; now at least it is on the record.
-            if (!PackageCatalog::CollectRunnerChainTargets(Snapshot, Lid, ConfigSnap, Targets, &Err))
+            if (!PackageCatalog::CollectRunnerChainTargets(Idx, Lid, ConfigSnap, Targets, &Err))
                 LogWarn("DownloadManager::beginDownload", "could not resolve the runner chain for '" + Lid
                             + "' — its runtime is NOT in this batch, so the download will complete but the game "
                               "will not be launchable" + (Err.empty() ? "" : " (" + Err + ")"));
         }
         if (Ok)
             for (const std::string & Rid : RunnerIds)
-                if (!RunnerInstall::CollectRunnerNodeTargets(Snapshot, Rid, Targets, &Err)) { Ok = false; break; }
+                if (!RunnerInstall::CollectRunnerNodeTargets(Idx, Rid, Targets, &Err)) { Ok = false; break; }
         if (Ok && !IpfsWrapper::FetchTargetsConcurrent(Targets, &Err)) Ok = false;
         // Builds are now present locally → the runner is ready. Its prefix assembles from the build at launch
         // (node-declared layers), so there is NO post-fetch generation step — fetching the build IS the install.

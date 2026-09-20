@@ -7,6 +7,7 @@
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"      // EnqueueBatch/WaitBatch — closure completion rides the ONE rolling queue
 #include "runnerwrapper.h"
 #include "containerwrapper.h"   // RunnerNodeImported (runner install state) — .cpp-only include avoids a header cycle
 #include "varsubst.h"           // %KEY% substitution — resolve CustomVar-templated content-layer PATHs for hydration
@@ -20,6 +21,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <deque>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -1117,6 +1119,104 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
         }
     }
     return Out;
+}
+
+// CompleteClosure: fetch a launchable's MISSING node blocks (PARENTS reachable from it that the index cannot
+// resolve — the state every received share starts in: only the exec + tile were shared) into its OWN package dir,
+// through the ONE rolling queue — each missing CID is a plain FetchTarget {cid, <bundle>/<cid>.json, Verify}, the
+// same path as every other CID in the app. Waves: fetch the frontier, read the landed blocks (blockstore, local),
+// discover the next frontier from their PARENTS/LIBRARYITEM, repeat until the closure closes. Landed files are
+// renamed to their NODE_ID (cosmetic — identity is the NODE_ID inside; the scan never cares about filenames).
+// Synchronous (WaitBatch) — call OFF the GUI thread. False + *Error when the closure cannot converge (a dangling
+// ref, an unreachable seeder past the wait bound — the queue keeps retrying in the background either way).
+bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    auto San = [](const std::string &In) {
+        std::string O;
+        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
+                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
+        if (O.size() > 120) O.resize(120);
+        return O.empty() ? std::string("x") : O;
+    };
+    const Node *Root = Idx.Find(LaunchId);
+    if (!Root) { if (Error) *Error = "unknown node " + LaunchId; return false; }
+    if (Root->BundleDir.empty()) { if (Error) *Error = LaunchId + " has no package dir to complete into"; return false; }
+    const fs::path Bundle = Root->BundleDir;
+
+    // Refs of one node: PARENTS + LIBRARYITEM. Resolvable via the index (disk tree) or via a block landed this call.
+    std::map<std::string, nlohmann::ordered_json> LandedDoc;       // cid → parsed block (this call)
+    auto RefsOf = [](const std::vector<std::string> &Ps, const std::string &Li, std::vector<std::string> &Out) {
+        for (const std::string &P : Ps) if (!P.empty()) Out.push_back(P);
+        if (!Li.empty()) Out.push_back(Li);
+    };
+
+    // Seed the frontier: BFS the ALREADY-PRESENT part of the closure; every unresolved ref is missing.
+    std::set<std::string> Visited, Missing;
+    std::deque<const Node *> Q{ Root };
+    Visited.insert(Root->Key());
+    while (!Q.empty())
+    {
+        const Node *N = Q.front(); Q.pop_front();
+        std::vector<std::string> Refs;
+        RefsOf(N->Parents, N->LibraryItem, Refs);
+        for (const std::string &R : Refs)
+        {
+            if (!Visited.insert(R).second) continue;
+            if (const Node *C = Idx.Find(R)) Q.push_back(C);
+            else Missing.insert(R);
+        }
+    }
+
+    size_t Total = 0;
+    while (!Missing.empty())
+    {
+        if ((Total += Missing.size()) > 200000)                          // hostile/looping closure — bounded like the freezer
+        { if (Error) *Error = "closure exceeds 200000 nodes"; return false; }
+
+        std::vector<IpfsWrapper::FetchTarget> Batch;
+        std::vector<std::string> Wave(Missing.begin(), Missing.end());
+        for (const std::string &C : Wave)
+            Batch.push_back(IpfsWrapper::FetchTarget{ C, (Bundle / (San(C) + ".json")).string(),
+                                                      /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
+        const auto H = IpfsWrapper::EnqueueBatch(Batch);
+        std::string WErr;
+        if (!IpfsWrapper::WaitBatch(H, 10 * 60 * 1000, &WErr))           // bounded; the queue keeps rolling regardless
+        { if (Error) *Error = "closure fetch did not converge: " + WErr; return false; }
+
+        // Read the landed blocks (local), discover the NEXT frontier, and give each file its NODE_ID name.
+        const auto Blocks = IpfsWrapper::DagGetManyLocal(Wave);
+        std::set<std::string> Next;
+        for (const std::string &C : Wave)
+        {
+            const auto It = Blocks.find(C);
+            if (It == Blocks.end()) { if (Error) *Error = "closure block " + C + " did not land"; return false; }
+            nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
+            if (J.is_discarded() || !J.is_object()) { if (Error) *Error = "closure block " + C + " is not a node"; return false; }
+            NodeGraph::NormalizeLinks(J);
+            std::vector<std::string> Refs;
+            std::vector<std::string> Ps;
+            if (J.contains("PARENTS") && J["PARENTS"].is_array())
+                for (const auto &P : J["PARENTS"]) if (P.is_string()) Ps.push_back(P.get<std::string>());
+            RefsOf(Ps, J.value("LIBRARYITEM", std::string()), Refs);
+            for (const std::string &R : Refs)
+            {
+                if (!Visited.insert(R).second) continue;
+                if (!Idx.Find(R) && !LandedDoc.count(R)) Next.insert(R);
+            }
+            LandedDoc[C] = J;
+
+            const std::string NodeId = J.value("NODE_ID", std::string());
+            if (!NodeId.empty())
+            {
+                std::error_code Ec;
+                const fs::path From = Bundle / (San(C) + ".json"), To = Bundle / (San(NodeId) + ".json");
+                if (fs::exists(From, Ec) && !fs::exists(To, Ec)) fs::rename(From, To, Ec);   // cosmetic; best-effort
+            }
+        }
+        Missing = std::move(Next);
+    }
+    return true;
 }
 
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)
