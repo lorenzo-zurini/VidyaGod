@@ -791,7 +791,7 @@ void AppModel::writeFriendStubsAsync(const QString & peer)
         std::filesystem::path(PackageCatalog::LibraryRootDir(*Config)).parent_path() / ".vgbrowse";
     auto Target = [&](const std::string & Cid) {
         FriendBrowseCids.insert(Cid);
-        return IpfsWrapper::FetchTarget{ Cid, (Browse / Cid).string(), /*Optional=*/true, /*Dir=*/false, /*Block=*/true };
+        return IpfsWrapper::FetchTarget{ Cid, (Browse / (Cid + ".json")).string(), /*Optional=*/true };
     };
 
     // LOCAL reads only (blockstore, no network — NOT a fetch): which roots/tiles are already present.

@@ -53,7 +53,7 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // dispatches on: 0 = Done, 1 = Retryable (stall / no providers / offline — rotate + back off), 2 = Terminal
 // (cancelled / bad CID / disk). Dir fetches a directory (meta) CID. This is the queue's primitive; app code uses the
 // queue (EnqueueBatch) or the FetchToPath/FetchDirToPath convenience wrappers, never this directly.
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, bool Block = false, std::string *Error = nullptr);
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr);
 
 // Test seam: override FetchOnce with a scripted outcome (return 0/1/2, optionally sleeping/blocking to simulate a
 // slow or stalled attempt). Set to {} to restore the real node-backed path. Production never touches this.
@@ -126,7 +126,6 @@ struct FetchTarget {
     std::string LocalPath;
     bool        Optional = false;   // a failure is tolerable (covers)
     bool        Dir      = false;   // fetch a UnixFS DIRECTORY (meta) CID rather than a file
-    bool        Block    = false;   // fetch ONE dag-json NODE block into the blockstore (browse) — stored, not written
 };
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once
