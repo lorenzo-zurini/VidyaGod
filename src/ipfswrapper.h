@@ -6,6 +6,8 @@
 #include <map>
 #include <functional>
 
+#include <nlohmann/json.hpp>
+
 #include <QObject>
 #include <QString>
 
@@ -327,10 +329,12 @@ bool FriendRemove(const std::string &PeerID);
 // Actively probe reachability now: 1 online, 0 offline, -1 n/a (offline node).
 int FriendPing(const std::string &PeerID);
 
-// Friend library sharing (bilateral, per-(friend,library)). ShareLibrary hands a friend a named library's launchable
-// CIDs (the seeder's "share" toggle; re-call to update); UnshareLibrary withdraws it; RequestFriendLibraries asks a
-// friend for everything they share with us. A friend's shared libraries arrive via FriendsManager::friendLibrary.
-bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const std::vector<std::string> &Cids, std::string *Error = nullptr);
+// Friend library sharing (bilateral, per-(friend,library)). ShareLibrary hands a friend a named library's share
+// entries — a JSON array of {cid, node, uid, title, tilecid, tilenode} objects straight from config["Libraries"]
+// (the node CID plus the metadata the RECEIVER needs to route each block to its final library path) — the seeder's
+// "share" toggle; re-call to update. UnshareLibrary withdraws it; RequestFriendLibraries asks a friend for everything
+// they share with us. A friend's shared libraries arrive via FriendsManager::friendLibrary.
+bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const nlohmann::json &Items, std::string *Error = nullptr);
 bool UnshareLibrary(const std::string &PeerID, const std::string &Lib, std::string *Error = nullptr);
 bool RequestFriendLibraries(const std::string &PeerID, std::string *Error = nullptr);
 

@@ -748,11 +748,10 @@ int FriendPing(const std::string &PeerID)
     return VgFriendPing(PeerID.c_str());
 }
 
-bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const std::vector<std::string> &Cids, std::string *Error)
+bool ShareLibrary(const std::string &PeerID, const std::string &Lib, const nlohmann::json &Items, std::string *Error)
 {
-    const nlohmann::json CidsJson = Cids;   // JSON array of strings
     char *Err = nullptr;
-    const int Rc = VgShareLibrary(PeerID.c_str(), Lib.c_str(), CidsJson.dump().c_str(), &Err);
+    const int Rc = VgShareLibrary(PeerID.c_str(), Lib.c_str(), Items.dump().c_str(), &Err);
     const std::string ErrS = TakeStr(Err);
     if (Rc != 0) { if (Error) *Error = ErrS.empty() ? "share library failed" : ErrS; return false; }
     return true;

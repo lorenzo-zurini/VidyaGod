@@ -122,6 +122,9 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         nlohmann::ordered_json J;
         try { In >> J; }
         catch (const std::exception &) { continue; }   // skip unparseable — a scan must never throw
+        NormalizeLinks(J);   // a RAW dag-json node block (a received share, landed verbatim by the fetch queue) uses
+                             // {"/":cid} link objects — normalize to plain CID strings so it reads like any tree node
+                             // (idempotent for ordinary handle-linked nodes; re-freezes to the identical CID)
         nlohmann::ordered_json Single;
         if (!J.is_array()) Single = nlohmann::ordered_json::array({J});
         const nlohmann::ordered_json &Nodes = J.is_array() ? J : Single;

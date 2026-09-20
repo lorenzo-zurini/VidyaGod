@@ -104,10 +104,10 @@ public:
     void reRegisterShares();
     // Self-healing reconciliation (the sharing handshake is otherwise EDGE-triggered — it fires only when you flip a
     // toggle, so share-before-accept, a toggle made while the peer was offline, and an app restart all left the receiver
-    // showing nothing). reconcileReceivedFriend re-materialises a peer's browsable stubs from our PERSISTED snapshot
-    // (cached tiles show instantly, and a browse-fetch that failed while they were offline is retried now they're
-    // reachable) AND re-requests a fresh snapshot in case their shares changed. Called on node-ready (for every
-    // receiving-from peer, via reconcileReceivedLibraries) and whenever such a peer comes online (friendPresence).
+    // showing nothing). reconcileReceivedFriend re-enqueues a peer's shared blocks from our PERSISTED snapshot
+    // (satisfied targets skip, so this is what retries a fetch that failed while they were offline) AND re-requests a
+    // fresh snapshot in case their shares changed. Called on node-ready (for every receiving-from peer, via
+    // reconcileReceivedLibraries) and whenever such a peer comes online (friendPresence).
     void reconcileReceivedFriend(const QString & peer);
     void reconcileReceivedLibraries();
     bool hasFriendLibraries(const QString & peer) const;
@@ -137,8 +137,8 @@ public:
     void stopReceivingFromFriend(const QString & peer);   // drop the friend's stub sources + LIBRARY entries
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
-    void writeFriendStubsAsync(const QString & peer);     // enqueue the peer's shared node+tile CIDs into the rolling queue
-    void onFriendBlockLanded(const QString & cid, bool ok); // a browse block finished in the queue → debounced reconcile
+    void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
+    void onFriendBlockLanded(const QString & cid, bool ok); // a received node block landed → debounced catalog rebuild
 
     // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
     // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
@@ -181,8 +181,8 @@ private:
     std::atomic<bool>        HealInFlight{false};         // single-flight guard for healOrphansIfAny
     std::set<std::string>    KnownUnhealable;             // orphaned paths a heal couldn't fix (content truly gone) → don't re-loop
     std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
-    std::set<std::string>          FriendBrowseCids;     // CIDs enqueued for friend browse (roots+tiles) — scopes the transferFinished reaction
-    bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of browse-block completions into one reconcile
+    std::set<std::string>          FriendBrowseCids;     // received-share CIDs we enqueued (roots+tiles) — scopes the transferFinished reaction
+    bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
 };
 
 #endif // APPMODEL_H

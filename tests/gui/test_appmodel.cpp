@@ -217,7 +217,7 @@ private slots:
         QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
 
         // First snapshot: two libraries recorded under the peer.
-        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX","cidY"],"Retro":["cidZ"]})");
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"},{"cid":"cidY"}],"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 1);
         QVERIFY(cfg.contains("FriendLibraries"));
         QCOMPARE((int)cfg["FriendLibraries"][peer.toStdString()].size(), 2);
@@ -225,13 +225,13 @@ private slots:
 
         // Withdraw "Games" by sending a snapshot that omits it — wholesale replace, so "Games" is gone even though no
         // explicit unshare was delivered. THE regression this whole redesign exists to prevent.
-        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})");
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 2);
         QVERIFY(!cfg["FriendLibraries"][peer.toStdString()].contains("Games"));
         QVERIFY(cfg["FriendLibraries"][peer.toStdString()].contains("Retro"));
 
         // Identical snapshot again → no change, no signal, no churn.
-        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})");
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})");
         QCOMPARE(chg.count(), 2);
 
         // Empty snapshot → the peer is dropped entirely.
@@ -259,28 +259,28 @@ private slots:
         QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
 
         // seq 10: the fresh state (Retro only).
-        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})", 10);
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 10);
         QCOMPARE(chg.count(), 1);
         QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
 
         // seq 5 arrives LATE (a big stale snapshot that still listed Games) → must be dropped, Games stays gone.
-        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"],"Retro":["cidZ"]})", 5);
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}],"Retro":[{"cid":"cidZ"}]})", 5);
         QCOMPARE(chg.count(), 1);                                   // no change emitted
         QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));      // the stale withdraw-loser did NOT resurrect Games
 
         // An equal stamp (duplicate) is also dropped.
-        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"]})", 10);
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 10);
         QCOMPARE(chg.count(), 1);
         QVERIFY(!cfg["FriendLibraries"][P].contains("Games"));
 
         // A higher stamp is accepted.
-        m.applyFriendLibrarySnapshot(peer, R"({"Games":["cidX"]})", 11);
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"cidX"}]})", 11);
         QCOMPARE(chg.count(), 2);
         QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
 
         // A malformed message must NOT advance the high-water mark: after it, a valid seq-12 still applies.
         m.applyFriendLibrarySnapshot(peer, "garbage", 99);          // parse error — ignored, mark stays at 11
-        m.applyFriendLibrarySnapshot(peer, R"({"Retro":["cidZ"]})", 12);
+        m.applyFriendLibrarySnapshot(peer, R"({"Retro":[{"cid":"cidZ"}]})", 12);
         QCOMPARE(chg.count(), 3);
         QVERIFY(cfg["FriendLibraries"][P].contains("Retro"));
     }
@@ -303,8 +303,9 @@ private slots:
         QCOMPARE(chg.count(), 0);
         QVERIFY(!cfg.contains("FriendLibraries") || !cfg["FriendLibraries"].contains(P));
 
-        // Mixed valid/invalid: "Good" keeps only its string CIDs; "Bad" (non-array) and "Empty" (no strings) are elided.
-        m.applyFriendLibrarySnapshot(peer, R"({"Good":["ok",42,"ok2"],"Bad":"nope","Empty":[7,8]})");
+        // Mixed valid/invalid: "Good" keeps only its cid-bearing objects; "Bad" (non-array) and "Empty" (no valid
+        // entries — a bare string, a number, an object with no cid) are elided.
+        m.applyFriendLibrarySnapshot(peer, R"({"Good":[{"cid":"ok"},42,{"cid":"ok2","node":"n"}],"Bad":"nope","Empty":[7,"cid",{"node":"x"}]})");
         QCOMPARE(chg.count(), 1);
         QCOMPARE((int)cfg["FriendLibraries"][P].size(), 1);
         QCOMPARE(cfg["FriendLibraries"][P]["Good"].size(), (size_t)2);
@@ -321,7 +322,7 @@ private slots:
         const std::string P = "12D3KooWFriend", Q = "12D3KooWOther";
         json cfg = json{{"Settings", json::object()},
                         {"Sharing", json{{P, json::array({"Games"})}, {Q, json::array({"Retro"})}}},
-                        {"FriendLibraries", json{{P, json{{"Games", json::array({"cidX"})}}}}}};
+                        {"FriendLibraries", json{{P, json{{"Games", json::array({json{{"cid","cidX"}}})}}}}}};
         AppModel m(&cfg, &appDir);
         QSignalSpy chg(&m, &AppModel::friendCatalogChanged);
 

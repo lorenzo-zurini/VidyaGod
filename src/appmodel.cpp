@@ -56,9 +56,9 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     connect(FriendsManager::instance(), &FriendsManager::friendPresence, this,
         [this](const QString & peer, bool online) { if (online) reconcileReceivedFriend(peer); });
 
-    // A friend browse block landed in the rolling queue → (debounced) reconcile so the next level (tiles after their
-    // roots) enqueues and the catalog rebuilds to show what arrived. Same queue as any transfer; we react only to CIDs
-    // we ourselves enqueued for browse (FriendBrowseCids).
+    // A received-share node block landed in the rolling queue (at its final library path) → (debounced) rebuild the
+    // catalog so it shows what arrived. Same queue as any transfer; we react only to CIDs we ourselves enqueued for
+    // received shares (FriendBrowseCids).
     connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
         [this](const QString & cid, bool ok, const QString &) { onFriendBlockLanded(cid, ok); });
 
@@ -419,12 +419,13 @@ QStringList AppModel::myLibraryNames() const
 void AppModel::shareLibraryWithFriend(const QString & peer, const QString & lib)
 {
     const std::string P = peer.toStdString(), L = lib.toStdString();
-    std::vector<std::string> Cids;   // the library's launchable CIDs (from the last publish)
+    nlohmann::ordered_json Items = nlohmann::ordered_json::array();   // the library's share entries (from the last publish)
     if (Config->contains("Libraries") && (*Config)["Libraries"].is_object()
         && (*Config)["Libraries"].contains(L) && (*Config)["Libraries"][L].is_array())
-        for (const auto & C : (*Config)["Libraries"][L]) if (C.is_string()) Cids.push_back(C.get<std::string>());
+        for (const auto & E : (*Config)["Libraries"][L])
+            if (E.is_object() && !E.value("cid", std::string()).empty()) Items.push_back(E);
     std::string Err;
-    if (!IpfsWrapper::ShareLibrary(P, L, Cids, &Err))
+    if (!IpfsWrapper::ShareLibrary(P, L, Items, &Err))
     { LogWarn("AppModel::shareLibraryWithFriend", "share '" + L + "' with " + P + " failed: " + Err); return; }
     auto & Sh = (*Config)["Sharing"][P];
     if (!Sh.is_array()) Sh = nlohmann::ordered_json::array();
@@ -477,7 +478,7 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
         const auto It = FriendLibSeq.find(P);
         if (It != FriendLibSeq.end() && seq <= It->second) return;   // reordered straggler / duplicate → ignore
     }
-    nlohmann::ordered_json Libs;                        // {name:[cid,…]} — parse + sanitize the snapshot
+    nlohmann::ordered_json Libs;                        // {name:[{cid,node,uid,title,…},…]} — parse + sanitize the snapshot
     try { Libs = nlohmann::ordered_json::parse(libsJson.toStdString()); }
     catch (const std::exception & Ex)
     { LogWarn("AppModel::friendLibrary", "bad snapshot from " + P + ": " + Ex.what()); return; }
@@ -488,7 +489,7 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
     {
         if (!Arr.is_array()) continue;
         nlohmann::ordered_json C = nlohmann::ordered_json::array();
-        for (const auto & X : Arr) if (X.is_string()) C.push_back(X.get<std::string>());
+        for (const auto & X : Arr) if (X.is_object() && !X.value("cid", std::string()).empty()) C.push_back(X);
         if (!C.empty()) Clean[Name] = std::move(C);
     }
     auto & FL = (*Config)["FriendLibraries"];
@@ -506,7 +507,7 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
     }
     save();
     emit friendCatalogChanged();
-    if (isReceivingFrom(peer)) writeFriendStubsAsync(peer);   // materialise/refresh their browsable catalog stubs
+    if (isReceivingFrom(peer)) enqueueReceivedShares(peer);   // route the shared blocks into the library tree
 }
 
 void AppModel::reRegisterShares()
@@ -524,11 +525,12 @@ void AppModel::reRegisterShares()
         {
             if (!N.is_string()) continue;
             const std::string L = N.get<std::string>();
-            std::vector<std::string> Cids;
+            nlohmann::ordered_json Items = nlohmann::ordered_json::array();
             if (Libs.is_object() && Libs.contains(L) && Libs[L].is_array())
-                for (const auto & C : Libs[L]) if (C.is_string()) Cids.push_back(C.get<std::string>());
+                for (const auto & E : Libs[L])
+                    if (E.is_object() && !E.value("cid", std::string()).empty()) Items.push_back(E);
             std::string Err;
-            if (!IpfsWrapper::ShareLibrary(P, L, Cids, &Err))
+            if (!IpfsWrapper::ShareLibrary(P, L, Items, &Err))
                 LogWarn("AppModel::reRegisterShares", "re-share '" + L + "' with " + P + " failed: " + Err);
         }
     }
@@ -546,11 +548,11 @@ void AppModel::reconcileReceivedFriend(const QString & peer)
 {
     // Make the receiver's view independent of WHEN the snapshot arrived. Two idempotent, self-healing steps:
     if (!isReceivingFrom(peer)) return;
-    // 1. Re-materialise from what we already have — shows cached tiles at once, and RETRIES a browse-fetch that failed
-    //    while the peer was offline (writeFriendStubsAsync is per-peer serialised, so repeated calls coalesce). A fresh
-    //    library_req reply would NO-OP when the snapshot is unchanged (seq high-water), so this is what retries the fetch.
-    if (hasFriendLibraries(peer)) writeFriendStubsAsync(peer);
-    // 2. Re-request in case their shares changed while we were away (a CHANGED snapshot re-triggers materialisation).
+    // 1. Re-enqueue from the snapshot we already hold — satisfied targets (file present + block local) skip, so this
+    //    is what RETRIES a fetch that failed while the peer was offline. A fresh library_req reply would NO-OP when
+    //    the snapshot is unchanged (seq high-water), so the retry has to come from here.
+    if (hasFriendLibraries(peer)) enqueueReceivedShares(peer);
+    // 2. Re-request in case their shares changed while we were away (a CHANGED snapshot re-enqueues on apply).
     requestFriendLibraries(peer);
 }
 
@@ -770,14 +772,15 @@ void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
     save();
 }
 
-void AppModel::writeFriendStubsAsync(const QString & peer)
+void AppModel::enqueueReceivedShares(const QString & peer)
 {
-    // Receiver = TWO steps, zero special machinery. (1) FETCH: every shared CID whose block isn't local yet goes into
-    // the ONE rolling queue as a plain FetchTarget — the Go leaf writes + pins a node block like any file. (2)
-    // MATERIALIZE: landed nodes are written into the working tree as ORDINARY packages of an ordinary
-    // "<Nick> - <Lib>" library; from there the normal catalog / hydration / install / publish handle them (a received
-    // library re-publishes on the next Verify&Publish — identical CIDs, the multi-seeder design). Re-runs on
-    // node-ready, presence-online and (debounced) on every landed block, so it converges: roots, then tiles, then tree.
+    // Receiver = ONE step, zero special machinery: each shared node CID becomes a plain FetchTarget whose dest is its
+    // FINAL library path — LIBRARY/<Nick> - <Lib>/[uid] Title/<node>.json — computed from the snapshot's routing
+    // metadata (PackageCatalog::PlanReceivedFetches). The ONE rolling queue writes + pins the block at that path like
+    // any file; from there the ordinary catalog scan / hydration / install / re-publish handle it (a received library
+    // re-publishes to identical CIDs — the multi-seeder design). Re-runs on node-ready, presence-online and snapshot
+    // apply; a satisfied target (file present + block local) is skipped, so repeats converge to a no-op. A re-publish
+    // (same NODE_ID, NEW cid, same dest) re-enqueues naturally: the new block isn't local yet.
     if (!isReceivingFrom(peer)) return;
     const std::string P = peer.toStdString();
     if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
@@ -787,47 +790,32 @@ void AppModel::writeFriendStubsAsync(const QString & peer)
     for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
     if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;   // never an empty dir prefix
 
-    // Queue download markers live OUTSIDE the library tree (like .part files) — the real nodes land in the library.
-    const std::filesystem::path Incoming =
-        std::filesystem::path(PackageCatalog::LibraryRootDir(*Config)).parent_path() / ".incoming-nodes";
-    bool Materialized = false;
-    for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
+    const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]);
+    std::vector<std::string> Cids;
+    Cids.reserve(Plan.size());
+    for (const auto & T : Plan) Cids.push_back(T.Cid);
+    const auto Local = IpfsWrapper::DagGetManyLocal(Cids);   // blockstore READ — the queue does all fetching
+
+    std::vector<IpfsWrapper::FetchTarget> Batch;
+    std::error_code Ec;
+    for (const auto & T : Plan)
     {
-        if (!Arr.is_array()) continue;
-        std::vector<std::string> Roots;
-        for (const auto & X : Arr) if (X.is_string()) Roots.push_back(X.get<std::string>());
-        if (Roots.empty()) continue;
-
-        // What is local already? A blockstore READ — the queue does all fetching.
-        const NodeIndex Local = NodeGraph::BuildFrozenIndex(Roots, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
-        std::vector<IpfsWrapper::FetchTarget> Batch;
-        std::set<std::string> Seen;
-        auto Enq = [&](const std::string & Cid) {
-            if (!Seen.insert(Cid).second) return;             // 900 Minecraft variants share ONE tile — enqueue once
-            FriendBrowseCids.insert(Cid);
-            Batch.push_back(IpfsWrapper::FetchTarget{ Cid, (Incoming / (Cid + ".json")).string(), /*Optional=*/true });
-        };
-        for (const std::string & R : Roots)
-        {
-            const Node * N = Local.Find(R);
-            if (!N) { Enq(R); continue; }                                          // root block still missing
-            if (!N->LibraryItem.empty() && !Local.Find(N->LibraryItem)) Enq(N->LibraryItem);   // tile still missing
-        }
-        if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
-
-        if (PackageCatalog::MaterializeReceivedNodes(*Config, Nick + " - " + Lib, Roots) > 0) Materialized = true;
+        if (Local.count(T.Cid) && std::filesystem::exists(T.Dest, Ec)) continue;   // fetched + placed already
+        FriendBrowseCids.insert(T.Cid);
+        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true });
     }
-    if (Materialized) { rebuildCatalog(); emit friendCatalogChanged(); }
+    if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
 }
 
 void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)
 {
-    if (!FriendBrowseCids.count(cid.toStdString())) return;   // not one of our browse blocks -> ignore
-    if (FriendReconcilePending) return;                       // coalesce a burst of completions into one reconcile
+    if (!FriendBrowseCids.count(cid.toStdString())) return;   // not a received-share node block -> ignore
+    if (FriendReconcilePending) return;                       // coalesce a burst of completions into one rebuild
     FriendReconcilePending = true;
     QTimer::singleShot(2000, this, [this] {
         FriendReconcilePending = false;
-        reconcileReceivedLibraries();   // re-enqueue the next level (tiles after roots) + rebuild; convergent
+        rebuildCatalog();               // the landed blocks ARE ordinary tree packages — just re-scan
+        emit friendCatalogChanged();
     });
 }
 

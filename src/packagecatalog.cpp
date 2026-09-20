@@ -521,8 +521,8 @@ int SyncPackageSources(nlohmann::ordered_json &GlobalConfigJSON, std::string *Er
     {
         const std::string Cid = PackageSourceCID(Src);
         if (Cid.empty()) continue;
-        //Friend-share sources (scheme "friend:<peer>:<lib>") are DISK-ONLY: WriteFriendStubs writes their metadata
-        //stubs and click-hydrate fetches content. They must never be fetched / IPNS-resolved here.
+        //Legacy friend-share sources (scheme "friend:<peer>:<lib>", the retired stub receiver) are DISK-ONLY —
+        //never fetched / IPNS-resolved here. Received shares now land straight in the library tree (no source).
         if (Cid.rfind("friend:", 0) == 0) continue;
         //An IPNS-name source (a friend / a manual /ipns/ address) resolves to a MUTABLE top-level index and mirrors
         //per-package meta-CIDs — a different flow from a static folder CID (handled just below).
@@ -861,7 +861,7 @@ std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConf
     return Cids;
 }
 
-static bool DirHasContent(const std::string &Dir);   // defined below, near WriteFriendStubs
+static bool DirHasContent(const std::string &Dir);   // defined below, near PlanReceivedFetches
 
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled)
 {
@@ -956,10 +956,15 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     NodeGraph::MintResult MR;
     if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
 
-    // Group PUBLISH'd CIDs by LIBRARY (the collection dir the package lives in), so sharing is per-library. The share
+    // Group PUBLISH'd nodes by LIBRARY (the collection dir the package lives in), so sharing is per-library. The share
     // axis is the author's PUBLISH flag, decoupled from type — so runners (GUEST exec) and libraries (no exec) are
-    // shareable too, not just games. `Libraries` = {libName: [CID]}; a flat `PublishedList` stays for convenience.
-    // These are off-IPFS VidyaGod app data, exchanged over the friend channel.
+    // shareable too, not just games. `Libraries` = {libName: [{cid,node,uid,title,tilecid,tilenode}]} — each entry
+    // carries, besides the node-block CID, the metadata a RECEIVER needs to route the block to its FINAL library path
+    // (LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json) BEFORE fetching it, so a received share rides the ordinary
+    // rolling queue straight into the library tree with no intermediary dir and no post-fetch materialize step.
+    // A flat `PublishedList` of bare CIDs stays for convenience. Off-IPFS VidyaGod app data (friend channel).
+    std::map<std::string, std::string> CidToHandle;   // resolve a LIBRARYITEM that is already a CID (re-published
+    for (const auto &[H, C] : MR.HandleToCid) CidToHandle[C] = H;   // received package) back to its tree handle
     nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
     for (const auto &[Handle, Doc] : Tree)
@@ -967,13 +972,35 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (!Doc.value("PUBLISH", false)) continue;    // SHARE axis: only nodes the author flagged PUBLISH=true.
                                                        // Replaces the old "DeclareExec && !GUEST" filter (which
                                                        // silently excluded runners and no-exec library heads).
-                                                       // (Received friend stubs never reach here: the GatherWorkingTree
-                                                       // above skips "_friend_*" dirs, so they never enter the mint.)
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
+
+        // The node's LIBRARYITEM tile (lifted above): the receiver fetches it alongside and names the package dir
+        // after its UID/TITLE — variants sharing one tile land in ONE package dir, exactly like the local tree.
+        std::string TileHandle;
+        if (const std::string Li = Doc.value("LIBRARYITEM", std::string()); !Li.empty())
+        {
+            if (Tree.count(Li)) TileHandle = Li;
+            else if (const auto Rit = CidToHandle.find(Li); Rit != CidToHandle.end()) TileHandle = Rit->second;
+        }
+        std::string TileCid;
+        if (!TileHandle.empty())
+            if (const auto Tit = MR.HandleToCid.find(TileHandle); Tit != MR.HandleToCid.end()) TileCid = Tit->second;
+
+        std::string Uid = Handle, Title = Handle;      // no tile → the node stands alone under its own handle
+        if (!TileHandle.empty())
+        {
+            const nlohmann::ordered_json &T = Tree.at(TileHandle);
+            Uid = T.value("UID", std::string());
+            if (Uid.empty()) Uid = TileHandle;
+            Title = T.value("TITLE", TileHandle);
+        }
+
         std::string LibName = LibraryOf(Dirs[Handle], Root);
         if (LibName.empty()) LibName = "Library";
-        Libs[LibName].push_back(CidIt->second);
+        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", Handle}, {"uid", Uid}, {"title", Title}};
+        if (!TileCid.empty()) { E["tilecid"] = TileCid; E["tilenode"] = TileHandle; }
+        Libs[LibName].push_back(std::move(E));
         Flat.push_back(CidIt->second);
     }
     Config["Libraries"]     = std::move(Libs);
@@ -984,13 +1011,13 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     return MR.Published;   // the share list (PUBLISH'd roots), not the launch axis
 }
 
-// Bounds + helpers for the friend-stub receiver (a friend's snapshot is UNTRUSTED input).
-static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library root set (Go caps at 100k)
+// Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
+static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library item set (Go caps at 100k)
 static constexpr size_t kMaxFriendRootsTotal  = 100000;   // snapshot-wide cap across all of one peer's libraries
 
-// True if a dir holds any HYDRATED content (a file that isn't a node stub *.json) — i.e. the user has INSTALLED this
-// package. The stub-prune must never delete such a dir: a friend un-sharing (or a transient fetch failure) must never
-// rm a user's installed game.
+// True if a dir holds any HYDRATED content (a file that isn't a node *.json) — i.e. the user has INSTALLED this
+// package. Source removal must never delete such a dir: a withdrawal (or a transient failure) must never rm a
+// user's installed game.
 static bool DirHasContent(const std::string &Dir)
 {
     std::error_code Ec;
@@ -1007,197 +1034,68 @@ static bool DirHasContent(const std::string &Dir)
     return Ec ? true : false;   // couldn't fully inspect (permission/IO) → assume content; never rm what we can't read
 }
 
-int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PeerID, const std::string &Nick,
-                     const std::map<std::string, std::vector<std::string>> &Libs)
+std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
+                                               const std::string &NickLabel, const nlohmann::ordered_json &Libs)
 {
     namespace fs = std::filesystem;
+    // UNTRUSTED input (a friend's snapshot): every path segment is sanitized to a plain filename — no separators, no
+    // traversal — and the "[uid] title" / "<nick> - <lib>" shapes keep any segment from ever being "." or "..".
     auto San = [](const std::string &In) {
         std::string O;
         for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
                                        || c == ' ' || c == '[' || c == ']') ? c : '_');
         return O.empty() ? std::string("x") : O;
     };
-    if (!GlobalConfigJSON.contains("LIBRARY") || !GlobalConfigJSON["LIBRARY"].is_array())
-        GlobalConfigJSON["LIBRARY"] = nlohmann::ordered_json::array();
-    const std::string Label = Nick.empty() ? PeerID : Nick;
-
-    int Written = 0;
-    size_t TotalRoots = 0;   // snapshot-wide bound (a hostile friend could send many libs x many roots)
-    for (const auto &[LibName, Cids] : Libs)
+    std::vector<ReceivedFetch> Out;
+    if (!Libs.is_object()) return Out;
+    const fs::path Root = fs::path(LibraryRootDir(GlobalConfigJSON));
+    std::set<std::string> UsedDests;   // 900 variants share ONE tile → one target; a NODE_ID collision keeps first-seen
+    auto Add = [&](const std::string &Cid, const fs::path &Dest) {
+        if (Cid.empty() || Cid.size() > 128) return;
+        if (!UsedDests.insert(Dest.string()).second) return;
+        Out.push_back(ReceivedFetch{Cid, Dest.string()});
+    };
+    size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)
+    for (const auto &[LibName, Items] : Libs.items())
     {
-        if (Cids.empty()) continue;
-        if (TotalRoots >= kMaxFriendRootsTotal)
+        if (!Items.is_array()) continue;
+        const fs::path LibDir = Root / San(NickLabel + " - " + LibName);
+        size_t PerLib = 0;
+        for (const auto &It : Items)
         {
-            LogWarn("PackageCatalog::WriteFriendStubs", "snapshot from " + PeerID + " exceeds "
-                    + std::to_string(kMaxFriendRootsTotal) + " total roots — ignoring the rest");
-            break;
-        }
-        TotalRoots += Cids.size();
-        const std::string SourceKey   = "friend:" + PeerID + ":" + LibName;
-        const std::string DisplayName = Label + " \xc2\xb7 " + LibName;   // "Nick · Lib" (middle dot = U+00B7)
-        (void)AddPackageSource(GlobalConfigJSON, SourceKey, DisplayName, /*Friend=*/true);   // no-op if already present
-        const int SrcIdx = PackageSourceIndexForCID(GlobalConfigJSON, SourceKey);
-        if (SrcIdx < 0) continue;
-        GlobalConfigJSON["Settings"]["PackageSources"][SrcIdx]["NAME"] = DisplayName;        // keep the label fresh
-        const std::string SourceDir = PackageSourceDir(GlobalConfigJSON, GlobalConfigJSON["Settings"]["PackageSources"][SrcIdx]);
-        std::error_code Ec; fs::create_directories(SourceDir, Ec);
-
-        // Bound a hostile/huge snapshot: cap roots per library (a friend controls the CID count within Go's 100k limit).
-        std::vector<std::string> Roots = Cids;
-        if (Roots.size() > kMaxFriendRootsPerLib)
-        {
-            LogWarn("PackageCatalog::WriteFriendStubs", "library '" + LibName + "' from " + PeerID + " has "
-                    + std::to_string(Roots.size()) + " roots — capping at " + std::to_string(kMaxFriendRootsPerLib));
-            Roots.resize(kMaxFriendRootsPerLib);
-        }
-        // Shallow browse-fetch: each published root + its LIBRARYITEM tile only (title/cover) — never the content graph.
-        std::vector<std::string> Missing;
-        NodeIndex Idx = NodeGraph::BuildFrozenIndex(Roots, &Missing, /*Shallow=*/true);
-        if (!Missing.empty())
-            LogWarn("PackageCatalog::WriteFriendStubs", std::to_string(Missing.size()) + " root block(s) of '"
-                    + LibName + "' from " + PeerID + " unfetchable right now — they will NOT be pruned");
-
-        // Group published roots by tile CID (LIBRARYITEM); a tile-less root (runner / library head) stands alone.
-        std::map<std::string, std::vector<std::string>> Group;
-        for (const std::string &Root : Roots)
-        {
-            const Node *R = Idx.Find(Root);
-            if (!R) continue;                                  // unfetchable (offline / withdrawn block) -> skipped
-            Group[R->LibraryItem.empty() ? Root : R->LibraryItem].push_back(Root);
-        }
-
-        std::set<std::string> KeepDirs;
-        for (const auto &[GroupKey, Members] : Group)
-        {
-            const Node *Tile  = Idx.Find(GroupKey);
-            const bool  Card  = Tile && Tile->Presentable();
-            const Node *First = Idx.Find(Members.front());
-            const std::string Uid   = Card ? (Tile->Uid.empty() ? Tile->NodeId : Tile->Uid)
-                                           : (First ? (First->Uid.empty() ? First->NodeId : First->Uid) : GroupKey);
-            const std::string Title = Card ? Tile->Meta.value("TITLE", Tile->NodeId)
-                                           : (First ? First->NodeId : GroupKey);
-            const std::string PkgDir = QDir::cleanPath(QString::fromStdString(
-                                           SourceDir + "/" + San("[" + Uid + "] " + Title))).toStdString();
-            fs::create_directories(PkgDir, Ec);
-
-            std::set<std::string> Used;
-            auto WriteStub = [&](const std::string &NodeCid) {
-                std::string Err;
-                const std::string Js = IpfsWrapper::DagGet(NodeCid, &Err);
-                if (Js.empty()) { LogWarn("PackageCatalog::WriteFriendStubs", "stub fetch failed " + NodeCid + ": " + Err); return; }
-                nlohmann::ordered_json J = nlohmann::ordered_json::parse(Js, nullptr, false);
-                if (J.is_discarded() || !J.is_object()) { LogWarn("PackageCatalog::WriteFriendStubs", "unparseable stub block " + NodeCid); return; }
-                NodeGraph::NormalizeLinks(J);   // {"/":cid} -> plain CID strings (readable; re-freezes to the same CID)
-                std::string Base = San(J.value("NODE_ID", NodeCid.substr(0, 12)));
-                if (!Used.insert(Base).second) Base += "_" + NodeCid.substr(0, 12);   // NODE_ID collision -> disambiguate
-                std::ofstream Out(PkgDir + "/" + Base + ".json");
-                if (!Out) { LogWarn("PackageCatalog::WriteFriendStubs", "cannot write stub " + Base + ".json in " + PkgDir); return; }
-                Out << J.dump(2) << "\n";
-            };
-            if (Card) WriteStub(GroupKey);                     // the tile stub (title/cover)
-            for (const std::string &M : Members) WriteStub(M); // the launchable / root stubs
-
-            UpsertMirrorEntry(GlobalConfigJSON["LIBRARY"], PkgDir, Uid, GroupKey, Title, SourceKey);
-            KeepDirs.insert(PkgDir);
-            ++Written;
-        }
-
-        // Prune packages withdrawn from THIS library's snapshot — SAFELY. Two hard data-loss rules:
-        //  (1) Only on a FULLY-RESOLVED snapshot (Missing empty): a partial fetch must never be read as "withdrawn",
-        //      or a friend's transiently-unreachable blocks would delete real entries.
-        //  (2) NEVER delete a dir holding hydrated content (an installed game the user keeps): a remote un-share, or
-        //      any prune, must not rm a user's install — such a package keeps its entry + files (stays launchable).
-        if (Missing.empty())
-        {
-            auto &Lib = GlobalConfigJSON["LIBRARY"];
-            for (int i = (int)Lib.size() - 1; i >= 0; --i)
+            if (Total >= kMaxFriendRootsTotal)
             {
-                if (!Lib[i].is_object() || Lib[i].value("SOURCE", std::string()) != SourceKey) continue;
-                const std::string P = Lib[i].value("PATH", std::string());
-                if (KeepDirs.count(P)) continue;
-                if (DirHasContent(P)) continue;   // installed content → preserve entry + files; never rm an install
-                fs::remove_all(P, Ec);
-                Lib.erase(Lib.begin() + i);
+                LogWarn("PackageCatalog::PlanReceivedFetches", "snapshot exceeds "
+                        + std::to_string(kMaxFriendRootsTotal) + " total items — ignoring the rest");
+                return Out;
+            }
+            if (++PerLib > kMaxFriendRootsPerLib)
+            {
+                LogWarn("PackageCatalog::PlanReceivedFetches", "library '" + LibName + "' exceeds "
+                        + std::to_string(kMaxFriendRootsPerLib) + " items — capping");
+                break;
+            }
+            ++Total;
+            if (!It.is_object()) continue;
+            const std::string Cid = It.value("cid", std::string());
+            if (Cid.empty()) continue;
+            std::string NodeId = It.value("node", std::string());
+            if (NodeId.empty()) NodeId = Cid.substr(0, 12);
+            std::string Uid = It.value("uid", std::string());
+            if (Uid.empty()) Uid = NodeId;
+            std::string Title = It.value("title", std::string());
+            if (Title.empty()) Title = NodeId;
+            const fs::path PkgDir = LibDir / San("[" + Uid + "] " + Title);
+            Add(Cid, PkgDir / (San(NodeId) + ".json"));
+            if (const std::string TileCid = It.value("tilecid", std::string()); !TileCid.empty())
+            {
+                std::string TileNode = It.value("tilenode", std::string());
+                if (TileNode.empty()) TileNode = TileCid.substr(0, 12);
+                Add(TileCid, PkgDir / (San(TileNode) + ".json"));
             }
         }
     }
-
-    // Drop friend sources for THIS peer whose library is no longer shared at all (withdrawn wholesale).
-    if (GlobalConfigJSON.contains("Settings") && GlobalConfigJSON["Settings"].is_object()
-        && GlobalConfigJSON["Settings"].contains("PackageSources") && GlobalConfigJSON["Settings"]["PackageSources"].is_array())
-    {
-        const std::string Prefix = "friend:" + PeerID + ":";
-        auto &Arr = GlobalConfigJSON["Settings"]["PackageSources"];
-        for (int i = (int)Arr.size() - 1; i >= 0; --i)
-        {
-            const std::string C = PackageSourceCID(Arr[i]);
-            if (C.rfind(Prefix, 0) != 0) continue;
-            if (Libs.count(C.substr(Prefix.size()))) continue;   // still shared -> keep
-            RemovePackageSource(GlobalConfigJSON, i, /*PreserveInstalled=*/true);   // withdrawn -> drop source, KEEP installs
-        }
-    }
-    return Written;
-}
-
-int MaterializeReceivedNodes(nlohmann::ordered_json &GlobalConfigJSON, const std::string &LibDirName,
-                             const std::vector<std::string> &RootCids)
-{
-    namespace fs = std::filesystem;
-    auto San = [](const std::string &In) {
-        std::string O;
-        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
-                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
-        return O.empty() ? std::string("x") : O;
-    };
-    const fs::path LibDir = fs::path(LibraryRootDir(GlobalConfigJSON)) / San(LibDirName);
-    // LOCAL blockstore read (roots + their tiles) — never a fetch; the rolling queue does all fetching.
-    NodeIndex Idx = NodeGraph::BuildFrozenIndex(RootCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
-    std::map<std::string, std::vector<std::string>> Group;   // tile cid (or the root itself) -> member roots
-    for (const std::string &Root : RootCids)
-    {
-        const Node *R = Idx.Find(Root);
-        if (!R) continue;                                               // block not landed yet
-        if (!R->LibraryItem.empty() && !Idx.Find(R->LibraryItem)) continue;   // tile pending → a later pass gets it
-        Group[R->LibraryItem.empty() ? Root : R->LibraryItem].push_back(Root);
-    }
-    int Written = 0;
-    std::error_code Ec;
-    for (const auto &[GroupKey, Members] : Group)
-    {
-        const Node *Tile  = Idx.Find(GroupKey);
-        const bool  Card  = Tile && Tile->Presentable();
-        const Node *First = Idx.Find(Members.front());
-        const std::string Uid   = Card ? (Tile->Uid.empty() ? Tile->NodeId : Tile->Uid)
-                                       : (First ? (First->Uid.empty() ? First->NodeId : First->Uid) : GroupKey);
-        const std::string Title = Card ? Tile->Meta.value("TITLE", Tile->NodeId)
-                                       : (First ? First->NodeId : GroupKey);
-        const fs::path PkgDir = LibDir / San("[" + Uid + "] " + Title);
-        std::set<std::string> Used;
-        bool Wrote = false;
-        auto WriteNode = [&](const std::string &NodeCid) {
-            const Node *N = Idx.Find(NodeCid);
-            if (!N) return;
-            std::string Base = San(N->NodeId.empty() ? NodeCid.substr(0, 12) : N->NodeId);
-            if (!Used.insert(Base).second) Base += "_" + NodeCid.substr(0, 12);   // NODE_ID collision → disambiguate
-            const fs::path File = PkgDir / (Base + ".json");
-            if (fs::exists(File, Ec)) return;                           // already materialized (idempotent)
-            const auto Blk = IpfsWrapper::DagGetManyLocal({NodeCid});
-            const auto Bit = Blk.find(NodeCid);
-            if (Bit == Blk.end()) return;
-            nlohmann::ordered_json J = nlohmann::ordered_json::parse(Bit->second, nullptr, false);
-            if (J.is_discarded() || !J.is_object()) return;
-            NodeGraph::NormalizeLinks(J);                               // {"/":cid} → plain CID strings (re-freezes identically)
-            fs::create_directories(PkgDir, Ec);
-            std::ofstream Out(File);
-            if (!Out) { LogWarn("PackageCatalog::MaterializeReceivedNodes", "cannot write " + File.string()); return; }
-            Out << J.dump(2) << "\n";
-            Wrote = true;
-        };
-        if (Card) WriteNode(GroupKey);                                  // the tile (title/cover)
-        for (const std::string &M : Members) WriteNode(M);              // the shared roots
-        if (Wrote) ++Written;
-    }
-    return Written;
+    return Out;
 }
 
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)

@@ -18,7 +18,9 @@
 #include "apppaths.h"
 #include "commonutils.h"
 
+#include <filesystem>
 #include <fstream>
+#include <set>
 #ifndef Q_OS_WIN
 #include <unistd.h>
 #endif
@@ -247,78 +249,25 @@ private slots:
         QCOMPARE((int)cfg["PublishedList"].size(), 3);      // exactly the three flagged roots
         QCOMPARE((int)Published.size(), 3);                 // return value == the share list
 
-        IpfsWrapper::StopNode();
-    }
-
-    // Receiver: a friend's shared libraries become browsable, un-hydrated catalog STUBS grouped per (peer, library),
-    // with many variants collapsing to one card, and a withdrawn library pruned. Teeth: publish a 2-variant game + a
-    // runner (real CIDs), feed them to WriteFriendStubs as a friend's snapshot, and index the receiver's catalog.
-    void receiver_writes_browsable_stubs_grouped_per_source()
-    {
-        std::string Err;
-        QTemporaryDir Repo; QVERIFY(Repo.isValid());
-        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-
-        // Seeder side: a working tree with a 2-variant game (shared tile) + a runner, all PUBLISH'd, minted -> real CIDs.
-        QTemporaryDir Root; QVERIFY(Root.isValid());
-        const QString R = Root.path();
-        QDir().mkpath(R + "/VidyaGod/[7] Multi");
-        QDir().mkpath(R + "/VidyaGodRunners/wine");
-        writeJson(R + "/VidyaGod/[7] Multi/tile.json", NodeFixture::Chain("m_tile", {NodeFixture::Tile("7", "Multi")}));
-        writeJson(R + "/VidyaGod/[7] Multi/v1.json",
-                  NodeFixture::Chain("m_v1", {NodeFixture::Exec("win32", "v1.exe")}, {"m_tile"}, {{"PUBLISH", true}}));
-        writeJson(R + "/VidyaGod/[7] Multi/v2.json",
-                  NodeFixture::Chain("m_v2", {NodeFixture::Exec("win32", "v2.exe")}, {"m_tile"}, {{"PUBLISH", true}}));
-        writeJson(R + "/VidyaGodRunners/wine/wine.json",
-                  NodeFixture::Chain("m_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}, {}, {{"PUBLISH", true}}));
-        json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
-        PackageCatalog::PublishLibrary(seeder, &Err);
-        QVERIFY(seeder.contains("Libraries") && seeder["Libraries"].is_object());
-
-        // Receiver side (same blockstore, so DagGet resolves): treat the seeder's Libraries as a friend's snapshot.
-        std::map<std::string, std::vector<std::string>> Libs;
-        for (auto & lib : seeder["Libraries"].items())
-        {
-            std::vector<std::string> v;
-            for (auto & c : lib.value()) if (c.is_string()) v.push_back(c.get<std::string>());
-            Libs[lib.key()] = v;
-        }
-        QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
-        const int Written = PackageCatalog::WriteFriendStubs(rx, "12D3KooWPeer", "Alice", Libs);
-        QCOMPARE(Written, 2);                                          // the multi-variant game + the runner = 2 packages
-
-        // One friend source per (peer, library), named "Nick · Lib", scheme "friend:".
-        QVERIFY(rx["Settings"].contains("PackageSources"));
-        bool haveGames = false, haveRunners = false;
-        for (auto & s : rx["Settings"]["PackageSources"])
-        {
-            QVERIFY2(s.value("CID", std::string()).rfind("friend:", 0) == 0, "friend source scheme");
-            const std::string n = s.value("NAME", std::string());
-            if (n == std::string("Alice \xc2\xb7 VidyaGod"))        haveGames = true;
-            if (n == std::string("Alice \xc2\xb7 VidyaGodRunners")) haveRunners = true;
-        }
-        QVERIFY2(haveGames,   "a 'Nick · VidyaGod' source is created");
-        QVERIFY2(haveRunners, "a 'Nick · VidyaGodRunners' source is created (runners are shareable now)");
-
-        // The 2 variants collapse to ONE card (shared tile); both indexed as un-hydrated browsable stubs.
-        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(Idx.Find("m_v1") != nullptr && Idx.Find("m_v2") != nullptr, "received variants index as stubs");
-        QCOMPARE(Idx.Find("m_v1")->GameKey(), Idx.Find("m_v2")->GameKey());   // same tile -> one card
-        QVERIFY2(Idx.Find("m_wine") != nullptr, "the received runner indexes too");
-
-        // Reconcile: withdraw the runner library wholesale -> its source + stubs are pruned; the game stays.
-        Libs.erase("VidyaGodRunners");
-        PackageCatalog::WriteFriendStubs(rx, "12D3KooWPeer", "Alice", Libs);
-        NodeIndex Idx2 = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(Idx2.Find("m_wine") == nullptr, "a withdrawn library's stubs are pruned");
-        QVERIFY2(Idx2.Find("m_v1") != nullptr,   "the still-shared game remains");
+        // Each entry carries the RECEIVER's routing metadata — enough to compute the final library path pre-fetch.
+        const auto & G = Libs["VidyaGod"][0];
+        QVERIFY2(!G.value("cid", std::string()).empty(), "entry names its node-block CID");
+        QCOMPARE(G.value("node", std::string()),  std::string("g_exec"));
+        QCOMPARE(G.value("uid", std::string()),   std::string("1"));       // from the LIBRARYITEM tile
+        QCOMPARE(G.value("title", std::string()), std::string("Game"));
+        QVERIFY2(!G.value("tilecid", std::string()).empty(), "the tile block rides along");
+        QCOMPARE(G.value("tilenode", std::string()), std::string("g_tile"));
+        const auto & W = Libs["VidyaGodRunners"][0];
+        QCOMPARE(W.value("node", std::string()),  std::string("r_wine"));
+        QCOMPARE(W.value("uid", std::string()),   std::string("r_wine"));  // no tile -> stands under its own handle
+        QVERIFY2(!W.contains("tilecid"), "a tile-less node ships no tile fields");
 
         IpfsWrapper::StopNode();
     }
 
-    // Helper: publish two distinct PUBLISH'd games in one collection and return their two launchable CIDs.
-    std::vector<std::string> publishTwoGames(const QString & root)
+    // Helper: publish two distinct PUBLISH'd games in one collection and return their two share entries
+    // ({cid,node,uid,title,tilecid,tilenode} routing objects, as PublishLibrary emits them).
+    json publishTwoGames(const QString & root)
     {
         std::string Err;
         QDir().mkpath(root + "/VidyaGod/[1] A");
@@ -336,39 +285,56 @@ private slots:
                   NodeFixture::Chain("b_exec", {NodeFixture::Exec("win32", "b.exe")}, {"b_tile"}, {{"PUBLISH", true}}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
-        std::vector<std::string> Cids;
-        if (seeder["Libraries"].contains("VidyaGod"))
-            for (auto & c : seeder["Libraries"]["VidyaGod"]) if (c.is_string()) Cids.push_back(c.get<std::string>());
-        return Cids;
+        return seeder["Libraries"].contains("VidyaGod") ? seeder["Libraries"]["VidyaGod"] : json::array();
     }
 
-    // A received share MATERIALIZES as ORDINARY packages in an ORDINARY library dir ("<Nick> - <Lib>") — the same
-    // on-disk artifact every node is. From there zero friend-specific code runs: the plain catalog scan indexes them
-    // (CID-keyed, real BundleDir). Roots whose tile hasn't landed wait for a later pass; re-runs are idempotent.
-    // Teeth: break the tree layout, the tile grouping, or idempotency and the asserts below fail.
-    void received_share_materializes_as_ordinary_library_packages()
+    // A received share goes STRAIGHT to the library: PlanReceivedFetches turns the snapshot's routing metadata into
+    // rolling-queue targets whose dests ARE the final tree paths ("<Nick> - <Lib>/[uid] Title/<node>.json"); the queue
+    // lands each node block VERBATIM at its dest (simulated below), and from there zero friend-specific code runs —
+    // the plain catalog scan indexes the raw dag-json (link normalization at scan), CID identity survives, and the
+    // vacuous-hydration guard routes the un-installed package to the Catalog tab. Teeth: break the dest layout, the
+    // tile ride-along, scan-time NormalizeLinks (CID identity dies), the hydration guard, or planner idempotency and
+    // the asserts below fail. Hostile uid/title/node must never escape the library root.
+    void received_share_lands_at_final_library_paths()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
-        const std::vector<std::string> Cids = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
-        QCOMPARE((int)Cids.size(), 2);
+        const json Items = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
+        QCOMPARE((int)Items.size(), 2);
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
 
-        const int W = PackageCatalog::MaterializeReceivedNodes(rx, "Alice - Games", Cids);
-        QCOMPARE(W, 2);
-        const QString Lib = RxData.path() + "/Alice - Games";
-        QVERIFY2(QFile::exists(Lib + "/[1] A/a_exec.json"), "root node lands NODE_ID-named in its [uid] Title package dir");
-        QVERIFY2(QFile::exists(Lib + "/[1] A/a_tile.json"), "the tile lands beside its variants");
-        QVERIFY2(QFile::exists(Lib + "/[2] B/b_exec.json"), "second game gets its own package dir");
+        // Plan: every node + its tile gets a FINAL library dest, computed pre-fetch from the snapshot alone.
+        const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
+        QCOMPARE((int)Plan.size(), 4);                          // 2 roots + their 2 tiles
+        const std::string Lib = RxData.path().toStdString() + "/Alice - Games";
+        std::set<std::string> Dests;
+        for (const auto & T : Plan) Dests.insert(T.Dest);
+        QVERIFY2(Dests.count(Lib + "/[1] A/a_exec.json"), "root dest = NODE_ID-named file in its [uid] Title dir");
+        QVERIFY2(Dests.count(Lib + "/[1] A/a_tile.json"), "the tile rides along into the SAME package dir");
+        QVERIFY2(Dests.count(Lib + "/[2] B/b_exec.json"), "second game gets its own package dir");
+        QVERIFY2(Dests.count(Lib + "/[2] B/b_tile.json"), "…with its tile");
 
-        // The ORDINARY catalog scan indexes them — no fold, no tags, no sources.
+        // Land the blocks exactly as the rolling queue does: the block's RAW dag-json bytes, verbatim, at the dest.
+        for (const auto & T : Plan)
+        {
+            const auto Blk = IpfsWrapper::DagGetManyLocal({T.Cid});
+            const auto It = Blk.find(T.Cid);
+            QVERIFY2(It != Blk.end(), "published block must be locally readable");
+            std::filesystem::create_directories(std::filesystem::path(T.Dest).parent_path());
+            std::ofstream Out(T.Dest, std::ios::binary);
+            Out << It->second;
+        }
+
+        // The ORDINARY catalog scan indexes them — raw dag-json links normalize at scan, so the node freezes back to
+        // the SAME CID (identity survives the wire; a re-publish re-mints identically — the multi-seeder design).
         auto Idx = PackageCatalog::BuildCatalogIndex(rx);
-        auto It = Idx.Nodes.find(Cids[0]);
-        QVERIFY2(It != Idx.Nodes.end(), "a materialized node freezes back to the SAME CID in the plain tree scan");
+        const std::string Cid0 = Items[0].value("cid", std::string());
+        auto It = Idx.Nodes.find(Cid0);
+        QVERIFY2(It != Idx.Nodes.end(), "a landed raw block freezes back to the SAME CID in the plain tree scan");
         QVERIFY2(!It->second.BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
 
         // Vacuous-hydration guard: an un-installed received game (PARENTS not fetched) must read NOT hydrated —
@@ -378,70 +344,42 @@ private slots:
         QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated,
                  "a received, un-installed package must not count as hydrated (its closure is not fetched)");
 
-        // Idempotent: a second pass writes nothing.
-        QCOMPARE(PackageCatalog::MaterializeReceivedNodes(rx, "Alice - Games", Cids), 0);
-        IpfsWrapper::StopNode();
-    }
+        // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
+        const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"uid", ".."}, {"title", "../.."},
+                                            {"tilecid", Items[0].value("tilecid", std::string())}, {"tilenode", "/etc/passwd"}}});
+        const auto EvilPlan = PackageCatalog::PlanReceivedFetches(rx, "..", json{{"..", Evil}});
+        QVERIFY(!EvilPlan.empty());
+        const std::string RootPrefix = RxData.path().toStdString() + "/";
+        for (const auto & T : EvilPlan)
+        {
+            const std::string Canon = std::filesystem::weakly_canonical(T.Dest).string();
+            QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the library root: " + Canon).c_str());
+        }
 
-    // DATA-LOSS GUARD 1: a package withdrawn from a still-shared library is NOT deleted if the user has INSTALLED it
-    // (its stub dir holds hydrated content). Teeth: without DirHasContent the withdrawn dir is rm'd — asserts fail.
-    void receiver_prune_preserves_installed_content()
-    {
-        std::string Err;
-        QTemporaryDir Repo; QVERIFY(Repo.isValid());
-        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-        QTemporaryDir Root; QVERIFY(Root.isValid());
-        const std::vector<std::string> Cids = publishTwoGames(Root.path());
-        QCOMPARE((int)Cids.size(), 2);
+        // Planner dedupe: the same snapshot plans the same 4 targets again (stable), never duplicates within one plan.
+        const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
+        QCOMPARE((int)Plan2.size(), 4);
+        std::set<std::string> D2; for (const auto & T : Plan2) D2.insert(T.Dest);
+        QCOMPARE(D2.size(), Plan2.size());
 
-        QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
-
-        // Run 1: share only the first game → one stub package. Then "install" it (drop a content file in its dir).
-        std::map<std::string, std::vector<std::string>> Libs{{"VidyaGod", {Cids[0]}}};
-        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
-        std::string dir0;
-        for (auto & e : rx["LIBRARY"])
-            if (e.is_object() && e.value("SOURCE", std::string()) == "friend:peerX:VidyaGod") dir0 = e.value("PATH", std::string());
-        QVERIFY2(!dir0.empty(), "the first game wrote a stub package");
-        { std::ofstream f(dir0 + "/game.bin"); f << "installed-content"; }
-
-        // Run 2: snapshot now shares only the SECOND game → the first is withdrawn from a still-shared library, but it
-        // has installed content, so it MUST be preserved (entry + dir + the content file).
-        Libs["VidyaGod"] = {Cids[1]};
-        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
-        QVERIFY2(QFile::exists(QString::fromStdString(dir0 + "/game.bin")), "installed content must NOT be deleted on withdrawal");
-        bool kept = false;
-        for (auto & e : rx["LIBRARY"]) if (e.is_object() && e.value("PATH", std::string()) == dir0) kept = true;
-        QVERIFY2(kept, "the installed package's LIBRARY entry must survive withdrawal");
-
-        IpfsWrapper::StopNode();
-    }
-
-    // DATA-LOSS GUARD 2: a snapshot with an UNFETCHABLE root (partial fetch) must not prune anything — "couldn't fetch"
-    // is never "withdrawn". Teeth: without the Missing-empty guard, the earlier stub is pruned — the assert fails.
-    void receiver_unfetchable_root_does_not_prune()
-    {
-        std::string Err;
-        QTemporaryDir Repo; QVERIFY(Repo.isValid());
-        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-        QTemporaryDir Root; QVERIFY(Root.isValid());
-        const std::vector<std::string> Cids = publishTwoGames(Root.path());
-        QVERIFY(Cids.size() >= 1);
-
-        QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
-        std::map<std::string, std::vector<std::string>> Libs{{"VidyaGod", {Cids[0]}}};
-        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
-        std::string dir0;
-        for (auto & e : rx["LIBRARY"])
-            if (e.is_object() && e.value("SOURCE", std::string()) == "friend:peerX:VidyaGod") dir0 = e.value("PATH", std::string());
-        QVERIFY(!dir0.empty());
-
-        // A well-formed but ABSENT CIDv1 → unfetchable → Missing non-empty → prune must be skipped entirely.
-        Libs["VidyaGod"] = {"bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"};
-        PackageCatalog::WriteFriendStubs(rx, "peerX", "Alice", Libs);
-        QVERIFY2(QDir(QString::fromStdString(dir0)).exists(), "a stub must NOT be pruned on a partial (unfetchable) snapshot");
+        // RE-PUBLISH (multi-seeder): the received library re-mints to IDENTICAL CIDs and re-shares with the SAME
+        // routing metadata — which requires the raw-landed docs to read as ordinary tree nodes (scan-time link
+        // normalization: LIBRARYITEM must come back as a plain CID string for the tile uid/title lookup). Teeth for
+        // NormalizeLinks-at-scan and for PublishLibrary's LIBRARYITEM-as-CID reverse lookup: drop either and the
+        // uid/title/tile asserts fail; a drifting re-mint breaks the cid equality.
+        std::string PubErr;
+        PackageCatalog::PublishLibrary(rx, &PubErr);
+        QVERIFY2(rx.contains("Libraries") && rx["Libraries"].contains("Alice - Games"),
+                 "the received library re-publishes under its own dir name");
+        const auto & Re = rx["Libraries"]["Alice - Games"];
+        QCOMPARE((int)Re.size(), 2);
+        const auto & R0 = Re[0];                                   // handle order: a_exec first
+        QCOMPARE(R0.value("cid", std::string()),  Cid0);           // identical re-mint — the multi-seeder design
+        QCOMPARE(R0.value("node", std::string()), std::string("a_exec"));
+        QCOMPARE(R0.value("uid", std::string()),  std::string("1"));
+        QCOMPARE(R0.value("title", std::string()), std::string("A"));
+        QCOMPARE(R0.value("tilenode", std::string()), std::string("a_tile"));
+        QCOMPARE(R0.value("tilecid", std::string()), Items[0].value("tilecid", std::string()));
 
         IpfsWrapper::StopNode();
     }

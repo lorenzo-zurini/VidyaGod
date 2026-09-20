@@ -247,23 +247,17 @@ struct RemintEntry { std::string Level, Name, Cid; };
 // shared directly. Call OFF the UI thread + with the node online (DagPut stores blocks). Supersedes PublishLibraries.
 std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::string *Error = nullptr);
 
-// Receiver: write a friend's shared libraries as browsable, metadata-only STUBS so they appear in the Catalog as
-// un-hydrated tiles grouped per (peer, library) ("Nick · Lib"), WITHOUT downloading content. `Libs` = {libName:
-// [PUBLISH'd root CID]} (a friend's snapshot). Per library: adds/refreshes a "friend:<peer>:<lib>" source, shallow-
-// fetches each root + its tile, groups by tile (many variants -> one package dir), writes each node's plain-CID JSON,
-// and upserts a SOURCE-tagged LIBRARY entry. Prunes packages/libraries withdrawn from the snapshot. Content is fetched
-// only when the user clicks (hydrate). Requires the node online (DagGet). Returns the number of packages written.
-int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PeerID, const std::string &Nick,
-                     const std::map<std::string, std::vector<std::string>> &Libs);
-
-// Materialize a friend's SHARED nodes into the working tree as ORDINARY packages in an ORDINARY library dir
-// (e.g. "Alice - VidyaGod"): each locally-present node block becomes the same on-disk artifact every node is — a
-// pretty, NODE_ID-named .json inside a "[uid] Title" package dir — so ZERO friend-specific code runs afterwards
-// (catalog scan, hydration, install, and re-publish all just work; re-publishing identical nodes yields identical
-// CIDs — the multi-seeder design). Roots whose tile block hasn't landed yet are skipped until a later pass.
-// Blockstore READS only; the rolling queue does all fetching. Idempotent. Returns package dirs written this pass.
-int MaterializeReceivedNodes(nlohmann::ordered_json &GlobalConfigJSON, const std::string &LibDirName,
-                             const std::vector<std::string> &RootCids);
+// Receiver: turn a friend's share snapshot into plain rolling-queue fetch targets whose destinations are the FINAL
+// working-tree paths — LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json — straight from the snapshot's routing
+// metadata (each item = {cid, node, uid, title, tilecid, tilenode}; the tile block gets its own target in the same
+// package dir). No intermediary dir, no post-fetch materialize: the queue writes + pins each node block at its
+// library path like any file, and the ordinary catalog scan / hydration / install / re-publish take it from there
+// (re-publishing identical nodes yields identical CIDs — the multi-seeder design). `Libs` = the peer's whole
+// {libName: [item]} record; `NickLabel` prefixes the per-library dir names. UNTRUSTED input: every path segment is
+// sanitized and item counts are bounded. Pure planning — touches no disk, fetches nothing.
+struct ReceivedFetch { std::string Cid; std::string Dest; };
+std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
+                                               const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 
 // True when a node's PARENTS reference ids missing from the index — a received package whose composition graph is
 // not fetched yet. Such a node always has something to download (hydration fetches the closure) even though
