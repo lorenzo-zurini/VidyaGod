@@ -534,23 +534,46 @@ void IpfsModel::refresh()
             const QString C = QString::fromStdString(P.Cid);
             if (!HaveSize.contains(C)) { const long long S = IpfsWrapper::CidSizeLocal(P.Cid); if (S >= 0) Sizes[C] = S; }
         }
-        // Deliverability: walk ONLY pins we have not verified yet (startup → all once; steady state → none; a serve
-        // failure invalidates entries so they re-verify here). This is the per-pin filestore DAG-walk that used to run
-        // for EVERY pin on the UI thread every 5s and froze the app — now off-thread and only when actually needed.
-        QHash<QString, QString> Verdicts;
-        for (const auto & P : Pins) {
-            const QString C = QString::fromStdString(P.Cid);
-            if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
-        }
         std::error_code Ec;
         const auto Sp = std::filesystem::space(LibRoot, Ec);
         St.diskFree = Ec ? -1 : (qlonglong)Sp.available;
 
+        // Post the ROWS now — pins + sizes are cheap local reads. The deliverability sweep below is NOT: it walks
+        // every block of every unverified pin through leveldb (a full library at startup = minutes of grinding —
+        // measured live: cidServeStatus dominated the profile while the tab sat "dead" waiting for this one post).
+        // Rows must never wait on verdicts; verdicts stream in afterwards, chunk by chunk.
         if (!A->load()) return;   // model destroyed mid-refresh → don't post back to `this`
-        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading, Verdicts]{
-            RefreshInFlight = false;
-            applySnapshot(St, Pins, Sizes, Uploading, Verdicts);
+        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading]{
+            applySnapshot(St, Pins, Sizes, Uploading, {});
         }, Qt::QueuedConnection);
+
+        // Deliverability: walk ONLY pins we have not verified yet (startup → all once; steady state → none; a serve
+        // failure invalidates entries so they re-verify here). Chunked: every ~64 pins the verdicts land on the UI
+        // (rows flip from "verifying" as the sweep progresses) instead of one post after the whole library.
+        QHash<QString, QString> Verdicts;
+        auto Post = [this, A](QHash<QString, QString> & V, bool Final){
+            if ((V.isEmpty() && !Final) || !A->load()) return;
+            QHash<QString, QString> Out; Out.swap(V);
+            QMetaObject::invokeMethod(this, [this, Out, Final]{
+                for (auto it = Out.constBegin(); it != Out.constEnd(); ++it)
+                {
+                    SeedVerdict[it.key()] = it.value();
+                    // An ERROR verdict flips its (currently green) row now; "" verdicts change nothing — the row
+                    // already shows Seeded, absent-verdict = provisional Seeded by design.
+                    auto Row = Cids.find(it.key());
+                    if (Row != Cids.end() && !it.value().isEmpty() && Row->phase == CidState::Seeded)
+                    { Row->phase = CidState::Errored; Row->error = it.value(); emit cidChanged(it.key()); }
+                }
+                if (Final) RefreshInFlight = false;           // the refresh cycle ends when the sweep does
+            }, Qt::QueuedConnection);
+        };
+        for (const auto & P : Pins) {
+            if (!A->load()) return;                            // app closing — abandon the sweep silently
+            const QString C = QString::fromStdString(P.Cid);
+            if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
+            if (Verdicts.size() >= 64) Post(Verdicts, false);
+        }
+        Post(Verdicts, true);
     }).detach();
 }
 
