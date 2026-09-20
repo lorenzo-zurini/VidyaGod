@@ -154,6 +154,9 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bo
 
     std::string Err;
     const int Rc = FetchOnce(Cid, Primary, Dir, Block, &Err);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
+    if (Block)   // TEMPORARY friend-browse bring-up diagnostics (always-on; remove once proven end-to-end)
+        LogOut("DownloadQueue::RunJob", "block " + Cid + " rc=" + std::to_string(Rc)
+               + (Err.empty() ? std::string() : (" err=" + Err)));
     bool MatFail = false;
     if (Rc == 0)
         for (const std::string &D : Dests)
@@ -282,6 +285,8 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));
         }
+        LogOut("DownloadQueue::EnqueueBatch", "targets=" + std::to_string(Targets.size())
+               + " newly-queued=" + std::to_string(NewlyQueued.size()));
         EnsureDispatcher();
     }
     // Materialize the Done-joins now, lock-free; a failure marks the job Failed so batches SEE the hole.
