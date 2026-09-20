@@ -30,6 +30,7 @@ struct Job {
     std::vector<std::string> Dests;
     bool                     Optional = true;   // required if ANY requester is required (AND of requesters' Optional)
     bool                     Dir      = false;  // directory (meta) CID
+    bool                     Block    = false;  // dag-json NODE block (browse) — stored in the blockstore, not a file
     enum State : std::uint8_t { Queued, Active, Done, Failed } State = Queued;
     int                      Priority = 0;       // higher dispatches sooner; Prioritize bumps it above all queued
     long long                Seq = 0;            // insertion order — tiebreak within a priority (FIFO)
@@ -143,7 +144,7 @@ bool EarliestReadyAt(SteadyTP &Out)
 
 // Perform one job's fetch (off the dispatcher, holding a DownloadSlot). Fetches the CID to the first missing dest,
 // then materializes into the others, and records the terminal state.
-void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir)
+void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bool Block)
 {
     // Primary = a destination that still needs the node to run. Prefer one that is MISSING; but a dest that EXISTS
     // WITH a `<dest>.part` marker is a crashed finalize that must be repaired (referenced/pinned), so it also needs
@@ -152,7 +153,7 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir)
     for (const std::string &D : Dests) if (!PathExists(D) || PathExists(D + ".part")) { Primary = D; break; }
 
     std::string Err;
-    const int Rc = FetchOnce(Cid, Primary, Dir, &Err);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
+    const int Rc = FetchOnce(Cid, Primary, Dir, Block, &Err);   // 0=Done 1=Retryable 2=Terminal — ONE attempt
     bool MatFail = false;
     if (Rc == 0)
         for (const std::string &D : Dests)
@@ -212,12 +213,13 @@ void DispatcherLoop()
         J->State = Job::Active;
         const std::string Cid = J->Cid;
         const bool Dir = J->Dir;
+        const bool Block = J->Block;
         std::vector<std::string> Dests = J->Dests;
         Lk.unlock();
 
         // Hand the slot to a detached worker; loop back to fill the next slot (up to MaxConcurrentDownloads workers).
-        std::thread([Cid, Dests = std::move(Dests), Dir, Slot = std::move(Slot)]() mutable {
-            RunJob(Cid, Dests, Dir);
+        std::thread([Cid, Dests = std::move(Dests), Dir, Block, Slot = std::move(Slot)]() mutable {
+            RunJob(Cid, Dests, Dir, Block);
         }).detach();
     }
 }
@@ -275,6 +277,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
             NewJob.Dests = { T.LocalPath };
             NewJob.Optional = T.Optional;
             NewJob.Dir = T.Dir;
+            NewJob.Block = T.Block;
             if (PathExists(T.LocalPath)) { NewJob.State = Job::Done; }
             else { NewJob.State = Job::Queued; NewJob.Seq = ++Q().Seq; Woke = true; NewlyQueued.push_back(T.Cid); }
             Q().Jobs.emplace(T.Cid, std::move(NewJob));

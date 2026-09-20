@@ -5,6 +5,7 @@
 #include "manifestmodel.h"
 #include "containerwrapper.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"   // IpfsWrapper::EnqueueBatch — the ONE rolling queue that browse fetches ride
 #include "jsonoperations.h"
 #include "filesystemoperations.h"   // FSOps::CheckPackageValid (local-package import)
 #include "commonutils.h"
@@ -54,6 +55,12 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     // connection is up and fail silently; this retries the moment they're reachable). Fires only on the online transition.
     connect(FriendsManager::instance(), &FriendsManager::friendPresence, this,
         [this](const QString & peer, bool online) { if (online) reconcileReceivedFriend(peer); });
+
+    // A friend browse block landed in the rolling queue → (debounced) reconcile so the next level (tiles after their
+    // roots) enqueues and the catalog rebuilds to show what arrived. Same queue as any transfer; we react only to CIDs
+    // we ourselves enqueued for browse (FriendBrowseCids).
+    connect(IpfsManager::instance(), &IpfsManager::transferFinished, this,
+        [this](const QString & cid, bool ok, const QString &) { onFriendBlockLanded(cid, ok); });
 
     // Auto-accept ("server mode"): if enabled, accept every incoming friend request automatically and apply the
     // New-Peer defaults. Runs whether or not the Network tab is open.
@@ -765,28 +772,58 @@ void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
 
 void AppModel::writeFriendStubsAsync(const QString & peer)
 {
+    // Enqueue the peer's shared node CIDs into the ONE rolling queue (IpfsWrapper::EnqueueBatch) as BLOCK fetches: they
+    // appear in the IPFS transfer list, are retried by the dispatcher, and reach the friend via warmFriends — exactly
+    // like a file transfer, no parallel path. The catalog reads landed blocks from the blockstore (BuildCatalogIndex,
+    // LocalOnly). Enqueue only what's NOT already local: missing roots, plus the LIBRARYITEM tiles of roots we already
+    // have (a card needs its tile). As roots land, transferFinished re-runs this (debounced) so their tiles follow.
+    if (!isReceivingFrom(peer)) return;
     const std::string P = peer.toStdString();
-    // The receiver's whole job now: FETCH the peer's shared node + tile blocks into the blockstore (the SAME windowed
-    // rolling path content uses). The catalog then folds them in from the LOCAL store (PackageCatalog::BuildCatalogIndex)
-    // as un-hydrated browse tiles — no stubs, no PackageSources, no dirs. Serialize per peer; a snapshot that arrives
-    // mid-warm re-runs once. (Name kept for its existing call sites; it no longer writes stubs.)
-    if (StubInFlight.count(P)) { StubRerun.insert(P); return; }
-    StubInFlight.insert(P);
-    std::vector<std::string> Cids;
+    std::vector<std::string> Roots;
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
         for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
             if (Arr.is_array())
-                for (const auto & X : Arr) if (X.is_string()) Cids.push_back(X.get<std::string>());
-    AsyncWork::Run(this,
-        [Cids]{ if (!Cids.empty()) (void)NodeGraph::BuildFrozenIndex(Cids, nullptr, /*Shallow=*/true); },  // warm blockstore (node + tile)
-        [this, P, peer]{
-            StubInFlight.erase(P);
-            rebuildCatalog();               // the catalog folds in the now-local friend nodes as browse tiles
-            emit friendCatalogChanged();
-            if (StubRerun.erase(P) && isReceivingFrom(peer)) writeFriendStubsAsync(peer);
-            else StubRerun.erase(P);
-        });
+                for (const auto & X : Arr) if (X.is_string()) Roots.push_back(X.get<std::string>());
+    if (Roots.empty()) return;
+
+    const std::filesystem::path Browse =
+        std::filesystem::path(PackageCatalog::LibraryRootDir(*Config)).parent_path() / ".vgbrowse";
+    auto Target = [&](const std::string & Cid) {
+        FriendBrowseCids.insert(Cid);
+        return IpfsWrapper::FetchTarget{ Cid, (Browse / Cid).string(), /*Optional=*/true, /*Dir=*/false, /*Block=*/true };
+    };
+
+    // LOCAL reads only (blockstore, no network — NOT a fetch): which roots/tiles are already present.
+    const NodeIndex LocalRoots = NodeGraph::BuildFrozenIndex(Roots, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+    std::vector<IpfsWrapper::FetchTarget> Batch;
+    std::vector<std::string> TileCids;
+    for (const std::string & R : Roots)
+    {
+        const Node * N = LocalRoots.Find(R);
+        if (N) { if (!N->LibraryItem.empty()) TileCids.push_back(N->LibraryItem); }
+        else     Batch.push_back(Target(R));   // missing root -> enqueue into the rolling queue
+    }
+    if (!TileCids.empty())
+    {
+        const NodeIndex LocalTiles = NodeGraph::BuildFrozenIndex(TileCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+        for (const std::string & T : TileCids)
+            if (!LocalTiles.Find(T)) Batch.push_back(Target(T));   // missing tile -> enqueue
+    }
+    if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
+    rebuildCatalog();               // show whatever is already local now
+    emit friendCatalogChanged();
+}
+
+void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)
+{
+    if (!FriendBrowseCids.count(cid.toStdString())) return;   // not one of our browse blocks -> ignore
+    if (FriendReconcilePending) return;                       // coalesce a burst of completions into one reconcile
+    FriendReconcilePending = true;
+    QTimer::singleShot(400, this, [this] {
+        FriendReconcilePending = false;
+        reconcileReceivedLibraries();   // re-enqueue the next level (tiles after roots) + rebuild; convergent
+    });
 }
 
 void AppModel::publishLibraries()

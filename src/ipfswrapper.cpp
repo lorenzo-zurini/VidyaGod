@@ -294,7 +294,7 @@ bool FetchOnceHookActive()
     return static_cast<bool>(g_FetchOnceHook);
 }
 
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, bool Block, std::string *Error)
 {
     // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
     // test swaps it (check-then-call UB). No-op in production (hook unset).
@@ -307,13 +307,13 @@ int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::st
     // File already materialized (and not a crashed mid-finalize, which leaves a `<dest>.part`) → Done with no node
     // call. A rotated job can re-enter here after another dest of the same CID landed it. Dir fetches always call in
     // (a partial tree has no single-file marker).
-    if (!Dir && QFileInfo::exists(QString::fromStdString(Dest))
+    if (!Dir && !Block && QFileInfo::exists(QString::fromStdString(Dest))
         && !QFileInfo::exists(QString::fromStdString(Dest + ".part")))
         return 0;
 
     FetchDbg("FetchOnce ENTER cid=" + Cid + " dest=" + Dest + (Dir ? " [dir]" : ""));
     char *Err = nullptr;
-    const int Rc = VgFetchOnce(Cid.c_str(), Dest.c_str(), Dir ? 1 : 0, &Err);
+    const int Rc = VgFetchOnce(Cid.c_str(), Dest.c_str(), Block ? 2 : (Dir ? 1 : 0), &Err);
     const std::string ErrS = TakeStr(Err);
     FetchDbg("FetchOnce RETURN rc=" + std::to_string(Rc) + " err='" + ErrS + "' cid=" + Cid);
     if (Rc != 0 && Error) *Error = ErrS.empty() ? ("fetch failed for CID " + Cid) : ErrS;
