@@ -14,24 +14,11 @@ namespace NodeGraph {
 // Untrusted-block guards. A fetched dag-json block's bytes hash to its CID, but the CID is attacker-chosen (pasted),
 // so the CONTENT is untrusted: it can be arbitrarily deep JSON. nlohmann's parser is recursive-descent, so a deeply
 // nested block overflows the stack before any callback can stop it. JsonDepthWithinLimit is a cheap string-aware
-// bracket-depth pre-scan that rejects such a block WITHOUT recursing. And a hostile closure can be unbounded, so
-// BuildFrozenIndex caps the node count.
+// bracket-depth pre-scan that rejects such a block WITHOUT recursing (JsonDepthWithinLimit, nodegraphpure.cpp —
+// shared with GatherWorkingTree, whose scanned files include LANDED received blocks). And a hostile closure can be
+// unbounded, so BuildFrozenIndex caps the node count.
 static constexpr int    kMaxJsonDepth  = 64;
 static constexpr size_t kMaxClosureNodes = 200000;
-
-static bool JsonDepthWithinLimit(const std::string &S, int MaxDepth)
-{
-    int Depth = 0;
-    bool InStr = false, Esc = false;
-    for (const char C : S)
-    {
-        if (InStr) { if (Esc) Esc = false; else if (C == '\\') Esc = true; else if (C == '"') InStr = false; continue; }
-        if (C == '"') InStr = true;
-        else if (C == '{' || C == '[') { if (++Depth > MaxDepth) return false; }
-        else if (C == '}' || C == ']') --Depth;
-    }
-    return true;
-}
 
 // Parse a block's bytes only after a depth check (never recurse into hostile JSON). False + empty J on reject/parse error.
 static bool ParseBlockBounded(const std::string &Js, nlohmann::ordered_json &J)

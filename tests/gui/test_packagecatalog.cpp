@@ -15,6 +15,7 @@
 #include "cli/climodes.h"
 #include "runnerinstall.h"
 #include "ipfswrapper.h"
+#include "downloadqueue.h"   // EnqueueBatch/WaitBatch — the REAL rolling queue under test
 #include "apppaths.h"
 #include "commonutils.h"
 
@@ -381,6 +382,124 @@ private slots:
         QCOMPARE(R0.value("tilenode", std::string()), std::string("a_tile"));
         QCOMPARE(R0.value("tilecid", std::string()), Items[0].value("tilecid", std::string()));
 
+        IpfsWrapper::StopNode();
+    }
+
+    // A RE-PUBLISHED node (same NODE_ID → same dest, NEW cid) must land OVER the occupied dest through the REAL
+    // rolling queue — the receiver's whole update path. Two independent refusals used to eat it silently: the C++
+    // queue marked a new-CID job Done on PathExists(dest) alone, and Go's fetchToPathOnce no-op'd on "dest present,
+    // no .part" without checking the node holds the requested CID. Teeth: revert either gate and the v2-bytes
+    // assert fails (the dest keeps v1 forever). Landing v1 through the real queue also keeps this test honest about
+    // what the queue actually does with an empty dest (no hand-written simulation).
+    void republished_node_lands_over_the_stale_dest()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const json Items = publishTwoGames(SeedRoot.path());
+        QCOMPARE((int)Items.size(), 2);
+        const std::string CidV1 = Items[0].value("cid", std::string());
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        auto Land = [&](const json & SnapItems) {
+            std::vector<IpfsWrapper::FetchTarget> B;
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", SnapItems}}))
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/false, /*Dir=*/false,
+                                                      /*Verify=*/true });   // receiver semantics: reusable dests
+            const auto H = IpfsWrapper::EnqueueBatch(B);
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(H, 30000, &WErr), WErr.c_str());
+        };
+        auto DestBytes = [&](const std::string & Node) {
+            std::ifstream In(RxData.path().toStdString() + "/Alice - Games/[1] A/" + Node + ".json", std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        };
+        Land(Items);
+        QCOMPARE(DestBytes("a_exec"), IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // v1 landed verbatim
+
+        // Seeder updates the node (same NODE_ID, new content) and re-publishes → NEW cid, SAME dest.
+        {
+            std::ifstream In((SeedRoot.path() + "/VidyaGod/[1] A/a.json").toStdString());
+            json J; In >> J; In.close();
+            auto Bump = [](json & N) { if (N.value("NODE_ID", std::string()) == "a_exec") N["ENV"] = json{{"V2", "yes"}}; };
+            if (J.is_array()) { for (auto & N : J) Bump(N); } else Bump(J);   // fixture files may hold a node ARRAY
+            std::ofstream Out((SeedRoot.path() + "/VidyaGod/[1] A/a.json").toStdString());
+            Out << J.dump(2);
+        }
+        json seeder2 = json{{"Settings", {{"Paths", {{"LibraryRoot", SeedRoot.path().toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(seeder2, &Err);
+        json Items2 = seeder2["Libraries"]["VidyaGod"];
+        std::string CidV2;
+        for (const auto & E : Items2) if (E.value("node", std::string()) == "a_exec") CidV2 = E.value("cid", std::string());
+        QVERIFY2(!CidV2.empty() && CidV2 != CidV1, "the update re-minted to a NEW cid");
+
+        Land(Items2);
+        QCOMPARE(DestBytes("a_exec"), IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // v2 REPLACED the stale file
+
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
+    // UNTRUSTED-input bounds of the planner, with teeth for each: (1) every dest path SEGMENT is capped under
+    // NAME_MAX even when nick/lib/uid/title/node arrive at the wire maximums (else the queue retries an
+    // ENAMETOOLONG mkdir forever); (2) an over-long cid is dropped; (3) the per-library item cap holds.
+    void planner_bounds_hostile_segments_and_counts()
+    {
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", "/tmp/vgplanb"}}}}}};
+        const std::string Long(1000, 'x');
+        const json Items = json::array({ json{{"cid", "bafyplannerboundscidaaaaaaaaaaaaaaaaaaaaaa"},
+                                              {"node", Long}, {"uid", Long}, {"title", Long}} });
+        const auto Plan = PackageCatalog::PlanReceivedFetches(rx, Long, json{{Long, Items}});
+        QCOMPARE((int)Plan.size(), 1);
+        for (const auto & T : Plan)
+            for (const auto & Part : std::filesystem::path(T.Dest.substr(std::string("/tmp/vgplanb/").size())))
+                QVERIFY2(Part.string().size() <= 130, ("segment too long: " + Part.string()).c_str());
+
+        const json BadCid = json::array({ json{{"cid", Long}} });                    // >128 bytes → not a CID → dropped
+        QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", BadCid}}).size(), 0);
+
+        json Many = json::array();
+        for (int i = 0; i < 20001; ++i) Many.push_back(json{{"cid", "bafycap" + std::to_string(i)}});
+        QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", Many}}).size(), 20000);
+    }
+
+    // Publish-side bounds + the tile race: a node NAMING a tile that is not in the tree (a received share whose tile
+    // hasn't landed) is HELD OUT of the share list — emitting it would ship uid/title = the bare handle and fork
+    // receivers' trees into "[handle] handle/" dirs that never reconcile. And an over-long user TITLE is truncated at
+    // emit (UTF-8-safe), or one title would make the receiver's inbound gate reject the WHOLE snapshot — silently,
+    // at the far end. Teeth: drop the hold-back → HeldGame appears with uid "h_exec"; drop the cap → title is 500.
+    void publish_holds_unresolved_tiles_and_bounds_titles()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[1] Held");
+        QDir().mkpath(R + "/VidyaGod/[2] Long");
+        writeJson(R + "/VidyaGod/[1] Held/h.json",
+                  json{{"NODE_ID", "h_exec"}, {"TYPE", "DeclareExec"}, {"HOST", "win32"}, {"EXECUTABLE", "h.exe"},
+                       {"LIBRARYITEM", "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}, {"PUBLISH", true}});
+        writeJson(R + "/VidyaGod/[2] Long/tile.json", NodeFixture::Chain("l_tile", {NodeFixture::Tile("2", std::string(500, 'T'))}));
+        writeJson(R + "/VidyaGod/[2] Long/l.json",
+                  NodeFixture::Chain("l_exec", {NodeFixture::Exec("win32", "l.exe")}, {"l_tile"}, {{"PUBLISH", true}}));
+
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(cfg, &Err);
+        QVERIFY(cfg["Libraries"].contains("VidyaGod"));
+        bool SawHeld = false;
+        for (const auto & E : cfg["Libraries"]["VidyaGod"])
+        {
+            if (E.value("node", std::string()) == "h_exec") SawHeld = true;
+            if (E.value("node", std::string()) == "l_exec")
+            {
+                const std::string T = E.value("title", std::string());
+                QVERIFY2(T.size() == 120 && T == std::string(120, 'T'), "over-long title truncated at emit");
+            }
+        }
+        QVERIFY2(!SawHeld, "a node with an unresolved LIBRARYITEM is held out of the share list");
         IpfsWrapper::StopNode();
     }
 

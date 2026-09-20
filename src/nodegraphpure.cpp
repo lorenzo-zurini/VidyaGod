@@ -1,5 +1,5 @@
 #include "nodegraph.h"
-#include "commonutils.h"   // LogWarn — surface duplicate-handle shadowing (never silent)
+#include "commonutils.h"   // LogWarn/LogErr — surface duplicate-handle conflicts (never silent)
 
 #include <deque>
 #include <fstream>
@@ -10,6 +10,20 @@
 // can be unit-tested with teeth (tests/test_nodegraph.cpp) without linking the embedded node. See nodegraph.h.
 
 namespace NodeGraph {
+
+bool JsonDepthWithinLimit(const std::string &S, int MaxDepth)
+{
+    int Depth = 0;
+    bool InStr = false, Esc = false;
+    for (const char C : S)
+    {
+        if (InStr) { if (Esc) Esc = false; else if (C == '\\') Esc = true; else if (C == '"') InStr = false; continue; }
+        if (C == '"') InStr = true;
+        else if (C == '{' || C == '[') { if (++Depth > MaxDepth) return false; }
+        else if (C == '}' || C == ']') --Depth;
+    }
+    return true;
+}
 
 void NormalizeLinks(nlohmann::ordered_json &J)
 {
@@ -109,6 +123,7 @@ void GatherWorkingTree(const std::filesystem::path &Root,
     if (!fs::is_directory(Root, Ec)) return;
     // error_code iteration with explicit increment: the range-for's operator++ THROWS (a permission-denied subdir
     // mid-walk would terminate the GUI thread). skip_permission_denied + increment(Ec) walks defensively.
+    std::set<std::string> Conflicted;   // handles denied this scan (different content claimed one NODE_ID)
     fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
     for (; !Ec && It != End; It.increment(Ec))
     {
@@ -118,10 +133,19 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
         { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
+        // UNTRUSTED bytes can now live in the tree (a received share's block, landed verbatim by the fetch queue), so
+        // the scan gets the same guards every fetched block gets: a size cap (a node block is never > 8 MiB — the
+        // friend-message bound) and a depth pre-scan BEFORE the recursive parse/normalize, or a hostile deep block
+        // becomes a stack overflow that crashes EVERY startup scan until the file is hand-deleted.
+        {
+            const auto Sz = E.file_size(Ec);
+            if (Ec || Sz > (8u << 20)) { Ec.clear(); continue; }
+        }
         std::ifstream In(E.path(), std::ios::binary);
-        nlohmann::ordered_json J;
-        try { In >> J; }
-        catch (const std::exception &) { continue; }   // skip unparseable — a scan must never throw
+        std::string Bytes((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        if (!JsonDepthWithinLimit(Bytes, 64)) { LogWarn("NodeGraph::GatherWorkingTree", "skipping too-deep JSON " + E.path().string()); continue; }
+        nlohmann::ordered_json J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
+        if (J.is_discarded()) continue;                // skip unparseable — a scan must never throw
         NormalizeLinks(J);   // a RAW dag-json node block (a received share, landed verbatim by the fetch queue) uses
                              // {"/":cid} link objects — normalize to plain CID strings so it reads like any tree node
                              // (idempotent for ordinary handle-linked nodes; re-freezes to the identical CID)
@@ -133,12 +157,23 @@ void GatherWorkingTree(const std::filesystem::path &Root,
                 && !N["NODE_ID"].get<std::string>().empty())
             {
                 const std::string Id = N["NODE_ID"].get<std::string>();
-                // Keep FIRST-seen and warn on a duplicate handle — never silently shadow (a hydrated foreign package
-                // reusing a local handle must not overwrite the local node's identity/content without a trace).
-                if (Tree.find(Id) != Tree.end())
+                // Duplicate NODE_ID handling. IDENTICAL copies dedupe silently (the multi-seeder normal: the same
+                // received node in two library dirs). DIFFERENT content claiming one handle is a CONFLICT — and since
+                // a received share is an ordinary scanned file now, "keep first-seen" would let a hostile block
+                // hijack a local handle by winning filesystem iteration order (mint AND launch resolve PARENTS by
+                // handle — a silent poison). Deny instead: the handle resolves to NOTHING, so dependents dangle
+                // LOUDLY and skip, until the user removes one claimant. One LogErr per handle, not per file.
+                if (Conflicted.count(Id)) continue;
+                const auto Prev = Tree.find(Id);
+                if (Prev != Tree.end())
                 {
-                    LogWarn("NodeGraph::GatherWorkingTree", "duplicate NODE_ID '" + Id + "' (" + E.path().string()
-                            + ") — keeping first-seen");
+                    if (Prev->second == N) continue;   // same content → same node; keep one
+                    LogErr("NodeGraph::GatherWorkingTree", "NODE_ID conflict: '" + Id + "' claimed with DIFFERENT content by '"
+                           + Dirs[Id].string() + "' and '" + E.path().parent_path().string()
+                           + "' — dropping the handle (neither claimant is trusted)");
+                    Tree.erase(Prev);
+                    Dirs.erase(Id);
+                    Conflicted.insert(Id);
                     continue;
                 }
                 Tree[Id] = N;

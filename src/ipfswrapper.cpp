@@ -294,7 +294,7 @@ bool FetchOnceHookActive()
     return static_cast<bool>(g_FetchOnceHook);
 }
 
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error)
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error, bool Verify)
 {
     // Copy the hook under the lock, invoke it OUTSIDE — a detached worker must never read the std::function while a
     // test swaps it (check-then-call UB). No-op in production (hook unset).
@@ -306,8 +306,9 @@ int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::st
 
     // File already materialized (and not a crashed mid-finalize, which leaves a `<dest>.part`) → Done with no node
     // call. A rotated job can re-enter here after another dest of the same CID landed it. Dir fetches always call in
-    // (a partial tree has no single-file marker).
-    if (!Dir && QFileInfo::exists(QString::fromStdString(Dest))
+    // (a partial tree has no single-file marker). A Verify job NEVER takes this shortcut: its dest is reusable, so
+    // presence proves nothing — the node hash-verifies (and overwrites a stale file).
+    if (!Dir && !Verify && QFileInfo::exists(QString::fromStdString(Dest))
         && !QFileInfo::exists(QString::fromStdString(Dest + ".part")))
         return 0;
 

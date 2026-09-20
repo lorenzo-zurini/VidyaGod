@@ -1,6 +1,11 @@
 #include "vgtest.h"
 #include "nodegraph.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -176,4 +181,66 @@ TEST(nodegraph_topo_external_refs_impose_no_order)
     CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
     CHECK(Order.size() == 1);
     CHECK(Order[0] == "only");
+}
+
+// A TEMPORARY tree dir for the scan tests below (vgtest has no fixture helper; keep it dead simple).
+struct ScanDir
+{
+    std::filesystem::path P;
+    ScanDir()  { P = std::filesystem::temp_directory_path() / ("vg_scan_" + std::to_string(::getpid()) + "_" + std::to_string(rand())); std::filesystem::create_directories(P); }
+    ~ScanDir() { std::error_code Ec; std::filesystem::remove_all(P, Ec); }
+    void Write(const std::string &Rel, const std::string &Bytes)
+    {
+        const std::filesystem::path F = P / Rel;
+        std::filesystem::create_directories(F.parent_path());
+        std::ofstream O(F, std::ios::binary); O << Bytes;
+    }
+};
+
+TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
+{
+    // UNTRUSTED bytes live in the tree now (a received share's block lands verbatim): a deeply nested file must be
+    // SKIPPED by the depth pre-scan, not parsed — nlohmann's parser and NormalizeLinks both recurse per level, so
+    // without the guard this test dies by stack overflow (no assert ever fires — the crash IS the failure).
+    ScanDir D;
+    std::string Deep;
+    for (int i = 0; i < 200000; ++i) Deep += '[';
+    for (int i = 0; i < 200000; ++i) Deep += ']';
+    D.Write("Evil - Lib/[x] x/bomb.json", Deep);
+    D.Write("Games/[1] A/a.json", ordered_json{{"NODE_ID", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    std::map<std::string, ordered_json> Tree;
+    std::map<std::string, std::filesystem::path> Dirs;
+    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
+    CHECK(Tree.count("a_exec") == 1);      // the honest neighbour still scans
+    CHECK(Tree.size() == 1);               // the bomb contributed nothing
+    CHECK(!NodeGraph::JsonDepthWithinLimit(Deep, 64));
+    CHECK(NodeGraph::JsonDepthWithinLimit("{\"a\":[1,2,{\"b\":3}]}", 64));
+}
+
+TEST(nodegraph_scan_denies_conflicting_duplicate_handles)
+{
+    // Two DIFFERENT docs claiming one NODE_ID = a conflict → the handle resolves to NOTHING (mint and launch resolve
+    // PARENTS by handle, and received shares are ordinary scanned files — "keep first-seen" would let a hostile block
+    // hijack a local handle by winning fs iteration order). IDENTICAL copies dedupe silently (multi-seeder normal).
+    ScanDir D;
+    const ordered_json Wine = {{"NODE_ID", "wine"}, {"TYPE", "DeclareExec"}, {"EXECUTABLE", "wine"}};
+    ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";
+    D.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
+    D.Write("Mallory - Lib/[x] x/wine.json", Evil.dump());
+    D.Write("Games/[1] A/a.json", ordered_json{{"NODE_ID", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    std::map<std::string, ordered_json> Tree;
+    std::map<std::string, std::filesystem::path> Dirs;
+    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
+    CHECK(Tree.count("wine") == 0);        // conflicted handle: NEITHER claimant wins (deny, loudly)
+    CHECK(Dirs.count("wine") == 0);
+    CHECK(Tree.count("a_exec") == 1);      // unrelated nodes unaffected
+
+    // Identical duplicate (the same received node in two library dirs) is NOT a conflict — kept once.
+    ScanDir D2;
+    D2.Write("Alice - Games/[1] A/a.json", Wine.dump());
+    D2.Write("Bob - Games/[1] A/a.json",   Wine.dump());
+    std::map<std::string, ordered_json> T2;
+    std::map<std::string, std::filesystem::path> Dirs2;
+    NodeGraph::GatherWorkingTree(D2.P, T2, Dirs2);
+    CHECK(T2.count("wine") == 1);
 }

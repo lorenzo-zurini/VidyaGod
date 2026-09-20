@@ -982,6 +982,16 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         {
             if (Tree.count(Li)) TileHandle = Li;
             else if (const auto Rit = CidToHandle.find(Li); Rit != CidToHandle.end()) TileHandle = Rit->second;
+            if (TileHandle.empty())
+            {
+                // The node NAMES a tile we cannot resolve — typically a received share whose tile block hasn't
+                // landed yet. Emitting it now would ship uid/title = the bare handle, forking third-party trees
+                // into "[handle] handle/" dirs that never reconcile with the correct "[uid] Title/" of the next
+                // publish. Skip it THIS round; it re-enters the share list once the tile is in the tree.
+                LogWarn("PackageCatalog::PublishLibrary", "'" + Handle + "' has an unresolved LIBRARYITEM ("
+                        + Li.substr(0, 16) + "…) — held out of the share list until its tile lands");
+                continue;
+            }
         }
         std::string TileCid;
         if (!TileHandle.empty())
@@ -994,6 +1004,14 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
             Uid = T.value("UID", std::string());
             if (Uid.empty()) Uid = TileHandle;
             Title = T.value("TITLE", TileHandle);
+        }
+        // Bound the emitted title (user-authored, unbounded) at a UTF-8 boundary: the receiver's inbound gate
+        // rejects a WHOLE snapshot over one >512-byte field — silently, at the far end — and its dir segment must
+        // stay under NAME_MAX. 120 bytes is ample for a display title.
+        if (Title.size() > 120)
+        {
+            Title.resize(120);
+            while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
         }
 
         std::string LibName = LibraryOf(Dirs[Handle], Root);
@@ -1044,6 +1062,9 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
         std::string O;
         for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
                                        || c == ' ' || c == '[' || c == ']') ? c : '_');
+        if (O.size() > 120) O.resize(120);   // NAME_MAX is 255 BYTES; wire caps (512-byte title) exceed it — a
+                                             // within-bounds snapshot must still yield satisfiable dests, or the
+                                             // queue retries an ENAMETOOLONG mkdir forever. San output is ASCII.
         return O.empty() ? std::string("x") : O;
     };
     std::vector<ReceivedFetch> Out;

@@ -569,9 +569,23 @@ void AppModel::forgetFriend(const QString & peer)
     bool Changed = false;
     if (Config->contains("Sharing") && (*Config)["Sharing"].is_object() && (*Config)["Sharing"].contains(P))
     { (*Config)["Sharing"].erase(P); Changed = true; }   // Go already dropped its side via VgFriendRemove→purgeShares
+    // Ending the friendship also stops their still-pending fetches (same as receive-off): plan from the snapshot
+    // BEFORE erasing it, cancel what we enqueued. Landed files stay — they are ordinary packages.
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
+    {
+        std::string Nick;
+        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+        {
+            if (!FriendBrowseCids.erase(T.Cid)) continue;
+            IpfsWrapper::CancelDownload(T.Cid);
+        }
+    }
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
-    { (*Config)["FriendLibraries"].erase(P); Changed = true; }   // drops the peer's folded browse tiles on rebuild
+    { (*Config)["FriendLibraries"].erase(P); Changed = true; }   // drops the peer's packages from future reconciles
     // Legacy cleanup: drop any old "friend:<peer>:*" PackageSources (retired stub model) — KEEP anything installed.
     // Done inline (not via stopReceivingFromFriend) so forgetFriend refreshes the UI exactly ONCE, after every erase.
     if (Config->contains("Settings") && (*Config)["Settings"].is_object()
@@ -637,8 +651,24 @@ void AppModel::stopReceivingFromFriend(const QString & peer)
 {
     const std::string P = peer.toStdString();
     bool Changed = false;
-    // Dropping the peer's snapshot removes its folded browse tiles from the catalog on the next rebuild (the catalog
-    // only folds in FriendLibraries for peers we still Receive from).
+    // Receive-OFF must also stop the peer's still-pending fetches — an explicit user stop, so their data must not
+    // keep arriving into the library. Re-plan from the snapshot (cheap, pure) to name this peer's CIDs, cancel each
+    // in the queue, and drop them from the landed-block reaction set. Files already landed stay (they are ordinary
+    // packages now; withdrawal never deletes).
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
+    {
+        std::string Nick;
+        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+        {
+            if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
+            IpfsWrapper::CancelDownload(T.Cid);
+        }
+    }
+    // Dropping the peer's snapshot removes its packages from future reconciles (enqueueReceivedShares plans only
+    // from FriendLibraries of peers we still Receive from).
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
     { (*Config)["FriendLibraries"].erase(P); Changed = true; }
@@ -791,18 +821,16 @@ void AppModel::enqueueReceivedShares(const QString & peer)
     if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;   // never an empty dir prefix
 
     const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]);
-    std::vector<std::string> Cids;
-    Cids.reserve(Plan.size());
-    for (const auto & T : Plan) Cids.push_back(T.Cid);
-    const auto Local = IpfsWrapper::DagGetManyLocal(Cids);   // blockstore READ — the queue does all fetching
-
     std::vector<IpfsWrapper::FetchTarget> Batch;
     std::error_code Ec;
     for (const auto & T : Plan)
     {
-        if (Local.count(T.Cid) && std::filesystem::exists(T.Dest, Ec)) continue;   // fetched + placed already
+        // Satisfied = file placed AND block held. Membership only (HasLocal) — never haul block bytes here: this
+        // runs on the GUI thread and a hostile snapshot can name 100k items. The dest check goes first so settled
+        // targets cost no cgo call at all.
+        if (std::filesystem::exists(T.Dest, Ec) && IpfsWrapper::HasLocal(T.Cid)) continue;
         FriendBrowseCids.insert(T.Cid);
-        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true });
+        Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
     }
     if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
 }

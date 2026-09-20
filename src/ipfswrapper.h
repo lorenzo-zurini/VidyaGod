@@ -55,7 +55,9 @@ std::string FetchToPath(const std::string &Cid, const std::string &DestPath, std
 // dispatches on: 0 = Done, 1 = Retryable (stall / no providers / offline — rotate + back off), 2 = Terminal
 // (cancelled / bad CID / disk). Dir fetches a directory (meta) CID. This is the queue's primitive; app code uses the
 // queue (EnqueueBatch) or the FetchToPath/FetchDirToPath convenience wrappers, never this directly.
-int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr);
+// Verify = refresh semantics for a REUSABLE dest (node files): skip the local "already materialized" shortcut and
+// let the node hash-verify the dest against the CID (overwriting a stale file). Default keeps the fast path.
+int FetchOnce(const std::string &Cid, const std::string &Dest, bool Dir, std::string *Error = nullptr, bool Verify = false);
 
 // Test seam: override FetchOnce with a scripted outcome (return 0/1/2, optionally sleeping/blocking to simulate a
 // slow or stalled attempt). Set to {} to restore the real node-backed path. Production never touches this.
@@ -128,6 +130,9 @@ struct FetchTarget {
     std::string LocalPath;
     bool        Optional = false;   // a failure is tolerable (covers)
     bool        Dir      = false;   // fetch a UnixFS DIRECTORY (meta) CID rather than a file
+    bool        Verify   = false;   // the DEST is reusable (a node file: same path, new CID on re-publish) — never
+                                    // trust its presence; the Go fetch verifies dest bytes against the CID and
+                                    // overwrites a stale file (refresh semantics)
 };
 
 // Fetch every target CONCURRENTLY, each bounded by a DownloadSlot, so at most MaxConcurrentDownloads() run at once

@@ -37,6 +37,11 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 // are globally unique). Pure — filesystem + JSON only, no IPFS.
 // SkipReserved: skip reserved "_friend_*" received-stub dirs (used by PublishLibrary so a friend's stub can never enter
 // the mint tree — no re-share, no hostile NODE_ID shadowing our handles). Default false (the catalog gather wants them).
+// Cheap string-aware bracket-depth pre-scan: true iff the JSON text nests no deeper than MaxDepth. nlohmann's parser
+// is recursive-descent and NormalizeLinks recurses per level, so UNTRUSTED bytes (a fetched block, a landed received
+// node file) must pass this BEFORE any parse — a hostile deep block otherwise overflows the stack (no exception).
+bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
+
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,
