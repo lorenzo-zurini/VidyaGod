@@ -337,6 +337,41 @@ private slots:
         return Cids;
     }
 
+    // A friend's SHARE is just node CIDs. When Receive is on, BuildCatalogIndex folds the peer's shared CIDs in from
+    // the LOCAL blockstore as CID-backed browse nodes — no PackageSource, no stub dir — tagged (peer, library) and with
+    // NO BundleDir (so HydrationMap reads them un-hydrated = browse tiles). Not receiving → they must NOT fold.
+    // Teeth: drop the InReceive gate → the not-receiving assert fails; drop the (peer,lib) tag → the tag asserts fail.
+    void friend_share_cids_fold_into_catalog_when_receiving()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const std::vector<std::string> Cids = publishTwoGames(Root.path());   // blocks are now in the local blockstore
+        QVERIFY(!Cids.empty());
+
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        rx["FriendLibraries"]["peerX"]["Games"] = json::array({Cids[0]});
+
+        // Not receiving → the friend's CID must NOT appear in the catalog.
+        {
+            auto Idx = PackageCatalog::BuildCatalogIndex(rx);
+            QVERIFY2(Idx.Nodes.find(Cids[0]) == Idx.Nodes.end(),
+                     "a friend's shared CID must not fold in until Receive is on");
+        }
+        // Receive on → folds in from the blockstore, tagged (peer, library), with no on-disk bundle (browse tile).
+        rx["ReceiveFrom"] = json::array({"peerX"});
+        auto Idx = PackageCatalog::BuildCatalogIndex(rx);
+        auto It = Idx.Nodes.find(Cids[0]);
+        QVERIFY2(It != Idx.Nodes.end(), "a received friend CID folds into the catalog");
+        QCOMPARE(QString::fromStdString(It->second.FriendPeer), QStringLiteral("peerX"));
+        QCOMPARE(QString::fromStdString(It->second.FriendLib), QStringLiteral("Games"));
+        QVERIFY2(It->second.BundleDir.empty(),
+                 "a folded friend node has no on-disk bundle (un-hydrated browse tile until installed)");
+        IpfsWrapper::StopNode();
+    }
+
     // DATA-LOSS GUARD 1: a package withdrawn from a still-shared library is NOT deleted if the user has INSTALLED it
     // (its stub dir holds hydrated content). Teeth: without DirHasContent the withdrawn dir is rm'd — asserts fail.
     void receiver_prune_preserves_installed_content()

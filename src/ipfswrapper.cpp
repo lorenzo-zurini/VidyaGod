@@ -233,6 +233,31 @@ std::map<std::string, std::string> DagGetMany(const std::vector<std::string> &Ci
     return Out;
 }
 
+std::map<std::string, std::string> DagGetManyLocal(const std::vector<std::string> &Cids)
+{
+    std::map<std::string, std::string> Out;
+    if (Cids.empty()) return Out;
+    nlohmann::json Arr = nlohmann::json::array();
+    for (const std::string &C : Cids) Arr.push_back(C);
+    char *OutJson = nullptr, *Err = nullptr;
+    const int Rc = VgDagGetManyLocal(Arr.dump().c_str(), &OutJson, &Err);
+    const std::string JsonS = TakeStr(OutJson);
+    const std::string ErrS  = TakeStr(Err);
+    if (Rc != 0) { LogWarn("IpfsWrapper::DagGetManyLocal", ErrS.empty() ? "local batched dag-get failed" : ErrS); return Out; }
+    try
+    {
+        const nlohmann::json O = nlohmann::json::parse(JsonS);
+        if (O.is_object())
+            for (auto It = O.begin(); It != O.end(); ++It)
+                Out[It.key()] = It.value().dump();
+    }
+    catch (const std::exception &Ex)
+    {
+        LogWarn("IpfsWrapper::DagGetManyLocal", std::string("bad local batched dag-get JSON: ") + Ex.what());
+    }
+    return Out;
+}
+
 bool DagHas(const std::string &Cid)
 {
     if (Cid.empty()) return false;

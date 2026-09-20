@@ -1158,6 +1158,51 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     else
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
                + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON));
+
+    // Fold in friends' SHARED nodes as browse tiles. A share is just node CIDs (config["FriendLibraries"][peer][lib]);
+    // resolve them from the LOCAL blockstore only (warmed by the receiver's fetch) and merge in — they carry NO
+    // BundleDir, so HydrationMap reads them un-hydrated = browse tiles until the user installs (hydrates) one. Only for
+    // peers we RECEIVE from; a local/own node ALWAYS wins a CID collision. Tagged with their (peer, library) origin so
+    // the catalog can section them "Friend -> library" without any PackageSource/stub.
+    {
+        auto InReceive = [&](const std::string & Peer) {
+            if (!GlobalConfigJSON.contains("ReceiveFrom") || !GlobalConfigJSON["ReceiveFrom"].is_array()) return false;
+            for (const auto & X : GlobalConfigJSON["ReceiveFrom"])
+                if (X.is_string() && X.get<std::string>() == Peer) return true;
+            return false;
+        };
+        std::vector<std::string> FriendCids;
+        std::map<std::string, std::pair<std::string, std::string>> Origin;   // cid -> (peer, lib)
+        if (GlobalConfigJSON.contains("FriendLibraries") && GlobalConfigJSON["FriendLibraries"].is_object())
+            for (auto It = GlobalConfigJSON["FriendLibraries"].begin(); It != GlobalConfigJSON["FriendLibraries"].end(); ++It)
+            {
+                const std::string Peer = It.key();
+                if (!It.value().is_object() || !InReceive(Peer)) continue;
+                for (auto Lit = It.value().begin(); Lit != It.value().end(); ++Lit)
+                    if (Lit.value().is_array())
+                        for (const auto & C : Lit.value())
+                            if (C.is_string())
+                            {
+                                const std::string S = C.get<std::string>();
+                                FriendCids.push_back(S);
+                                Origin.emplace(S, std::make_pair(Peer, Lit.key()));
+                            }
+            }
+        if (!FriendCids.empty())
+        {
+            NodeIndex F = NodeGraph::BuildFrozenIndex(FriendCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+            for (auto & Entry : F.Nodes)
+            {
+                const std::string & Cid = Entry.first;
+                if (Idx.Nodes.count(Cid)) continue;             // own/local node already indexed — never clobber
+                Node N = std::move(Entry.second);
+                const auto Oit = Origin.find(Cid);
+                if (Oit != Origin.end()) { N.FriendPeer = Oit->second.first; N.FriendLib = Oit->second.second; }
+                Idx.Nodes.emplace(Cid, std::move(N));
+            }
+            ManifestModel::LinkGames(Idx);                      // re-link tiles across the merged set
+        }
+    }
     return Idx;
 }
 

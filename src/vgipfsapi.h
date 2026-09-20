@@ -35,6 +35,7 @@ int  VgComputeCid(const char *path, char **outCid, char **errOut); // a file's C
 int  VgDagPut(const char *json, char **outCid, char **errOut); // store a node block (direct-pinned + announced) -> its CID
 int  VgDagGet(const char *cid, char **outJson, char **errOut); // node block's canonical dag-json bytes (fetches over bitswap if remote)
 int  VgDagGetMany(const char *cidsJson, char **outJson, char **errOut); // batched: {cid:dagjson} for a JSON array of CIDs (windowed fetch)
+int  VgDagGetManyLocal(const char *cidsJson, char **outJson, char **errOut); // batched, LOCAL blockstore only (no bitswap)
 int  VgDagHas(const char *cid);                                // 1 if the node block is local, 0 no, -1 n/a / bad CID
 int  VgDagCid(const char *json, char **outCid, char **errOut); // the CID a node's JSON WOULD have, NO side effects
 long long VgCidFileSizeLocal(const char *cid);   // UnixFS FILE size (payload bytes) from the local store, -1 unknown

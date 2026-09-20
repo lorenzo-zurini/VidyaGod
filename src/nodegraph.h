@@ -68,8 +68,10 @@ bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &Worki
 // ONLY its LIBRARYITEM tile, NOT the PARENTS composition graph — the cheap BROWSE view for a friend's shared library
 // (the tile's title/cover is enough to render a card; the full graph is walked only on install). Content leaves are
 // never fetched either way, so Shallow bounds only the node-block fan-out.
+// LocalOnly=true reads only blocks already in the store (no bitswap) — for catalog-build over friend share CIDs that
+// may not all be fetched yet. Only meaningful with Shallow=true.
 NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr,
-                           bool Shallow = false);
+                           bool Shallow = false, bool LocalOnly = false);
 
 // Freeze a gathered working tree directly into a CID-keyed NodeIndex (identity = CID) WITHOUT storing blocks — uses
 // DagCid (side-effect-free), so it is safe at catalog-build time. Resolves PARENTS/LIBRARYITEM handles → CIDs, sets

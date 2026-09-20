@@ -93,6 +93,9 @@ std::string DagGet(const std::string &Cid, std::string *Error = nullptr);
 // Batched dag-get: fetch many node blocks at once through the windowed session (the same rolling want-window + friend
 // providers content uses). Returns cid -> canonical dag-json for those fetched (missing ones absent). For the browse path.
 std::map<std::string, std::string> DagGetMany(const std::vector<std::string> &Cids);
+// Local-only variant: reads ONLY blocks already in the blockstore (no bitswap) — for catalog-build, so it never stalls
+// on a friend block that hasn't been fetched yet. Same {cid -> dag-json} shape; absent CIDs simply omitted.
+std::map<std::string, std::string> DagGetManyLocal(const std::vector<std::string> &Cids);
 bool        DagHas(const std::string &Cid);
 std::string DagCid(const std::string &Json, std::string *Error = nullptr);
 

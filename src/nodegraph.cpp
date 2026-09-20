@@ -53,7 +53,7 @@ static bool PathWithin(const std::filesystem::path &Base, const std::filesystem:
     return Rel.begin()->native() != "..";                // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
 }
 
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing, bool Shallow)
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing, bool Shallow, bool LocalOnly)
 {
     NodeIndex Idx;
     if (Shallow)
@@ -61,7 +61,10 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         // Browse: batch-fetch the roots + their tiles via the windowed session (the SAME rolling want-window +
         // friend-provider routing content uses) — NOT serial single-block gets; 900+ tiny blocks must not be 900
         // round-trips. Two rounds: the published roots, then their distinct LIBRARYITEM tiles.
-        const std::map<std::string, std::string> RootBlocks = IpfsWrapper::DagGetMany(RootCids);
+        // LocalOnly (catalog-build): read only blocks already in the store, so we never stall on a friend block that
+        // hasn't landed yet — the catalog shows what's present and re-renders as more arrive.
+        const auto Fetch = LocalOnly ? &IpfsWrapper::DagGetManyLocal : &IpfsWrapper::DagGetMany;
+        const std::map<std::string, std::string> RootBlocks = Fetch(RootCids);
         std::set<std::string> TileCids;
         for (const std::string &C : RootCids)
         {
@@ -79,7 +82,7 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
             if (!Nit->second.LibraryItem.empty()) TileCids.insert(Nit->second.LibraryItem);
         }
         std::vector<std::string> TV(TileCids.begin(), TileCids.end());
-        const std::map<std::string, std::string> TileBlocks = IpfsWrapper::DagGetMany(TV);
+        const std::map<std::string, std::string> TileBlocks = Fetch(TV);
         for (const std::string &C : TV)
         {
             if (Idx.Nodes.count(C)) continue;

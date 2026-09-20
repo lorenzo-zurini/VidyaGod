@@ -557,13 +557,28 @@ void AppModel::reconcileReceivedLibraries()
 void AppModel::forgetFriend(const QString & peer)
 {
     const std::string P = peer.toStdString();
-    stopReceivingFromFriend(peer);   // drop their browsable stub sources + LIBRARY entries (saves + rebuilds if any)
     bool Changed = false;
     if (Config->contains("Sharing") && (*Config)["Sharing"].is_object() && (*Config)["Sharing"].contains(P))
     { (*Config)["Sharing"].erase(P); Changed = true; }   // Go already dropped its side via VgFriendRemove→purgeShares
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
-    { (*Config)["FriendLibraries"].erase(P); Changed = true; }
+    { (*Config)["FriendLibraries"].erase(P); Changed = true; }   // drops the peer's folded browse tiles on rebuild
+    // Legacy cleanup: drop any old "friend:<peer>:*" PackageSources (retired stub model) — KEEP anything installed.
+    // Done inline (not via stopReceivingFromFriend) so forgetFriend refreshes the UI exactly ONCE, after every erase.
+    if (Config->contains("Settings") && (*Config)["Settings"].is_object()
+        && (*Config)["Settings"].contains("PackageSources") && (*Config)["Settings"]["PackageSources"].is_array())
+    {
+        const std::string Prefix = "friend:" + P + ":";
+        auto & Arr = (*Config)["Settings"]["PackageSources"];
+        for (int i = (int)Arr.size() - 1; i >= 0; --i)
+        {
+            const std::string C = (Arr[i].is_object() && Arr[i].contains("CID") && Arr[i]["CID"].is_string())
+                                  ? Arr[i]["CID"].get<std::string>() : std::string();
+            if (C.rfind(Prefix, 0) != 0) continue;
+            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);
+            Changed = true;
+        }
+    }
     auto EraseFrom = [&](const char * Key, nlohmann::ordered_json & Root) {
         if (Root.contains(Key) && Root[Key].is_array())
             for (auto It = Root[Key].begin(); It != Root[Key].end(); ++It)
@@ -578,7 +593,7 @@ void AppModel::forgetFriend(const QString & peer)
         EraseFrom("LanExcludedPeers", (*Config)["Settings"]);
     FriendLibSeq.erase(P);   // forget the seq high-water mark too, so a re-add starts fresh (no stale-drop of the first snapshot)
     if (DenyChanged) pushPresenceDeny();
-    if (Changed) { save(); emit friendCatalogChanged(); }
+    if (Changed) { save(); rebuildCatalog(); emit friendCatalogChanged(); }
 }
 
 // ── Network tab per-peer toggles ─────────────────────────────────────────────
@@ -611,18 +626,27 @@ void AppModel::setReceivingFrom(const QString & peer, bool on)
 
 void AppModel::stopReceivingFromFriend(const QString & peer)
 {
-    const std::string Prefix = "friend:" + peer.toStdString() + ":";
+    const std::string P = peer.toStdString();
     bool Changed = false;
+    // Dropping the peer's snapshot removes its folded browse tiles from the catalog on the next rebuild (the catalog
+    // only folds in FriendLibraries for peers we still Receive from).
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P))
+    { (*Config)["FriendLibraries"].erase(P); Changed = true; }
+    FriendLibSeq.erase(P);
+    // Legacy cleanup: drop any old "friend:<peer>:*" PackageSources from the retired stub model — KEEP anything the
+    // user already installed (converted to a local package, files intact).
     if (Config->contains("Settings") && (*Config)["Settings"].is_object()
         && (*Config)["Settings"].contains("PackageSources") && (*Config)["Settings"]["PackageSources"].is_array())
     {
+        const std::string Prefix = "friend:" + P + ":";
         auto & Arr = (*Config)["Settings"]["PackageSources"];
         for (int i = (int)Arr.size() - 1; i >= 0; --i)
         {
             const std::string C = (Arr[i].is_object() && Arr[i].contains("CID") && Arr[i]["CID"].is_string())
                                   ? Arr[i]["CID"].get<std::string>() : std::string();
             if (C.rfind(Prefix, 0) != 0) continue;
-            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);   // drop source, KEEP any installed game
+            PackageCatalog::RemovePackageSource(*Config, i, /*PreserveInstalled=*/true);
             Changed = true;
         }
     }
@@ -742,65 +766,26 @@ void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
 void AppModel::writeFriendStubsAsync(const QString & peer)
 {
     const std::string P = peer.toStdString();
-    // Serialize per peer: two concurrent workers would write/rm the SAME _friend_<peer> dirs and race the config. If one
-    // is already running for this peer, note that a fresh snapshot arrived and re-run once it finishes.
+    // The receiver's whole job now: FETCH the peer's shared node + tile blocks into the blockstore (the SAME windowed
+    // rolling path content uses). The catalog then folds them in from the LOCAL store (PackageCatalog::BuildCatalogIndex)
+    // as un-hydrated browse tiles — no stubs, no PackageSources, no dirs. Serialize per peer; a snapshot that arrives
+    // mid-warm re-runs once. (Name kept for its existing call sites; it no longer writes stubs.)
     if (StubInFlight.count(P)) { StubRerun.insert(P); return; }
     StubInFlight.insert(P);
-
-    std::string Nick;
-    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-    std::map<std::string, std::vector<std::string>> Libs;
+    std::vector<std::string> Cids;
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
         for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
-        {
-            std::vector<std::string> V;
-            if (Arr.is_array()) for (const auto & X : Arr) if (X.is_string()) V.push_back(X.get<std::string>());
-            if (!V.empty()) Libs[Lib] = std::move(V);
-        }
-    auto Cfg  = std::make_shared<nlohmann::ordered_json>(*Config);
-    auto Done = std::make_shared<bool>(false);
+            if (Arr.is_array())
+                for (const auto & X : Arr) if (X.is_string()) Cids.push_back(X.get<std::string>());
     AsyncWork::Run(this,
-        [Cfg, Done, P, Nick, Libs]{ PackageCatalog::WriteFriendStubs(*Cfg, P, Nick, Libs); *Done = true; },
-        [this, Cfg, Done, P, peer]{
+        [Cids]{ if (!Cids.empty()) (void)NodeGraph::BuildFrozenIndex(Cids, nullptr, /*Shallow=*/true); },  // warm blockstore (node + tile)
+        [this, P, peer]{
             StubInFlight.erase(P);
-            if (*Done)
-            {
-                // Replace ONLY this peer's "friend:<peer>:*" slice in the LIVE config from the worker's copy — never
-                // adopt PackageSources/LIBRARY wholesale (that would clobber changes made to OTHER sources / entries
-                // during the off-thread write, and resurrect a source the user removed meanwhile).
-                const std::string Prefix = "friend:" + P + ":";
-                auto SrcCid = [](const nlohmann::ordered_json & S) {
-                    return (S.is_object() && S.contains("CID") && S["CID"].is_string()) ? S["CID"].get<std::string>() : std::string();
-                };
-                auto & LiveSrc = (*Config)["Settings"]["PackageSources"];
-                if (!LiveSrc.is_array()) LiveSrc = nlohmann::ordered_json::array();
-                for (int i = (int)LiveSrc.size() - 1; i >= 0; --i)
-                    if (SrcCid(LiveSrc[i]).rfind(Prefix, 0) == 0) LiveSrc.erase(LiveSrc.begin() + i);
-                auto & LiveLib = (*Config)["LIBRARY"];
-                if (!LiveLib.is_array()) LiveLib = nlohmann::ordered_json::array();
-                for (int i = (int)LiveLib.size() - 1; i >= 0; --i)
-                    if (LiveLib[i].is_object() && LiveLib[i].value("SOURCE", std::string()).rfind(Prefix, 0) == 0)
-                        LiveLib.erase(LiveLib.begin() + i);
-                // Re-add the worker's slice ONLY if Receive is still on for this peer (a mid-write toggle-off must not
-                // resurrect the stubs it just tore down).
-                if (isReceivingFrom(peer))
-                {
-                    if ((*Cfg).contains("Settings") && (*Cfg)["Settings"].contains("PackageSources")
-                        && (*Cfg)["Settings"]["PackageSources"].is_array())
-                        for (const auto & Sc : (*Cfg)["Settings"]["PackageSources"])
-                            if (SrcCid(Sc).rfind(Prefix, 0) == 0) LiveSrc.push_back(Sc);
-                    if ((*Cfg).contains("LIBRARY") && (*Cfg)["LIBRARY"].is_array())
-                        for (const auto & E : (*Cfg)["LIBRARY"])
-                            if (E.is_object() && E.value("SOURCE", std::string()).rfind(Prefix, 0) == 0) LiveLib.push_back(E);
-                }
-                save();
-                rebuildCatalog();
-                emit friendCatalogChanged();
-            }
-            if (StubRerun.erase(P) && isReceivingFrom(peer))       // a snapshot arrived mid-write → apply it, UNLESS the
-                writeFriendStubsAsync(peer);                       // user turned Receive off meanwhile (no ghost stubs)
-            else StubRerun.erase(P);                               // (drop a pending rerun that Receive-off obsoleted)
+            rebuildCatalog();               // the catalog folds in the now-local friend nodes as browse tiles
+            emit friendCatalogChanged();
+            if (StubRerun.erase(P) && isReceivingFrom(peer)) writeFriendStubsAsync(peer);
+            else StubRerun.erase(P);
         });
 }
 
