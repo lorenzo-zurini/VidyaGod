@@ -820,7 +820,7 @@ void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)
     if (!FriendBrowseCids.count(cid.toStdString())) return;   // not one of our browse blocks -> ignore
     if (FriendReconcilePending) return;                       // coalesce a burst of completions into one reconcile
     FriendReconcilePending = true;
-    QTimer::singleShot(400, this, [this] {
+    QTimer::singleShot(2000, this, [this] {
         FriendReconcilePending = false;
         reconcileReceivedLibraries();   // re-enqueue the next level (tiles after roots) + rebuild; convergent
     });

@@ -1191,6 +1191,7 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         if (!FriendCids.empty())
         {
             NodeIndex F = NodeGraph::BuildFrozenIndex(FriendCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+            int Folded = 0;
             for (auto & Entry : F.Nodes)
             {
                 const std::string & Cid = Entry.first;
@@ -1199,8 +1200,11 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
                 const auto Oit = Origin.find(Cid);
                 if (Oit != Origin.end()) { N.FriendPeer = Oit->second.first; N.FriendLib = Oit->second.second; }
                 Idx.Nodes.emplace(Cid, std::move(N));
+                ++Folded;
             }
             ManifestModel::LinkGames(Idx);                      // re-link tiles across the merged set
+            LogOut("PackageCatalog::BuildCatalogIndex", "folded " + std::to_string(Folded)
+                   + " friend browse node(s) of " + std::to_string(FriendCids.size()) + " shared CIDs known");
         }
     }
     return Idx;
