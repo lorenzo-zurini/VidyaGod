@@ -256,6 +256,20 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
 int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string &PeerID, const std::string &Nick,
                      const std::map<std::string, std::vector<std::string>> &Libs);
 
+// Materialize a friend's SHARED nodes into the working tree as ORDINARY packages in an ORDINARY library dir
+// (e.g. "Alice - VidyaGod"): each locally-present node block becomes the same on-disk artifact every node is — a
+// pretty, NODE_ID-named .json inside a "[uid] Title" package dir — so ZERO friend-specific code runs afterwards
+// (catalog scan, hydration, install, and re-publish all just work; re-publishing identical nodes yields identical
+// CIDs — the multi-seeder design). Roots whose tile block hasn't landed yet are skipped until a later pass.
+// Blockstore READS only; the rolling queue does all fetching. Idempotent. Returns package dirs written this pass.
+int MaterializeReceivedNodes(nlohmann::ordered_json &GlobalConfigJSON, const std::string &LibDirName,
+                             const std::vector<std::string> &RootCids);
+
+// True when a node's PARENTS reference ids missing from the index — a received package whose composition graph is
+// not fetched yet. Such a node always has something to download (hydration fetches the closure) even though
+// NodeContentCids can enumerate nothing from the incomplete graph.
+bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
+
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.
 bool IsIpnsSource(const nlohmann::ordered_json &Source);

@@ -19,6 +19,7 @@
 #include <QStringList>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -1138,6 +1139,76 @@ int WriteFriendStubs(nlohmann::ordered_json &GlobalConfigJSON, const std::string
     return Written;
 }
 
+int MaterializeReceivedNodes(nlohmann::ordered_json &GlobalConfigJSON, const std::string &LibDirName,
+                             const std::vector<std::string> &RootCids)
+{
+    namespace fs = std::filesystem;
+    auto San = [](const std::string &In) {
+        std::string O;
+        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
+                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
+        return O.empty() ? std::string("x") : O;
+    };
+    const fs::path LibDir = fs::path(LibraryRootDir(GlobalConfigJSON)) / San(LibDirName);
+    // LOCAL blockstore read (roots + their tiles) — never a fetch; the rolling queue does all fetching.
+    NodeIndex Idx = NodeGraph::BuildFrozenIndex(RootCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+    std::map<std::string, std::vector<std::string>> Group;   // tile cid (or the root itself) -> member roots
+    for (const std::string &Root : RootCids)
+    {
+        const Node *R = Idx.Find(Root);
+        if (!R) continue;                                               // block not landed yet
+        if (!R->LibraryItem.empty() && !Idx.Find(R->LibraryItem)) continue;   // tile pending → a later pass gets it
+        Group[R->LibraryItem.empty() ? Root : R->LibraryItem].push_back(Root);
+    }
+    int Written = 0;
+    std::error_code Ec;
+    for (const auto &[GroupKey, Members] : Group)
+    {
+        const Node *Tile  = Idx.Find(GroupKey);
+        const bool  Card  = Tile && Tile->Presentable();
+        const Node *First = Idx.Find(Members.front());
+        const std::string Uid   = Card ? (Tile->Uid.empty() ? Tile->NodeId : Tile->Uid)
+                                       : (First ? (First->Uid.empty() ? First->NodeId : First->Uid) : GroupKey);
+        const std::string Title = Card ? Tile->Meta.value("TITLE", Tile->NodeId)
+                                       : (First ? First->NodeId : GroupKey);
+        const fs::path PkgDir = LibDir / San("[" + Uid + "] " + Title);
+        std::set<std::string> Used;
+        bool Wrote = false;
+        auto WriteNode = [&](const std::string &NodeCid) {
+            const Node *N = Idx.Find(NodeCid);
+            if (!N) return;
+            std::string Base = San(N->NodeId.empty() ? NodeCid.substr(0, 12) : N->NodeId);
+            if (!Used.insert(Base).second) Base += "_" + NodeCid.substr(0, 12);   // NODE_ID collision → disambiguate
+            const fs::path File = PkgDir / (Base + ".json");
+            if (fs::exists(File, Ec)) return;                           // already materialized (idempotent)
+            const auto Blk = IpfsWrapper::DagGetManyLocal({NodeCid});
+            const auto Bit = Blk.find(NodeCid);
+            if (Bit == Blk.end()) return;
+            nlohmann::ordered_json J = nlohmann::ordered_json::parse(Bit->second, nullptr, false);
+            if (J.is_discarded() || !J.is_object()) return;
+            NodeGraph::NormalizeLinks(J);                               // {"/":cid} → plain CID strings (re-freezes identically)
+            fs::create_directories(PkgDir, Ec);
+            std::ofstream Out(File);
+            if (!Out) { LogWarn("PackageCatalog::MaterializeReceivedNodes", "cannot write " + File.string()); return; }
+            Out << J.dump(2) << "\n";
+            Wrote = true;
+        };
+        if (Card) WriteNode(GroupKey);                                  // the tile (title/cover)
+        for (const std::string &M : Members) WriteNode(M);              // the shared roots
+        if (Wrote) ++Written;
+    }
+    return Written;
+}
+
+bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)
+{
+    const Node *N = Idx.Find(Id);
+    if (!N) return false;
+    for (const auto &P : N->Parents)                                    // adapt iteration to the actual Parents type
+        if (!Idx.Find(P)) return true;
+    return false;
+}
+
 // The gigagraph catalog: the on-disk library is the pretty, handle-based working tree (LIBRARY/[uid] Title/…); we
 // derive the CID-addressed node graph from it in memory (NodeGraph::FreezeToIndex) — identity = each node's dag-json
 // CID, NODE_ID demotes to a label, cross-package edges resolve to CIDs, and every node carries its on-disk BundleDir
@@ -1159,54 +1230,6 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
                + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON));
 
-    // Fold in friends' SHARED nodes as browse tiles. A share is just node CIDs (config["FriendLibraries"][peer][lib]);
-    // resolve them from the LOCAL blockstore only (warmed by the receiver's fetch) and merge in — they carry NO
-    // BundleDir, so HydrationMap reads them un-hydrated = browse tiles until the user installs (hydrates) one. Only for
-    // peers we RECEIVE from; a local/own node ALWAYS wins a CID collision. Tagged with their (peer, library) origin so
-    // the catalog can section them "Friend -> library" without any PackageSource/stub.
-    {
-        auto InReceive = [&](const std::string & Peer) {
-            if (!GlobalConfigJSON.contains("ReceiveFrom") || !GlobalConfigJSON["ReceiveFrom"].is_array()) return false;
-            for (const auto & X : GlobalConfigJSON["ReceiveFrom"])
-                if (X.is_string() && X.get<std::string>() == Peer) return true;
-            return false;
-        };
-        std::vector<std::string> FriendCids;
-        std::map<std::string, std::pair<std::string, std::string>> Origin;   // cid -> (peer, lib)
-        if (GlobalConfigJSON.contains("FriendLibraries") && GlobalConfigJSON["FriendLibraries"].is_object())
-            for (auto It = GlobalConfigJSON["FriendLibraries"].begin(); It != GlobalConfigJSON["FriendLibraries"].end(); ++It)
-            {
-                const std::string Peer = It.key();
-                if (!It.value().is_object() || !InReceive(Peer)) continue;
-                for (auto Lit = It.value().begin(); Lit != It.value().end(); ++Lit)
-                    if (Lit.value().is_array())
-                        for (const auto & C : Lit.value())
-                            if (C.is_string())
-                            {
-                                const std::string S = C.get<std::string>();
-                                FriendCids.push_back(S);
-                                Origin.emplace(S, std::make_pair(Peer, Lit.key()));
-                            }
-            }
-        if (!FriendCids.empty())
-        {
-            NodeIndex F = NodeGraph::BuildFrozenIndex(FriendCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
-            int Folded = 0;
-            for (auto & Entry : F.Nodes)
-            {
-                const std::string & Cid = Entry.first;
-                if (Idx.Nodes.count(Cid)) continue;             // own/local node already indexed — never clobber
-                Node N = std::move(Entry.second);
-                const auto Oit = Origin.find(Cid);
-                if (Oit != Origin.end()) { N.FriendPeer = Oit->second.first; N.FriendLib = Oit->second.second; }
-                Idx.Nodes.emplace(Cid, std::move(N));
-                ++Folded;
-            }
-            ManifestModel::LinkGames(Idx);                      // re-link tiles across the merged set
-            LogOut("PackageCatalog::BuildCatalogIndex", "folded " + std::to_string(Folded)
-                   + " friend browse node(s) of " + std::to_string(FriendCids.size()) + " shared CIDs known");
-        }
-    }
     return Idx;
 }
 

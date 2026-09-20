@@ -95,8 +95,6 @@ struct Node {
     nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects, incl. Declare*)
     std::filesystem::path File;              // source <node_id>.json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
-    std::string FriendPeer;                  // set on a friend's SHARED node folded into the catalog from a snapshot
-    std::string FriendLib;                   // (no BundleDir): origin peer + library, for browse sectioning. "" = own node.
 
     // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its NODE_ID in a legacy single-
     // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog

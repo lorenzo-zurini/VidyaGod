@@ -132,37 +132,6 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             if (OutCategory) OutCategory->insert(QCid, CatMeta);
         }
 
-    // Friend BROWSE blocks: a friend's shared node CIDs (config["FriendLibraries"]) fetch through the rolling queue
-    // like any transfer, but an UNLABELED row is dropped on the next table rebuild — so the user watched 900+ rows
-    // appear and instantly vanish while the fetches kept running invisibly. Label every shared CID, grouped per
-    // "Friend <peer> · <library>"; once a block is folded into the catalog its human NODE_ID names the row.
-    if (Config.contains("FriendLibraries") && Config["FriendLibraries"].is_object())
-        for (auto Pit = Config["FriendLibraries"].begin(); Pit != Config["FriendLibraries"].end(); ++Pit)
-        {
-            if (!Pit.value().is_object()) continue;
-            const std::string Peer      = Pit.key();
-            const std::string PeerShort = Peer.size() > 8 ? Peer.substr(Peer.size() - 8) : Peer;
-            for (auto Lit = Pit.value().begin(); Lit != Pit.value().end(); ++Lit)
-            {
-                if (!Lit.value().is_array()) continue;
-                const std::string Grp = "Friend " + PeerShort + " \xc2\xb7 " + Lit.key();
-                for (const auto & C : Lit.value())
-                {
-                    if (!C.is_string()) continue;
-                    const std::string Cid = C.get<std::string>();
-                    const QString QCid = QString::fromStdString(Cid);
-                    if (Labels.contains(QCid)) continue;               // already named — don't override
-                    const auto Nit = Idx.Nodes.find(Cid);              // folded already? name the row by its NODE_ID
-                    const std::string Name = (Nit != Idx.Nodes.end() && !Nit->second.NodeId.empty())
-                                             ? Nit->second.NodeId
-                                             : (Cid.size() > 12 ? Cid.substr(0, 12) + "\xe2\x80\xa6" : Cid);
-                    Labels.insert(QCid, QString::fromStdString(Name + " (browse)"));
-                    if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(Grp));
-                    if (OutCategory) OutCategory->insert(QCid, CatMeta);
-                    if (OutSource)   OutSource->insert(QCid, QString::fromStdString(Grp));
-                }
-            }
-        }
     return Labels;
 }
 

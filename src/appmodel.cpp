@@ -772,47 +772,52 @@ void AppModel::setNewPeerShareDefault(const QString & lib, bool on)
 
 void AppModel::writeFriendStubsAsync(const QString & peer)
 {
-    // Enqueue the peer's shared node CIDs into the ONE rolling queue (IpfsWrapper::EnqueueBatch) as BLOCK fetches: they
-    // appear in the IPFS transfer list, are retried by the dispatcher, and reach the friend via warmFriends — exactly
-    // like a file transfer, no parallel path. The catalog reads landed blocks from the blockstore (BuildCatalogIndex,
-    // LocalOnly). Enqueue only what's NOT already local: missing roots, plus the LIBRARYITEM tiles of roots we already
-    // have (a card needs its tile). As roots land, transferFinished re-runs this (debounced) so their tiles follow.
+    // Receiver = TWO steps, zero special machinery. (1) FETCH: every shared CID whose block isn't local yet goes into
+    // the ONE rolling queue as a plain FetchTarget — the Go leaf writes + pins a node block like any file. (2)
+    // MATERIALIZE: landed nodes are written into the working tree as ORDINARY packages of an ordinary
+    // "<Nick> - <Lib>" library; from there the normal catalog / hydration / install / publish handle them (a received
+    // library re-publishes on the next Verify&Publish — identical CIDs, the multi-seeder design). Re-runs on
+    // node-ready, presence-online and (debounced) on every landed block, so it converges: roots, then tiles, then tree.
     if (!isReceivingFrom(peer)) return;
     const std::string P = peer.toStdString();
-    std::vector<std::string> Roots;
-    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
-        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
-        for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
-            if (Arr.is_array())
-                for (const auto & X : Arr) if (X.is_string()) Roots.push_back(X.get<std::string>());
-    if (Roots.empty()) return;
+    if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
+        || !(*Config)["FriendLibraries"].contains(P) || !(*Config)["FriendLibraries"][P].is_object()) return;
 
-    const std::filesystem::path Browse =
-        std::filesystem::path(PackageCatalog::LibraryRootDir(*Config)).parent_path() / ".vgbrowse";
-    auto Target = [&](const std::string & Cid) {
-        FriendBrowseCids.insert(Cid);
-        return IpfsWrapper::FetchTarget{ Cid, (Browse / (Cid + ".json")).string(), /*Optional=*/true };
-    };
+    std::string Nick;
+    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+    if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;   // never an empty dir prefix
 
-    // LOCAL reads only (blockstore, no network — NOT a fetch): which roots/tiles are already present.
-    const NodeIndex LocalRoots = NodeGraph::BuildFrozenIndex(Roots, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
-    std::vector<IpfsWrapper::FetchTarget> Batch;
-    std::vector<std::string> TileCids;
-    for (const std::string & R : Roots)
+    // Queue download markers live OUTSIDE the library tree (like .part files) — the real nodes land in the library.
+    const std::filesystem::path Incoming =
+        std::filesystem::path(PackageCatalog::LibraryRootDir(*Config)).parent_path() / ".incoming-nodes";
+    bool Materialized = false;
+    for (const auto & [Lib, Arr] : (*Config)["FriendLibraries"][P].items())
     {
-        const Node * N = LocalRoots.Find(R);
-        if (N) { if (!N->LibraryItem.empty()) TileCids.push_back(N->LibraryItem); }
-        else     Batch.push_back(Target(R));   // missing root -> enqueue into the rolling queue
+        if (!Arr.is_array()) continue;
+        std::vector<std::string> Roots;
+        for (const auto & X : Arr) if (X.is_string()) Roots.push_back(X.get<std::string>());
+        if (Roots.empty()) continue;
+
+        // What is local already? A blockstore READ — the queue does all fetching.
+        const NodeIndex Local = NodeGraph::BuildFrozenIndex(Roots, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
+        std::vector<IpfsWrapper::FetchTarget> Batch;
+        std::set<std::string> Seen;
+        auto Enq = [&](const std::string & Cid) {
+            if (!Seen.insert(Cid).second) return;             // 900 Minecraft variants share ONE tile — enqueue once
+            FriendBrowseCids.insert(Cid);
+            Batch.push_back(IpfsWrapper::FetchTarget{ Cid, (Incoming / (Cid + ".json")).string(), /*Optional=*/true });
+        };
+        for (const std::string & R : Roots)
+        {
+            const Node * N = Local.Find(R);
+            if (!N) { Enq(R); continue; }                                          // root block still missing
+            if (!N->LibraryItem.empty() && !Local.Find(N->LibraryItem)) Enq(N->LibraryItem);   // tile still missing
+        }
+        if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
+
+        if (PackageCatalog::MaterializeReceivedNodes(*Config, Nick + " - " + Lib, Roots) > 0) Materialized = true;
     }
-    if (!TileCids.empty())
-    {
-        const NodeIndex LocalTiles = NodeGraph::BuildFrozenIndex(TileCids, nullptr, /*Shallow=*/true, /*LocalOnly=*/true);
-        for (const std::string & T : TileCids)
-            if (!LocalTiles.Find(T)) Batch.push_back(Target(T));   // missing tile -> enqueue
-    }
-    if (!Batch.empty()) IpfsWrapper::EnqueueBatch(Batch);
-    rebuildCatalog();               // show whatever is already local now
-    emit friendCatalogChanged();
+    if (Materialized) { rebuildCatalog(); emit friendCatalogChanged(); }
 }
 
 void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)

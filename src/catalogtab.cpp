@@ -181,11 +181,12 @@ void CatalogTab::rebuild()
             if (H == Hyd.end() || !H->second.Hydrated)   // only an un-hydrated edition needs its (closure-walked) CIDs checked
             {
                 AnyMissing = true;
-                // A friend's SHARED node is fetchable BY DEFINITION: the shallow browse index holds only its root +
-                // tile blocks (no PARENTS closure to enumerate content CIDs from), and installing hydrates the root
-                // CID's whole closure. Without this, every friend browse card is suppressed as "nothing to download".
-                if (!N->FriendPeer.empty()) AnyFetchable = true;
-                else if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()) AnyFetchable = true;
+                // Fetchable = it has enumerable content CIDs, OR its composition graph is INCOMPLETE locally (a
+                // received package whose PARENTS haven't been fetched yet): hydration fetches the closure, so there
+                // is always something to download even though nothing can be enumerated from the partial graph.
+                if (!PackageCatalog::NodeContentCids(Model.catalogIndex(), N->NodeId).empty()
+                    || PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), N->Key()))
+                    AnyFetchable = true;
             }
         }
         if (!AnyMissing || !AnyFetchable || Ids.empty()) continue;

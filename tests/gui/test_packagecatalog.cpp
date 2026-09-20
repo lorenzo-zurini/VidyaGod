@@ -337,38 +337,37 @@ private slots:
         return Cids;
     }
 
-    // A friend's SHARE is just node CIDs. When Receive is on, BuildCatalogIndex folds the peer's shared CIDs in from
-    // the LOCAL blockstore as CID-backed browse nodes — no PackageSource, no stub dir — tagged (peer, library) and with
-    // NO BundleDir (so HydrationMap reads them un-hydrated = browse tiles). Not receiving → they must NOT fold.
-    // Teeth: drop the InReceive gate → the not-receiving assert fails; drop the (peer,lib) tag → the tag asserts fail.
-    void friend_share_cids_fold_into_catalog_when_receiving()
+    // A received share MATERIALIZES as ORDINARY packages in an ORDINARY library dir ("<Nick> - <Lib>") — the same
+    // on-disk artifact every node is. From there zero friend-specific code runs: the plain catalog scan indexes them
+    // (CID-keyed, real BundleDir). Roots whose tile hasn't landed wait for a later pass; re-runs are idempotent.
+    // Teeth: break the tree layout, the tile grouping, or idempotency and the asserts below fail.
+    void received_share_materializes_as_ordinary_library_packages()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
-        QTemporaryDir Root; QVERIFY(Root.isValid());
-        const std::vector<std::string> Cids = publishTwoGames(Root.path());   // blocks are now in the local blockstore
-        QVERIFY(!Cids.empty());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const std::vector<std::string> Cids = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
+        QCOMPARE((int)Cids.size(), 2);
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
-        rx["FriendLibraries"]["peerX"]["Games"] = json::array({Cids[0]});
 
-        // Not receiving → the friend's CID must NOT appear in the catalog.
-        {
-            auto Idx = PackageCatalog::BuildCatalogIndex(rx);
-            QVERIFY2(Idx.Nodes.find(Cids[0]) == Idx.Nodes.end(),
-                     "a friend's shared CID must not fold in until Receive is on");
-        }
-        // Receive on → folds in from the blockstore, tagged (peer, library), with no on-disk bundle (browse tile).
-        rx["ReceiveFrom"] = json::array({"peerX"});
+        const int W = PackageCatalog::MaterializeReceivedNodes(rx, "Alice - Games", Cids);
+        QCOMPARE(W, 2);
+        const QString Lib = RxData.path() + "/Alice - Games";
+        QVERIFY2(QFile::exists(Lib + "/[1] A/a_exec.json"), "root node lands NODE_ID-named in its [uid] Title package dir");
+        QVERIFY2(QFile::exists(Lib + "/[1] A/a_tile.json"), "the tile lands beside its variants");
+        QVERIFY2(QFile::exists(Lib + "/[2] B/b_exec.json"), "second game gets its own package dir");
+
+        // The ORDINARY catalog scan indexes them — no fold, no tags, no sources.
         auto Idx = PackageCatalog::BuildCatalogIndex(rx);
         auto It = Idx.Nodes.find(Cids[0]);
-        QVERIFY2(It != Idx.Nodes.end(), "a received friend CID folds into the catalog");
-        QCOMPARE(QString::fromStdString(It->second.FriendPeer), QStringLiteral("peerX"));
-        QCOMPARE(QString::fromStdString(It->second.FriendLib), QStringLiteral("Games"));
-        QVERIFY2(It->second.BundleDir.empty(),
-                 "a folded friend node has no on-disk bundle (un-hydrated browse tile until installed)");
+        QVERIFY2(It != Idx.Nodes.end(), "a materialized node freezes back to the SAME CID in the plain tree scan");
+        QVERIFY2(!It->second.BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
+
+        // Idempotent: a second pass writes nothing.
+        QCOMPARE(PackageCatalog::MaterializeReceivedNodes(rx, "Alice - Games", Cids), 0);
         IpfsWrapper::StopNode();
     }
 
