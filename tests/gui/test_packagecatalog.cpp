@@ -403,21 +403,25 @@ private slots:
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        // TWO libraries carry the same items (the multi-dest normal: one CID job, several dests) — a re-publish
+        // must refresh EVERY dest, not just the fetch's primary.
         auto Land = [&](const json & SnapItems) {
             std::vector<IpfsWrapper::FetchTarget> B;
-            for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", SnapItems}}))
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(
+                     rx, "Alice", json{{"Games", SnapItems}, {"Favs", SnapItems}}))
                 B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/false, /*Dir=*/false,
                                                       /*Verify=*/true });   // receiver semantics: reusable dests
             const auto H = IpfsWrapper::EnqueueBatch(B);
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(H, 30000, &WErr), WErr.c_str());
         };
-        auto DestBytes = [&](const std::string & Node) {
-            std::ifstream In(RxData.path().toStdString() + "/Alice - Games/[1] A/" + Node + ".json", std::ios::binary);
+        auto DestBytes = [&](const std::string & Lib, const std::string & Node) {
+            std::ifstream In(RxData.path().toStdString() + "/Alice - " + Lib + "/[1] A/" + Node + ".json", std::ios::binary);
             return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
         };
         Land(Items);
-        QCOMPARE(DestBytes("a_exec"), IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // v1 landed verbatim
+        QCOMPARE(DestBytes("Games", "a_exec"), IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // v1 landed verbatim
+        QCOMPARE(DestBytes("Favs", "a_exec"),  IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // …into BOTH libraries
 
         // Seeder updates the node (same NODE_ID, new content) and re-publishes → NEW cid, SAME dest.
         {
@@ -436,7 +440,9 @@ private slots:
         QVERIFY2(!CidV2.empty() && CidV2 != CidV1, "the update re-minted to a NEW cid");
 
         Land(Items2);
-        QCOMPARE(DestBytes("a_exec"), IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // v2 REPLACED the stale file
+        QCOMPARE(DestBytes("Games", "a_exec"), IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // v2 REPLACED the stale file
+        QCOMPARE(DestBytes("Favs", "a_exec"),  IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // …at EVERY dest, not just
+                                                                                                // the fetch's primary
 
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();

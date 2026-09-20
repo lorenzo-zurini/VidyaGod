@@ -113,6 +113,19 @@ static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node
     return Deps;
 }
 
+bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J)
+{
+    std::error_code Ec;
+    const auto Sz = std::filesystem::file_size(File, Ec);
+    if (Ec || Sz > (8u << 20)) return false;
+    std::ifstream In(File, std::ios::binary);
+    if (!In) return false;
+    std::string Bytes((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+    if (!JsonDepthWithinLimit(Bytes, 64)) { LogWarn("NodeGraph::ReadTreeJsonBounded", "skipping too-deep JSON " + File.string()); return false; }
+    J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
+    return !J.is_discarded();
+}
+
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,
@@ -134,18 +147,11 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
         // UNTRUSTED bytes can now live in the tree (a received share's block, landed verbatim by the fetch queue), so
-        // the scan gets the same guards every fetched block gets: a size cap (a node block is never > 8 MiB — the
-        // friend-message bound) and a depth pre-scan BEFORE the recursive parse/normalize, or a hostile deep block
-        // becomes a stack overflow that crashes EVERY startup scan until the file is hand-deleted.
-        {
-            const auto Sz = E.file_size(Ec);
-            if (Ec || Sz > (8u << 20)) { Ec.clear(); continue; }
-        }
-        std::ifstream In(E.path(), std::ios::binary);
-        std::string Bytes((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
-        if (!JsonDepthWithinLimit(Bytes, 64)) { LogWarn("NodeGraph::GatherWorkingTree", "skipping too-deep JSON " + E.path().string()); continue; }
-        nlohmann::ordered_json J = nlohmann::ordered_json::parse(Bytes, nullptr, false);
-        if (J.is_discarded()) continue;                // skip unparseable — a scan must never throw
+        // the scan gets the same guards every fetched block gets — size cap + depth pre-scan BEFORE the recursive
+        // parse/normalize, or a hostile deep block becomes a stack overflow that crashes EVERY startup scan.
+        Ec.clear();
+        nlohmann::ordered_json J;
+        if (!ReadTreeJsonBounded(E.path(), J)) continue;
         NormalizeLinks(J);   // a RAW dag-json node block (a received share, landed verbatim by the fetch queue) uses
                              // {"/":cid} link objects — normalize to plain CID strings so it reads like any tree node
                              // (idempotent for ordinary handle-linked nodes; re-freezes to the identical CID)

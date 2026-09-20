@@ -42,6 +42,11 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 // node file) must pass this BEFORE any parse — a hostile deep block otherwise overflows the stack (no exception).
 bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
 
+// Bounded read of a library-tree .json file: size cap (8 MiB — a node block is never bigger) + depth pre-scan +
+// non-throwing parse. False on oversize/too-deep/unparseable. EVERY walker of the library root must use this —
+// received shares land hostile bytes there verbatim, and one unguarded recursive parse is a crash.
+bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J);
+
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,

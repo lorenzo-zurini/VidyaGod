@@ -157,7 +157,10 @@ void RunJob(const std::string &Cid, std::vector<std::string> Dests, bool Dir, bo
     bool MatFail = false;
     if (Rc == 0)
         for (const std::string &D : Dests)
-            if (D != Primary && !PathExists(D) && !Materialize(Primary, D, &Err)) MatFail = true;   // every dest, or fail
+            // Every dest, or fail. A Verify job's dests are REUSABLE paths (a node file: same path, new CID on
+            // re-publish), so an EXISTING non-primary dest can hold a stale version — overwrite it from the
+            // just-verified Primary (Materialize's copy fallback overwrites); presence proves nothing there.
+            if (D != Primary && (Verify || !PathExists(D)) && !Materialize(Primary, D, &Err)) MatFail = true;
 
     {
         std::lock_guard<std::mutex> Lk(Q().Mu);
@@ -257,7 +260,13 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
                         AddDest(J, T.LocalPath);          // join the in-flight fetch (cross-dest)
                         break;
                     case Job::Done: {
-                        if (PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
+                        // Trust exactly the dests THIS job wrote/verified (J.Dests) — a repeat of one of them is a
+                        // no-op. A NEW dest materializes from one of them (same CID ⇒ same bytes). For a Verify
+                        // target, mere PRESENCE of the new dest proves nothing (a reusable node path can hold an
+                        // OLDER version), so it is materialized over; non-Verify keeps the presence shortcut.
+                        if (PathExists(T.LocalPath)
+                            && std::find(J.Dests.begin(), J.Dests.end(), T.LocalPath) != J.Dests.end()) break;
+                        if (!T.Verify && PathExists(T.LocalPath)) { AddDest(J, T.LocalPath); break; }   // already there
                         const std::string Src = FirstExisting(J);
                         if (!Src.empty()) { AddDest(J, T.LocalPath); Late.push_back({T.Cid, Src, T.LocalPath}); }
                         else { J.State = Job::Queued; J.Seq = ++Q().Seq; AddDest(J, T.LocalPath); Woke = true; NewlyQueued.push_back(T.Cid); }

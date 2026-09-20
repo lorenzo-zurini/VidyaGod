@@ -822,13 +822,14 @@ void AppModel::enqueueReceivedShares(const QString & peer)
 
     const auto Plan = PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]);
     std::vector<IpfsWrapper::FetchTarget> Batch;
-    std::error_code Ec;
+    Batch.reserve(Plan.size());
     for (const auto & T : Plan)
     {
-        // Satisfied = file placed AND block held. Membership only (HasLocal) — never haul block bytes here: this
-        // runs on the GUI thread and a hostile snapshot can name 100k items. The dest check goes first so settled
-        // targets cost no cgo call at all.
-        if (std::filesystem::exists(T.Dest, Ec) && IpfsWrapper::HasLocal(T.Cid)) continue;
+        // No local "satisfied" guess: presence and even HasLocal both LIE for reusable node dests (HasLocal is
+        // GLOBAL block membership — another friend's fetch of v2 would mark this friend's stale v1 file settled
+        // forever). Enqueue every planned target with Verify semantics: the QUEUE settles repeats for free (a dest
+        // its job already wrote is a no-op at enqueue), and the Go fetch hash-verifies a reused dest exactly —
+        // overwriting a stale file, no-oping a current one.
         FriendBrowseCids.insert(T.Cid);
         Batch.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
     }

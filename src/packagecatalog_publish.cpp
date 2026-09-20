@@ -2,6 +2,7 @@
 #include "pkglayout.h"
 #include "pkggraph.h"
 #include "packagecatalog_p.h"
+#include "nodegraph.h"       // ReadTreeJsonBounded — every library-root walker reads bounded
 #include "apppaths.h"
 #include "manifestmodel.h"
 #include "commonutils.h"
@@ -114,15 +115,14 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
     nlohmann::ordered_json Nodes = nlohmann::ordered_json::array();
     for (const fs::path &F : Files)
     {
-        std::ifstream In(F);
         nlohmann::ordered_json J;
-        //A file we cannot parse is left alone — but SAID, because dropping it silently removes it from the
-        //layout graph and moves every other node, which looks like the algorithm changed.
-        try { In >> J; }
-        catch (const std::exception &E)
+        //A file we cannot parse (or a hostile oversize/too-deep one — received shares land verbatim bytes in the
+        //tree) is left alone — but SAID, because dropping it silently removes it from the layout graph and moves
+        //every other node, which looks like the algorithm changed.
+        if (!NodeGraph::ReadTreeJsonBounded(F, J))
         {
             LogWarn("PackageCatalog::StampNodePositions",
-                    "skipping unparseable " + F.filename().string() + " (" + E.what() + ") — its nodes are not "
+                    "skipping unparseable/unsafe " + F.filename().string() + " — its nodes are not "
                     "laid out, and every other node's position is computed without them.");
             continue;
         }
@@ -439,7 +439,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
         if (!It->is_regular_file(Ec) || It->path().extension() != ".json") continue;
 
         nlohmann::ordered_json J;
-        { std::ifstream F(It->path()); if (!F) continue; try { F >> J; } catch (...) { continue; } }
+        if (!NodeGraph::ReadTreeJsonBounded(It->path(), J)) continue;   // bounded: hostile bytes live in the tree now
         if (!J.is_object() && !J.is_array()) continue;      // one node, or an array of them
         const fs::path Bundle = It->path().parent_path();
 
