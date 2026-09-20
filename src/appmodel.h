@@ -102,6 +102,15 @@ public:
     // re-arm shares after a restart) and after a re-publish (the launchable CIDs may have moved). Without it the two
     // halves split-brain: the UI shows a friend as shared-with, but Go serves them nothing.
     void reRegisterShares();
+    // Self-healing reconciliation (the sharing handshake is otherwise EDGE-triggered — it fires only when you flip a
+    // toggle, so share-before-accept, a toggle made while the peer was offline, and an app restart all left the receiver
+    // showing nothing). reconcileReceivedFriend re-materialises a peer's browsable stubs from our PERSISTED snapshot
+    // (cached tiles show instantly, and a browse-fetch that failed while they were offline is retried now they're
+    // reachable) AND re-requests a fresh snapshot in case their shares changed. Called on node-ready (for every
+    // receiving-from peer, via reconcileReceivedLibraries) and whenever such a peer comes online (friendPresence).
+    void reconcileReceivedFriend(const QString & peer);
+    void reconcileReceivedLibraries();
+    bool hasFriendLibraries(const QString & peer) const;
     // Consent with a friend ended (remove/block): forget both directions of the relationship's sharing state — stop
     // serving them (config["Sharing"][peer]) and drop what they shared with us (config["FriendLibraries"][peer]).
     void forgetFriend(const QString & peer);

@@ -49,6 +49,12 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     connect(FriendsManager::instance(), &FriendsManager::friendLibrary, this,
         [this](const QString & peer, const QString & libsJson, quint64 seq) { applyFriendLibrarySnapshot(peer, libsJson, seq); });
 
+    // Self-heal on reachability: when a friend we RECEIVE from comes online, re-materialise + re-request so the catalog
+    // fills regardless of the order shares/accepts/toggles happened in (a node-ready request can fire before the friend
+    // connection is up and fail silently; this retries the moment they're reachable). Fires only on the online transition.
+    connect(FriendsManager::instance(), &FriendsManager::friendPresence, this,
+        [this](const QString & peer, bool online) { if (online) reconcileReceivedFriend(peer); });
+
     // Auto-accept ("server mode"): if enabled, accept every incoming friend request automatically and apply the
     // New-Peer defaults. Runs whether or not the Network tab is open.
     connect(FriendsManager::instance(), &FriendsManager::friendRequest, this,
@@ -519,6 +525,33 @@ void AppModel::reRegisterShares()
                 LogWarn("AppModel::reRegisterShares", "re-share '" + L + "' with " + P + " failed: " + Err);
         }
     }
+}
+
+bool AppModel::hasFriendLibraries(const QString & peer) const
+{
+    const std::string P = peer.toStdString();
+    return Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object()
+        && !(*Config)["FriendLibraries"][P].empty();
+}
+
+void AppModel::reconcileReceivedFriend(const QString & peer)
+{
+    // Make the receiver's view independent of WHEN the snapshot arrived. Two idempotent, self-healing steps:
+    if (!isReceivingFrom(peer)) return;
+    // 1. Re-materialise from what we already have — shows cached tiles at once, and RETRIES a browse-fetch that failed
+    //    while the peer was offline (writeFriendStubsAsync is per-peer serialised, so repeated calls coalesce). A fresh
+    //    library_req reply would NO-OP when the snapshot is unchanged (seq high-water), so this is what retries the fetch.
+    if (hasFriendLibraries(peer)) writeFriendStubsAsync(peer);
+    // 2. Re-request in case their shares changed while we were away (a CHANGED snapshot re-triggers materialisation).
+    requestFriendLibraries(peer);
+}
+
+void AppModel::reconcileReceivedLibraries()
+{
+    if (!Config->contains("ReceiveFrom") || !(*Config)["ReceiveFrom"].is_array()) return;
+    for (const auto & X : (*Config)["ReceiveFrom"])
+        if (X.is_string()) reconcileReceivedFriend(QString::fromStdString(X.get<std::string>()));
 }
 
 void AppModel::forgetFriend(const QString & peer)

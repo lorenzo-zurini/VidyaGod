@@ -331,8 +331,10 @@ void MainWindow::onNodeReady()
     {
         Model->pushPresenceDeny();   // apply the per-peer presence-hide roster now the friend service is live
         Model->reRegisterShares();
-        for (const auto & C : IpfsWrapper::FriendList())
-            if (C.State == "accepted") Model->requestFriendLibraries(QString::fromStdString(C.PeerID));
+        // Materialise every receiving-from peer's browsable stubs from our PERSISTED snapshot (so the catalog is
+        // populated at startup without waiting for a fresh snapshot) AND re-request in case their shares changed. This
+        // is what makes a restart show a friend's library again — applyFriendLibrarySnapshot only fires on a NEW snapshot.
+        Model->reconcileReceivedLibraries();
     }
 }
 
