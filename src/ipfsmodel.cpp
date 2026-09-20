@@ -65,12 +65,15 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
             OutPkgDirs->insert(QString::fromStdString(PkgName), QString::fromStdString(N.BundleDir.string()));
 
         // The node BLOCK itself (the index key IS its CID): every catalog node is a pinned dag-json block, and a
-        // received share arrives as exactly these — name them like everything else instead of "(unknown)".
+        // received share arrives as exactly these — name them like everything else instead of "(unknown)". They are
+        // PART OF THEIR PACKAGE (Content > <library> > <package>, same as the queue-dest naming while in flight) —
+        // a global "Meta" bucket for a thousand node rows was a dumping ground, and inconsistent with the in-flight
+        // grouping. Meta stays for what it always meant: sources and per-package meta-CIDs.
         {
             const QString QCid = QString::fromStdString(NodeCid);
             Labels.insert(QCid, QString::fromStdString((N.NodeId.empty() ? NodeCid.substr(0, 12) : N.NodeId) + " (node)"));
             if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
-            if (OutCategory) OutCategory->insert(QCid, CatMeta);
+            if (OutCategory) OutCategory->insert(QCid, CatContent);
             if (OutSource)   OutSource->insert(QCid, Src.isEmpty() ? QStringLiteral("Other") : Src);
         }
 

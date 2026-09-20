@@ -213,10 +213,15 @@ void CatalogTab::rebuild()
         }
         return n;
     };
-    std::map<std::string, std::vector<LibraryGameCard*>> ByBundle;     // bundle dir → its un-hydrated game cards
+    // Sibling games group by PACKAGE UID — the package's identity — not by directory: a received package's games
+    // may land per-tile before the seeder's dir name reaches the wire (and a dir is an on-disk accident anyway).
+    // A card with no UID falls back to its bundle dir so unrelated UID-less packages never merge.
+    std::map<std::string, std::vector<LibraryGameCard*>> ByBundle;     // PACKAGEUID (or dir) → its un-hydrated game cards
     std::vector<std::string> BundleOrder;
     for (LibraryGameCard * c : *AvailableGameCards) {
-        const std::string Key = c->PackagePath.string();
+        const Node * N = Model.catalogIndex().Find(c->RepNodeId);
+        std::string Key = N ? N->Uid : std::string();
+        if (Key.empty()) Key = c->PackagePath.string();
         if (ByBundle.find(Key) == ByBundle.end()) BundleOrder.push_back(Key);
         ByBundle[Key].push_back(c);
     }

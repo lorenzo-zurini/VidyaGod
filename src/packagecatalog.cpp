@@ -1018,7 +1018,12 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
 
         std::string LibName = LibraryOf(Dirs[Handle], Root);
         if (LibName.empty()) LibName = "Library";
-        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", Handle}, {"uid", Uid}, {"title", Title}};
+        // pkg = the node's ACTUAL package dir basename: the receiver reproduces the seeder's tree exactly, so a
+        // multi-game package (AoE2: AoK + Conquerors + …) lands as ONE dir and the catalog's by-bundle sibling
+        // grouping ("Other games in this package") survives the wire. uid/title stay for display + legacy fallback.
+        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", Handle},
+                                 {"pkg", Dirs[Handle].filename().string()},
+                                 {"uid", Uid}, {"title", Title}};
         if (!TileCid.empty()) { E["tilecid"] = TileCid; E["tilenode"] = TileHandle; }
         Libs[LibName].push_back(std::move(E));
         Flat.push_back(CidIt->second);
@@ -1108,7 +1113,11 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             if (Uid.empty()) Uid = NodeId;
             std::string Title = It.value("title", std::string());
             if (Title.empty()) Title = NodeId;
-            const fs::path PkgDir = LibDir / San("[" + Uid + "] " + Title);
+            // The seeder's real package dir name keeps multi-game packages ONE dir (sibling grouping is by bundle
+            // dir); the "[uid] title" shape is only the fallback for a snapshot without it.
+            std::string PkgSeg = It.value("pkg", std::string());
+            if (PkgSeg.empty()) PkgSeg = "[" + Uid + "] " + Title;
+            const fs::path PkgDir = LibDir / San(PkgSeg);
             Add(Cid, PkgDir / (San(NodeId) + ".json"));
             if (const std::string TileCid = It.value("tilecid", std::string()); !TileCid.empty())
             {
@@ -1544,6 +1553,21 @@ std::vector<std::string> NodeContentCids(const NodeIndex &Idx, const std::string
     return Cids;
 }
 
+std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                                  const std::map<std::string, bool> &Toggles)
+{
+    // The stamped SOURCE.SIZE per content CID — the sizes-in-JSON keystone: a download size must derive INSTANTLY
+    // and OFFLINE from the graph, never from a ~35s network probe per CID (which left the pre-download dialog
+    // "estimating…" for minutes). Only stamped (>0) entries are returned; the caller probes the rare unstamped rest.
+    std::map<std::string, long long> Out;
+    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &L, const std::filesystem::path&, const std::string &Cid){
+        if (Cid.empty() || !L.contains("SOURCE") || !L["SOURCE"].is_object()) return;
+        const long long Sz = L["SOURCE"].value("SIZE", (long long)0);
+        if (Sz > 0) Out[Cid] = Sz;
+    });
+    return Out;
+}
+
 bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId, const std::map<std::string, bool> &Toggles,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error)
 {
@@ -1593,6 +1617,19 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
         }
     }
     return true;
+}
+
+std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                        const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    const Node *Launch = Idx.Find(LaunchNodeId);
+    if (!Launch) return {};
+    ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
+    Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;
+    std::vector<std::string> Ids;
+    for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
+        if (RunnerId != LaunchResolver::kNativeTerminalId) Ids.push_back(RunnerId);
+    return Ids;
 }
 
 bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,

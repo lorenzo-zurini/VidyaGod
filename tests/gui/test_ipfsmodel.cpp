@@ -108,7 +108,7 @@ private slots:
         started(NodeCid);                                           // any transfer/pin row for a node block
         QCOMPARE(im.state(NodeCid).label,    QString("g_exec (node)"));
         QCOMPARE(im.state(NodeCid).package,  QString("Game"));
-        QCOMPARE(im.state(NodeCid).category, QString("Meta"));
+        QCOMPARE(im.state(NodeCid).category, QString("Content"));   // node rows live INSIDE their package's tree
         QCOMPARE(im.state(NodeCid).source,   QString("VidyaGod"));
         IpfsWrapper::StopNode();
     }

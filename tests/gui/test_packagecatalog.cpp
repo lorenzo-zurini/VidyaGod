@@ -258,6 +258,7 @@ private slots:
         QCOMPARE(G.value("title", std::string()), std::string("Game"));
         QVERIFY2(!G.value("tilecid", std::string()).empty(), "the tile block rides along");
         QCOMPARE(G.value("tilenode", std::string()), std::string("g_tile"));
+        QCOMPARE(G.value("pkg", std::string()), std::string("[1] Game"));   // the REAL dir — sibling grouping survives
         const auto & W = Libs["VidyaGodRunners"][0];
         QCOMPARE(W.value("node", std::string()),  std::string("r_wine"));
         QCOMPARE(W.value("uid", std::string()),   std::string("r_wine"));  // no tile -> stands under its own handle
@@ -279,8 +280,12 @@ private slots:
         // TWO content levels below the exec: closure completion must converge over WAVES (a_content's block only
         // reveals a_base once fetched), not stop at the first frontier.
         writeJson(root + "/VidyaGod/[1] A/base.json",
-                  NodeFixture::Chain("a_base", {NodeFixture::ContentCid("file", "base.bin",
-                      "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}));
+                  NodeFixture::Chain("a_base", {[]{
+                      auto L = NodeFixture::ContentCid("file", "base.bin",
+                          "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e");
+                      L["SOURCE"]["SIZE"] = 4096;   // stamped size — the dialog's instant size derivation reads THIS
+                      return L;
+                  }()}));
         writeJson(root + "/VidyaGod/[1] A/content.json",
                   NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
@@ -351,7 +356,7 @@ private slots:
                  "a received, un-installed package must not count as hydrated (its closure is not fetched)");
 
         // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
-        const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"uid", ".."}, {"title", "../.."},
+        const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"pkg", "../../.."}, {"uid", ".."}, {"title", "../.."},
                                             {"tilecid", Items[0].value("tilecid", std::string())}, {"tilenode", "/etc/passwd"}}});
         const auto EvilPlan = PackageCatalog::PlanReceivedFetches(rx, "..", json{{"..", Evil}});
         QVERIFY(!EvilPlan.empty());
@@ -428,6 +433,10 @@ private slots:
         QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Fresh, "a_exec"), "the closure is complete after the fetch");
         QVERIFY2(!PackageCatalog::NodeContentCids(Fresh, "a_exec").empty(),
                  "content targets (and thus sizes) now resolve — the Download button has something to do");
+
+        // Sizes derive INSTANTLY from the stamped SOURCE.SIZE in the just-landed chain — never a network probe.
+        const auto Sizes = PackageCatalog::NodeContentSizes(Fresh, "a_exec");
+        QCOMPARE(Sizes.at("bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"), 4096LL);
 
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
@@ -510,6 +519,15 @@ private slots:
         for (const auto & T : Plan)
             for (const auto & Part : std::filesystem::path(T.Dest.substr(std::string("/tmp/vgplanb/").size())))
                 QVERIFY2(Part.string().size() <= 130, ("segment too long: " + Part.string()).c_str());
+
+        // Two games of ONE package (same pkg, different tiles) must land in the SAME dir — by-bundle sibling
+        // grouping ("Other games in this package") depends on it.
+        const json Sib = json::array({
+            json{{"cid", "bafysib1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"node", "aok"},  {"pkg", "[9] AoE2"}, {"uid", "9"}, {"title", "AoK"}},
+            json{{"cid", "bafysib2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, {"node", "conq"}, {"pkg", "[9] AoE2"}, {"uid", "9"}, {"title", "Conquerors"}} });
+        const auto SibPlan = PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", Sib}});
+        QCOMPARE((int)SibPlan.size(), 2);
+        QCOMPARE(std::filesystem::path(SibPlan[0].Dest).parent_path(), std::filesystem::path(SibPlan[1].Dest).parent_path());
 
         const json BadCid = json::array({ json{{"cid", Long}} });                    // >128 bytes → not a CID → dropped
         QCOMPARE((int)PackageCatalog::PlanReceivedFetches(rx, "A", json{{"L", BadCid}}).size(), 0);

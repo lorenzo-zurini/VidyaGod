@@ -206,7 +206,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 const bool Standalone = !PackageCatalog::IsEmbeddedRunner(Model.catalogIndex(), rid);  // not bundled in any game
                 if (!Embedded && !Standalone) continue;                                           // another game's embedded runner
                 if (PackageCatalog::RunnerInstalled(Model.catalogIndex(), rid)) { AnyCompatInstalled = true; continue; }
-                if (PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty()) continue;      // PATH runner — not downloadable
+                // A RECEIVED runner has no enumerable build YET (closure incomplete) but is absolutely downloadable
+                // — only a complete-closure runner with no content is a PATH runner.
+                if (PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty()
+                    && !PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), rid)) continue;
                 (Embedded ? EmbeddedR : GlobalR).push_back(R);
             }
             const bool ShowGlobal = !AnyCompatInstalled && !GlobalR.empty();
@@ -217,8 +220,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
                 auto addRunner = [&](const Node * R){
                     const std::string rid = R->NodeId;
                     const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).size();
+                    const QString Suffix = Items > 0 ? QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s")
+                                                     : QStringLiteral("   (remote)");   // received: enumerates on install
                     QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label)
-                        + QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s"), Box);
+                        + Suffix, Box);
                     cb->setChecked(true);
                     RunnerChecks[rid] = cb; BL->addWidget(cb);
                 };
@@ -266,15 +271,26 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         for (const auto & [Rid, cb] : RunnerChecks) if (cb->isChecked()) SelR.push_back(Rid);
         auto Tg  = std::make_shared<std::map<std::string, bool>>(*OptStates);
         auto Out = std::make_shared<std::set<std::string>>();
+        auto Stamped = std::make_shared<std::map<std::string, long long>>();   // cid → SOURCE.SIZE (instant, offline)
         const std::shared_ptr<const NodeIndex> S = *Snap;   // GUI-thread copy — the worker never touches the handle
         AsyncWork::Run(&Dlg,
-            [S, SelL, SelR, Tg, Out]{
+            [S, SelL, SelR, Tg, Out, Stamped]{
                 for (const std::string & Lid : SelL)
+                {
                     for (const auto & C : PackageCatalog::NodeContentCids(*S, Lid, *Tg)) Out->insert(C);
+                    for (const auto & [C, Sz] : PackageCatalog::NodeContentSizes(*S, Lid, *Tg)) (*Stamped)[C] = Sz;
+                }
                 for (const std::string & Rid : SelR)
+                {
                     for (const auto & C : PackageCatalog::NodeContentCids(*S, Rid)) Out->insert(C);
+                    for (const auto & [C, Sz] : PackageCatalog::NodeContentSizes(*S, Rid)) (*Stamped)[C] = Sz;
+                }
             },
-            [this, Out, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce]{
+            [this, Out, Stamped, SizeCache, Queried, SizeLabel, FreeBytes, Alive, Debounce]{
+                // Stamped sizes are authoritative and free — seed the cache with them so the network prober only
+                // ever runs for the rare UNSTAMPED legacy CID (it used to run for everything: ~35s each, serial —
+                // the "no size for minutes" bug).
+                for (const auto & [C, Sz] : *Stamped) (*SizeCache)[C] = Sz;
                 long long Sum = 0; bool AllKnown = true;
                 std::vector<std::string> Unknown;
                 for (const std::string & C : *Out)
@@ -473,6 +489,21 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                     if (!PackageCatalog::CompleteClosure(Idx, Lid, &Err)) { Ok = false; break; }
                     Completed = true;
                 }
+            if (Ok && Completed) { Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap); Completed = false; }
+            // The AUTO-POOLED runtime too: a received game's resolved runner chain (proton/wine) is itself received
+            // — exec + tile only — and CollectRunnerChainTargets can enumerate NOTHING from a headless runner graph
+            // (the game downloaded but its runtime silently didn't). Resolve the chain on the fresh index, complete
+            // each incomplete runner's closure the same way, and re-index once more.
+            if (Ok)
+                for (const std::string & Lid : LaunchIds)
+                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(Idx, Lid, ConfigSnap))
+                        if (PackageCatalog::NodeClosureIncomplete(Idx, Rid))
+                        {
+                            std::string CErr;
+                            if (!PackageCatalog::CompleteClosure(Idx, Rid, &CErr))
+                                LogWarn("DownloadManager::beginDownload", "runner closure '" + Rid + "': " + CErr);
+                            else Completed = true;
+                        }
             if (Ok && Completed) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
         }
         // Pool EVERY fetch — all selected launchables' content layers + each launchable's RESOLVED runner chain build +

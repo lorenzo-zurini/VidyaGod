@@ -327,6 +327,16 @@ std::vector<std::string> GroupNodeIds(const NodeIndex &Idx, const std::string &L
 // Lets a caller pool a game's content with its runners' build layers into ONE concurrent download batch. Returns
 // false (with *Error) if a required layer is locally missing AND has no IPFS source. Also seeds an already-present
 // cover by reference (best-effort) so a downloader serves it too.
+// The stamped SOURCE.SIZE per content CID of a launchable's selection — instant + offline (sizes-in-JSON); only
+// stamped entries are returned, the caller network-probes the rare unstamped rest.
+std::map<std::string, long long> NodeContentSizes(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                                  const std::map<std::string, bool> &Toggles = {});
+
+// The launchable's RESOLVED runner-chain node ids (native terminal excluded) — what CollectRunnerChainTargets pools;
+// exposed so an installer can COMPLETE a received runner's closure before collecting its build.
+std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                        const nlohmann::ordered_json &GlobalConfigJSON);
+
 [[nodiscard]] bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId,
                            const std::map<std::string, bool> &Toggles,
                            std::vector<IpfsWrapper::FetchTarget> &Out, std::string *Error = nullptr);

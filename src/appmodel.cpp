@@ -56,6 +56,17 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
     connect(FriendsManager::instance(), &FriendsManager::friendPresence, this,
         [this](const QString & peer, bool online) { if (online) reconcileReceivedFriend(peer); });
 
+    // Periodic reconcile: presence-online and snapshot-apply are EDGE-triggered — a seeder killed mid-transfer and
+    // restarted while we saw no edge (or a missed presence event) would otherwise leave the receiver waiting
+    // forever. Every 10 min, re-plan + re-enqueue each receiving-from peer; the queue settles repeats silently
+    // (a dest its job already wrote is a no-op at enqueue), so steady state costs nothing visible.
+    {
+        QTimer * Resync = new QTimer(this);
+        Resync->setInterval(10 * 60 * 1000);
+        connect(Resync, &QTimer::timeout, this, [this]{ reconcileReceivedLibraries(); });
+        Resync->start();
+    }
+
     // A received-share node block landed in the rolling queue (at its final library path) → (debounced) rebuild the
     // catalog so it shows what arrived. Same queue as any transfer; we react only to CIDs we ourselves enqueued for
     // received shares (FriendBrowseCids).
