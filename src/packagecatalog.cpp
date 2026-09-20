@@ -1465,11 +1465,14 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
                 else { PS = ResolvePathState(L, Local, Vars); StatCache[Key] = PS; }
                 if (LayerFetchableMissing(PS, Cid)) R.Hydrated = false;
             }
-        // Fold in the parents' (already-memoized) closure result.
+        // Fold in the parents' (already-memoized) closure result. A parent MISSING from the index means the closure
+        // itself isn't fetched (a received share before install, or a broken ref) — that can never count as hydrated:
+        // "hydrated" previously held VACUOUSLY for such nodes (no reachable content layers → nothing missing), which
+        // filed un-installed received games under the Library tab as playable and left the Catalog empty.
         if (N)
             for (const std::string &P : N->Parents)
             {
-                if (!Idx.Find(P)) continue;
+                if (!Idx.Find(P)) { R.Hydrated = false; continue; }
                 const NodeHydration PC = Compute(P);
                 R.Hydrated    = R.Hydrated && PC.Hydrated;
                 R.HasContent  = R.HasContent || PC.HasContent;

@@ -324,8 +324,13 @@ private slots:
         QDir().mkpath(root + "/VidyaGod/[1] A");
         QDir().mkpath(root + "/VidyaGod/[2] B");
         writeJson(root + "/VidyaGod/[1] A/tile.json", NodeFixture::Chain("a_tile", {NodeFixture::Tile("1", "A")}));
+        // Real games carry content in PARENT nodes; a share ships only exec+tile, so a receiver's copy has an
+        // INCOMPLETE closure until install — exactly what the vacuous-hydration guard must classify as NOT hydrated.
+        writeJson(root + "/VidyaGod/[1] A/content.json",
+                  NodeFixture::Chain("a_content", {NodeFixture::ContentCid("File", "data.bin",
+                      "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
                   NodeFixture::Chain("b_exec", {NodeFixture::Exec("win32", "b.exe")}, {"b_tile"}, {{"PUBLISH", true}}));
@@ -365,6 +370,13 @@ private slots:
         auto It = Idx.Nodes.find(Cids[0]);
         QVERIFY2(It != Idx.Nodes.end(), "a materialized node freezes back to the SAME CID in the plain tree scan");
         QVERIFY2(!It->second.BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
+
+        // Vacuous-hydration guard: an un-installed received game (PARENTS not fetched) must read NOT hydrated —
+        // that is what routes it to the Catalog tab (downloadable) instead of the Library tab (playable).
+        const auto Hyd = PackageCatalog::HydrationMap(Idx);
+        const auto Hit = Hyd.find(It->second.Key());
+        QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated,
+                 "a received, un-installed package must not count as hydrated (its closure is not fetched)");
 
         // Idempotent: a second pass writes nothing.
         QCOMPARE(PackageCatalog::MaterializeReceivedNodes(rx, "Alice - Games", Cids), 0);
