@@ -11,6 +11,11 @@
 #include "appmodel.h"
 #include "ipfsmodel.h"
 #include "ipfswrapper.h"   // IpfsManager (its signals are invoked to simulate the node's transfer events)
+#include "downloadqueue.h" // EnqueueBatch/DebugResetQueue (the queue-destination naming under test)
+#include "packagecatalog.h"
+#include "nodefixture.h"
+
+#include <fstream>
 
 using json = nlohmann::ordered_json;
 using P    = IpfsModel::CidState;
@@ -51,6 +56,61 @@ private slots:
         QVERIFY(im.state(cid).activity.isEmpty());                 // Seeded rows carry no stale narration
         phaseEv("QmNeverSeen", "text for an unknown row");         // no row → ignored, no crash, none created
         QVERIFY(!im.has("QmNeverSeen"));
+    }
+
+    // A queued transfer the catalog can't name yet is named by WHERE IT IS GOING — the queue's destination path:
+    // file name, "[uid] Title" package dir, LIBRARY collection. This is what keeps received-share node blocks (queued
+    // before their block exists anywhere) out of "Unknown / not in your library". Teeth: drop LabelFromQueueDest, the
+    // QueueDestForCid accessor, or the "[uid] " strip and the asserts fail.
+    void queued_transfer_is_named_by_its_destination()
+    {
+        AppModel m(&Cfg, &AppDir); IpfsModel im(m);
+        const QString cid = "bafyreidestnamedblockaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const std::string Dest = Dir.path().toStdString() + "/LIBRARY/Alice - Games/[7] Multi/m_v1.json";
+        IpfsWrapper::EnqueueBatch({ IpfsWrapper::FetchTarget{ cid.toStdString(), Dest, /*Optional=*/true } });
+        im.markQueued(cid);
+        QCOMPARE(im.state(cid).label,    QString("m_v1.json"));
+        QCOMPARE(im.state(cid).package,  QString("Multi"));
+        QCOMPARE(im.state(cid).source,   QString("Alice - Games"));
+        IpfsWrapper::DebugResetQueue();
+
+        // No queue job and no catalog entry → the honest fallback remains.
+        const QString stray = "QmStrayNoJob";
+        im.markQueued(stray);
+        QCOMPARE(im.state(stray).package, QString("Unknown / not in your library"));
+        IpfsWrapper::DebugResetQueue();
+    }
+
+    // A catalog node's OWN block CID is a first-class row: labeled "<NODE_ID> (node)" under its package and LIBRARY
+    // collection, category Meta — a received share that has LANDED is exactly such a node, and must never read as
+    // "Unknown". Teeth: drop the node-block pass in BuildCidLabels and every assert fails.
+    void catalog_node_blocks_are_labeled()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path() + "/LIBRARY";                 // a real LIBRARY component → SourceOfBundle works
+        QDir().mkpath(R + "/VidyaGod/[1] Game");
+        auto writeJson = [](const QString & path, const json & j) { std::ofstream o(path.toStdString()); o << j.dump(2); };
+        writeJson(R + "/VidyaGod/[1] Game/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "Game")}));
+        writeJson(R + "/VidyaGod/[1] Game/game.json",
+                  NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}));
+
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}, {"LIBRARY", json::array()}};
+        AppModel m(&cfg, &AppDir);
+        m.rebuildCatalog();
+        QString NodeCid;
+        for (const auto & [C, N] : m.catalogIndex().Nodes) if (N.NodeId == "g_exec") NodeCid = QString::fromStdString(C);
+        QVERIFY2(!NodeCid.isEmpty(), "the exec node indexed with a CID key");
+
+        IpfsModel im(m);
+        started(NodeCid);                                           // any transfer/pin row for a node block
+        QCOMPARE(im.state(NodeCid).label,    QString("g_exec (node)"));
+        QCOMPARE(im.state(NodeCid).package,  QString("Game"));
+        QCOMPARE(im.state(NodeCid).category, QString("Meta"));
+        QCOMPARE(im.state(NodeCid).source,   QString("VidyaGod"));
+        IpfsWrapper::StopNode();
     }
 
     void mark_queued_sets_state_and_signals()

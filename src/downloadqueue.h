@@ -43,6 +43,10 @@ void CancelDownload(const std::string &Cid);
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);
 
+// The (first) destination path a CID's queued/active job will write to — "" when the CID has no job. UI labeling:
+// a transfer is named by where it is going.
+std::string QueueDestForCid(const std::string & Cid);
+
 // Test observability: a job's effective fetch bound (ms; 0 = unbounded), or -1 if the CID has no job. The merge
 // rule under test: unbounded is STICKY — a cover's bound must never cut a game layer's fetch short.
 // Test observability for the rolling scheduler.

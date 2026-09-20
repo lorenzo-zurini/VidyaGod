@@ -49,7 +49,7 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                                               QHash<QString, qlonglong> * OutSizes = nullptr)
 {
     QHash<QString, QString> Labels;
-    for (const auto & [NodeId, N] : Idx.Nodes)
+    for (const auto & [NodeCid, N] : Idx.Nodes)
     {
         const QString Src = SourceOfBundle(N.BundleDir);
         std::string PkgName;
@@ -64,6 +64,16 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
         if (OutPkgDirs && !PkgName.empty() && !N.BundleDir.empty())
             OutPkgDirs->insert(QString::fromStdString(PkgName), QString::fromStdString(N.BundleDir.string()));
 
+        // The node BLOCK itself (the index key IS its CID): every catalog node is a pinned dag-json block, and a
+        // received share arrives as exactly these — name them like everything else instead of "(unknown)".
+        {
+            const QString QCid = QString::fromStdString(NodeCid);
+            Labels.insert(QCid, QString::fromStdString((N.NodeId.empty() ? NodeCid.substr(0, 12) : N.NodeId) + " (node)"));
+            if (OutPackages) OutPackages->insert(QCid, QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
+            if (OutCategory) OutCategory->insert(QCid, CatMeta);
+            if (OutSource)   OutSource->insert(QCid, Src.isEmpty() ? QStringLiteral("Other") : Src);
+        }
+
         if (N.Layers.is_array())
             for (const auto & L : N.Layers)
             {
@@ -71,7 +81,10 @@ static QHash<QString, QString> BuildCidLabels(const NodeIndex & Idx, const nlohm
                 if (!L.contains("SOURCE") || !L["SOURCE"].is_object() || L["SOURCE"].value("TYPE", std::string()) != "ipfs") continue;
                 const std::string Cid = L["SOURCE"].value("CID", std::string());
                 if (Cid.empty()) continue;
-                Labels.insert(QString::fromStdString(Cid), QString::fromStdString(NodeId));
+                // Label = the owning node's NAME (its NODE_ID); the index key is the node's CID since the gigagraph
+                // cutover, which read as a bare CID string here — a latent label regression, fixed by the rename.
+                Labels.insert(QString::fromStdString(Cid),
+                              QString::fromStdString(N.NodeId.empty() ? NodeCid.substr(0, 12) : N.NodeId));
                 if (OutPackages) OutPackages->insert(QString::fromStdString(Cid),
                     QString::fromStdString(PkgName.empty() ? std::string("(unnamed)") : PkgName));
                 if (OutCategory) OutCategory->insert(QString::fromStdString(Cid), CatContent);
@@ -253,12 +266,36 @@ void IpfsModel::refreshNow()
     refresh();
 }
 
+// Fallback naming for a CID the catalog can't label (yet): the QUEUE knows where the transfer is going, so name it
+// by its destination — file name, "[uid] Title" package dir, LIBRARY collection. Received node blocks are queued
+// before their block (and thus their catalog entry) exists; this is what keeps them out of "Unknown" while in flight.
+static bool LabelFromQueueDest(const QString & cid, IpfsModel::CidState & s)
+{
+    const std::string D = IpfsWrapper::QueueDestForCid(cid.toStdString());
+    if (D.empty()) return false;
+    const std::filesystem::path P(D);
+    std::string Pkg = P.parent_path().filename().string();
+    {   // strip the "[uid] " prefix, same as the catalog naming above
+        size_t i = 0;
+        while (i < Pkg.size()) { if (Pkg[i] == '[') { size_t c = Pkg.find(']', i); if (c == std::string::npos) break; i = c + 1; }
+                                 else if (Pkg[i] == ' ') ++i; else break; }
+        if (i < Pkg.size()) Pkg = Pkg.substr(i);
+    }
+    s.label    = QString::fromStdString(P.filename().string());
+    s.package  = Pkg.empty() ? QStringLiteral("(unnamed)") : QString::fromStdString(Pkg);
+    const QString Src = SourceOfBundle(P.parent_path());
+    s.source   = Src.isEmpty() ? QStringLiteral("Other") : Src;
+    if (s.category.isEmpty()) s.category = CatContent;
+    return true;
+}
+
 void IpfsModel::ensureLabels(const QString & cid)
 {
     if (Cids.contains(cid) && !Cids[cid].label.isEmpty()) return;
     QHash<QString, QString> Pkgs, Cats, Srcs;
     const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs);
     CidState & s = Cids[cid];
+    if (!Labels.contains(cid) && LabelFromQueueDest(cid, s)) return;
     s.label    = Labels.value(cid, QStringLiteral("(unknown)"));
     s.package  = Pkgs.value(cid, QStringLiteral("Unknown / not in your library"));
     s.category = Cats.value(cid, CatContent);
@@ -275,6 +312,8 @@ void IpfsModel::rebuildLabels()
                              // not here — this model only exists in the GUI, and a fetch can precede a refresh.
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
+        if (!Labels.contains(cid) && (it->label.isEmpty() || it->label == QStringLiteral("(unknown)"))
+            && LabelFromQueueDest(cid, it.value())) { /* named by its queue destination */ }
         it->label    = Labels.value(cid, it->label.isEmpty() ? QStringLiteral("(unknown)") : it->label);
         it->package  = Pkgs.value(cid, it->package.isEmpty() ? QStringLiteral("Unknown / not in your library") : it->package);
         it->category = Cats.value(cid, it->category.isEmpty() ? CatContent : it->category);

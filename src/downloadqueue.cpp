@@ -300,6 +300,15 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
     return Handle;
 }
 
+// The (first) destination path a CID's queued/active job will write to — "" when the CID has no job. Lets the UI
+// name a transfer from where it is going (the queue is the one place that knows), instead of "(unknown)".
+std::string QueueDestForCid(const std::string & Cid)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    auto It = Q().Jobs.find(Cid);
+    return (It == Q().Jobs.end() || It->second.Dests.empty()) ? std::string() : It->second.Dests.front();
+}
+
 int DebugJobState(const std::string & Cid)
 {
     std::lock_guard<std::mutex> Lk(Q().Mu);
