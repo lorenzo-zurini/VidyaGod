@@ -140,11 +140,13 @@ def main(argv):
     files = all_json(roots)
     hmap, collisions = build_map(files)
     if collisions:
-        print("!! LABEL COLLISIONS — these would clash as handles (fix the labels before applying):")
+        # LABEL is COSMETIC (identity is the CID); duplicate labels are allowed — the scan keeps first-seen. These
+        # are almost always leaf launchables sharing a display name (RoC/TFT "v1.21b", AoK/TC "Vanilla"), which are
+        # never referenced as handles, so nothing breaks. Warn (do NOT refuse); a referenced colliding handle would
+        # resolve first-seen, matching runtime.
+        print("== NOTE: duplicate LABELs (cosmetic; kept first-seen at scan, matching runtime):")
         for lbl, ids in collisions.items():
             print(f"   '{lbl}' <- {sorted(ids)}")
-        if apply:
-            print("!! refusing to apply with collisions present"); return 1
     if apply:
         for root in roots:
             print(f"== JSON backup {root} → {json_backup(root)}")

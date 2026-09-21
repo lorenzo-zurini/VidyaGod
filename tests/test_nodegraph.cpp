@@ -254,9 +254,17 @@ TEST(nodegraph_duplicate_label_keeps_first_seen)
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(Lib.P, Tree, Dirs);   // LIBRARY first (local)
     NodeGraph::GatherWorkingTree(Cat.P, Tree, Dirs);   // CATALOG second (received)
-    CHECK(Tree.count("wine") == 1);                    // NOT erased -- kept first-seen (cosmetic label)
+    CHECK(Tree.count("wine") == 1);                    // the handle -> first-seen LOCAL node
     CHECK(Tree["wine"].value("EXECUTABLE", std::string()) == "wine");   // LOCAL content won, not the received "pwned"
     CHECK(Tree.count("a_exec") == 1);
+    // The collision LOSER is NOT dropped — it survives under a synthetic key, so BOTH distinct nodes still index by
+    // CID (a real library legitimately has RoC "v1.21b" AND TFT "v1.21b"; neither may vanish). Count both contents.
+    int wineNodes = 0, pwned = 0;
+    for (const auto & [K, N] : Tree)
+        if (N.value("EXECUTABLE", std::string()) == "wine") wineNodes++;
+        else if (N.value("EXECUTABLE", std::string()) == "pwned") pwned++;
+    CHECK(wineNodes == 1);
+    CHECK(pwned == 1);          // the loser is retained (re-keyed), NOT erased -- no game vanishes on a label clash
 
     // Identical duplicate (the same received node in two library dirs) -> kept once.
     ScanDir D2;

@@ -184,17 +184,24 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             // erase. Security: BuildCatalogIndex scans LIBRARY before CATALOG, so a LOCAL node always wins the
             // handle over a later-scanned RECEIVED one — a received block can't shadow a local handle by order, and
             // received nodes are browse-only (never minted/published), so a colliding label can't poison a mint.
-            const auto Prev = Tree.find(Id);
+            std::string Key = Id;
+            const auto Prev = Tree.find(Key);
             if (Prev != Tree.end())
             {
                 if (Prev->second == N) continue;   // identical → same node; keep one (the multi-seeder normal)
+                // Duplicate LABEL, DIFFERENT content: LABEL is cosmetic, so both nodes are legitimate and DISTINCT
+                // (RoC/TFT "v1.21b", two "Vanilla" editions — different CIDs). The FIRST-seen keeps the referenceable
+                // handle; the loser must NOT be dropped (that would vanish a real game from the catalog) — re-key it
+                // under a unique SYNTHETIC key so it still gathers/freezes/indexes by its CID. It just isn't
+                // resolvable as a parent by that (ambiguous) label — acceptable, these are leaf launchables.
                 if (Handled)
                     LogWarn("NodeGraph::GatherWorkingTree", "duplicate LABEL '" + Id + "' (" + E.path().string()
-                            + ") — cosmetic; keeping first-seen (identity is the CID)");
-                continue;                          // keep first-seen; do NOT erase (label is not a logic key)
+                            + ") — cosmetic; first-seen keeps the handle, this one indexes under its CID");
+                Key = std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx);   // unique → never dropped
+                if (Tree.count(Key)) continue;     // same file re-scanned (overlapping roots) → truly identical slot
             }
-            Tree[Id] = N;
-            Dirs[Id] = E.path().parent_path();
+            Tree[Key] = N;
+            Dirs[Key] = E.path().parent_path();
         }
     }
 }
