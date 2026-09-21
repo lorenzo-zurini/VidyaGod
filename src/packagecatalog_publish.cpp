@@ -422,6 +422,78 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
     return true;
 }
 
+int StampNodeCids(const std::filesystem::path &Root,
+                  const std::map<std::string, std::string> &HandleToCid, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    if (!fs::is_directory(Root, Ec)) return 0;
+
+    // Remap one CID-string reference old→new. Returns whether it changed. A ref absent from the map is an already-
+    // frozen EXTERNAL dep (cross-bundle / shared library) — left as-is, exactly as FreezeNodeJson passes it through.
+    const auto Remap = [&](nlohmann::ordered_json &Field) -> bool {
+        if (!Field.is_string()) return false;
+        const auto It = HandleToCid.find(Field.get<std::string>());
+        if (It == HandleToCid.end() || It->second == Field.get<std::string>()) return false;
+        Field = It->second;
+        return true;
+    };
+    const auto UpdateNode = [&](nlohmann::ordered_json &N) -> bool {
+        if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) return false;
+        bool Ch = false;
+        // The node's own handle (its stored last-minted CID) → its fresh CID. A node with no stored CID is left
+        // untouched here (a never-minted draft, or a synthetic/received node not in the map) — the migration seeds
+        // initial CIDs; publish only refreshes existing handles.
+        if (N.contains("CID") && N["CID"].is_string())
+        {
+            const auto It = HandleToCid.find(N["CID"].get<std::string>());
+            if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
+        }
+        if (N.contains("PARENTS") && N["PARENTS"].is_array())
+            for (auto &P : N["PARENTS"]) Ch = Remap(P) || Ch;
+        if (N.contains("LIBRARYITEM")) Ch = Remap(N["LIBRARYITEM"]) || Ch;
+        return Ch;
+    };
+
+    int Rewritten = 0;
+    fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
+    for (; !Ec && It != End; It.increment(Ec))
+    {
+        const auto &E = *It;
+        if (E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
+        { It.disable_recursion_pending(); continue; }   // never rewrite a received stub (browse-only, never minted)
+        if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
+        nlohmann::ordered_json J;
+        if (!NodeGraph::ReadTreeJsonBounded(E.path(), J)) continue;
+        bool Ch = false;
+        if (J.is_array()) { for (auto &N : J) Ch = UpdateNode(N) || Ch; }
+        else Ch = UpdateNode(J);
+        if (!Ch) continue;
+
+        // Atomic temp+rename (a node .json is the author's only copy): a crash/ENOSPC part-way leaves the old file.
+        // dump(4), no trailing newline — byte-identical to SaveNodes / the POS+SOURCE stampers, so a stamp doesn't
+        // reflow the file (which would change its bytes with no semantic change and re-mint an identical node).
+        const fs::path Tmp = E.path().string() + ".vgtmp";
+        {
+            std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
+            if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); return -1; }
+            Out << J.dump(4);
+            Out.flush();
+            if (!Out.good())
+            { std::error_code Rm; fs::remove(Tmp, Rm);
+              if (Error) *Error = "write failed (disk full?) for " + E.path().string(); return -1; }
+        }
+        std::error_code Rn;
+        fs::rename(Tmp, E.path(), Rn);
+        if (Rn) { std::error_code Rm; fs::remove(Tmp, Rm);
+                  if (Error) *Error = "could not replace " + E.path().string() + ": " + Rn.message(); return -1; }
+        ++Rewritten;
+    }
+    if (Rewritten)
+        LogOut("PackageCatalog::StampNodeCids", "wrote fresh CIDs into " + std::to_string(Rewritten) + " node file(s)");
+    return Rewritten;
+}
+
 std::map<std::string, std::string> SeedTargets(const std::string &Dir, bool CoversOnly)
 {
     return ManifestTargets(Dir, CoversOnly, true);

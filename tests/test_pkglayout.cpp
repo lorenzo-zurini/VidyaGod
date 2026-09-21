@@ -32,7 +32,7 @@ ordered_json Chain(int N)
     for (int I = 0; I < N; ++I)
     {
         ordered_json Nd;
-        Nd["LABEL"] = "n" + std::to_string(I);
+        Nd["CID"] = "n" + std::to_string(I);
         Nd["TYPE"]    = "Group";
         if (I > 0) Nd["PARENTS"] = ordered_json::array({"n" + std::to_string(I - 1)});
         A.push_back(Nd);
@@ -44,12 +44,12 @@ ordered_json Chain(int N)
 ordered_json Fan(int N)
 {
     ordered_json A = ordered_json::array();
-    ordered_json Root; Root["LABEL"] = "root"; Root["TYPE"] = "Group";
+    ordered_json Root; Root["CID"] = "root"; Root["TYPE"] = "Group";
     A.push_back(Root);
     for (int I = 0; I < N; ++I)
     {
         ordered_json Nd;
-        Nd["LABEL"] = "c" + std::to_string(I);
+        Nd["CID"] = "c" + std::to_string(I);
         Nd["TYPE"]    = "Group";
         Nd["PARENTS"] = ordered_json::array({"root"});
         A.push_back(Nd);
@@ -164,11 +164,11 @@ TEST(ordering_reduces_crossings_versus_document_order)
     ordered_json A = ordered_json::array();
     const int N = 12;
     for (int I = 0; I < N; ++I)
-    { ordered_json P; P["LABEL"] = "p" + std::to_string(I); P["TYPE"] = "Group"; A.push_back(P); }
+    { ordered_json P; P["CID"] = "p" + std::to_string(I); P["TYPE"] = "Group"; A.push_back(P); }
     for (int I = 0; I < N; ++I)
     {
         ordered_json C;
-        C["LABEL"] = "c" + std::to_string(I);
+        C["CID"] = "c" + std::to_string(I);
         C["TYPE"]    = "Group";
         C["PARENTS"] = ordered_json::array({"p" + std::to_string(N - 1 - I)});
         A.push_back(C);
@@ -195,7 +195,7 @@ TEST(ordering_reduces_crossings_versus_document_order)
 TEST(a_node_POS_is_used_as_the_default_position)
 {
     ordered_json A = ordered_json::array();
-    ordered_json N; N["LABEL"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({1234.0, 567.0});
+    ordered_json N; N["CID"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({1234.0, 567.0});
     A.push_back(N);
     PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes[0].X, 1234.0f);
@@ -206,7 +206,7 @@ TEST(a_node_POS_is_used_as_the_default_position)
 TEST(a_local_override_beats_the_node_POS)
 {
     ordered_json A = ordered_json::array();
-    ordered_json N; N["LABEL"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({1234.0, 567.0});
+    ordered_json N; N["CID"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({1234.0, 567.0});
     A.push_back(N);
     ordered_json Override = ordered_json::object();
     Override["a"] = ordered_json::array({10.0, 20.0});
@@ -225,8 +225,8 @@ TEST(a_malformed_POS_falls_through_to_the_computed_layout)
                                     ordered_json::object()})
     {
         ordered_json A = ordered_json::array();
-        ordered_json N; N["LABEL"] = "a"; N["TYPE"] = "Group"; N["POS"] = Bad;
-        ordered_json M; M["LABEL"] = "b"; M["TYPE"] = "Group"; M["PARENTS"] = ordered_json::array({"a"});
+        ordered_json N; N["CID"] = "a"; N["TYPE"] = "Group"; N["POS"] = Bad;
+        ordered_json M; M["CID"] = "b"; M["TYPE"] = "Group"; M["PARENTS"] = ordered_json::array({"a"});
         A.push_back(N); A.push_back(M);
         PkgGraph::Graph G = PkgGraph::Build(A);
         CHECK(!G.Nodes[0].HasPos);                // a malformed POS is ABSENT, not a declared position
@@ -239,8 +239,8 @@ TEST(placed_nodes_keep_their_position_when_a_new_one_is_added)
     //ComputeUnplaced must not move what the author already positioned — and must not drop the new node on top
     //of one of them either.
     ordered_json A = ordered_json::array();
-    ordered_json N; N["LABEL"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({500.0, 500.0});
-    ordered_json M; M["LABEL"] = "b"; M["TYPE"] = "Group"; M["PARENTS"] = ordered_json::array({"a"});
+    ordered_json N; N["CID"] = "a"; N["TYPE"] = "Group"; N["POS"] = ordered_json::array({500.0, 500.0});
+    ordered_json M; M["CID"] = "b"; M["TYPE"] = "Group"; M["PARENTS"] = ordered_json::array({"a"});
     A.push_back(N); A.push_back(M);
     PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes[0].X, 500.0f);
@@ -255,8 +255,8 @@ TEST(placed_nodes_keep_their_position_when_a_new_one_is_added)
 TEST(a_parents_cycle_still_produces_a_layout)
 {
     ordered_json A = ordered_json::array();
-    ordered_json X; X["LABEL"] = "x"; X["TYPE"] = "Group"; X["PARENTS"] = ordered_json::array({"y"});
-    ordered_json Y; Y["LABEL"] = "y"; Y["TYPE"] = "Group"; Y["PARENTS"] = ordered_json::array({"x"});
+    ordered_json X; X["CID"] = "x"; X["TYPE"] = "Group"; X["PARENTS"] = ordered_json::array({"y"});
+    ordered_json Y; Y["CID"] = "y"; Y["TYPE"] = "Group"; Y["PARENTS"] = ordered_json::array({"x"});
     A.push_back(X); A.push_back(Y);
     PkgGraph::Graph G = PkgGraph::Build(A);
     CHECK_EQ(G.Nodes.size(), (size_t)2);
@@ -291,10 +291,10 @@ TEST(tall_nodes_do_not_overlap_the_ones_below_them)
     ordered_json A = ordered_json::array();
     //One parent, and a fan of children of WILDLY different heights hanging off it: a bare Group, a Content,
     //and RegEdits carrying 5, 40 and 120 registry rows. The 120-row node is roughly ten nominal steps tall.
-    ordered_json Root; Root["LABEL"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
+    ordered_json Root; Root["CID"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
     auto Child = [&](const char *Id, const ordered_json &Extra) {
         ordered_json J = Extra;
-        J["LABEL"] = Id;
+        J["CID"] = Id;
         J["PARENTS"] = ordered_json::array({"root"});
         A.push_back(J);
     };
@@ -346,7 +346,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
     for (int I = 0; I < 60; ++I)
     {
         ordered_json Nd;
-        Nd["LABEL"] = "n" + std::to_string(I);
+        Nd["CID"] = "n" + std::to_string(I);
         Nd["TYPE"]    = "Content";
         Nd["FORM"]    = "zip";
         Nd["PATH"]    = "layer.zip";
@@ -359,7 +359,7 @@ TEST(no_node_overlaps_another_on_a_realistic_mixed_graph)
             for (int R = 0; R < (I + K) % 30; ++R) Keys["Software"]["v" + std::to_string(R)] = "d";
             ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
             ordered_json C;
-            C["LABEL"] = "f" + std::to_string(I) + "_" + std::to_string(K);
+            C["CID"] = "f" + std::to_string(I) + "_" + std::to_string(K);
             C["TYPE"]    = "RegEdit";
             C["EDITS"]   = ordered_json::array({E});
             C["PARENTS"] = ordered_json::array({"n" + std::to_string(I)});
@@ -434,14 +434,14 @@ TEST(the_registry_row_count_matches_the_flattening)
 TEST(a_wide_fanout_of_varied_heights_stays_a_rectangle)
 {
     ordered_json A = ordered_json::array();
-    ordered_json Root; Root["LABEL"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
+    ordered_json Root; Root["CID"] = "root"; Root["TYPE"] = "Group"; A.push_back(Root);
     for (int I = 0; I < 500; ++I)
     {
         ordered_json Keys = ordered_json::object();
         for (int R = 0; R < (I % 17); ++R) Keys["Software"]["v" + std::to_string(R)] = "d";
         ordered_json E = ordered_json::object(); E["HKLM"] = Keys;
         ordered_json N;
-        N["LABEL"] = "f" + std::to_string(I);
+        N["CID"] = "f" + std::to_string(I);
         N["TYPE"]    = "RegEdit";
         N["EDITS"]   = ordered_json::array({E});
         N["PARENTS"] = ordered_json::array({"root"});
@@ -487,7 +487,7 @@ TEST(every_refused_position_is_handed_back_with_its_reason)
 {
     ordered_json A = ordered_json::array();
     auto N = [&](const char *Id, ordered_json Pos) {
-        ordered_json J; J["LABEL"] = Id; J["TYPE"] = "Group";
+        ordered_json J; J["CID"] = Id; J["TYPE"] = "Group";
         if (!Pos.is_null()) J["POS"] = Pos;
         A.push_back(J);
     };
@@ -534,7 +534,7 @@ TEST(every_refused_position_is_handed_back_with_its_reason)
     ordered_json D = ordered_json::array();
     auto Dup = [&](const char *Id, ordered_json Pos) {
         ordered_json J; J["TYPE"] = "Group";
-        if (Id) J["LABEL"] = Id;
+        if (Id) J["CID"] = Id;
         J["POS"] = Pos;
         D.push_back(J);
     };
@@ -561,7 +561,7 @@ TEST(a_malformed_node_still_gets_room_in_the_layout)
 {
     ordered_json A = ordered_json::array();
     auto Group = [&](const char *Id) {
-        ordered_json J; J["LABEL"] = Id; J["TYPE"] = "Group"; A.push_back(J);
+        ordered_json J; J["CID"] = Id; J["TYPE"] = "Group"; A.push_back(J);
     };
     Group("first");
     A.push_back("this entry is not an object");     // the placeholder, same layer
@@ -756,7 +756,7 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
 {
     ordered_json A = ordered_json::array();
     auto N = [&](const char *Id, const char *Type, std::initializer_list<const char *> Parents) {
-        ordered_json J; J["LABEL"] = Id; J["TYPE"] = Type;
+        ordered_json J; J["CID"] = Id; J["TYPE"] = Type;
         if (Parents.size())
         {
             ordered_json P = ordered_json::array();
@@ -792,7 +792,7 @@ TEST(an_impossible_declared_position_is_rejected_not_honoured)
 {
     ordered_json A = ordered_json::array();
     auto N = [&](const char *Id, ordered_json Pos) {
-        ordered_json J; J["LABEL"] = Id; J["TYPE"] = "Group";
+        ordered_json J; J["CID"] = Id; J["TYPE"] = "Group";
         if (!Pos.is_null()) J["POS"] = Pos;
         A.push_back(J);
     };
@@ -824,7 +824,7 @@ TEST(a_fixed_graph_lays_out_at_pinned_coordinates)
     ordered_json A = ordered_json::array();
     auto N = [&](const char *Id, std::initializer_list<const char *> Parents) {
         ordered_json J;
-        J["LABEL"] = Id;
+        J["CID"] = Id;
         J["TYPE"]    = "Group";
         if (Parents.size())
         {
@@ -871,7 +871,7 @@ TEST(a_deep_chain_wraps_into_bands_and_stays_readable)
     const int Depth = 24;
     for (int I = 0; I < Depth; ++I)
     {
-        ordered_json J; J["LABEL"] = "n" + std::to_string(I); J["TYPE"] = "Group";
+        ordered_json J; J["CID"] = "n" + std::to_string(I); J["TYPE"] = "Group";
         if (I) J["PARENTS"] = ordered_json::array({"n" + std::to_string(I - 1)});
         A.push_back(J);
     }
@@ -932,12 +932,12 @@ TEST(a_wide_layers_ordering_does_not_depend_on_document_order)
 {
     auto BuildPositions = [](bool Reversed) {
         std::vector<ordered_json> Ns;
-        ordered_json Root; Root["LABEL"] = "root"; Root["TYPE"] = "Group";
+        ordered_json Root; Root["CID"] = "root"; Root["TYPE"] = "Group";
         Ns.push_back(Root);
         for (int I = 0; I < 10; ++I)
         {
             ordered_json J;
-            J["LABEL"] = "c" + std::to_string(I);
+            J["CID"] = "c" + std::to_string(I);
             J["TYPE"]    = "Group";
             J["PARENTS"] = ordered_json::array({"root"});
             Ns.push_back(J);

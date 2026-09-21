@@ -61,16 +61,24 @@ void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * 
 
 QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) const
 {
-    //Prefer <NODE_ID>.json so a rename re-files the node (SaveNodes then cleans the stale file).
+    //Model C: the filename is PURE PRESENTATION (nothing keys on it — identity is the CID). Prefer the file the node
+    //was LOADED from (__FILE__) so it stays put: renaming is now just editing the cosmetic LABEL and must NOT re-file
+    //the node (and array-file grouping must survive a save). A brand-new node has no __FILE__ → name it from its
+    //LABEL (a readable filename), else its short CID handle, else "untitled".
+    if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
+        && !std::string(Node["__FILE__"]).empty())
+        return QString::fromStdString(std::string(Node["__FILE__"]));
     std::string Id = (Node.is_object() && Node.contains("LABEL") && Node["LABEL"].is_string()) ? Node["LABEL"].get<std::string>() : std::string();
-    //A node id becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Ids are authored
+    if (Id.empty())   // unnamed new node: fall back to a short form of its CID handle
+    {
+        const std::string H = (Node.is_object() && Node.contains("CID") && Node["CID"].is_string()) ? Node["CID"].get<std::string>() : std::string();
+        Id = H.size() > 16 ? H.substr(0, 16) : H;
+    }
+    //A node name becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Names are authored
     //freely on the canvas; sanitise rather than trust.
     for (char &C : Id) if (C == '/' || C == '\\' || C == ':') C = '_';
     if (Id == "." || Id == "..") Id = "node";
     if (!Id.empty()) return QString::fromStdString(Id) + ".json";
-    if (Node.is_object() && Node.contains("__FILE__") && Node["__FILE__"].is_string()
-        && !std::string(Node["__FILE__"]).empty())
-        return QString::fromStdString(std::string(Node["__FILE__"]));
     return "untitled_node.json";
 }
 
@@ -117,7 +125,9 @@ void PackageEditorModel::LoadNodes()
     }
 
     if (Doc["NODES"].empty())
-        Doc["NODES"].push_back(json::object({ {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
+        // A fresh empty bundle gets one Group node. It needs a stable draft HANDLE ("CID") so the canvas can wire it;
+        // the real CID is minted at Publish. LABEL is left empty (cosmetic — the node shows its type until named).
+        Doc["NODES"].push_back(json::object({ {"CID", "draft-1"}, {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LoadLayout();
@@ -315,7 +325,8 @@ void PackageEditorModel::Revalidate()
     if (Doc.contains("NODES") && Doc["NODES"].is_array())
         for (const auto & N : Doc["NODES"])
         {
-            const std::string Id = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
+            // Scope keys into the (handle-keyed) index → use the node's CID handle, not its cosmetic LABEL.
+            const std::string Id = (N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
             if (Id.empty()) continue;
             Scope.insert(Id);
             for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
@@ -341,13 +352,21 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
     return Idx;
 }
 
-std::vector<std::string> PackageEditorModel::KnownNodeIds()
+std::vector<std::pair<std::string, std::string>> PackageEditorModel::KnownNodeIds()
 {
     const NodeIndex & Idx = ExecIndex();
-    std::vector<std::string> Out;
-    for (const auto &[Id, N] : Idx.Nodes) { (void)N; Out.push_back(Id); }
-    std::sort(Out.begin(), Out.end());
-    return Out;   // (std::map already sorted, but keep explicit)
+    std::vector<std::pair<std::string, std::string>> Out;   // {handle(CID), cosmetic label}
+    for (const auto &[Id, N] : Idx.Nodes)
+    {
+        // Prefer the pretty display: LABEL (N.NodeId carries it), else the tile title, else a short CID. The picker
+        // sorts + shows this; the handle (Id) is what gets wired.
+        std::string Label = N.NodeId;
+        if (Label.empty()) Label = N.Meta.value("TITLE", std::string());
+        if (Label.empty()) Label = Id.size() > 14 ? (Id.substr(0, 8) + "…" + Id.substr(Id.size() - 4)) : Id;
+        Out.emplace_back(Id, Label);
+    }
+    std::sort(Out.begin(), Out.end(), [](const auto &A, const auto &B) { return A.second < B.second; });   // by label
+    return Out;
 }
 
 std::vector<std::string> PackageEditorModel::KnownPlatforms()
@@ -413,16 +432,17 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
                                            const std::vector<std::string> & Parents,
                                            const std::string & IdHint)
 {
-    auto Exists = [this](const std::string & Id) {
-        for (const auto & N : Doc["NODES"]) if (N.contains("LABEL") && N["LABEL"].is_string() && N["LABEL"].get<std::string>() == Id) return true;
+    // Model C: a new node gets a unique, STABLE draft HANDLE (its "CID"); the real CID is minted at Publish. Callers
+    // wire by the RETURNED handle (they push it into another node's PARENTS). IdHint becomes the cosmetic LABEL — a
+    // readable display name, not a key, so it need not be unique.
+    auto HandleExists = [this](const std::string & H) {
+        for (const auto & N : Doc["NODES"]) if (N.contains("CID") && N["CID"].is_string() && N["CID"].get<std::string>() == H) return true;
         return false;
     };
-    std::string Base = IdHint.empty() ? std::string("node") : IdHint;
-    for (char & C : Base) if (!std::isalnum((unsigned char)C) && C != '_') C = '_';
-    std::string Id = Base;
-    for (int K = 2; Exists(Id); ++K) Id = Base + "_" + std::to_string(K);
+    std::string Handle;
+    for (int K = (int)Doc["NODES"].size() + 1; ; ++K) { Handle = "draft-" + std::to_string(K); if (!HandleExists(Handle)) break; }
 
-    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"LABEL", Id}});
+    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"CID", Handle}, {"LABEL", IdHint}});
     nlohmann::ordered_json P = nlohmann::ordered_json::array();
     for (const std::string & X : Parents) if (!X.empty()) P.push_back(X);
     N["PARENTS"] = std::move(P);
@@ -430,8 +450,8 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
     Doc["NODES"].push_back(std::move(N));
     SaveNodes();
     emit documentReloaded();
-    LogSucc("PackageEditorModel", "Created node '" + Id + "'.");
-    return Id;
+    LogSucc("PackageEditorModel", "Created node '" + (IdHint.empty() ? Handle : IdHint) + "'.");
+    return Handle;
 }
 
 QString PackageEditorModel::packagePath() const

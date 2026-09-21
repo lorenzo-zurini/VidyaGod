@@ -171,7 +171,11 @@ def make_deltas(B, tool):
 def nodes():
     N = []
     def add(**kw):
-        N.append(kw); return kw["LABEL"]
+        # Model C: a node's wiring handle is its stored "CID". For this fixture we use the readable LABEL string as the
+        # handle (unique here) so PARENTS — which reference the returned handle — stay legible. GatherWorkingTree keys
+        # on "CID"; FreezeToIndex then derives the real CID and indexes by it. LABEL rides along as the cosmetic name.
+        kw.setdefault("CID", kw["LABEL"])
+        N.append(kw); return kw["CID"]
 
     # ---- identity -------------------------------------------------------------------------------------
     add(LABEL="lm_tile", TYPE="DeclareLibraryItem", PARENTS=[], UID="90000000000001",

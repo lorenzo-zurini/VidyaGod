@@ -975,6 +975,13 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     NodeGraph::MintResult MR;
     if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
 
+    // Re-stabilise the on-disk tree at the freshly-minted identities: stamp each node's new CID + remap its refs.
+    // Non-fatal — the blocks are already stored; a failed write-back only leaves the on-disk handles stale (freeze
+    // still remaps them next time), and the editor's "edited since publish" badge is the only thing degraded.
+    if (std::string WbErr; StampNodeCids(Root, MR.HandleToCid, &WbErr) < 0)
+        LogWarn("PackageCatalog::PublishLibrary", "could not write minted CIDs back to the working tree: " + WbErr
+                + " — handles left stale; re-run Verify & Publish");
+
     // Group PUBLISH'd nodes by LIBRARY (the collection dir the package lives in), so sharing is per-library. The share
     // axis is the author's PUBLISH flag, decoupled from type — so runners (GUEST exec) and libraries (no exec) are
     // shareable too, not just games. `Libraries` = {libName: [{cid,node,uid,title,tilecid,tilenode}]} — each entry
@@ -991,15 +998,13 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (!(Doc.contains("PUBLISH") && Doc["PUBLISH"].is_boolean() && Doc["PUBLISH"].get<bool>())) continue;   // SHARE axis (guarded: a hostile non-bool PUBLISH must not throw).
                                                        // Replaces the old "DeclareExec && !GUEST" filter (which
                                                        // silently excluded runners and no-exec library heads).
-        // A shared node MUST be named: a nameless node's Handle is its SYNTHETIC key (an absolute local path),
-        // which would leak the seeder's filesystem path into the share snapshot as node/uid/title. Refuse to
-        // publish it — the author gives it a LABEL first.
-        if (!Doc.contains("LABEL") || !Doc["LABEL"].is_string() || Doc["LABEL"].get<std::string>().empty())
-        { LogWarn("PackageCatalog::PublishLibrary", "skipping a PUBLISH'd node with no LABEL — give it a name to share it"); continue; }
-        const std::string NodeLabel = Doc["LABEL"].get<std::string>();   // receiver filename = the doc LABEL, NOT Handle
-                                                                         // (a synthetic path for a re-keyed collision-loser)
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
+        // A PUBLISH'd node is always safe to share now that its Handle is its CID (identity) — a LABEL is OPTIONAL.
+        // node = the cosmetic display name for the receiver's filename/section; fall back to the fresh CID when there
+        // is none (never a filesystem path — the synthetic-key leak that once forced a mandatory LABEL is gone).
+        const std::string NodeLabel = (Doc.contains("LABEL") && Doc["LABEL"].is_string() && !Doc["LABEL"].get<std::string>().empty())
+                                          ? Doc["LABEL"].get<std::string>() : CidIt->second;
 
         // The node's LIBRARYITEM tile (lifted above): the receiver fetches it alongside and names the package dir
         // after its UID/TITLE — variants sharing one tile land in ONE package dir, exactly like the local tree.
@@ -1048,7 +1053,19 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", NodeLabel},
                                  {"pkg", Dirs[Handle].filename().string()},
                                  {"uid", Uid}, {"title", Title}};
-        if (!TileCid.empty()) { E["tilecid"] = TileCid; E["tilenode"] = TileHandle; }
+        if (!TileCid.empty())
+        {
+            // tilenode = the tile's cosmetic LABEL (display / receiver section), NOT its CID handle. Fall back to the
+            // tile CID when it has no LABEL.
+            std::string TileLabel = TileCid;
+            if (Tree.count(TileHandle))
+            {
+                const auto &T = Tree.at(TileHandle);
+                if (T.contains("LABEL") && T["LABEL"].is_string() && !T["LABEL"].get<std::string>().empty())
+                    TileLabel = T["LABEL"].get<std::string>();
+            }
+            E["tilecid"] = TileCid; E["tilenode"] = TileLabel;
+        }
         Libs[LibName].push_back(std::move(E));
         Flat.push_back(CidIt->second);
     }

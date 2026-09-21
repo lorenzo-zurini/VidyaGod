@@ -242,6 +242,15 @@ const nlohmann::ordered_json *EditorLayoutFor(const nlohmann::ordered_json &Glob
                                       const nlohmann::ordered_json *LocalOverride = nullptr,
                                       std::string *Error = nullptr);
 
+// After a mint, write each node's freshly-minted CID back into its working-tree file (the stored top-level "CID"
+// handle) and remap every reference (PARENTS / LIBRARYITEM) old-CID → new-CID via HandleToCid, so the on-disk tree
+// re-stabilises at the current identities. Both the stored CID and the reference strings are stripped / re-resolved
+// at freeze, so this NEVER perturbs a future mint's CIDs — it only keeps the on-disk handles honest, which is what
+// makes "recompute ≠ stored CID" a truthful "edited since publish" signal for the editor. Atomic temp+rename per
+// file, byte-identical dump(4), only files that actually change are rewritten. Returns files rewritten, -1 on I/O error.
+int StampNodeCids(const std::filesystem::path &Root,
+                  const std::map<std::string, std::string> &HandleToCid, std::string *Error = nullptr);
+
 // {Level, Name, Cid} rows for a re-mint listing (Level = "package" | "collection"). Used by the per-package mint path.
 struct RemintEntry { std::string Level, Name, Cid; };
 

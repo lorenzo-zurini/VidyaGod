@@ -135,7 +135,7 @@ int PkgActions::indexOf(const std::string & nodeId) const
 {
     const auto & Ns = Model->doc()["NODES"];
     for (int I = 0; I < (int)Ns.size(); ++I)
-        if (StrOf(Ns[I], "LABEL") == nodeId) return I;
+        if (StrOf(Ns[I], "CID") == nodeId) return I;   // indexOf by the node handle (CID)
     return -1;
 }
 
@@ -470,7 +470,7 @@ void PkgActions::refreshHints()
     for (const auto & N : Ns)
         if (StrOf(N, "TYPE") == "Content" && StrOf(N, "FORM") == "zip"
             && !StrOf(N, "PATH").empty())
-            Todo->push_back({StrOf(N, "LABEL"), StrOf(N, "PATH")});
+            Todo->push_back({StrOf(N, "CID"), StrOf(N, "PATH")});   // Probe.Id = handle (Running is keyed by it)
     if (Todo->empty()) return;
     auto Deflated = std::make_shared<std::vector<std::string>>();
     AsyncWork::Run(this,
@@ -548,12 +548,13 @@ void PkgActions::findUsages(const std::string & NodeId)
     const json & Ns = Model->doc()["NODES"];
     for (const auto & N : Ns)
     {
-        const std::string Id = StrOf(N, "LABEL");
-        if (Id == NodeId) continue;
+        const std::string H = StrOf(N, "CID");       // self-exclude by HANDLE (NodeId is a handle)
+        if (H == NodeId) continue;
+        const std::string Disp = !StrOf(N, "LABEL").empty() ? StrOf(N, "LABEL") : H;   // show the readable name
         const std::string Dump = N.dump();
-        if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Id);
+        if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Disp);
         else if (StrOf(N, "TYPE") == "CustomVar" && StrOf(N, "KEY") == Key)
-            Users << QString::fromStdString(Id) + "  (declares the same KEY)";
+            Users << QString::fromStdString(Disp) + "  (declares the same KEY)";
     }
     tell("Find usages",
         Users.isEmpty() ? QString("Nothing in this bundle uses %1.").arg(QString::fromStdString(Token))
@@ -710,7 +711,7 @@ static bool DeltaBaseOf(const json & Nodes, int Index, std::string & BasePath, s
         if (!P.is_string()) continue;
         for (const auto & C : Nodes)
         {
-            if (StrOf(C, "LABEL") != P.get<std::string>()) continue;
+            if (StrOf(C, "CID") != P.get<std::string>()) continue;   // PARENTS ref is a CID → match the handle
             if (StrOf(C, "TYPE") != "Content") continue;
             if (StrOf(C, "FORM") != "zip") continue;
             BasePath   = StrOf(C, "PATH");

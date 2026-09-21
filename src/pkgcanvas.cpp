@@ -125,6 +125,11 @@ std::string StrOf(const json &N, const char *Key, const std::string &Def = {})
 {
     return (N.is_object() && N.contains(Key) && N[Key].is_string()) ? N[Key].get<std::string>() : Def;
 }
+// Model C: a node is IDENTIFIED for wiring by its stored "CID" handle — the CID it last minted to (or a stable
+// "draft-…" handle for a node not yet published). This is the authoring handle PARENTS/LIBRARYITEM reference and
+// everything (indexOf, canvas buffers, running state) keys on; it stays STABLE across an edit session (edits leave
+// it stale-on-purpose until Publish re-mints + write-backs). LABEL is PURELY COSMETIC — the pretty display name.
+std::string Handle(const json &N) { return StrOf(N, "CID"); }
 bool BoolOf(const json &N, const char *Key, bool Def = false)
 {
     return (N.is_object() && N.contains(Key) && N[Key].is_boolean()) ? N[Key].get<bool>() : Def;
@@ -291,7 +296,8 @@ struct PkgCanvasState
     PkgGraph::Graph Cache;
     bool CacheValid = false;
     std::set<int> HasDependent;                              // precomputed once per rebuild
-    std::vector<std::string> OfferedExternals;               // chips placed by the picker, not yet wired
+    std::vector<std::string> OfferedExternals;               // chips placed by the picker, not yet wired (by handle)
+    std::map<std::string, std::string> ExternalLabels;       // handle → pretty label, for chip display (from the picker)
     std::string ExternalFilter;
     float SidePanel = 360.0f;
     std::string AddType = "Content";
@@ -415,7 +421,7 @@ int PkgCanvas::indexOf(const std::string &nodeId) const
 {
     const int N = nodeCount();
     for (int I = 0; I < N; ++I)
-        if (StrOf((*m_s->Doc)["NODES"][I], "LABEL") == nodeId) return I;
+        if (Handle((*m_s->Doc)["NODES"][I]) == nodeId) return I;
     return -1;
 }
 
@@ -504,15 +510,29 @@ void PkgCanvas::selectNode(int index)
 int PkgCanvas::addNode(const std::string &type, float x, float y)
 {
     json N = NewPayload(type);
-    // A unique-by-construction id: the old editor made every new node "new_node" and let the duplicate-id
-    // warning sort it out later.
+    // A readable default cosmetic name (LABEL). LABEL is cosmetic now, so it need NOT be unique — the counter just
+    // keeps freshly-dropped nodes visually distinct until the author names them.
     std::string Base = type == "Group" ? "group" : type;
     for (char &C : Base) C = (char)std::tolower((unsigned char)C);
-    std::string Id = Base;
-    for (int K = 2; indexOf(Id) >= 0; ++K) Id = Base + "_" + std::to_string(K);
-    json Out = json::object({{"LABEL", Id}, {"PARENTS", json::array()}});
+    std::string Label = Base;
+    for (int K = 2; ; ++K)
+    {
+        bool Taken = false;
+        for (const auto &Nn : m_s->Nodes()) if (StrOf(Nn, "LABEL") == Label) { Taken = true; break; }
+        if (!Taken) break;
+        Label = Base + "_" + std::to_string(K);
+    }
+    // A unique, STABLE draft HANDLE. A new node has no CID until the next Publish mints it (the cascade is fully
+    // deferred): "draft-…" is the in-editor handle that PARENTS reference meanwhile and that Publish remaps to the
+    // real CID via HandleToCid + StampNodeCids. It is stored in "CID" (stripped at freeze, so it never ships).
+    std::string Draft;
+    for (int K = (int)m_s->Nodes().size() + 1; ; ++K)
+    { Draft = "draft-" + std::to_string(K); if (indexOf(Draft) < 0) break; }
+    json Out = json::object({{"PARENTS", json::array()}});
     for (const auto &[K, V] : N.items()) Out[K] = V;
-    if (m_s->Layout) { SetPos(*m_s->Layout, Id, x, y); m_s->PosDirty = true; }
+    Out["CID"] = Draft;
+    if (!Out.contains("LABEL")) Out["LABEL"] = Label;
+    if (m_s->Layout) { SetPos(*m_s->Layout, Draft, x, y); m_s->PosDirty = true; }
     m_s->Nodes().push_back(std::move(Out));
     m_s->MarkDirty();
     return (int)m_s->Nodes().size() - 1;
@@ -522,7 +542,7 @@ bool PkgCanvas::removeNode(int index)
 {
     json &Ns = m_s->Nodes();
     if (index < 0 || index >= (int)Ns.size()) return false;
-    const std::string Id = StrOf(Ns[index], "LABEL");
+    const std::string Id = Handle(Ns[index]);
     //Deleting shifts every later index, so every seeded position is now against the wrong node. Drop them all
     //and let the next frame re-seed from the layout sidecar.
     m_s->Seeded.clear();
@@ -564,7 +584,7 @@ bool PkgCanvas::connect(int parentIndex, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
     if (parentIndex == childIndex) return false;
-    const std::string Pid = StrOf(Ns[parentIndex], "LABEL");
+    const std::string Pid = Handle(Ns[parentIndex]);
     if (Pid.empty()) return false;
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
         Ns[childIndex]["PARENTS"] = json::array();
@@ -578,7 +598,7 @@ bool PkgCanvas::disconnect(int parentIndex, int childIndex)
 {
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
-    const std::string Pid = StrOf(Ns[parentIndex], "LABEL");
+    const std::string Pid = Handle(Ns[parentIndex]);
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array()) return false;
     json Keep = json::array();
     bool Removed = false;
@@ -596,7 +616,7 @@ bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
 {
     json &Ns = m_s->Nodes();
     if (parentId.empty() || childIndex < 0 || childIndex >= (int)Ns.size()) return false;
-    if (StrOf(Ns[childIndex], "LABEL") == parentId) return false;
+    if (Handle(Ns[childIndex]) == parentId) return false;
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
         Ns[childIndex]["PARENTS"] = json::array();
     for (const auto &P : Ns[childIndex]["PARENTS"]) if (P.is_string() && P.get<std::string>() == parentId) return false;
@@ -605,80 +625,29 @@ bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
     return true;
 }
 
-void PkgCanvas::offerExternal(const std::string &parentId)
+void PkgCanvas::offerExternal(const std::string &parentId, const std::string &label)
 {
     if (parentId.empty()) return;
     auto &O = m_s->OfferedExternals;
     if (std::find(O.begin(), O.end(), parentId) == O.end()) O.push_back(parentId);
+    if (!label.empty()) m_s->ExternalLabels[parentId] = label;   // remember the pretty name for the chip
 }
 
 bool PkgCanvas::renameNode(int index, const std::string &newId)
 {
     json &Ns = m_s->Nodes();
     if (index < 0 || index >= (int)Ns.size()) return false;
-    //A NODES entry that is not an object has no NODE_ID to change, and writing one through operator[](string)
-    //throws type_error.305 — out of frame(), out of paintGL, which has no catch. Build keeps such an entry as
-    //a placeholder so indices stay aligned, so this is reachable from any malformed or peer-authored package.
+    //A NODES entry that is not an object has no LABEL to set, and writing one through operator[](string) throws
+    //type_error.305 — out of frame(), out of paintGL, which has no catch. Build keeps such an entry as a
+    //placeholder so indices stay aligned, so this is reachable from any malformed or peer-authored package.
     if (!Ns[index].is_object()) return false;
-    const std::string Old = StrOf(Ns[index], "LABEL");
-    if (Old == newId || newId.empty()) return false;
-    // Refuse a name another node already owns. Both would map to <id>.json, SaveNodes would write them as one
-    // array, and ScanBundleNodes keeps first-seen — silently dropping a node from the graph while the orphan
-    // sweep removed the old file. Typing through a colliding name is transient, so this just does nothing
-    // until the name is unique again.
-    for (int I = 0; I < (int)Ns.size(); ++I)
-        if (I != index && StrOf(Ns[I], "LABEL") == newId) return false;
+    // Model C: "rename" sets the node's COSMETIC LABEL. It is NOT the wiring handle — the handle is the node's CID
+    // (derived, not user-set) — so NOTHING else moves: no reference re-pointing (refs are CIDs, unchanged by a
+    // rename), and no canvas position / Seeded / Running / Hints / NodeDims / RegBuf / WarnedPos migration (all keyed
+    // by the stable handle, which the rename never touches). A blank label is allowed (the node then shows its short
+    // CID); duplicate labels are allowed (LABEL is cosmetic — RoC/TFT "v1.21b" are legitimate namesakes).
+    if (StrOf(Ns[index], "LABEL") == newId) return false;   // no-op (also stops a per-keystroke rebuild storm)
     Ns[index]["LABEL"] = newId;
-    //Re-point EVERY field that holds a NODE_ID, not just PARENTS. A rename that fixes only the edges leaves the
-    //others pointing at a name nothing answers to: EXCLUDE silently stops excluding (two mutually-exclusive
-    //variants both become selectable, caught later only as a WARNING), and a RUNNER pin silently falls back to
-    //the default runner, which nothing catches at all.
-    for (auto &N : Ns)
-    {
-        if (!N.is_object()) continue;
-        for (const char *Key : {"PARENTS", "EXCLUDE"})
-            if (N.contains(Key) && N[Key].is_array())
-                for (auto &P : N[Key]) if (P.is_string() && P.get<std::string>() == Old) P = newId;
-        if (StrOf(N, "RUNNER") == Old) N["RUNNER"] = newId;
-    }
-    //...and carry the canvas position across, or the box jumps to the auto-layout column on the first
-    //character typed (renameNode runs per keystroke) and the sidecar accumulates a dead key per rename.
-    if (m_s->Layout && m_s->Layout->is_object() && m_s->Layout->contains(Old))
-    {
-        (*m_s->Layout)[newId] = (*m_s->Layout)[Old];
-        m_s->Layout->erase(Old);
-        m_s->PosDirty = true;
-    }
-    //Seeded/Running/Hints/NodeDims/RegBuf are all keyed by NODE_ID too. NodeDims especially: renameNode
-    //runs on EVERY KEYSTROKE of an id edit, so a missed move leaks one entry per character typed and lets a
-    //node later named back into one of them inherit a stale box size in the overview.
-    auto Move = [&](auto &M) { auto It = M.find(Old); if (It == M.end()) return;
-                               M[newId] = std::move(It->second); M.erase(It); };
-    Move(m_s->Seeded); Move(m_s->Running); Move(m_s->Hints); Move(m_s->NodeDims);
-    //And the warned-about keys, RE-KEYED rather than dropped. This runs on EVERY KEYSTROKE of an id edit and
-    //ends in MarkDirty(), so the graph is rebuilt with the new id — and a warning keyed by the old one then
-    //fires again under the new one, once per character typed, naming ids that never existed. Measured before
-    //this: a 20-character id produced 21 warnings and 20 immortal entries. Prefix again, because the key is
-    //composite and erasing the bare id was a no-op.
-    {
-        std::vector<std::string> Rekey;
-        for (auto It = m_s->WarnedPos.begin(); It != m_s->WarnedPos.end(); )
-            if (It->rfind(Old + "@", 0) == 0) { Rekey.push_back(It->substr(Old.size())); It = m_s->WarnedPos.erase(It); }
-            else ++It;
-        for (const std::string &Tail : Rekey) m_s->WarnedPos.insert(newId + Tail);
-    }
-    //Collected first, then re-inserted: inserting into the map being iterated can land the new key AFTER the
-    //cursor, where it matches the same prefix again (a NODE_ID containing '#' is enough) and the loop never ends.
-    {
-        std::vector<std::pair<std::string, std::vector<PkgGraph::RegRow>>> Moved;
-        for (auto It = m_s->RegBuf.begin(); It != m_s->RegBuf.end(); )
-        {
-            if (It->first.rfind(Old + "#", 0) != 0) { ++It; continue; }
-            Moved.emplace_back(newId + It->first.substr(Old.size()), std::move(It->second));
-            It = m_s->RegBuf.erase(It);
-        }
-        for (auto &M : Moved) m_s->RegBuf[M.first] = std::move(M.second);
-    }
     m_s->MarkDirty();
     return true;
 }
@@ -921,7 +890,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             else if (PkgGraph::WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton("browse")) m_s->Pending = {StrOf(Node, "LABEL"), "browse_cover"};
+        if (ImGui::SmallButton("browse")) m_s->Pending = {Handle(Node), "browse_cover"};
         break;
     }
     }
@@ -967,7 +936,7 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
 
         // The registry IS a tree on disk; a human edits flat key paths. Round-trip through RegRows, but hold
         // the rows steady while a field is live (see RegBuf) and commit when it is finished.
-        const std::string BufKey = StrOf(Node, "LABEL") + "#" + std::to_string(E);
+        const std::string BufKey = Handle(Node) + "#" + std::to_string(E);
         auto Buf = m_s->RegBuf.find(BufKey);
         std::vector<RegRow> Rows = (Buf != m_s->RegBuf.end()) ? Buf->second : RegRowsOf(Edits[E]);
         bool Commit = false, Editing = false;
@@ -1025,7 +994,7 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
 
 void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
 {
-    const std::string Id = StrOf(Node, "LABEL");
+    const std::string Id = Handle(Node);
     auto Run = m_s->Running.find(Id);
     if (Run != m_s->Running.end())
     {
@@ -1261,7 +1230,7 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     const bool Malformed = !Ns[Index].is_object();
     json &Node = Ns[Index];
     const std::string Type = Malformed ? std::string("Group") : StrOf(Node, "TYPE", "Group");
-    const std::string Id   = Malformed ? std::string()        : StrOf(Node, "LABEL");
+    const std::string Id   = Malformed ? std::string()        : Handle(Node);   // wiring handle (CID): Issues/Running keys
 
     int R, Gc, B;
     TypeColour(Type, R, Gc, B);
@@ -1286,7 +1255,9 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     }
 
     ImNodes::BeginNodeTitleBar();
-    ImGui::TextUnformatted(Type.c_str());
+    // Title = the cosmetic name (LABEL) when the node has one, else the TYPE. The title-bar COLOUR already encodes
+    // the type, so a named node reads as its pretty name; an unnamed one falls back to its type.
+    { const std::string Nm = StrOf(Node, "LABEL"); ImGui::TextUnformatted(Nm.empty() ? Type.c_str() : Nm.c_str()); }
     ImNodes::EndNodeTitleBar();
 
     // Nothing depends on this node yet, and it is not a launchable — so nothing mounts it. That is NORMAL
@@ -1312,11 +1283,20 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     ImNodes::EndOutputAttribute();
 
     ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
-    std::string EditId = Id;
-    ImGui::TextUnformatted("id"); ImGui::SameLine(kLabelCol);
+    // The editable field is the node's COSMETIC name (LABEL), NOT the handle (the handle is the derived CID, shown
+    // read-only below). Blank is allowed — the node then shows its short CID. renameNode just sets LABEL.
+    std::string EditLabel = StrOf(Node, "LABEL");
+    ImGui::TextUnformatted("name"); ImGui::SameLine(kLabelCol);
     ImGui::SetNextItemWidth(kFieldWidth);
     if (m_s->Running.find(Id) == m_s->Running.end()
-        && ImGui::InputText("##id", &EditId) && !EditId.empty()) renameNode(Index, EditId);
+        && ImGui::InputText("##name", &EditLabel)) renameNode(Index, EditLabel);
+    // The identity (CID) handle, read-only, so the author can see/copy what this node resolves to. A never-minted
+    // draft shows its "draft-…" handle until the next Publish assigns a real CID.
+    if (!Id.empty())
+    {
+        ImGui::TextDisabled("cid"); ImGui::SameLine(kLabelCol);
+        ImGui::TextDisabled("%s", Id.size() > 20 ? (Id.substr(0, 12) + "…" + Id.substr(Id.size() - 6)).c_str() : Id.c_str());
+    }
 
     // A node running a heavy action is READ-ONLY: a zip conversion is rewriting the very file these fields
     // describe, so an edit landing mid-flight would describe a file that no longer exists.
@@ -1523,16 +1503,21 @@ void PkgCanvas::drawToolbar()
     {
         ImGui::SetNextItemWidth(260.0f);
         ImGui::InputTextWithHint("##extfilter", "filter", &m_s->ExternalFilter);
-        const std::vector<std::string> Ids = m_s->KnownIds ? m_s->KnownIds() : std::vector<std::string>();
+        const auto Ids = m_s->KnownIds ? m_s->KnownIds()
+                                        : std::vector<std::pair<std::string, std::string>>();   // {handle, label}
         std::set<std::string> Mine;
-        for (const auto &N : m_s->Nodes()) Mine.insert(StrOf(N, "LABEL"));
+        for (const auto &N : m_s->Nodes()) Mine.insert(Handle(N));
         int Shown = 0;
-        for (const std::string &Id : Ids)
+        for (const auto &[Hnd, Lbl] : Ids)
         {
-            if (Mine.count(Id)) continue;                    // already in this bundle: not external
-            if (!m_s->ExternalFilter.empty() && Id.find(m_s->ExternalFilter) == std::string::npos) continue;
+            if (Mine.count(Hnd)) continue;                   // already in this bundle: not external
+            // Filter matches the human LABEL or the CID handle, so you can search by name.
+            if (!m_s->ExternalFilter.empty()
+                && Lbl.find(m_s->ExternalFilter) == std::string::npos
+                && Hnd.find(m_s->ExternalFilter) == std::string::npos) continue;
             if (++Shown > 40) { ImGui::TextDisabled("(narrow the filter)"); break; }
-            if (ImGui::Selectable(Id.c_str())) { offerExternal(Id); ImGui::CloseCurrentPopup(); }
+            // Show the pretty LABEL; "##<handle>" keeps the Selectable id unique without showing the hash.
+            if (ImGui::Selectable((Lbl + "##" + Hnd).c_str())) { offerExternal(Hnd, Lbl); ImGui::CloseCurrentPopup(); }
         }
         if (!Shown) ImGui::TextDisabled(m_s->KnownIds ? "nothing matches" : "(no catalog available)");
         ImGui::EndPopup();
@@ -1908,7 +1893,12 @@ void PkgCanvas::frame()
         ImGui::TextDisabled("external");
         ImNodes::EndNodeTitleBar();
         ImNodes::BeginOutputAttribute(OutPin(Nid));
-        ImGui::TextUnformatted(Chips[E].c_str());
+        // Show the pretty label the picker gave us; otherwise a short form of the CID handle (never the raw hash).
+        const auto Lit = m_s->ExternalLabels.find(Chips[E]);
+        const std::string Disp = (Lit != m_s->ExternalLabels.end() && !Lit->second.empty()) ? Lit->second
+                               : (Chips[E].size() > 14 ? (Chips[E].substr(0, 8) + "…" + Chips[E].substr(Chips[E].size() - 4))
+                                                       : Chips[E]);
+        ImGui::TextUnformatted(Disp.c_str());
         ImNodes::EndOutputAttribute();
         ImNodes::EndNode();
         ImNodes::PopColorStyle();
@@ -2270,7 +2260,7 @@ void PkgCanvas::frame()
     //document with nulls that SaveNodes would then write to disk, and threw on the read.
     if (m_s->Selected >= 0 && m_s->Selected < (int)m_s->Nodes().size()
         && ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive()
-        && !isBusy(StrOf(m_s->Nodes()[m_s->Selected], "LABEL")))
+        && !isBusy(Handle(m_s->Nodes()[m_s->Selected])))
         m_s->ConfirmDelete = m_s->Selected;
     if (m_s->ConfirmDelete >= 0)
     {
@@ -2279,7 +2269,7 @@ void PkgCanvas::frame()
         {
             const int D = m_s->ConfirmDelete;
             const json &Ns2 = m_s->Nodes();
-            const std::string DId = (D >= 0 && D < (int)Ns2.size()) ? StrOf(Ns2[D], "LABEL") : std::string();
+            const std::string DId = (D >= 0 && D < (int)Ns2.size()) ? Handle(Ns2[D]) : std::string();
             int Dependents = 0;
             for (const Link &L : G.Links) if (L.ParentIndex == D) ++Dependents;
             ImGui::Text("Delete '%s'?", DId.c_str());

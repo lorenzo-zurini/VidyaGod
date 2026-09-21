@@ -77,10 +77,13 @@ static void LinkifySources(nlohmann::ordered_json &J)
 nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
                                       const std::map<std::string, std::string> &HandleToCid)
 {
-    Raw.erase("POS");   // blueprint-canvas coordinates — the one non-semantic field; never part of identity
+    Raw.erase("POS");   // blueprint-canvas coordinates — non-semantic; never part of identity
+    Raw.erase("CID");   // the node's OWN last-minted CID: a working-tree handle only (the block is ADDRESSED by its
+                        // CID, so storing it inside would be circular). Stripped like POS → identity stays purely
+                        // the hash of {TYPE, refs→CIDs, LABEL, payload}; the stored CID is never shipped.
 
-    // Resolve intra-tree handles → frozen CIDs. A ref absent from HandleToCid is an already-frozen EXTERNAL dep
-    // (a shared library referenced by CID) — pass it through unchanged.
+    // Remap references (old handle CID → freshly-minted CID) as the cascade climbs. A ref absent from HandleToCid is
+    // an already-frozen EXTERNAL dep (a shared library / cross-bundle node referenced by CID) — pass it through.
     const auto Resolve = [&](const std::string &Ref) -> std::string {
         const auto It = HandleToCid.find(Ref);
         return It != HandleToCid.end() ? It->second : Ref;
@@ -161,42 +164,35 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         for (const auto &N : Nodes)
         {
             ++NIdx;
-            // A node is an object with a TYPE (identity is the CID; NODE_ID is gone). LABEL is the OPTIONAL pretty
-            // name + the intra-tree authoring handle that PARENTS/LIBRARYITEM resolve through at freeze. A node with
-            // no LABEL still gathers/freezes/indexes (identified by its CID) but is keyed by a SYNTHETIC per-file key
-            // so it can't be referenced as a parent and never collides with a real LABEL.
+            // A node is an object with a string TYPE. Identity is the CID, and references (PARENTS/LIBRARYITEM) name
+            // other nodes BY CID. The authoring handle is the node's OWN stored "CID" — the CID it last minted to
+            // (stamped on a received block at fetch time; computed at create/publish for a local one). LABEL is PURELY
+            // COSMETIC: an optional pretty name that travels in the block and is NEVER a key. So distinct nodes may
+            // freely share a label (RoC/TFT "v1.21b", two "Vanilla" editions) — they have distinct CIDs, full stop.
             if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
-            std::string Label = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
-            // A LABEL carrying a control byte (< 0x20) is rejected as a handle (treated as nameless): the synthetic
-            // key for a nameless node is control-byte-prefixed, and a hostile JSON "\\u0001<path>#N" LABEL would
-            // otherwise forge exactly that key and evict a local node. Control bytes never belong in a display name.
-            for (unsigned char c : Label) if (c < 0x20) { Label.clear(); break; }
-            const bool Handled = !Label.empty();
-            // Synthetic key for a nameless node: prefixed with a control byte (\x01) that a real pretty LABEL never
-            // carries, so a crafted LABEL can never collide with (or evict) a nameless node's slot. Nameless nodes
-            // are never referenced as parents, so this key is never resolved as a handle.
-            const std::string Id = Handled ? Label
-                                           : (std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx));
-            // LABEL is COSMETIC — identity is the CID, and every runtime decision keys on the CID (the frozen
-            // index is CID-keyed). LABEL doubles ONLY as an author-time reference handle, resolved to a CID at
-            // freeze; it is NOT a unique logic key, so different nodes MAY share a label (RoC/TFT "v1.21b", two
-            // "Vanilla" editions — all legitimate). On a duplicate we KEEP FIRST-SEEN with a warning; we never
-            // erase. Security: BuildCatalogIndex scans LIBRARY before CATALOG, so a LOCAL node always wins the
-            // handle over a later-scanned RECEIVED one — a received block can't shadow a local handle by order, and
-            // received nodes are browse-only (never minted/published), so a colliding label can't poison a mint.
+            std::string Handle = (N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
+            // A real CID handle is base32/base58 — no control bytes. Reject a handle carrying any (< 0x20) as
+            // handle-less (→ synthetic key): the synthetic key is control-byte-prefixed, so a hostile working-tree
+            // "CID":"<path>#N" could otherwise forge exactly that key and evict a local node.
+            for (unsigned char c : Handle) if (c < 0x20) { Handle.clear(); break; }
+            // A node with no stored CID (a never-minted local draft, or a malformed file) still gathers/freezes/indexes,
+            // but under a unique SYNTHETIC per-file key so it is never referenceable as a parent and never collides.
+            const std::string Id = !Handle.empty()
+                                       ? Handle
+                                       : (std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx));
             std::string Key = Id;
             const auto Prev = Tree.find(Key);
             if (Prev != Tree.end())
             {
                 if (Prev->second == N) continue;   // identical → same node; keep one (the multi-seeder normal)
-                // Duplicate LABEL, DIFFERENT content: LABEL is cosmetic, so both nodes are legitimate and DISTINCT
-                // (RoC/TFT "v1.21b", two "Vanilla" editions — different CIDs). The FIRST-seen keeps the referenceable
-                // handle; the loser must NOT be dropped (that would vanish a real game from the catalog) — re-key it
-                // under a unique SYNTHETIC key so it still gathers/freezes/indexes by its CID. It just isn't
-                // resolvable as a parent by that (ambiguous) label — acceptable, these are leaf launchables.
-                if (Handled)
-                    LogWarn("NodeGraph::GatherWorkingTree", "duplicate LABEL '" + Id + "' (" + E.path().string()
-                            + ") — cosmetic; first-seen keeps the handle, this one indexes under its CID");
+                // Same CID handle, DIFFERENT content: a CID is a content hash, so this only happens when a node's
+                // stored "CID" is STALE (edited, not yet re-minted) or FORGED (a received block claiming a local CID).
+                // Keep FIRST-SEEN — BuildCatalogIndex scans LIBRARY before CATALOG, so a local node always wins over a
+                // later-scanned received one (a received block can never shadow a local handle by order, and received
+                // nodes are browse-only, never minted). The loser is NOT dropped (that would vanish a real node) —
+                // re-key it under a unique SYNTHETIC key so it still gathers/indexes by its own CID at freeze.
+                LogWarn("NodeGraph::GatherWorkingTree", "duplicate node handle '" + Id + "' (" + E.path().string()
+                        + ") — stale-or-forged stored CID; first-seen keeps the handle, this one indexes on its own CID");
                 Key = std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx);   // unique → never dropped
                 if (Tree.count(Key)) continue;     // same file re-scanned (overlapping roots) → truly identical slot
             }

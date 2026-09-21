@@ -31,7 +31,8 @@ class PkgCanvas : public QObject
 
 public:
     using SaveFn     = std::function<void()>;                                  // persist the document
-    using KnownIdsFn = std::function<std::vector<std::string>()>;              // ids across the catalog (parent picker)
+    using KnownIdsFn = std::function<std::vector<std::pair<std::string, std::string>>()>;   // {handle(CID), label} across
+                                                                                          // the catalog (parent picker)
     using ActionFn   = std::function<void(const std::string &NodeId, const std::string &Action)>;
 
     //`layout` is the canvas-position sidecar (NODE_ID -> [x,y]); see PkgGraph::Build. Optional: pass nullptr and
@@ -82,7 +83,7 @@ public:
     //depends on at least one, so a canvas that can only wire within the bundle cannot author a real package.
     bool connectExternal(const std::string &parentId, int childIndex);
     //Show a chip for an external id that nothing references yet, so there is something to drag a wire from.
-    void offerExternal(const std::string &parentId);
+    void offerExternal(const std::string &parentId, const std::string &label = {});
     bool disconnect(int parentIndex, int childIndex);
     //Renames a node and re-points every reference to it. Refuses a name another node already owns.
     //Returns false if the rename was rejected.

@@ -74,7 +74,7 @@ public:
 
     // ── Catalog queries (exec index / PARENTS picker / platform suggestions) ──
     NodeIndex BuildExecIndex() const;
-    std::vector<std::string> KnownNodeIds();
+    std::vector<std::pair<std::string, std::string>> KnownNodeIds();   // {handle(CID), cosmetic label} for the picker
     std::vector<std::string> KnownPlatforms();
 
     // ── Authoring (native node engine): build NodeId's container and run / analyze it ──

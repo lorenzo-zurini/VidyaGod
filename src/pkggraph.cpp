@@ -137,7 +137,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         auto Str = [&](const char *K, const char *Def) {
             return (N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string(Def);
         };
-        Nd.Id    = Str("LABEL", "");
+        Nd.Id    = Str("CID", "");   // Model C: the canvas handle is the node's stored CID (LABEL is cosmetic only)
         Nd.Type  = Str("TYPE", "Group");
         Nd.Form  = Str("FORM", "");
         //Position resolves in three steps, weakest first: the node's own POS (the author's published default),

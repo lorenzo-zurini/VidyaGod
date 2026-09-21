@@ -86,6 +86,11 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
     // node, identified by its CID once frozen).
     if (!J.is_object() || !J.contains("TYPE") || !J["TYPE"].is_string()) return false;
     Out = Node{};
+    // Model C: identity/wiring is the CID. A working-tree node stores its last-minted CID in "CID" (its authoring
+    // handle, which PARENTS reference) — read it into Cid so Key() returns it. LABEL is the OPTIONAL cosmetic name,
+    // kept in NodeId as a display fallback (and passed to the lowerer for error/layer naming). A FROZEN block has no
+    // "CID" field (a block can't contain its own hash); its caller (FreezeToIndex) sets Cid to the DERIVED hash.
+    Out.Cid      = (J.contains("CID") && J["CID"].is_string()) ? J["CID"].get<std::string>() : std::string();
     Out.NodeId   = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
     //A node IS one layer of one TYPE; NodeLower expands its (possibly batched) payload into the ordered
     //layer sequence the launch engine consumes. A malformed payload is refused here rather than launched
@@ -197,14 +202,14 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
         {
             Node N;
             if (!ParseNode(Doc, Entry.path(), BundleDir, N)) continue;    // not a node (no TYPE / bad payload)
-            // Key by LABEL when present; a nameless node (identity = CID) gets a synthetic key so nameless nodes
-            // don't collide with each other. (This NodeId-keyed index predates CID identity; labels are present in
-            // practice — migration gives every node one — but nameless must not fold together.)
-            std::string K = N.NodeId;
-            for (unsigned char c : K) if (c < 0x20) { K.clear(); break; }   // control-byte LABEL -> nameless (unforgeable key)
-            if (K.empty()) K = std::string("\x01") + Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());  // control-byte prefix: unforgeable by a LABEL
+            // Key by the node's HANDLE — its stored CID (Key() = Cid). A node with no stored CID (a never-minted
+            // draft caught mid-author, or a frozen block with no "CID" field) gets a synthetic per-node key so
+            // handle-less nodes never fold together. Refs (PARENTS) are CIDs, so they resolve against these keys.
+            std::string K = N.Key();
+            for (unsigned char c : K) if (c < 0x20) { K.clear(); break; }   // control-byte handle -> synthetic (unforgeable key)
+            if (K.empty()) K = std::string("\x01") + Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());  // control-byte prefix: unforgeable
             else if (Idx.Nodes.count(K))
-            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate LABEL '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
+            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate node handle '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
             Idx.Nodes.emplace(K, std::move(N));
         }
     }

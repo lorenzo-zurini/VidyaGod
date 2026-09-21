@@ -71,15 +71,27 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
     {
         LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
         auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));   // repos + locally-added packages
-        if (!Index->Find(LaunchParameters.LaunchNodeId))
-        { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog, aborting."); return 1; }
+        // Identity is the CID, so Find() keys on it. As a CLI CONVENIENCE, accept a cosmetic LABEL too: if the arg is
+        // not a CID key, resolve it to the CID of the (first) node whose LABEL matches. Lets a person type
+        // `--node "Age of Empires II"` instead of a hash. Ambiguous only across unrelated games (cosmetic labels may
+        // repeat); the first match wins — a person who needs a specific variant passes its CID. The ARG is kept for
+        // the log line and the resolve-dump filename; the resolved CID is what the engine looks the node up by.
+        std::string LookupCid = LaunchParameters.LaunchNodeId;
+        if (!Index->Find(LookupCid))
+        {
+            LookupCid.clear();
+            for (const auto &[Cid, N] : Index->Nodes)
+                if (N.NodeId == LaunchParameters.LaunchNodeId) { LookupCid = Cid; break; }
+            if (LookupCid.empty())
+            { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID or name), aborting."); return 1; }
+        }
 
         Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
         nlohmann::ordered_json MANIFESTJSON = nlohmann::ordered_json::object();   // engine fills this from the node graph
-        struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LaunchParameters.LaunchNodeId, std::string());
+        struct ContainerParams NewContainerParams = ContainerParams(std::filesystem::path(), LookupCid, std::string());
         NewContainerParams.NodeIdx           = Index.get();
         NewContainerParams.NodeIdxOwned      = Index;         // the wrapper's copy co-owns the index
-        NewContainerParams.LaunchNodeId      = LaunchParameters.LaunchNodeId;
+        NewContainerParams.LaunchNodeId      = LookupCid;
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
         //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the

@@ -60,6 +60,7 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
         {"tile_node", "cidTile"},
     };
     ordered_json Raw = {
+        {"CID", "premint-9"},                                   // the working-tree handle (last-minted CID / draft)
         {"LABEL", "exec"},
         {"TYPE", "DeclareExec"},
         {"POS", ordered_json::array({100.0, 200.0})},
@@ -71,6 +72,9 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
     const ordered_json F = NodeGraph::FreezeNodeJson(Raw, HandleToCid);
 
     CHECK(!F.contains("POS"));                                   // non-semantic canvas coords dropped
+    CHECK(!F.contains("CID"));                                   // the node's OWN handle is STRIPPED (a block can't
+                                                               // contain its own hash) → identity stays purely the
+                                                               // hash of {TYPE, refs→CIDs, LABEL, payload}
     CHECK(F.contains("PUBLISH") && F["PUBLISH"] == true);       // PUBLISH is minted IN (identity-bearing): unlike POS it
                                                                // is NOT stripped, so shareability travels with the node
     // intra-tree handle → CID, then linkified; external ref passes through, linkified
@@ -152,6 +156,44 @@ TEST(nodegraph_topo_order_is_deps_first)
     CHECK(IndexOf(Order, "tile")    < IndexOf(Order, "exec"));   // LIBRARYITEM is a freeze dependency too
 }
 
+TEST(nodegraph_edit_cascades_new_cids_up_the_chain)
+{
+    // THE Model C cascade: references are CID handles; a mint freezes leaf→root, resolving each ref to the freshly
+    // computed CID of its target (FreezeNodeJson via HandleToCid). So editing a LEAF must change its CID AND every
+    // ancestor's CID, and each ancestor's reference must re-point to the new child CID. We stand in a deterministic
+    // fake "CID" (a hash of the frozen bytes) for IpfsWrapper::DagCid — the CASCADE LOGIC is pure (topo + resolve).
+    // Teeth: if FreezeNodeJson stopped resolving handles (or topo stopped being deps-first), an ancestor would keep
+    // the OLD child CID and its own CID would not move.
+    auto fakeCid = [](const ordered_json &Frozen) {
+        return "cid_" + std::to_string(std::hash<std::string>{}(Frozen.dump()) & 0xffffffffULL);
+    };
+    // Handles are the stored "CID" values; refs point to them. base(A) ← content(B) ← exec(C).
+    auto mint = [&](std::map<std::string, ordered_json> Tree) {
+        std::vector<std::string> Order; std::string Err;
+        CHECK(NodeGraph::TopoOrderForMint(Tree, Order, &Err));
+        std::map<std::string, std::string> H2C;
+        for (const std::string &H : Order)
+            H2C[H] = fakeCid(NodeGraph::FreezeNodeJson(Tree.at(H), H2C));   // deps already in H2C ⇒ refs resolve
+        return H2C;
+    };
+    auto tree = [](const std::string &basePayload) {
+        return std::map<std::string, ordered_json>{
+            {"A", {{"CID", "A"}, {"LABEL", "base"},    {"TYPE", "Content"}, {"PATH", "b.zip"}, {"NOTE", basePayload}}},
+            {"B", {{"CID", "B"}, {"LABEL", "content"}, {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"A"})}}},
+            {"C", {{"CID", "C"}, {"LABEL", "exec"},    {"TYPE", "DeclareExec"}, {"PARENTS", ordered_json::array({"B"})}}},
+        };
+    };
+    const auto V1 = mint(tree("v1"));
+    const auto V2 = mint(tree("v2"));            // ONLY the leaf A's payload changed
+    CHECK(V1.at("A") != V2.at("A"));             // the edited leaf's CID moved
+    CHECK(V1.at("B") != V2.at("B"));             // its parent re-minted (its ref resolved to A's NEW cid)
+    CHECK(V1.at("C") != V2.at("C"));             // cascade reached the root exec
+    // And an UNRELATED edit does NOT move a node that does not transitively depend on it: freezing B in V2 must embed
+    // A's V2 cid, proving the ref actually re-pointed (not a coincidental hash).
+    const ordered_json FB = NodeGraph::FreezeNodeJson(tree("v2").at("B"), { {"A", V2.at("A")} });
+    CHECK(FB["PARENTS"][0] == ordered_json({{"/", V2.at("A")}}));   // B's parent link IS A's new cid
+}
+
 TEST(nodegraph_topo_order_breaks_cycle)
 {
     // A cycle must NOT abort the order (that would empty the whole library on one self-referential typo): the back
@@ -207,71 +249,83 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
     for (int i = 0; i < 200000; ++i) Deep += '[';
     for (int i = 0; i < 200000; ++i) Deep += ']';
     D.Write("Evil - Lib/[x] x/bomb.json", Deep);
-    D.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    // Model C: a node is KEYED by its stored "CID" handle (LABEL is cosmetic).
+    D.Write("Games/[1] A/a.json", ordered_json{{"CID", "cidA"}, {"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
-    CHECK(Tree.count("a_exec") == 1);      // the honest neighbour still scans
+    CHECK(Tree.count("cidA") == 1);        // keyed by the CID handle; the honest neighbour still scans
     CHECK(Tree.size() == 1);               // the bomb contributed nothing
     CHECK(!NodeGraph::JsonDepthWithinLimit(Deep, 64));
     CHECK(NodeGraph::JsonDepthWithinLimit("{\"a\":[1,2,{\"b\":3}]}", 64));
 }
 
-TEST(nodegraph_scan_survives_hostile_nonstring_label_and_keeps_nameless)
+TEST(nodegraph_scan_survives_hostile_handle_and_keeps_handleless)
 {
-    // A received block controls LABEL's TYPE. A non-string LABEL must NOT throw the catalog scan (that aborts the
-    // GUI/worker); it reads as nameless. And a legal NAMELESS node (TYPE, no LABEL) must still be gathered (keyed by
-    // a synthetic key), never dropped. Teeth: revert GatherWorkingTree's is_string guard → this throws; drop the
-    // TYPE-gate/synthetic-key → the nameless node vanishes.
+    // A received/working-tree file controls the "CID" handle's TYPE. A non-string handle must NOT throw the scan (that
+    // aborts the GUI/worker); it reads as handle-less. A control-byte handle is rejected (unforgeable synthetic key).
+    // And a legal HANDLE-LESS node (TYPE, no "CID" — a never-minted draft, or a frozen block) must still be gathered
+    // under a synthetic key, never dropped. LABEL is cosmetic and is NEVER a key. Teeth: revert GatherWorkingTree's
+    // is_string guard → this throws; drop the synthetic-key path → the handle-less node vanishes.
     ScanDir D;
-    D.Write("A/hostile.json", std::string("{\"TYPE\":\"Content\",\"LABEL\":1}"));      // non-string LABEL
-    D.Write("A/nameless.json", std::string("{\"TYPE\":\"Content\",\"FORM\":\"zip\",\"PATH\":\"x.zip\"}"));  // no LABEL
-    D.Write("A/named.json", ordered_json{{"LABEL","named"},{"TYPE","Content"}}.dump());
+    D.Write("A/hostile.json",  std::string("{\"TYPE\":\"Content\",\"CID\":1,\"LABEL\":\"x\"}"));            // non-string handle
+    D.Write("A/nameless.json", std::string("{\"TYPE\":\"Content\",\"FORM\":\"zip\",\"PATH\":\"x.zip\"}"));  // no handle
+    D.Write("A/named.json",    ordered_json{{"CID","cidN"},{"LABEL","named"},{"TYPE","Content"}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);   // must NOT throw
-    CHECK(Tree.count("named") == 1);
-    // The hostile + nameless nodes are gathered under synthetic keys (never a real handle), so both are present but
-    // neither claims a forgeable label. Total gathered = 3 (named + 2 synthetic).
+    CHECK(Tree.count("cidN") == 1);       // keyed by its CID handle
+    // hostile + handle-less land under synthetic keys (never a real handle). Total gathered = 3.
     CHECK((int)Tree.size() == 3);
-    CHECK(Tree.count("1") == 0);        // the number LABEL did NOT become a "1" handle
+    CHECK(Tree.count("1") == 0);          // the number handle did NOT become a "1" key
+    CHECK(Tree.count("x") == 0);          // the cosmetic LABEL is NEVER a key
 }
 
-TEST(nodegraph_duplicate_label_keeps_first_seen)
+TEST(nodegraph_duplicate_LABEL_is_fine_distinct_handles_both_kept)
 {
-    // LABEL is COSMETIC — identity is the CID. Two DIFFERENT nodes MAY share a label (RoC/TFT "v1.21b", two
-    // "Vanilla" editions). On a duplicate the scan KEEPS FIRST-SEEN (with a warning) and never erases — the label is
-    // not a unique logic key. BuildCatalogIndex scans LIBRARY before CATALOG, so a local node wins the handle over a
-    // later-scanned received one. IDENTICAL copies dedupe silently (the multi-seeder normal).
-    const ordered_json Wine = {{"LABEL", "wine"}, {"TYPE", "DeclareExec"}, {"EXECUTABLE", "wine"}};
-    ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";
-    // Mirror BuildCatalogIndex: LIBRARY is gathered into the tree BEFORE CATALOG, into the SAME map. The local
-    // (LIBRARY, first-call) node must win the label; the later CATALOG claimant is dropped, never erasing the local.
+    // THE Model C win: LABEL is cosmetic, so two DIFFERENT nodes sharing a label (RoC/TFT "v1.21b") are NOT a
+    // collision at all — they have distinct CID handles and BOTH gather normally. Teeth: if anything still keyed on
+    // LABEL, one of these would evict the other.
+    ScanDir D;
+    D.Write("Games/[1] RoC/roc.json", ordered_json{{"CID","cidRoC"},{"LABEL","v1.21b"},{"TYPE","DeclareExec"}}.dump());
+    D.Write("Games/[2] TfT/tft.json", ordered_json{{"CID","cidTfT"},{"LABEL","v1.21b"},{"TYPE","DeclareExec"}}.dump());
+    std::map<std::string, ordered_json> Tree;
+    std::map<std::string, std::filesystem::path> Dirs;
+    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
+    CHECK((int)Tree.size() == 2);         // both kept — a shared label is NOT a clash
+    CHECK(Tree.count("cidRoC") == 1);
+    CHECK(Tree.count("cidTfT") == 1);
+}
+
+TEST(nodegraph_duplicate_HANDLE_keeps_first_seen_local_wins)
+{
+    // A CID is a content hash, so a duplicate HANDLE only happens on a STALE (edited, not re-minted) or FORGED stored
+    // CID. Keep FIRST-SEEN; BuildCatalogIndex scans LIBRARY before CATALOG, so a local node wins the handle over a
+    // later-scanned received one (a received block can never shadow a local handle by order). The loser is NOT dropped
+    // — it survives under a synthetic key so no node vanishes. Teeth: drop the re-key path → the loser is erased.
+    const ordered_json Wine = {{"CID","cidW"},{"LABEL","wine"},{"TYPE","DeclareExec"},{"EXECUTABLE","wine"}};
+    ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";   // same forged handle "cidW", different content
     ScanDir Lib;   Lib.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
-    ScanDir Cat;   Cat.Write("Mallory - Lib/[x] x/wine.json", Evil.dump());
-    Lib.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    ScanDir Cat;   Cat.Write("Mallory - Lib/[x] x/wine.json",  Evil.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(Lib.P, Tree, Dirs);   // LIBRARY first (local)
     NodeGraph::GatherWorkingTree(Cat.P, Tree, Dirs);   // CATALOG second (received)
-    CHECK(Tree.count("wine") == 1);                    // the handle -> first-seen LOCAL node
-    CHECK(Tree["wine"].value("EXECUTABLE", std::string()) == "wine");   // LOCAL content won, not the received "pwned"
-    CHECK(Tree.count("a_exec") == 1);
-    // The collision LOSER is NOT dropped — it survives under a synthetic key, so BOTH distinct nodes still index by
-    // CID (a real library legitimately has RoC "v1.21b" AND TFT "v1.21b"; neither may vanish). Count both contents.
-    int wineNodes = 0, pwned = 0;
+    CHECK(Tree.count("cidW") == 1);                                       // handle -> first-seen LOCAL node
+    CHECK(Tree["cidW"].value("EXECUTABLE", std::string()) == "wine");     // local won, not the forged "pwned"
+    int wine = 0, pwned = 0;
     for (const auto & [K, N] : Tree)
-        if (N.value("EXECUTABLE", std::string()) == "wine") wineNodes++;
+        if (N.value("EXECUTABLE", std::string()) == "wine") wine++;
         else if (N.value("EXECUTABLE", std::string()) == "pwned") pwned++;
-    CHECK(wineNodes == 1);
-    CHECK(pwned == 1);          // the loser is retained (re-keyed), NOT erased -- no game vanishes on a label clash
+    CHECK(wine == 1);
+    CHECK(pwned == 1);          // the forged loser is retained (re-keyed), never erased
 
-    // Identical duplicate (the same received node in two library dirs) -> kept once.
+    // Identical duplicate (the same node in two dirs, same handle + content) -> kept once (multi-seeder normal).
     ScanDir D2;
     D2.Write("Alice - Games/[1] A/a.json", Wine.dump());
     D2.Write("Bob - Games/[1] A/a.json",   Wine.dump());
     std::map<std::string, ordered_json> T2;
     std::map<std::string, std::filesystem::path> Dirs2;
     NodeGraph::GatherWorkingTree(D2.P, T2, Dirs2);
-    CHECK(T2.count("wine") == 1);
+    CHECK(T2.count("cidW") == 1);
 }
