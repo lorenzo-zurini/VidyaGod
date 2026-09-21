@@ -1,4 +1,5 @@
 #include "appmodel.h"
+#include "covercache.h"
 #include "asyncwork.h"   // guarded detached workers (P7: replaces raw std::thread(...).detach() with `this` captures)
 #include "packagecatalog.h"
 #include "nodegraph.h"   // HydratePackage — add a game by launchable CID (gigagraph sharing consumer)
@@ -35,6 +36,10 @@ AppModel::AppModel(nlohmann::ordered_json * config, QDir * appDataDir, QObject *
         CardPixelWidth = int(S["CardPixelWidth"]);
     if (S.contains("MaxConcurrentDownloads") && S["MaxConcurrentDownloads"].is_number_integer())
         IpfsWrapper::SetMaxConcurrentDownloads(int(S["MaxConcurrentDownloads"]));
+
+    // Content-addressed cover store: covers with a SOURCE.CID resolve + fetch to ASSETS/<cid>, shared across the
+    // CATALOG stub, the LIBRARY install, and any package referencing the same cover — no per-bundle duplication.
+    CoverCache::instance()->setAssetsRoot(QString::fromStdString(PackageCatalog::AssetsRootDir(*Config)));
 
     // Drop LIBRARY records for locally-added bundles the user has since moved/deleted (their PATH is gone), so the
     // library doesn't list dead tiles. Repo packages are untouched (their content may just be un-hydrated).

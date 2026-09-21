@@ -59,13 +59,20 @@ public:
     // Test seam: override the "is the node online?" probe (defaults to IpfsWrapper::DaemonRunning) — the sweep
     // skips while offline (a pre-online enqueue would fail terminally instead of waiting).
     void setOnlineProbe(std::function<bool()> Probe);
+    // The content-addressed shared cover store (top-level ASSETS dir). Set once at startup. When set, a cover that
+    // carries a SOURCE.CID resolves + fetches to ASSETS/<cid> — shared by the CATALOG stub, the LIBRARY install, and
+    // every package that references the same cover CID — instead of duplicating inside each bundle. Empty → covers
+    // resolve in-bundle (a local authored cover with no CID always does).
+    void setAssetsRoot(const QString & Dir);
 
 signals:
     void coverReady(QString cid);
 
 private:
     explicit CoverCache(QObject * parent = nullptr);
+    QString coverPath(const QString & File, const QString & Cid, const QString & PackageDir) const;   // ASSETS/<cid> or in-bundle
     std::function<bool()> OnlineProbe;      // "is the node online?" (injectable for tests)
+    QString AssetsRoot;                     // ASSETS dir for content-addressed covers ("" → in-bundle)
     QHash<QString, QString> MissDest;       // dest path → cid, every cover seen missing and not yet landed
     bool SweepSoon = false;                 // a debounced near-term sweep is already scheduled
 };

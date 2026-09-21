@@ -67,6 +67,32 @@ private slots:
         QCOMPARE(Spy.Count(), 0);                              // and PAINT ENQUEUED NOTHING
     }
 
+    // With an ASSETS root set, a cover that carries a SOURCE.CID resolves + fetches to ASSETS/<cid> — shared across
+    // the CATALOG stub, the LIBRARY install, and any package referencing the same cover — NOT into the per-bundle
+    // dir. Two different package dirs asking for the same cover CID resolve to the SAME ASSETS path. Without an
+    // ASSETS root (or for a CID-less local cover) it stays in-bundle. Teeth: drop the ASSETS routing in coverPath
+    // and the two dirs resolve to different in-bundle paths.
+    void cover_with_cid_resolves_into_shared_assets()
+    {
+        auto * cc = CoverCache::instance();
+        cc->setOnlineProbe([]{ return true; });
+        QTemporaryDir assets; QVERIFY(assets.isValid());
+        cc->setAssetsRoot(assets.path());
+        // The shared cover already present in ASSETS under its CID → a HIT from any package dir.
+        { std::ofstream((assets.path() + "/CID_SHARED").toStdString()) << "png"; }
+        QTemporaryDir pkgA, pkgB; QVERIFY(pkgA.isValid() && pkgB.isValid());
+        const QString ra = cc->resolve(CoverJson("CID_SHARED"), pkgA.path());
+        const QString rb = cc->resolve(CoverJson("CID_SHARED"), pkgB.path());
+        QVERIFY2(!ra.isEmpty() && ra == rb, "same cover CID resolves to ONE shared ASSETS path from any package dir");
+        QVERIFY2(ra.startsWith(assets.path()), "a CID cover lives under ASSETS, not the bundle");
+
+        // A local cover with no CID stays in-bundle even with an ASSETS root set.
+        { std::ofstream((pkgA.path() + "/local.png").toStdString()) << "png"; }
+        const QString loc = cc->resolve(nlohmann::ordered_json(std::string("local.png")), pkgA.path());
+        QVERIFY2(loc.startsWith(pkgA.path()), "a CID-less local cover stays in its bundle");
+        cc->setAssetsRoot(QString());   // reset so other tests use in-bundle resolution
+    }
+
     // The sweep is the only enqueue path: offline it does nothing at all; online it batches the recorded misses.
     void sweep_batches_misses_online_and_skips_offline()
     {

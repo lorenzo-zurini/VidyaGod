@@ -42,13 +42,29 @@ void CoverCache::Locate(const nlohmann::ordered_json &Cover, QString &File, QStr
     }
 }
 
+void CoverCache::setAssetsRoot(const QString & Dir) { AssetsRoot = Dir; }
+
+// Where a cover's bytes live: ASSETS/<cid> when it has a SOURCE.CID and the assets store is configured (shared,
+// content-addressed, fetched once for every tile that references the CID); else in-bundle PackageDir/PATH (a local
+// authored cover). Cover CIDs are content hashes (safe filenames), but sanitize defensively.
+QString CoverCache::coverPath(const QString & File, const QString & Cid, const QString & PackageDir) const
+{
+    if (!Cid.isEmpty() && !AssetsRoot.isEmpty())
+    {
+        QString Safe; Safe.reserve(Cid.size());
+        for (QChar ch : Cid) Safe.append((ch.isLetterOrNumber() || ch == '-' || ch == '_' || ch == '.') ? ch : QChar('_'));
+        return QDir::cleanPath(AssetsRoot + "/" + Safe);
+    }
+    return QDir::cleanPath(PackageDir + "/" + File);
+}
+
 QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &PackageDir)
 {
     QString File, Cid;
     Locate(Cover, File, Cid);
-    if (File.isEmpty()) return QString();
+    if (File.isEmpty() && Cid.isEmpty()) return QString();
 
-    QString Local = QDir::cleanPath(PackageDir + "/" + File);
+    QString Local = coverPath(File, Cid, PackageDir);
     if (QFileInfo::exists(Local))
     {
         MissDest.remove(Local);            // landed (by us or anyone) — stop tracking
