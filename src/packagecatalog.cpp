@@ -996,6 +996,8 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         // publish it — the author gives it a LABEL first.
         if (!Doc.contains("LABEL") || !Doc["LABEL"].is_string() || Doc["LABEL"].get<std::string>().empty())
         { LogWarn("PackageCatalog::PublishLibrary", "skipping a PUBLISH'd node with no LABEL — give it a name to share it"); continue; }
+        const std::string NodeLabel = Doc["LABEL"].get<std::string>();   // receiver filename = the doc LABEL, NOT Handle
+                                                                         // (a synthetic path for a re-keyed collision-loser)
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
 
@@ -1021,7 +1023,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (!TileHandle.empty())
             if (const auto Tit = MR.HandleToCid.find(TileHandle); Tit != MR.HandleToCid.end()) TileCid = Tit->second;
 
-        std::string Uid = Handle, Title = Handle;      // no tile → the node stands alone under its own handle
+        std::string Uid = NodeLabel, Title = NodeLabel;   // no tile → the node stands alone under its own LABEL
         if (!TileHandle.empty())
         {
             const nlohmann::ordered_json &T = Tree.at(TileHandle);
@@ -1043,7 +1045,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         // pkg = the node's ACTUAL package dir basename: the receiver reproduces the seeder's tree exactly, so a
         // multi-game package (AoE2: AoK + Conquerors + …) lands as ONE dir and the catalog's by-bundle sibling
         // grouping ("Other games in this package") survives the wire. uid/title stay for display + legacy fallback.
-        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", Handle},
+        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", NodeLabel},
                                  {"pkg", Dirs[Handle].filename().string()},
                                  {"uid", Uid}, {"title", Title}};
         if (!TileCid.empty()) { E["tilecid"] = TileCid; E["tilenode"] = TileHandle; }
