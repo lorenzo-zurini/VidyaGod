@@ -871,6 +871,35 @@ private slots:
         QVERIFY(PackageCatalog::GetPackageUserSettings(cfg, "other").value("PREFERRED_RUNNER", std::string()).empty());
     }
 
+    // The pre-download dialog's runner-offer contract (#2): a RECEIVED runner — closure incomplete, no enumerable
+    // build yet — must be OFFERABLE, not filtered as a PATH runner. The dialog keeps a compatible runner when it has
+    // content OR its closure is incomplete; only a complete-closure runner with no content is a PATH runner (skipped).
+    // Teeth: flip the incomplete-runner arm and a received runner gets wrongly filtered.
+    void received_runner_is_offerable_not_path_runner()
+    {
+        NodeIndex idx;
+        Node launch; launch.NodeId = "game"; launch.HasExec = true; launch.HostPlatform = "win32";
+        // A RECEIVED runner: compatible, but its build closure hasn't landed (a PARENT it names isn't in the index).
+        Node proton; proton.NodeId = "proton"; proton.HasRunner = true; proton.GuestPlatform = {"win32"};
+        proton.HostPlatform = ManifestModel::MachinePlatform();
+        proton.Parents = {"proton_build"};   // dangling → closure incomplete (build not fetched yet)
+        // A PATH runner: complete closure, no content at all (resolves an executable on the system).
+        Node nativeR; nativeR.NodeId = "native"; nativeR.HasRunner = true; nativeR.GuestPlatform = {"win32"};
+        nativeR.HostPlatform = ManifestModel::MachinePlatform();
+        idx.Nodes["game"] = launch; idx.Nodes["proton"] = proton; idx.Nodes["native"] = nativeR;
+
+        QVERIFY2(PackageCatalog::NodeClosureIncomplete(idx, "proton"), "received runner: closure is incomplete");
+        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(idx, "native"), "PATH runner: closure is complete");
+        QVERIFY2(PackageCatalog::NodeContentCids(idx, "native").empty(), "PATH runner has no content");
+        // The dialog's offer predicate: offer when (has content) OR (closure incomplete).
+        auto Offerable = [&](const std::string & rid){
+            return !PackageCatalog::NodeContentCids(idx, rid).empty()
+                || PackageCatalog::NodeClosureIncomplete(idx, rid);
+        };
+        QVERIFY2(Offerable("proton"), "a received runner MUST be offered (regression: proton auto-pulled invisibly)");
+        QVERIFY2(!Offerable("native"), "a PATH runner is correctly not offered as a download");
+    }
+
     // CompatibleRunners returns runners whose GUEST set covers the launchable's host platform.
     void compatible_runners_by_platform()
     {

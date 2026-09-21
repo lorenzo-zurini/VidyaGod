@@ -192,57 +192,56 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     DL->addWidget(OptBox);
     auto OptStates = std::make_shared<std::map<std::string, bool>>(); // node id → chosen (seeded by DEFAULT on first sight)
     // ── Available Runners: the package's EMBEDDED runner(s), plus a compatible GLOBAL runner only when none is
-    //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. ──
-    std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox
-    {
-        const Node * BaseGame = Variants.empty() ? nullptr : Model.catalogIndex().Find(Variants.front());
+    //    installed — each downloadable runner an optional checkbox (default on). Downloading one installs it. This is
+    //    a RE-DERIVABLE block (like DeriveEndpoints): a received game opens with its runner (proton) not yet in the
+    //    index, so the section is empty at first; the closure-completion swap below re-derives it and the checkbox
+    //    appears. Reads *Snap (swappable), not the live index. ──
+    // Debounce created early: the re-derivable runner section connects each checkbox's toggle to it.
+    QTimer * Debounce = new QTimer(&Dlg);
+    Debounce->setSingleShot(true);
+    Debounce->setInterval(200);
+
+    std::map<std::string, QCheckBox*> RunnerChecks;                   // runner node id → checkbox (rebuilt on re-derive)
+    QGroupBox *   RunBox = new QGroupBox("Available Runners", &Dlg);
+    QVBoxLayout * RunL   = new QVBoxLayout(RunBox);
+    RunBox->setVisible(false);
+    DL->addWidget(RunBox);
+    auto DeriveRunners = std::make_shared<std::function<void()>>();
+    *DeriveRunners = [&Dlg, &RunnerChecks, Snap, Variants, RunBox, RunL, Debounce]() {
+        const std::shared_ptr<const NodeIndex> S = *Snap;
+        QLayoutItem * It; while ((It = RunL->takeAt(0)) != nullptr) { if (QWidget * W = It->widget()) W->deleteLater(); delete It; }
+        RunnerChecks.clear();
+        const Node * BaseGame = Variants.empty() ? nullptr : S->Find(Variants.front());
+        std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
         if (BaseGame)
-        {
-            std::vector<const Node*> EmbeddedR, GlobalR; bool AnyCompatInstalled = false;
-            for (const Node * R : PackageCatalog::CompatibleRunners(Model.catalogIndex(), *BaseGame))
+            for (const Node * R : PackageCatalog::CompatibleRunners(*S, *BaseGame))
             {
                 const std::string rid = R->NodeId;
-                const bool Embedded   = (R->BundleDir == BaseGame->BundleDir);                    // embedded in THIS package
-                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(Model.catalogIndex(), rid);  // not bundled in any game
-                if (!Embedded && !Standalone) continue;                                           // another game's embedded runner
-                if (PackageCatalog::RunnerInstalled(Model.catalogIndex(), rid)) { AnyCompatInstalled = true; continue; }
-                // A RECEIVED runner has no enumerable build YET (closure incomplete) but is absolutely downloadable
-                // — only a complete-closure runner with no content is a PATH runner.
-                if (PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).empty()
-                    && !PackageCatalog::NodeClosureIncomplete(Model.catalogIndex(), rid)) continue;
+                const bool Embedded   = (R->BundleDir == BaseGame->BundleDir);
+                const bool Standalone = !PackageCatalog::IsEmbeddedRunner(*S, rid);
+                if (!Embedded && !Standalone) continue;
+                if (PackageCatalog::RunnerInstalled(*S, rid)) { AnyCompatInstalled = true; continue; }
+                // A RECEIVED runner has no enumerable build YET (closure incomplete) but is downloadable — only a
+                // complete-closure runner with no content is a PATH runner.
+                if (PackageCatalog::NodeContentCids(*S, rid).empty() && !PackageCatalog::NodeClosureIncomplete(*S, rid)) continue;
                 (Embedded ? EmbeddedR : GlobalR).push_back(R);
             }
-            const bool ShowGlobal = !AnyCompatInstalled && !GlobalR.empty();
-            if (!EmbeddedR.empty() || ShowGlobal)
-            {
-                QGroupBox * Box = new QGroupBox("Available Runners", &Dlg);
-                QVBoxLayout * BL = new QVBoxLayout(Box);
-                auto addRunner = [&](const Node * R){
-                    const std::string rid = R->NodeId;
-                    const int Items = (int)PackageCatalog::NodeContentCids(Model.catalogIndex(), rid).size();
-                    const QString Suffix = Items > 0 ? QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s")
-                                                     : QStringLiteral("   (remote)");   // received: enumerates on install
-                    QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label)
-                        + Suffix, Box);
-                    cb->setChecked(true);
-                    RunnerChecks[rid] = cb; BL->addWidget(cb);
-                };
-                if (!EmbeddedR.empty())
-                {
-                    QLabel * h = new QLabel("Embedded", Box); h->setStyleSheet("color:#8f98a0; font-weight:bold;");
-                    BL->addWidget(h);
-                    for (const Node * R : EmbeddedR) addRunner(R);
-                }
-                if (ShowGlobal)
-                {
-                    QLabel * h = new QLabel("Global", Box); h->setStyleSheet("color:#8f98a0; font-weight:bold;");
-                    BL->addWidget(h);
-                    for (const Node * R : GlobalR) addRunner(R);
-                }
-                DL->addWidget(Box);
-            }
-        }
-    }
+        const bool ShowGlobal = !AnyCompatInstalled && !GlobalR.empty();
+        auto addRunner = [&](const Node * R){
+            const std::string rid = R->NodeId;
+            const int Items = (int)PackageCatalog::NodeContentCids(*S, rid).size();
+            const QString Suffix = Items > 0 ? QString("   (%1 file%2)").arg(Items).arg(Items == 1 ? "" : "s")
+                                             : QStringLiteral("   (remote)");   // received: enumerates on install
+            QCheckBox * cb = new QCheckBox(QString::fromStdString(R->Label.empty() ? rid : R->Label) + Suffix, RunBox);
+            cb->setChecked(true);
+            QObject::connect(cb, &QCheckBox::toggled, RunBox, [Debounce](bool){ Debounce->start(); });   // toggle → re-derive size
+            RunnerChecks[rid] = cb; RunL->addWidget(cb);
+        };
+        if (!EmbeddedR.empty()) { QLabel * h = new QLabel("Embedded", RunBox); h->setStyleSheet("color:#8f98a0; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : EmbeddedR) addRunner(R); }
+        if (ShowGlobal)         { QLabel * h = new QLabel("Global", RunBox);   h->setStyleSheet("color:#8f98a0; font-weight:bold;"); RunL->addWidget(h); for (const Node * R : GlobalR)   addRunner(R); }
+        RunBox->setVisible(!EmbeddedR.empty() || ShowGlobal);
+    };
+
     // ── Disk-space display: free space at the library + the (async-derived) size of the current selection ──
     QLabel * SizeLabel = new QLabel("Free space: …", &Dlg);
     SizeLabel->setStyleSheet("color:#8f98a0;");
@@ -254,13 +253,10 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     auto SizeCache = std::make_shared<std::map<std::string, long long>>();   // CID → bytes (filled async)
     auto Queried   = std::make_shared<std::set<std::string>>();              // CIDs already handed to the size prober
 
-    // A toggle anywhere (variant / secondary / optional / runner) restarts this; on fire, the optionals section and
-    // the size line are re-derived for the CURRENT selection. Both derivations walk closures — so both run off the
-    // GUI thread via AsyncWork against Snap, and only ever for what is actually checked.
-    QTimer * Debounce = new QTimer(&Dlg);
-    Debounce->setSingleShot(true);
-    Debounce->setInterval(200);
-
+    // A toggle anywhere (variant / secondary / optional / runner) restarts Debounce; on fire, the optionals section
+    // and the size line are re-derived for the CURRENT selection. Both derivations walk closures — so both run off
+    // the GUI thread via AsyncWork against Snap, and only ever for what is actually checked. (Debounce is declared
+    // above so the re-derivable runner section can connect to it.)
     auto RecomputeSize    = std::make_shared<std::function<void()>>();
     auto RebuildOptionals = std::make_shared<std::function<void()>>();
 
@@ -357,7 +353,6 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     connect(Debounce, &QTimer::timeout, &Dlg, [RebuildOptionals, RecomputeSize]{ (*RebuildOptionals)(); (*RecomputeSize)(); });
     connect(CustomPicker, &VariantPicker::checkedChanged, &Dlg, [Debounce]{ Debounce->start(); });
     for (const auto & [Lid, cb] : SecChecks)    connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
-    for (const auto & [Rid, cb] : RunnerChecks) connect(cb, &QCheckBox::toggled, &Dlg, [Debounce](bool){ Debounce->start(); });
     (*RebuildOptionals)(); (*RecomputeSize)();   // initial async fill — the dialog itself shows instantly
 
     // Derive the endpoints off-thread and materialize their checkboxes (all ticked = the default "everything").
@@ -391,6 +386,7 @@ void DownloadManager::startDownload(LibraryGameCard *card)
             });
     };
     (*DeriveEndpoints)();
+    (*DeriveRunners)();
 
     // A RECEIVED package opens with an INCOMPLETE closure (only its exec + tile were shared) — nothing below it to
     // size or enumerate. Complete it NOW, through the same rolling queue (CompleteClosure — the node blocks are
@@ -398,23 +394,40 @@ void DownloadManager::startDownload(LibraryGameCard *card)
     // Download button resolves real content targets. No wire change, no size stamping — the graph itself arrives.
     {
         bool AnyIncomplete = false;
+        const nlohmann::ordered_json CfgForGate = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
         for (const std::string & V : Variants)
+        {
             if (PackageCatalog::NodeClosureIncomplete(**Snap, V)) { AnyIncomplete = true; break; }
+            for (const std::string & Rid : PackageCatalog::RunnerChainIds(**Snap, V, CfgForGate))
+                if (PackageCatalog::NodeClosureIncomplete(**Snap, Rid)) { AnyIncomplete = true; break; }
+            if (AnyIncomplete) break;
+        }
         if (AnyIncomplete)
         {
             const std::shared_ptr<const NodeIndex> S = *Snap;
-            std::thread([this, S, Variants, Snap, Alive, DeriveEndpoints, Debounce]{
+            nlohmann::ordered_json ConfigSnap = Model.config() ? *Model.config() : nlohmann::ordered_json::object();
+            std::thread([this, S, Variants, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce, ConfigSnap = std::move(ConfigSnap)]{
                 for (const std::string & V : Variants)
                 {
                     std::string CErr;
                     if (PackageCatalog::NodeClosureIncomplete(*S, V) && !PackageCatalog::CompleteClosure(*S, V, &CErr))
                         LogWarn("DownloadManager::startDownload", "closure completion for '" + V + "': " + CErr);
+                    // The RUNNER chain (proton/wine) is itself received — complete it too, so CompatibleRunners can
+                    // enumerate it and the runner checkbox appears (else it auto-pools invisibly).
+                    for (const std::string & Rid : PackageCatalog::RunnerChainIds(*S, V, ConfigSnap))
+                        if (PackageCatalog::NodeClosureIncomplete(*S, Rid))
+                        {
+                            std::string RErr;
+                            if (!PackageCatalog::CompleteClosure(*S, Rid, &RErr))
+                                LogWarn("DownloadManager::startDownload", "runner closure '" + Rid + "': " + RErr);
+                        }
                 }
-                QMetaObject::invokeMethod(this, [this, Snap, Alive, DeriveEndpoints, Debounce]{
+                QMetaObject::invokeMethod(this, [this, Snap, Alive, DeriveEndpoints, DeriveRunners, Debounce]{
                     Model.rebuildCatalog();                       // the landed node files are ordinary tree packages
                     if (!Alive->load()) return;                   // dialog closed meanwhile — catalog is fresh anyway
                     *Snap = std::make_shared<const NodeIndex>(Model.catalogIndex());
                     (*DeriveEndpoints)();
+                    (*DeriveRunners)();                           // proton's node is present now → the choice appears
                     Debounce->start();                            // sizes + optionals re-derive on the full graph
                 }, Qt::QueuedConnection);
             }).detach();
