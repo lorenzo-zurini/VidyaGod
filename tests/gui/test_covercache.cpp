@@ -93,6 +93,33 @@ private slots:
         cc->setAssetsRoot(QString());   // reset so other tests use in-bundle resolution
     }
 
+    // A cover carries a SOURCE.CID but ASSETS/<cid> is not populated yet, while the PNG is still LOCAL in the bundle
+    // (your own library, or before ASSETS was ever filled). It must be PROMOTED into ASSETS and shown IMMEDIATELY —
+    // no blank tile, no fetch, no recorded miss. Teeth: drop the in-bundle promotion in resolve() and this resolves
+    // empty and records a miss instead. This is the bug where every local cover blanked after the identity migration.
+    void local_cover_promotes_into_assets_when_absent()
+    {
+        auto * cc = CoverCache::instance();
+        cc->setOnlineProbe([]{ return true; });
+        QueueSpy Spy;
+        QTemporaryDir assets; QVERIFY(assets.isValid());
+        cc->setAssetsRoot(assets.path());
+        QTemporaryDir pkg; QVERIFY(pkg.isValid());
+        { std::ofstream((pkg.path() + "/cover.png").toStdString()) << "PNGBYTES"; }   // local bytes present
+        const QString assetPath = QDir::cleanPath(assets.path() + "/CID_LOCAL_PROMOTE");
+        QVERIFY(!QFileInfo::exists(assetPath));                     // ASSETS/<cid> starts empty
+        const int Before = cc->missCount();
+        const QString r = cc->resolve(CoverJson("CID_LOCAL_PROMOTE"), pkg.path());
+        QVERIFY2(!r.isEmpty(), "a cover whose bytes are local must resolve, not paint blank");
+        QCOMPARE(r, assetPath);                                     // resolves to the shared ASSETS path…
+        QVERIFY2(QFileInfo::exists(assetPath), "…because the bundle cover was PROMOTED into ASSETS");
+        QCOMPARE(cc->missCount(), Before);                          // no miss recorded (no fetch needed)
+        QCOMPARE(Spy.Count(), 0);                                   // and nothing was enqueued
+        QFile f(assetPath); QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("PNGBYTES"));              // byte-identical promotion
+        cc->setAssetsRoot(QString());
+    }
+
     // The sweep is the only enqueue path: offline it does nothing at all; online it batches the recorded misses.
     void sweep_batches_misses_online_and_skips_offline()
     {

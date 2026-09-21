@@ -3,8 +3,12 @@
 #include "ipfswrapper.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QTimer>
+
+#include <filesystem>
+#include <system_error>
 
 namespace {
 constexpr int SweepPeriodMs   = 60'000;   // the steady cadence: a minuscule stat-sweep of recorded misses
@@ -70,7 +74,31 @@ QString CoverCache::resolve(const nlohmann::ordered_json &Cover, const QString &
         MissDest.remove(Local);            // landed (by us or anyone) — stop tracking
         return Local;
     }
-    // Not on disk → the tile paints BLANK. The only side effect here is remembering the miss for the sweep.
+    // The addressed path (ASSETS/<cid>) is empty — but the bytes may be LOCAL: an authored cover whose SOURCE.CID was
+    // stamped at publish yet whose PNG still lives in its bundle (your own library, or before ASSETS was ever
+    // populated). PROMOTE it into the shared, content-addressed assets store (copy bundle → ASSETS/<cid>) so every tile
+    // that references the CID shares one file and it survives a bundle move — and show it immediately, with no fetch.
+    // Only received covers (no local bytes) fall through to the fetch sweep.
+    if (!File.isEmpty() && !PackageDir.isEmpty())
+    {
+        const QString Bundle = QDir::cleanPath(PackageDir + "/" + File);
+        if (Bundle != Local && QFileInfo::exists(Bundle))
+        {
+            if (!Cid.isEmpty() && !AssetsRoot.isEmpty())     // Local == ASSETS/<cid>: copy the bundle PNG there
+            {
+                std::error_code Ec;
+                std::filesystem::create_directories(std::filesystem::path(Local.toStdString()).parent_path(), Ec);
+                const QString Tmp = Local + ".cvtmp";        // temp+rename so a reader never sees a half-written cover
+                QFile::remove(Tmp);
+                if (QFile::copy(Bundle, Tmp) && QFile::rename(Tmp, Local))
+                { MissDest.remove(Local); return Local; }
+                QFile::remove(Tmp);
+            }
+            MissDest.remove(Local);
+            return Bundle;                                   // promotion not possible → serve the in-bundle bytes
+        }
+    }
+    // Not on disk anywhere local → the tile paints BLANK. Remember the miss for the fetch sweep (received covers).
     if (!Cid.isEmpty() && !MissDest.contains(Local))
     {
         MissDest.insert(Local, Cid);
