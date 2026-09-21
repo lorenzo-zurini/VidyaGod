@@ -67,6 +67,10 @@ private:
     QListWidget  * CategoryFilters = nullptr;
     QPushButton  * SeedBtn         = nullptr;   // held so seed-progress can update its label
     QTimer       * CountsDebounce  = nullptr;   // coalesces per-leaf changes into one sidebar-count refresh
+    QTimer       * SortDebounce    = nullptr;   // coalesces a burst of row changes into ONE explicit re-sort
+    int            SortColumn      = 0;         // current sort column/order — auto-sorting is OFF (it re-sorted the
+    Qt::SortOrder  SortOrder       = Qt::AscendingOrder;   // whole tree per setText; we sort explicitly, debounced)
+    void           scheduleSort();              // request a debounced re-sort (no-op if already pending)
     bool           IpfsFitColumnsOnShow = true; // fit every column to content on first render / whenever shown
 
     int     CurrentStatus   = SAll;             // selected status filter

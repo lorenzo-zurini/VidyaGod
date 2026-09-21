@@ -60,11 +60,18 @@ void PackagesView::rebuildList()
     //separator difference between a node's BundleDir and the LIBRARY PATH doesn't cause a false miss.
     const NodeIndex & Idx = Model.catalogIndex();
     auto Norm = [](const std::filesystem::path & P){ return P.lexically_normal().generic_string(); };
+    // ONE HydrationMap pass (O(N+E), stat-cached) — the per-launchable NodeHasContent+NodeHydrated pair re-derived
+    // CustomVarDefaults over the WHOLE graph and re-walked the closure per node: O(N²) + per-node disk stats ON THE
+    // GUI THREAD, measured as a top contributor to the startup freeze. Same map the Library/Catalog tabs use.
+    const auto Hyd = PackageCatalog::HydrationMap(Idx);
     std::set<std::string> HydratedBundles;
     for (const auto & [NodeId, N] : Idx.Nodes)
-        if (N.IsLaunchable() && !N.BundleDir.empty()
-            && PackageCatalog::NodeHasContent(Idx, NodeId) && PackageCatalog::NodeHydrated(Idx, NodeId))
+    {
+        if (!N.IsLaunchable() || N.BundleDir.empty()) continue;
+        const auto It = Hyd.find(NodeId);
+        if (It != Hyd.end() && It->second.HasContent && It->second.Hydrated)
             HydratedBundles.insert(Norm(N.BundleDir));
+    }
 
     for (int i = 0; i < (int)Lib.size(); i++) {
         //Only HYDRATED packages (content present locally) are listed — synced-but-not-downloaded repo entries

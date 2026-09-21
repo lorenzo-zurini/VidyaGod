@@ -230,8 +230,20 @@ void IpfsTab::buildUi()
     IpfsPins->setItemDelegateForColumn(2, new ProgressBarDelegate(IpfsPins));
     IpfsPins->setEditTriggers(QAbstractItemView::NoEditTriggers);
     IpfsPins->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    IpfsPins->setSortingEnabled(true);
-    IpfsPins->sortByColumn(0, Qt::AscendingOrder);
+    // Auto-sorting stays OFF permanently: with it on, EVERY setText on a sort-column cell (progress/status tick,
+    // and each of the thousands of leaf inserts at startup) re-sorted the entire tree — measured as the dominant
+    // main-thread cost. We sort EXPLICITLY: once, debounced, after a batch of row changes, and immediately on a
+    // header click. Same visible behaviour, without the O(rows) re-sort per cell write.
+    IpfsPins->setSortingEnabled(false);
+    IpfsPins->header()->setSortIndicatorShown(true);
+    IpfsPins->header()->setSectionsClickable(true);
+    IpfsPins->header()->setSortIndicator(SortColumn, SortOrder);
+    connect(IpfsPins->header(), &QHeaderView::sectionClicked, this, [this](int col){
+        SortOrder = (col == SortColumn && SortOrder == Qt::AscendingOrder) ? Qt::DescendingOrder : Qt::AscendingOrder;
+        SortColumn = col;
+        IpfsPins->header()->setSortIndicator(SortColumn, SortOrder);
+        IpfsPins->sortItems(SortColumn, SortOrder);   // explicit, on demand
+    });
     IpfsPins->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(IpfsPins, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint & p){ showContextMenu(p); });
     body->addWidget(IpfsPins, 1);
@@ -244,7 +256,14 @@ void IpfsTab::buildUi()
     CountsDebounce->setSingleShot(true);
     CountsDebounce->setInterval(300);
     connect(CountsDebounce, &QTimer::timeout, this, [this]{ updateFilterCounts(); });
+
+    SortDebounce = new QTimer(this);
+    SortDebounce->setSingleShot(true);
+    SortDebounce->setInterval(250);
+    connect(SortDebounce, &QTimer::timeout, this, [this]{ if (IpfsPins) IpfsPins->sortItems(SortColumn, SortOrder); });
 }
+
+void IpfsTab::scheduleSort() { if (SortDebounce) SortDebounce->start(); }
 
 QWidget * IpfsTab::buildSidebar()
 {
@@ -302,6 +321,32 @@ QWidget * IpfsTab::buildSidebar()
     return side;
 }
 
+// QTreeWidgetItem's default operator< routes through QVariant + the LOCALE COLLATOR (ICU table walk per
+// comparison) — at thousands of rows that made every re-sort (each reconcile, each sort-column cell change) a
+// main-thread burn, measured top-of-profile at startup. Plain case-insensitive QString::compare keeps the same
+// practical order at a fraction of the cost; numeric columns carry their sortable value in Qt::UserRole.
+class FastSortItem : public QTreeWidgetItem
+{
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+    bool operator<(const QTreeWidgetItem & Other) const override
+    {
+        const int C = treeWidget() ? treeWidget()->sortColumn() : 0;
+        const QVariant A = data(C, Qt::UserRole), B = Other.data(C, Qt::UserRole);
+        if (A.userType() == QMetaType::LongLong && B.userType() == QMetaType::LongLong)
+            return A.toLongLong() < B.toLongLong();
+        return text(C).compare(Other.text(C), Qt::CaseInsensitive) < 0;
+    }
+};
+
+// setText only when the text actually changed: an unchanged setData still costs a QVariant round-trip and — on the
+// SORT column — a per-item sorted re-insertion. During startup every row's label resolves once, but progress/status
+// tick constantly; the guard keeps those ticks off the sort machinery.
+static inline void SetTextIfChanged(QTreeWidgetItem * It, int Col, const QString & V)
+{
+    if (It->text(Col) != V) It->setText(Col, V);
+}
+
 // Find or create a CID's leaf under its category (Content/Assets/Meta) → package group, using the model's label/
 // package/category for this CID. Default expansion: categories open (Assets closed), package groups closed.
 QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
@@ -316,7 +361,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     QTreeWidgetItem * cat = IpfsPinCategories.value(CatName, nullptr);
     if (!cat)
     {
-        cat = new QTreeWidgetItem(IpfsPins);
+        cat = new FastSortItem(IpfsPins);
         cat->setText(0, CatName);
         QFont cf = cat->font(0); cf.setBold(true); cf.setPointSizeF(cf.pointSizeF() + 0.5); cat->setFont(0, cf);
         cat->setFlags(cat->flags() & ~Qt::ItemIsSelectable);
@@ -335,7 +380,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         QTreeWidgetItem * srcGrp = IpfsPinSourceGroups.value(SrcKey, nullptr);
         if (!srcGrp)
         {
-            srcGrp = new QTreeWidgetItem(cat);
+            srcGrp = new FastSortItem(cat);
             srcGrp->setText(0, Src);
             QFont sf = srcGrp->font(0); sf.setBold(true); srcGrp->setFont(0, sf);
             srcGrp->setForeground(0, QColor("#c6d4df"));
@@ -349,7 +394,7 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
     QTreeWidgetItem * grp = IpfsPinGroups.value(GroupKey, nullptr);
     if (!grp)
     {
-        grp = new QTreeWidgetItem(pkgParent);
+        grp = new FastSortItem(pkgParent);
         grp->setText(0, PkgName);
         QFont f = grp->font(0); f.setBold(true); grp->setFont(0, f); grp->setFont(1, f);
         grp->setFlags(grp->flags() & ~Qt::ItemIsSelectable);
@@ -358,16 +403,15 @@ QTreeWidgetItem * IpfsTab::ensureLeaf(const QString & cid)
         IpfsPinGroups.insert(GroupKey, grp);
     }
 
-    IpfsPins->setSortingEnabled(false);
     QString LeafName = st.label.isEmpty() ? QStringLiteral("(unknown)") : st.label;
     if (LeafName.startsWith(PkgName + " — ")) LeafName = LeafName.mid(PkgName.size() + 3);
     else if (LeafName == PkgName)             LeafName = QStringLiteral("content");
-    QTreeWidgetItem * child = new QTreeWidgetItem(grp);
+    QTreeWidgetItem * child = new FastSortItem(grp);
     child->setText(0, LeafName);
     child->setToolTip(0, QString("%1\n%2").arg(st.label, cid));
     child->setText(6, cid);
     IpfsPinChildren.insert(cid, child);
-    IpfsPins->setSortingEnabled(true);
+    scheduleSort();                                  // one debounced re-sort for the whole batch, not per insert
     return child;
 }
 
@@ -388,11 +432,13 @@ void IpfsTab::renderLeaf(const QString & cid)
     if (!Model.has(cid)) { removeLeaf(cid); return; }
     QTreeWidgetItem * leaf = ensureLeaf(cid);
     if (!leaf) return;
-    const IpfsModel::CidState st = Model.state(cid);
+    const IpfsModel::CidState * StP = Model.stateRef(cid);
+    if (!StP) return;
+    const IpfsModel::CidState & st = *StP;
     using P = IpfsModel::CidState;
 
     // Size.
-    leaf->setText(1, st.phase == P::Pending ? QString() : HumanBytesQ(st.size));
+    SetTextIfChanged(leaf, 1, st.phase == P::Pending ? QString() : HumanBytesQ(st.size));
     leaf->setData(1, Qt::UserRole, (qlonglong)(st.size < 0 ? 0 : st.size));
 
     // Progress bar value + colour code.
@@ -454,13 +500,13 @@ void IpfsTab::renderLeaf(const QString & cid)
     }
     leaf->setData(2, Qt::DisplayRole, Bar);
     leaf->setData(2, StatusRole, Role);
-    leaf->setText(3, st.speedBps > 0 ? (HumanBytesQ((long long)st.speedBps) + "/s") : QString());
-    leaf->setText(4, Status);
+    SetTextIfChanged(leaf, 3, st.speedBps > 0 ? (HumanBytesQ((long long)st.speedBps) + "/s") : QString());
+    SetTextIfChanged(leaf, 4, Status);
     leaf->setForeground(4, Fg);
 
     // Health (blank for a not-yet-fetched source).
-    if (st.phase == P::Pending) leaf->setText(5, QString());
-    else { const auto [Txt, Col] = IpfsHealthText(st.providers, st.missing); leaf->setText(5, Txt); leaf->setForeground(5, Col); }
+    if (st.phase == P::Pending) SetTextIfChanged(leaf, 5, QString());
+    else { const auto [Txt, Col] = IpfsHealthText(st.providers, st.missing); SetTextIfChanged(leaf, 5, Txt); leaf->setForeground(5, Col); }
 
     leaf->setHidden(!leafMatches(cid));
     if (CountsDebounce) CountsDebounce->start();
@@ -478,7 +524,6 @@ void IpfsTab::reconcile()
     if (!IpfsPins) return;
     QScrollBar * VBar = IpfsPins->verticalScrollBar();
     const int Scroll = VBar ? VBar->value() : 0;
-    IpfsPins->setSortingEnabled(false);
 
     const QHash<QString, IpfsModel::CidState> & Cids = Model.cids();
     for (const QString & cid : IpfsPinChildren.keys())
@@ -489,7 +534,7 @@ void IpfsTab::reconcile()
     applyFilters();
     updateFilterCounts();
 
-    IpfsPins->setSortingEnabled(true);
+    IpfsPins->sortItems(SortColumn, SortOrder);       // one sort for the whole reconcile
     if (VBar) VBar->setValue(Scroll);
     if (IpfsFitColumnsOnShow)
     {
@@ -509,7 +554,9 @@ void IpfsTab::reconcile()
 
 int IpfsTab::effectiveStatus(const QString & cid) const
 {
-    const IpfsModel::CidState st = Model.state(cid);
+    const IpfsModel::CidState * S = Model.stateRef(cid);
+    static const IpfsModel::CidState None{};
+    const IpfsModel::CidState & st = S ? *S : None;
     using P = IpfsModel::CidState;
     switch (st.phase)
     {
@@ -527,7 +574,9 @@ int IpfsTab::effectiveStatus(const QString & cid) const
 bool IpfsTab::leafMatches(const QString & cid) const
 {
     if (CurrentStatus != SAll && effectiveStatus(cid) != CurrentStatus) return false;
-    const IpfsModel::CidState st = Model.state(cid);
+    const IpfsModel::CidState * S = Model.stateRef(cid);
+    static const IpfsModel::CidState None{};
+    const IpfsModel::CidState & st = S ? *S : None;
     if (!CurrentCategory.isEmpty())
     {
         const QString Cat = st.category.isEmpty() ? QStringLiteral("Content") : st.category;

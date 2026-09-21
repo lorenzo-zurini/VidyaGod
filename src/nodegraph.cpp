@@ -1,4 +1,7 @@
 #include "nodegraph.h"
+
+#include <mutex>
+#include <unordered_map>
 #include "ipfswrapper.h"     // DagGet, DagPut, FetchToPath
 #include "commonutils.h"     // Log*
 
@@ -148,10 +151,31 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     int Skipped = 0;
     for (const std::string &Handle : Order)
     {
-        // Freeze (resolve handles→CIDs, linkify) and derive the CID with NO side effects.
+        // Freeze (resolve handles→CIDs, linkify) and derive the CID with NO side effects. DagCid is PURE
+        // (canonical bytes → CID), so memoize dump→cid across rebuilds: every catalog rebuild used to re-hash the
+        // ENTIRE library through cgo — measured as a top slice of the GUI-thread startup freeze (rebuilds fire on
+        // node-ready, source sync, friend snapshots, transfer completion…). Mutex'd: rebuilds run on several threads.
+        static std::mutex CidMemoMu;
+        static std::unordered_map<std::string, std::string> CidMemo;
         const nlohmann::ordered_json Frozen = FreezeNodeJson(WorkingTree.at(Handle), HandleToCid);
         std::string Err;
-        const std::string Cid = IpfsWrapper::DagCid(Frozen.dump(), &Err);
+        std::string Cid;
+        const std::string Dump = Frozen.dump();
+        {
+            std::lock_guard<std::mutex> Lk(CidMemoMu);
+            const auto Mit = CidMemo.find(Dump);
+            if (Mit != CidMemo.end()) Cid = Mit->second;
+        }
+        if (Cid.empty())
+        {
+            Cid = IpfsWrapper::DagCid(Dump, &Err);
+            if (!Cid.empty())
+            {
+                std::lock_guard<std::mutex> Lk(CidMemoMu);
+                if (CidMemo.size() >= 50000) CidMemo.clear();   // bound the memo; a reset just re-hashes once
+                CidMemo.emplace(Dump, Cid);
+            }
+        }
         if (Cid.empty())
         {
             // A per-node failure — almost always a DANGLING ref (a PARENTS/LIBRARYITEM handle not in the tree, so it

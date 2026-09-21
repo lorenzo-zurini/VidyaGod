@@ -238,6 +238,9 @@ IpfsModel::IpfsModel(AppModel & model, QObject * parent)
         emit cidChanged(cid);
     });
 
+    // Label cache invalidation: names derive from the catalog, so only a catalog change can change them.
+    connect(&model, &AppModel::catalogChanged, this, [this]{ LabelsDirty = true; });
+
     RefreshTimer = new QTimer(this);
     connect(RefreshTimer, &QTimer::timeout, this, [this]{ refresh(); });
 
@@ -292,27 +295,45 @@ static bool LabelFromQueueDest(const QString & cid, IpfsModel::CidState & s)
     return true;
 }
 
+// Rebuild the CID→label/package/category/source cache from the catalog. BuildCidLabels walks the WHOLE index ×
+// layers — running it per snapshot (every 5s) and even per newly-queued CID was ~85% of the measured main-thread
+// startup burn. Now it runs ONLY when the catalog actually changed (LabelsDirty, set by catalogChanged) and its
+// result is read from the cache everywhere else.
+void IpfsModel::rebuildLabelCache()
+{
+    CachedPkgs.clear(); CachedCats.clear(); CachedSrcs.clear();
+    QHash<QString, qlonglong> Sizes;
+    CachedLabels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &CachedPkgs, &CachedCats, &PkgDirs, &CachedSrcs, &Sizes);
+    ManifestSizes = Sizes;   // for the Size column + per-item speed (display). The NODE registration for gateway
+                             // progress happens at fetch-build in PackageCatalog::CollectContentTargets (GUI + CLI),
+                             // not here — this model only exists in the GUI, and a fetch can precede a refresh.
+    LabelsDirty = false;
+}
+
+// Fill one row's naming from the cache (queue-dest fallback for a CID the catalog can't name yet).
+void IpfsModel::applyLabels(const QString & cid, CidState & s)
+{
+    if (!CachedLabels.contains(cid) && LabelFromQueueDest(cid, s)) return;
+    s.label    = CachedLabels.value(cid, s.label.isEmpty() ? QStringLiteral("(unknown)") : s.label);
+    s.package  = CachedPkgs.value(cid, s.package.isEmpty() ? QStringLiteral("Unknown / not in your library") : s.package);
+    s.category = CachedCats.value(cid, s.category.isEmpty() ? CatContent : s.category);
+    s.source   = CachedSrcs.value(cid, s.source);
+    if (s.size < 0 && ManifestSizes.contains(cid)) s.size = ManifestSizes.value(cid);
+}
+
 void IpfsModel::ensureLabels(const QString & cid)
 {
     if (Cids.contains(cid) && !Cids[cid].label.isEmpty()) return;
-    QHash<QString, QString> Pkgs, Cats, Srcs;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs);
-    CidState & s = Cids[cid];
-    if (!Labels.contains(cid) && LabelFromQueueDest(cid, s)) return;
-    s.label    = Labels.value(cid, QStringLiteral("(unknown)"));
-    s.package  = Pkgs.value(cid, QStringLiteral("Unknown / not in your library"));
-    s.category = Cats.value(cid, CatContent);
-    s.source   = Srcs.value(cid);
+    if (LabelsDirty) rebuildLabelCache();
+    applyLabels(cid, Cids[cid]);
 }
 
 void IpfsModel::rebuildLabels()
 {
-    QHash<QString, QString> Pkgs, Cats, Srcs;
-    QHash<QString, qlonglong> Sizes;
-    const QHash<QString, QString> Labels = BuildCidLabels(Model.catalogIndex(), *Model.config(), &Pkgs, &Cats, &PkgDirs, &Srcs, &Sizes);
-    ManifestSizes = Sizes;   // for the Size column + per-item speed (display). The NODE registration for gateway
-                             // progress happens at fetch-build in PackageCatalog::CollectContentTargets (GUI + CLI),
-                             // not here — this model only exists in the GUI, and a fetch can precede a refresh.
+    rebuildLabelCache();
+    const QHash<QString, QString> & Labels = CachedLabels;
+    const QHash<QString, QString> & Pkgs = CachedPkgs, & Cats = CachedCats, & Srcs = CachedSrcs;
+    const QHash<QString, qlonglong> & Sizes = ManifestSizes;
     for (auto it = Cids.begin(); it != Cids.end(); ++it) {
         const QString & cid = it.key();
         if (!Labels.contains(cid) && (it->label.isEmpty() || it->label == QStringLiteral("(unknown)"))
@@ -525,6 +546,11 @@ void IpfsModel::refresh()
         St.pinCount = (int)Pins.size();
         QSet<QString> Uploading;
         for (const auto & C : IpfsWrapper::ActiveUploads(90000)) Uploading.insert(QString::fromStdString(C));
+        // Announced-state OFF-THREAD too: the upsert used to make one cgo call PER PIN PER SNAPSHOT on the GUI
+        // thread (thousands every refresh once node blocks are pinned).
+        QSet<QString> Announced;
+        for (const auto & P : Pins)
+            if (IpfsWrapper::SeedAnnounced(P.Cid)) Announced.insert(QString::fromStdString(P.Cid));
         // LOCAL-only sizes here: pins are our own seeds, so their DAG roots are local disk reads. The
         // network-falling CidSize (bitswap+gateway, ~35s bound) must never run in this loop — a repo with
         // hundreds of orphaned filestore references made the first refresh take HOURS, wedging the status
@@ -543,13 +569,19 @@ void IpfsModel::refresh()
         // measured live: cidServeStatus dominated the profile while the tab sat "dead" waiting for this one post).
         // Rows must never wait on verdicts; verdicts stream in afterwards, chunk by chunk.
         if (!A->load()) return;   // model destroyed mid-refresh → don't post back to `this`
-        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading]{
+        QMetaObject::invokeMethod(this, [this, St, Pins, Sizes, Uploading, Announced]{
+            RefreshInFlight = false;   // the SNAPSHOT cycle ends here — refreshes must keep flowing (live peers/
+                                       // status/rows) while the sweep grinds; holding the flag through a minutes-
+                                       // long sweep froze the monitor at its very first reading ("0 peers").
+            LastAnnounced = Announced;
             applySnapshot(St, Pins, Sizes, Uploading, {});
         }, Qt::QueuedConnection);
 
         // Deliverability: walk ONLY pins we have not verified yet (startup → all once; steady state → none; a serve
         // failure invalidates entries so they re-verify here). Chunked: every ~64 pins the verdicts land on the UI
         // (rows flip from "verifying" as the sweep progresses) instead of one post after the whole library.
+        // Its OWN guard: sweeps never overlap, but they never block refreshes either.
+        if (SweepInFlight.exchange(true)) return;
         QHash<QString, QString> Verdicts;
         auto Post = [this, A](QHash<QString, QString> & V, bool Final){
             if ((V.isEmpty() && !Final) || !A->load()) return;
@@ -564,11 +596,11 @@ void IpfsModel::refresh()
                     if (Row != Cids.end() && !it.value().isEmpty() && Row->phase == CidState::Seeded)
                     { Row->phase = CidState::Errored; Row->error = it.value(); emit cidChanged(it.key()); }
                 }
-                if (Final) RefreshInFlight = false;           // the refresh cycle ends when the sweep does
             }, Qt::QueuedConnection);
+            if (Final) SweepInFlight.store(false);
         };
         for (const auto & P : Pins) {
-            if (!A->load()) return;                            // app closing — abandon the sweep silently
+            if (!A->load()) { SweepInFlight.store(false); return; }   // app closing — abandon the sweep silently
             const QString C = QString::fromStdString(P.Cid);
             if (!Verified.contains(C)) Verdicts[C] = QString::fromStdString(IpfsWrapper::CidServeStatus(P.Cid));
             if (Verdicts.size() >= 64) Post(Verdicts, false);
@@ -586,6 +618,7 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
     // Fold in the deliverability verdicts computed off-thread this round (startup / newly-seen pins / post-failure
     // re-verify). From here on every displayed pin's servable/errored state is read from this cache — no UI-thread walk.
     for (auto it = verdicts.constBegin(); it != verdicts.constEnd(); ++it) SeedVerdict[it.key()] = it.value();
+    bool SetChanged = false;   // rows added/removed this snapshot — the only thing that justifies a tab-wide reset
 
     // Merge freshly-gathered sizes into whatever we know.
     for (auto it = sizes.constBegin(); it != sizes.constEnd(); ++it)
@@ -629,7 +662,7 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
 
     // Drop entries no longer desired.
     for (const QString & cid : Cids.keys())
-        if (!Desired.contains(cid)) { Cids.remove(cid); SeedVerdict.remove(cid); emit cidRemoved(cid); }
+        if (!Desired.contains(cid)) { Cids.remove(cid); SeedVerdict.remove(cid); SetChanged = true; emit cidRemoved(cid); }
 
     // A peer asked for these and we could not deliver them. Strongest possible evidence: not a heuristic about
     // sizes, but an actual failed serve. This is the ON-DEMAND trigger: a failure invalidates the cached verdict so
@@ -664,14 +697,19 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
         SeedVerdict.clear();
     }
 
-    // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending.
+    // Upsert pins as Seeded (unless mid-transfer), and pending sources as Pending. Rows that merely CHANGED emit
+    // per-cid signals; a full modelReset (→ tab-wide reconcile + a whole-tree re-sort, ICU collation per compare —
+    // measured as a main-thread top cost at ~3000 rows × every 5s) fires ONLY when the row SET actually changed.
     for (const auto & P : pins) {
         const QString cid = QString::fromStdString(P.Cid);
+        if (!Cids.contains(cid)) SetChanged = true;
         CidState & s = Cids[cid];
+        const auto PrevPhase = s.phase; const auto PrevSize = s.size;
+        const bool PrevUp = s.uploading, PrevAnn = s.announced;
         const bool MidTransfer = (s.phase == CidState::Downloading || s.phase == CidState::Pinning
                                || s.phase == CidState::Stalled || s.phase == CidState::Errored || s.phase == CidState::Queued);
         s.uploading = uploading.contains(cid);
-        s.announced = IpfsWrapper::SeedAnnounced(P.Cid);   // "seeding" once the DHT announce is done, else "queued for seeding"
+        s.announced = LastAnnounced.contains(cid);   // "seeding" once the DHT announce is done — batched off-thread
         if (!MidTransfer)
         {
             // "Seeding" has to MEAN we can hand a peer the bytes. A pin on its own proves nothing: it survives the
@@ -685,8 +723,11 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
             else               { s.phase = CidState::Errored; s.error = Why; s.speedBps = -1.0; }
         }
         if (s.size < 0) ensureSize(cid);
+        if (!SetChanged && (s.phase != PrevPhase || s.size != PrevSize || s.uploading != PrevUp || s.announced != PrevAnn))
+            emit cidChanged(cid);                                 // in-place row refresh — no tree-wide churn
     }
     for (const QString & cid : PendingSources) {
+        if (!Cids.contains(cid)) SetChanged = true;
         CidState & s = Cids[cid];
         s.phase = CidState::Pending; s.pct = -1.0; s.size = -1;
     }
@@ -694,9 +735,13 @@ void IpfsModel::applySnapshot(const NodeStatus & status,
     // Label every CID in ONE pass now that all pins/pending are in the map: BuildCidLabels scans the whole catalog,
     // so calling it per-CID (the old ensureLabels-in-loop) was O(pins × nodes) — a multi-second main-thread freeze
     // once the pinset grew to hundreds. rebuildLabels builds the map once and applies it to every entry: O(nodes + cids).
-    rebuildLabels();
+    // Full label pass ONLY when the catalog changed; otherwise just name any label-less newcomer from the cache.
+    if (LabelsDirty) rebuildLabels();
+    else if (SetChanged)
+        for (auto it = Cids.begin(); it != Cids.end(); ++it)
+            if (it->label.isEmpty()) applyLabels(it.key(), it.value());
 
-    emit modelReset();
+    if (SetChanged) emit modelReset();
     gatherHealth();
 }
 

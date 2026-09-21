@@ -1,6 +1,7 @@
 #ifndef IPFSMODEL_H
 #define IPFSMODEL_H
 
+#include <atomic>
 #include <QObject>
 #include <QHash>
 #include <QString>
@@ -62,6 +63,9 @@ public:
 
     // ── Read API ──
     const QHash<QString, CidState> & cids() const { return Cids; }
+    // Copy-free row lookup for hot per-row paths (filters, renders): a CidState copy is six QStrings — per row per
+    // pass it was a measured slice of the main-thread cost. Pointer valid until the next model mutation.
+    const CidState * stateRef(const QString & cid) const { auto It = Cids.constFind(cid); return It == Cids.constEnd() ? nullptr : &It.value(); }
     bool                             has(const QString & cid) const { return Cids.contains(cid); }
     CidState                         state(const QString & cid) const { return Cids.value(cid); }
     const NodeStatus &               nodeStatus() const { return Status; }
@@ -113,8 +117,10 @@ private:
                                                                     // merge pins/status/sources → Cids + Status, emit signals
     void gatherHealth();                     // off-thread provider-count / missing pass for leaves lacking it
     void ensureSize(const QString & cid);    // async-fill one CID's byte size if unknown
-    void ensureLabels(const QString & cid);  // fill one CID's label/package/category from the catalog if missing
-    void rebuildLabels();                    // (re)derive label/package/category for all known CIDs from the catalog
+    void ensureLabels(const QString & cid);  // fill one CID's label/package/category from the CACHE if missing
+    void rebuildLabels();                    // full pass: rebuild the cache + re-apply to every row (catalog changed)
+    void rebuildLabelCache();                // recompute the CID→naming cache from the catalog (the expensive walk)
+    void applyLabels(const QString & cid, CidState & s);   // name one row from the cache (queue-dest fallback)
     void tick();                             // stall watchdog: flag transfers with no recent forward progress
 
     AppModel & Model;
@@ -123,6 +129,9 @@ private:
     QHash<QString, QString>                    PkgDirs;           // package display name → its bundle dir (for publish)
     NodeStatus                                 Status;
     QSet<QString>                              PendingSources;    // configured source CIDs not yet fetched
+    bool                                       LabelsDirty = true;   // catalog changed since the last cache rebuild
+    QHash<QString, QString>                    CachedLabels, CachedPkgs, CachedCats, CachedSrcs;   // CID→naming cache
+    QSet<QString>                              LastAnnounced;     // pins whose DHT announce completed — gathered off-thread per refresh
     QHash<QString, QString>                    SeedVerdict;       // cid → deliverability reason ("" = servable); ABSENT = needs (re)verify.
                                                                   // Computed OFF-THREAD (startup + new pins), invalidated by an actual
                                                                   // serve failure. Replaces the per-5s UI-thread filestore DAG-walk that froze the app.
@@ -136,6 +145,7 @@ private:
     QTimer * StallTimer   = nullptr;
     bool     Active         = false;
     bool     RefreshInFlight = false;
+    std::atomic<bool> SweepInFlight { false };   // one deliverability sweep at a time — but it never blocks refreshes
     bool     HealthInFlight  = false;
     bool     RecheckInFlight = false;   // force-recheck reads whole files — never run two at once
 
