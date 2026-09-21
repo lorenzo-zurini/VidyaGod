@@ -400,7 +400,7 @@ private:
 
         json &doc() { return model->doc(); }
         QString path(const QString &rel) const { return dir->path() + "/" + rel; }
-        QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["NODE_ID"].get<std::string>()); }
+        QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["LABEL"].get<std::string>()); }
 
         int addRegEditNode()
         {

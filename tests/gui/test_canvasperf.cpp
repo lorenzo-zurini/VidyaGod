@@ -48,7 +48,7 @@ private slots:
         for (int I = 0; I < chainLen; ++I)
         {
             json N;
-            N["NODE_ID"] = "c" + std::to_string(I);
+            N["LABEL"] = "c" + std::to_string(I);
             N["TYPE"]    = "Content";
             N["FORM"]    = "delta";
             N["PATH"]    = "d" + std::to_string(I) + ".vgdelta";

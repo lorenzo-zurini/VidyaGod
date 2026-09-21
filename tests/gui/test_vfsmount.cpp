@@ -449,12 +449,12 @@ private slots:
     // guard meant to stop `undelta` from reconstructing a multi-base delta against a single archive.
     void base_targets_are_read_from_a_node_as_well_as_a_layer()
     {
-        const json Node{{"NODE_ID","d"}, {"TYPE","Content"}, {"FORM","delta"}, {"PATH","d.vgdelta"},
+        const json Node{{"LABEL","d"}, {"TYPE","Content"}, {"FORM","delta"}, {"PATH","d.vgdelta"},
                         {"BASE_TARGETS", json::array({"wine", "dxvk"})}};
         QCOMPARE(ManifestModel::LayerBaseTargets(Node), (std::vector<std::string>{"wine", "dxvk"}));
 
         // ...and a non-delta node still has none, whatever key it carries.
-        json Zip{{"NODE_ID","z"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
+        json Zip{{"LABEL","z"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
                  {"BASE_TARGETS", json::array({"wine"})}};
         QVERIFY(ManifestModel::LayerBaseTargets(Zip).empty());
     }

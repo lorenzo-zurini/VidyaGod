@@ -40,7 +40,7 @@ inline nlohmann::ordered_json Chain(const std::string &Id,
         nlohmann::ordered_json P = nlohmann::ordered_json::array();
         if (I == 0) for (const std::string &X : Parents) P.push_back(X);
         else        P.push_back(Id + "__l" + std::to_string(I - 1));
-        Nd["NODE_ID"] = Tail ? Id : (Id + "__l" + std::to_string(I));
+        Nd["LABEL"] = Tail ? Id : (Id + "__l" + std::to_string(I));
         Nd["PARENTS"] = std::move(P);
         if (Tail && TailFields.is_object())
             for (const auto &[K, V] : TailFields.items()) Nd[K] = V;

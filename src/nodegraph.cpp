@@ -123,7 +123,7 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         Node N;
         if (!ManifestModel::ParseNode(J, {}, {}, N))   // no NODE_ID ⇒ not a node
         {
-            LogWarn("NodeGraph::BuildFrozenIndex", "block " + C + " is not a node (no NODE_ID)");
+            LogWarn("NodeGraph::BuildFrozenIndex", "block " + C + " is not a node (no TYPE)");
             continue;
         }
         N.Cid = C;                                     // identity = the block's own CID

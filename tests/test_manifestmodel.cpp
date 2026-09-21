@@ -43,17 +43,17 @@ static bool AnyContains(const std::vector<std::string> &V, const std::string &Ne
     return false;
 }
 
-TEST(parse_rejects_missing_node_id)
+TEST(parse_requires_type_label_optional)
 {
     Node N;
-    CHECK(!ManifestModel::ParseNode(ordered_json{{"FOO", "bar"}}, "f.json", "/b", N));      // no NODE_ID
-    CHECK(!ManifestModel::ParseNode(ordered_json{{"NODE_ID", ""}}, "f.json", "/b", N));           // empty NODE_ID
-    //A node with an id but an UNLOWERABLE payload is now KEPT, carrying the reason, so validation can name it
-    //and resolution can refuse to route through it — dropping it left a leaf mistake reported by nothing.
-    CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID", "ok"}}, "f.json", "/b", N));    // no TYPE
-    CHECK(!N.LowerError.empty());
-    CHECK_EQ((int)N.Layers.size(), 0);
-    CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID", "ok"}, {"TYPE", "Group"}}, "f.json", "/b", N));
+    // A node is an object with a TYPE (identity is the CID; NODE_ID is gone, LABEL is optional).
+    CHECK(!ManifestModel::ParseNode(ordered_json{{"FOO", "bar"}}, "f.json", "/b", N));        // no TYPE ⇒ not a node
+    CHECK(!ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}}, "f.json", "/b", N));       // LABEL but no TYPE ⇒ not a node
+    // A node with a TYPE but an UNLOWERABLE payload is KEPT, carrying the reason (validation names it, resolution
+    // refuses to route through it). A LABEL is NOT required — a nameless node is still a node (identified by its CID).
+    CHECK(ManifestModel::ParseNode(ordered_json{{"TYPE", "Group"}}, "f.json", "/b", N));      // no LABEL ⇒ still a node
+    CHECK(N.NodeId.empty());
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}, {"TYPE", "Group"}}, "f.json", "/b", N));
     CHECK(!N.IsLaunchable() && !N.IsRunner());   // pure composition (no Declare* identity)
 }
 
@@ -235,7 +235,7 @@ TEST(validate_flags_compressed_zip_layer)
     // Compressed → flagged.
     MakeZip((Dir / "c.zip").string(), /*Stored=*/false);
     {
-        ordered_json Zj = NodeFixture::Content("zip", "c.zip"); Zj["NODE_ID"] = "z";
+        ordered_json Zj = NodeFixture::Content("zip", "c.zip"); Zj["LABEL"] = "z";
         Node N; CHECK(ManifestModel::ParseNode(Zj, "f.json", Dir.string(), N));
         NodeIndex Idx; Idx.Nodes["z"] = N;
         std::vector<std::string> Errors, Warnings;
@@ -246,7 +246,7 @@ TEST(validate_flags_compressed_zip_layer)
     // Stored → clean.
     MakeZip((Dir / "s.zip").string(), /*Stored=*/true);
     {
-        ordered_json Zj = NodeFixture::Content("zip", "s.zip"); Zj["NODE_ID"] = "z";
+        ordered_json Zj = NodeFixture::Content("zip", "s.zip"); Zj["LABEL"] = "z";
         Node N; CHECK(ManifestModel::ParseNode(Zj, "f.json", Dir.string(), N));
         NodeIndex Idx; Idx.Nodes["z"] = N;
         std::vector<std::string> Errors, Warnings;
@@ -304,7 +304,7 @@ TEST(runtime_sourced_layer_separates_assembly_from_build)
     CHECK(!ManifestModel::IsRunnerBuildLayer(ordered_json{{"TYPE", "RegEdit"}}));
 
     Node R;
-    ordered_json rj = NodeFixture::Runner("linux64", {"win64"}, "x"); rj["NODE_ID"] = "r";
+    ordered_json rj = NodeFixture::Runner("linux64", {"win64"}, "x"); rj["LABEL"] = "r";
     CHECK(ManifestModel::ParseNode(rj, "f.json", "/b", R));
     CHECK(R.IsRunner());
     CHECK_EQ((int)R.Layers.size(), 1);          // the declaration, and nothing else — no content can ride along
@@ -384,13 +384,13 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     Node N;
     // ParseNode KEEPS it (so it is in the graph to be named) but gives it no layers (so it can never apply).
     CHECK(ManifestModel::ParseNode(
-        ordered_json{{"NODE_ID", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}},
+        ordered_json{{"LABEL", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}},
         "f.json", "/b", N));
     CHECK(!N.LowerError.empty());
     CHECK_EQ((int)N.Layers.size(), 0);
 
     NodeIndex Idx;
-    Add(Idx, ordered_json{{"NODE_ID", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
+    Add(Idx, ordered_json{{"LABEL", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
     CHECK_EQ((int)Idx.Nodes.size(), 1);                       // indexed, not vanished
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
@@ -399,7 +399,7 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     // ...and a launch that routes through it is REFUSED, rather than quietly applying nothing where the
     // author declared something.
     NodeIndex L;
-    Add(L, ordered_json{{"NODE_ID", "bad"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
+    Add(L, ordered_json{{"LABEL", "bad"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
     AddChain(L, "game", {NodeFixture::Exec("win32", "g.exe")}, {"bad"});
     std::vector<std::string> Miss;
     ManifestModel::ResolveNodeOrder(L, "game", {}, &Miss);   // Chain's TAIL owns the bare id
@@ -414,14 +414,14 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
 TEST(validate_errors_on_a_when_that_gates_nothing)
 {
     NodeIndex Idx;
-    Add(Idx, ordered_json{{"NODE_ID","g"}, {"TYPE","Group"}, {"WHEN","%NETMODE% == host"},
+    Add(Idx, ordered_json{{"LABEL","g"}, {"TYPE","Group"}, {"WHEN","%NETMODE% == host"},
                           {"PARENTS", ordered_json::array()}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "never evaluated"));
 
     NodeIndex Ok;                                   // ...and a Group with no WHEN is perfectly fine
-    Add(Ok, ordered_json{{"NODE_ID","g"}, {"TYPE","Group"}, {"PARENTS", ordered_json::array()}});
+    Add(Ok, ordered_json{{"LABEL","g"}, {"TYPE","Group"}, {"PARENTS", ordered_json::array()}});
     std::vector<std::string> E2, W2;
     ManifestModel::ValidateNodeGraph(Ok, E2, W2);
     CHECK(!AnyContains(E2, "never evaluated"));
@@ -430,14 +430,14 @@ TEST(validate_errors_on_a_when_that_gates_nothing)
 TEST(validate_errors_on_an_unknown_toggle_value)
 {
     Node N;
-    CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID","t"}, {"TYPE","Group"}, {"TOGGLE","of"}},
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TYPE","Group"}, {"TOGGLE","of"}},
                                    "f.json", "/b", N));
     CHECK(!N.LowerError.empty());
 
     for (const char *V : {"on", "off"})                    // ...and both legal values are accepted
     {
         Node Ok;
-        CHECK(ManifestModel::ParseNode(ordered_json{{"NODE_ID","t"}, {"TYPE","Group"}, {"TOGGLE", V}},
+        CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TYPE","Group"}, {"TOGGLE", V}},
                                        "f.json", "/b", Ok));
         CHECK(Ok.LowerError.empty());
     }
@@ -458,7 +458,7 @@ TEST(validate_flags_asymmetric_exclude)
 TEST(declare_layers_derive_identity)
 {
     Node N;
-    ordered_json lj{{"NODE_ID","g"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","game.exe"},
+    ordered_json lj{{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","game.exe"},
                     {"LABEL","Vanilla"},{"RECOMMENDED",true},{"RUNNER","geproton_9_20_runner"}};
     CHECK(ManifestModel::ParseNode(lj, "f.json", "/b", N));
     CHECK(N.IsLaunchable()); CHECK(!N.IsRunner());
@@ -470,7 +470,7 @@ TEST(declare_layers_derive_identity)
     Node R;
     // A runner is the SAME declaration with GUEST platforms — no GUEST ⇒ terminal ⇒ launchable.
     ordered_json rj = NodeFixture::Runner("linux64", {"win32","win64"}, "wine");
-    rj["NODE_ID"] = "wine";
+    rj["LABEL"] = "wine";
     CHECK(ManifestModel::ParseNode(rj, "f.json", "/b", R));
     CHECK(R.IsRunner()); CHECK(!R.IsLaunchable());
     CHECK_EQ(R.HostPlatform, std::string("linux64"));
@@ -479,7 +479,7 @@ TEST(declare_layers_derive_identity)
 
     Node L;
     ordered_json tj = NodeFixture::Tile("42", "My Game");
-    tj["NODE_ID"] = "tile";
+    tj["LABEL"] = "tile";
     CHECK(ManifestModel::ParseNode(tj, "f.json", "/b", L));
     CHECK(L.Presentable()); CHECK(!L.IsLaunchable());
     CHECK_EQ(L.Uid, std::string("42"));
@@ -582,9 +582,9 @@ TEST(validate_flags_cross_layer_case_collision_after_memoization)
 TEST(compose_merges_ENV_key_wise_rather_than_replacing_it)
 {
     NodeIndex Idx;
-    Add(Idx, {{"NODE_ID","base"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
+    Add(Idx, {{"LABEL","base"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
                   {"ENV", {{"A","1"},{"SHARED","base"}}}});
-    Add(Idx, {{"NODE_ID","variant"},{"TYPE","DeclareExec"},{"PARENTS", ordered_json::array({"base"})},
+    Add(Idx, {{"LABEL","variant"},{"TYPE","DeclareExec"},{"PARENTS", ordered_json::array({"base"})},
                   {"HOST","win32"},{"PATH","G.exe"},
                   {"ENV", {{"B","2"},{"SHARED","variant"}}}});
     const ordered_json Composed = ManifestModel::ComposeAcrossClosure(

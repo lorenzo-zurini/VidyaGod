@@ -135,7 +135,7 @@ int PkgActions::indexOf(const std::string & nodeId) const
 {
     const auto & Ns = Model->doc()["NODES"];
     for (int I = 0; I < (int)Ns.size(); ++I)
-        if (StrOf(Ns[I], "NODE_ID") == nodeId) return I;
+        if (StrOf(Ns[I], "LABEL") == nodeId) return I;
     return -1;
 }
 
@@ -470,7 +470,7 @@ void PkgActions::refreshHints()
     for (const auto & N : Ns)
         if (StrOf(N, "TYPE") == "Content" && StrOf(N, "FORM") == "zip"
             && !StrOf(N, "PATH").empty())
-            Todo->push_back({StrOf(N, "NODE_ID"), StrOf(N, "PATH")});
+            Todo->push_back({StrOf(N, "LABEL"), StrOf(N, "PATH")});
     if (Todo->empty()) return;
     auto Deflated = std::make_shared<std::vector<std::string>>();
     AsyncWork::Run(this,
@@ -548,7 +548,7 @@ void PkgActions::findUsages(const std::string & NodeId)
     const json & Ns = Model->doc()["NODES"];
     for (const auto & N : Ns)
     {
-        const std::string Id = StrOf(N, "NODE_ID");
+        const std::string Id = StrOf(N, "LABEL");
         if (Id == NodeId) continue;
         const std::string Dump = N.dump();
         if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Id);
@@ -710,7 +710,7 @@ static bool DeltaBaseOf(const json & Nodes, int Index, std::string & BasePath, s
         if (!P.is_string()) continue;
         for (const auto & C : Nodes)
         {
-            if (StrOf(C, "NODE_ID") != P.get<std::string>()) continue;
+            if (StrOf(C, "LABEL") != P.get<std::string>()) continue;
             if (StrOf(C, "TYPE") != "Content") continue;
             if (StrOf(C, "FORM") != "zip") continue;
             BasePath   = StrOf(C, "PATH");

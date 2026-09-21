@@ -158,33 +158,43 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         nlohmann::ordered_json Single;
         if (!J.is_array()) Single = nlohmann::ordered_json::array({J});
         const nlohmann::ordered_json &Nodes = J.is_array() ? J : Single;
+        int NIdx = 0;
         for (const auto &N : Nodes)
-            if (N.is_object() && N.contains("NODE_ID") && N["NODE_ID"].is_string()
-                && !N["NODE_ID"].get<std::string>().empty())
+        {
+            ++NIdx;
+            // A node is an object with a TYPE (identity is the CID; NODE_ID is gone). LABEL is the OPTIONAL pretty
+            // name + the intra-tree authoring handle that PARENTS/LIBRARYITEM resolve through at freeze. A node with
+            // no LABEL still gathers/freezes/indexes (identified by its CID) but is keyed by a SYNTHETIC per-file key
+            // so it can't be referenced as a parent and never collides with a real LABEL.
+            if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
+            const std::string Label = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
+            const bool Handled = !Label.empty();
+            const std::string Id = Handled ? Label
+                                           : (E.path().string() + "#" + std::to_string(NIdx));   // synthetic: never a real LABEL
+            // Duplicate LABEL handling (only for real handles). IDENTICAL copies dedupe silently (the multi-seeder
+            // normal: the same received node in two dirs). DIFFERENT content claiming one LABEL is a CONFLICT — a
+            // received share is an ordinary scanned file, so "keep first-seen" would let a hostile block hijack a
+            // local handle by winning fs iteration order (freeze resolves PARENTS by LABEL — a silent poison). Deny:
+            // the handle resolves to NOTHING, dependents dangle LOUDLY and skip, until a claimant is removed.
+            if (Handled && Conflicted.count(Id)) continue;
+            const auto Prev = Tree.find(Id);
+            if (Prev != Tree.end())
             {
-                const std::string Id = N["NODE_ID"].get<std::string>();
-                // Duplicate NODE_ID handling. IDENTICAL copies dedupe silently (the multi-seeder normal: the same
-                // received node in two library dirs). DIFFERENT content claiming one handle is a CONFLICT — and since
-                // a received share is an ordinary scanned file now, "keep first-seen" would let a hostile block
-                // hijack a local handle by winning filesystem iteration order (mint AND launch resolve PARENTS by
-                // handle — a silent poison). Deny instead: the handle resolves to NOTHING, so dependents dangle
-                // LOUDLY and skip, until the user removes one claimant. One LogErr per handle, not per file.
-                if (Conflicted.count(Id)) continue;
-                const auto Prev = Tree.find(Id);
-                if (Prev != Tree.end())
+                if (Prev->second == N) continue;   // same content → same node; keep one
+                if (Handled)
                 {
-                    if (Prev->second == N) continue;   // same content → same node; keep one
-                    LogErr("NodeGraph::GatherWorkingTree", "NODE_ID conflict: '" + Id + "' claimed with DIFFERENT content by '"
+                    LogErr("NodeGraph::GatherWorkingTree", "LABEL conflict: '" + Id + "' claimed with DIFFERENT content by '"
                            + Dirs[Id].string() + "' and '" + E.path().parent_path().string()
                            + "' — dropping the handle (neither claimant is trusted)");
                     Tree.erase(Prev);
                     Dirs.erase(Id);
                     Conflicted.insert(Id);
-                    continue;
                 }
-                Tree[Id] = N;
-                Dirs[Id] = E.path().parent_path();
+                continue;
             }
+            Tree[Id] = N;
+            Dirs[Id] = E.path().parent_path();
+        }
     }
 }
 

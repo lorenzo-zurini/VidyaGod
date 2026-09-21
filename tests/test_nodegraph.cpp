@@ -25,7 +25,7 @@ static int IndexOf(const std::vector<std::string> &V, const std::string &S)
 TEST(nodegraph_normalizelinks_collapses_link_objects)
 {
     ordered_json J = {
-        {"NODE_ID", "x"},
+        {"LABEL", "x"},
         {"PARENTS", ordered_json::array({ {{"/", "cidA"}}, {{"/", "cidB"}} })},
         {"LIBRARYITEM", {{"/", "cidTile"}}},
         {"SOURCE", {{"TYPE", "ipfs"}, {"CID", {{"/", "cidContent"}}}, {"SIZE", 5}}},
@@ -60,7 +60,7 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
         {"tile_node", "cidTile"},
     };
     ordered_json Raw = {
-        {"NODE_ID", "exec"},
+        {"LABEL", "exec"},
         {"TYPE", "DeclareExec"},
         {"POS", ordered_json::array({100.0, 200.0})},
         {"PUBLISH", true},
@@ -78,14 +78,14 @@ TEST(nodegraph_freeze_strips_pos_resolves_and_linkifies)
     CHECK(F["PARENTS"][1] == ordered_json({{"/", "external_already_a_cid"}}));
     CHECK(F["LIBRARYITEM"] == ordered_json({{"/", "cidTile"}}));
     CHECK(F["COVER"]["SOURCE"]["CID"] == ordered_json({{"/", "cidCover"}}));   // nested SOURCE.CID linkified
-    CHECK(F["NODE_ID"] == "exec");                              // identity label preserved
+    CHECK(F["LABEL"] == "exec");                              // identity label preserved
 }
 
 TEST(nodegraph_freeze_then_normalize_roundtrips)
 {
     std::map<std::string, std::string> HandleToCid = {{"dep", "cidDep"}};
     ordered_json Raw = {
-        {"NODE_ID", "n"}, {"TYPE", "Content"},
+        {"LABEL", "n"}, {"TYPE", "Content"},
         {"PARENTS", ordered_json::array({"dep"})},
         {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "cidBytes"}, {"SIZE", 1}}},
     };
@@ -98,11 +98,11 @@ TEST(nodegraph_freeze_then_normalize_roundtrips)
 TEST(nodegraph_lift_libraryitem_edge_direct)
 {
     std::map<std::string, ordered_json> Tree = {
-        {"tile", {{"NODE_ID", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"TITLE", "X"}, {"UID", "42"}}},
-        {"exec", {{"NODE_ID", "exec"}, {"TYPE", "DeclareExec"},
+        {"tile", {{"LABEL", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"TITLE", "X"}, {"UID", "42"}}},
+        {"exec", {{"LABEL", "exec"}, {"TYPE", "DeclareExec"},
                   {"PARENTS", ordered_json::array({"persist", "tile", "content"})}}},
-        {"content", {{"NODE_ID", "content"}, {"TYPE", "Content"}}},
-        {"persist", {{"NODE_ID", "persist"}, {"TYPE", "DeclarePersist"}}},
+        {"content", {{"LABEL", "content"}, {"TYPE", "Content"}}},
+        {"persist", {{"LABEL", "persist"}, {"TYPE", "DeclarePersist"}}},
     };
     NodeGraph::LiftLibraryItemEdge(Tree);
     // The tile moves out of PARENTS into LIBRARYITEM; the composition parents stay, order preserved.
@@ -122,9 +122,9 @@ TEST(nodegraph_lift_libraryitem_edge_transitive)
     // The tile is a TRANSITIVE ancestor (exec → base → tile), not a direct parent. It must still be lifted onto the
     // exec, and stripped from EVERY node's PARENTS (base's too) — the tile leaves the composition graph entirely.
     std::map<std::string, ordered_json> Tree = {
-        {"tile", {{"NODE_ID", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"TITLE", "X"}, {"UID", "7"}}},
-        {"base", {{"NODE_ID", "base"}, {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"tile"})}}},
-        {"exec", {{"NODE_ID", "exec"}, {"TYPE", "DeclareExec"}, {"PARENTS", ordered_json::array({"base"})}}},
+        {"tile", {{"LABEL", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"TITLE", "X"}, {"UID", "7"}}},
+        {"base", {{"LABEL", "base"}, {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"tile"})}}},
+        {"exec", {{"LABEL", "exec"}, {"TYPE", "DeclareExec"}, {"PARENTS", ordered_json::array({"base"})}}},
     };
     NodeGraph::LiftLibraryItemEdge(Tree);
     CHECK(Tree["exec"]["LIBRARYITEM"] == "tile");          // found transitively
@@ -137,10 +137,10 @@ TEST(nodegraph_topo_order_is_deps_first)
 {
     // exec → (PARENTS) content → (PARENTS) lib ; exec → (LIBRARYITEM) tile. Deps must precede dependents.
     std::map<std::string, ordered_json> Tree = {
-        {"lib",     {{"NODE_ID", "lib"}, {"TYPE", "Content"}}},
-        {"content", {{"NODE_ID", "content"}, {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"lib"})}}},
-        {"tile",    {{"NODE_ID", "tile"}, {"TYPE", "DeclareLibraryItem"}}},
-        {"exec",    {{"NODE_ID", "exec"}, {"TYPE", "DeclareExec"},
+        {"lib",     {{"LABEL", "lib"}, {"TYPE", "Content"}}},
+        {"content", {{"LABEL", "content"}, {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"lib"})}}},
+        {"tile",    {{"LABEL", "tile"}, {"TYPE", "DeclareLibraryItem"}}},
+        {"exec",    {{"LABEL", "exec"}, {"TYPE", "DeclareExec"},
                      {"PARENTS", ordered_json::array({"content"})}, {"LIBRARYITEM", "tile"}}},
     };
     std::vector<std::string> Order;
@@ -158,9 +158,9 @@ TEST(nodegraph_topo_order_breaks_cycle)
     // edge is broken, both nodes still enter the order, and they get dropped later at freeze (unfreezable). A THIRD
     // acyclic node must survive regardless — the degrade-per-node guarantee.
     std::map<std::string, ordered_json> Tree = {
-        {"a",    {{"NODE_ID", "a"},    {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"b"})}}},
-        {"b",    {{"NODE_ID", "b"},    {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"a"})}}},
-        {"good", {{"NODE_ID", "good"}, {"TYPE", "Content"}}},
+        {"a",    {{"LABEL", "a"},    {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"b"})}}},
+        {"b",    {{"LABEL", "b"},    {"TYPE", "Content"}, {"PARENTS", ordered_json::array({"a"})}}},
+        {"good", {{"LABEL", "good"}, {"TYPE", "Content"}}},
     };
     std::vector<std::string> Order;
     std::string Err;
@@ -173,7 +173,7 @@ TEST(nodegraph_topo_external_refs_impose_no_order)
 {
     // A PARENTS ref not in the tree is an external (already-frozen) dep — it must not block ordering or error.
     std::map<std::string, ordered_json> Tree = {
-        {"only", {{"NODE_ID", "only"}, {"TYPE", "DeclareExec"},
+        {"only", {{"LABEL", "only"}, {"TYPE", "DeclareExec"},
                   {"PARENTS", ordered_json::array({"some_external_cid"})}, {"LIBRARYITEM", "another_external_cid"}}},
     };
     std::vector<std::string> Order;
@@ -207,7 +207,7 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
     for (int i = 0; i < 200000; ++i) Deep += '[';
     for (int i = 0; i < 200000; ++i) Deep += ']';
     D.Write("Evil - Lib/[x] x/bomb.json", Deep);
-    D.Write("Games/[1] A/a.json", ordered_json{{"NODE_ID", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    D.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
@@ -223,11 +223,11 @@ TEST(nodegraph_scan_denies_conflicting_duplicate_handles)
     // PARENTS by handle, and received shares are ordinary scanned files — "keep first-seen" would let a hostile block
     // hijack a local handle by winning fs iteration order). IDENTICAL copies dedupe silently (multi-seeder normal).
     ScanDir D;
-    const ordered_json Wine = {{"NODE_ID", "wine"}, {"TYPE", "DeclareExec"}, {"EXECUTABLE", "wine"}};
+    const ordered_json Wine = {{"LABEL", "wine"}, {"TYPE", "DeclareExec"}, {"EXECUTABLE", "wine"}};
     ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";
     D.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
     D.Write("Mallory - Lib/[x] x/wine.json", Evil.dump());
-    D.Write("Games/[1] A/a.json", ordered_json{{"NODE_ID", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    D.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
     NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);

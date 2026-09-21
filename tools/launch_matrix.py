@@ -41,7 +41,7 @@ def launchables(bundle):
         nodes = json.load(F)
     #A launchable is a DeclareExec with no GUEST — the terminal link of a chain. Derived, not listed, so a
     #launchable added to the fixture is covered without touching this script.
-    return sorted(n["NODE_ID"] for n in nodes
+    return sorted(n["LABEL"] for n in nodes
                   if n.get("TYPE") == "DeclareExec" and not n.get("GUEST"))
 
 def normalise(obj, data_dir):

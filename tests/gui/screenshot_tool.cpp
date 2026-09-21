@@ -28,7 +28,7 @@ static void writeNodes(const QString & dir, const json & nodes)
 {
     json doc = nodes;
     const std::string id = (doc.is_array() && !doc.empty())
-                               ? doc.back().value("NODE_ID", std::string("node")) : std::string("node");
+                               ? doc.back().value("LABEL", std::string("node")) : std::string("node");
     QFile f(dir + "/" + QString::fromStdString(id) + ".json");
     JSONOps::SaveJSON(&doc, &f);
 }

@@ -32,7 +32,7 @@ static int indexOfNode(PackageEditorModel & m, const std::string & id)
 {
     const auto & Ns = m.doc()["NODES"];
     for (int i = 0; i < (int)Ns.size(); ++i)
-        if (Ns[i].value("NODE_ID", std::string()) == id) return i;
+        if (Ns[i].value("LABEL", std::string()) == id) return i;
     return -1;
 }
 
@@ -58,8 +58,8 @@ private slots:
     void load_nodes_reads_bundle_and_tags_files()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"TYPE", "Group"}});
-        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"TYPE", "Group"},
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "game.json", json{{"LABEL", "game"}, {"TYPE", "Group"},
                                                {"PARENTS", json::array({"base"})}});
         writeNode(dir.path(), "MANIFEST.json", json{{"LEGACY", true}});   // no NODE_ID → ignored
 
@@ -85,23 +85,23 @@ private slots:
     void file_for_node_prefers_node_id()
     {
         PackageEditorModel m(&Cfg, nullptr);
-        QCOMPARE(m.FileForNode(json{{"NODE_ID", "wine"}}), QString("wine.json"));
-        QCOMPARE(m.FileForNode(json{{"NODE_ID", ""}, {"__FILE__", "kept.json"}}), QString("kept.json"));
-        QCOMPARE(m.FileForNode(json{{"NODE_ID", ""}}), QString("untitled_node.json"));
+        QCOMPARE(m.FileForNode(json{{"LABEL", "wine"}}), QString("wine.json"));
+        QCOMPARE(m.FileForNode(json{{"LABEL", ""}, {"__FILE__", "kept.json"}}), QString("kept.json"));
+        QCOMPARE(m.FileForNode(json{{"LABEL", ""}}), QString("untitled_node.json"));
     }
 
     // SaveNodes after a rename writes the new file, deletes the stale one, and fires savedToDisk.
     void save_nodes_renames_refiles_and_cleans_orphan()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "old.json", json{{"NODE_ID", "old"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "old.json", json{{"LABEL", "old"}, {"TYPE", "Group"}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
         QCOMPARE((int)m.doc()["NODES"].size(), 1);
 
         QSignalSpy saved(&m, &PackageEditorModel::savedToDisk);
-        m.doc()["NODES"][0]["NODE_ID"] = "renamed";
+        m.doc()["NODES"][0]["LABEL"] = "renamed";
         m.SaveNodes();
 
         QVERIFY(QFile::exists(dir.path() + "/renamed.json"));   // re-filed under the new id
@@ -113,13 +113,13 @@ private slots:
     void replace_node_json_preserves_tag_and_reloads()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "n.json", json{{"NODE_ID", "n"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "n.json", json{{"LABEL", "n"}, {"TYPE", "Group"}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
 
         QSignalSpy reloaded(&m, &PackageEditorModel::documentReloaded);
-        json swapped = NodeFixture::Exec("win32", "n.exe"); swapped["NODE_ID"] = "n";
+        json swapped = NodeFixture::Exec("win32", "n.exe"); swapped["LABEL"] = "n";
         m.replaceNodeJson(0, swapped);
 
         QCOMPARE(m.doc()["NODES"][0].value("TYPE", std::string()), std::string("DeclareExec"));
@@ -132,7 +132,7 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeNode(dir.path(), "game.json",
-                  json{{"NODE_ID", "game"}, {"TYPE", "Content"}, {"FORM", "dir"}});   // content with no PATH → error
+                  json{{"LABEL", "game"}, {"TYPE", "Content"}, {"FORM", "dir"}});   // content with no PATH → error
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);   // LoadNodes already validated once
@@ -147,8 +147,8 @@ private slots:
     void revalidate_clean_graph_has_no_errors()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"TYPE", "Group"}});
-        writeNode(dir.path(), "game.json", json{{"NODE_ID", "game"}, {"TYPE", "Group"},
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "game.json", json{{"LABEL", "game"}, {"TYPE", "Group"},
                                                {"PARENTS", json::array({"base"})}});
 
         PackageEditorModel m(&Cfg, nullptr);
@@ -162,7 +162,7 @@ private slots:
     void create_node_parents_at_the_anchor_and_uniquifies()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -195,7 +195,7 @@ private slots:
         // One node PLUS a stray — the shape where the node would otherwise be re-filed to <id>.json and the
         // original file swept away, taking the stray with it.
         writeNode(dir.path(), "pack.json", json::array({
-            json{{"NODE_ID", "a"}, {"TYPE", "Group"}},
+            json{{"LABEL", "a"}, {"TYPE", "Group"}},
             json{{"NOTE", "keep me"}} }));
 
         PackageEditorModel m(&Cfg, nullptr);
@@ -212,7 +212,7 @@ private slots:
         bool sawNode = false, sawStray = false;
         for (const auto &e : back)
         {
-            if (e.value("NODE_ID", std::string()) == "a") sawNode = true;
+            if (e.value("LABEL", std::string()) == "a") sawNode = true;
             if (e.value("NOTE", std::string()) == "keep me") sawStray = true;
         }
         QVERIFY(sawNode);
@@ -222,7 +222,7 @@ private slots:
     void known_node_ids_and_platforms()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"NODE_ID", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
@@ -241,7 +241,7 @@ private slots:
     void onlyOneEditorIsEverOpen()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "solo.json", json{{"NODE_ID", "solo"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "solo.json", json{{"LABEL", "solo"}, {"TYPE", "Group"}});
         json cfg = json{{"Settings", json::object()}};
 
         bool createdA = false, createdB = false;

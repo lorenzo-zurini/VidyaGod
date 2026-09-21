@@ -415,7 +415,7 @@ int PkgCanvas::indexOf(const std::string &nodeId) const
 {
     const int N = nodeCount();
     for (int I = 0; I < N; ++I)
-        if (StrOf((*m_s->Doc)["NODES"][I], "NODE_ID") == nodeId) return I;
+        if (StrOf((*m_s->Doc)["NODES"][I], "LABEL") == nodeId) return I;
     return -1;
 }
 
@@ -448,7 +448,7 @@ std::string PkgCanvas::selectedNodeId() const
 {
     auto &Ns = m_s->Nodes();
     if (m_s->Selected < 0 || m_s->Selected >= (int)Ns.size()) return std::string();
-    return Ns[m_s->Selected].value("NODE_ID", std::string());
+    return Ns[m_s->Selected].value("LABEL", std::string());
 }
 
 //A live JSON edit already persisted the change; the canvas only needs to rebuild its cached graph from the doc,
@@ -510,7 +510,7 @@ int PkgCanvas::addNode(const std::string &type, float x, float y)
     for (char &C : Base) C = (char)std::tolower((unsigned char)C);
     std::string Id = Base;
     for (int K = 2; indexOf(Id) >= 0; ++K) Id = Base + "_" + std::to_string(K);
-    json Out = json::object({{"NODE_ID", Id}, {"PARENTS", json::array()}});
+    json Out = json::object({{"LABEL", Id}, {"PARENTS", json::array()}});
     for (const auto &[K, V] : N.items()) Out[K] = V;
     if (m_s->Layout) { SetPos(*m_s->Layout, Id, x, y); m_s->PosDirty = true; }
     m_s->Nodes().push_back(std::move(Out));
@@ -522,7 +522,7 @@ bool PkgCanvas::removeNode(int index)
 {
     json &Ns = m_s->Nodes();
     if (index < 0 || index >= (int)Ns.size()) return false;
-    const std::string Id = StrOf(Ns[index], "NODE_ID");
+    const std::string Id = StrOf(Ns[index], "LABEL");
     //Deleting shifts every later index, so every seeded position is now against the wrong node. Drop them all
     //and let the next frame re-seed from the layout sidecar.
     m_s->Seeded.clear();
@@ -564,7 +564,7 @@ bool PkgCanvas::connect(int parentIndex, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
     if (parentIndex == childIndex) return false;
-    const std::string Pid = StrOf(Ns[parentIndex], "NODE_ID");
+    const std::string Pid = StrOf(Ns[parentIndex], "LABEL");
     if (Pid.empty()) return false;
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
         Ns[childIndex]["PARENTS"] = json::array();
@@ -578,7 +578,7 @@ bool PkgCanvas::disconnect(int parentIndex, int childIndex)
 {
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
-    const std::string Pid = StrOf(Ns[parentIndex], "NODE_ID");
+    const std::string Pid = StrOf(Ns[parentIndex], "LABEL");
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array()) return false;
     json Keep = json::array();
     bool Removed = false;
@@ -596,7 +596,7 @@ bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
 {
     json &Ns = m_s->Nodes();
     if (parentId.empty() || childIndex < 0 || childIndex >= (int)Ns.size()) return false;
-    if (StrOf(Ns[childIndex], "NODE_ID") == parentId) return false;
+    if (StrOf(Ns[childIndex], "LABEL") == parentId) return false;
     if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
         Ns[childIndex]["PARENTS"] = json::array();
     for (const auto &P : Ns[childIndex]["PARENTS"]) if (P.is_string() && P.get<std::string>() == parentId) return false;
@@ -620,15 +620,15 @@ bool PkgCanvas::renameNode(int index, const std::string &newId)
     //throws type_error.305 — out of frame(), out of paintGL, which has no catch. Build keeps such an entry as
     //a placeholder so indices stay aligned, so this is reachable from any malformed or peer-authored package.
     if (!Ns[index].is_object()) return false;
-    const std::string Old = StrOf(Ns[index], "NODE_ID");
+    const std::string Old = StrOf(Ns[index], "LABEL");
     if (Old == newId || newId.empty()) return false;
     // Refuse a name another node already owns. Both would map to <id>.json, SaveNodes would write them as one
     // array, and ScanBundleNodes keeps first-seen — silently dropping a node from the graph while the orphan
     // sweep removed the old file. Typing through a colliding name is transient, so this just does nothing
     // until the name is unique again.
     for (int I = 0; I < (int)Ns.size(); ++I)
-        if (I != index && StrOf(Ns[I], "NODE_ID") == newId) return false;
-    Ns[index]["NODE_ID"] = newId;
+        if (I != index && StrOf(Ns[I], "LABEL") == newId) return false;
+    Ns[index]["LABEL"] = newId;
     //Re-point EVERY field that holds a NODE_ID, not just PARENTS. A rename that fixes only the edges leaves the
     //others pointing at a name nothing answers to: EXCLUDE silently stops excluding (two mutually-exclusive
     //variants both become selectable, caught later only as a WARNING), and a RUNNER pin silently falls back to
@@ -921,7 +921,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
             else if (PkgGraph::WriteSubKey(Node, F.Key, "PATH", P))          m_s->MarkDirty();
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton("browse")) m_s->Pending = {StrOf(Node, "NODE_ID"), "browse_cover"};
+        if (ImGui::SmallButton("browse")) m_s->Pending = {StrOf(Node, "LABEL"), "browse_cover"};
         break;
     }
     }
@@ -967,7 +967,7 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
 
         // The registry IS a tree on disk; a human edits flat key paths. Round-trip through RegRows, but hold
         // the rows steady while a field is live (see RegBuf) and commit when it is finished.
-        const std::string BufKey = StrOf(Node, "NODE_ID") + "#" + std::to_string(E);
+        const std::string BufKey = StrOf(Node, "LABEL") + "#" + std::to_string(E);
         auto Buf = m_s->RegBuf.find(BufKey);
         std::vector<RegRow> Rows = (Buf != m_s->RegBuf.end()) ? Buf->second : RegRowsOf(Edits[E]);
         bool Commit = false, Editing = false;
@@ -1025,7 +1025,7 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
 
 void PkgCanvas::drawActions(json &Node, int Index, const Graph &G)
 {
-    const std::string Id = StrOf(Node, "NODE_ID");
+    const std::string Id = StrOf(Node, "LABEL");
     auto Run = m_s->Running.find(Id);
     if (Run != m_s->Running.end())
     {
@@ -1113,7 +1113,7 @@ void PkgCanvas::drawEnvelope(json &Node)
     std::string Ex = ListToText(Node.contains("EXCLUDE") ? Node["EXCLUDE"] : json::array());
     ImGui::TextUnformatted("excludes"); ImGui::SameLine(kLabelCol);
     ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##excl", "mutually-exclusive NODE_IDs", &Ex))
+    if (ImGui::InputTextWithHint("##excl", "mutually-exclusive LABELs", &Ex))
     {
         json A = TextToList(Ex);
         if (A.empty()) Node.erase("EXCLUDE"); else Node["EXCLUDE"] = std::move(A);
@@ -1252,7 +1252,7 @@ void PkgCanvas::drawNode(int Index, Graph &G)
 
     //A NODES entry that is not an object is kept as a placeholder so indices stay aligned (PkgGraph::Build),
     //and it used to be rendered like any other node — where one character in the id box reaches
-    //`Ns[index]["NODE_ID"] = ...` and drawEnvelope reaches `Node.erase("TOGGLE")`, i.e. type_error.305 and
+    //`Ns[index]["LABEL"] = ...` and drawEnvelope reaches `Node.erase("TOGGLE")`, i.e. type_error.305 and
     //307 out of paintGL, which has no catch. It draws as a box that says what is wrong and offers nothing to
     //touch — but it is a NORMAL node in every other respect: same colour pushes and pops (an early return
     //between the pushes and the pops leaked three ImNodesColElement per frame, forever, on a canvas left open
@@ -1261,7 +1261,7 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     const bool Malformed = !Ns[Index].is_object();
     json &Node = Ns[Index];
     const std::string Type = Malformed ? std::string("Group") : StrOf(Node, "TYPE", "Group");
-    const std::string Id   = Malformed ? std::string()        : StrOf(Node, "NODE_ID");
+    const std::string Id   = Malformed ? std::string()        : StrOf(Node, "LABEL");
 
     int R, Gc, B;
     TypeColour(Type, R, Gc, B);
@@ -1525,7 +1525,7 @@ void PkgCanvas::drawToolbar()
         ImGui::InputTextWithHint("##extfilter", "filter", &m_s->ExternalFilter);
         const std::vector<std::string> Ids = m_s->KnownIds ? m_s->KnownIds() : std::vector<std::string>();
         std::set<std::string> Mine;
-        for (const auto &N : m_s->Nodes()) Mine.insert(StrOf(N, "NODE_ID"));
+        for (const auto &N : m_s->Nodes()) Mine.insert(StrOf(N, "LABEL"));
         int Shown = 0;
         for (const std::string &Id : Ids)
         {
@@ -2270,7 +2270,7 @@ void PkgCanvas::frame()
     //document with nulls that SaveNodes would then write to disk, and threw on the read.
     if (m_s->Selected >= 0 && m_s->Selected < (int)m_s->Nodes().size()
         && ImGui::IsKeyPressed(ImGuiKey_Delete) && !ImGui::IsAnyItemActive()
-        && !isBusy(StrOf(m_s->Nodes()[m_s->Selected], "NODE_ID")))
+        && !isBusy(StrOf(m_s->Nodes()[m_s->Selected], "LABEL")))
         m_s->ConfirmDelete = m_s->Selected;
     if (m_s->ConfirmDelete >= 0)
     {
@@ -2279,7 +2279,7 @@ void PkgCanvas::frame()
         {
             const int D = m_s->ConfirmDelete;
             const json &Ns2 = m_s->Nodes();
-            const std::string DId = (D >= 0 && D < (int)Ns2.size()) ? StrOf(Ns2[D], "NODE_ID") : std::string();
+            const std::string DId = (D >= 0 && D < (int)Ns2.size()) ? StrOf(Ns2[D], "LABEL") : std::string();
             int Dependents = 0;
             for (const Link &L : G.Links) if (L.ParentIndex == D) ++Dependents;
             ImGui::Text("Delete '%s'?", DId.c_str());

@@ -62,7 +62,7 @@ void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * 
 QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) const
 {
     //Prefer <NODE_ID>.json so a rename re-files the node (SaveNodes then cleans the stale file).
-    std::string Id = Node.is_object() ? Node.value("NODE_ID", std::string()) : std::string();
+    std::string Id = Node.is_object() ? Node.value("LABEL", std::string()) : std::string();
     //A node id becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Ids are authored
     //freely on the canvas; sanitise rather than trust.
     for (char &C : Id) if (C == '/' || C == '\\' || C == ':') C = '_';
@@ -87,7 +87,7 @@ void PackageEditorModel::LoadNodes()
         if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
         //A file holds ONE node or an ARRAY of them — grouping nodes into files is pure presentation, so the
         //editor reads either and (see SaveNodes) writes back the grouping it found.
-        if (J.is_object() && J.contains("NODE_ID"))
+        if (J.is_object() && J.contains("LABEL"))
         {
             J["__FILE__"] = FileName.toStdString();
             Doc["NODES"].push_back(std::move(J));
@@ -100,7 +100,7 @@ void PackageEditorModel::LoadNodes()
             nlohmann::ordered_json Strays = nlohmann::ordered_json::array();
             for (auto &N : J)
             {
-                if (N.is_object() && N.contains("NODE_ID"))
+                if (N.is_object() && N.contains("LABEL"))
                 {
                     N["__FILE__"] = FileName.toStdString();
                     Doc["NODES"].push_back(std::move(N));
@@ -117,7 +117,7 @@ void PackageEditorModel::LoadNodes()
     }
 
     if (Doc["NODES"].empty())
-        Doc["NODES"].push_back(json::object({ {"NODE_ID", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
+        Doc["NODES"].push_back(json::object({ {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LoadLayout();
@@ -286,8 +286,8 @@ void PackageEditorModel::SaveNodes()
         if (ByFile.count(Existing)) continue;
         nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
         if (JSONOps::LoadJSON(&F, &J)) continue;
-        const bool IsNodeFile = (J.is_object() && J.contains("NODE_ID"))
-                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("NODE_ID"));
+        const bool IsNodeFile = (J.is_object() && J.contains("LABEL"))
+                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("LABEL"));
         if (IsNodeFile) PackageDir->remove(Existing);
     }
 
@@ -315,7 +315,7 @@ void PackageEditorModel::Revalidate()
     if (Doc.contains("NODES") && Doc["NODES"].is_array())
         for (const auto & N : Doc["NODES"])
         {
-            const std::string Id = N.value("NODE_ID", std::string());
+            const std::string Id = N.value("LABEL", std::string());
             if (Id.empty()) continue;
             Scope.insert(Id);
             for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
@@ -414,7 +414,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
                                            const std::string & IdHint)
 {
     auto Exists = [this](const std::string & Id) {
-        for (const auto & N : Doc["NODES"]) if (N.value("NODE_ID", std::string()) == Id) return true;
+        for (const auto & N : Doc["NODES"]) if (N.value("LABEL", std::string()) == Id) return true;
         return false;
     };
     std::string Base = IdHint.empty() ? std::string("node") : IdHint;
@@ -422,7 +422,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
     std::string Id = Base;
     for (int K = 2; Exists(Id); ++K) Id = Base + "_" + std::to_string(K);
 
-    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"NODE_ID", Id}});
+    nlohmann::ordered_json N = nlohmann::ordered_json::object({{"LABEL", Id}});
     nlohmann::ordered_json P = nlohmann::ordered_json::array();
     for (const std::string & X : Parents) if (!X.empty()) P.push_back(X);
     N["PARENTS"] = std::move(P);
@@ -445,7 +445,7 @@ std::vector<std::string> PackageEditorModel::bundleNodeIds() const
     if (Doc.contains("NODES") && Doc["NODES"].is_array())
         for (const auto & N : Doc["NODES"])
         {
-            const std::string Id = N.value("NODE_ID", std::string());
+            const std::string Id = N.value("LABEL", std::string());
             if (!Id.empty()) Out.push_back(Id);
         }
     return Out;

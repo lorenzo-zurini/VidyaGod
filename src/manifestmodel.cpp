@@ -59,9 +59,10 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     }
     catch (const std::exception &E)
     {
-        const std::string Id = (J.is_object() && J.contains("NODE_ID") && J["NODE_ID"].is_string())
-                                   ? J["NODE_ID"].get<std::string>() : std::string();
-        if (Id.empty()) return false;                       // not identifiable ⇒ not a node at all
+        // Identity is the CID; LABEL is the optional pretty name/handle. A node is any object with a TYPE — that,
+        // not a name, is what makes it a node now.
+        if (!J.is_object() || !J.contains("TYPE") || !J["TYPE"].is_string()) return false;
+        const std::string Id = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
         LogWarn("ManifestModel::ParseNode",
                 "Malformed node '" + Id + "' — " + E.what() + " (" + File.string() + ")");
         Out = Node{};
@@ -80,10 +81,12 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
 static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                              const std::filesystem::path &BundleDir, Node &Out)
 {
-    if (!J.is_object() || !J.contains("NODE_ID") || !J["NODE_ID"].is_string()) return false;
+    // A node is an object with a TYPE (identity = CID). LABEL is the OPTIONAL pretty name + intra-tree authoring
+    // handle (NODE_ID is gone). Out.NodeId now carries the LABEL value — it may be empty (a nameless node is still a
+    // node, identified by its CID once frozen).
+    if (!J.is_object() || !J.contains("TYPE") || !J["TYPE"].is_string()) return false;
     Out = Node{};
-    Out.NodeId   = J["NODE_ID"].get<std::string>();
-    if (Out.NodeId.empty()) return false;
+    Out.NodeId   = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
     //A node IS one layer of one TYPE; NodeLower expands its (possibly batched) payload into the ordered
     //layer sequence the launch engine consumes. A malformed payload is refused here rather than launched
     //half-understood — the node is skipped and the graph reports it missing at resolve time.
@@ -193,10 +196,15 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
         for (const auto &Doc : Nodes)
         {
             Node N;
-            if (!ParseNode(Doc, Entry.path(), BundleDir, N)) continue;    // not a node (no NODE_ID / bad payload)
-            if (Idx.Nodes.count(N.NodeId))
-            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate NODE_ID '" + N.NodeId + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
-            Idx.Nodes.emplace(N.NodeId, std::move(N));
+            if (!ParseNode(Doc, Entry.path(), BundleDir, N)) continue;    // not a node (no TYPE / bad payload)
+            // Key by LABEL when present; a nameless node (identity = CID) gets a synthetic key so nameless nodes
+            // don't collide with each other. (This NodeId-keyed index predates CID identity; labels are present in
+            // practice — migration gives every node one — but nameless must not fold together.)
+            std::string K = N.NodeId;
+            if (K.empty()) K = Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());
+            else if (Idx.Nodes.count(K))
+            { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate LABEL '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
+            Idx.Nodes.emplace(K, std::move(N));
         }
     }
 }

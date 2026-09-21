@@ -137,7 +137,7 @@ Graph Build(const json &NodesArray, const json *Layout)
         auto Str = [&](const char *K, const char *Def) {
             return (N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string(Def);
         };
-        Nd.Id    = Str("NODE_ID", "");
+        Nd.Id    = Str("LABEL", "");
         Nd.Type  = Str("TYPE", "Group");
         Nd.Form  = Str("FORM", "");
         //Position resolves in three steps, weakest first: the node's own POS (the author's published default),
@@ -391,7 +391,7 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"CONTENT_ROOT","Content root",FieldKind::Text,       "runner only", {}, {}},
             {"PREFIX_GENERATE", "Generate prefix", FieldKind::Check, "runner only - needs a wine/proton prefix", {}, {}},
             {"UNIFIED_RUNTIME", "Unified runtime", FieldKind::Check, "runner only - mount the build INTO the game runtime", {}, {}},
-            {"RUNNER",      "Pin runner", FieldKind::Text,       "launchable only - a runner NODE_ID to prefer", {}, {}},
+            {"RUNNER",      "Pin runner", FieldKind::Text,       "launchable only - a runner LABEL to prefer", {}, {}},
         };
     if (Type == "DeclareLibraryItem")
         return {

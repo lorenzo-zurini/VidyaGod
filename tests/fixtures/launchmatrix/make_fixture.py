@@ -171,16 +171,16 @@ def make_deltas(B, tool):
 def nodes():
     N = []
     def add(**kw):
-        N.append(kw); return kw["NODE_ID"]
+        N.append(kw); return kw["LABEL"]
 
     # ---- identity -------------------------------------------------------------------------------------
-    add(NODE_ID="lm_tile", TYPE="DeclareLibraryItem", PARENTS=[], UID="90000000000001",
+    add(LABEL="lm_tile", TYPE="DeclareLibraryItem", PARENTS=[], UID="90000000000001",
         TITLE="Launch Matrix", META={"SERIES": "Fixtures", "YEAR": "2026"})
 
     # ---- runners: a native terminal, and a two-hop chain through a synthetic "prefix" runner ------------
     # Runs the content through an explicit interpreter rather than exec'ing it directly, so the fixture does
     # not depend on the FUSE mount preserving an executable bit.
-    add(NODE_ID="lm_runner_native", TYPE="DeclareExec", PARENTS=[], HOST="linux64",
+    add(LABEL="lm_runner_native", TYPE="DeclareExec", PARENTS=[], HOST="linux64",
         GUEST=["linux64"], PATH="/bin/sh", ARGS=["%Content%"],
         # The runner sets both: one the launchable overrides, one it REMOVES. Removal has to beat the runner,
         # or a launchable can never get rid of something its runner insists on.
@@ -193,48 +193,48 @@ def nodes():
         # wrapped precisely because its PATH is a real program rather than %Content%), and restoring the old
         # exec-time environment order makes that line vanish from the golden.
         ENV_REMOVE=["LM_GAME_KEEPS_THIS"])
-    add(NODE_ID="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
+    add(LABEL="lm_runner_content", TYPE="Content", PARENTS=[], FORM="file", PATH="fakerunner.sh",
         TARGET="runner/fakerunner.sh")
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
-    add(NODE_ID="lm_runner_prefix", TYPE="DeclareExec", PARENTS=["lm_runner_content"], HOST="linux64",
+    add(LABEL="lm_runner_prefix", TYPE="DeclareExec", PARENTS=["lm_runner_content"], HOST="linux64",
         GUEST=["fixture32"], PATH="%RunnerMount%/runner/fakerunner.sh", ARGS=["--run"],
         ENV={"LM_RUNNER_ENV": "set", "LM_FROM_VAR": "%lm_text%"}, ENV_REMOVE=["LM_UNWANTED"],
         CONTENT_ROOT="%PrefixRoot%/drive_c/%PackageUID%", PREFIX_GENERATE=False)
 
     # ---- Content: every FORM, every TARGET shape, submounts, deltas -------------------------------------
-    base   = add(NODE_ID="lm_c_zip_base", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
+    base   = add(LABEL="lm_c_zip_base", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%", COMMENT="the base layer")
-    patch  = add(NODE_ID="lm_c_zip_patch", TYPE="Content", PARENTS=[base], FORM="zip", PATH="patch.zip",
+    patch  = add(LABEL="lm_c_zip_patch", TYPE="Content", PARENTS=[base], FORM="zip", PATH="patch.zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    subm   = add(NODE_ID="lm_c_submount", TYPE="Content", PARENTS=[patch], FORM="zip", PATH="carrier.zip",
+    subm   = add(LABEL="lm_c_submount", TYPE="Content", PARENTS=[patch], FORM="zip", PATH="carrier.zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/carrier",
                  # SUBMOUNTS is a list of "source/path:dest/path" strings, not objects.
                  SUBMOUNTS=["nested/relocated.txt:%PrefixRoot%/drive_c/%PackageUID%/unpacked/relocated.txt"])
-    dirl   = add(NODE_ID="lm_c_dir", TYPE="Content", PARENTS=[subm], FORM="dir", PATH="loosedir",
+    dirl   = add(LABEL="lm_c_dir", TYPE="Content", PARENTS=[subm], FORM="dir", PATH="loosedir",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/loose")
     # A FORM "file" layer's TARGET is the CONTAINING DIRECTORY — the file appears as TARGET/<basename of
     # PATH>. Naming the file itself in TARGET creates a directory of that name with the file inside it.
-    filel  = add(NODE_ID="lm_c_file", TYPE="Content", PARENTS=[dirl], FORM="file", PATH="single.txt",
+    filel  = add(LABEL="lm_c_file", TYPE="Content", PARENTS=[dirl], FORM="file", PATH="single.txt",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/loosefile")
     # A delta reconstructs a COMPLETE archive and MASKS everything below it at its target, so each one gets a
     # target whose byte view is exactly one known zip. dbase mounts base.zip at the chain target; the delta
     # above it rebuilds delta_target.zip from those bytes.
-    dbase  = add(NODE_ID="lm_c_delta_base", TYPE="Content", PARENTS=[filel], FORM="zip", PATH="base.zip",
+    dbase  = add(LABEL="lm_c_delta_base", TYPE="Content", PARENTS=[filel], FORM="zip", PATH="base.zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
-    masked = add(NODE_ID="lm_c_masked_dir", TYPE="Content", PARENTS=[dbase], FORM="dir", PATH="maskeddir",
+    masked = add(LABEL="lm_c_masked_dir", TYPE="Content", PARENTS=[dbase], FORM="dir", PATH="maskeddir",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
-    d1     = add(NODE_ID="lm_c_delta_implicit", TYPE="Content", PARENTS=[masked], FORM="delta",
+    d1     = add(LABEL="lm_c_delta_implicit", TYPE="Content", PARENTS=[masked], FORM="delta",
                  PATH="over_base.vgdelta", TARGET="%PrefixRoot%/drive_c/%PackageUID%/deltatarget")
     # A second byte view for the multi-base delta to concatenate with.
-    innerz = add(NODE_ID="lm_c_inner_zip", TYPE="Content", PARENTS=[d1], FORM="zip", PATH="inner.zip",
+    innerz = add(LABEL="lm_c_inner_zip", TYPE="Content", PARENTS=[d1], FORM="zip", PATH="inner.zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/innerzip")
     # BASE_TARGETS order is load-bearing: it must match the order the delta was generated against.
-    d2     = add(NODE_ID="lm_c_delta_multibase", TYPE="Content", PARENTS=[innerz], FORM="delta",
+    d2     = add(LABEL="lm_c_delta_multibase", TYPE="Content", PARENTS=[innerz], FORM="delta",
                  PATH="over_concat.vgdelta", TARGET="%PrefixRoot%/drive_c/%PackageUID%/combined",
                  BASE_TARGETS=["%PrefixRoot%/drive_c/%PackageUID%/deltatarget",
                                "%PrefixRoot%/drive_c/%PackageUID%/innerzip"])
     # The probe sits at its own sub-target so the opaque delta cannot mask it.
-    probe  = add(NODE_ID="lm_c_probe", TYPE="Content", PARENTS=[d2], FORM="file", PATH="probe.sh",
+    probe  = add(LABEL="lm_c_probe", TYPE="Content", PARENTS=[d2], FORM="file", PATH="probe.sh",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/bin")
     # Content that is only present as a CID — un-hydrated, so the plan must report it rather than mount silence.
     # Un-hydrated content: present only as a CID, never fetched. The engine REFUSES to launch a closure with
@@ -244,25 +244,25 @@ def nodes():
     # shape of un-hydrated remote content in the gigagraph, where a SOURCE.CID is a live IPLD link the freeze must be
     # able to decode. (A bogus non-CID string used to sit here; it parsed fine when a CID was an opaque field, but the
     # content-addressed freeze now decodes every link, so it made this node — and its whole downstream — unindexable.)
-    remote = add(NODE_ID="lm_c_remote", TYPE="Content", PARENTS=[probe], FORM="zip",
+    remote = add(LABEL="lm_c_remote", TYPE="Content", PARENTS=[probe], FORM="zip",
                  TARGET="%PrefixRoot%/drive_c/%PackageUID%/remote",
                  SOURCE={"PATH": "never_fetched.zip",
                          "CID": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"})
-    add(NODE_ID="lm_unhydrated", TYPE="Group", PARENTS=[remote])
+    add(LABEL="lm_unhydrated", TYPE="Group", PARENTS=[remote])
 
     # ---- CustomVar: defaults, UI kinds, cross-reference, WHEN, format spec ------------------------------
-    v1 = add(NODE_ID="lm_v_text", TYPE="CustomVar", PARENTS=[probe], KEY="lm_text", DEFAULT="hello",
+    v1 = add(LABEL="lm_v_text", TYPE="CustomVar", PARENTS=[probe], KEY="lm_text", DEFAULT="hello",
              UI={"LABEL": "Text", "CONTROL": "text", "GROUP": "Matrix"})
-    v2 = add(NODE_ID="lm_v_enum", TYPE="CustomVar", PARENTS=[v1], KEY="lm_mode", DEFAULT="beta",
+    v2 = add(LABEL="lm_v_enum", TYPE="CustomVar", PARENTS=[v1], KEY="lm_mode", DEFAULT="beta",
              UI={"LABEL": "Mode", "CONTROL": "enum", "GROUP": "Matrix",
                  "CHOICES": [{"LABEL": "Alpha", "VALUE": "alpha"}, {"LABEL": "Beta", "VALUE": "beta"}]})
-    v3 = add(NODE_ID="lm_v_bool", TYPE="CustomVar", PARENTS=[v2], KEY="lm_flag", DEFAULT="1",
+    v3 = add(LABEL="lm_v_bool", TYPE="CustomVar", PARENTS=[v2], KEY="lm_flag", DEFAULT="1",
              UI={"LABEL": "Flag", "CONTROL": "bool", "GROUP": "Matrix"})
     # A var whose DEFAULT references another var — resolution is a fixpoint, so forward order must not matter.
-    v4 = add(NODE_ID="lm_v_derived", TYPE="CustomVar", PARENTS=[v3], KEY="lm_derived",
+    v4 = add(LABEL="lm_v_derived", TYPE="CustomVar", PARENTS=[v3], KEY="lm_derived",
              DEFAULT="%lm_text%-%lm_mode%")
     # A var that only exists when another var says so.
-    v5 = add(NODE_ID="lm_v_conditional", TYPE="CustomVar", PARENTS=[v4], KEY="lm_conditional",
+    v5 = add(LABEL="lm_v_conditional", TYPE="CustomVar", PARENTS=[v4], KEY="lm_conditional",
              DEFAULT="on-because-beta", WHEN="%lm_mode% == beta")
     vars_tip = v5
 
@@ -272,27 +272,27 @@ def nodes():
     # "/drive_c/x", which silently escapes the pass. Layer TARGETs are normalised and survive it; edit FILEs
     # are not. The fixture found this by running.
     # ---- FileEdit: all three modes, both passes --------------------------------------------------------
-    fe1 = add(NODE_ID="lm_fe_config", TYPE="FileEdit", PARENTS=[vars_tip], OVERRIDE=True,
+    fe1 = add(LABEL="lm_fe_config", TYPE="FileEdit", PARENTS=[vars_tip], OVERRIDE=True,
               FILE="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini",
               EDITS=[{"MODE": "ConfigWrite", "KEY": "Setting=", "VALUE": "1"},
                      {"MODE": "ConfigWrite", "KEY": "FromVar=", "VALUE": "%lm_derived%"}])
-    fe2 = add(NODE_ID="lm_fe_overwrite", TYPE="FileEdit", PARENTS=[fe1], OVERRIDE=True,
+    fe2 = add(LABEL="lm_fe_overwrite", TYPE="FileEdit", PARENTS=[fe1], OVERRIDE=True,
               FILE="%PrefixRoot%/drive_c/%PackageUID%/game/written.txt",
               EDITS=[{"MODE": "Overwrite", "VALUE": "overwritten by the matrix\n"}])
-    fe3 = add(NODE_ID="lm_fe_append", TYPE="FileEdit", PARENTS=[fe2], OVERRIDE=True,
+    fe3 = add(LABEL="lm_fe_append", TYPE="FileEdit", PARENTS=[fe2], OVERRIDE=True,
               FILE="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini",
               EDITS=[{"MODE": "AppendLine", "VALUE": "; appended once", "COMMENT": "idempotent by contract"}])
     # A BASE-pass edit (OVERRIDE absent) — it runs against DEFAULTDATA, before anything is mounted.
-    fe4 = add(NODE_ID="lm_fe_basepass", TYPE="FileEdit", PARENTS=[fe3],
+    fe4 = add(LABEL="lm_fe_basepass", TYPE="FileEdit", PARENTS=[fe3],
               FILE="basepass.txt", EDITS=[{"MODE": "Overwrite", "VALUE": "base pass ran\n"}])
     # A conditional edit: inert unless the flag is on. The class of bug this guards is a WHEN that reads
     # inert in the file and fires at launch anyway.
-    fe5 = add(NODE_ID="lm_fe_when", TYPE="FileEdit", PARENTS=[fe4], OVERRIDE=True, WHEN="%lm_flag% == 1",
+    fe5 = add(LABEL="lm_fe_when", TYPE="FileEdit", PARENTS=[fe4], OVERRIDE=True, WHEN="%lm_flag% == 1",
               FILE="%PrefixRoot%/drive_c/%PackageUID%/game/conditional.txt",
               EDITS=[{"MODE": "Overwrite", "VALUE": "flag was on\n"}])
 
     # ---- BinaryPatch: every MODE ----------------------------------------------------------------------
-    bp = add(NODE_ID="lm_bp", TYPE="BinaryPatch", PARENTS=[fe5],
+    bp = add(LABEL="lm_bp", TYPE="BinaryPatch", PARENTS=[fe5],
              FILE="%PrefixRoot%/drive_c/%PackageUID%/game/patch.exe",
              # Each MODE names its bytes differently: Replace->REPLACE, Poke->VALUE, Cave->PAYLOAD.
              EDITS=[{"MODE": "Replace", "OFFSET": "0x401000", "EXPECT": "000102", "REPLACE": "aabbcc",
@@ -304,7 +304,7 @@ def nodes():
                      "CAVE": "auto", "COMMENT": "cave into section slack the patcher picks itself"}])
 
     # ---- RegEdit: both views, default value, key-only, conditional entry -------------------------------
-    reg = add(NODE_ID="lm_reg", TYPE="RegEdit", PARENTS=[bp], EDITS=[
+    reg = add(LABEL="lm_reg", TYPE="RegEdit", PARENTS=[bp], EDITS=[
         {"ARCHITECTURE": ["32", "64"], "COMMENT": "written into both views",
          "HKLM": {"Software": {"LaunchMatrix": {"Value": "plain", "Number": "dword:0000002a",
                                                 "FromVar": "%lm_mode%"}}}},
@@ -316,65 +316,65 @@ def nodes():
     ])
 
     # ---- DllOverride ----------------------------------------------------------------------------------
-    dll = add(NODE_ID="lm_dll", TYPE="DllOverride", PARENTS=[reg],
+    dll = add(LABEL="lm_dll", TYPE="DllOverride", PARENTS=[reg],
               OVERRIDES={"ddraw": "n,b", "dinput8": "n,b", "winmm": "b,n", "broken": ""})
 
     # ---- DeclarePersist: one node = one persist, exercising every classification the parser produces -----
     #   file dir  → KeepDirs ;  file single-file → KeepFiles ;  registry key → KeepRegKeys (x2).
     #   TARGET names the durable subdir under the instance; CLOUD=false marks machine-specific data (shader cache).
-    per_dir = add(NODE_ID="lm_persist_saves", TYPE="DeclarePersist", PARENTS=[dll],
+    per_dir = add(LABEL="lm_persist_saves", TYPE="DeclarePersist", PARENTS=[dll],
                   SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/saves/", TARGET="Saves")
-    per_file = add(NODE_ID="lm_persist_config", TYPE="DeclarePersist", PARENTS=[per_dir],
+    per_file = add(LABEL="lm_persist_config", TYPE="DeclarePersist", PARENTS=[per_dir],
                    SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/config.ini", TARGET="Config")
-    per_cache = add(NODE_ID="lm_persist_cache", TYPE="DeclarePersist", PARENTS=[per_file],
+    per_cache = add(LABEL="lm_persist_cache", TYPE="DeclarePersist", PARENTS=[per_file],
                     SCOPE="file", PATH="%PrefixRoot%/drive_c/%PackageUID%/game/shadercache/",
                     TARGET="ShaderCache", CLOUD=False)
-    per_reg1 = add(NODE_ID="lm_persist_hkcu", TYPE="DeclarePersist", PARENTS=[per_cache],
+    per_reg1 = add(LABEL="lm_persist_hkcu", TYPE="DeclarePersist", PARENTS=[per_cache],
                    SCOPE="registry", PATH="HKCU")
-    per = add(NODE_ID="lm_persist_hklm", TYPE="DeclarePersist", PARENTS=[per_reg1],
+    per = add(LABEL="lm_persist_hklm", TYPE="DeclarePersist", PARENTS=[per_reg1],
               SCOPE="registry", PATH="HKLM\\Software\\LaunchMatrix")
 
     # ---- Group: payload-less composition --------------------------------------------------------------
-    grp = add(NODE_ID="lm_group", TYPE="Group", PARENTS=[per])
+    grp = add(LABEL="lm_group", TYPE="Group", PARENTS=[per])
 
     # ---- launchables ----------------------------------------------------------------------------------
     # (1) the whole matrix, on the native runner.
-    add(NODE_ID="lm_all", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="linux64",
+    add(LABEL="lm_all", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="linux64",
         PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=["--matrix", "%lm_derived%"],
-        LABEL="Everything", RECOMMENDED=True,
+        RECOMMENDED=True,
         # ENV on a LAUNCHABLE reaches the process (it used to be dropped by the lowering, and had no consumer
         # either). lm_run proves the whole path at runtime; this one pins it in the plan.
         ENV={"LM_EXEC_ENV": "does-this-arrive"})
     # (2) THE RUNTIME CASE: mounts for real and runs the probe, whose stdout is its own golden. Same closure
     # as lm_all except it points at a program instead of a data file.
-    add(NODE_ID="lm_run", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="linux64",
+    add(LABEL="lm_run", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="linux64",
         PATH="%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", ARGS=["--matrix", "%lm_derived%"],
         # WORKDIR: without it the working directory is the exe's own folder (bin/), and everything the probe
         # inspects is one level up. Setting it here exercises the field AND anchors the report.
-        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%", LABEL="Runtime probe",
+        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%",
         # A launchable's own ENV, including a %var% reference — the probe prints every LM_* it was given, so
         # this is the end-to-end proof that a game's environment reaches its process.
         ENV={"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%"}, ENV_REMOVE=["LM_SHOULD_BE_GONE"])
     # (3) THE RUNTIME TWO-HOP CASE. Same runnable closure as lm_run, reached through the chain, and its ENV
     # collides with the OUTER link's on purpose: the game's value must survive, which is a property of the
     # order the environment is assembled in at exec time and is invisible in a plan.
-    add(NODE_ID="lm_run_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="fixture32",
+    add(LABEL="lm_run_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_tile"], HOST="fixture32",
         PATH="%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", ARGS=["--chained"],
-        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%", LABEL="Runtime probe via a chain",
+        WORKDIR="%PrefixRoot%/drive_c/%PackageUID%",
         ENV={"LM_EXEC_ENV": "game-beats-the-outer-link",
              #The outer link asks for this key to be REMOVED. The game sets it, so it must survive.
              "LM_GAME_KEEPS_THIS": "survived-the-outer-remove"})
     # (4) the same content routed through the two-hop chain, plus the un-hydrated branch (plan only).
-    add(NODE_ID="lm_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="fixture32",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=[], LABEL="Through a runner chain",
+    add(LABEL="lm_chained", TYPE="DeclareExec", PARENTS=[grp, "lm_unhydrated", "lm_tile"], HOST="fixture32",
+        PATH="%PrefixRoot%/drive_c/%PackageUID%/probe.sh", ARGS=[],
         # The game's own ENV against a CHAIN: the outer native link sets LM_EXEC_ENV too, and the game must
         # still win. Before the ordering fix the outer wrapper was applied last and silently overrode it.
         ENV={"LM_EXEC_ENV": "game-wins-over-the-chain"})
     # (5) the minimum that can launch at all — the control case a regression shows up against first.
-    add(NODE_ID="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
+    add(LABEL="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")
-    add(NODE_ID="lm_minimal", TYPE="DeclareExec", PARENTS=["lm_minimal_content", "lm_tile"], HOST="linux64",
-        PATH="%PrefixRoot%/drive_c/%PackageUID%/game/data.txt", ARGS=[], LABEL="Minimal")
+    add(LABEL="lm_minimal", TYPE="DeclareExec", PARENTS=["lm_minimal_content", "lm_tile"], HOST="linux64",
+        PATH="%PrefixRoot%/drive_c/%PackageUID%/game/data.txt", ARGS=[])
     return N
 
 def main():

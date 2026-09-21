@@ -73,7 +73,7 @@ private slots:
         QVERIFY(Canvas->connect(content, exec));
         QCOMPARE(Doc["NODES"][exec]["PARENTS"].size(), size_t(1));
         QCOMPARE(Doc["NODES"][exec]["PARENTS"][0].get<std::string>(),
-                 Doc["NODES"][content]["NODE_ID"].get<std::string>());
+                 Doc["NODES"][content]["LABEL"].get<std::string>());
 
         QVERIFY(!Canvas->connect(content, exec));            // idempotent — no duplicate edge
         QVERIFY(Canvas->disconnect(content, exec));
@@ -88,7 +88,7 @@ private slots:
         QCOMPARE(Doc["NODES"][i]["FORM"].get<std::string>(), std::string("zip"));
         QCOMPARE(Doc["NODES"][i]["TARGET"].get<std::string>(),
                  std::string("%PrefixRoot%/drive_c/%PackageUID%"));
-        QVERIFY(!Doc["NODES"][i]["NODE_ID"].get<std::string>().empty());
+        QVERIFY(!Doc["NODES"][i]["LABEL"].get<std::string>().empty());
     }
 
     // Ids are unique by construction (the old editor named every new node "new_node"), a rename actually
@@ -98,19 +98,19 @@ private slots:
     {
         const int a = Canvas->addNode("Content");
         const int b = Canvas->addNode("Content");
-        const std::string aId = Doc["NODES"][a]["NODE_ID"].get<std::string>();
-        const std::string bId = Doc["NODES"][b]["NODE_ID"].get<std::string>();
+        const std::string aId = Doc["NODES"][a]["LABEL"].get<std::string>();
+        const std::string bId = Doc["NODES"][b]["LABEL"].get<std::string>();
         QVERIFY(aId != bId);
 
         QVERIFY(Canvas->connect(a, b));                                  // b depends on a
         QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), aId);
 
         QVERIFY(Canvas->renameNode(a, "renamed_base"));
-        QCOMPARE(Doc["NODES"][a]["NODE_ID"].get<std::string>(), std::string("renamed_base"));
+        QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed_base"));
         QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), std::string("renamed_base"));  // re-pointed
 
         QVERIFY(!Canvas->renameNode(b, "renamed_base"));                 // name taken -> refused
-        QCOMPARE(Doc["NODES"][b]["NODE_ID"].get<std::string>(), bId);    // and b is untouched
+        QCOMPARE(Doc["NODES"][b]["LABEL"].get<std::string>(), bId);    // and b is untouched
         QVERIFY(!Canvas->renameNode(a, ""));                             // empty -> refused
     }
 
@@ -120,8 +120,8 @@ private slots:
     void storedPositionsSurviveRendering()
     {
         Doc["NODES"] = json::array({
-            json{{"NODE_ID","a"},{"TYPE","Content"},{"FORM","zip"},{"PATH","a.zip"}},
-            json{{"NODE_ID","b"},{"TYPE","Content"},{"FORM","zip"},{"PATH","b.zip"}},
+            json{{"LABEL","a"},{"TYPE","Content"},{"FORM","zip"},{"PATH","a.zip"}},
+            json{{"LABEL","b"},{"TYPE","Content"},{"FORM","zip"},{"PATH","b.zip"}},
         });
         Layout = json{{"a", json::array({250.0, 140.0})}, {"b", json::array({900.0, 430.0})}};
         Canvas->invalidateGraph();
@@ -162,7 +162,7 @@ private slots:
     void positionsPersistIntoTheLayoutSidecarNotThePackage()
     {
         const int i = Canvas->addNode("Content", 123.0f, 456.0f);
-        const std::string id = Doc["NODES"][i]["NODE_ID"].get<std::string>();
+        const std::string id = Doc["NODES"][i]["LABEL"].get<std::string>();
         QVERIFY(!Doc["NODES"][i].contains("POS"));               // NOT in the package
         QVERIFY(Layout.contains(id));                            // in the sidecar
         QCOMPARE(Layout[id][0].get<double>(), 123.0);
@@ -187,9 +187,9 @@ private slots:
     void unpositionedNodesAreAutoLaidOut()
     {
         Doc["NODES"] = json::array({
-            json{{"NODE_ID","base"},{"TYPE","Content"},{"FORM","zip"},{"PATH","a.zip"}},
-            json{{"NODE_ID","mid"}, {"TYPE","Content"},{"FORM","zip"},{"PATH","b.zip"},{"PARENTS",json::array({"base"})}},
-            json{{"NODE_ID","tip"}, {"TYPE","DeclareExec"},{"HOST","win32"},{"PARENTS",json::array({"mid"})}},
+            json{{"LABEL","base"},{"TYPE","Content"},{"FORM","zip"},{"PATH","a.zip"}},
+            json{{"LABEL","mid"}, {"TYPE","Content"},{"FORM","zip"},{"PATH","b.zip"},{"PARENTS",json::array({"base"})}},
+            json{{"LABEL","tip"}, {"TYPE","DeclareExec"},{"HOST","win32"},{"PARENTS",json::array({"mid"})}},
         });
         const PkgGraph::Graph g = Canvas->graph();
         QVERIFY(g.Nodes[0].X < g.Nodes[1].X);                 // depth increases left → right
@@ -256,7 +256,7 @@ private slots:
                     PkgGraph::RegRowsInto(After, PkgGraph::RegRowsOf(E));
                     ++checked;
                     if (After.dump() != E.dump()) { ++bad;
-                        qWarning("DIFF in %s", N.value("NODE_ID", std::string()).c_str()); }
+                        qWarning("DIFF in %s", N.value("LABEL", std::string()).c_str()); }
                 }
             }
         }
@@ -332,7 +332,7 @@ private slots:
     void busyStateLocksAndAlwaysClears()
     {
         const int i = Canvas->addNode("Content");
-        const std::string id = Doc["NODES"][i]["NODE_ID"].get<std::string>();
+        const std::string id = Doc["NODES"][i]["LABEL"].get<std::string>();
         QVERIFY(!Canvas->isBusy(id));
 
         Canvas->beginAction(id, "packing zip…", true);
@@ -384,7 +384,7 @@ private slots:
     {
         const int a = Canvas->addNode("Content", 300.0f, 400.0f);
         const int b = Canvas->addNode("DeclareExec");
-        const std::string old = Doc["NODES"][a]["NODE_ID"].get<std::string>();
+        const std::string old = Doc["NODES"][a]["LABEL"].get<std::string>();
         QVERIFY(Canvas->connect(a, b));
         Doc["NODES"][b]["EXCLUDE"] = json::array({old});
         Doc["NODES"][b]["RUNNER"]  = old;
@@ -408,8 +408,8 @@ private slots:
         const int p1 = Canvas->addNode("Content");
         const int p2 = Canvas->addNode("Content");
         const int c  = Canvas->addNode("DeclareExec");
-        const std::string a = Doc["NODES"][p1]["NODE_ID"].get<std::string>();
-        const std::string b = Doc["NODES"][p2]["NODE_ID"].get<std::string>();
+        const std::string a = Doc["NODES"][p1]["LABEL"].get<std::string>();
+        const std::string b = Doc["NODES"][p2]["LABEL"].get<std::string>();
         // A junk entry BETWEEN two real ones: a running counter over G.Links would put b at slot 1, not 2.
         Doc["NODES"][c]["PARENTS"] = json::array({a, nullptr, b});
         Canvas->invalidateGraph();
@@ -515,7 +515,7 @@ private slots:
 
         // ...and all three are what ParseNode distinguishes, so the editor's three map onto real semantics.
         auto parsed = [](const char *toggle) {
-            json J{{"NODE_ID","x"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"}};
+            json J{{"LABEL","x"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"}};
             if (toggle) J["TOGGLE"] = toggle;
             Node P; ManifestModel::ParseNode(J, "f.json", "/b", P);
             return std::make_pair(P.Optional, P.Default);
@@ -535,7 +535,7 @@ private slots:
         {
             //FORM must be "delta": BASE_TARGETS on any other form is refused for a DIFFERENT reason ("it means
             //nothing on FORM zip"), which would make this assertion pass without testing the empty-array rule.
-            json N{{"NODE_ID","c"}, {"TYPE","Content"}, {"FORM","delta"}, {"PATH","a.vgdelta"},
+            json N{{"LABEL","c"}, {"TYPE","Content"}, {"FORM","delta"}, {"PATH","a.vgdelta"},
                    {"BASE_TARGETS", json::array()}};
             std::string Err;
             NodeLower::Lower(N, "c", Err);
@@ -547,7 +547,7 @@ private slots:
 
         // Now drive the REAL widget: find the list field by effect, type into it, then clear it.
         const int n = Canvas->addNode("Content");
-        const std::string id = Doc["NODES"][n]["NODE_ID"].get<std::string>();
+        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
         //FORM must be "delta": the base-targets box is offered only there, because the key means nothing on any
         //other form and NodeLower refuses it outright.
         Doc["NODES"][n]["FORM"] = "delta";
@@ -600,7 +600,7 @@ private slots:
     void anEmptyBaseTargetEntryIsDataAndSurvivesEditing()
     {
         const int n = Canvas->addNode("Content");
-        const std::string id = Doc["NODES"][n]["NODE_ID"].get<std::string>();
+        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
         Doc["NODES"][n]["FORM"] = "delta";
         Doc["NODES"][n]["PATH"] = "d.vgdelta";
         Layout[id] = json::array({30.0, 30.0});
@@ -695,13 +695,13 @@ private slots:
     void malformedNodesRenderInsteadOfThrowing()
     {
         Doc["NODES"] = json::array({
-            json{{"NODE_ID","a"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"}, {"WHEN", true}},
-            json{{"NODE_ID","b"}, {"TYPE","RegEdit"}, {"EDITS", json::array({
+            json{{"LABEL","a"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"}, {"WHEN", true}},
+            json{{"LABEL","b"}, {"TYPE","RegEdit"}, {"EDITS", json::array({
                 json{{"OVERRIDE","true"}, {"ARCHITECTURE","32"}, {"HKCU", {{"S", {{"v","1"}}}}}}})}},
-            json{{"NODE_ID","c"}, {"TYPE","DeclareLibraryItem"}, {"UID","1"}, {"COVER","cover.png"}},
-            json{{"NODE_ID","d"}, {"TYPE", 5}},
-            json{{"NODE_ID","e"}, {"TYPE","Content"}, {"FORM", 7}, {"PATH", 9}},
-            json{{"NODE_ID","f"}, {"TYPE","DeclareExec"}, {"HOST","win32"}, {"RECOMMENDED","yes"}},
+            json{{"LABEL","c"}, {"TYPE","DeclareLibraryItem"}, {"UID","1"}, {"COVER","cover.png"}},
+            json{{"LABEL","d"}, {"TYPE", 5}},
+            json{{"LABEL","e"}, {"TYPE","Content"}, {"FORM", 7}, {"PATH", 9}},
+            json{{"LABEL","f"}, {"TYPE","DeclareExec"}, {"HOST","win32"}, {"RECOMMENDED","yes"}},
         });
         Canvas->invalidateGraph();
         runFrame();
@@ -722,7 +722,7 @@ private slots:
     void coverEditingHandlesBothFormsAndPreservesWhichever()
     {
         const int n = Canvas->addNode("DeclareLibraryItem");
-        const std::string id = Doc["NODES"][n]["NODE_ID"].get<std::string>();
+        const std::string id = Doc["NODES"][n]["LABEL"].get<std::string>();
         Doc["NODES"][n]["COVER"] = "cover.png";
         Layout[id] = json::array({30.0, 30.0});
         Canvas->invalidateGraph();
@@ -763,7 +763,7 @@ private slots:
         Canvas->addNode("Content");
         Canvas->addNode("Content");
         Canvas->selectNode(1);
-        Doc["NODES"] = json::array({ json{{"NODE_ID","only"}, {"TYPE","Group"}} });   // document swapped
+        Doc["NODES"] = json::array({ json{{"LABEL","only"}, {"TYPE","Group"}} });   // document swapped
         Canvas->invalidateGraph();
 
         // PRESS Delete with the stale index still set. Without this the test was vacuous: it never exercised
@@ -829,7 +829,7 @@ private slots:
             Doc["NODES"][n]["EDITS"] = json::array({ json{{"ARCHITECTURE", json::array({"32"})},
                 {"HKLM", json{{"Soft", json{{"Sub", json{{"X", "1"}}}}},
                               {"So",   json{{"Y", "2"}}}}}} });
-            Layout[Doc["NODES"][n]["NODE_ID"].get<std::string>()] = json::array({30.0, 30.0});
+            Layout[Doc["NODES"][n]["LABEL"].get<std::string>()] = json::array({30.0, 30.0});
             Canvas->invalidateGraph();
             runFrame(); runFrame();
         };
@@ -1699,7 +1699,7 @@ private slots:
         QCOMPARE(Canvas->cachedNodeSizes(), 3);
 
         // A typed id arrives one character at a time, which is one rename per character.
-        const std::string Start = Doc["NODES"][0]["NODE_ID"].get<std::string>();
+        const std::string Start = Doc["NODES"][0]["LABEL"].get<std::string>();
         std::string Cur = Start;
         for (const char *C = "abcdef"; *C; ++C) {
             const std::string Next = Cur + *C;
@@ -1784,7 +1784,7 @@ private slots:
             //Hints are host facts ("this zip is deflate") that add ACTION BUTTONS, and an id reused from an
             //earlier test in this suite arrives carrying them — worth 50-odd pixels of extra button rows on
             //every measurement. Cleared for the node under test so what is measured is the payload.
-            Canvas->setNodeHints(Doc["NODES"][N].value("NODE_ID", std::string()), {});
+            Canvas->setNodeHints(Doc["NODES"][N].value("LABEL", std::string()), {});
             Canvas->invalidateGraph();
             runFrame(); runFrame();
             QVERIFY2(Canvas->visibleNodes() == Canvas->nodeCount(),
@@ -2185,7 +2185,7 @@ private slots:
         auto measure = [&](const char *Type, const json &Payload) {
             const int N = Canvas->addNode(Type, 100.0f, 100.0f);
             for (auto It = Payload.begin(); It != Payload.end(); ++It) Doc["NODES"][N][It.key()] = It.value();
-            Canvas->setNodeHints(Doc["NODES"][N].value("NODE_ID", std::string()), {});
+            Canvas->setNodeHints(Doc["NODES"][N].value("LABEL", std::string()), {});
             Canvas->invalidateGraph();
             runFrame(); runFrame();
             const float Drawn = ImNodes::GetNodeDimensions(N).y;
@@ -2508,7 +2508,7 @@ private slots:
         // And twenty keystrokes into the ID BOX of the corrupt node itself, which is the path that actually
         // happens: renameNode runs per character, ends in MarkDirty, and the graph is rebuilt with a new id —
         // so a warning keyed by the old one fires again under the new one, naming ids that never existed.
-        std::string Id = Doc["NODES"][N].value("NODE_ID", std::string());
+        std::string Id = Doc["NODES"][N].value("LABEL", std::string());
         for (int i = 0; i < 20; ++i) { Id += 'x'; Canvas->renameNode(N, Id); runFrame(); }
         QVERIFY2(Warnings == 1,
                  qPrintable(QString("twenty rebuilds and a twenty-character rename produced %1 warnings, not 1:\n  %2")
@@ -2713,7 +2713,7 @@ private slots:
     {
         Canvas->setMiniMap(false);
         const int N = Canvas->addNode("Content", 100, 100);
-        const std::string Id = Doc["NODES"][N].value("NODE_ID", std::string());
+        const std::string Id = Doc["NODES"][N].value("LABEL", std::string());
         Doc["NODES"][N]["POS"] = json::array({5.0e9, 5.0e9});
         Canvas->invalidateGraph();
 
@@ -2729,7 +2729,7 @@ private slots:
         // which is what opening a second package does, since ids are auto-generated from the type name.
         Canvas->removeNode(N);
         const int M2 = Canvas->addNode("Content", 400, 100);
-        Doc["NODES"][M2]["NODE_ID"] = Id;
+        Doc["NODES"][M2]["LABEL"] = Id;
         Doc["NODES"][M2]["POS"] = json::array({5.0e9, 5.0e9});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -2771,10 +2771,10 @@ private slots:
 
         // Now a DIFFERENT node reusing the same id must still be able to warn — the failure mode when the two
         // producers disagree about the key shape is that this one is swallowed.
-        const std::string Id = Doc["NODES"][A].value("NODE_ID", std::string());
+        const std::string Id = Doc["NODES"][A].value("LABEL", std::string());
         Canvas->removeNode(A);
         const int B = Canvas->addNode("Content", 400, 100);
-        Doc["NODES"][B]["NODE_ID"] = Id;
+        Doc["NODES"][B]["LABEL"] = Id;
         Canvas->invalidateGraph();
         runFrame(); runFrame();
         const int Before = Warnings;
@@ -2864,7 +2864,7 @@ private slots:
     void aReloadedPositionReachesTheCanvasInsteadOfBeingOverwritten()
     {
         Canvas->setMiniMap(false);
-        Doc["NODES"] = json::array({json{{"NODE_ID", "a"}, {"TYPE", "Group"},
+        Doc["NODES"] = json::array({json{{"LABEL", "a"}, {"TYPE", "Group"},
                                          {"POS", json::array({100.0, 100.0})}}});
         Canvas->invalidateGraph();
         runFrame(); runFrame();
@@ -3034,7 +3034,7 @@ private slots:
         Canvas->setMiniMap(false);
         const int p = Canvas->addNode("Content", -90000, -90000);   // far top-left, off-screen
         const int c = Canvas->addNode("DeclareExec", 90000, 90000); // far bottom-right, off-screen
-        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["NODE_ID"].get<std::string>() });
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["LABEL"].get<std::string>() });
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);   // both nodes are culled...
@@ -3048,7 +3048,7 @@ private slots:
         Canvas->setMiniMap(false);
         const int p = Canvas->addNode("Content", 90000, 90000);
         const int c = Canvas->addNode("DeclareExec", 95000, 95000);   // both far bottom-right; wire stays off-screen
-        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["NODE_ID"].get<std::string>() });
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["LABEL"].get<std::string>() });
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);

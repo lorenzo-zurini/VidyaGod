@@ -1232,7 +1232,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             }
             LandedDoc[C] = J;
 
-            const std::string NodeId = J.value("NODE_ID", std::string());
+            const std::string NodeId = J.value("LABEL", std::string());
             if (!NodeId.empty())
             {
                 std::error_code Ec;
