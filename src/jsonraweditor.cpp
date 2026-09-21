@@ -110,7 +110,7 @@ void JsonRawEditor::rebuildCombo()
     const auto & Nodes = Model->doc()["NODES"];
     for (int n = 0; n < (int)Nodes.size(); n++)
     {
-        const std::string Id = Nodes[n].value("LABEL", std::string());
+        const std::string Id = (Nodes[n].contains("LABEL") && Nodes[n]["LABEL"].is_string()) ? Nodes[n]["LABEL"].get<std::string>() : std::string();
         FileCombo->addItem(QString::fromStdString(Id.empty() ? ("node " + std::to_string(n + 1)) : Id));
     }
     const int K = FileCombo->findText(Keep);

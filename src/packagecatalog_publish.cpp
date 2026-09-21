@@ -37,8 +37,10 @@ namespace PackageCatalog {
 static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &J)
 {
     std::vector<nlohmann::ordered_json *> Out;
-    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("LABEL")) Out.push_back(&N); }
-    else if (J.is_object() && J.contains("LABEL")) Out.push_back(&J);
+    // A node is any object with a TYPE (identity = CID; LABEL is optional). Detecting by LABEL silently
+    // skipped legal nameless nodes → their content was never seeded.
+    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("TYPE")) Out.push_back(&N); }
+    else if (J.is_object() && J.contains("TYPE")) Out.push_back(&J);
     return Out;
 }
 //Content nodes are the ones carrying seedable bytes (PATH + SOURCE); FORM says how they are interpreted.
@@ -126,12 +128,12 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
                     "laid out, and every other node's position is computed without them.");
             continue;
         }
-        if (J.is_object() && J.contains("LABEL"))
+        if (J.is_object() && J.contains("TYPE"))
         { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
         else if (J.is_array())
         {
             for (size_t I = 0; I < J.size(); ++I)
-                if (J[I].is_object() && J[I].contains("LABEL"))
+                if (J[I].is_object() && J[I].contains("TYPE"))
                 { Slots.push_back({F, true, I}); Nodes.push_back(J[I]); }
             Loaded[F] = std::move(J);
         }

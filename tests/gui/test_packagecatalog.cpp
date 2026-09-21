@@ -386,6 +386,39 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // A PUBLISH'd NAMELESS node must NOT be shared: its handle is a synthetic absolute-path key, so publishing it
+    // would leak the seeder's filesystem path as node/uid/title. It is skipped (loudly); a named PUBLISH'd node
+    // publishes normally. Teeth: drop the nameless guard in PublishLibrary and the share list gains a path-leaking entry.
+    void publish_skips_nameless_flagged_node()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[1] Named");
+        QDir().mkpath(R + "/VidyaGod/[2] Nameless");
+        writeJson(R + "/VidyaGod/[1] Named/tile.json", NodeFixture::Chain("n_tile", {NodeFixture::Tile("1", "Named")}));
+        writeJson(R + "/VidyaGod/[1] Named/g.json",
+                  NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}, {{"PUBLISH", true}}));
+        // A nameless node (no LABEL) flagged PUBLISH — a content node that happens to be shareable-flagged.
+        writeJson(R + "/VidyaGod/[2] Nameless/c.json",
+                  json{{"TYPE", "Content"}, {"FORM", "zip"}, {"PATH", "c.zip"},
+                       {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}},
+                       {"PUBLISH", true}});
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(cfg, &Err);
+        QVERIFY(cfg.contains("Libraries") && cfg["Libraries"].contains("VidyaGod"));
+        for (const auto & E : cfg["Libraries"]["VidyaGod"])
+        {
+            const std::string node = E.value("node", std::string());
+            QVERIFY2(node == "n_exec", ("only the named node publishes; leaked: " + node).c_str());
+            QVERIFY2(E.value("uid", std::string()).find('/') == std::string::npos, "no filesystem path in a share entry");
+        }
+        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 1);   // the nameless node is NOT in the share list
+        IpfsWrapper::StopNode();
+    }
+
     // CATALOG is a scanned root beside LIBRARY: a stub placed in CATALOG shows up in the catalog index, and a
     // LIBRARY package's cross-reference to it resolves through the MERGED index. Teeth: drop the CATALOG
     // GatherWorkingTree in BuildCatalogIndex and the CATALOG node is absent from the scan.

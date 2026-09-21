@@ -62,7 +62,7 @@ void PackageEditorModel::initPackage(const QString & preselectedPath, QWidget * 
 QString PackageEditorModel::FileForNode(const nlohmann::ordered_json & Node) const
 {
     //Prefer <NODE_ID>.json so a rename re-files the node (SaveNodes then cleans the stale file).
-    std::string Id = Node.is_object() ? Node.value("LABEL", std::string()) : std::string();
+    std::string Id = (Node.is_object() && Node.contains("LABEL") && Node["LABEL"].is_string()) ? Node["LABEL"].get<std::string>() : std::string();
     //A node id becomes a FILENAME here, so a '/' or a ".." would write outside the bundle. Ids are authored
     //freely on the canvas; sanitise rather than trust.
     for (char &C : Id) if (C == '/' || C == '\\' || C == ':') C = '_';
@@ -87,7 +87,7 @@ void PackageEditorModel::LoadNodes()
         if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
         //A file holds ONE node or an ARRAY of them — grouping nodes into files is pure presentation, so the
         //editor reads either and (see SaveNodes) writes back the grouping it found.
-        if (J.is_object() && J.contains("LABEL"))
+        if (J.is_object() && J.contains("TYPE"))
         {
             J["__FILE__"] = FileName.toStdString();
             Doc["NODES"].push_back(std::move(J));
@@ -100,7 +100,7 @@ void PackageEditorModel::LoadNodes()
             nlohmann::ordered_json Strays = nlohmann::ordered_json::array();
             for (auto &N : J)
             {
-                if (N.is_object() && N.contains("LABEL"))
+                if (N.is_object() && N.contains("TYPE"))
                 {
                     N["__FILE__"] = FileName.toStdString();
                     Doc["NODES"].push_back(std::move(N));
@@ -286,8 +286,8 @@ void PackageEditorModel::SaveNodes()
         if (ByFile.count(Existing)) continue;
         nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
         if (JSONOps::LoadJSON(&F, &J)) continue;
-        const bool IsNodeFile = (J.is_object() && J.contains("LABEL"))
-                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("LABEL"));
+        const bool IsNodeFile = (J.is_object() && J.contains("TYPE"))
+                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("TYPE"));
         if (IsNodeFile) PackageDir->remove(Existing);
     }
 
@@ -315,7 +315,7 @@ void PackageEditorModel::Revalidate()
     if (Doc.contains("NODES") && Doc["NODES"].is_array())
         for (const auto & N : Doc["NODES"])
         {
-            const std::string Id = N.value("LABEL", std::string());
+            const std::string Id = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
             if (Id.empty()) continue;
             Scope.insert(Id);
             for (const std::string & Dep : ManifestModel::ResolveNodeOrder(Idx, Id, {})) Scope.insert(Dep);
@@ -414,7 +414,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
                                            const std::string & IdHint)
 {
     auto Exists = [this](const std::string & Id) {
-        for (const auto & N : Doc["NODES"]) if (N.value("LABEL", std::string()) == Id) return true;
+        for (const auto & N : Doc["NODES"]) if (N.contains("LABEL") && N["LABEL"].is_string() && N["LABEL"].get<std::string>() == Id) return true;
         return false;
     };
     std::string Base = IdHint.empty() ? std::string("node") : IdHint;
@@ -445,7 +445,7 @@ std::vector<std::string> PackageEditorModel::bundleNodeIds() const
     if (Doc.contains("NODES") && Doc["NODES"].is_array())
         for (const auto & N : Doc["NODES"])
         {
-            const std::string Id = N.value("LABEL", std::string());
+            const std::string Id = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
             if (!Id.empty()) Out.push_back(Id);
         }
     return Out;

@@ -217,6 +217,26 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
     CHECK(NodeGraph::JsonDepthWithinLimit("{\"a\":[1,2,{\"b\":3}]}", 64));
 }
 
+TEST(nodegraph_scan_survives_hostile_nonstring_label_and_keeps_nameless)
+{
+    // A received block controls LABEL's TYPE. A non-string LABEL must NOT throw the catalog scan (that aborts the
+    // GUI/worker); it reads as nameless. And a legal NAMELESS node (TYPE, no LABEL) must still be gathered (keyed by
+    // a synthetic key), never dropped. Teeth: revert GatherWorkingTree's is_string guard → this throws; drop the
+    // TYPE-gate/synthetic-key → the nameless node vanishes.
+    ScanDir D;
+    D.Write("A/hostile.json", std::string("{\"TYPE\":\"Content\",\"LABEL\":1}"));      // non-string LABEL
+    D.Write("A/nameless.json", std::string("{\"TYPE\":\"Content\",\"FORM\":\"zip\",\"PATH\":\"x.zip\"}"));  // no LABEL
+    D.Write("A/named.json", ordered_json{{"LABEL","named"},{"TYPE","Content"}}.dump());
+    std::map<std::string, ordered_json> Tree;
+    std::map<std::string, std::filesystem::path> Dirs;
+    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);   // must NOT throw
+    CHECK(Tree.count("named") == 1);
+    // The hostile + nameless nodes are gathered under synthetic keys (never a real handle), so both are present but
+    // neither claims a forgeable label. Total gathered = 3 (named + 2 synthetic).
+    CHECK((int)Tree.size() == 3);
+    CHECK(Tree.count("1") == 0);        // the number LABEL did NOT become a "1" handle
+}
+
 TEST(nodegraph_scan_denies_conflicting_duplicate_handles)
 {
     // Two DIFFERENT docs claiming one NODE_ID = a conflict → the handle resolves to NOTHING (mint and launch resolve

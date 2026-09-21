@@ -148,10 +148,13 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             // in place rather than indexing into a LAYERS array that no longer exists.
             nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
             nlohmann::ordered_json *Nd = nullptr;
-            if (J.is_object() && J.value("NODE_ID", std::string()) == vs[i].node->NodeId) Nd = &J;
+            auto LabelOf = [](const nlohmann::ordered_json &E) {
+                return (E.contains("LABEL") && E["LABEL"].is_string()) ? E["LABEL"].get<std::string>() : std::string();
+            };
+            if (J.is_object() && LabelOf(J) == vs[i].node->NodeId) Nd = &J;
             else if (J.is_array())
                 for (auto &E : J)
-                    if (E.is_object() && E.value("NODE_ID", std::string()) == vs[i].node->NodeId) { Nd = &E; break; }
+                    if (E.is_object() && LabelOf(E) == vs[i].node->NodeId) { Nd = &E; break; }
             if (!Nd) { LogErr("convert-delta", "could not find node " + vs[i].node->NodeId + " in " + vs[i].node->File.string()); return 1; }
 
             nlohmann::ordered_json parents = Nd->value("PARENTS", nlohmann::ordered_json::array());

@@ -991,6 +991,11 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (!Doc.value("PUBLISH", false)) continue;    // SHARE axis: only nodes the author flagged PUBLISH=true.
                                                        // Replaces the old "DeclareExec && !GUEST" filter (which
                                                        // silently excluded runners and no-exec library heads).
+        // A shared node MUST be named: a nameless node's Handle is its SYNTHETIC key (an absolute local path),
+        // which would leak the seeder's filesystem path into the share snapshot as node/uid/title. Refuse to
+        // publish it — the author gives it a LABEL first.
+        if (!Doc.contains("LABEL") || !Doc["LABEL"].is_string() || Doc["LABEL"].get<std::string>().empty())
+        { LogWarn("PackageCatalog::PublishLibrary", "skipping a PUBLISH'd node with no LABEL — give it a name to share it"); continue; }
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
 
@@ -1217,6 +1222,12 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
         {
             const auto It = Blocks.find(C);
             if (It == Blocks.end()) { if (Error) *Error = "closure block " + C + " did not land"; return false; }
+            // UNTRUSTED bytes (a friend controls the block content behind its CID): depth pre-scan BEFORE the
+            // recursive parse/NormalizeLinks (a deep block is a stack-overflow bomb), and every field read must
+            // tolerate a non-string value without throwing (a hostile LABEL/LIBRARYITEM = int/object would abort
+            // this detached worker → std::terminate).
+            if (!NodeGraph::JsonDepthWithinLimit(It->second, 64))
+            { if (Error) *Error = "closure block " + C + " too deep"; return false; }
             nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
             if (J.is_discarded() || !J.is_object()) { if (Error) *Error = "closure block " + C + " is not a node"; return false; }
             NodeGraph::NormalizeLinks(J);
@@ -1224,7 +1235,8 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             std::vector<std::string> Ps;
             if (J.contains("PARENTS") && J["PARENTS"].is_array())
                 for (const auto &P : J["PARENTS"]) if (P.is_string()) Ps.push_back(P.get<std::string>());
-            RefsOf(Ps, J.value("LIBRARYITEM", std::string()), Refs);
+            const std::string Li = (J.contains("LIBRARYITEM") && J["LIBRARYITEM"].is_string()) ? J["LIBRARYITEM"].get<std::string>() : std::string();
+            RefsOf(Ps, Li, Refs);
             for (const std::string &R : Refs)
             {
                 if (!Visited.insert(R).second) continue;
@@ -1232,7 +1244,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             }
             LandedDoc[C] = J;
 
-            const std::string NodeId = J.value("LABEL", std::string());
+            const std::string NodeId = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
             if (!NodeId.empty())
             {
                 std::error_code Ec;

@@ -169,8 +169,11 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
             const std::string Label = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
             const bool Handled = !Label.empty();
+            // Synthetic key for a nameless node: prefixed with a control byte (\x01) that a real pretty LABEL never
+            // carries, so a crafted LABEL can never collide with (or evict) a nameless node's slot. Nameless nodes
+            // are never referenced as parents, so this key is never resolved as a handle.
             const std::string Id = Handled ? Label
-                                           : (E.path().string() + "#" + std::to_string(NIdx));   // synthetic: never a real LABEL
+                                           : (std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx));
             // Duplicate LABEL handling (only for real handles). IDENTICAL copies dedupe silently (the multi-seeder
             // normal: the same received node in two dirs). DIFFERENT content claiming one LABEL is a CONFLICT — a
             // received share is an ordinary scanned file, so "keep first-seen" would let a hostile block hijack a
@@ -190,6 +193,10 @@ void GatherWorkingTree(const std::filesystem::path &Root,
                     Dirs.erase(Id);
                     Conflicted.insert(Id);
                 }
+                else
+                    // Two nameless nodes with the SAME synthetic key = the same file re-scanned (roots overlap); a
+                    // genuine different-content collision here is impossible (keys are path-unique), but log if it ever occurs.
+                    LogWarn("NodeGraph::GatherWorkingTree", "nameless-node key reuse at " + E.path().string() + " — keeping first-seen");
                 continue;
             }
             Tree[Id] = N;

@@ -40,7 +40,10 @@ def load(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f, object_pairs_hook=OrderedDict)
-    except Exception:
+    except Exception as e:
+        # A file that won't parse drops from BOTH the handle map and the rewrite → its refs would stale silently.
+        # Say so loudly; a JSON node file that fails to load is a migration hazard the user must resolve.
+        print(f"!! WARNING: could not read {path} ({e}) — skipped; references into it will NOT be migrated")
         return None
 
 def new_label(node):
@@ -58,13 +61,16 @@ def build_map(files):
         if doc is None: continue
         for n in iter_nodes(doc):
             nid = n.get("NODE_ID")
-            if not isinstance(nid, str) or not nid: continue
             lbl = new_label(n)
             if lbl is None: continue
-            handle_map[nid] = lbl
-            if lbl in seen and seen[lbl] != nid:
-                collisions.setdefault(lbl, set()).update({seen[lbl], nid})
-            seen[lbl] = nid
+            if isinstance(nid, str) and nid:
+                handle_map[nid] = lbl
+            # Record the label for collision detection whether it came from NODE_ID or an already-migrated
+            # LABEL-only node — a partially-migrated tree must not hide a clash.
+            key = nid if (isinstance(nid, str) and nid) else lbl
+            if lbl in seen and seen[lbl] != key:
+                collisions.setdefault(lbl, set()).update({seen[lbl], key})
+            seen[lbl] = key
     return handle_map, collisions
 
 def rewrite_node(node, hmap):

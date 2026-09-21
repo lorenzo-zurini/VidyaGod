@@ -201,7 +201,7 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx)
             // don't collide with each other. (This NodeId-keyed index predates CID identity; labels are present in
             // practice — migration gives every node one — but nameless must not fold together.)
             std::string K = N.NodeId;
-            if (K.empty()) K = Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());
+            if (K.empty()) K = std::string("\x01") + Entry.path().string() + "#unnamed" + std::to_string(Idx.Nodes.size());  // control-byte prefix: unforgeable by a LABEL
             else if (Idx.Nodes.count(K))
             { LogWarn("ManifestModel::ScanBundleNodes", "Duplicate LABEL '" + K + "' (" + Entry.path().string() + ") — keeping first-seen."); continue; }
             Idx.Nodes.emplace(K, std::move(N));
