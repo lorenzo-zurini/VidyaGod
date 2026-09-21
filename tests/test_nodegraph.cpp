@@ -237,25 +237,28 @@ TEST(nodegraph_scan_survives_hostile_nonstring_label_and_keeps_nameless)
     CHECK(Tree.count("1") == 0);        // the number LABEL did NOT become a "1" handle
 }
 
-TEST(nodegraph_scan_denies_conflicting_duplicate_handles)
+TEST(nodegraph_duplicate_label_keeps_first_seen)
 {
-    // Two DIFFERENT docs claiming one NODE_ID = a conflict → the handle resolves to NOTHING (mint and launch resolve
-    // PARENTS by handle, and received shares are ordinary scanned files — "keep first-seen" would let a hostile block
-    // hijack a local handle by winning fs iteration order). IDENTICAL copies dedupe silently (multi-seeder normal).
-    ScanDir D;
+    // LABEL is COSMETIC — identity is the CID. Two DIFFERENT nodes MAY share a label (RoC/TFT "v1.21b", two
+    // "Vanilla" editions). On a duplicate the scan KEEPS FIRST-SEEN (with a warning) and never erases — the label is
+    // not a unique logic key. BuildCatalogIndex scans LIBRARY before CATALOG, so a local node wins the handle over a
+    // later-scanned received one. IDENTICAL copies dedupe silently (the multi-seeder normal).
     const ordered_json Wine = {{"LABEL", "wine"}, {"TYPE", "DeclareExec"}, {"EXECUTABLE", "wine"}};
     ordered_json Evil = Wine; Evil["EXECUTABLE"] = "pwned";
-    D.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
-    D.Write("Mallory - Lib/[x] x/wine.json", Evil.dump());
-    D.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
+    // Mirror BuildCatalogIndex: LIBRARY is gathered into the tree BEFORE CATALOG, into the SAME map. The local
+    // (LIBRARY, first-call) node must win the label; the later CATALOG claimant is dropped, never erasing the local.
+    ScanDir Lib;   Lib.Write("VidyaGodRunners/wine/wine.json", Wine.dump());
+    ScanDir Cat;   Cat.Write("Mallory - Lib/[x] x/wine.json", Evil.dump());
+    Lib.Write("Games/[1] A/a.json", ordered_json{{"LABEL", "a_exec"}, {"TYPE", "DeclareExec"}}.dump());
     std::map<std::string, ordered_json> Tree;
     std::map<std::string, std::filesystem::path> Dirs;
-    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
-    CHECK(Tree.count("wine") == 0);        // conflicted handle: NEITHER claimant wins (deny, loudly)
-    CHECK(Dirs.count("wine") == 0);
-    CHECK(Tree.count("a_exec") == 1);      // unrelated nodes unaffected
+    NodeGraph::GatherWorkingTree(Lib.P, Tree, Dirs);   // LIBRARY first (local)
+    NodeGraph::GatherWorkingTree(Cat.P, Tree, Dirs);   // CATALOG second (received)
+    CHECK(Tree.count("wine") == 1);                    // NOT erased -- kept first-seen (cosmetic label)
+    CHECK(Tree["wine"].value("EXECUTABLE", std::string()) == "wine");   // LOCAL content won, not the received "pwned"
+    CHECK(Tree.count("a_exec") == 1);
 
-    // Identical duplicate (the same received node in two library dirs) is NOT a conflict — kept once.
+    // Identical duplicate (the same received node in two library dirs) -> kept once.
     ScanDir D2;
     D2.Write("Alice - Games/[1] A/a.json", Wine.dump());
     D2.Write("Bob - Games/[1] A/a.json",   Wine.dump());

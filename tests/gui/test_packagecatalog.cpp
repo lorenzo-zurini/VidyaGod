@@ -386,6 +386,38 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // A hostile hydrated block with non-typed fields (PUBLISH:"yes", LIBRARYITEM:5, TITLE:{}) must NOT crash the
+    // publish walk. The blocks land in LIBRARY (as a hostile friend's added game would); PublishLibrary + Mint run
+    // over them and must complete without throwing (the reads are all is-type guarded). Teeth: unguard any of
+    // PUBLISH/LIBRARYITEM/UID/TITLE and this aborts (std::terminate in the real app's detached mint thread).
+    void publish_tolerates_hostile_field_types()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        const QString R = Root.path();
+        QDir().mkpath(R + "/VidyaGod/[1] Evil");
+        // Every identity/flag field carries a hostile non-matching type.
+        writeJson(R + "/VidyaGod/[1] Evil/e.json",
+                  json{{"TYPE", "DeclareExec"}, {"HOST", "win32"}, {"LABEL", "Evil"},
+                       {"PUBLISH", "yes"}, {"LIBRARYITEM", 5}, {"TITLE", json::object()}});
+        // …plus a well-formed shared game so the walk actually does work alongside the hostile node.
+        QDir().mkpath(R + "/VidyaGod/[2] Good");
+        writeJson(R + "/VidyaGod/[2] Good/tile.json", NodeFixture::Chain("gd_tile", {NodeFixture::Tile("2", "Good")}));
+        writeJson(R + "/VidyaGod/[2] Good/g.json",
+                  NodeFixture::Chain("gd_exec", {NodeFixture::Exec("win32", "g.exe")}, {"gd_tile"}, {{"PUBLISH", true}}));
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
+        PackageCatalog::PublishLibrary(cfg, &Err);   // MUST NOT throw
+        QVERIFY2(cfg.contains("Libraries"), "publish completed over a hostile block without crashing");
+        // The hostile node's PUBLISH:"yes" (non-bool) is NOT treated as shared; only the good game publishes.
+        int shared = 0;
+        for (const auto & E : cfg.value("Libraries", json::object()).value("VidyaGod", json::array()))
+            if (E.value("node", std::string()) == "gd_exec") shared++;
+        QCOMPARE(shared, 1);
+        IpfsWrapper::StopNode();
+    }
+
     // A PUBLISH'd NAMELESS node must NOT be shared: its handle is a synthetic absolute-path key, so publishing it
     // would leak the seeder's filesystem path as node/uid/title. It is skipped (loudly); a named PUBLISH'd node
     // publishes normally. Teeth: drop the nameless guard in PublishLibrary and the share list gains a path-leaking entry.

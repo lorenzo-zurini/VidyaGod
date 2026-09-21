@@ -328,8 +328,8 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
 
         // The SHARE axis, decoupled from type: a node the author flagged PUBLISH=true is a shareable root (a game's
         // launchable, a runner exec, or a no-exec library head). This — not the launch axis — drives the share list.
-        if (Raw.value("PUBLISH", false))
-            Out.Published.push_back(Cid);
+        if (Raw.contains("PUBLISH") && Raw["PUBLISH"].is_boolean() && Raw["PUBLISH"].get<bool>())
+            Out.Published.push_back(Cid);   // guarded: a hostile hydrated block's non-bool PUBLISH must not throw in the mint thread
     }
     if (Skipped) LogWarn("NodeGraph::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
     LogSucc("NodeGraph::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "

@@ -151,6 +151,8 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             auto LabelOf = [](const nlohmann::ordered_json &E) {
                 return (E.contains("LABEL") && E["LABEL"].is_string()) ? E["LABEL"].get<std::string>() : std::string();
             };
+            if (vs[i].node->NodeId.empty())   // a nameless node has no handle -> would clobber the first unlabeled object
+            { LogErr("convert-delta", "cannot convert a nameless node (no LABEL) in " + vs[i].node->File.string() + " - give it a LABEL first"); return 1; }
             if (J.is_object() && LabelOf(J) == vs[i].node->NodeId) Nd = &J;
             else if (J.is_array())
                 for (auto &E : J)

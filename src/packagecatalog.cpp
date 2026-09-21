@@ -988,7 +988,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
     for (const auto &[Handle, Doc] : Tree)
     {
-        if (!Doc.value("PUBLISH", false)) continue;    // SHARE axis: only nodes the author flagged PUBLISH=true.
+        if (!(Doc.contains("PUBLISH") && Doc["PUBLISH"].is_boolean() && Doc["PUBLISH"].get<bool>())) continue;   // SHARE axis (guarded: a hostile non-bool PUBLISH must not throw).
                                                        // Replaces the old "DeclareExec && !GUEST" filter (which
                                                        // silently excluded runners and no-exec library heads).
         // A shared node MUST be named: a nameless node's Handle is its SYNTHETIC key (an absolute local path),
@@ -1002,7 +1002,7 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         // The node's LIBRARYITEM tile (lifted above): the receiver fetches it alongside and names the package dir
         // after its UID/TITLE — variants sharing one tile land in ONE package dir, exactly like the local tree.
         std::string TileHandle;
-        if (const std::string Li = Doc.value("LIBRARYITEM", std::string()); !Li.empty())
+        if (const std::string Li = (Doc.contains("LIBRARYITEM") && Doc["LIBRARYITEM"].is_string()) ? Doc["LIBRARYITEM"].get<std::string>() : std::string(); !Li.empty())
         {
             if (Tree.count(Li)) TileHandle = Li;
             else if (const auto Rit = CidToHandle.find(Li); Rit != CidToHandle.end()) TileHandle = Rit->second;
@@ -1025,9 +1025,9 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         if (!TileHandle.empty())
         {
             const nlohmann::ordered_json &T = Tree.at(TileHandle);
-            Uid = T.value("UID", std::string());
+            Uid = (T.contains("UID") && T["UID"].is_string()) ? T["UID"].get<std::string>() : std::string();
             if (Uid.empty()) Uid = TileHandle;
-            Title = T.value("TITLE", TileHandle);
+            Title = (T.contains("TITLE") && T["TITLE"].is_string()) ? T["TITLE"].get<std::string>() : TileHandle;
         }
         // Bound the emitted title (user-authored, unbounded) at a UTF-8 boundary: the receiver's inbound gate
         // rejects a WHOLE snapshot over one >512-byte field — silently, at the far end — and its dir segment must

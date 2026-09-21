@@ -136,7 +136,6 @@ void GatherWorkingTree(const std::filesystem::path &Root,
     if (!fs::is_directory(Root, Ec)) return;
     // error_code iteration with explicit increment: the range-for's operator++ THROWS (a permission-denied subdir
     // mid-walk would terminate the GUI thread). skip_permission_denied + increment(Ec) walks defensively.
-    std::set<std::string> Conflicted;   // handles denied this scan (different content claimed one NODE_ID)
     fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
     for (; !Ec && It != End; It.increment(Ec))
     {
@@ -167,37 +166,32 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             // no LABEL still gathers/freezes/indexes (identified by its CID) but is keyed by a SYNTHETIC per-file key
             // so it can't be referenced as a parent and never collides with a real LABEL.
             if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
-            const std::string Label = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
+            std::string Label = (N.contains("LABEL") && N["LABEL"].is_string()) ? N["LABEL"].get<std::string>() : std::string();
+            // A LABEL carrying a control byte (< 0x20) is rejected as a handle (treated as nameless): the synthetic
+            // key for a nameless node is control-byte-prefixed, and a hostile JSON "\\u0001<path>#N" LABEL would
+            // otherwise forge exactly that key and evict a local node. Control bytes never belong in a display name.
+            for (unsigned char c : Label) if (c < 0x20) { Label.clear(); break; }
             const bool Handled = !Label.empty();
             // Synthetic key for a nameless node: prefixed with a control byte (\x01) that a real pretty LABEL never
             // carries, so a crafted LABEL can never collide with (or evict) a nameless node's slot. Nameless nodes
             // are never referenced as parents, so this key is never resolved as a handle.
             const std::string Id = Handled ? Label
                                            : (std::string("\x01") + E.path().string() + "#" + std::to_string(NIdx));
-            // Duplicate LABEL handling (only for real handles). IDENTICAL copies dedupe silently (the multi-seeder
-            // normal: the same received node in two dirs). DIFFERENT content claiming one LABEL is a CONFLICT — a
-            // received share is an ordinary scanned file, so "keep first-seen" would let a hostile block hijack a
-            // local handle by winning fs iteration order (freeze resolves PARENTS by LABEL — a silent poison). Deny:
-            // the handle resolves to NOTHING, dependents dangle LOUDLY and skip, until a claimant is removed.
-            if (Handled && Conflicted.count(Id)) continue;
+            // LABEL is COSMETIC — identity is the CID, and every runtime decision keys on the CID (the frozen
+            // index is CID-keyed). LABEL doubles ONLY as an author-time reference handle, resolved to a CID at
+            // freeze; it is NOT a unique logic key, so different nodes MAY share a label (RoC/TFT "v1.21b", two
+            // "Vanilla" editions — all legitimate). On a duplicate we KEEP FIRST-SEEN with a warning; we never
+            // erase. Security: BuildCatalogIndex scans LIBRARY before CATALOG, so a LOCAL node always wins the
+            // handle over a later-scanned RECEIVED one — a received block can't shadow a local handle by order, and
+            // received nodes are browse-only (never minted/published), so a colliding label can't poison a mint.
             const auto Prev = Tree.find(Id);
             if (Prev != Tree.end())
             {
-                if (Prev->second == N) continue;   // same content → same node; keep one
+                if (Prev->second == N) continue;   // identical → same node; keep one (the multi-seeder normal)
                 if (Handled)
-                {
-                    LogErr("NodeGraph::GatherWorkingTree", "LABEL conflict: '" + Id + "' claimed with DIFFERENT content by '"
-                           + Dirs[Id].string() + "' and '" + E.path().parent_path().string()
-                           + "' — dropping the handle (neither claimant is trusted)");
-                    Tree.erase(Prev);
-                    Dirs.erase(Id);
-                    Conflicted.insert(Id);
-                }
-                else
-                    // Two nameless nodes with the SAME synthetic key = the same file re-scanned (roots overlap); a
-                    // genuine different-content collision here is impossible (keys are path-unique), but log if it ever occurs.
-                    LogWarn("NodeGraph::GatherWorkingTree", "nameless-node key reuse at " + E.path().string() + " — keeping first-seen");
-                continue;
+                    LogWarn("NodeGraph::GatherWorkingTree", "duplicate LABEL '" + Id + "' (" + E.path().string()
+                            + ") — cosmetic; keeping first-seen (identity is the CID)");
+                continue;                          // keep first-seen; do NOT erase (label is not a logic key)
             }
             Tree[Id] = N;
             Dirs[Id] = E.path().parent_path();

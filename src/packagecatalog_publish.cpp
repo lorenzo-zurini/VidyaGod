@@ -39,14 +39,14 @@ static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &
     std::vector<nlohmann::ordered_json *> Out;
     // A node is any object with a TYPE (identity = CID; LABEL is optional). Detecting by LABEL silently
     // skipped legal nameless nodes → their content was never seeded.
-    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("TYPE")) Out.push_back(&N); }
-    else if (J.is_object() && J.contains("TYPE")) Out.push_back(&J);
+    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("TYPE") && N["TYPE"].is_string()) Out.push_back(&N); }
+    else if (J.is_object() && J.contains("TYPE") && J["TYPE"].is_string()) Out.push_back(&J);
     return Out;
 }
 //Content nodes are the ones carrying seedable bytes (PATH + SOURCE); FORM says how they are interpreted.
 static bool IsContentNode(const nlohmann::ordered_json &N)
 {
-    return N.is_object() && N.value("TYPE", std::string()) == "Content";
+    return N.is_object() && N.contains("TYPE") && N["TYPE"].is_string() && N["TYPE"].get<std::string>() == "Content";
 }
 
 
@@ -128,12 +128,12 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
                     "laid out, and every other node's position is computed without them.");
             continue;
         }
-        if (J.is_object() && J.contains("TYPE"))
+        if (J.is_object() && J.contains("TYPE") && J["TYPE"].is_string())
         { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
         else if (J.is_array())
         {
             for (size_t I = 0; I < J.size(); ++I)
-                if (J[I].is_object() && J[I].contains("TYPE"))
+                if (J[I].is_object() && J[I].contains("TYPE") && J[I]["TYPE"].is_string())
                 { Slots.push_back({F, true, I}); Nodes.push_back(J[I]); }
             Loaded[F] = std::move(J);
         }
@@ -450,7 +450,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
             const std::string Path = Obj.value("PATH", std::string());
             if (Path.empty() || !Obj.contains("SOURCE") || !Obj["SOURCE"].is_object()) return;
             const auto &S = Obj["SOURCE"];
-            if (S.value("TYPE", std::string()) != "ipfs") return;
+            if (!(S.contains("TYPE") && S["TYPE"].is_string() && S["TYPE"].get<std::string>() == "ipfs")) return;
             const std::string Cid = S.value("CID", std::string());
             if (Cid.empty()) return;
             const fs::path Local = Bundle / Path;
