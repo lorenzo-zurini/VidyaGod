@@ -13,6 +13,10 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+
+#include <cctype>
+#include <set>
 #include <QStringList>
 #include <QTimer>
 
@@ -106,6 +110,34 @@ bool AppModel::save()
 void AppModel::rebuildCatalog()
 {
     CatalogIndex = PackageCatalog::BuildCatalogIndex(*Config);   // re-scan the node graph from disk
+
+    // Covers ride the ONE rolling queue, no bespoke trigger: walk every tile's cover and enqueue any that isn't
+    // already in ASSETS as an ordinary (optional, verified) fetch. Uniform for LOCAL tiles (the fetch resolves from
+    // our own seeded block → copied into ASSETS) and RECEIVED tiles (fetched from the friend/gateway). EnqueueBatch
+    // de-dupes + no-ops an already-present dest, so this is cheap to call on every rebuild.
+    {
+        const QString AssetsRoot = QString::fromStdString(PackageCatalog::AssetsRootDir(*Config));
+        if (!AssetsRoot.isEmpty())
+        {
+            std::vector<IpfsWrapper::FetchTarget> Covers;
+            std::set<std::string> Seen;
+            for (const auto & [Key, N] : CatalogIndex.Nodes)
+            {
+                if (!(N.Meta.is_object() && N.Meta.contains("COVER") && N.Meta["COVER"].is_object())) continue;
+                const auto & Cv = N.Meta["COVER"];
+                if (!(Cv.contains("SOURCE") && Cv["SOURCE"].is_object()
+                      && Cv["SOURCE"].value("TYPE", std::string()) == "ipfs")) continue;
+                const std::string Cid = Cv["SOURCE"].value("CID", std::string());
+                if (Cid.empty() || !Seen.insert(Cid).second) continue;
+                std::string Safe;                                   // ASSETS/<cid> — same shape as CoverCache::coverPath
+                for (char c : Cid) Safe.push_back((std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_');
+                const QString Dest = QDir::cleanPath(AssetsRoot + "/" + QString::fromStdString(Safe));
+                if (QFileInfo::exists(Dest)) continue;              // already in the shared store
+                Covers.push_back({ Cid, Dest.toStdString(), /*Optional=*/true, /*Dir=*/false, /*Verify=*/true });
+            }
+            if (!Covers.empty()) IpfsWrapper::EnqueueBatch(Covers);
+        }
+    }
     emit catalogChanged();
 }
 
@@ -663,7 +695,9 @@ void AppModel::setReceivingFrom(const QString & peer, bool on)
     if (on) RF.push_back(P);
     else    for (auto It = RF.begin(); It != RF.end(); ++It) if (*It == P) { RF.erase(It); break; }
     save();
-    if (on) requestFriendLibraries(peer);            // pull their current snapshot → stubs written on arrival
+    if (on) reconcileReceivedFriend(peer);           // enqueue from a snapshot we ALREADY hold (arrived during
+                                                     // handshake, before Receive was on) AND re-request for a fresh
+                                                     // one — a bare re-request is dropped by the seq/identical dedup
     else    stopReceivingFromFriend(peer);           // drop what we've already materialised
 }
 

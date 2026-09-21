@@ -235,7 +235,11 @@ std::string PackageSourceNameForPath(const nlohmann::ordered_json &GlobalConfigJ
 
 bool IsLocalPackagePath(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &BundleDir)
 {
-    return !BundleDir.empty() && !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
+    if (BundleDir.empty()) return false;
+    // A bundle under CATALOG is a RECEIVED share — published-by-default content, NOT a locally-added out-of-tree
+    // package. A catalog tile can never be "Local". ("Local" = a bundle in LIBRARY that isn't from a CID source.)
+    if (PathUnder(CatalogRootDir(GlobalConfigJSON), BundleDir)) return false;
+    return !PathUnderManagedSource(GlobalConfigJSON, BundleDir);
 }
 
 std::vector<std::filesystem::path> LocalPackageDirs(const nlohmann::ordered_json &GlobalConfigJSON)

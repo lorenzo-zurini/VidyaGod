@@ -32,11 +32,15 @@ static const QString CatMeta    = QStringLiteral("Meta");
 // VidyaGodRunners, VidyaGodLibraries. "" when the path has no LIBRARY component. Used to split Content by source.
 static QString SourceOfBundle(const std::filesystem::path & BundleDir)
 {
-    bool afterLib = false;
+    // The section a bundle belongs to = the dir right under LIBRARY (a collection: VidyaGod/…) OR under CATALOG
+    // (a received friend share: "<Nick> - <Lib>"). A share is PUBLISHED content, so it names its friend section —
+    // never "Other"/"Local". "" only when the path is truly out of both trees.
+    bool afterRoot = false;
     for (const auto & Part : BundleDir)
     {
-        if (afterLib) return QString::fromStdString(Part.string());
-        if (Part.string() == "LIBRARY") afterLib = true;
+        if (afterRoot) return QString::fromStdString(Part.string());
+        const std::string P = Part.string();
+        if (P == "LIBRARY" || P == "CATALOG") afterRoot = true;
     }
     return {};
 }

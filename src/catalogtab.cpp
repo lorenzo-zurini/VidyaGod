@@ -300,9 +300,18 @@ void CatalogTab::applyFilter()
 
 QString CatalogTab::repoNameForBundle(const std::filesystem::path & BundleDir) const
 {
-    // Each CID package source is its own named catalog section; un-sourced bundles group under "Local".
+    // Each CID package source is its own named catalog section.
     const std::string Name = PackageCatalog::PackageSourceNameForPath(*Model.config(), BundleDir);
-    return Name.empty() ? QStringLiteral("Local") : QString::fromStdString(Name);
+    if (!Name.empty()) return QString::fromStdString(Name);
+    // A RECEIVED share lives under CATALOG/"<Nick> - <Lib>"/… — that is PUBLISHED content, so it sections under its
+    // friend/library, NEVER "Local". Return the dir directly under CATALOG. Only a bundle out of BOTH trees is "Local".
+    bool afterCatalog = false;
+    for (const auto & Part : BundleDir)
+    {
+        if (afterCatalog) return QString::fromStdString(Part.string());
+        if (Part.string() == "CATALOG") afterCatalog = true;
+    }
+    return QStringLiteral("Local");   // genuinely out-of-tree / unpublished
 }
 
 // "Add CID" — manage IPFS folder-CID package sources (add/remove). The list rebuilds on packageSourcesChanged, which
