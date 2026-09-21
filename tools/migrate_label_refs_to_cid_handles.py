@@ -25,7 +25,7 @@ Usage:
 After --apply: open the app and Verify & Publish (mints real CIDs, replaces the placeholders), then re-share.
 Safety: JSON-ONLY backup per root before any write; key order preserved; sort_keys NEVER used.
 """
-import json, os, sys, tarfile, time
+import hashlib, json, os, sys, tarfile, time
 from collections import OrderedDict
 
 REF_LIST_KEYS = ("PARENTS",)        # arrays of handle strings that are TREE/BUILD edges (become CID handles)
@@ -58,28 +58,58 @@ def all_json(roots):
                 if fn.endswith(".json"): out.append(os.path.join(dp, fn))
     return out
 
+def node_positions(doc):
+    """Yield (full-array-index, node_dict) for every node — indexed by POSITION IN THE WHOLE ARRAY (not just among
+    node objects), so build_handles and rewrite_file agree on the key even when a file mixes nodes with stray non-node
+    elements. A single-object file is position 0."""
+    if isinstance(doc, list):
+        for i, n in enumerate(doc):
+            if is_node(n): yield i, n
+    elif is_node(doc):
+        yield 0, doc
+
+def handle_for(abs_path, index):
+    """A DETERMINISTIC handle from (absolute file path, position). Stable across re-runs and independent of the rest of
+    the file set, so adding/removing one file never renumbers (hence never mis-wires) the others. (Premint handles are
+    ephemeral — the next publish mints the real, content-derived CIDs — so cross-machine equality is not needed.)"""
+    h = hashlib.sha1(f"{abs_path}#{index}".encode("utf-8")).hexdigest()[:16]
+    return f"premint-{h}"
+
 def build_handles(files):
-    """Assign every node a unique placeholder handle; map each UNIQUE label → its handle (for reference rewriting)."""
-    node_handle = {}            # id(node dict) → "premint-N"  (identity map; nodes are mutated later in place)
+    """Assign every node its deterministic handle; map each UNIQUE label → its handle (for reference rewriting)."""
+    node_handle = {}            # (path, full-index) → handle
     label_to_handle = {}        # label → handle  (first-seen wins; only unique labels are trustworthy ref targets)
-    dup_labels = {}             # label → count   (cosmetic duplicates; reported, harmless — they are never referenced)
-    counter = 0
-    # Deterministic order so a re-run (or a per-machine run) assigns the SAME handles → same eventual CIDs everywhere.
-    for path in sorted(files):
+    dup_labels = {}             # label → count   (cosmetic duplicates)
+    already_migrated = 0        # nodes already carrying a "CID" (a prior run / partial migration)
+    for path in sorted(files):  # sorted so first-seen (for a duplicate label) is deterministic
         doc = load(path)
         if doc is None: continue
-        for i, n in enumerate(iter_nodes(doc)):
-            if not is_node(n): continue
-            counter += 1
-            h = f"premint-{counter}"
+        ap = os.path.abspath(path)
+        for i, n in node_positions(doc):
+            if isinstance(n.get("CID"), str) and n["CID"]: already_migrated += 1
+            h = handle_for(ap, i)
             node_handle[(path, i)] = h
             lbl = n.get("LABEL")
             if isinstance(lbl, str) and lbl:
-                if lbl in label_to_handle:
-                    dup_labels[lbl] = dup_labels.get(lbl, 1) + 1
-                else:
-                    label_to_handle[lbl] = h
-    return node_handle, label_to_handle, dup_labels
+                if lbl in label_to_handle: dup_labels[lbl] = dup_labels.get(lbl, 1) + 1
+                else: label_to_handle[lbl] = h
+    return node_handle, label_to_handle, dup_labels, already_migrated
+
+def referenced_labels(files):
+    """Every label that appears in a PARENTS/LIBRARYITEM position — so we can tell a harmless cosmetic-duplicate label
+    from one that is actually a reference target (where first-seen resolution matters)."""
+    refd = set()
+    for path in files:
+        doc = load(path)
+        if doc is None: continue
+        for _, n in node_positions(doc):
+            for k in REF_LIST_KEYS:
+                if isinstance(n.get(k), list):
+                    for x in n[k]:
+                        if isinstance(x, str): refd.add(x)
+            for k in REF_STR_KEYS:
+                if isinstance(n.get(k), str): refd.add(n[k])
+    return refd
 
 def rewrite_ref(v, label_to_handle):
     """A reference value: a label → its target's handle; anything already a handle/CID/unknown passes through."""
@@ -109,7 +139,7 @@ def rewrite_file(path, node_handle, label_to_handle, apply):
     changed = 0
     if isinstance(doc, list):
         new = []
-        for i, n in enumerate(doc):
+        for i, n in enumerate(doc):   # FULL-array index — must match node_positions() in build_handles
             if is_node(n) and (path, i) in node_handle:
                 nn = rewrite_node(n, node_handle[(path, i)], label_to_handle); new.append(nn); changed += (nn != n)
             else:
@@ -138,16 +168,27 @@ def json_backup(root):
 
 def main(argv):
     apply = "--apply" in argv
-    roots = [a for a in argv[1:] if a != "--apply"]
+    roots = [a for a in argv[1:] if a not in ("--apply", "--force")]
     roots = [r for r in roots if os.path.isdir(r)]
     if not roots:
         print(__doc__); return 2
+    force = "--force" in argv
     files = all_json(roots)
-    node_handle, label_to_handle, dup_labels = build_handles(files)
+    node_handle, label_to_handle, dup_labels, already_migrated = build_handles(files)
+    # A tree that already carries "CID" handles was migrated before. Re-running is SAFE (handles are deterministic per
+    # (path,index), so refs — now handles, not labels — pass through unchanged and each "CID" is re-set to the same
+    # value), but it is almost never intended. Refuse unless --force, so a stray re-run can't surprise anyone.
+    if already_migrated and not force:
+        print(f"!! REFUSING: {already_migrated} node(s) already have a \"CID\" handle — this tree looks already migrated.")
+        print("   If you really mean to re-run (idempotent with the same file set), pass --force. To start clean,")
+        print("   restore the .label-to-cid-handle-backup-*.tar first.")
+        return 3
     if dup_labels:
-        print("== NOTE: duplicate LABELs (cosmetic — never referenced, so harmless; each node still gets its own handle):")
+        refd = referenced_labels(files)
+        print("== NOTE: duplicate LABELs (cosmetic; each node still gets its OWN unique handle):")
         for lbl, c in sorted(dup_labels.items()):
-            print(f"   '{lbl}' x{c}")
+            tag = "  ⚠ REFERENCED — a ref to this label resolves to the FIRST-seen node (sorted-path order)" if lbl in refd else ""
+            print(f"   '{lbl}' x{c}{tag}")
     if apply:
         for root in roots:
             print(f"== JSON backup {root} → {json_backup(root)}")

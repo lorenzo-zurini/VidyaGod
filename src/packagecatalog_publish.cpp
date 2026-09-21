@@ -440,25 +440,33 @@ int StampNodeCids(const std::filesystem::path &Root,
     };
     const auto UpdateNode = [&](nlohmann::ordered_json &N) -> bool {
         if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) return false;
+        // ONLY touch a locally-AUTHORED node — one that carries a stored "CID" handle. A node with no "CID" is a
+        // fetched/received block (its handle was stripped on landing); rewriting its refs would corrupt the block it
+        // was fetched as (an installed friend package's shared node) — leave it entirely alone.
+        if (!(N.contains("CID") && N["CID"].is_string())) return false;
         bool Ch = false;
-        // The node's own handle (its stored last-minted CID) → its fresh CID. A node with no stored CID is left
-        // untouched here (a never-minted draft, or a synthetic/received node not in the map) — the migration seeds
-        // initial CIDs; publish only refreshes existing handles.
-        if (N.contains("CID") && N["CID"].is_string())
-        {
-            const auto It = HandleToCid.find(N["CID"].get<std::string>());
-            if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
-        }
+        // The node's own handle (its stored last-minted CID) → its fresh CID.
+        const auto It = HandleToCid.find(N["CID"].get<std::string>());
+        if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
         if (N.contains("PARENTS") && N["PARENTS"].is_array())
             for (auto &P : N["PARENTS"]) Ch = Remap(P) || Ch;
         if (N.contains("LIBRARYITEM")) Ch = Remap(N["LIBRARYITEM"]) || Ch;
         return Ch;
     };
 
-    int Rewritten = 0;
+    // TWO-PHASE so a partial failure can NEVER leave the tree with mixed stale/fresh handles (a referrer pointing at a
+    // parent's OLD published CID reads as a valid external dep and would silently pin the previous version — a class the
+    // Model C ref form makes silent, unlike a dangling label). Phase 1: write every changed file to a sibling ".vgtmp"
+    // (a byte-identical dump(4)); if ANY write fails, remove every tmp and abort with the tree UNCHANGED (still fully
+    // consistent — every handle stays at its pre-publish value, which freeze remaps deterministically). Phase 2: rename
+    // all tmps into place (a same-dir rename is atomic and, after all the writes succeeded, near-certain).
+    std::vector<fs::path> Pending;   // committed tmps awaiting rename → their real path is Tmp without ".vgtmp"
+    auto CleanupTmps = [&](const std::vector<fs::path> &Tmps) { for (const fs::path &T : Tmps) { std::error_code Rm; fs::remove(T, Rm); } };
+
     fs::recursive_directory_iterator It(Root, fs::directory_options::skip_permission_denied, Ec), End;
-    for (; !Ec && It != End; It.increment(Ec))
+    for (; It != End; It.increment(Ec))
     {
+        if (Ec) { Ec.clear(); continue; }   // a permission-denied subdir mid-walk must not truncate the stamp
         const auto &E = *It;
         if (E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
         { It.disable_recursion_pending(); continue; }   // never rewrite a received stub (browse-only, never minted)
@@ -470,24 +478,30 @@ int StampNodeCids(const std::filesystem::path &Root,
         else Ch = UpdateNode(J);
         if (!Ch) continue;
 
-        // Atomic temp+rename (a node .json is the author's only copy): a crash/ENOSPC part-way leaves the old file.
         // dump(4), no trailing newline — byte-identical to SaveNodes / the POS+SOURCE stampers, so a stamp doesn't
         // reflow the file (which would change its bytes with no semantic change and re-mint an identical node).
         const fs::path Tmp = E.path().string() + ".vgtmp";
-        {
-            std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
-            if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); return -1; }
-            Out << J.dump(4);
-            Out.flush();
-            if (!Out.good())
-            { std::error_code Rm; fs::remove(Tmp, Rm);
-              if (Error) *Error = "write failed (disk full?) for " + E.path().string(); return -1; }
-        }
+        std::ofstream Out(Tmp, std::ios::binary | std::ios::trunc);
+        if (!Out) { if (Error) *Error = "could not write " + Tmp.string(); CleanupTmps(Pending); return -1; }
+        Out << J.dump(4);
+        Out.flush();
+        if (!Out.good())
+        { std::error_code Rm; fs::remove(Tmp, Rm);
+          if (Error) *Error = "write failed (disk full?) for " + E.path().string(); CleanupTmps(Pending); return -1; }
+        Pending.push_back(Tmp);
+    }
+
+    int Rewritten = 0;
+    for (const fs::path &Tmp : Pending)
+    {
+        fs::path Real = Tmp; Real.replace_extension();   // strip ".vgtmp" → the original path (…/x.json.vgtmp → …/x.json)
         std::error_code Rn;
-        fs::rename(Tmp, E.path(), Rn);
-        if (Rn) { std::error_code Rm; fs::remove(Tmp, Rm);
-                  if (Error) *Error = "could not replace " + E.path().string() + ": " + Rn.message(); return -1; }
-        ++Rewritten;
+        fs::rename(Tmp, Real, Rn);
+        if (Rn)   // extremely unlikely after all writes succeeded; report loudly (some may already be committed)
+        { std::error_code Rm; fs::remove(Tmp, Rm);
+          LogErr("PackageCatalog::StampNodeCids", "could not commit " + Real.string() + ": " + Rn.message()
+                 + " — re-run Verify & Publish"); }
+        else ++Rewritten;
     }
     if (Rewritten)
         LogOut("PackageCatalog::StampNodeCids", "wrote fresh CIDs into " + std::to_string(Rewritten) + " node file(s)");

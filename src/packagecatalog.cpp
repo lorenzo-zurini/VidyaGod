@@ -1250,6 +1250,10 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
             if (J.is_discarded() || !J.is_object()) { if (Error) *Error = "closure block " + C + " is not a node"; return false; }
             NodeGraph::NormalizeLinks(J);
+            // SECURITY: an honest frozen block never carries a top-level "CID" (stripped at freeze). A malicious block
+            // can embed one equal to a local node's handle to hijack it at the next gather. The block is identified by
+            // the CID we fetched it BY, so drop any embedded handle before it is written to the working tree.
+            J.erase("CID");
             std::vector<std::string> Refs;
             std::vector<std::string> Ps;
             if (J.contains("PARENTS") && J["PARENTS"].is_array())
@@ -1263,13 +1267,17 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             }
             LandedDoc[C] = J;
 
+            // The Go fetch wrote the RAW block bytes (which may carry the forged "CID"); overwrite that file with the
+            // normalized, handle-stripped J so the on-disk working tree never carries a hijackable handle. Prefer a
+            // pretty NodeId(LABEL) filename when it is free.
             const std::string NodeId = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
-            if (!NodeId.empty())
-            {
-                std::error_code Ec;
-                const fs::path From = Bundle / (San(C) + ".json"), To = Bundle / (San(NodeId) + ".json");
-                if (fs::exists(From, Ec) && !fs::exists(To, Ec)) fs::rename(From, To, Ec);   // cosmetic; best-effort
-            }
+            std::error_code Ec;
+            const fs::path From = Bundle / (San(C) + ".json");
+            fs::path Dest = From;
+            if (!NodeId.empty()) { const fs::path To = Bundle / (San(NodeId) + ".json");
+                                   if (To == From || !fs::exists(To, Ec)) Dest = To; }
+            if (Dest != From) fs::remove(From, Ec);   // relocating to the pretty name
+            { std::ofstream Out(Dest, std::ios::binary); Out << J.dump(2) << "\n"; }
         }
         Missing = std::move(Next);
     }

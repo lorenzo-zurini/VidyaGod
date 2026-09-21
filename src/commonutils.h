@@ -73,6 +73,13 @@ inline void LogSucc(const std::string& ctx, const std::string& msg) { Log(LogLev
 //QString::fromStdString.
 std::string HumanBytes(long long Bytes);
 
+//A GLOBALLY-unique placeholder handle for a not-yet-minted node ("draft-<random hex>"). Model C keys nodes by their
+//stored "CID" handle; a fresh node has no CID until it is published, so it carries one of these meanwhile. It MUST be
+//globally unique — publishing is library-wide, so two bundles authored independently would otherwise collide (a
+//per-bundle counter gives every fresh bundle "draft-1") and get cross-wired at the first mint. Random-suffixed, so
+//uniqueness needs no shared counter across bundles/sessions/machines. Replaced by the real CID at the next publish.
+std::string MakeDraftHandle();
+
 //Structured launch-step marker: context "LaunchStep", message "<k>/<n> <label>". This is a CONTRACT, not
 //log phrasing: the prelaunch progress bar/status parse exactly this shape (LaunchThread), so the engine
 //announces every phase through here — never by ad-hoc log-line heuristics.

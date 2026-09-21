@@ -522,12 +522,13 @@ int PkgCanvas::addNode(const std::string &type, float x, float y)
         if (!Taken) break;
         Label = Base + "_" + std::to_string(K);
     }
-    // A unique, STABLE draft HANDLE. A new node has no CID until the next Publish mints it (the cascade is fully
-    // deferred): "draft-…" is the in-editor handle that PARENTS reference meanwhile and that Publish remaps to the
-    // real CID via HandleToCid + StampNodeCids. It is stored in "CID" (stripped at freeze, so it never ships).
+    // A GLOBALLY-unique, stable draft HANDLE. A new node has no CID until the next Publish mints it (the cascade is
+    // fully deferred): the draft handle is what PARENTS reference meanwhile and Publish remaps to the real CID via
+    // HandleToCid + StampNodeCids. It MUST be globally unique (publish is library-wide) — a per-bundle counter would
+    // give every fresh bundle the same handle and cross-wire them at the first mint. Stored in "CID" (stripped at
+    // freeze, so it never ships). The retry loop guards the astronomically-unlikely in-bundle collision.
     std::string Draft;
-    for (int K = (int)m_s->Nodes().size() + 1; ; ++K)
-    { Draft = "draft-" + std::to_string(K); if (indexOf(Draft) < 0) break; }
+    do { Draft = MakeDraftHandle(); } while (indexOf(Draft) >= 0);
     json Out = json::object({{"PARENTS", json::array()}});
     for (const auto &[K, V] : N.items()) Out[K] = V;
     Out["CID"] = Draft;

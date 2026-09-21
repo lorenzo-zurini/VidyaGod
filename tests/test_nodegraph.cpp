@@ -328,4 +328,22 @@ TEST(nodegraph_duplicate_HANDLE_keeps_first_seen_local_wins)
     std::map<std::string, std::filesystem::path> Dirs2;
     NodeGraph::GatherWorkingTree(D2.P, T2, Dirs2);
     CHECK(T2.count("cidW") == 1);
+
+    // SAME-WALK collision (the real threat surface — two files with the same handle under ONE root, one recursive
+    // walk, order = filesystem enumeration): still keep-first-seen, and the loser is retained under a synthetic key,
+    // never dropped. (Whichever wins is fs-order-dependent, but BOTH survive and no node vanishes — that is the
+    // invariant. The forged-block hijack it used to enable is closed upstream by stripping "CID" on landing.)
+    ScanDir D3;
+    D3.Write("A/one.json", Wine.dump());
+    D3.Write("A/two.json", Evil.dump());   // same handle "cidW", different content
+    std::map<std::string, ordered_json> T3;
+    std::map<std::string, std::filesystem::path> Dirs3;
+    NodeGraph::GatherWorkingTree(D3.P, T3, Dirs3);
+    CHECK(T3.size() == 2);                  // BOTH retained (winner on "cidW", loser re-keyed) — nothing vanishes
+    CHECK(T3.count("cidW") == 1);
+    int w = 0, p = 0;
+    for (const auto & [K, N] : T3)
+        if (N.value("EXECUTABLE", std::string()) == "wine") w++;
+        else if (N.value("EXECUTABLE", std::string()) == "pwned") p++;
+    CHECK(w == 1); CHECK(p == 1);
 }

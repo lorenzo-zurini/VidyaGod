@@ -1,8 +1,12 @@
 #include "commonutils.h"
 
 #include <cstdlib>
+#include <cstdint>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
+#include <random>
 #include <set>
 
 //Static callback — null by default. Set via SetLogCallback(); cleared via ClearLogCallback().
@@ -168,5 +172,17 @@ std::string HumanBytes(long long Bytes)
     while (V >= 1024.0 && I < 5) { V /= 1024.0; ++I; }
     char Buf[32];
     std::snprintf(Buf, sizeof Buf, (I > 0 && V < 10.0) ? "%.1f %s" : "%.0f %s", V, U[I]);
+    return Buf;
+}
+
+std::string MakeDraftHandle()
+{
+    // 64 bits of randomness from a seeded-once engine + a monotonic counter → unique even for many nodes created in the
+    // same millisecond across bundles. Format "draft-<16 hex>"; never a valid CID, so it's obviously a placeholder.
+    static std::mt19937_64 Eng{ std::random_device{}() ^ (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count() };
+    static std::atomic<uint64_t> Ctr{ 0 };
+    const uint64_t R = Eng() ^ (Ctr.fetch_add(1) * 0x9E3779B97F4A7C15ULL);
+    char Buf[24];
+    std::snprintf(Buf, sizeof Buf, "draft-%016llx", (unsigned long long)R);
     return Buf;
 }

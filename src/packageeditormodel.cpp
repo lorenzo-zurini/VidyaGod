@@ -125,9 +125,10 @@ void PackageEditorModel::LoadNodes()
     }
 
     if (Doc["NODES"].empty())
-        // A fresh empty bundle gets one Group node. It needs a stable draft HANDLE ("CID") so the canvas can wire it;
-        // the real CID is minted at Publish. LABEL is left empty (cosmetic — the node shows its type until named).
-        Doc["NODES"].push_back(json::object({ {"CID", "draft-1"}, {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
+        // A fresh empty bundle gets one Group node with a GLOBALLY-unique draft HANDLE ("CID") so the canvas can wire
+        // it; the real CID is minted at Publish. (A hardcoded "draft-1" here would collide with every other fresh
+        // bundle at the library-wide publish and cross-wire them.) LABEL is empty (cosmetic — shows its type until named).
+        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LoadLayout();
@@ -440,7 +441,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
         return false;
     };
     std::string Handle;
-    for (int K = (int)Doc["NODES"].size() + 1; ; ++K) { Handle = "draft-" + std::to_string(K); if (!HandleExists(Handle)) break; }
+    do { Handle = MakeDraftHandle(); } while (HandleExists(Handle));   // globally unique — never a per-bundle counter
 
     nlohmann::ordered_json N = nlohmann::ordered_json::object({{"CID", Handle}, {"LABEL", IdHint}});
     nlohmann::ordered_json P = nlohmann::ordered_json::array();

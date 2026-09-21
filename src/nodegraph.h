@@ -31,12 +31,13 @@ void NormalizeLinks(nlohmann::ordered_json &J);
 nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
                                       const std::map<std::string, std::string> &HandleToCid);
 
-// Read every *.json node under Root (RECURSIVELY) into a working tree: NODE_ID handle → raw node JSON, and handle →
-// the bundle dir it came from (for BundleDir). A file holds one node or an array of them; FIRST-seen wins on a
-// duplicate handle (and warns). Recursion is required so a package's cross-package edges resolve against the whole library (handles
-// are globally unique). Pure — filesystem + JSON only, no IPFS.
+// Read every *.json node under Root (RECURSIVELY) into a working tree: stored "CID" handle → raw node JSON, and handle
+// → the bundle dir it came from (for BundleDir). A node with no stored "CID" (a fetched/received block, whose handle
+// was stripped on landing, or a never-minted draft) gets a synthetic per-node key. A file holds one node or an array
+// of them; FIRST-seen wins on a duplicate handle (a stale/forged stored CID) and the loser is RE-KEYED, never dropped.
+// Recursion is required so a package's cross-package edges resolve against the whole library. Pure — FS + JSON, no IPFS.
 // SkipReserved: skip reserved "_friend_*" received-stub dirs (used by PublishLibrary so a friend's stub can never enter
-// the mint tree — no re-share, no hostile NODE_ID shadowing our handles). Default false (the catalog gather wants them).
+// the mint tree — no re-share, no hostile handle shadowing our nodes). Default false (the catalog gather wants them).
 // Cheap string-aware bracket-depth pre-scan: true iff the JSON text nests no deeper than MaxDepth. nlohmann's parser
 // is recursive-descent and NormalizeLinks recurses per level, so UNTRUSTED bytes (a fetched block, a landed received
 // node file) must pass this BEFORE any parse — a hostile deep block otherwise overflows the stack (no exception).

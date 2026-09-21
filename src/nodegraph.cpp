@@ -148,6 +148,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
 
     NodeIndex Idx;
     std::map<std::string, std::string> HandleToCid;
+    std::set<std::string> AuthoredCids;   // CIDs whose index slot came from a LOCAL (non-synthetic) handle
     int Skipped = 0;
     for (const std::string &Handle : Order)
     {
@@ -196,7 +197,16 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         N.Cid = Cid;
         const auto It = Dirs.find(Handle);
         if (It != Dirs.end()) N.BundleDir = It->second;   // on-disk content home → launch mounts from here
-        Idx.Nodes.emplace(Cid, std::move(N));
+        // Two copies of one node (same content ⇒ same CID) can both be present: a LOCAL authored/installed one and a
+        // RECEIVED one inside a just-hydrated friend package's closure. They are byte-identical, but their BundleDir
+        // differs and launch mounts/seeds from BundleDir — so the LOCAL copy must win regardless of topo order. A
+        // received/synthetic-gathered node has a control-byte ('\x01') handle; an authored/local one does not.
+        const bool Authored = !Handle.empty() && (unsigned char)Handle[0] >= 0x20;
+        const auto Ex = Idx.Nodes.find(Cid);
+        if (Ex == Idx.Nodes.end()) { Idx.Nodes.emplace(Cid, std::move(N)); if (Authored) AuthoredCids.insert(Cid); }
+        else if (Authored && !AuthoredCids.count(Cid))   // replace a received entry with the authored one (once)
+        { Ex->second = std::move(N); AuthoredCids.insert(Cid); }
+        // else: keep first-seen (existing authored, or both received)
     }
     if (Skipped) LogWarn("NodeGraph::FreezeToIndex", "skipped " + std::to_string(Skipped)
                          + " node(s) with dangling/bad refs — the rest of the library is intact");
@@ -250,6 +260,11 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
         nlohmann::ordered_json J;
         if (!ParseBlockBounded(Js, J)) { if (Error) *Error = "unparseable / too-deep block " + C; return {}; }
         NormalizeLinks(J);   // {"/":cid} → plain CID strings: readable, and re-freezes to the same CID
+        // SECURITY: an honest frozen block never carries a top-level "CID" (it is stripped at freeze — a block can't
+        // contain its own hash). A MALICIOUS block can embed one equal to a local node's handle to hijack it at the
+        // next gather (and get baked into the author's files by StampNodeCids). A fetched block is identified solely by
+        // the CID we fetched it BY, so drop any embedded handle — the node re-keys synthetically and can't hijack.
+        if (J.is_object()) J.erase("CID");
 
         std::string Base = SanitizeSegment(N.NodeId);
         if (!UsedFiles.insert(Base).second) Base += "_" + C.substr(0, 12);   // NODE_ID collision → disambiguate by CID
