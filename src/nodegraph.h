@@ -48,10 +48,16 @@ bool JsonDepthWithinLimit(const std::string &S, int MaxDepth);
 // received shares land hostile bytes there verbatim, and one unguarded recursive parse is a crash.
 bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_json &J);
 
+// TrustStoredCid: whether a node's stored "CID" field may be used as its handle. TRUE for the user's OWN roots
+// (LIBRARY, externally-added local bundles) — those files are authored/installed under our control. FALSE for the
+// UNTRUSTED received root (CATALOG browse stubs a friend controls): a malicious stub can embed a "CID" equal to a
+// local node's external-dep CID to make that dep resolve intra-tree to hostile content (or forge an "authored"
+// handle to steal a launch's BundleDir). An honest frozen stub never carries "CID" (stripped at freeze), so ignoring
+// it costs nothing and makes every received node synthetic-keyed (browse-only, un-referenceable, never a handle).
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,
-                       bool SkipReserved = false);
+                       bool SkipReserved = false, bool TrustStoredCid = true);
 
 // Lift the metadata edge (flat → gigagraph): for each DeclareExec in the tree, move a PARENTS entry that names a
 // DeclareLibraryItem node (present in the tree) into the exec's LIBRARYITEM field, removing it from PARENTS — so the

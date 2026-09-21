@@ -297,6 +297,27 @@ TEST(nodegraph_duplicate_LABEL_is_fine_distinct_handles_both_kept)
     CHECK(Tree.count("cidTfT") == 1);
 }
 
+TEST(nodegraph_untrusted_gather_ignores_forged_cid_handle)
+{
+    // A received CATALOG stub's bytes are attacker-controlled. Gathered with TrustStoredCid=FALSE, a crafted "CID"
+    // (equal to a local node's external-dep CID, or forged to look authored) MUST NOT become a resolvable handle — the
+    // node is synthetic-keyed instead. Teeth: pass TrustStoredCid=true here and the forged handle keys the node,
+    // re-opening the dependency-substitution / BundleDir-steal hijacks.
+    ScanDir D;
+    D.Write("Mallory - Lib/[x] x/forge.json",
+            ordered_json{{"CID", "bafyVICTIMdep"}, {"LABEL", "innocent"}, {"TYPE", "Content"}}.dump());
+    std::map<std::string, ordered_json> Untrusted;
+    std::map<std::string, std::filesystem::path> DirsU;
+    NodeGraph::GatherWorkingTree(D.P, Untrusted, DirsU, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
+    CHECK(Untrusted.count("bafyVICTIMdep") == 0);   // the forged handle did NOT take the slot
+    CHECK(Untrusted.size() == 1);                   // the node is still gathered (browse) — under a synthetic key
+    // The same file gathered as TRUSTED (our own root) DOES honor the stored handle.
+    std::map<std::string, ordered_json> Trusted;
+    std::map<std::string, std::filesystem::path> DirsT;
+    NodeGraph::GatherWorkingTree(D.P, Trusted, DirsT, /*SkipReserved=*/false, /*TrustStoredCid=*/true);
+    CHECK(Trusted.count("bafyVICTIMdep") == 1);
+}
+
 TEST(nodegraph_duplicate_HANDLE_keeps_first_seen_local_wins)
 {
     // A CID is a content hash, so a duplicate HANDLE only happens on a STALE (edited, not re-minted) or FORGED stored

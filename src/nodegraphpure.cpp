@@ -132,7 +132,7 @@ bool ReadTreeJsonBounded(const std::filesystem::path &File, nlohmann::ordered_js
 void GatherWorkingTree(const std::filesystem::path &Root,
                        std::map<std::string, nlohmann::ordered_json> &Tree,
                        std::map<std::string, std::filesystem::path> &Dirs,
-                       bool SkipReserved)
+                       bool SkipReserved, bool TrustStoredCid)
 {
     namespace fs = std::filesystem;
     std::error_code Ec;
@@ -170,7 +170,9 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             // COSMETIC: an optional pretty name that travels in the block and is NEVER a key. So distinct nodes may
             // freely share a label (RoC/TFT "v1.21b", two "Vanilla" editions) — they have distinct CIDs, full stop.
             if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
-            std::string Handle = (N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
+            // From an UNTRUSTED root (received CATALOG stubs), the stored "CID" is attacker-controlled — ignore it so
+            // the node is synthetic-keyed (browse-only, never a resolvable handle). An honest stub has none anyway.
+            std::string Handle = (TrustStoredCid && N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
             // A real CID handle is base32/base58 — no control bytes. Reject a handle carrying any (< 0x20) as
             // handle-less (→ synthetic key): the synthetic key is control-byte-prefixed, so a hostile working-tree
             // "CID":"<path>#N" could otherwise forge exactly that key and evict a local node.

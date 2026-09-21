@@ -1302,10 +1302,11 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
-    NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);
-    NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs);   // received browse stubs (merged in
-                                                                                 // → a LIBRARY game's dep resolves
-                                                                                 // even when the dep is a CATALOG stub)
+    NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);   // OUR nodes: stored CID handle trusted
+    // Received browse stubs (a friend controls their bytes): gather with TrustStoredCid=FALSE so a crafted "CID" can't
+    // hijack a local handle or a local node's external-dep ref, or forge an "authored" handle to steal a BundleDir.
+    // They still merge in and resolve by their DERIVED CID in the frozen index (browse tiles link exec→tile fine).
+    NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
     for (const auto &D : LocalPackageDirs(GlobalConfigJSON))   // externally-added bundles that live OUTSIDE LIBRARY
         NodeGraph::GatherWorkingTree(D, Tree, Dirs);
     NodeGraph::LiftLibraryItemEdge(Tree);
