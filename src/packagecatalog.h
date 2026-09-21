@@ -44,6 +44,10 @@ void MergePackageVariables(const nlohmann::ordered_json &GlobalConfigJSON, const
 // ----- on-disk locations -----
 // The managed library root (hydrated content + disk-space checks): Settings.Paths.LibraryRoot or ~/.VidyaGod/LIBRARY.
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
+// CATALOG (received browse stubs) and ASSETS (content-addressed shared files, e.g. covers) — top-level siblings of
+// LIBRARY. The catalog scan spans LIBRARY + CATALOG; publish scans LIBRARY only. See the .cpp for the three-dir model.
+std::string CatalogRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
+std::string AssetsRootDir(const nlohmann::ordered_json &GlobalConfigJSON);
 
 // The library (named collection dir under the LIBRARY root) a bundle belongs to — the first path segment of BundleDir
 // relative to Root; "" if the package sits directly under the root. A package's library is chosen at publish time.

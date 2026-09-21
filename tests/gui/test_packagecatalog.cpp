@@ -316,12 +316,13 @@ private slots:
         QCOMPARE((int)Items.size(), 2);
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);   // sibling of LIBRARY → RxData/CATALOG
 
-        // Plan: every node + its tile gets a FINAL library dest, computed pre-fetch from the snapshot alone.
+        // Plan: every node + its tile gets a FINAL CATALOG dest, computed pre-fetch from the snapshot alone.
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
         QCOMPARE((int)Plan.size(), 4);                          // 2 roots + their 2 tiles
-        const std::string Lib = RxData.path().toStdString() + "/Alice - Games";
+        const std::string Lib = Catalog + "/Alice - Games";     // received stubs land in CATALOG, not LIBRARY
         std::set<std::string> Dests;
         for (const auto & T : Plan) Dests.insert(T.Dest);
         QVERIFY2(Dests.count(Lib + "/[1] A/a_exec.json"), "root dest = NODE_ID-named file in its [uid] Title dir");
@@ -360,11 +361,11 @@ private slots:
                                             {"tilecid", Items[0].value("tilecid", std::string())}, {"tilenode", "/etc/passwd"}}});
         const auto EvilPlan = PackageCatalog::PlanReceivedFetches(rx, "..", json{{"..", Evil}});
         QVERIFY(!EvilPlan.empty());
-        const std::string RootPrefix = RxData.path().toStdString() + "/";
+        const std::string RootPrefix = Catalog + "/";
         for (const auto & T : EvilPlan)
         {
             const std::string Canon = std::filesystem::weakly_canonical(T.Dest).string();
-            QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the library root: " + Canon).c_str());
+            QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the CATALOG root: " + Canon).c_str());
         }
 
         // Planner dedupe: the same snapshot plans the same 4 targets again (stable), never duplicates within one plan.
@@ -373,26 +374,39 @@ private slots:
         std::set<std::string> D2; for (const auto & T : Plan2) D2.insert(T.Dest);
         QCOMPARE(D2.size(), Plan2.size());
 
-        // RE-PUBLISH (multi-seeder): the received library re-mints to IDENTICAL CIDs and re-shares with the SAME
-        // routing metadata — which requires the raw-landed docs to read as ordinary tree nodes (scan-time link
-        // normalization: LIBRARYITEM must come back as a plain CID string for the tile uid/title lookup). Teeth for
-        // NormalizeLinks-at-scan and for PublishLibrary's LIBRARYITEM-as-CID reverse lookup: drop either and the
-        // uid/title/tile asserts fail; a drifting re-mint breaks the cid equality.
+        // CATALOG stubs are BROWSE-ONLY: publish scans LIBRARY only, so a re-publish must NOT include a received
+        // stub — you re-share what you've installed, not everything you've browsed. (The scan-finds-Cid0 assert
+        // above is the NormalizeLinks-at-scan tooth: drop scan-time normalization and the raw {"/":cid} block
+        // re-freezes to a DIFFERENT CID → Cid0 not found.)
         std::string PubErr;
         PackageCatalog::PublishLibrary(rx, &PubErr);
-        QVERIFY2(rx.contains("Libraries") && rx["Libraries"].contains("Alice - Games"),
-                 "the received library re-publishes under its own dir name");
-        const auto & Re = rx["Libraries"]["Alice - Games"];
-        QCOMPARE((int)Re.size(), 2);
-        const auto & R0 = Re[0];                                   // handle order: a_exec first
-        QCOMPARE(R0.value("cid", std::string()),  Cid0);           // identical re-mint — the multi-seeder design
-        QCOMPARE(R0.value("node", std::string()), std::string("a_exec"));
-        QCOMPARE(R0.value("uid", std::string()),  std::string("1"));
-        QCOMPARE(R0.value("title", std::string()), std::string("A"));
-        QCOMPARE(R0.value("tilenode", std::string()), std::string("a_tile"));
-        QCOMPARE(R0.value("tilecid", std::string()), Items[0].value("tilecid", std::string()));
+        QVERIFY2(!rx.value("Libraries", json::object()).contains("Alice - Games"),
+                 "a CATALOG browse stub is NOT published (LIBRARY-only publish; browse != share)");
 
         IpfsWrapper::StopNode();
+    }
+
+    // CATALOG is a scanned root beside LIBRARY: a stub placed in CATALOG shows up in the catalog index, and a
+    // LIBRARY package's cross-reference to it resolves through the MERGED index. Teeth: drop the CATALOG
+    // GatherWorkingTree in BuildCatalogIndex and the CATALOG node is absent from the scan.
+    void catalog_dir_is_a_scanned_root_beside_library()
+    {
+        QTemporaryDir Root; QVERIFY(Root.isValid());
+        json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", (Root.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(cfg);
+        const std::string Library = PackageCatalog::LibraryRootDir(cfg);
+        // One node in LIBRARY, one in CATALOG — both must appear in the single merged index.
+        QDir().mkpath(QString::fromStdString(Library) + "/VidyaGod/[1] Mine");
+        QDir().mkpath(QString::fromStdString(Catalog) + "/Alice - Games/[2] Theirs");
+        writeJson(QString::fromStdString(Library) + "/VidyaGod/[1] Mine/m.json",
+                  NodeFixture::Chain("mine", {NodeFixture::Exec("win32", "m.exe")}));
+        writeJson(QString::fromStdString(Catalog) + "/Alice - Games/[2] Theirs/t.json",
+                  NodeFixture::Chain("theirs", {NodeFixture::Exec("win32", "t.exe")}));
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(cfg);
+        bool haveMine = false, haveTheirs = false;
+        for (const auto & [C, N] : Idx.Nodes) { if (N.NodeId == "mine") haveMine = true; if (N.NodeId == "theirs") haveTheirs = true; }
+        QVERIFY2(haveMine, "LIBRARY node is scanned");
+        QVERIFY2(haveTheirs, "CATALOG node is scanned into the SAME index (drop the CATALOG root → this fails)");
     }
 
     // Install on a RECEIVED card: the closure is incomplete (only exec + tile were shared), so the download pipeline
@@ -410,8 +424,9 @@ private slots:
         QCOMPARE((int)Items.size(), 2);
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
-        {   // Receive: exec + tile land at their final library paths through the queue (the share flow).
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
+        {   // Receive: exec + tile land at their final CATALOG paths through the queue (the share flow).
             std::vector<IpfsWrapper::FetchTarget> B;
             for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}}))
                 B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
@@ -425,7 +440,7 @@ private slots:
 
         QVERIFY2(PackageCatalog::CompleteClosure(Idx, "a_exec", &Err), Err.c_str());
 
-        const QString Pkg = RxData.path() + "/Alice - Games/[1] A";
+        const QString Pkg = QString::fromStdString(Catalog) + "/Alice - Games/[1] A";
         QVERIFY2(QFile::exists(Pkg + "/a_content.json"), "wave 1 landed NODE_ID-named in the package dir");
         QVERIFY2(QFile::exists(Pkg + "/a_base.json"),    "wave 2 landed (frontier discovered from wave 1's block)");
 
@@ -459,7 +474,8 @@ private slots:
         const std::string CidV1 = Items[0].value("cid", std::string());
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", RxData.path().toStdString()}}}}}};
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         // TWO libraries carry the same items (the multi-dest normal: one CID job, several dests) — a re-publish
         // must refresh EVERY dest, not just the fetch's primary.
         auto Land = [&](const json & SnapItems) {
@@ -473,7 +489,7 @@ private slots:
             QVERIFY2(IpfsWrapper::WaitBatch(H, 30000, &WErr), WErr.c_str());
         };
         auto DestBytes = [&](const std::string & Lib, const std::string & Node) {
-            std::ifstream In(RxData.path().toStdString() + "/Alice - " + Lib + "/[1] A/" + Node + ".json", std::ios::binary);
+            std::ifstream In(Catalog + "/Alice - " + Lib + "/[1] A/" + Node + ".json", std::ios::binary);
             return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
         };
         Land(Items);
@@ -510,14 +526,16 @@ private slots:
     // ENAMETOOLONG mkdir forever); (2) an over-long cid is dropped; (3) the per-library item cap holds.
     void planner_bounds_hostile_segments_and_counts()
     {
-        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", "/tmp/vgplanb"}}}}}};
+        QTemporaryDir PlanRoot; QVERIFY(PlanRoot.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (PlanRoot.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
         const std::string Long(1000, 'x');
         const json Items = json::array({ json{{"cid", "bafyplannerboundscidaaaaaaaaaaaaaaaaaaaaaa"},
                                               {"node", Long}, {"uid", Long}, {"title", Long}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, Long, json{{Long, Items}});
         QCOMPARE((int)Plan.size(), 1);
         for (const auto & T : Plan)
-            for (const auto & Part : std::filesystem::path(T.Dest.substr(std::string("/tmp/vgplanb/").size())))
+            for (const auto & Part : std::filesystem::path(T.Dest.substr(Catalog.size() + 1)))
                 QVERIFY2(Part.string().size() <= 130, ("segment too long: " + Part.string()).c_str());
 
         // Two games of ONE package (same pkg, different tiles) must land in the SAME dir — by-bundle sibling

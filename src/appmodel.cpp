@@ -588,11 +588,15 @@ void AppModel::forgetFriend(const QString & peer)
         std::string Nick;
         for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
         if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        std::set<std::filesystem::path> LibDirs;
         for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
         {
+            LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());
             if (!FriendBrowseCids.erase(T.Cid)) continue;
             IpfsWrapper::CancelDownload(T.Cid);
         }
+        std::error_code Ec;
+        for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // browse stubs; LIBRARY installs untouched
     }
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
@@ -672,11 +676,15 @@ void AppModel::stopReceivingFromFriend(const QString & peer)
         std::string Nick;
         for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
         if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        std::set<std::filesystem::path> LibDirs;   // CATALOG/<Nick> - <Lib> subtrees to remove (pure browse stubs)
         for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
         {
+            LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
             if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
             IpfsWrapper::CancelDownload(T.Cid);
         }
+        std::error_code Ec;
+        for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // installed games are in LIBRARY, untouched
     }
     // Dropping the peer's snapshot removes its packages from future reconciles (enqueueReceivedShares plans only
     // from FriendLibraries of peers we still Receive from).

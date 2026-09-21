@@ -88,6 +88,23 @@ static std::string LibraryDir(const nlohmann::ordered_json &GlobalConfigJSON)
 
 std::string LibraryRootDir(const nlohmann::ordered_json &GlobalConfigJSON) { return LibraryDir(GlobalConfigJSON); }
 
+// CATALOG and ASSETS are top-level SIBLINGS of LIBRARY (beside it, whether LibraryRoot is default or overridden):
+//   LIBRARY/ = what you've installed (hydrated, published, seeded)
+//   CATALOG/ = received browse stubs (pinned node blocks, NOT published) — <Nick> - <Lib>/<pkg>/<node>.json
+//   ASSETS/  = content-addressed shared files (covers) — <cid>, one per CID, shared by every tile that references it
+// The catalog scan spans LIBRARY + CATALOG (merged index resolves a LIBRARY game's dep even when the dep is a
+// CATALOG stub); publish scans LIBRARY only.
+std::string CatalogRootDir(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    return QDir::cleanPath(QString::fromStdString(
+        (std::filesystem::path(LibraryDir(GlobalConfigJSON)).parent_path() / "CATALOG").string())).toStdString();
+}
+std::string AssetsRootDir(const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    return QDir::cleanPath(QString::fromStdString(
+        (std::filesystem::path(LibraryDir(GlobalConfigJSON)).parent_path() / "ASSETS").string())).toStdString();
+}
+
 // Pure path-prefix test: is Path inside Base? (weakly-canonical so it works whether or not either exists yet.)
 static bool PathUnder(const std::filesystem::path &Base, const std::filesystem::path &Path)
 {
@@ -1076,7 +1093,7 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     };
     std::vector<ReceivedFetch> Out;
     if (!Libs.is_object()) return Out;
-    const fs::path Root = fs::path(LibraryRootDir(GlobalConfigJSON));
+    const fs::path Root = fs::path(CatalogRootDir(GlobalConfigJSON));   // received stubs live in CATALOG, not LIBRARY
     std::set<std::string> UsedDests;   // 900 variants share ONE tile → one target; a NODE_ID collision keeps first-seen
     auto Add = [&](const std::string &Cid, const fs::path &Dest) {
         if (Cid.empty() || Cid.size() > 128) return;
@@ -1247,6 +1264,9 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     std::map<std::string, nlohmann::ordered_json> Tree;
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(LibraryRootDir(GlobalConfigJSON), Tree, Dirs);
+    NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs);   // received browse stubs (merged in
+                                                                                 // → a LIBRARY game's dep resolves
+                                                                                 // even when the dep is a CATALOG stub)
     for (const auto &D : LocalPackageDirs(GlobalConfigJSON))   // externally-added bundles that live OUTSIDE LIBRARY
         NodeGraph::GatherWorkingTree(D, Tree, Dirs);
     NodeGraph::LiftLibraryItemEdge(Tree);
