@@ -40,6 +40,7 @@ NetworkTab::NetworkTab(AppModel & model, QWidget * parent) : QWidget(parent), Mo
     connect(FM, &FriendsManager::friendRemoved,  this, [this]{ scheduleRefresh(); });
     connect(&Model, &AppModel::friendCatalogChanged, this, [this]{ scheduleRefresh(); });
     connect(&Model, &AppModel::networkingChanged,    this, [this]{ scheduleRefresh(); });
+    connect(&Model, &AppModel::nodeReady,            this, [this]{ scheduleRefresh(); });   // node came up async — friend code + Publish are live now
 
     connect(&Model, &AppModel::libraryPublished, this, [this](const QString & addr, const QString & top, const QString &){
         if (PublishButton) PublishButton->setEnabled(true);

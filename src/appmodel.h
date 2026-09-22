@@ -51,6 +51,7 @@ public:
     // ── Networking (IPFS) — OFF by default; all download/seed activity is opt-in (Settings.IPFS.Enabled) ──
     bool networkingEnabled() const;                    // Settings.IPFS.Enabled (default false)
     void setNetworkingEnabled(bool on);                // persist + emit networkingChanged(on) (no-op if unchanged)
+    void markNodeReady() { emit nodeReady(); }         // MainWindow calls this once the async node start completes
     void removePackage(const QString & uid);           // drop a LIBRARY entry (+ its managed files) → rebuild
     void notifyCoversReady();                          // a batch of covers finished loading → emit coversReady()
 
@@ -159,6 +160,9 @@ signals:
     void gameAddFailed(QString message);         // addGameByCid failed (bad CID / offline / fetch error)
     void friendCatalogChanged();                 // a friend shared/updated/withdrew a library — refresh the friend view
     void networkingChanged(bool enabled);   // user toggled IPFS networking — start/stop the node + grey Catalog/IPFS
+    void nodeReady();               // the embedded IPFS node finished coming up (Available() + friend code live) — tabs
+                                    // that read node state (Network: friend code + Verify&Publish enable) must refresh,
+                                    // since networkingChanged fires at TOGGLE time, before the async start completes
     void runnerImportRequested(QString runnerNodeId);   // MainWindow routes this to DownloadManager::beginDownload (unified pump)
     void ipfsHealthChanged();       // orphaned refs were repaired — the IPFS tab should re-poll health
     // A source upgrade was planned and nothing has changed yet: `summary` describes it for confirmation, and

@@ -191,6 +191,20 @@ private slots:
         QVERIFY(!m.networkingEnabled());
     }
 
+    // markNodeReady emits nodeReady — the signal the Network tab needs so its friend code + Verify&Publish enable
+    // refresh once the ASYNC node start finishes (networkingChanged fires at toggle time, before the node is up, so
+    // without this the tab stays stuck "networking off" with Publish disabled after startup).
+    void mark_node_ready_emits_node_ready()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        QSignalSpy spy(&m, &AppModel::nodeReady);
+        m.markNodeReady();
+        QCOMPARE(spy.count(), 1);
+    }
+
     // rebuildCatalog emits catalogChanged (empty config → empty index, but the signal still fires).
     void rebuild_catalog_signals()
     {

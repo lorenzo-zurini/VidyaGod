@@ -318,6 +318,10 @@ void MainWindow::onNodeReady()
     // networking is enabled, instead of waiting for its periodic tick. Its network stack comes up shortly after — the
     // ResumeTimer polls for that, then resumes any interrupted downloads.
     if (IpfsModelPtr) IpfsModelPtr->refreshNow();
+    // The Network tab reads live node state (friend code + Verify&Publish enable) but only refreshes on
+    // networkingChanged — which fired at TOGGLE time, before this async start finished, so it is still showing
+    // "networking off" with Publish disabled. Tell it the node is up now.
+    if (Model) Model->markNodeReady();
     if (ResumeTimer && !ResumeTimer->isActive()) ResumeTimer->start();
 
     // Fetch/index any not-yet-present CID package sources now the node is up — this is what bootstraps the default
