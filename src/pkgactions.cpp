@@ -35,6 +35,29 @@ std::string StrOf(const json & N, const char * Key)
     return (N.is_object() && N.contains(Key) && N[Key].is_string()) ? N[Key].get<std::string>() : std::string();
 }
 
+//Batched: a content node is a VFSLayer holding a LAYERS list; per-node content actions (browse/convert/delta/
+//capture) target its FIRST layer — the common single-layer case. A multi-layer node's other layers are edited
+//as rows in the canvas. Returns a mutable ref to that primary layer, materialising an empty one if needed.
+json & PrimaryLayer(json & N)
+{
+    if (StrOf(N, "TYPE") == "VFSLayer")
+    {
+        if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
+        if (N["LAYERS"].empty()) N["LAYERS"].push_back(json::object());
+        return N["LAYERS"][0];
+    }
+    return N;   // non-VFSLayer (e.g. a DeclareLibraryItem's COVER lives on the node itself)
+}
+
+//Read a content field from the primary layer of a VFSLayer node (or the node itself otherwise).
+std::string LayerStr(const json & N, const char * Key)
+{
+    if (N.is_object() && StrOf(N, "TYPE") == "VFSLayer" && N.contains("LAYERS") && N["LAYERS"].is_array()
+        && !N["LAYERS"].empty() && N["LAYERS"][0].is_object())
+        return StrOf(N["LAYERS"][0], Key);
+    return StrOf(N, Key);
+}
+
 
 //A node's PATH resolved inside its bundle — or EMPTY if it does not stay inside it.
 //
@@ -230,7 +253,7 @@ void PkgActions::browsePath(const std::string & NodeId)
     int I = indexOf(NodeId);
     if (I < 0) return;
     const QString Bundle = Model->packageDir() ? Model->packageDir()->path() : QDir::homePath();
-    const std::string Form = [&]{ const std::string F = StrOf(Model->doc()["NODES"][I], "FORM"); return F.empty() ? std::string("zip") : F; }();
+    const std::string Form = [&]{ const std::string F = LayerStr(Model->doc()["NODES"][I], "FORM"); return F.empty() ? std::string("zip") : F; }();
 
     const QString Picked = (Form == "dir")
         ? pick("Pick the folder this layer supplies", Bundle, QString(), true)
@@ -250,7 +273,7 @@ void PkgActions::browsePath(const std::string & NodeId)
     }
     I = indexOf(NodeId);                          // re-resolved after the modal — see the note above
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
-    Model->doc()["NODES"][I]["PATH"] = Rel.toStdString();
+    PrimaryLayer(Model->doc()["NODES"][I])["PATH"] = Rel.toStdString();
     Model->SaveNodes();
     Model->requestReload();
 }
@@ -276,7 +299,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 {
     const int I = indexOf(NodeId);
     json & N = Model->doc()["NODES"][I];
-    const std::string Path = StrOf(N, "PATH");
+    const std::string Path = LayerStr(N, "PATH");
     if (Path.empty()) { tell("Nothing to convert", "This layer has no PATH yet."); return; }
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Src = ResolveInBundle(Bundle, Path);
@@ -335,8 +358,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove_all(Src, Rc);         // only now is the folder redundant
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            Model->doc()["NODES"][J]["FORM"] = "zip";
-            Model->doc()["NODES"][J]["PATH"] = ZipName;
+            { json & Lp = PrimaryLayer(Model->doc()["NODES"][J]); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName; }
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -393,8 +415,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
             std::filesystem::remove(Src, Rc);
             const int J = indexOf(NodeId);
             if (J < 0) return;
-            Model->doc()["NODES"][J]["FORM"] = "dir";
-            Model->doc()["NODES"][J]["PATH"] = DirName;
+            { json & Lp = PrimaryLayer(Model->doc()["NODES"][J]); Lp["FORM"] = "dir"; Lp["PATH"] = DirName; }
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -404,7 +425,7 @@ void PkgActions::convertZipDir(const std::string & NodeId, bool ToZip)
 void PkgActions::reStore(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const std::string Path = StrOf(Model->doc()["NODES"][I], "PATH");
+    const std::string Path = LayerStr(Model->doc()["NODES"][I], "PATH");
     const std::filesystem::path Bundle = Model->packageDir()->path().toStdString();
     const std::filesystem::path Zip = ResolveInBundle(Bundle, Path);
     if (Zip.empty())
@@ -468,9 +489,9 @@ void PkgActions::refreshHints()
     struct Probe { std::string Id; std::string Path; };
     auto Todo = std::make_shared<std::vector<Probe>>();
     for (const auto & N : Ns)
-        if (StrOf(N, "TYPE") == "Content" && StrOf(N, "FORM") == "zip"
-            && !StrOf(N, "PATH").empty())
-            Todo->push_back({StrOf(N, "CID"), StrOf(N, "PATH")});   // Probe.Id = handle (Running is keyed by it)
+        if (StrOf(N, "TYPE") == "VFSLayer" && LayerStr(N, "FORM") == "zip"
+            && !LayerStr(N, "PATH").empty())
+            Todo->push_back({StrOf(N, "CID"), LayerStr(N, "PATH")});   // Probe.Id = handle (Running is keyed by it)
     if (Todo->empty()) return;
     auto Deflated = std::make_shared<std::vector<std::string>>();
     AsyncWork::Run(this,
@@ -712,10 +733,10 @@ static bool DeltaBaseOf(const json & Nodes, int Index, std::string & BasePath, s
         for (const auto & C : Nodes)
         {
             if (StrOf(C, "CID") != P.get<std::string>()) continue;   // PARENTS ref is a CID → match the handle
-            if (StrOf(C, "TYPE") != "Content") continue;
-            if (StrOf(C, "FORM") != "zip") continue;
-            BasePath   = StrOf(C, "PATH");
-            BaseTarget = C.value("TARGET", std::string());
+            if (StrOf(C, "TYPE") != "VFSLayer") continue;
+            if (LayerStr(C, "FORM") != "zip") continue;
+            BasePath   = LayerStr(C, "PATH");
+            BaseTarget = LayerStr(C, "TARGET");
             return !BasePath.empty();
         }
     }
@@ -769,7 +790,7 @@ void PkgActions::undelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     const json & Ns = Model->doc()["NODES"];
-    const std::string Path = StrOf(Ns[I], "PATH");
+    const std::string Path = LayerStr(Ns[I], "PATH");
     if (Path.empty()) { tell("Undelta", "This layer has no PATH yet."); return; }
 
     // Name the restored archive after the delta, minus the .vgdelta suffix — "delta_from__base.zip.vgdelta"
@@ -800,7 +821,7 @@ void PkgActions::undelta(const std::string & NodeId)
     //A MULTI-BASE delta reconstructs against the CONCATENATION of several mounted targets, which exists only
     //inside a live mount — there is no single parent archive to hand DeltaByteSource here. Say that, rather than
     //composing it over one base and reporting the resulting hash mismatch as "could not be composed".
-    if (ManifestModel::LayerBaseTargets(Ns[I]).size() > 1)
+    if (ManifestModel::LayerBaseTargets(PrimaryLayer(const_cast<json&>(Ns[I]))).size() > 1)
     { tell("Undelta", "This delta is based on several targets at once (a concatenation), which only exists inside "
                       "a mounted runtime. Reconstructing it from the package folder is not possible."); return; }
 
@@ -831,8 +852,7 @@ void PkgActions::undelta(const std::string & NodeId)
             const int J = indexOf(NodeId);
             if (J < 0) return;
             json & N = Model->doc()["NODES"][J];
-            N["FORM"] = "zip";
-            N["PATH"] = ZipName;
+            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName; }
             N.erase("BASE_TARGETS");                      // a full archive has no byte-base
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
@@ -843,8 +863,8 @@ void PkgActions::makeDelta(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
     const json & Ns = Model->doc()["NODES"];
-    const std::string TgtPath   = StrOf(Ns[I], "PATH");
-    const std::string TgtTarget = Ns[I].value("TARGET", std::string());
+    const std::string TgtPath   = LayerStr(Ns[I], "PATH");
+    const std::string TgtTarget = LayerStr(Ns[I], "TARGET");
     std::string BasePath, BaseTarget;
     if (!DeltaBaseOf(Ns, I, BasePath, BaseTarget) || TgtPath.empty())
     { tell("Make delta", "This node needs a Content parent with a zip to diff against."); return; }
@@ -944,8 +964,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             const int J = indexOf(NodeId);
             if (J < 0) return;
             json & N = Model->doc()["NODES"][J];
-            N["FORM"] = "delta";
-            N["PATH"] = Blob;
+            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "delta"; Lp["PATH"] = Blob; }
             // Cross-target: when the byte-base mounts at a DIFFERENT target, name it so the FS can pair them.
             //A base at the ROOT ("") is a real, ordinary base — the wine/runner-build shape. Skipping the key for it
             //left an UNDECLARED base, so the FS looks at the delta's OWN target, finds nothing, and drops the layer.

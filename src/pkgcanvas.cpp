@@ -300,7 +300,7 @@ struct PkgCanvasState
     std::map<std::string, std::string> ExternalLabels;       // handle → pretty label, for chip display (from the picker)
     std::string ExternalFilter;
     float SidePanel = 360.0f;
-    std::string AddType = "Content";
+    std::string AddType = "VFSLayer";
 
     json &Nodes()
     {
@@ -844,6 +844,7 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
                 continue;
             }
             for (const Field &S : F.Sub) drawField(Arr[I], S, Index);
+            if (F.VarUI) drawCustomVarUI(Arr[I]);   // a batched CustomVar entry carries its own launcher UI facet
             if (ImGui::SmallButton("remove")) Del = I;
             ImGui::PopID();
         }
@@ -1105,7 +1106,7 @@ void PkgCanvas::drawPayload(json &Node, int Index)
         if (F.Key == std::string("BASE_TARGETS") && StrOf(Node, "FORM") != "delta") continue;
         drawField(Node, F, Index);
     }
-    if (Type == "CustomVar") drawCustomVarUI(Node);   // the UI facet: visibility + how it renders in the launch dialog
+    //A CustomVar's UI facet is now drawn PER VARS ENTRY inside the ObjArray loop (Field::VarUI), not per node.
 }
 
 //The CustomVar UI facet — the thing whose PRESENCE makes the var user-facing (08-variables.md). The generic field
@@ -1458,7 +1459,7 @@ void PkgCanvas::drawToolbar()
     {
         struct Grp { const char *Title; std::vector<const char *> Types; };
         static const std::vector<Grp> Groups = {
-            {"Payload",     {"Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "DeclarePersist", "CustomVar"}},
+            {"Payload",     {"VFSLayer", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "DeclarePersist", "CustomVar"}},
             {"Declare",     {"DeclareExec", "DeclareLibraryItem"}},
             {"Composition", {"Group"}},
         };

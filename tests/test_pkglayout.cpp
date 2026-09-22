@@ -767,7 +767,9 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     };
     N("root", "Group",   {});
     N("a",    "Group",   {"root"});     // short
-    N("b",    "Content", {"root"});     // taller: Content has five fields
+    N("b",    "VFSLayer", {"root"});    // taller: a VFSLayer draws its LAYERS list as an ObjArray
+    // Give b a one-layer LAYERS so its ObjArray has an entry to render (height > a bare node).
+    A.back()["LAYERS"] = ordered_json::array({ ordered_json{{"FORM","zip"},{"PATH","x.zip"},{"TARGET","t"}} });
     N("c",    "Group",   {"root"});     // short again, so it must clear b's height and not a's
     N("tail", "Group",   {"a", "b", "c"});
 
@@ -776,7 +778,7 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
     CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 392.0f);   // b,    after a's 242 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 800.0f);   // c,    after b's 318 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 909.0f);   // c,    after b's 427 + 90 gap (VFSLayer ObjArray)
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
     //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
     //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
@@ -785,7 +787,7 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     //-> 318) when the estimate stopped charging BASE_TARGETS on a Content node that is not a delta — the
     //canvas has never drawn that field there, so the 35px were a hole reserved in every published layout.
     CHECK_EQ(G.Nodes[1].Height, 242.0f);
-    CHECK_EQ(G.Nodes[2].Height, 318.0f);
+    CHECK_EQ(G.Nodes[2].Height, 427.0f);   // b: a VFSLayer with one LAYERS entry (batched ObjArray)
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)

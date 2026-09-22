@@ -263,9 +263,12 @@ void AuthoringSessionModel::onFilesCopied(int count)
     if (!Editor) return;
     // A capture IS a node: one Content node holding what the run wrote, parented at the anchor so it applies
     // exactly where the capture was taken.
+    //Batched: a capture is one VFSLayer node holding a single dir layer.
+    nlohmann::ordered_json Layer = nlohmann::ordered_json::object({
+        {"FORM", "dir"}, {"PATH", PendDestName.toStdString()}});
+    if (!PendTarget.isEmpty()) Layer["TARGET"] = PendTarget.toStdString();
     nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
-        {"TYPE", "Content"}, {"FORM", "dir"}, {"PATH", PendDestName.toStdString()}});
-    if (!PendTarget.isEmpty()) Payload["TARGET"] = PendTarget.toStdString();
+        {"TYPE", "VFSLayer"}, {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
     const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");
     emit filesCaptured(PendRoots);
     emit nodeCreated(QString::fromStdString(NewId));

@@ -51,11 +51,12 @@ inline nlohmann::ordered_json Chain(const std::string &Id,
 
 // ---- layer payload shorthands (the flat vocabulary, so fixtures read like real node files) ----
 
+// A VFSLayer node holds a LAYERS list (batched); this builds the one-layer form used across the tests.
 inline nlohmann::ordered_json Content(const char *Form, const std::string &Path, const std::string &Target = {})
 {
-    nlohmann::ordered_json L{{"TYPE", "Content"}, {"FORM", Form}, {"PATH", Path}};
-    if (!Target.empty()) L["TARGET"] = Target;
-    return L;
+    nlohmann::ordered_json Layer{{"FORM", Form}, {"PATH", Path}};
+    if (!Target.empty()) Layer["TARGET"] = Target;
+    return {{"TYPE", "VFSLayer"}, {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}};
 }
 
 // Content whose bytes come from a backend rather than the bundle dir (missing locally ⇒ fetchable, not broken).
@@ -63,7 +64,7 @@ inline nlohmann::ordered_json ContentCid(const char *Form, const std::string &Pa
                                          const std::string &Target = {})
 {
     nlohmann::ordered_json L = Content(Form, Path, Target);
-    L["SOURCE"] = nlohmann::ordered_json{{"TYPE", "ipfs"}, {"CID", Cid}};
+    L["LAYERS"][0]["SOURCE"] = nlohmann::ordered_json{{"TYPE", "ipfs"}, {"CID", Cid}};
     return L;
 }
 

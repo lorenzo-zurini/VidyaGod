@@ -204,7 +204,8 @@ TEST(validate_flags_missing_parent_and_cycle)
 TEST(validate_flags_vfs_layer_without_path)
 {
     NodeIndex Idx;
-    AddChain(Idx, "c", {ordered_json{{"TYPE", "Content"}, {"FORM", "zip"}}});   // no PATH/SOURCE
+    AddChain(Idx, "c", {ordered_json{{"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({
+        ordered_json{{"FORM", "zip"}}})}}});   // no PATH/SOURCE
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "PATH"));
@@ -281,19 +282,22 @@ TEST(validate_warns_unzipped_dir_layer)
 // runner as not installed, which greys out Play on every Windows game.
 TEST(runtime_sourced_layer_separates_assembly_from_build)
 {
-    CHECK(ManifestModel::IsRuntimeSourcedLayer(NodeFixture::Content("dir", "%DefaultPfxDir%")));
-    CHECK(ManifestModel::IsRuntimeSourcedLayer(NodeFixture::Content("dir", "%RunnerMount%/files/share/default_pfx")));
-    CHECK(!ManifestModel::IsRuntimeSourcedLayer(NodeFixture::Content("zip", "rt.zip")));       // real build content
+    // IsRuntimeSourcedLayer takes a LOWERED layer (VFSDirLayer/VFSZipLayer with a top-level PATH), which is what
+    // Node::Layers holds — not a VFSLayer NODE (whose PATH lives inside a LAYERS entry).
+    auto Lyr = [](const char *T, const std::string &P) { return ordered_json{{"TYPE", T}, {"PATH", P}}; };
+    CHECK(ManifestModel::IsRuntimeSourcedLayer(Lyr("VFSDirLayer", "%DefaultPfxDir%")));
+    CHECK(ManifestModel::IsRuntimeSourcedLayer(Lyr("VFSDirLayer", "%RunnerMount%/files/share/default_pfx")));
+    CHECK(!ManifestModel::IsRuntimeSourcedLayer(Lyr("VFSZipLayer", "rt.zip")));                // real build content
 
-    ordered_json ViaSource = NodeFixture::Content("zip", "rt.zip");                            // SOURCE.PATH wins
+    ordered_json ViaSource = Lyr("VFSZipLayer", "rt.zip");                                     // SOURCE.PATH wins
     ViaSource["SOURCE"] = ordered_json{{"PATH", "%RunnerMount%/x"}};
     CHECK(ManifestModel::IsRuntimeSourcedLayer(ViaSource));
 
     //A %variable% is a matched pair around a NAME. A doubly-URL-escaped filename has matched pairs around
     //digits, and calling that runtime-sourced excluded a real file from hydration, verification AND a runner's
     //build — the layer simply never arrived, with no diagnostic.
-    CHECK(!ManifestModel::IsRuntimeSourcedLayer(NodeFixture::Content("zip", "100%25%20done.zip")));
-    CHECK(!ManifestModel::IsRuntimeSourcedLayer(NodeFixture::Content("zip", "a%1%b.zip")));
+    CHECK(!ManifestModel::IsRuntimeSourcedLayer(Lyr("VFSZipLayer", "100%25%20done.zip")));
+    CHECK(!ManifestModel::IsRuntimeSourcedLayer(Lyr("VFSZipLayer", "a%1%b.zip")));
 
     //And the rule the CALL SITES actually ask (IsVfsLayer AND NOT runtime-sourced), so a site that forgets
     //half of it cannot pass this file. NOTE it takes a LOWERED layer (VFSZipLayer), which is what Node::Layers
@@ -384,13 +388,13 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     Node N;
     // ParseNode KEEPS it (so it is in the graph to be named) but gives it no layers (so it can never apply).
     CHECK(ManifestModel::ParseNode(
-        ordered_json{{"LABEL", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}},
+        ordered_json{{"LABEL", "oops"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}},
         "f.json", "/b", N));
     CHECK(!N.LowerError.empty());
     CHECK_EQ((int)N.Layers.size(), 0);
 
     NodeIndex Idx;
-    Add(Idx, ordered_json{{"LABEL", "oops"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
+    Add(Idx, ordered_json{{"LABEL", "oops"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
     CHECK_EQ((int)Idx.Nodes.size(), 1);                       // indexed, not vanished
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
@@ -399,7 +403,7 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     // ...and a launch that routes through it is REFUSED, rather than quietly applying nothing where the
     // author declared something.
     NodeIndex L;
-    Add(L, ordered_json{{"LABEL", "bad"}, {"TYPE", "Content"}, {"FORM", "tarball"}, {"PATH", "a.tar"}});
+    Add(L, ordered_json{{"LABEL", "bad"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
     AddChain(L, "game", {NodeFixture::Exec("win32", "g.exe")}, {"bad"});
     std::vector<std::string> Miss;
     ManifestModel::ResolveNodeOrder(L, "game", {}, &Miss);   // Chain's TAIL owns the bare id

@@ -35,6 +35,24 @@ bool Refused(const ordered_json &Node)
     return Out.is_array() && Out.empty() && !E.empty();
 }
 
+// Batched-form wrappers: the schema is "one node = one TYPE + an array of its items". These wrap a single
+// item (its pre-batch payload) so the field-mapping assertions below read exactly as before; a dedicated
+// equivalence test then proves N items in one node lower to the same layers as N one-item nodes.
+ordered_json Vfs(ordered_json Item, ordered_json Extra = ordered_json::object())
+{
+    ordered_json N{{"LABEL", "c"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({std::move(Item)})}};
+    for (auto &[K, V] : Extra.items()) N[K] = V;                 // node-level WHEN/TOGGLE for a few tests
+    return N;
+}
+ordered_json Var(ordered_json Item)
+{
+    return ordered_json{{"LABEL", "v"}, {"TYPE", "CustomVar"}, {"VARS", ordered_json::array({std::move(Item)})}};
+}
+ordered_json Persist(ordered_json Item)
+{
+    return ordered_json{{"LABEL", "p"}, {"TYPE", "DeclarePersist"}, {"PERSISTS", ordered_json::array({std::move(Item)})}};
+}
+
 } // namespace
 
 // A node file is UNTRUSTED INPUT — it arrives from a peer over IPFS, or from an author's typo — and every
@@ -52,11 +70,11 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
         {{"TYPE","DeclareExec"}, {"HOST","w"}, {"PATH","g"}, {"LABEL", 5}},   // non-string LABEL → refused
         {{"LABEL","d"}, {"TYPE","DeclareExec"}, {"HOST","w"}, {"PATH","g"}, {"RUNNER", 5}},
         {{"LABEL","e"}, {"TYPE","DeclareLibraryItem"}, {"UID", 749}},
-        {{"LABEL","f"}, {"TYPE","CustomVar"}, {"KEY", 5}},
-        {{"LABEL","g"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH", 5}},
+        Var({{"KEY", 5}}),                                                       // batched var, non-string KEY
+        Vfs({{"FORM","zip"}, {"PATH", 5}}),                                       // batched layer, non-string PATH
         {{"LABEL","h"}, {"TYPE","RegEdit"}, {"EDITS", ordered_json::array({
             ordered_json{{"OVERRIDE","true"}, {"HKCU", {{"S", {{"v","1"}}}}}}})}},
-        {{"LABEL","i"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"}, {"SUBMOUNTS","a:b"}},
+        Vfs({{"FORM","zip"}, {"PATH","a.zip"}, {"SUBMOUNTS","a:b"}}),             // SUBMOUNTS must be a str-array
     };
     for (const ordered_json &N : Bad)
         CHECK(Refused(N));      // a named refusal, NOT an exception and NOT a silent empty result
@@ -73,11 +91,11 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
         ordered_json{{"HKCU", {{"S", {{"v", 5}}}}}}})}}));
     // ...but a NUMBER where the schema says number is fine, and an unlisted key inside a schema sub-object is
     // simply one the table has not learned — constraining it would be the COVER mistake again.
-    CHECK(!Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"KEY","K"}, {"DEFAULT","1"},
-                                {"UI", {{"MIN", 0}, {"MAX", 100}, {"POOL", ordered_json::array({1,2})}}}}));
+    CHECK(!Refused(Var({{"KEY","K"}, {"DEFAULT","1"},
+                        {"UI", {{"MIN", 0}, {"MAX", 100}, {"POOL", ordered_json::array({1,2})}}}})));
     // A CHOICES entry may be the bare-string shorthand OR an object.
-    CHECK(!Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"KEY","K"}, {"DEFAULT","1"},
-                                {"UI", {{"CHOICES", ordered_json::array({"60", "120"})}}}}));
+    CHECK(!Refused(Var({{"KEY","K"}, {"DEFAULT","1"},
+                        {"UI", {{"CHOICES", ordered_json::array({"60", "120"})}}}})));
 
     // COVER is deliberately unconstrained: it is dual-form (a bare filename OR a {PATH,SOURCE} object) and
     // every consumer branches on which. Constraining it rejected a real shipping node.
@@ -92,12 +110,9 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
 // is a very plausible slip, since the field reads like a boolean.
 TEST(lower_refuses_a_non_string_when)
 {
-    CHECK(Refused(ordered_json{{"LABEL","a"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
-                               {"WHEN", 7}}));
-    CHECK(Refused(ordered_json{{"LABEL","b"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
-                               {"WHEN", true}}));
-    CHECK(!Refused(ordered_json{{"LABEL","c"}, {"TYPE","Content"}, {"FORM","zip"}, {"PATH","a.zip"},
-                                {"WHEN", "%A% == 1"}}));
+    CHECK(Refused(Vfs({{"FORM","zip"}, {"PATH","a.zip"}}, {{"WHEN", 7}})));
+    CHECK(Refused(Vfs({{"FORM","zip"}, {"PATH","a.zip"}}, {{"WHEN", true}})));
+    CHECK(!Refused(Vfs({{"FORM","zip"}, {"PATH","a.zip"}}, {{"WHEN", "%A% == 1"}})));
 }
 
 // ...and the same at the OTHER boundary: ParseNode reads a few fields off the RAW node (TOGGLE, PARENTS),
@@ -120,9 +135,9 @@ TEST(lower_content_maps_form_to_layer_type_and_carries_placement)
         {"zip", "VFSZipLayer"}, {"dir", "VFSDirLayer"}, {"file", "VFSFileLayer"}, {"delta", "VFSDeltaLayer"}};
     for (const auto &[Form, Type] : Forms)
     {
-        ordered_json N{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", Form}, {"PATH", "a.zip"},
-                       {"TARGET", "%PrefixRoot%/drive_c/1"}, {"SUBMOUNTS", ordered_json::array({"a:b"})},
-                       {"SOURCE", ordered_json{{"TYPE", "ipfs"}, {"CID", "Qm1"}}}, {"COMMENT", "hi"}};
+        ordered_json N = Vfs({{"FORM", Form}, {"PATH", "a.zip"},
+                              {"TARGET", "%PrefixRoot%/drive_c/1"}, {"SUBMOUNTS", ordered_json::array({"a:b"})},
+                              {"SOURCE", ordered_json{{"TYPE", "ipfs"}, {"CID", "Qm1"}}}, {"COMMENT", "hi"}});
         const ordered_json L = Lower(N);
         CHECK_EQ((int)L.size(), 1);
         CHECK_EQ(L[0].value("TYPE", std::string()), std::string(Type));
@@ -131,7 +146,8 @@ TEST(lower_content_maps_form_to_layer_type_and_carries_placement)
         CHECK_EQ(L[0].value("COMMENT", std::string()), std::string("hi"));
         CHECK(L[0].contains("SUBMOUNTS") && L[0].contains("SOURCE"));
     }
-    CHECK(Refused(ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", "tarball"}}));
+    CHECK(Refused(Vfs({{"FORM", "tarball"}})));                                   // unknown FORM
+    CHECK(Refused(ordered_json{{"LABEL","c"}, {"TYPE","VFSLayer"}}));             // no LAYERS array
 }
 
 // A delta's byte-base(s) are BASE_TARGETS: ONE key, ALWAYS a list, node and layer alike. One entry is the
@@ -141,8 +157,7 @@ TEST(lower_content_maps_form_to_layer_type_and_carries_placement)
 TEST(lower_content_base_targets_is_one_key_always_a_list)
 {
     auto Mk = [](ordered_json B) {
-        return ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", "delta"}, {"PATH", "d.vgdelta"},
-                            {"BASE_TARGETS", std::move(B)}};
+        return Vfs({{"FORM", "delta"}, {"PATH", "d.vgdelta"}, {"BASE_TARGETS", std::move(B)}});
     };
     auto Bases = [](const ordered_json &Lowered) {
         std::vector<std::string> B;
@@ -164,8 +179,7 @@ TEST(lower_content_base_targets_is_one_key_always_a_list)
     //...and so is the singular key, rather than being ignored: BASE_TARGET reads as obviously right, and
     //dropping it silently gives a delta with no base that validates clean and audits clean.
     std::string E;
-    NodeLower::Lower(ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", "delta"},
-                                  {"PATH", "d.vgdelta"}, {"BASE_TARGET", "a"}}, "c", E);
+    NodeLower::Lower(Vfs({{"FORM", "delta"}, {"PATH", "d.vgdelta"}, {"BASE_TARGET", "a"}}), "c", E);
     CHECK(E.find("BASE_TARGETS") != std::string::npos);           // and the message names the key to use
 }
 
@@ -174,8 +188,7 @@ TEST(lower_content_base_targets_is_one_key_always_a_list)
 TEST(lower_content_base_targets_only_means_something_on_a_delta)
 {
     auto Mk = [](const char *Form) {
-        return ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", Form}, {"PATH", "a.zip"},
-                            {"BASE_TARGETS", ordered_json::array({"wine"})}};
+        return Vfs({{"FORM", Form}, {"PATH", "a.zip"}, {"BASE_TARGETS", ordered_json::array({"wine"})}});
     };
     for (const char *F : {"zip", "dir", "file"})
     {
@@ -184,8 +197,7 @@ TEST(lower_content_base_targets_only_means_something_on_a_delta)
         CHECK(!E.empty());                                     // refused, not quietly dropped
         CHECK(E.find("BASE_TARGETS") != std::string::npos);    // and the message names the key
     }
-    CHECK(!Refused(ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", "delta"},
-                                {"PATH", "d.vgdelta"}, {"BASE_TARGETS", ordered_json::array({"wine"})}}));
+    CHECK(!Refused(Vfs({{"FORM", "delta"}, {"PATH", "d.vgdelta"}, {"BASE_TARGETS", ordered_json::array({"wine"})}})));
 }
 
 // ---- RegEdit -------------------------------------------------------------------------------------
@@ -290,7 +302,7 @@ TEST(lower_node_when_and_entry_when_are_combined_not_replaced)
 TEST(lower_node_when_reaches_every_gated_type)
 {
     const ordered_json Nodes[] = {
-        {{"LABEL", "a"}, {"TYPE", "Content"}, {"FORM", "zip"}, {"PATH", "a.zip"}},
+        Vfs({{"FORM", "zip"}, {"PATH", "a.zip"}}),
         {{"LABEL", "b"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
             ordered_json{{"HKCU", {{"S", {{"v", "1"}}}}}}})}},
         {{"LABEL", "c"}, {"TYPE", "FileEdit"}, {"FILE", "f.ini"}, {"EDITS", ordered_json::array({
@@ -298,8 +310,8 @@ TEST(lower_node_when_reaches_every_gated_type)
         {{"LABEL", "d"}, {"TYPE", "BinaryPatch"}, {"FILE", "g.exe"}, {"EDITS", ordered_json::array({
             ordered_json{{"MODE", "Replace"}, {"OFFSET", "0x1"}, {"EXPECT", "01"}, {"REPLACE", "00"}}})}},
         {{"LABEL", "e"}, {"TYPE", "DllOverride"}, {"OVERRIDES", {{"d3d8", "n,b"}}}},
-        {{"LABEL", "f"}, {"TYPE", "DeclarePersist"}, {"SCOPE", "file"}, {"PATH", "a"}, {"TARGET", "a"}},
-        {{"LABEL", "g"}, {"TYPE", "CustomVar"}, {"KEY", "K"}, {"DEFAULT", "1"}},
+        Persist({{"SCOPE", "file"}, {"PATH", "a"}, {"TARGET", "a"}}),
+        Var({{"KEY", "K"}, {"DEFAULT", "1"}}),
     };
     for (ordered_json N : Nodes)
     {
@@ -332,8 +344,8 @@ TEST(lower_when_on_an_identity_type_is_rejected_by_validation)
     // ...and a gated type with the same WHEN is accepted.
     NodeIndex Ok;
     Node P;
-    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "c"}, {"TYPE", "Content"}, {"FORM", "zip"},
-                                                {"PATH", "a.zip"}, {"WHEN", "%A% == 1"}}, "f.json", "/b", P));
+    CHECK(ManifestModel::ParseNode(Vfs({{"FORM", "zip"}, {"PATH", "a.zip"}}, {{"WHEN", "%A% == 1"}}),
+                                   "f.json", "/b", P));
     Ok.Nodes["c"] = P;
     std::vector<std::string> E2, W2;
     ManifestModel::ValidateNodeGraph(Ok, E2, W2);
@@ -410,19 +422,18 @@ TEST(lower_dlloverride_preserves_an_empty_order)
 // saves at capture time.
 TEST(lower_declarepersist_refuses_a_malformed_field)
 {
-    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"SCOPE", 5}}));
-    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"PATH", ordered_json::array()}}));
-    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"TARGET", 7}}));
-    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"CLOUD", "yes"}}));
+    CHECK(Refused(Persist({{"SCOPE", 5}})));
+    CHECK(Refused(Persist({{"PATH", ordered_json::array()}})));
+    CHECK(Refused(Persist({{"TARGET", 7}})));
+    CHECK(Refused(Persist({{"CLOUD", "yes"}})));
+    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}}));       // no PERSISTS array
     // ...and a well-formed persist lowers without complaint.
-    CHECK(!Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"},
-                                {"SCOPE","file"}, {"PATH","drive_c/Saves"}, {"TARGET","Saves"}, {"CLOUD",true}}));
+    CHECK(!Refused(Persist({{"SCOPE","file"}, {"PATH","drive_c/Saves"}, {"TARGET","Saves"}, {"CLOUD",true}})));
 }
 
 TEST(lower_declarepersist_emits_one_layer_passing_the_fields_through)
 {
-    ordered_json N{{"LABEL", "p"}, {"TYPE", "DeclarePersist"},
-                   {"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Game"}, {"TARGET", "Game"}, {"CLOUD", false}};
+    ordered_json N = Persist({{"SCOPE", "registry"}, {"PATH", "HKCU\\Software\\Game"}, {"TARGET", "Game"}, {"CLOUD", false}});
     const ordered_json L = Lower(N);
     CHECK_EQ((int)L.size(), 1);
     CHECK_EQ(L[0].value("TYPE", std::string()), std::string("DeclarePersist"));
@@ -436,10 +447,9 @@ TEST(lower_declarepersist_emits_one_layer_passing_the_fields_through)
 // declared variable with no way for the player to set it, which looks like the knob simply not existing.
 TEST(lower_customvar_carries_the_ui_facet_and_comment)
 {
-    ordered_json N{{"LABEL", "v"}, {"TYPE", "CustomVar"}, {"KEY", "RES"}, {"DEFAULT", "1920"},
-                   {"COMMENT", "why this exists"},
-                   {"UI", {{"LABEL", "Resolution"}, {"CONTROL", "enum"},
-                           {"CHOICES", ordered_json::array({ordered_json{{"LABEL", "HD"}, {"VALUE", "1920"}}})}}}};
+    ordered_json N = Var({{"KEY", "RES"}, {"DEFAULT", "1920"}, {"COMMENT", "why this exists"},
+                          {"UI", {{"LABEL", "Resolution"}, {"CONTROL", "enum"},
+                                  {"CHOICES", ordered_json::array({ordered_json{{"LABEL", "HD"}, {"VALUE", "1920"}}})}}}});
     const ordered_json L = Lower(N);
     CHECK_EQ((int)L.size(), 1);
     CHECK_EQ(L[0].value("KEY", std::string()), std::string("RES"));
@@ -451,6 +461,78 @@ TEST(lower_customvar_carries_the_ui_facet_and_comment)
         CHECK_EQ(L[0]["UI"].value("LABEL", std::string()), std::string("Resolution"));
         CHECK_EQ((int)L[0]["UI"].value("CHOICES", ordered_json::array()).size(), 1);
     }
+}
+
+// ---- BATCHING: many items in one node ------------------------------------------------------------
+
+// The whole point of the schema: one node holds a LIST of items and lowers to one layer PER item, in order,
+// identically to the same items as one-node-each. Resolution downstream is a global KEY namespace independent
+// of declaration order, so this equivalence is what makes batching safe. Proven for all three list types.
+TEST(lower_batched_node_equals_the_same_items_as_separate_nodes)
+{
+    // CustomVar: 3 vars in one node == 3 one-var nodes (order preserved, all fields carried).
+    ordered_json Batched{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", ordered_json::array({
+        ordered_json{{"KEY","A"},{"DEFAULT","1"}},
+        ordered_json{{"KEY","B"},{"DEFAULT","2"},{"WHEN","%A%==1"}},
+        ordered_json{{"KEY","C"},{"DEFAULT","3"},{"UI",{{"CONTROL","text"}}}}})}};
+    const ordered_json L = Lower(Batched);
+    CHECK_EQ((int)L.size(), 3);
+    const char *Keys[] = {"A","B","C"};
+    for (int i = 0; i < 3; ++i)
+    {
+        CHECK_EQ(L[i].value("TYPE", std::string()), std::string("CustomVar"));
+        CHECK_EQ(L[i].value("KEY", std::string()), std::string(Keys[i]));
+    }
+    CHECK_EQ(L[1].value("WHEN", std::string()), std::string("%A%==1"));           // per-entry WHEN carried
+    CHECK(L[2].contains("UI"));
+
+    // Concatenation across two batched nodes matches item-for-item (what the closure will see).
+    ordered_json OneEach = Lower(Var({{"KEY","A"},{"DEFAULT","1"}}));
+    CHECK_EQ(OneEach[0], L[0]);
+
+    // VFSLayer: two layers in one node, order = mount/precedence order.
+    ordered_json Vl{{"LABEL","c"}, {"TYPE","VFSLayer"}, {"LAYERS", ordered_json::array({
+        ordered_json{{"FORM","zip"},{"PATH","base.zip"},{"SOURCE",{{"TYPE","ipfs"},{"CID","Qm1"}}}},
+        ordered_json{{"FORM","delta"},{"PATH","p.vgdelta"},{"BASE_TARGETS",ordered_json::array({""})},
+                     {"SOURCE",{{"TYPE","ipfs"},{"CID","Qm2"}}}}})}};
+    const ordered_json VL = Lower(Vl);
+    CHECK_EQ((int)VL.size(), 2);
+    CHECK_EQ(VL[0].value("TYPE", std::string()), std::string("VFSZipLayer"));
+    CHECK_EQ(VL[1].value("TYPE", std::string()), std::string("VFSDeltaLayer"));
+    CHECK_EQ(VL[0].value("PATH", std::string()), std::string("base.zip"));
+    CHECK_EQ(VL[1].value("PATH", std::string()), std::string("p.vgdelta"));
+
+    // DeclarePersist: two persists in one node.
+    ordered_json Pn{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"PERSISTS", ordered_json::array({
+        ordered_json{{"SCOPE","file"},{"PATH","Saves"},{"TARGET","Saves"}},
+        ordered_json{{"SCOPE","registry"},{"PATH","HKCU\\Game"},{"TARGET","Game"}}})}};
+    const ordered_json PL = Lower(Pn);
+    CHECK_EQ((int)PL.size(), 2);
+    CHECK_EQ(PL[0].value("SCOPE", std::string()), std::string("file"));
+    CHECK_EQ(PL[1].value("SCOPE", std::string()), std::string("registry"));
+}
+
+// A node-level WHEN gates the WHOLE batch, ANDed with each item's own WHEN (never replacing it). Taking either
+// alone silently widens or narrows what the author wrote.
+TEST(lower_batched_node_when_ands_with_each_item_when)
+{
+    ordered_json N{{"LABEL","v"}, {"TYPE","CustomVar"}, {"WHEN","%MODE%==mp"}, {"VARS", ordered_json::array({
+        ordered_json{{"KEY","A"},{"DEFAULT","1"}},                                 // no own WHEN -> gets the node's
+        ordered_json{{"KEY","B"},{"DEFAULT","2"},{"WHEN","%A%==1"}}})}};           // own WHEN -> ANDed
+    const ordered_json L = Lower(N);
+    CHECK_EQ((int)L.size(), 2);
+    CHECK_EQ(L[0].value("WHEN", std::string()), std::string("%MODE%==mp"));
+    CHECK_EQ(L[1].value("WHEN", std::string()), std::string("(%MODE%==mp) && (%A%==1)"));
+}
+
+// A malformed item is a NAMED refusal (not a throw, not a silent drop of the rest of the batch).
+TEST(lower_batched_node_refuses_a_malformed_item)
+{
+    CHECK(Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", ordered_json::array({
+        ordered_json{{"KEY","A"},{"DEFAULT","1"}}, ordered_json{{"DEFAULT","2"}}})}}));   // 2nd has no KEY
+    CHECK(Refused(ordered_json{{"LABEL","c"}, {"TYPE","VFSLayer"}, {"LAYERS", ordered_json::array({
+        ordered_json{{"FORM","zip"},{"PATH","a"}}, ordered_json{{"FORM","nope"}}})}}));   // 2nd unknown FORM
+    CHECK(Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", "notarray"}}));  // VARS not an array
 }
 
 // ---- DeclareExec / DeclareLibraryItem / Group ----------------------------------------------------

@@ -43,10 +43,20 @@ static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &
     else if (J.is_object() && J.contains("TYPE") && J["TYPE"].is_string()) Out.push_back(&J);
     return Out;
 }
-//Content nodes are the ones carrying seedable bytes (PATH + SOURCE); FORM says how they are interpreted.
+//VFSLayer nodes are the ones carrying seedable bytes; each LAYERS entry has PATH + SOURCE (FORM says how it
+//is interpreted). Batched: one node holds many layers, so seeding must walk the LAYERS list, not the node.
 static bool IsContentNode(const nlohmann::ordered_json &N)
 {
-    return N.is_object() && N.contains("TYPE") && N["TYPE"].is_string() && N["TYPE"].get<std::string>() == "Content";
+    return N.is_object() && N.contains("TYPE") && N["TYPE"].is_string() && N["TYPE"].get<std::string>() == "VFSLayer";
+}
+//The individual content-layer objects (each {FORM, PATH, SOURCE{ipfs,CID}, …}) of a VFSLayer node — the units
+//that carry seedable bytes. Mutable pointers so callers can backfill SOURCE.SIZE / re-stamp CIDs in place.
+static std::vector<nlohmann::ordered_json *> ContentLayerDocsOf(nlohmann::ordered_json &N)
+{
+    std::vector<nlohmann::ordered_json *> Out;
+    if (!IsContentNode(N) || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return Out;
+    for (auto &Ly : N["LAYERS"]) if (Ly.is_object()) Out.push_back(&Ly);
+    return Out;
 }
 
 
@@ -343,18 +353,22 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 if (S["COVER"].is_object()) SeedCover(S);
                 else ++BadCovers;
             }
-            if (!IsContentNode(S)) continue;
+            //Batched: a VFSLayer node carries a LAYERS list; seed each layer object (each {FORM,PATH,SOURCE}).
+            //A non-VFSLayer node yields none, so this naturally skips it.
+            for (nlohmann::ordered_json *Lp : ContentLayerDocsOf(S))
+            {
+            nlohmann::ordered_json &Ly = *Lp;
             ++Walked;
             std::filesystem::path Local; std::string Cid;
-            LayerLocator(S, Pkg, Local, Cid);
+            LayerLocator(Ly, Pkg, Local, Cid);
             std::error_code Rc;
             if (!NeedsSeed(Cid, Local))                                          // has a CID that still verifies — idempotent
             {
                 //Backfill SOURCE.SIZE if absent (no re-seed): existing packages gain the download-size hint on the
                 //next --remint-library without re-adding bytes. Skips CID-only refs (no local file to measure).
                 std::error_code Sc;
-                if (S["SOURCE"].is_object() && !S["SOURCE"].contains("SIZE") && std::filesystem::exists(Local, Sc))
-                { S["SOURCE"]["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
+                if (Ly["SOURCE"].is_object() && !Ly["SOURCE"].contains("SIZE") && std::filesystem::exists(Local, Sc))
+                { Ly["SOURCE"]["SIZE"] = LocalPayloadSize(Local); Mutated = true; ++SizesStamped; }
                 continue;
             }
             if (!std::filesystem::exists(Local, Rc))                             // no local content to seed
@@ -376,15 +390,16 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
                 //all resolve to a real file (ResolvePathState treats that as real content) is absent HERE and
                 //is now silently not reported. No such node exists in the library; if one is ever authored,
                 //this report has to substitute defaults before deciding.
-                if (!ManifestModel::IsRuntimeSourcedLayer(S)) Unfetchable.push_back(Local.string());
+                if (!ManifestModel::IsRuntimeSourcedLayer(Ly)) Unfetchable.push_back(Local.string());
                 continue;
             }
             std::string Err;
             const std::string NewCid = IpfsWrapper::AddNoCopy(Local.string(), &Err);
             if (NewCid.empty()) return Fail("could not seed layer " + Local.string() + " (" + Err + ")");
-            nlohmann::ordered_json Src = (S.contains("SOURCE") && S["SOURCE"].is_object()) ? S["SOURCE"] : nlohmann::ordered_json::object();
-            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; Src["SIZE"] = LocalPayloadSize(Local); S["SOURCE"] = std::move(Src);
+            nlohmann::ordered_json Src = (Ly.contains("SOURCE") && Ly["SOURCE"].is_object()) ? Ly["SOURCE"] : nlohmann::ordered_json::object();
+            Src["TYPE"] = "ipfs"; Src["CID"] = NewCid; Src["SIZE"] = LocalPayloadSize(Local); Ly["SOURCE"] = std::move(Src);
             Mutated = true; ++Seeded;
+            }
         }
 
         if (Mutated && !JSONOps::SaveJSON(&Frag, &FragFile))
@@ -553,7 +568,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
         // same shape as content.
         for (nlohmann::ordered_json *Np : NodeDocsOf(J))
         {
-            if (!CoversOnly && IsContentNode(*Np)) Consider(*Np);                 // content (skipped in covers-only)
+            if (!CoversOnly) for (nlohmann::ordered_json *Lp : ContentLayerDocsOf(*Np)) Consider(*Lp);  // each VFSLayer LAYERS entry (skipped in covers-only)
             if (Np->contains("COVER") && (*Np)["COVER"].is_object()) Consider((*Np)["COVER"]);
         }
     }

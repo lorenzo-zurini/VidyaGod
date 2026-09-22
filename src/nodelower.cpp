@@ -78,37 +78,48 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
     if (J.contains("WHEN") && !J["WHEN"].is_string())
         return Fail("WHEN must be a string (a condition), not " + std::string(J["WHEN"].type_name()));
 
-    if (T == "Content")
+    if (T == "VFSLayer")
     {
-        const std::string Form = J.value("FORM", std::string());
-        const char *VfsType = VfsTypeForForm(Form);
-        if (!VfsType) return Fail("Content has unknown FORM '" + Form + "'");
-        ordered_json L = {{"TYPE", VfsType}};
-        CopyIf(J, L, {"PATH", "TARGET", "SOURCE", "SUBMOUNTS", "COMMENT"});   // WHEN: applied at the tail
-        //BASE_TARGETS is a delta's byte-base(s): ALWAYS a list, because the base may be the CONCATENATION of
-        //several composed views and a one-element list says exactly what a singular key would have. There is
-        //deliberately no singular spelling — two keys for one idea is how the plural came to be emitted,
-        //documented and never read, and "" is a real target (the mount root) that a lone string could not tell
-        //apart from "no base declared".
-        if (J.contains("BASE_TARGET"))
-            return Fail("BASE_TARGET does not exist — a delta's base(s) are BASE_TARGETS, always a list "
-                        "(one entry for an ordinary cross-target delta)");
-        //...and it is meaningless on anything but a delta, where it was accepted and then silently discarded by
-        //the mounter. The editor offers the field on every Content node, so this is a two-click mistake.
-        if (J.contains("BASE_TARGETS") && Form != "delta")
-            return Fail("BASE_TARGETS is a delta's byte-base — it means nothing on FORM \"" + Form + "\"");
-        if (J.contains("BASE_TARGETS"))
+        //Batched: one VFSLayer node holds a LAYERS list, each entry a former "Content" node's payload
+        //(FORM + PATH/TARGET/SOURCE/… + its own WHEN). Order = mount/precedence order. Each entry lowers to
+        //exactly one VFS layer, so every downstream consumer of Node::Layers sees the identical flat stream
+        //it saw when these were one-node-per-layer.
+        if (!J.contains("LAYERS") || !J["LAYERS"].is_array()) return Fail("VFSLayer has no LAYERS array");
+        for (const auto &Ly : J["LAYERS"])
         {
-            const auto &B = J["BASE_TARGETS"];
-            if (!B.is_array()) return Fail("BASE_TARGETS must be an array of mount targets, not "
-                                           + std::string(B.type_name()));
-            //An EMPTY array silently dropped the base — a delta with nothing to reconstruct against, reported
-            //by nobody. Say it instead of omitting the key.
-            if (B.empty()) return Fail("BASE_TARGETS is an empty array (omit it to base the delta on its own TARGET)");
-            for (const auto &E : B) if (!E.is_string()) return Fail("BASE_TARGETS entries must be strings");
-            L["BASE_TARGETS"] = B;
+            if (!Ly.is_object()) return Fail("VFSLayer LAYERS entry is not an object");
+            if (Ly.contains("WHEN") && !Ly["WHEN"].is_string())
+                return Fail("VFSLayer LAYERS entry WHEN must be a string (a condition), not "
+                            + std::string(Ly["WHEN"].type_name()));
+            const std::string Form = Ly.value("FORM", std::string());
+            const char *VfsType = VfsTypeForForm(Form);
+            if (!VfsType) return Fail("VFSLayer LAYERS entry has unknown FORM '" + Form + "'");
+            ordered_json L = {{"TYPE", VfsType}};
+            CopyIf(Ly, L, {"PATH", "TARGET", "SOURCE", "SUBMOUNTS", "COMMENT", "WHEN"});   // node WHEN ANDed at the tail
+            //BASE_TARGETS is a delta's byte-base(s): ALWAYS a list, because the base may be the CONCATENATION of
+            //several composed views and a one-element list says exactly what a singular key would have. There is
+            //deliberately no singular spelling — "" is a real target (the mount root) a lone string could not tell
+            //apart from "no base declared".
+            if (Ly.contains("BASE_TARGET"))
+                return Fail("BASE_TARGET does not exist — a delta's base(s) are BASE_TARGETS, always a list "
+                            "(one entry for an ordinary cross-target delta)");
+            //...and it is meaningless on anything but a delta, where it was accepted and then silently discarded by
+            //the mounter.
+            if (Ly.contains("BASE_TARGETS") && Form != "delta")
+                return Fail("BASE_TARGETS is a delta's byte-base — it means nothing on FORM \"" + Form + "\"");
+            if (Ly.contains("BASE_TARGETS"))
+            {
+                const auto &B = Ly["BASE_TARGETS"];
+                if (!B.is_array()) return Fail("BASE_TARGETS must be an array of mount targets, not "
+                                               + std::string(B.type_name()));
+                //An EMPTY array silently dropped the base — a delta with nothing to reconstruct against, reported
+                //by nobody. Say it instead of omitting the key.
+                if (B.empty()) return Fail("BASE_TARGETS is an empty array (omit it to base the delta on its own TARGET)");
+                for (const auto &E : B) if (!E.is_string()) return Fail("BASE_TARGETS entries must be strings");
+                L["BASE_TARGETS"] = B;
+            }
+            Out.push_back(std::move(L));
         }
-        Out.push_back(std::move(L));
     }
     else if (T == "RegEdit")
     {
@@ -176,24 +187,44 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
     }
     else if (T == "DeclarePersist")
     {
-        //One node = one persist (no arrays to expand): validate the fields and pass them through. SCOPE=file|registry
+        //Batched: one DeclarePersist node holds a PERSISTS list, each entry one persist. SCOPE=file|registry
         //(default file); PATH is the runtime source, "" = the whole runtime / all hives (an authoring aid); TARGET is
         //the durable subdir (defaults downstream to PATH's last component); CLOUD (default true) is the future
-        //Cloud-Saves flag. REFUSES a malformed field, like every other branch.
-        nlohmann::ordered_json P = {{"TYPE", "DeclarePersist"}};
-        if (J.contains("SCOPE"))  { if (!J["SCOPE"].is_string())  return Fail("SCOPE must be a string (file|registry)"); P["SCOPE"]  = J["SCOPE"]; }
-        if (J.contains("PATH"))   { if (!J["PATH"].is_string())   return Fail("PATH must be a string");                  P["PATH"]   = J["PATH"]; }
-        if (J.contains("TARGET")) { if (!J["TARGET"].is_string()) return Fail("TARGET must be a string");                P["TARGET"] = J["TARGET"]; }
-        if (J.contains("CLOUD"))  { if (!J["CLOUD"].is_boolean()) return Fail("CLOUD must be a boolean");                P["CLOUD"]  = J["CLOUD"]; }
-        //WHEN is validated and applied at the tail (like every other branch); copying it here too would double the
-        //node's own condition back on itself — "(A) && (A)" — see the tail's note.
-        Out.push_back(std::move(P));
+        //Cloud-Saves flag. Each entry lowers to one DeclarePersist layer; a per-entry WHEN is ANDed with the node's.
+        if (!J.contains("PERSISTS") || !J["PERSISTS"].is_array()) return Fail("DeclarePersist has no PERSISTS array");
+        for (const auto &Pe : J["PERSISTS"])
+        {
+            if (!Pe.is_object()) return Fail("DeclarePersist PERSISTS entry is not an object");
+            if (Pe.contains("WHEN") && !Pe["WHEN"].is_string())
+                return Fail("DeclarePersist PERSISTS entry WHEN must be a string (a condition), not "
+                            + std::string(Pe["WHEN"].type_name()));
+            nlohmann::ordered_json P = {{"TYPE", "DeclarePersist"}};
+            if (Pe.contains("SCOPE"))  { if (!Pe["SCOPE"].is_string())  return Fail("SCOPE must be a string (file|registry)"); P["SCOPE"]  = Pe["SCOPE"]; }
+            if (Pe.contains("PATH"))   { if (!Pe["PATH"].is_string())   return Fail("PATH must be a string");                  P["PATH"]   = Pe["PATH"]; }
+            if (Pe.contains("TARGET")) { if (!Pe["TARGET"].is_string()) return Fail("TARGET must be a string");                P["TARGET"] = Pe["TARGET"]; }
+            if (Pe.contains("CLOUD"))  { if (!Pe["CLOUD"].is_boolean()) return Fail("CLOUD must be a boolean");                P["CLOUD"]  = Pe["CLOUD"]; }
+            CopyIf(Pe, P, {"WHEN"});                                       // node WHEN ANDed at the tail
+            Out.push_back(std::move(P));
+        }
     }
     else if (T == "CustomVar")
     {
-        ordered_json L = {{"TYPE", "CustomVar"}};
-        CopyIf(J, L, {"KEY", "DEFAULT", "COMMENT", "UI"});                    // WHEN: applied at the tail
-        Out.push_back(std::move(L));
+        //Batched: one CustomVar node holds a VARS list. Resolution is a global KEY namespace (override by
+        //closure order, independent of declaration order — launchresolver_vars.cpp), so N vars in one node
+        //resolve identically to N one-var nodes; each entry lowers to one CustomVar layer.
+        if (!J.contains("VARS") || !J["VARS"].is_array()) return Fail("CustomVar has no VARS array");
+        for (const auto &V : J["VARS"])
+        {
+            if (!V.is_object()) return Fail("CustomVar VARS entry is not an object");
+            if (V.contains("WHEN") && !V["WHEN"].is_string())
+                return Fail("CustomVar VARS entry WHEN must be a string (a condition), not "
+                            + std::string(V["WHEN"].type_name()));
+            if (!V.contains("KEY") || !V["KEY"].is_string() || V["KEY"].get<std::string>().empty())
+                return Fail("CustomVar VARS entry has no KEY");
+            ordered_json L = {{"TYPE", "CustomVar"}};
+            CopyIf(V, L, {"KEY", "DEFAULT", "COMMENT", "UI", "WHEN"});         // node WHEN ANDed at the tail
+            Out.push_back(std::move(L));
+        }
     }
     else if (T == "DeclareLibraryItem")
     {

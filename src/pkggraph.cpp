@@ -140,6 +140,11 @@ Graph Build(const json &NodesArray, const json *Layout)
         Nd.Id    = Str("CID", "");   // Model C: the canvas handle is the node's stored CID (LABEL is cosmetic only)
         Nd.Type  = Str("TYPE", "Group");
         Nd.Form  = Str("FORM", "");
+        //Batched: a VFSLayer carries FORM inside its first LAYERS entry. Expose that as the node's Form so the
+        //delta-base match (a delta's parent must be a zip layer) and the colour logic keep working.
+        if (Nd.Type == "VFSLayer" && N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
+            && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("FORM") && N["LAYERS"][0]["FORM"].is_string())
+            Nd.Form = N["LAYERS"][0]["FORM"].get<std::string>();
         //Position resolves in three steps, weakest first: the node's own POS (the author's published default),
         //then the caller's Layout override (this machine's own drags, held in GlobalConfig), then — for
         //whatever is still unplaced — the computed layout below. A node carrying POS therefore opens where the
@@ -248,7 +253,7 @@ const std::vector<std::string> &AllTypes()
 
 const char *TypeHelp(const std::string &Type)
 {
-    if (Type == "Content")            return "Files mounted into the runtime - a zip, a directory, a single file, or a delta over one.";
+    if (Type == "VFSLayer")           return "Files mounted into the runtime - a zip, a directory, a single file, or a delta over one.";
     if (Type == "RegEdit")            return "Registry keys and values written into the prefix, per architecture.";
     if (Type == "FileEdit")           return "Text edits applied to a file in the runtime (whole-file, key=value, or append).";
     if (Type == "BinaryPatch")        return "Byte patches over the PRISTINE executable, guarded by an EXPECT check.";
@@ -264,7 +269,7 @@ const char *TypeHelp(const std::string &Type)
 void TypeColour(const std::string &Type, int &R, int &G, int &B)
 {
     // Content = blue, transforms = amber, identity = green, composition = grey.
-    if (Type == "Content")                                       { R = 46;  G = 96;  B = 148; return; }
+    if (Type == "VFSLayer")                                      { R = 46;  G = 96;  B = 148; return; }
     if (Type == "RegEdit" || Type == "FileEdit" ||
         Type == "BinaryPatch" || Type == "DllOverride")          { R = 136; G = 92;  B = 36;  return; }
     if (Type == "DeclarePersist" || Type == "CustomVar")         { R = 92;  G = 68;  B = 128; return; }
@@ -276,9 +281,11 @@ json NewPayload(const std::string &Type)
 {
     // Required keys present from the start, so a fresh node is never malformed — the old editor created
     // content layers with no TARGET at all, which is what made Tonic Trouble die as "create process: 2".
-    if (Type == "Content")
-        return json::object({{"TYPE","Content"},{"FORM","zip"},{"PATH",""},
-                             {"TARGET","%PrefixRoot%/drive_c/%PackageUID%"}});
+    //Batched types start with ONE item, so a fresh node is valid + immediately editable (its ObjArray shows a
+    //row + "+ add entry"). SOURCE on a layer is stamped by publish, not seeded here.
+    if (Type == "VFSLayer")
+        return json::object({{"TYPE","VFSLayer"},{"LAYERS", json::array({
+            json::object({{"FORM","zip"},{"PATH",""},{"TARGET","%PrefixRoot%/drive_c/%PackageUID%"}}) })}});
     if (Type == "RegEdit")
         return json::object({{"TYPE","RegEdit"},{"EDITS", json::array({
             json::object({{"ARCHITECTURE", json::array({"32"})}}) })}});
@@ -289,9 +296,11 @@ json NewPayload(const std::string &Type)
     if (Type == "DllOverride")
         return json::object({{"TYPE","DllOverride"},{"OVERRIDES", json::object()}});
     if (Type == "DeclarePersist")
-        return json::object({{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}});
+        return json::object({{"TYPE","DeclarePersist"},{"PERSISTS", json::array({
+            json::object({{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}}) })}});
     if (Type == "CustomVar")
-        return json::object({{"TYPE","CustomVar"},{"KEY",""},{"DEFAULT",""}});
+        return json::object({{"TYPE","CustomVar"},{"VARS", json::array({
+            json::object({{"KEY",""},{"DEFAULT",""}}) })}});
     if (Type == "DeclareExec")
         return json::object({{"TYPE","DeclareExec"},{"HOST","win32"},
                              {"PATH","%PrefixRoot%/drive_c/%PackageUID%/"},{"ARGS", json::array()}});
@@ -318,13 +327,18 @@ const std::vector<std::pair<const char *, const char *>> ScopeOpts  = {{"file","
 
 std::vector<Field> MakeFields(const std::string &Type)
 {
-    if (Type == "Content")
+    if (Type == "VFSLayer")
+        //Batched: a node holds a LAYERS list, each entry a mount layer (SOURCE is stamped by publish, not
+        //hand-edited). Order = mount/precedence order.
         return {
-            {"FORM",        "Form",        FieldKind::Enum,       "",  FormOpts, {}},
-            {"PATH",        "Path",        FieldKind::Text,       "file in this bundle", {}, {}},
-            {"TARGET",      "Target",      FieldKind::Text,       "%PrefixRoot%/drive_c/%PackageUID%", {}, {}},
-            {"SUBMOUNTS",   "Submounts",   FieldKind::StringList, "source/path:dest/path", {}, {}},
-            {"BASE_TARGETS", "Base targets", FieldKind::StringListKeepEmpty, "delta only - concatenated, in order; a blank line is the mount root", {}, {}},
+            {"LAYERS", "Layers", FieldKind::ObjArray, "", {}, {
+                {"FORM",        "Form",        FieldKind::Enum,       "",  FormOpts, {}},
+                {"PATH",        "Path",        FieldKind::Text,       "file in this bundle", {}, {}},
+                {"TARGET",      "Target",      FieldKind::Text,       "%PrefixRoot%/drive_c/%PackageUID%", {}, {}},
+                {"SUBMOUNTS",   "Submounts",   FieldKind::StringList, "source/path:dest/path", {}, {}},
+                {"BASE_TARGETS", "Base targets", FieldKind::StringListKeepEmpty, "delta only - concatenated, in order; a blank line is the mount root", {}, {}},
+                {"WHEN",        "When",        FieldKind::Text,       "condition - layer inert when false", {}, {}},
+            }},
         };
     if (Type == "RegEdit")
         return {{"EDITS", "Registry", FieldKind::RegEdits, "", {}, {}}};
@@ -363,19 +377,25 @@ std::vector<Field> MakeFields(const std::string &Type)
     if (Type == "DllOverride")
         return {{"OVERRIDES", "Overrides", FieldKind::KeyValue, "dll -> resolution order", DllOpts, {}}};
     if (Type == "DeclarePersist")
+        //Batched: a node holds a PERSISTS list, each entry one durable path/registry subtree.
         return {
-            {"SCOPE",  "Scope",  FieldKind::Enum,  "", ScopeOpts, {}},
-            {"PATH",   "Path",   FieldKind::Text,  "runtime path, or HKCU\\Software\\... - empty = the whole runtime", {}, {}},
-            {"TARGET", "Target", FieldKind::Text,  "durable name under the instance (defaults to the path's last segment)", {}, {}},
-            {"CLOUD",  "Cloud sync", FieldKind::Check, "include in Cloud Saves (off for machine-specific data like shader caches)", {}, {}},
+            {"PERSISTS", "Persists", FieldKind::ObjArray, "", {}, {
+                {"SCOPE",  "Scope",  FieldKind::Enum,  "", ScopeOpts, {}},
+                {"PATH",   "Path",   FieldKind::Text,  "runtime path, or HKCU\\Software\\... - empty = the whole runtime", {}, {}},
+                {"TARGET", "Target", FieldKind::Text,  "durable name under the instance (defaults to the path's last segment)", {}, {}},
+                {"CLOUD",  "Cloud sync", FieldKind::Check, "include in Cloud Saves (off for machine-specific data like shader caches)", {}, {}},
+                {"WHEN",   "When",   FieldKind::Text,  "condition - inert when false", {}, {}},
+            }},
         };
     if (Type == "CustomVar")
+        //Batched: a node holds a VARS list, each entry one variable + its optional launcher UI facet (VarUI).
         return {
-            {"KEY",     "Key",     FieldKind::Text, "used as %KEY%", {}, {}},
-            {"DEFAULT", "Default", FieldKind::Text, "", {}, {}},
-            {"COMMENT", "Comment", FieldKind::Text, "", {}, {}},
-            //WHEN is NODE-level and drawn by the envelope for every type — listing it here too rendered two
-            //widgets bound to the same key.
+            {"VARS", "Variables", FieldKind::ObjArray, "", {}, {
+                {"KEY",     "Key",     FieldKind::Text, "used as %KEY%", {}, {}},
+                {"DEFAULT", "Default", FieldKind::Text, "", {}, {}},
+                {"COMMENT", "Comment", FieldKind::Text, "", {}, {}},
+                {"WHEN",    "When",    FieldKind::Text, "condition - var inert (resolves empty) when false", {}, {}},
+            }, /*VarUI=*/true},
         };
     if (Type == "DeclareExec")
         return {
@@ -653,10 +673,13 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
         return std::find(Hints.begin(), Hints.end(), H) != Hints.end();
     };
 
-    if (Type == "Content")
+    if (Type == "VFSLayer")
     {
-        const std::string Form = (Node.contains("FORM") && Node["FORM"].is_string())
-                                     ? Node["FORM"].get<std::string>() : std::string();
+        //Batched: FORM lives in the first LAYERS entry. Per-node content actions target that primary layer.
+        std::string Form;
+        if (Node.contains("LAYERS") && Node["LAYERS"].is_array() && !Node["LAYERS"].empty()
+            && Node["LAYERS"][0].is_object() && Node["LAYERS"][0].contains("FORM") && Node["LAYERS"][0]["FORM"].is_string())
+            Form = Node["LAYERS"][0]["FORM"].get<std::string>();
         A.push_back({"browse", "browse...", "Pick the file or folder this layer supplies.", false});
         if (Form == "dir")
             A.push_back({"to_zip", "-> zip", "Pack this directory as an uncompressed (STORE) zip and delete the folder.", true});
@@ -670,7 +693,7 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
             //a delta or dir parent only to refuse afterwards is a button that lies.
             for (const Link &L : G.Links)
                 if (L.ChildIndex == Index && L.ParentIndex >= 0
-                    && G.Nodes[L.ParentIndex].Type == "Content" && G.Nodes[L.ParentIndex].Form == "zip")
+                    && G.Nodes[L.ParentIndex].Type == "VFSLayer" && G.Nodes[L.ParentIndex].Form == "zip")
                 { A.push_back({"to_delta", "-> delta", "Store this as a binary delta against its parent's content.", true}); break; }
         }
         //The exact inverse of "-> delta": reconstruct the full archive and go back to being a plain zip. From
@@ -702,7 +725,7 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
     //Available ANYWHERE along the chain: open a live runtime built from this node's closure, run an installer,
     //and capture what it wrote — the captures become NEW nodes parented here.
     A.push_back({"capture_setup", "capture setup", "Run an installer on a live runtime at this point and capture the files and registry it writes.", true});
-    if (Type != "Content")
+    if (Type != "VFSLayer")
         A.push_back({"browse_files", "browse files", "Open a file manager on a live runtime at this point and capture what you add.", true});
     return A;
 }

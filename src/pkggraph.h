@@ -138,6 +138,7 @@ struct Field
     const char *Hint  = "";
     std::vector<std::pair<const char *, const char *>> Options;   // Enum: {stored value, shown label}
     std::vector<Field> Sub;                                       // ObjArray: the per-entry fields
+    bool VarUI = false;                                           // ObjArray of CustomVars: draw the UI facet per entry
 };
 
 //The rows to render for a node of this TYPE, in order. Empty for "Group" (pure composition).
