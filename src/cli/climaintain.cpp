@@ -144,8 +144,8 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             { std::ofstream o(vs[i].node->BundleDir / blob, std::ios::binary); o.write((const char *)delta.data(), (std::streamsize)delta.size()); }
             after += delta.size();
 
-            // A node IS its layer, and a file holds one node or an array of them — so rewrite the node object
-            // in place rather than indexing into a LAYERS array that no longer exists.
+            // Batched: a content node is a VFSLayer holding a LAYERS list — convert its PRIMARY layer to a
+            // delta. A file holds one node or an array of them.
             nlohmann::ordered_json J; { std::ifstream in(vs[i].node->File); in >> J; }
             nlohmann::ordered_json *Nd = nullptr;
             auto LabelOf = [](const nlohmann::ordered_json &E) {
@@ -164,15 +164,24 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
             bool have = false; for (auto &p : parents) if (p == vs[i - 1].node->NodeId) have = true;
             if (!have) parents.push_back(vs[i - 1].node->NodeId);
             (*Nd)["PARENTS"] = parents;
-            (*Nd)["TYPE"] = "Content";
-            (*Nd)["FORM"] = "delta";
-            (*Nd)["PATH"] = blob;
-            (*Nd)["TARGET"] = vs[i].target;
-            // Cross-target: when the byte-base zip mounts at a DIFFERENT target than this node (e.g. a complete
+            (*Nd)["TYPE"] = "VFSLayer";
+            // Convert the SAME entry the chain selection matched — the VFSZipLayer at layerIdx. A batched node may
+            // carry its zip at a later LAYERS entry, and each LAYERS[k] lowers to Layers[k] one-to-one, so blindly
+            // rewriting LAYERS[0] would corrupt a different layer and orphan the real zip. Refuse if it is missing.
+            if (!Nd->contains("LAYERS") || !(*Nd)["LAYERS"].is_array() || (int)(*Nd)["LAYERS"].size() <= vs[i].layerIdx)
+            { LogErr("convert-delta", "node " + vs[i].node->NodeId + " has no LAYERS[" + std::to_string(vs[i].layerIdx)
+                     + "] to convert in " + vs[i].node->File.string()); return 1; }
+            nlohmann::ordered_json &L0 = (*Nd)["LAYERS"][vs[i].layerIdx];
+            L0["FORM"]   = "delta";
+            L0["PATH"]   = blob;
+            L0["TARGET"] = vs[i].target;
+            // Cross-target: when the byte-base zip mounts at a DIFFERENT target than this layer (e.g. a complete
             // archive at the package root diffed over a base zip at a sub-target), name it so the FS can pair
             // them. Arrayable, because a delta may dedup against a CONCATENATION of bases.
             if (vs[i - 1].target != vs[i].target)
-                (*Nd)["BASE_TARGETS"] = nlohmann::ordered_json::array({vs[i - 1].target});
+                L0["BASE_TARGETS"] = nlohmann::ordered_json::array({vs[i - 1].target});
+            else
+                L0.erase("BASE_TARGETS");
             { std::ofstream o(vs[i].node->File); o << J.dump(4) << "\n"; }
 
             toDelete.push_back(vs[i].zipPath);

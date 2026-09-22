@@ -1354,14 +1354,14 @@ bool HasLiveToken(const std::string &S)
 std::vector<std::string> LayerBaseTargets(const nlohmann::ordered_json &Sub)
 {
     std::vector<std::string> Out;
-    //Accepts BOTH shapes a delta is written in — the LOWERED layer (TYPE "VFSDeltaLayer") and the NODE it came
-    //from (TYPE "Content", FORM "delta") — because the key and its meaning are identical in both and the editor
-    //reads nodes while the mounter reads layers. Splitting that into two readers is how this question came to be
-    //answered differently in four places to begin with.
+    //Accepts BOTH shapes a delta is written in — the LOWERED layer (TYPE "VFSDeltaLayer") and the raw batched
+    //LAYERS ENTRY it came from (FORM "delta", no TYPE key) — because the key and its meaning are identical in
+    //both and the editor reads layer entries while the mounter reads lowered layers. Splitting that into two
+    //readers is how this question came to be answered differently in four places to begin with.
     if (!Sub.is_object()) return Out;
     const std::string T = LayerType(Sub);
     const bool IsDelta = (T == "VFSDeltaLayer")
-                      || (T == "Content" && Sub.value("FORM", std::string()) == "delta");
+                      || (Sub.value("FORM", std::string()) == "delta");   // a raw LAYERS entry carries FORM, no TYPE
     if (!IsDelta) return Out;                                                // only a delta has a byte-base
     //ONE key, always a list. A one-entry list is the ordinary cross-target delta; several are a concatenation.
     //A malformed shape yields NOTHING and says so, rather than a SHORTER list: the bases are concatenated, so a

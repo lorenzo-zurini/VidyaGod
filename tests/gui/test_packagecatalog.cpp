@@ -173,7 +173,10 @@ private slots:
                 for (const auto & N : Frag) {
                     if (!N.is_object()) continue;
                     if (cover) { if (N.contains("COVER") && N["COVER"].is_object() && N["COVER"].contains("SOURCE")) return N["COVER"]["SOURCE"]; }
-                    else if (N.contains("SOURCE") && N["SOURCE"].is_object()) return N["SOURCE"];
+                    // Batched VFSLayer: the content SOURCE lives on the primary layer, LAYERS[0].
+                    else if (N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
+                             && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("SOURCE") && N["LAYERS"][0]["SOURCE"].is_object())
+                        return N["LAYERS"][0]["SOURCE"];
                 }
             return json::object();
         };
@@ -193,7 +196,9 @@ private slots:
             std::ifstream in((Pkg.path() + "/game.json").toStdString());
             json Frag = json::parse(in);
             for (auto & N : Frag)
-                if (N.is_object() && N.contains("SOURCE") && N["SOURCE"].is_object()) N["SOURCE"].erase("SIZE");
+                if (N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
+                    && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("SOURCE") && N["LAYERS"][0]["SOURCE"].is_object())
+                    N["LAYERS"][0]["SOURCE"].erase("SIZE");
             writeJson(Pkg.path() + "/game.json", Frag);
         }
         QVERIFY2(!srcIn("game.json", false).contains("SIZE"), "precondition: SIZE stripped");
@@ -283,7 +288,7 @@ private slots:
                   NodeFixture::Chain("a_base", {[]{
                       auto L = NodeFixture::ContentCid("file", "base.bin",
                           "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e");
-                      L["SOURCE"]["SIZE"] = 4096;   // stamped size — the dialog's instant size derivation reads THIS
+                      L["LAYERS"][0]["SOURCE"]["SIZE"] = 4096;   // stamped size — the dialog's instant size derivation reads THIS
                       return L;
                   }()}));
         writeJson(root + "/VidyaGod/[1] A/content.json",
@@ -418,9 +423,10 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // A PUBLISH'd NAMELESS node must NOT be shared: its handle is a synthetic absolute-path key, so publishing it
-    // would leak the seeder's filesystem path as node/uid/title. It is skipped (loudly); a named PUBLISH'd node
-    // publishes normally. Teeth: drop the nameless guard in PublishLibrary and the share list gains a path-leaking entry.
+    // A PUBLISH'd NAMELESS node IS shareable under Model C: identity is the CID, so a label-less node stands under its
+    // CID handle rather than a synthetic path key — the old path-leak that forced a mandatory LABEL is gone. The
+    // property that must hold is that NO share entry carries a filesystem path (uid/node/title). Teeth: reintroduce a
+    // synthetic-path handle and the assert below catches the '/' it leaks.
     void publish_skips_nameless_flagged_node()
     {
         std::string Err;
@@ -435,19 +441,27 @@ private slots:
                   NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}, {{"PUBLISH", true}}));
         // A nameless node (no LABEL) flagged PUBLISH — a content node that happens to be shareable-flagged.
         writeJson(R + "/VidyaGod/[2] Nameless/c.json",
-                  json{{"TYPE", "Content"}, {"FORM", "zip"}, {"PATH", "c.zip"},
-                       {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}},
-                       {"PUBLISH", true}});
+                  json{{"TYPE", "VFSLayer"}, {"PUBLISH", true},
+                       {"LAYERS", json::array({ json{{"FORM", "zip"}, {"PATH", "c.zip"},
+                           {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}}} })}});
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);
         QVERIFY(cfg.contains("Libraries") && cfg["Libraries"].contains("VidyaGod"));
+        // Model C: a nameless PUBLISH'd node is safe to share — its handle is its CID (identity), so it stands under
+        // that CID, never a filesystem path. THE property that matters is the absence of a path leak in ANY entry
+        // (uid/node/title), not the exclusion of nameless nodes. Teeth: the old synthetic-key leak would put the
+        // seeder's bundle PATH in uid/node here.
+        bool sawNamed = false, sawNameless = false;
         for (const auto & E : cfg["Libraries"]["VidyaGod"])
         {
-            const std::string node = E.value("node", std::string());
-            QVERIFY2(node == "n_exec", ("only the named node publishes; leaked: " + node).c_str());
-            QVERIFY2(E.value("uid", std::string()).find('/') == std::string::npos, "no filesystem path in a share entry");
+            const std::string node = E.value("node", std::string()), uid = E.value("uid", std::string());
+            const std::string Msg = "no filesystem path in a share entry: node=" + node + " uid=" + uid;
+            QVERIFY2(node.find('/') == std::string::npos && uid.find('/') == std::string::npos, Msg.c_str());
+            if (node == "n_exec") sawNamed = true;
+            else sawNameless = true;                             // the nameless node rides under its own CID
         }
-        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 1);   // the nameless node is NOT in the share list
+        QVERIFY2(sawNamed, "the named launchable publishes");
+        QVERIFY2(sawNameless, "the nameless PUBLISH'd node publishes under its CID (no longer skipped)");
         IpfsWrapper::StopNode();
     }
 
@@ -750,11 +764,13 @@ private slots:
             std::ofstream F((Dir.path() + "/" + Name).toStdString());
             F << J.dump(2);
         };
+        // Model C: the layout override + warnings key on the node's stored CID HANDLE, so each fixture node carries
+        // one (= its readable name here); PARENTS reference those handles.
         // Its OWN POS is impossible: publish computes one and writes it, changing the file.
-        Write("bad.json",  nlohmann::ordered_json{{"LABEL", "bad"},  {"TYPE", "Group"},
+        Write("bad.json",  nlohmann::ordered_json{{"CID", "bad"}, {"LABEL", "bad"},  {"TYPE", "Group"},
                                                   {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
         // A good POS with an impossible LOCAL override: the node keeps its POS and nothing is rewritten.
-        Write("keep.json", nlohmann::ordered_json{{"LABEL", "keep"}, {"TYPE", "Group"},
+        Write("keep.json", nlohmann::ordered_json{{"CID", "keep"}, {"LABEL", "keep"}, {"TYPE", "Group"},
                                                   {"POS", nlohmann::ordered_json::array({60.0, 60.0})},
                                                   {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
         // NO POS of its own, plus an impossible local override. This is the case where the source label and
@@ -762,7 +778,7 @@ private slots:
         // package changed — but with no POS to fall back on the layout supplies one, the file GAINS a POS it
         // never had, and the Meta-CID moves. Both earlier versions of this line got this case wrong, and a
         // test built only from the two agreeing cases could not tell the difference.
-        Write("fresh.json", nlohmann::ordered_json{{"LABEL", "fresh"}, {"TYPE", "Group"},
+        Write("fresh.json", nlohmann::ordered_json{{"CID", "fresh"}, {"LABEL", "fresh"}, {"TYPE", "Group"},
                                                    {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
         nlohmann::ordered_json Override = nlohmann::ordered_json::object();
         Override["keep"]  = nlohmann::ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 1.0});
@@ -823,13 +839,15 @@ private slots:
             std::ofstream F((Dir.path() + "/" + Name).toStdString());
             F << J.dump(2);
         };
-        //Both called "same". The first carries an impossible POS, so publish computes one and REWRITES it.
-        Write("a.json", nlohmann::ordered_json{{"LABEL", "same"}, {"TYPE", "Group"},
+        //Both share the handle "same" (Model C: the CID handle is the identity the override + warnings key on; the
+        //point of this test is two nodes with the SAME handle). The first carries an impossible POS, so publish
+        //computes one and REWRITES it.
+        Write("a.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, {"TYPE", "Group"},
                                                {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
         //The second carries a POS the layout would produce anyway, plus an impossible local OVERRIDE. It is
         //refused like the first, but its file is left exactly as it was — 60,60 is where the layout puts the
         //first node of the first layer, so "already correct: do not touch the bytes" fires.
-        Write("b.json", nlohmann::ordered_json{{"LABEL", "same"}, {"TYPE", "Group"},
+        Write("b.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, {"TYPE", "Group"},
                                                {"POS", nlohmann::ordered_json::array({60.0, 60.0})}});
         nlohmann::ordered_json Override = nlohmann::ordered_json::object();
         Override["same"] = nlohmann::ordered_json::array({1e300, 2.0});
@@ -1697,11 +1715,11 @@ private slots:
     {
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
-        json A; A["LABEL"] = "a"; A["TYPE"] = "Group"; A["POS"] = json::array({10.0, 20.0});
+        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["TYPE"] = "Group"; A["POS"] = json::array({10.0, 20.0});
         writeJson(Dir.filePath("a.json"), A);
 
         json Local = json::object();
-        Local["a"] = json::array({777.0, 888.0});   // the author dragged it; that is the current layout
+        Local["a"] = json::array({777.0, 888.0});   // the author dragged it; keyed by the node's CID handle "a"
         std::string Err;
         QVERIFY(PackageCatalog::StampNodePositions(Dir.path().toStdString(), &Local, &Err));
 
@@ -1740,7 +1758,7 @@ private slots:
         QVERIFY(Dir.isValid());
         const QString Bundle = Dir.filePath("[999][v1.0] Keyed");
         QVERIFY(QDir().mkpath(Bundle));
-        json A; A["LABEL"] = "a"; A["TYPE"] = "Group";
+        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["TYPE"] = "Group";   // handle "a" is what SetPos + the override key on
         writeJson(Bundle + "/a.json", A);
 
         // What the editor writes, through the editor's own path.

@@ -72,8 +72,8 @@ private slots:
         QCOMPARE(Canvas->nodeCount(), 2);
         QVERIFY(Canvas->connect(content, exec));
         QCOMPARE(Doc["NODES"][exec]["PARENTS"].size(), size_t(1));
-        QCOMPARE(Doc["NODES"][exec]["PARENTS"][0].get<std::string>(),
-                 Doc["NODES"][content]["LABEL"].get<std::string>());
+        QCOMPARE(Doc["NODES"][exec]["PARENTS"][0].get<std::string>(),   // wired by the HANDLE (CID), not the cosmetic LABEL
+                 Doc["NODES"][content]["CID"].get<std::string>());
 
         QVERIFY(!Canvas->connect(content, exec));            // idempotent — no duplicate edge
         QVERIFY(Canvas->disconnect(content, exec));
@@ -92,27 +92,30 @@ private slots:
         QVERIFY(!Doc["NODES"][i]["LABEL"].get<std::string>().empty());
     }
 
-    // Ids are unique by construction (the old editor named every new node "new_node"), a rename actually
-    // RE-POINTS every reference, and a rename onto a name in use is REFUSED — otherwise both nodes map to
-    // <id>.json, SaveNodes writes them as one array and the loader keeps first-seen, silently dropping a node.
+    // Model C: HANDLES (the stored "CID") are unique by construction; a rename sets only the COSMETIC LABEL and
+    // therefore re-points NOTHING — references are handles, unchanged by a rename — and duplicate or empty labels are
+    // allowed (a label is a display name, not a key; RoC/TFT "v1.21b" are legitimate namesakes).
     void idsAreUniqueAndRenamesRepointChildren()
     {
         const int a = Canvas->addNode("VFSLayer");
         const int b = Canvas->addNode("VFSLayer");
-        const std::string aId = Doc["NODES"][a]["LABEL"].get<std::string>();
-        const std::string bId = Doc["NODES"][b]["LABEL"].get<std::string>();
-        QVERIFY(aId != bId);
+        const std::string aH = Doc["NODES"][a]["CID"].get<std::string>();   // the wiring HANDLE
+        const std::string bH = Doc["NODES"][b]["CID"].get<std::string>();
+        QVERIFY(aH != bH);                                               // handles are unique by construction
 
-        QVERIFY(Canvas->connect(a, b));                                  // b depends on a
-        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), aId);
+        QVERIFY(Canvas->connect(a, b));                                  // b depends on a — via a's HANDLE
+        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), aH);
 
         QVERIFY(Canvas->renameNode(a, "renamed_base"));
         QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed_base"));
-        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), std::string("renamed_base"));  // re-pointed
+        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), aH);  // UNCHANGED — refs are handles, not names
+        QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), aH);         // the handle itself never moves on rename
 
-        QVERIFY(!Canvas->renameNode(b, "renamed_base"));                 // name taken -> refused
-        QCOMPARE(Doc["NODES"][b]["LABEL"].get<std::string>(), bId);    // and b is untouched
-        QVERIFY(!Canvas->renameNode(a, ""));                             // empty -> refused
+        QVERIFY(Canvas->renameNode(b, "renamed_base"));                  // a duplicate LABEL is allowed (cosmetic)
+        QCOMPARE(Doc["NODES"][b]["LABEL"].get<std::string>(), std::string("renamed_base"));
+        QVERIFY(Doc["NODES"][b]["CID"].get<std::string>() == bH);        // still its own node — handle intact
+        QVERIFY(Canvas->renameNode(a, ""));                             // a blank label is allowed (shows the short CID)
+        QVERIFY(Doc["NODES"][a]["LABEL"].get<std::string>().empty());
     }
 
     // A stored position must actually be restored: imnodes has no persisted state of its own, so a node whose
@@ -163,7 +166,7 @@ private slots:
     void positionsPersistIntoTheLayoutSidecarNotThePackage()
     {
         const int i = Canvas->addNode("VFSLayer", 123.0f, 456.0f);
-        const std::string id = Doc["NODES"][i]["LABEL"].get<std::string>();
+        const std::string id = Doc["NODES"][i]["CID"].get<std::string>();   // the layout sidecar is keyed by the HANDLE
         QVERIFY(!Doc["NODES"][i].contains("POS"));               // NOT in the package
         QVERIFY(Layout.contains(id));                            // in the sidecar
         QCOMPARE(Layout[id][0].get<double>(), 123.0);
@@ -187,10 +190,11 @@ private slots:
     // rather than stacked at the origin.
     void unpositionedNodesAreAutoLaidOut()
     {
+        // Handles (CID) are what PARENTS reference and the layout keys on; batched content is a VFSLayer/LAYERS node.
         Doc["NODES"] = json::array({
-            json{{"LABEL","base"},{"TYPE","Content"},{"FORM","zip"},{"PATH","a.zip"}},
-            json{{"LABEL","mid"}, {"TYPE","Content"},{"FORM","zip"},{"PATH","b.zip"},{"PARENTS",json::array({"base"})}},
-            json{{"LABEL","tip"}, {"TYPE","DeclareExec"},{"HOST","win32"},{"PARENTS",json::array({"mid"})}},
+            json{{"CID","base"},{"LABEL","base"},{"TYPE","VFSLayer"},{"LAYERS",json::array({json{{"FORM","zip"},{"PATH","a.zip"}}})}},
+            json{{"CID","mid"}, {"LABEL","mid"}, {"TYPE","VFSLayer"},{"LAYERS",json::array({json{{"FORM","zip"},{"PATH","b.zip"}}})},{"PARENTS",json::array({"base"})}},
+            json{{"CID","tip"}, {"LABEL","tip"}, {"TYPE","DeclareExec"},{"HOST","win32"},{"PARENTS",json::array({"mid"})}},
         });
         const PkgGraph::Graph g = Canvas->graph();
         QVERIFY(g.Nodes[0].X < g.Nodes[1].X);                 // depth increases left → right
@@ -377,28 +381,29 @@ private slots:
         QCOMPARE(g.Externals.size(), size_t(1));
     }
 
-    // A rename must carry EVERY reference to the node, not just the edges. The ones that are not PARENTS fail
-    // quietly: EXCLUDE stops excluding (both variants become selectable, caught later only as a warning), a
-    // RUNNER pin falls back to the default runner with nothing catching it, and the canvas position is lost —
-    // which matters because renameNode runs per KEYSTROKE, so the box would jump on the first character typed.
+    // Model C: every reference to a node is its HANDLE (the stored CID), and a rename touches only the cosmetic
+    // LABEL — so a rename carries nothing and, crucially, BREAKS nothing. PARENTS/EXCLUDE/RUNNER (all handle refs)
+    // still resolve, and the canvas position (keyed by the handle) does not move — which matters because renameNode
+    // runs per KEYSTROKE, so the old name-keyed scheme made the box jump on the first character typed.
     void renamingANodeCarriesEveryReferenceToIt()
     {
         const int a = Canvas->addNode("VFSLayer", 300.0f, 400.0f);
         const int b = Canvas->addNode("DeclareExec");
-        const std::string old = Doc["NODES"][a]["LABEL"].get<std::string>();
+        const std::string handle = Doc["NODES"][a]["CID"].get<std::string>();   // the stable identity
         QVERIFY(Canvas->connect(a, b));
-        Doc["NODES"][b]["EXCLUDE"] = json::array({old});
-        Doc["NODES"][b]["RUNNER"]  = old;
-        QVERIFY(Layout.contains(old));
+        Doc["NODES"][b]["EXCLUDE"] = json::array({handle});   // these reference the HANDLE, as authoring does
+        Doc["NODES"][b]["RUNNER"]  = handle;
+        QVERIFY(Layout.contains(handle));
 
         QVERIFY(Canvas->renameNode(a, "renamed"));
 
-        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), std::string("renamed"));
-        QCOMPARE(Doc["NODES"][b]["EXCLUDE"][0].get<std::string>(), std::string("renamed"));
-        QCOMPARE(Doc["NODES"][b]["RUNNER"].get<std::string>(), std::string("renamed"));
-        QVERIFY(!Layout.contains(old));                       // no dead key left behind
-        QVERIFY(Layout.contains("renamed"));
-        QCOMPARE(Layout["renamed"][0].get<double>(), 300.0);  // ...and the position came with it
+        QCOMPARE(Doc["NODES"][a]["LABEL"].get<std::string>(), std::string("renamed"));  // only the label changed
+        QCOMPARE(Doc["NODES"][a]["CID"].get<std::string>(), handle);                    // the handle never moves
+        QCOMPARE(Doc["NODES"][b]["PARENTS"][0].get<std::string>(), handle);             // refs still resolve...
+        QCOMPARE(Doc["NODES"][b]["EXCLUDE"][0].get<std::string>(), handle);
+        QCOMPARE(Doc["NODES"][b]["RUNNER"].get<std::string>(), handle);
+        QVERIFY(Layout.contains(handle));                     // ...and the position stayed put (no per-keystroke jump)
+        QCOMPARE(Layout[handle][0].get<double>(), 300.0);
     }
 
     // The link slot must address the REAL PARENTS index, including past entries the graph skips (a null or a
@@ -3036,7 +3041,7 @@ private slots:
         Canvas->setMiniMap(false);
         const int p = Canvas->addNode("VFSLayer", -90000, -90000);   // far top-left, off-screen
         const int c = Canvas->addNode("DeclareExec", 90000, 90000); // far bottom-right, off-screen
-        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["LABEL"].get<std::string>() });
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["CID"].get<std::string>() });   // wire by handle
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);   // both nodes are culled...
@@ -3050,7 +3055,7 @@ private slots:
         Canvas->setMiniMap(false);
         const int p = Canvas->addNode("VFSLayer", 90000, 90000);
         const int c = Canvas->addNode("DeclareExec", 95000, 95000);   // both far bottom-right; wire stays off-screen
-        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["LABEL"].get<std::string>() });
+        Doc["NODES"][c]["PARENTS"] = json::array({ Doc["NODES"][p]["CID"].get<std::string>() });   // wire by handle
         Canvas->invalidateGraph();
         runFrame();
         QCOMPARE(Canvas->visibleNodes(), 0);

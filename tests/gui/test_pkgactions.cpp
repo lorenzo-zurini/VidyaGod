@@ -61,7 +61,7 @@ private slots:
         F.act->perform(F.nodeId(n), "to_dir");
         QVERIFY(F.waitIdle(F.nodeId(n)));
 
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("dir"));
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("dir"));
         const QString Dir = F.path("content");
         QVERIFY(QFile::exists(Dir + "/hello/world.txt"));
         QVERIFY(!QFile::exists(F.path("content.zip")));            // replaced, not duplicated
@@ -69,7 +69,7 @@ private slots:
 
         F.act->perform(F.nodeId(n), "to_zip");
         QVERIFY(F.waitIdle(F.nodeId(n)));
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
         QVERIFY(QFile::exists(F.path("content.zip")));
         QVERIFY(!QDir(Dir).exists());
     }
@@ -85,14 +85,14 @@ private slots:
         F.write(F.path("stuff/a.txt"), "mine");
         F.write(F.path("stuff.zip"), "SOMEONE ELSE'S ARCHIVE");   // the name is taken
         const int n = F.addContentNode("stuff");
-        F.doc()["NODES"][n]["FORM"] = "dir";
+        F.layer(n)["FORM"] = "dir";
 
         F.act->perform(F.nodeId(n), "to_zip");
         QTest::qWait(300);
 
         QVERIFY(QDir(F.path("stuff")).exists());                   // the folder was NOT deleted
         QCOMPARE(F.read(F.path("stuff.zip")), QByteArray("SOMEONE ELSE'S ARCHIVE"));   // untouched
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("dir"));  // node unchanged
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("dir"));  // node unchanged
         QVERIFY(!F.notices.isEmpty());                             // and it SAID so rather than failing quietly
         QVERIFY(F.notices.join(" ").contains("already exists"));
     }
@@ -117,7 +117,7 @@ private slots:
 
         QCOMPARE(F.read(F.path("stuff.zip")), QByteArray("MY ARCHIVE"));            // the zip was NOT deleted
         QCOMPARE(F.read(F.path("stuff/theirs.txt")), QByteArray("SOMEONE ELSE'S LAYER"));  // nor contaminated
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("zip"));      // node unchanged
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));      // node unchanged
         QVERIFY(!F.notices.isEmpty());                                              // and it SAID so
         QVERIFY(F.notices.join(" ").contains("already exists"));
 
@@ -164,7 +164,7 @@ private slots:
             // against), which is also correct but not what this test is pinning.
             for (const char *Act : {"to_zip", "to_dir", "restore", "undelta"})
             {
-                F.doc()["NODES"][n]["FORM"] = (std::string(Act) == "to_zip") ? "dir" : "zip";
+                F.layer(n)["FORM"] = (std::string(Act) == "to_zip") ? "dir" : "zip";
                 F.notices.clear();
                 F.act->perform(F.nodeId(n), Act);
                 QTest::qWait(120);
@@ -200,7 +200,7 @@ private slots:
         QVERIFY(F.waitIdle(F.nodeId(n)));                          // the node did NOT stay locked
         QVERIFY(QFile::exists(F.path("content.zip")));             // and the source is still here
         QVERIFY(!F.notices.isEmpty());                             // the failure was reported, not swallowed
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
     }
 
     // Declining the confirmation must be a complete no-op — these actions delete things.
@@ -215,7 +215,7 @@ private slots:
         QTest::qWait(200);
         QVERIFY(QFile::exists(F.path("content.zip")));
         QVERIFY(!F.canvas->isBusy(F.nodeId(n).toStdString()));
-        QCOMPARE(F.doc()["NODES"][n]["FORM"].get<std::string>(), std::string("zip"));
+        QCOMPARE(F.layer(n)["FORM"].get<std::string>(), std::string("zip"));
     }
 
     // The DEFAULT path — no injected handlers at all — is the one that ships, and the previous suite never
@@ -233,7 +233,7 @@ private slots:
         QVERIFY(QFile::exists(F.path("content.zip")));                    // refused, so nothing was deleted
         QVERIFY(!F.canvas->isBusy(F.nodeId(n).toStdString()));
 
-        F.doc()["NODES"][n]["PATH"] = "";                                 // drives the "Nothing to convert" report
+        F.layer(n)["PATH"] = "";                                          // drives the "Nothing to convert" report
         F.act->perform(F.nodeId(n), "to_zip");
         QTest::qWait(100);
         QVERIFY(true);                                                    // reaching here at all is the assertion
@@ -326,7 +326,7 @@ private slots:
 
         QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);               // in memory...
         // ...and ON DISK, which is what the button used to lose: the destruction was followed by SaveNodes().
-        const json Saved = json::parse(F.read(F.path(F.nodeId(n) + ".json")).toStdString());
+        const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
         QCOMPARE(Saved["EDITS"], Hand);
         QVERIFY(!F.notices.isEmpty());
         QVERIFY2(F.notices.join(" ").contains("not a list"), qUtf8Printable(F.notices.join(" ")));
@@ -349,7 +349,7 @@ private slots:
         QTest::qWait(100);
 
         QCOMPARE(F.doc()["NODES"][n]["EDITS"], Hand);
-        const json Saved = json::parse(F.read(F.path(F.nodeId(n) + ".json")).toStdString());
+        const json Saved = json::parse(F.read(F.path(F.nodeFile(n))).toStdString());
         QCOMPARE(Saved["EDITS"], Hand);
         QVERIFY2(F.notices.join(" ").contains("not an object"), qUtf8Printable(F.notices.join(" ")));
     }
@@ -400,7 +400,11 @@ private:
 
         json &doc() { return model->doc(); }
         QString path(const QString &rel) const { return dir->path() + "/" + rel; }
-        QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["LABEL"].get<std::string>()); }
+        // perform() resolves a node by its HANDLE (the "CID" field — a draft handle until Publish mints it),
+        // not by the cosmetic LABEL. Hand it the handle.
+        QString nodeId(int i) { return QString::fromStdString(doc()["NODES"][i]["CID"].get<std::string>()); }
+        // The on-disk file, in contrast, is named from the cosmetic LABEL (Model C: filename is pure presentation).
+        QString nodeFile(int i) { return QString::fromStdString(doc()["NODES"][i].value("LABEL", std::string())) + ".json"; }
 
         int addRegEditNode()
         {
@@ -423,11 +427,13 @@ private:
 
         int addContentNode(const QString &p)
         {
-            const int i = canvas->addNode("Content");
-            doc()["NODES"][i]["PATH"] = p.toStdString();
+            const int i = canvas->addNode("VFSLayer");           // batched: one node, LAYERS[0] is the primary layer
+            layer(i)["PATH"] = p.toStdString();
             model->SaveNodes();
             return i;
         }
+        // The primary VFS layer of a batched VFSLayer node — where FORM/PATH/SOURCE live post-batching.
+        json &layer(int i) { return doc()["NODES"][i]["LAYERS"][0]; }
         void write(const QString &p, const QByteArray &b)
         { QDir().mkpath(QFileInfo(p).path()); QFile f(p); QVERIFY2(f.open(QIODevice::WriteOnly), qUtf8Printable(p)); f.write(b); }
         QByteArray read(const QString &p) const { QFile f(p); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll(); }

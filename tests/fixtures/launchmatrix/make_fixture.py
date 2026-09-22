@@ -175,6 +175,20 @@ def nodes():
         # handle (unique here) so PARENTS — which reference the returned handle — stay legible. GatherWorkingTree keys
         # on "CID"; FreezeToIndex then derives the real CID and indexes by it. LABEL rides along as the cosmetic name.
         kw.setdefault("CID", kw["LABEL"])
+        # Batched schema: a content node is a VFSLayer holding a LAYERS list. Each add() here declares ONE layer, so
+        # collapse its layer-payload fields into LAYERS[0]; NodeLower expands that back into the same flat layer the
+        # resolvers consume, so the resolved plan (and thus the golden) is unchanged by the batching.
+        # Each of these add() calls declares ONE item; collapse its payload fields into the batched node's list. The
+        # DllOverride map (OVERRIDES) is already the batched form. NodeLower expands each list entry into the same flat
+        # layer/var/persist the resolvers consume, so the resolved plan (and the golden) is unchanged by the batching.
+        BATCH = {"Content": ("VFSLayer", "LAYERS",
+                             ("FORM", "PATH", "TARGET", "SOURCE", "WHEN", "TOGGLE", "SUBMOUNTS", "BASE_TARGETS", "COMMENT")),
+                 "CustomVar": ("CustomVar", "VARS", ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
+                 "DeclarePersist": ("DeclarePersist", "PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN"))}
+        if kw.get("TYPE") in BATCH:
+            newtype, listkey, fields = BATCH[kw["TYPE"]]
+            kw["TYPE"] = newtype
+            kw[listkey] = [{f: kw.pop(f) for f in fields if f in kw}]
         N.append(kw); return kw["CID"]
 
     # ---- identity -------------------------------------------------------------------------------------

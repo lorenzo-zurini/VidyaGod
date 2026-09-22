@@ -10,6 +10,7 @@
 
 #include <QTemporaryDir>
 #include <QDir>
+#include <algorithm>
 #include <QFile>
 
 #include "packageeditormodel.h"
@@ -26,15 +27,13 @@ void writeNode(const QString & dir, const QString & file, const json & j)
     std::ofstream f((dir + "/" + file).toStdString());
     f << j.dump(2);
 }
+std::string readFile(const QString & path)
+{
+    std::ifstream f(path.toStdString());
+    return std::string(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
 }
 
-static int indexOfNode(PackageEditorModel & m, const std::string & id)
-{
-    const auto & Ns = m.doc()["NODES"];
-    for (int i = 0; i < (int)Ns.size(); ++i)
-        if (Ns[i].value("LABEL", std::string()) == id) return i;
-    return -1;
-}
 
 class PackageEditorModelTest : public QObject
 {
@@ -90,8 +89,10 @@ private slots:
         QCOMPARE(m.FileForNode(json{{"LABEL", ""}}), QString("untitled_node.json"));
     }
 
-    // SaveNodes after a rename writes the new file, deletes the stale one, and fires savedToDisk.
-    void save_nodes_renames_refiles_and_cleans_orphan()
+    // Model C: a node's file is pure presentation and is pinned by its __FILE__ provenance — renaming is just
+    // editing the cosmetic LABEL and must NOT re-file the node (nor split an array file). SaveNodes rewrites the
+    // node in place, keeping its file, and fires savedToDisk.
+    void save_nodes_rename_keeps_the_file_and_persists_the_label()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeNode(dir.path(), "old.json", json{{"LABEL", "old"}, {"TYPE", "Group"}});
@@ -104,8 +105,11 @@ private slots:
         m.doc()["NODES"][0]["LABEL"] = "renamed";
         m.SaveNodes();
 
-        QVERIFY(QFile::exists(dir.path() + "/renamed.json"));   // re-filed under the new id
-        QVERIFY(!QFile::exists(dir.path() + "/old.json"));      // stale file removed
+        QVERIFY(QFile::exists(dir.path() + "/old.json"));       // stays put — the file is provenance, not identity
+        QVERIFY(!QFile::exists(dir.path() + "/renamed.json"));  // a rename does NOT create a new file
+        const json Back = json::parse(readFile(dir.path() + "/old.json"));
+        const json &N = Back.is_array() ? Back[0] : Back;
+        QCOMPARE(N.value("LABEL", std::string()), std::string("renamed"));   // the new cosmetic name persisted
         QVERIFY(saved.count() >= 1);
     }
 
@@ -132,7 +136,8 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeNode(dir.path(), "game.json",
-                  json{{"LABEL", "game"}, {"TYPE", "Content"}, {"FORM", "dir"}});   // content with no PATH → error
+                  json{{"CID", "game"}, {"LABEL", "game"}, {"TYPE", "VFSLayer"},
+                       {"LAYERS", json::array({ json{{"FORM", "dir"}} })}});   // a VFS layer with no PATH → error
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);   // LoadNodes already validated once
@@ -147,12 +152,13 @@ private slots:
     void revalidate_clean_graph_has_no_errors()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
-        writeNode(dir.path(), "game.json", json{{"LABEL", "game"}, {"TYPE", "Group"},
+        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "game.json", json{{"CID", "game"}, {"LABEL", "game"}, {"TYPE", "Group"},
                                                {"PARENTS", json::array({"base"})}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
+        m.Revalidate();                             // scope keys on the CID handle, so the nodes must carry one
         QVERIFY(m.validationErrors().empty());
     }
 
@@ -162,29 +168,38 @@ private slots:
     void create_node_parents_at_the_anchor_and_uniquifies()
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
-        writeNode(dir.path(), "base.json", json{{"LABEL", "base"}, {"TYPE", "Group"}});
+        writeNode(dir.path(), "base.json", json{{"CID", "base"}, {"LABEL", "base"}, {"TYPE", "Group"}});
 
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
 
-        const std::string a = m.createNode(json{{"TYPE","Content"},{"FORM","dir"},{"PATH","cap"}}, {"base"}, "cap_files");
-        QCOMPARE(a, std::string("cap_files"));
-        const int ai = indexOfNode(m, a);
+        // Model C: createNode returns a unique draft HANDLE (not the hint); the hint is the cosmetic LABEL, which
+        // need NOT be unique. Callers wire by the returned handle. A node is found by its handle (its "CID").
+        auto byHandle = [&](PackageEditorModel & mm, const std::string & h) {
+            const auto & Ns = mm.doc()["NODES"];
+            for (int i = 0; i < (int)Ns.size(); ++i) if (Ns[i].value("CID", std::string()) == h) return i;
+            return -1;
+        };
+
+        const std::string a = m.createNode(json{{"TYPE","VFSLayer"},{"LAYERS",json::array({json{{"FORM","dir"},{"PATH","cap"}}})}}, {"base"}, "cap_files");
+        QVERIFY(!a.empty() && a != "cap_files");           // a draft handle, not the hint
+        const int ai = byHandle(m, a);
         QVERIFY(ai >= 0);
+        QCOMPARE(m.doc()["NODES"][ai].value("LABEL", std::string()), std::string("cap_files"));   // hint → cosmetic LABEL
         QCOMPARE(m.doc()["NODES"][ai]["PARENTS"].size(), size_t(1));
-        QCOMPARE(m.doc()["NODES"][ai]["PARENTS"][0].get<std::string>(), std::string("base"));
-        QCOMPARE(m.doc()["NODES"][ai]["TYPE"].get<std::string>(), std::string("Content"));
+        QCOMPARE(m.doc()["NODES"][ai]["PARENTS"][0].get<std::string>(), std::string("base"));      // wired to the anchor handle
+        QCOMPARE(m.doc()["NODES"][ai]["TYPE"].get<std::string>(), std::string("VFSLayer"));
 
-        // A second capture with the same hint must not overwrite the first.
-        const std::string b = m.createNode(json{{"TYPE","Content"},{"FORM","dir"},{"PATH","cap2"}}, {"base"}, "cap_files");
+        // A second create with the same hint gets its OWN handle (handles are always unique; labels may repeat).
+        const std::string b = m.createNode(json{{"TYPE","VFSLayer"},{"LAYERS",json::array({json{{"FORM","dir"},{"PATH","cap2"}}})}}, {"base"}, "cap_files");
         QVERIFY(b != a);
-        QVERIFY(indexOfNode(m, b) >= 0);
+        QVERIFY(byHandle(m, b) >= 0);
 
-        // And it is on disk, not just in the document.
+        // And both are on disk, not just in the document.
         PackageEditorModel m2(&Cfg, nullptr);
         m2.initPackage(dir.path(), nullptr);
-        QVERIFY(indexOfNode(m2, a) >= 0);
-        QVERIFY(indexOfNode(m2, b) >= 0);
+        QVERIFY(byHandle(m2, a) >= 0);
+        QVERIFY(byHandle(m2, b) >= 0);
     }
 
     // A multi-node file may hold entries we do not recognise as nodes. SaveNodes rewrites the whole file from
@@ -227,8 +242,8 @@ private slots:
         PackageEditorModel m(&Cfg, nullptr);
         m.initPackage(dir.path(), nullptr);
 
-        const auto ids = m.KnownNodeIds();
-        QVERIFY(std::find(ids.begin(), ids.end(), "base") != ids.end());
+        const auto ids = m.KnownNodeIds();   // {handle(CID), cosmetic label} pairs
+        QVERIFY(std::any_of(ids.begin(), ids.end(), [](const auto &p) { return p.second == "base"; }));
 
         const auto plats = m.KnownPlatforms();
         QVERIFY(std::find(plats.begin(), plats.end(), "win32") != plats.end());

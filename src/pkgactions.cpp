@@ -821,7 +821,9 @@ void PkgActions::undelta(const std::string & NodeId)
     //A MULTI-BASE delta reconstructs against the CONCATENATION of several mounted targets, which exists only
     //inside a live mount — there is no single parent archive to hand DeltaByteSource here. Say that, rather than
     //composing it over one base and reporting the resulting hash mismatch as "could not be composed".
-    if (ManifestModel::LayerBaseTargets(PrimaryLayer(const_cast<json&>(Ns[I]))).size() > 1)
+    const json & Ly0 = (Ns[I].is_object() && Ns[I].contains("LAYERS") && Ns[I]["LAYERS"].is_array()
+                        && !Ns[I]["LAYERS"].empty()) ? Ns[I]["LAYERS"][0] : Ns[I];   // read-only, no materialise
+    if (ManifestModel::LayerBaseTargets(Ly0).size() > 1)
     { tell("Undelta", "This delta is based on several targets at once (a concatenation), which only exists inside "
                       "a mounted runtime. Reconstructing it from the package folder is not possible."); return; }
 
@@ -852,8 +854,8 @@ void PkgActions::undelta(const std::string & NodeId)
             const int J = indexOf(NodeId);
             if (J < 0) return;
             json & N = Model->doc()["NODES"][J];
-            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName; }
-            N.erase("BASE_TARGETS");                      // a full archive has no byte-base
+            { json & Lp = PrimaryLayer(N); Lp["FORM"] = "zip"; Lp["PATH"] = ZipName;
+              Lp.erase("BASE_TARGETS"); }                 // a full archive has no byte-base (on the LAYER, where it lives)
             Model->SaveNodes(); Model->requestReload();
             refreshHints();
         });
@@ -968,7 +970,7 @@ void PkgActions::makeDelta(const std::string & NodeId)
             // Cross-target: when the byte-base mounts at a DIFFERENT target, name it so the FS can pair them.
             //A base at the ROOT ("") is a real, ordinary base — the wine/runner-build shape. Skipping the key for it
             //left an UNDECLARED base, so the FS looks at the delta's OWN target, finds nothing, and drops the layer.
-            if (BaseTarget != TgtTarget) N["BASE_TARGETS"] = json::array({BaseTarget});
+            if (BaseTarget != TgtTarget) PrimaryLayer(N)["BASE_TARGETS"] = json::array({BaseTarget});  // on the LAYER, where lowering reads it
             Model->SaveNodes(); Model->requestReload();
         });
 }

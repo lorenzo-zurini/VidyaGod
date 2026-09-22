@@ -843,7 +843,13 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
                 ImGui::PopID();
                 continue;
             }
-            for (const Field &S : F.Sub) drawField(Arr[I], S, Index);
+            for (const Field &S : F.Sub)
+            {
+                //A VFS layer's BASE_TARGETS means nothing except on a delta, and NodeLower REFUSES it elsewhere —
+                //offering the box on a zip/dir/file entry is a two-click way to make a node that will not lower.
+                if (S.Key == std::string("BASE_TARGETS") && StrOf(Arr[I], "FORM") != "delta") continue;
+                drawField(Arr[I], S, Index);
+            }
             if (F.VarUI) drawCustomVarUI(Arr[I]);   // a batched CustomVar entry carries its own launcher UI facet
             if (ImGui::SmallButton("remove")) Del = I;
             ImGui::PopID();
@@ -1100,11 +1106,7 @@ void PkgCanvas::drawPayload(json &Node, int Index)
     if (Fields.empty()) { ImGui::TextDisabled("no payload - composition only"); return; }
     for (const Field &F : Fields)
     {
-        //A delta's byte-bases are meaningless on any other FORM, and NodeLower now REFUSES them there — so
-        //offering the box on every Content node is a two-click way to make a node that will not lower. The
-        //refusal turned a silent no-op into a hard failure; leaving the trap in place would just relocate it.
-        if (F.Key == std::string("BASE_TARGETS") && StrOf(Node, "FORM") != "delta") continue;
-        drawField(Node, F, Index);
+        drawField(Node, F, Index);   // BASE_TARGETS gating is per-LAYERS-entry now (see the ObjArray loop)
     }
     //A CustomVar's UI facet is now drawn PER VARS ENTRY inside the ObjArray loop (Field::VarUI), not per node.
 }

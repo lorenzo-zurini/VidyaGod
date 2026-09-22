@@ -85,6 +85,9 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
         //exactly one VFS layer, so every downstream consumer of Node::Layers sees the identical flat stream
         //it saw when these were one-node-per-layer.
         if (!J.contains("LAYERS") || !J["LAYERS"].is_array()) return Fail("VFSLayer has no LAYERS array");
+        //An EMPTY batch is a typed node that contributes nothing and would vanish from launch validating clean —
+        //the same silent-drop this front-end refuses everywhere. A payload-less node must be TYPE "Group".
+        if (J["LAYERS"].empty()) return Fail("VFSLayer LAYERS is empty (a node with no layers contributes nothing — remove it or add a layer)");
         for (const auto &Ly : J["LAYERS"])
         {
             if (!Ly.is_object()) return Fail("VFSLayer LAYERS entry is not an object");
@@ -192,6 +195,7 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
         //the durable subdir (defaults downstream to PATH's last component); CLOUD (default true) is the future
         //Cloud-Saves flag. Each entry lowers to one DeclarePersist layer; a per-entry WHEN is ANDed with the node's.
         if (!J.contains("PERSISTS") || !J["PERSISTS"].is_array()) return Fail("DeclarePersist has no PERSISTS array");
+        if (J["PERSISTS"].empty()) return Fail("DeclarePersist PERSISTS is empty (a node with no persists contributes nothing)");
         for (const auto &Pe : J["PERSISTS"])
         {
             if (!Pe.is_object()) return Fail("DeclarePersist PERSISTS entry is not an object");
@@ -213,6 +217,7 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
         //closure order, independent of declaration order — launchresolver_vars.cpp), so N vars in one node
         //resolve identically to N one-var nodes; each entry lowers to one CustomVar layer.
         if (!J.contains("VARS") || !J["VARS"].is_array()) return Fail("CustomVar has no VARS array");
+        if (J["VARS"].empty()) return Fail("CustomVar VARS is empty (a node with no variables contributes nothing)");
         for (const auto &V : J["VARS"])
         {
             if (!V.is_object()) return Fail("CustomVar VARS entry is not an object");

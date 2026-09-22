@@ -37,10 +37,16 @@ inline nlohmann::ordered_json Chain(const std::string &Id,
         // No layers at all ⇒ pure composition: the node exists only to carry PARENTS.
         nlohmann::ordered_json Nd = Layers.empty() ? nlohmann::ordered_json{{"TYPE", "Group"}} : Layers[I];
         const bool Tail = (I + 1 == Count);
+        const std::string Handle = Tail ? Id : (Id + "__l" + std::to_string(I));
         nlohmann::ordered_json P = nlohmann::ordered_json::array();
         if (I == 0) for (const std::string &X : Parents) P.push_back(X);
         else        P.push_back(Id + "__l" + std::to_string(I - 1));
-        Nd["LABEL"] = Tail ? Id : (Id + "__l" + std::to_string(I));
+        // Model C: identity/wiring is the stored "CID" HANDLE (GatherWorkingTree keys by it); LABEL is purely
+        // cosmetic. A fixture must set the handle so PARENTS refs resolve at freeze — the readable Id doubles as the
+        // handle here (a node's stored CID is a working-tree handle, stripped + re-minted at publish). LABEL matches it
+        // so the on-disk filename and the picker read naturally.
+        Nd["CID"] = Handle;
+        Nd["LABEL"] = Handle;
         Nd["PARENTS"] = std::move(P);
         if (Tail && TailFields.is_object())
             for (const auto &[K, V] : TailFields.items()) Nd[K] = V;

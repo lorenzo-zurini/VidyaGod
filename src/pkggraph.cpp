@@ -245,7 +245,7 @@ bool SetPos(json &Layout, const std::string &NodeId, float X, float Y)
 const std::vector<std::string> &AllTypes()
 {
     static const std::vector<std::string> T = {
-        "Content", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride",
+        "VFSLayer", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride",
         "DeclarePersist", "CustomVar", "DeclareExec", "DeclareLibraryItem", "Group"
     };
     return T;
