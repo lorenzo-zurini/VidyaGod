@@ -3,7 +3,7 @@
 #include "apppaths.h"
 #include "instancestore.h"
 #include "manifestmodel.h"
-#include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / LiftLibraryItemEdge / FreezeToIndex
+#include "nodegraph.h"        // gigagraph catalog: GatherWorkingTree / FreezeToIndex
 #include "commonutils.h"
 #include "jsonoperations.h"
 #include "ipfswrapper.h"
@@ -286,8 +286,7 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir)   // decl + Bund
     BundleIdentity Id;
     NodeIndex Idx;
     ManifestModel::ScanBundleNodes(BundleDir, Idx);
-    ManifestModel::LinkGames(Idx);   // a launchable variant inherits its tile's UID/TITLE (DeclareExec + DeclareLibraryItem
-                                     // may live on separate nodes); without this, such a bundle is mislabelled by its exec node-id
+    ManifestModel::DeriveIdentity(Idx);   // a graft inherits its game's UID/TITLE through OVER
     const Node *Rep = nullptr;                                                    // prefer a presentable launchable
     for (const auto &[NodeId, N] : Idx.Nodes)
     {
@@ -975,7 +974,6 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     std::map<std::string, std::filesystem::path>  Dirs;
     NodeGraph::GatherWorkingTree(Root, Tree, Dirs, /*SkipReserved=*/true);   // never mint a received friend stub
     if (Tree.empty()) { if (Error) *Error = "no packages to publish under " + Root.string(); return {}; }
-    NodeGraph::LiftLibraryItemEdge(Tree);
     NodeGraph::MintResult MR;
     if (!NodeGraph::Mint(Tree, MR, Error)) return {};   // DagPut every node block → pinned + announced + seedable
 
@@ -993,8 +991,25 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
     // (LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json) BEFORE fetching it, so a received share rides the ordinary
     // rolling queue straight into the library tree with no intermediary dir and no post-fetch materialize step.
     // A flat `PublishedList` of bare CIDs stays for convenience. Off-IPFS VidyaGod app data (friend channel).
-    std::map<std::string, std::string> CidToHandle;   // resolve a LIBRARYITEM that is already a CID (re-published
+    std::map<std::string, std::string> CidToHandle;   // resolve an OVER ref that is already a CID (re-published
     for (const auto &[H, C] : MR.HandleToCid) CidToHandle[C] = H;   // received package) back to its tree handle
+    // The tile of a PUBLISH'd node: its OWN TILE, else the first TILE reachable through its positive OVER refs (a
+    // graft belongs to its game). Returns the handle of the tile-carrying node ("" if none reachable). Bounded walk.
+    const auto TileHandleOf = [&](const std::string &Start) -> std::string {
+        std::deque<std::string> Q{Start};
+        std::set<std::string> Seen;
+        while (!Q.empty())
+        {
+            std::string H = Q.front(); Q.pop_front();
+            if (!Tree.count(H)) { const auto Rit = CidToHandle.find(H); if (Rit == CidToHandle.end()) continue; H = Rit->second; }
+            if (!Seen.insert(H).second) continue;
+            const nlohmann::ordered_json &D = Tree.at(H);
+            if (D.contains("TILE") && D["TILE"].is_object()) return H;
+            for (const std::string &P : ManifestModel::OverRefs(D)) Q.push_back(P);
+            if (Seen.size() > 100000) break;
+        }
+        return {};
+    };
     nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
     nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
     for (const auto &[Handle, Doc] : Tree)
@@ -1010,35 +1025,27 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         const std::string NodeLabel = (Doc.contains("LABEL") && Doc["LABEL"].is_string() && !Doc["LABEL"].get<std::string>().empty())
                                           ? Doc["LABEL"].get<std::string>() : CidIt->second;
 
-        // The node's LIBRARYITEM tile (lifted above): the receiver fetches it alongside and names the package dir
-        // after its UID/TITLE — variants sharing one tile land in ONE package dir, exactly like the local tree.
-        std::string TileHandle;
-        if (const std::string Li = (Doc.contains("LIBRARYITEM") && Doc["LIBRARYITEM"].is_string()) ? Doc["LIBRARYITEM"].get<std::string>() : std::string(); !Li.empty())
+        // The node's tile: its own TILE, or its game's (reached through OVER). The receiver names the package dir
+        // after its UID/TITLE — everything of one title lands in ONE package dir, exactly like the local tree. A
+        // graft whose game is not in the tree (a received mod whose game block hasn't landed) is held out this
+        // round; it re-enters the share list once its game is in the tree.
+        const std::string TileHandle = TileHandleOf(Handle);
+        if (TileHandle.empty() && !Doc.contains("ENTRYPOINTS") && !ManifestModel::OverRefs(Doc).empty())
         {
-            if (Tree.count(Li)) TileHandle = Li;
-            else if (const auto Rit = CidToHandle.find(Li); Rit != CidToHandle.end()) TileHandle = Rit->second;
-            if (TileHandle.empty())
-            {
-                // The node NAMES a tile we cannot resolve — typically a received share whose tile block hasn't
-                // landed yet. Emitting it now would ship uid/title = the bare handle, forking third-party trees
-                // into "[handle] handle/" dirs that never reconcile with the correct "[uid] Title/" of the next
-                // publish. Skip it THIS round; it re-enters the share list once the tile is in the tree.
-                LogWarn("PackageCatalog::PublishLibrary", "'" + Handle + "' has an unresolved LIBRARYITEM ("
-                        + Li.substr(0, 16) + "…) — held out of the share list until its tile lands");
-                continue;
-            }
+            LogWarn("PackageCatalog::PublishLibrary", "'" + Handle + "' reaches no TILE through OVER — held out of the share list until its game lands");
+            continue;
         }
         std::string TileCid;
-        if (!TileHandle.empty())
+        if (!TileHandle.empty() && TileHandle != Handle)
             if (const auto Tit = MR.HandleToCid.find(TileHandle); Tit != MR.HandleToCid.end()) TileCid = Tit->second;
 
         std::string Uid = NodeLabel, Title = NodeLabel;   // no tile → the node stands alone under its own LABEL
         if (!TileHandle.empty())
         {
-            const nlohmann::ordered_json &T = Tree.at(TileHandle);
+            const nlohmann::ordered_json &T = Tree.at(TileHandle)["TILE"];
             Uid = (T.contains("UID") && T["UID"].is_string()) ? T["UID"].get<std::string>() : std::string();
             if (Uid.empty()) Uid = TileHandle;
-            Title = (T.contains("TITLE") && T["TITLE"].is_string()) ? T["TITLE"].get<std::string>() : TileHandle;
+            Title = (T.contains("TITLE") && T["TITLE"].is_string()) ? T["TITLE"].get<std::string>() : Uid;
         }
         // Bound the emitted title (user-authored, unbounded) at a UTF-8 boundary: the receiver's inbound gate
         // rejects a WHOLE snapshot over one >512-byte field — silently, at the far end — and its dir segment must
@@ -1175,11 +1182,11 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     return Out;
 }
 
-// CompleteClosure: fetch a launchable's MISSING node blocks (PARENTS reachable from it that the index cannot
+// CompleteClosure: fetch a launchable's MISSING node blocks (OVER refs reachable from it that the index cannot
 // resolve — the state every received share starts in: only the exec + tile were shared) into its OWN package dir,
 // through the ONE rolling queue — each missing CID is a plain FetchTarget {cid, <bundle>/<cid>.json, Verify}, the
 // same path as every other CID in the app. Waves: fetch the frontier, read the landed blocks (blockstore, local),
-// discover the next frontier from their PARENTS/LIBRARYITEM, repeat until the closure closes. Landed files are
+// discover the next frontier from their OVER refs, repeat until the closure closes. Landed files are
 // renamed to their NODE_ID (cosmetic — identity is the NODE_ID inside; the scan never cares about filenames).
 // Synchronous (WaitBatch) — call OFF the GUI thread. False + *Error when the closure cannot converge (a dangling
 // ref, an unreachable seeder past the wait bound — the queue keeps retrying in the background either way).
@@ -1198,11 +1205,11 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
     if (Root->BundleDir.empty()) { if (Error) *Error = LaunchId + " has no package dir to complete into"; return false; }
     const fs::path Bundle = Root->BundleDir;
 
-    // Refs of one node: PARENTS + LIBRARYITEM. Resolvable via the index (disk tree) or via a block landed this call.
+    // Refs of one node: its positive OVER refs (a NOT is never fetched). Resolvable via the index (disk tree) or via
+    // a block landed this call.
     std::map<std::string, nlohmann::ordered_json> LandedDoc;       // cid → parsed block (this call)
-    auto RefsOf = [](const std::vector<std::string> &Ps, const std::string &Li, std::vector<std::string> &Out) {
+    auto RefsOf = [](const std::vector<std::string> &Ps, std::vector<std::string> &Out) {
         for (const std::string &P : Ps) if (!P.empty()) Out.push_back(P);
-        if (!Li.empty()) Out.push_back(Li);
     };
 
     // Seed the frontier: BFS the ALREADY-PRESENT part of the closure; every unresolved ref is missing.
@@ -1213,7 +1220,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
     {
         const Node *N = Q.front(); Q.pop_front();
         std::vector<std::string> Refs;
-        RefsOf(N->Parents, N->LibraryItem, Refs);
+        RefsOf(N->Parents, Refs);
         for (const std::string &R : Refs)
         {
             if (!Visited.insert(R).second) continue;
@@ -1259,11 +1266,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             // the CID we fetched it BY, so drop any embedded handle before it is written to the working tree.
             J.erase("CID");
             std::vector<std::string> Refs;
-            std::vector<std::string> Ps;
-            if (J.contains("PARENTS") && J["PARENTS"].is_array())
-                for (const auto &P : J["PARENTS"]) if (P.is_string()) Ps.push_back(P.get<std::string>());
-            const std::string Li = (J.contains("LIBRARYITEM") && J["LIBRARYITEM"].is_string()) ? J["LIBRARYITEM"].get<std::string>() : std::string();
-            RefsOf(Ps, Li, Refs);
+            RefsOf(ManifestModel::OverRefs(J), Refs);
             for (const std::string &R : Refs)
             {
                 if (!Visited.insert(R).second) continue;
@@ -1301,7 +1304,7 @@ bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)
 // derive the CID-addressed node graph from it in memory (NodeGraph::FreezeToIndex) — identity = each node's dag-json
 // CID, NODE_ID demotes to a label, cross-package edges resolve to CIDs, and every node carries its on-disk BundleDir
 // so launch mounts local content. No on-disk rewrite (git model: working tree is truth, CID index is derived on load;
-// DagPut only happens when publishing). The tile edge is lifted (PARENTS → LIBRARYITEM) before freezing.
+// DagPut only happens when publishing).
 NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
 {
     std::map<std::string, nlohmann::ordered_json> Tree;
@@ -1313,7 +1316,6 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     NodeGraph::GatherWorkingTree(CatalogRootDir(GlobalConfigJSON), Tree, Dirs, /*SkipReserved=*/false, /*TrustStoredCid=*/false);
     for (const auto &D : LocalPackageDirs(GlobalConfigJSON))   // externally-added bundles that live OUTSIDE LIBRARY
         NodeGraph::GatherWorkingTree(D, Tree, Dirs);
-    NodeGraph::LiftLibraryItemEdge(Tree);
     std::string Err;
     NodeIndex Idx = NodeGraph::FreezeToIndex(Tree, Dirs, &Err);
     if (Idx.Nodes.empty() && !Tree.empty())

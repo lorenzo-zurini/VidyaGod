@@ -48,45 +48,37 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
     NodeIndex Idx;
     if (Shallow)
     {
-        // Browse: batch-fetch the roots + their tiles via the windowed session (the SAME rolling want-window +
-        // friend-provider routing content uses) — NOT serial single-block gets; 900+ tiny blocks must not be 900
-        // round-trips. Two rounds: the published roots, then their distinct LIBRARYITEM tiles.
+        // Browse: batch-fetch the roots via the windowed session (the SAME rolling want-window + friend-provider
+        // routing content uses) — NOT serial single-block gets; 900+ tiny blocks must not be 900 round-trips. A
+        // launchable carries its TILE itself, so ONE round renders every card; a graft root's identity is inherited
+        // through OVER, so a shared MOD's card needs its game's block too — a second round for the roots' direct
+        // OVER refs that carry no tile of their own is the cheap browse view (never the full composition graph).
         // LocalOnly (catalog-build): read only blocks already in the store, so we never stall on a friend block that
         // hasn't landed yet — the catalog shows what's present and re-renders as more arrive.
         const auto Fetch = LocalOnly ? &IpfsWrapper::DagGetManyLocal : &IpfsWrapper::DagGetMany;
-        const std::map<std::string, std::string> RootBlocks = Fetch(RootCids);
-        std::set<std::string> TileCids;
-        for (const std::string &C : RootCids)
-        {
-            if (C.empty() || Idx.Nodes.count(C)) continue;
-            const auto It = RootBlocks.find(C);
-            if (It == RootBlocks.end()) { if (Missing) Missing->push_back(C); continue; }
-            nlohmann::ordered_json J;
-            if (!ParseBlockBounded(It->second, J)) { if (Missing) Missing->push_back(C); continue; }
-            NormalizeLinks(J);
-            Node N;
-            if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
-            N.Cid = C;
-            auto [Nit, Ins] = Idx.Nodes.emplace(C, std::move(N));
-            (void)Ins;
-            if (!Nit->second.LibraryItem.empty()) TileCids.insert(Nit->second.LibraryItem);
-        }
-        std::vector<std::string> TV(TileCids.begin(), TileCids.end());
-        const std::map<std::string, std::string> TileBlocks = Fetch(TV);
-        for (const std::string &C : TV)
-        {
-            if (Idx.Nodes.count(C)) continue;
-            const auto It = TileBlocks.find(C);
-            if (It == TileBlocks.end()) continue;   // tile unfetchable → the card renders plainer; not fatal
-            nlohmann::ordered_json J;
-            if (!ParseBlockBounded(It->second, J)) continue;
-            NormalizeLinks(J);
-            Node N;
-            if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
-            N.Cid = C;
-            Idx.Nodes.emplace(C, std::move(N));
-        }
-        ManifestModel::LinkGames(Idx);
+        auto Land = [&](const std::vector<std::string> &Cids, bool Report, std::set<std::string> *NextRefs) {
+            const std::map<std::string, std::string> Blocks = Fetch(Cids);
+            for (const std::string &C : Cids)
+            {
+                if (C.empty() || Idx.Nodes.count(C)) continue;
+                const auto It = Blocks.find(C);
+                if (It == Blocks.end()) { if (Report && Missing) Missing->push_back(C); continue; }
+                nlohmann::ordered_json J;
+                if (!ParseBlockBounded(It->second, J)) { if (Report && Missing) Missing->push_back(C); continue; }
+                NormalizeLinks(J);
+                Node N;
+                if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
+                N.Cid = C;
+                auto [Nit, Ins] = Idx.Nodes.emplace(C, std::move(N));
+                (void)Ins;
+                if (NextRefs && !Nit->second.OwnTile)
+                    for (const std::string &P : Nit->second.Parents) NextRefs->insert(P);
+            }
+        };
+        std::set<std::string> Refs;
+        Land(RootCids, /*Report=*/true, &Refs);
+        if (!Refs.empty()) Land(std::vector<std::string>(Refs.begin(), Refs.end()), /*Report=*/false, nullptr);
+        ManifestModel::DeriveIdentity(Idx);
         return Idx;
     }
     std::set<std::string> Seen;
@@ -121,22 +113,21 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         NormalizeLinks(J);
 
         Node N;
-        if (!ManifestModel::ParseNode(J, {}, {}, N))   // no NODE_ID ⇒ not a node
+        if (!ManifestModel::ParseNode(J, {}, {}, N))   // not a node object
         {
-            LogWarn("NodeGraph::BuildFrozenIndex", "block " + C + " is not a node (no TYPE)");
+            LogWarn("NodeGraph::BuildFrozenIndex", "block " + C + " is not a node");
             continue;
         }
         N.Cid = C;                                     // identity = the block's own CID
         auto [It, Ins] = Idx.Nodes.emplace(C, std::move(N));
         (void)Ins;                                     // Seen already guaranteed uniqueness
-        // Recurse into PARENTS (composition edges) AND the LIBRARYITEM link (the tile — reachable ONLY this way now,
-        // never via PARENTS). SOURCE/COVER are content-leaf (dag-pb) CIDs fetched lazily at hydrate — dagGet would
-        // (correctly) refuse them — so they are never enqueued here.
+        // Recurse into OVER's positive refs (the composition). A NOT ref is deliberately NOT followed: the excluded
+        // node's block is not part of this node's closure (it is a plain string in the frozen block, not a link).
+        // SOURCE/COVER are content-leaf (dag-pb) CIDs fetched lazily at hydrate — never enqueued here.
         if (!Shallow)                                                    // full closure: composition edges too
             for (const std::string &P : It->second.Parents) Q.push_back(P);
-        if (!It->second.LibraryItem.empty()) Q.push_back(It->second.LibraryItem);   // the tile — always (browse needs it)
     }
-    ManifestModel::LinkGames(Idx);
+    ManifestModel::DeriveIdentity(Idx);
     return Idx;
 }
 
@@ -179,7 +170,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         }
         if (Cid.empty())
         {
-            // A per-node failure — almost always a DANGLING ref (a PARENTS/LIBRARYITEM handle not in the tree, so it
+            // A per-node failure — almost always a DANGLING ref (an OVER handle not in the tree, so it
             // linkified into an invalid CID). SKIP this node, never abort the whole index: one typo'd edge or one
             // deleted dependency must not empty the entire library. Its referrers will fail the same way and skip too,
             // so a dangling subtree drops while every other game survives.
@@ -210,7 +201,7 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
     }
     if (Skipped) LogWarn("NodeGraph::FreezeToIndex", "skipped " + std::to_string(Skipped)
                          + " node(s) with dangling/bad refs — the rest of the library is intact");
-    ManifestModel::LinkGames(Idx);
+    ManifestModel::DeriveIdentity(Idx);
     return Idx;
 }
 
@@ -234,7 +225,8 @@ std::string HydratePackage(const std::filesystem::path &DestRoot, const std::str
     if (!Launch)
     { if (Error) *Error = "launchable " + LaunchableCid + " not a node after fetch"; return {}; }
 
-    // Bundle dir name from the tile: "[uid] title" (the pretty layout). Meta is inherited via the LIBRARYITEM edge.
+    // Bundle dir name from the tile: "[uid] title" (the pretty layout). A launchable carries its TILE; a graft
+    // inherits its game's through OVER (DeriveIdentity ran inside BuildFrozenIndex).
     std::string Uid   = Launch->Uid.empty() ? Launch->NodeId : Launch->Uid;
     std::string Title = Launch->Meta.is_object() ? Launch->Meta.value("TITLE", Launch->NodeId) : Launch->NodeId;
     const fs::path Dir    = DestRoot / SanitizeSegment("[" + Uid + "] " + Title);
@@ -335,11 +327,12 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
         }
         Out.HandleToCid[Handle] = Cid;
 
-        // A playable list root: a DeclareExec with NO GUEST. A GUEST-bearing DeclareExec is a runner (it provides
-        // platforms) — distributed via a runner tile, not listed as a game. This is the LAUNCH axis (launch/CLI).
-        if (Raw.value("TYPE", std::string()) == "DeclareExec"
-            && !(Raw.contains("GUEST") && Raw["GUEST"].is_array() && !Raw["GUEST"].empty()))
-            Out.Launchables.push_back(Cid);
+        // A playable list root: a node with an entrypoint that has NO GUEST. A GUEST-bearing entrypoint is a runner
+        // (it provides platforms) — distributed as a runner, not listed as a game. This is the LAUNCH axis (launch/CLI).
+        if (Raw.contains("ENTRYPOINTS") && Raw["ENTRYPOINTS"].is_array())
+            for (const auto &E : Raw["ENTRYPOINTS"])
+                if (E.is_object() && !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()))
+                { Out.Launchables.push_back(Cid); break; }
 
         // The SHARE axis, decoupled from type: a node the author flagged PUBLISH=true is a shareable root (a game's
         // launchable, a runner exec, or a no-exec library head). This — not the launch axis — drives the share list.

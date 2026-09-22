@@ -88,8 +88,8 @@ private slots:
             // a package meta-CID: materialize a minimal valid dehydrated bundle (tile + launchable).
             std::filesystem::create_directories(Dest);
             json Nodes = json::array({
-                json{{"LABEL","pkg1_tile"},{"TYPE","DeclareLibraryItem"},{"UID","pkg1"},{"TITLE","Game One"},{"PARENTS",json::array()}},
-                json{{"LABEL","pkg1_exec"},{"TYPE","DeclareExec"},{"HOST","linux64"},{"PATH","run.sh"},{"PARENTS",json::array({"pkg1_tile"})}} });
+                json{{"LABEL","pkg1_tile"},{"TILE",{{"UID","pkg1"},{"TITLE","Game One"}}}},
+                json{{"LABEL","pkg1_exec"},{"ENTRYPOINTS",json::array({json{{"HOST","linux64"},{"PATH","run.sh"}}})},{"OVER",json::array({"pkg1_tile"})}} });
             writeFile(QString::fromStdString(Dest) + "/pkg1.json", Nodes.dump(2));
             (void)Err;
             return 0;
@@ -162,8 +162,7 @@ private slots:
         // (c) a tile with a COVER.
         writeFile(Pkg.path() + "/cover.png", std::string(777, 'C'));
         writeJson(Pkg.path() + "/tile.json", json::array({ json{
-            {"LABEL", "tile"}, {"TYPE", "DeclareLibraryItem"}, {"UID", "9001"},
-            {"COVER", {{"PATH", "cover.png"}}} } }));
+            {"LABEL", "tile"}, {"TILE", {{"UID", "9001"}, {"COVER", {{"PATH", "cover.png"}}}}} } }));
 
         // The SOURCE of the (only) content node in a fragment file, or the COVER's SOURCE for the tile.
         auto srcIn = [&](const QString & file, bool cover) -> json {
@@ -172,7 +171,7 @@ private slots:
             if (Frag.is_array())
                 for (const auto & N : Frag) {
                     if (!N.is_object()) continue;
-                    if (cover) { if (N.contains("COVER") && N["COVER"].is_object() && N["COVER"].contains("SOURCE")) return N["COVER"]["SOURCE"]; }
+                    if (cover) { if (N.contains("TILE") && N["TILE"].is_object() && N["TILE"].contains("COVER") && N["TILE"]["COVER"].is_object() && N["TILE"]["COVER"].contains("SOURCE")) return N["TILE"]["COVER"]["SOURCE"]; }
                     // Batched VFSLayer: the content SOURCE lives on the primary layer, LAYERS[0].
                     else if (N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
                              && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("SOURCE") && N["LAYERS"][0]["SOURCE"].is_object())
@@ -441,7 +440,7 @@ private slots:
                   NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}, {{"PUBLISH", true}}));
         // A nameless node (no LABEL) flagged PUBLISH — a content node that happens to be shareable-flagged.
         writeJson(R + "/VidyaGod/[2] Nameless/c.json",
-                  json{{"TYPE", "VFSLayer"}, {"PUBLISH", true},
+                  json{{"PUBLISH", true},
                        {"LAYERS", json::array({ json{{"FORM", "zip"}, {"PATH", "c.zip"},
                            {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}}} })}});
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
@@ -767,19 +766,19 @@ private slots:
         // Model C: the layout override + warnings key on the node's stored CID HANDLE, so each fixture node carries
         // one (= its readable name here); PARENTS reference those handles.
         // Its OWN POS is impossible: publish computes one and writes it, changing the file.
-        Write("bad.json",  nlohmann::ordered_json{{"CID", "bad"}, {"LABEL", "bad"},  {"TYPE", "Group"},
+        Write("bad.json",  nlohmann::ordered_json{{"CID", "bad"}, {"LABEL", "bad"},  
                                                   {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
         // A good POS with an impossible LOCAL override: the node keeps its POS and nothing is rewritten.
-        Write("keep.json", nlohmann::ordered_json{{"CID", "keep"}, {"LABEL", "keep"}, {"TYPE", "Group"},
+        Write("keep.json", nlohmann::ordered_json{{"CID", "keep"}, {"LABEL", "keep"}, 
                                                   {"POS", nlohmann::ordered_json::array({60.0, 60.0})},
-                                                  {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
+                                                  {"OVER", nlohmann::ordered_json::array({"bad"})}});
         // NO POS of its own, plus an impossible local override. This is the case where the source label and
         // the outcome DIVERGE: the label says "this machine's saved layout", which sounds like nothing in the
         // package changed — but with no POS to fall back on the layout supplies one, the file GAINS a POS it
         // never had, and the Meta-CID moves. Both earlier versions of this line got this case wrong, and a
         // test built only from the two agreeing cases could not tell the difference.
-        Write("fresh.json", nlohmann::ordered_json{{"CID", "fresh"}, {"LABEL", "fresh"}, {"TYPE", "Group"},
-                                                   {"PARENTS", nlohmann::ordered_json::array({"bad"})}});
+        Write("fresh.json", nlohmann::ordered_json{{"CID", "fresh"}, {"LABEL", "fresh"}, 
+                                                   {"OVER", nlohmann::ordered_json::array({"bad"})}});
         nlohmann::ordered_json Override = nlohmann::ordered_json::object();
         Override["keep"]  = nlohmann::ordered_json::array({std::numeric_limits<double>::quiet_NaN(), 1.0});
         Override["fresh"] = nlohmann::ordered_json::array({1e300, 2.0});
@@ -842,12 +841,12 @@ private slots:
         //Both share the handle "same" (Model C: the CID handle is the identity the override + warnings key on; the
         //point of this test is two nodes with the SAME handle). The first carries an impossible POS, so publish
         //computes one and REWRITES it.
-        Write("a.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, {"TYPE", "Group"},
+        Write("a.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, 
                                                {"POS", nlohmann::ordered_json::array({5e9, 5e9})}});
         //The second carries a POS the layout would produce anyway, plus an impossible local OVERRIDE. It is
         //refused like the first, but its file is left exactly as it was — 60,60 is where the layout puts the
         //first node of the first layer, so "already correct: do not touch the bytes" fires.
-        Write("b.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, {"TYPE", "Group"},
+        Write("b.json", nlohmann::ordered_json{{"CID", "same"}, {"LABEL", "same"}, 
                                                {"POS", nlohmann::ordered_json::array({60.0, 60.0})}});
         nlohmann::ordered_json Override = nlohmann::ordered_json::object();
         Override["same"] = nlohmann::ordered_json::array({1e300, 2.0});
@@ -983,7 +982,7 @@ private slots:
         // A RECEIVED runner: compatible, but its build closure hasn't landed (a PARENT it names isn't in the index).
         Node proton; proton.NodeId = "proton"; proton.HasRunner = true; proton.GuestPlatform = {"win32"};
         proton.HostPlatform = ManifestModel::MachinePlatform();
-        proton.Parents = {"proton_build"};   // dangling → closure incomplete (build not fetched yet)
+        NodeFixture::Wire(proton, {"proton_build"});   // dangling → closure incomplete (build not fetched yet)
         // A PATH runner: complete closure, no content at all (resolves an executable on the system).
         Node nativeR; nativeR.NodeId = "native"; nativeR.HasRunner = true; nativeR.GuestPlatform = {"win32"};
         nativeR.HostPlatform = ManifestModel::MachinePlatform();
@@ -1253,9 +1252,10 @@ private slots:
         const Node * v = idx.Find("variant");
         QVERIFY(v != nullptr);                                     // indexed despite living outside any repo
         QVERIFY(v->Presentable());                                 // linked to its tile → shows in the library
-        const Node * tile = idx.Find("tile");                      // gigagraph: the grouping key is the TILE's identity
-        QVERIFY(tile != nullptr);                                  // (its CID in the catalog), reached via the LIBRARYITEM
-        QCOMPARE(v->GameKey(), tile->Key());                       // edge — no longer the tile's NODE_ID label
+        const Node * tile = idx.Find("tile");                      // the grouping key is the UID, inherited through OVER
+        QVERIFY(tile != nullptr);
+        QCOMPARE(v->GameKey(), std::string("777"));
+        QCOMPARE(v->GameKey(), tile->GameKey());
     }
 
     // Startup prune drops a LIBRARY entry for a local bundle whose PATH no longer exists (moved/deleted), keeps the
@@ -1300,9 +1300,10 @@ private slots:
         const Node * v = idx.Find("cidvariant");
         QVERIFY(v != nullptr);                                             // indexed via the CID-source root
         QVERIFY(v->Presentable());                                         // grouped under its tile
-        const Node * tile = idx.Find("cidtile");                           // grouping key = the tile's identity (its CID)
+        const Node * tile = idx.Find("cidtile");                           // grouping key = the UID, inherited through OVER
         QVERIFY(tile != nullptr);
-        QCOMPARE(v->GameKey(), tile->Key());
+        QCOMPARE(v->GameKey(), tile->GameKey());
+        QVERIFY(!v->Uid.empty());
     }
 
     // A PER-PACKAGE CID: the fetched source dir is ITSELF a bundle (node JSON at its top level, no package subdirs).
@@ -1389,7 +1390,7 @@ private slots:
         { std::ofstream f((bundle + "/cover.png").toStdString()); f << "img"; }
 
         json tile = NodeFixture::Tile("1", "G");
-        tile["COVER"] = json{{"PATH", "cover.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmCoverCID"}}}};
+        tile["TILE"]["COVER"] = json{{"PATH", "cover.png"}, {"SOURCE", {{"TYPE", "ipfs"}, {"CID", "QmCoverCID"}}}};
         writeJson(bundle + "/node.json",
                   NodeFixture::Chain("g", {NodeFixture::ContentCid("zip", "game.zip", "QmLayerCID"), tile}));
 
@@ -1631,7 +1632,7 @@ private slots:
         QDir().mkpath(bundle);
         writeFile(bundle + "/cover.png", "PNGBYTES");
         json tile = NodeFixture::Tile("1234", "A Game");
-        tile["COVER"] = "cover.png";                       // the pre-node bare-string form, file present
+        tile["TILE"]["COVER"] = "cover.png";               // the pre-node bare-string form, file present
         writeJson(bundle + "/node.json", NodeFixture::Chain("t", {}, {}, tile));
 
         std::vector<std::string> Errors;
@@ -1665,8 +1666,8 @@ private slots:
         {
             json N;
             N["LABEL"] = "n" + std::to_string(I);
-            N["TYPE"]    = "Group";
-            if (I > 0) N["PARENTS"] = json::array({"n" + std::to_string(I - 1)});
+
+            if (I > 0) N["OVER"] = json::array({"n" + std::to_string(I - 1)});
             writeJson(Dir.filePath(QString("n%1.json").arg(I)), N);
         }
         std::string Err;
@@ -1688,8 +1689,8 @@ private slots:
     {
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
-        json A; A["LABEL"] = "a"; A["TYPE"] = "Group";
-        json B; B["LABEL"] = "b"; B["TYPE"] = "Group"; B["PARENTS"] = json::array({"a"});
+        json A; A["LABEL"] = "a";
+        json B; B["LABEL"] = "b"; B["OVER"] = json::array({"a"});
         writeJson(Dir.filePath("a.json"), A);
         writeJson(Dir.filePath("b.json"), B);
 
@@ -1715,7 +1716,7 @@ private slots:
     {
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
-        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["TYPE"] = "Group"; A["POS"] = json::array({10.0, 20.0});
+        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["POS"] = json::array({10.0, 20.0});
         writeJson(Dir.filePath("a.json"), A);
 
         json Local = json::object();
@@ -1737,7 +1738,7 @@ private slots:
         QVERIFY(Dir.isValid());
         json Arr = json::array();
         for (int I = 0; I < 3; ++I)
-        { json N; N["LABEL"] = "m" + std::to_string(I); N["TYPE"] = "Group"; Arr.push_back(N); }
+        { json N; N["LABEL"] = "m" + std::to_string(I); Arr.push_back(N); }
         writeJson(Dir.filePath("many.json"), Arr);
 
         std::string Err;
@@ -1758,7 +1759,7 @@ private slots:
         QVERIFY(Dir.isValid());
         const QString Bundle = Dir.filePath("[999][v1.0] Keyed");
         QVERIFY(QDir().mkpath(Bundle));
-        json A; A["CID"] = "a"; A["LABEL"] = "a"; A["TYPE"] = "Group";   // handle "a" is what SetPos + the override key on
+        json A; A["CID"] = "a"; A["LABEL"] = "a";   // handle "a" is what SetPos + the override key on
         writeJson(Bundle + "/a.json", A);
 
         // What the editor writes, through the editor's own path.
@@ -1806,7 +1807,7 @@ private slots:
     {
         QTemporaryDir Dir;
         QVERIFY(Dir.isValid());
-        json A; A["LABEL"] = "a"; A["TYPE"] = "Group";
+        json A; A["LABEL"] = "a";
         writeJson(Dir.filePath("a.json"), A);
 
         std::string Err;

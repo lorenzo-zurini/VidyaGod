@@ -129,6 +129,13 @@ def make_content(B):
     # nothing to mask. A dir layer is not a byte view, is not folded, and must therefore disappear.
     write(f"{B}/maskeddir/masked.txt", "must be masked by the opaque delta above\n")
     write(f"{B}/single.txt", "single-file\n")
+    # Grafts (see the node matrix): what a mod mounts above the launchable, what an unticked one must not, what a
+    # branch off an ANCESTOR must never contribute, and a library pulled in as substance.
+    write(f"{B}/graftdir/game/grafted.txt", "grafted above lm_run\n")
+    write(f"{B}/grafthd/game/grafted_hd.txt", "a graft on a graft\n")
+    write(f"{B}/graftoff/game/never.txt", "an unticked graft must not mount\n")
+    write(f"{B}/graftwrong/game/wrong.txt", "a branch off an ancestor must not mount\n")
+    write(f"{B}/graftlib/game/lib.txt", "substance pulled in beneath a graft\n")
     # FORM delta — REAL ones, generated below by vg_make_delta.
     #
     # A delta reconstructs a COMPLETE archive and is OPAQUE: it masks everything below it at its own target.
@@ -175,20 +182,30 @@ def nodes():
         # handle (unique here) so PARENTS — which reference the returned handle — stay legible. GatherWorkingTree keys
         # on "CID"; FreezeToIndex then derives the real CID and indexes by it. LABEL rides along as the cosmetic name.
         kw.setdefault("CID", kw["LABEL"])
-        # Batched schema: a content node is a VFSLayer holding a LAYERS list. Each add() here declares ONE layer, so
-        # collapse its layer-payload fields into LAYERS[0]; NodeLower expands that back into the same flat layer the
-        # resolvers consume, so the resolved plan (and thus the golden) is unchanged by the batching.
-        # Each of these add() calls declares ONE item; collapse its payload fields into the batched node's list. The
-        # DllOverride map (OVERRIDES) is already the batched form. NodeLower expands each list entry into the same flat
-        # layer/var/persist the resolvers consume, so the resolved plan (and the golden) is unchanged by the batching.
-        BATCH = {"Content": ("VFSLayer", "LAYERS",
-                             ("FORM", "PATH", "TARGET", "SOURCE", "WHEN", "TOGGLE", "SUBMOUNTS", "BASE_TARGETS", "COMMENT")),
-                 "CustomVar": ("CustomVar", "VARS", ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
-                 "DeclarePersist": ("DeclarePersist", "PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN"))}
-        if kw.get("TYPE") in BATCH:
-            newtype, listkey, fields = BATCH[kw["TYPE"]]
-            kw["TYPE"] = newtype
-            kw[listkey] = [{f: kw.pop(f) for f in fields if f in kw}]
+        # ONE-EDGE schema: no TYPE. Each add() declares ONE item of one kind in the old flat vocabulary (kept here
+        # because it reads well); collapse it into the node's SECTION — LAYERS/VARS/PERSISTS/REGEDITS/FILEEDITS/
+        # PATCHES/DLLOVERRIDES/ENTRYPOINTS/TILE — and PARENTS into OVER. NodeLower expands each section entry into the
+        # same flat layer the resolvers consume, so the resolved plan (and thus the golden) is unchanged by the shape.
+        SECTION = {"Content":        ("LAYERS",   ("FORM", "PATH", "TARGET", "SOURCE", "WHEN", "SUBMOUNTS", "BASE_TARGETS", "COMMENT")),
+                   "CustomVar":      ("VARS",     ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
+                   "DeclarePersist": ("PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN")),
+                   "DeclareExec":    ("ENTRYPOINTS", ("HOST", "GUEST", "PATH", "ARGS", "ENV", "ENV_REMOVE", "WORKDIR",
+                                                      "RECOMMENDED", "RUNNER", "CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME"))}
+        t = kw.pop("TYPE", "Group")
+        if t in SECTION:
+            key, fields = SECTION[t]
+            item = {f: kw.pop(f) for f in fields if f in kw}
+            if t == "DeclareExec": item["LABEL"] = kw["LABEL"]      # the entry's variant label = the node's name
+            kw[key] = [item]
+        elif t == "RegEdit":      kw["REGEDITS"] = kw.pop("EDITS")
+        elif t == "FileEdit":     kw["FILEEDITS"] = [{k: kw.pop(k) for k in ("FILE", "EDITS", "OVERRIDE") if k in kw}]
+        elif t == "BinaryPatch":  kw["PATCHES"] = [{k: kw.pop(k) for k in ("FILE", "EDITS") if k in kw}]
+        elif t == "DllOverride":  kw["DLLOVERRIDES"] = kw.pop("OVERRIDES")
+        elif t == "DeclareLibraryItem": kw["TILE"] = {k: kw.pop(k) for k in ("UID", "TITLE", "COVER", "META") if k in kw}
+        elif t == "Group": pass
+        else: raise SystemExit(f"make_fixture: unknown kind {t}")
+        parents = kw.pop("PARENTS", [])
+        if parents: kw["OVER"] = parents
         N.append(kw); return kw["CID"]
 
     # ---- identity -------------------------------------------------------------------------------------
@@ -389,6 +406,25 @@ def nodes():
         # still win. Before the ordering fix the outer wrapper was applied last and silently overrode it.
         ENV={"LM_EXEC_ENV": "game-wins-over-the-chain"})
     # (5) the minimum that can launch at all — the control case a regression shows up against first.
+    # ---- grafts: selection ≠ closure ---------------------------------------------------------------------
+    # A graft is a node in nobody's list that is OVER something of this title. It mounts ABOVE lm_run only when
+    # SELECTED — here by the author's default (TOGGLE on). The probe's "mounted tree" is the proof: grafted.txt
+    # and grafted_hd.txt (a graft on a graft, applicable through the fixpoint) and lib.txt (substance pulled in
+    # beneath) appear; never.txt (no TOGGLE ⇒ not selected) and wrong.txt (OVER lm_v_text, an ANCESTOR of lm_run
+    # that is never SELECTED — a sibling branch, not a mod for lm_run) do not. None of these touch lm_all /
+    # lm_chained / lm_minimal / lm_run_chained: lm_run is not selected there, so nothing is applicable.
+    add(LABEL="lm_graft_on", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftdir",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
+    add(LABEL="lm_graft_hd", TYPE="Content", PARENTS=["lm_graft_on"], FORM="dir", PATH="grafthd",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
+    add(LABEL="lm_graft_off", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftoff",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%")
+    add(LABEL="lm_graft_wrong_branch", TYPE="Content", PARENTS=["lm_v_text"], FORM="dir", PATH="graftwrong",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
+    add(LABEL="lm_graft_lib", TYPE="Content", PARENTS=[], FORM="dir", PATH="graftlib",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%")
+    add(LABEL="lm_graft_uses_lib", TYPE="Group", PARENTS=["lm_run", "lm_graft_lib"], TOGGLE="on")
+
     add(LABEL="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")
     add(LABEL="lm_minimal", TYPE="DeclareExec", PARENTS=["lm_minimal_content", "lm_tile"], HOST="linux64",

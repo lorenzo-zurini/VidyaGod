@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "manifestmodel.h"
+#include "nodefixture.h"
 
 using nlohmann::ordered_json;
 
@@ -20,7 +21,7 @@ Node MakeNode(const std::string &Id, const std::vector<std::string> &Parents = {
 {
     Node N;
     N.NodeId    = Id;
-    N.Parents   = Parents;
+    NodeFixture::Wire(N, Parents);
     N.BundleDir = "/tmp/vg_test_bundle";
     N.Layers    = ordered_json::array();
     return N;

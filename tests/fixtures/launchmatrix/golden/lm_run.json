@@ -81,7 +81,11 @@
     "lm_persist_hkcu",
     "lm_persist_hklm",
     "lm_group",
-    "lm_run__self"
+    "lm_tile",
+    "lm_graft_lib",
+    "lm_graft_uses_lib",
+    "lm_graft_on",
+    "lm_graft_hd"
   ],
   "RunnerArgs": [
     "%Content%"
@@ -301,6 +305,21 @@
     {
       "DLLOVERRIDE": "broken=",
       "TYPE": "DllOverride"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftlib",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSDirLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftdir",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSDirLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/grafthd",
+      "TARGET": "/drive_c/90000000000001",
+      "TYPE": "VFSDirLayer"
     }
   ],
   "UnifiedRuntime": false

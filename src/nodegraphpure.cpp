@@ -84,35 +84,36 @@ nlohmann::ordered_json FreezeNodeJson(nlohmann::ordered_json Raw,
 
     // Remap references (old handle CID → freshly-minted CID) as the cascade climbs. A ref absent from HandleToCid is
     // an already-frozen EXTERNAL dep (a shared library / cross-bundle node referenced by CID) — pass it through.
-    const auto Resolve = [&](const std::string &Ref) -> std::string {
+    // ONE remapper (ManifestModel::RemapOverRefs) walks plain entries, any-of members and NOT refs alike, shared
+    // with the CID write-back so the two can never disagree on where refs live.
+    ManifestModel::RemapOverRefs(Raw, [&](const std::string &Ref) {
         const auto It = HandleToCid.find(Ref);
         return It != HandleToCid.end() ? It->second : Ref;
-    };
-    if (Raw.contains("PARENTS") && Raw["PARENTS"].is_array())
-        for (auto &P : Raw["PARENTS"]) if (P.is_string()) P = Resolve(P.get<std::string>());
-    if (Raw.contains("LIBRARYITEM") && Raw["LIBRARYITEM"].is_string())
-        Raw["LIBRARYITEM"] = Resolve(Raw["LIBRARYITEM"].get<std::string>());
+    });
 
-    // Linkify all CID-bearing fields into dag-json links (resolution above ran while they were still plain strings).
-    if (Raw.contains("PARENTS") && Raw["PARENTS"].is_array())
-        for (auto &P : Raw["PARENTS"]) LinkifyCidString(P);
-    if (Raw.contains("LIBRARYITEM")) LinkifyCidString(Raw["LIBRARYITEM"]);
+    // Linkify the POSITIVE refs into dag-json links (resolution above ran while they were still plain strings). A
+    // NOT ref stays a PLAIN STRING on purpose: it is part of the node's identity (the hash covers it) but NOT part
+    // of its DAG closure — a recursive pin/fetch of this node must never pull in the node it excludes.
+    if (Raw.contains("OVER") && Raw["OVER"].is_array())
+        for (auto &E : Raw["OVER"])
+        {
+            if (E.is_string())     LinkifyCidString(E);
+            else if (E.is_array()) for (auto &M : E) LinkifyCidString(M);
+        }
     LinkifySources(Raw);
     return Raw;
 }
 
-// The intra-tree node links a node depends on (must be frozen first): PARENTS + LIBRARYITEM that name a node in the
-// working tree. Refs outside the tree are external (already frozen) and impose no order.
+// The intra-tree node refs a node depends on (must be frozen first): every OVER ref — plain, any-of member AND
+// NOT (a NOT names a CID too, so the excluded node's fresh CID must exist before this node freezes) — that names
+// a node in the working tree. Refs outside the tree are external (already frozen) and impose no order.
 static std::vector<std::string> IntraTreeDeps(const nlohmann::ordered_json &Node,
                                               const std::map<std::string, nlohmann::ordered_json> &Tree)
 {
     std::vector<std::string> Deps;
-    if (Node.contains("PARENTS") && Node["PARENTS"].is_array())
-        for (const auto &P : Node["PARENTS"])
-            if (P.is_string() && Tree.count(P.get<std::string>())) Deps.push_back(P.get<std::string>());
-    if (Node.contains("LIBRARYITEM") && Node["LIBRARYITEM"].is_string()
-        && Tree.count(Node["LIBRARYITEM"].get<std::string>()))
-        Deps.push_back(Node["LIBRARYITEM"].get<std::string>());
+    std::vector<std::string> Nots;
+    for (const std::string &P : ManifestModel::OverRefs(Node, &Nots)) if (Tree.count(P)) Deps.push_back(P);
+    for (const std::string &P : Nots) if (Tree.count(P)) Deps.push_back(P);
     return Deps;
 }
 
@@ -164,12 +165,13 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         for (const auto &N : Nodes)
         {
             ++NIdx;
-            // A node is an object with a string TYPE. Identity is the CID, and references (PARENTS/LIBRARYITEM) name
-            // other nodes BY CID. The authoring handle is the node's OWN stored "CID" — the CID it last minted to
-            // (stamped on a received block at fetch time; computed at create/publish for a local one). LABEL is PURELY
-            // COSMETIC: an optional pretty name that travels in the block and is NEVER a key. So distinct nodes may
-            // freely share a label (RoC/TFT "v1.21b", two "Vanilla" editions) — they have distinct CIDs, full stop.
-            if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) continue;
+            // A node is any object carrying a node field (ManifestModel::IsNodeObject). Identity is the CID, and OVER
+            // refs name other nodes BY CID. The authoring handle is the node's OWN stored "CID" — the CID it last
+            // minted to (stamped on a received block at fetch time; computed at create/publish for a local one). LABEL
+            // is PURELY COSMETIC: an optional pretty name that travels in the block and is NEVER a key.
+            if (N.is_object() && N.contains("TYPE"))
+                LogWarn("NodeGraph::GatherWorkingTree", "legacy TYPE node ignored (run tools/migrate_one_edge.py): " + E.path().string());
+            if (!ManifestModel::IsNodeObject(N)) continue;
             // From an UNTRUSTED root (received CATALOG stubs), the stored "CID" is attacker-controlled — ignore it so
             // the node is synthetic-keyed (browse-only, never a resolvable handle). An honest stub has none anyway.
             std::string Handle = (TrustStoredCid && N.contains("CID") && N["CID"].is_string()) ? N["CID"].get<std::string>() : std::string();
@@ -201,63 +203,6 @@ void GatherWorkingTree(const std::filesystem::path &Root,
             Tree[Key] = N;
             Dirs[Key] = E.path().parent_path();
         }
-    }
-}
-
-void LiftLibraryItemEdge(std::map<std::string, nlohmann::ordered_json> &Tree)
-{
-    // Which handles are tiles (DeclareLibraryItem nodes present in this tree).
-    std::set<std::string> Tiles;
-    for (const auto &[Handle, Doc] : Tree)
-        if (Doc.value("TYPE", std::string()) == "DeclareLibraryItem") Tiles.insert(Handle);
-    if (Tiles.empty()) return;
-
-    const auto ParentsOf = [](const nlohmann::ordered_json &Doc) {
-        std::vector<std::string> Ps;
-        if (Doc.contains("PARENTS") && Doc["PARENTS"].is_array())
-            for (const auto &P : Doc["PARENTS"]) if (P.is_string() && !P.get<std::string>().empty())
-                Ps.push_back(P.get<std::string>());
-        return Ps;
-    };
-
-    // (1) Each DeclareExec's tile = its NEAREST tile ANCESTOR via PARENTS (a tile is usually a transitive ancestor,
-    // not a direct parent). BFS from the exec's direct parents outward — first tile reached is the nearest. Set it as
-    // the LIBRARYITEM edge. (This mirrors LinkGames' "nearest presentable ancestor", resolved once here at freeze.)
-    for (auto &[Handle, Doc] : Tree)
-    {
-        (void)Handle;
-        if (Doc.value("TYPE", std::string()) != "DeclareExec") continue;
-        if (Doc.contains("LIBRARYITEM") && Doc["LIBRARYITEM"].is_string()
-            && !Doc["LIBRARYITEM"].get<std::string>().empty())
-            continue;   // already lifted (idempotent)
-
-        std::deque<std::string> Q;
-        for (const auto &P : ParentsOf(Doc)) Q.push_back(P);
-        std::set<std::string> Seen;
-        std::string Found;
-        while (!Q.empty())
-        {
-            const std::string P = Q.front();
-            Q.pop_front();
-            if (!Seen.insert(P).second) continue;
-            if (Tiles.count(P)) { Found = P; break; }   // nearest tile (BFS order)
-            const auto It = Tree.find(P);
-            if (It != Tree.end()) for (const auto &Pp : ParentsOf(It->second)) Q.push_back(Pp);
-        }
-        if (!Found.empty()) Doc["LIBRARYITEM"] = Found;
-    }
-
-    // (2) Tiles are pure metadata (no layers) — strip them from EVERY node's PARENTS so the composition graph carries
-    // no metadata edges. The tile now lives ONLY on the LIBRARYITEM edge. Safe for CFS: a layer-less node contributes
-    // nothing to a resolved layer stack, so removing it never changes launch behavior.
-    for (auto &[Handle, Doc] : Tree)
-    {
-        (void)Handle;
-        if (!Doc.contains("PARENTS") || !Doc["PARENTS"].is_array()) continue;
-        nlohmann::ordered_json Kept = nlohmann::ordered_json::array();
-        for (const auto &P : Doc["PARENTS"])
-            if (!(P.is_string() && Tiles.count(P.get<std::string>()))) Kept.push_back(P);
-        Doc["PARENTS"] = std::move(Kept);
     }
 }
 

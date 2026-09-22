@@ -158,7 +158,7 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
     {
         // Node-native identity: a library bundle must define a launchable node (runner-only bundles aren't games).
         NodeIndex BIdx; ManifestModel::ScanBundleNodes(Path.toStdString(), BIdx);
-        ManifestModel::LinkGames(BIdx);   // link variants to their tile so the representative inherits UID/TITLE
+        ManifestModel::DeriveIdentity(BIdx);   // the representative launchable carries (or inherits) its UID/TITLE
         const Node * Rep = nullptr;
         for (const auto & [Id, N] : BIdx.Nodes)
             if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;

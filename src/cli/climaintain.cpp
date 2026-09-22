@@ -1,3 +1,4 @@
+#include "pkggraph.h"   // AddOverRef
 #include "cli/climodes.h"
 #include "main.h"
 #include "apppaths.h"
@@ -159,12 +160,8 @@ int CliModes::RunMaintenanceModes(LaunchParameters &LaunchParameters, nlohmann::
                     if (E.is_object() && LabelOf(E) == vs[i].node->NodeId) { Nd = &E; break; }
             if (!Nd) { LogErr("convert-delta", "could not find node " + vs[i].node->NodeId + " in " + vs[i].node->File.string()); return 1; }
 
-            nlohmann::ordered_json parents = Nd->value("PARENTS", nlohmann::ordered_json::array());
-            if (!parents.is_array()) parents = nlohmann::ordered_json::array();
-            bool have = false; for (auto &p : parents) if (p == vs[i - 1].node->NodeId) have = true;
-            if (!have) parents.push_back(vs[i - 1].node->NodeId);
-            (*Nd)["PARENTS"] = parents;
-            (*Nd)["TYPE"] = "VFSLayer";
+            //The delta composes over the view below it, so the previous version must be OVER'd (by handle).
+            PkgGraph::AddOverRef(*Nd, vs[i - 1].node->Key());
             // Convert the SAME entry the chain selection matched — the VFSZipLayer at layerIdx. A batched node may
             // carry its zip at a later LAYERS entry, and each LAYERS[k] lowers to Layers[k] one-to-one, so blindly
             // rewriting LAYERS[0] would corrupt a different layer and orphan the real zip. Refuse if it is missing.

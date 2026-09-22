@@ -159,10 +159,16 @@ public:
     //Variant resolution:
     std::string VariantID;                                           //VARIANT_ID — resolved in DecideComponent (RECOMMENDED/first) or set by the caller
 
-    //The launch EXEC composed across the launchable's closure (field-level last-wins, launch node highest-priority) —
-    //so a parent/base can supply CONTENTPATH/WORKDIR and the variant overrides EXEARGS, etc. Set by InitializeFromNode
-    //from the DeclareExec layers; consumed by ResolveExecutableDefinition. Empty ⇒ fall back to the launch node's Exec.
+    //The launch EXEC: the SELECTED entrypoint of the launch node, lowered (NodeLower::LowerEntrypoint). Execution is
+    //NOT transitive — nothing under the launch node contributes to it. Set by InitializeFromNode; consumed by
+    //ResolveExecutableDefinition. Empty ⇒ fall back to the launch node's default Exec.
     nlohmann::ordered_json ComposedExec;
+    //Which ENTRYPOINTS entry of the launch node to run, by LABEL ("" = the default: the first RECOMMENDED, else the
+    //first). A variant = (node, entrypoint). PASSED (picker / --entrypoint).
+    std::string Entrypoint;
+    //Per-graft precedence (node key → rank; higher = mounted later = wins at a conflict). Grafts absent from the
+    //map rank 0 and order by key. PASSED (instance config).
+    std::map<std::string, int> GraftPrecedence;
 
     //Native node-graph launch (everything-is-a-node): when NodeIdx+LaunchNodeId are set, the engine resolves
     //EVERYTHING from the global node graph (InitializeFromNode) instead of from a MANIFESTJSON.
@@ -170,7 +176,7 @@ public:
     std::shared_ptr<const NodeIndex> NodeIdxOwned;                  //optional keep-alive: set it alongside NodeIdx and the
                                                                     //wrapper's ContainerParams COPY owns the index for its
                                                                     //whole life (P7: removes the raw-pointer lifetime pact)
-    std::string LaunchNodeId;                                       //PASSED — the ROLE:"launchable" node to run
+    std::string LaunchNodeId;                                       //PASSED — the launchable node to run
 
     //System Variables — queried from Qt at runtime
     std::string ScreenWidth;

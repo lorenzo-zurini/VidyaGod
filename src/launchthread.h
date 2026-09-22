@@ -24,7 +24,9 @@ class LaunchThread : public QThread
 public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
-    std::string            LaunchNodeId;      // Native node-graph launch: the ROLE:"launchable" node to run
+    std::string            LaunchNodeId;      // Native node-graph launch: the launchable node to run
+    std::string            Entrypoint;        // which ENTRYPOINTS entry of it (LABEL; "" = default)
+    std::map<std::string, int> GraftPrecedence;  // per-graft rank (node key → rank) from the instance config
     std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)
     std::vector<std::string>           RunnerChain;       // Runner daisy-chain (innermost→outermost node ids); empty = auto-resolve

@@ -408,7 +408,7 @@ private:
 
         int addRegEditNode()
         {
-            const int i = canvas->addNode("RegEdit");
+            const int i = canvas->addNode("REGEDITS");
             model->SaveNodes();
             return i;
         }
@@ -427,7 +427,7 @@ private:
 
         int addContentNode(const QString &p)
         {
-            const int i = canvas->addNode("VFSLayer");           // batched: one node, LAYERS[0] is the primary layer
+            const int i = canvas->addNode("LAYERS");           // batched: one node, LAYERS[0] is the primary layer
             layer(i)["PATH"] = p.toStdString();
             model->SaveNodes();
             return i;

@@ -39,10 +39,10 @@ VOLATILE_VARS = ("VIDYAGOD_SELF_NAME", "VIDYAGOD_SELF_VIP", "VIDYAGOD_PEER_NAMES
 def launchables(bundle):
     with open(os.path.join(bundle, "launchmatrix.json")) as F:
         nodes = json.load(F)
-    #A launchable is a DeclareExec with no GUEST — the terminal link of a chain. Derived, not listed, so a
-    #launchable added to the fixture is covered without touching this script.
+    #A launchable is a node with an ENTRYPOINTS entry that has no GUEST — the terminal link of a chain. Derived,
+    #not listed, so a launchable added to the fixture is covered without touching this script.
     return sorted(n["LABEL"] for n in nodes
-                  if n.get("TYPE") == "DeclareExec" and not n.get("GUEST"))
+                  if any(isinstance(e, dict) and not e.get("GUEST") for e in n.get("ENTRYPOINTS", [])))
 
 def normalise(obj, data_dir):
     """Strip everything that is a property of WHERE this ran rather than WHAT was resolved."""

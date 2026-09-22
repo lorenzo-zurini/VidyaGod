@@ -138,11 +138,10 @@ Graph Build(const json &NodesArray, const json *Layout)
             return (N.contains(K) && N[K].is_string()) ? N[K].get<std::string>() : std::string(Def);
         };
         Nd.Id    = Str("CID", "");   // Model C: the canvas handle is the node's stored CID (LABEL is cosmetic only)
-        Nd.Type  = Str("TYPE", "Group");
-        Nd.Form  = Str("FORM", "");
-        //Batched: a VFSLayer carries FORM inside its first LAYERS entry. Expose that as the node's Form so the
-        //delta-base match (a delta's parent must be a zip layer) and the colour logic keep working.
-        if (Nd.Type == "VFSLayer" && N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
+        Nd.Type  = KindOf(N);
+        //Content carries FORM inside its first LAYERS entry. Expose that as the node's Form so the delta-base
+        //match (a delta's base must be a zip layer) and the colour logic keep working.
+        if (N.contains("LAYERS") && N["LAYERS"].is_array() && !N["LAYERS"].empty()
             && N["LAYERS"][0].is_object() && N["LAYERS"][0].contains("FORM") && N["LAYERS"][0]["FORM"].is_string())
             Nd.Form = N["LAYERS"][0]["FORM"].get<std::string>();
         //Position resolves in three steps, weakest first: the node's own POS (the author's published default),
@@ -203,24 +202,36 @@ Graph Build(const json &NodesArray, const json *Layout)
     for (int I = 0; I < (int)G.Nodes.size(); ++I)
     {
         const json &N = NodesArray[I];
-        if (!N.contains("PARENTS") || !N["PARENTS"].is_array()) continue;
-        int Slot = -1;
-        for (const auto &P : N["PARENTS"])
-        {
-            ++Slot;                                  // counts EVERY entry, including the skipped ones, so the
-            if (!P.is_string()) continue;            // slot always addresses the real array index
-            const std::string Pid = P.get<std::string>();
-            if (Pid.empty()) continue;
-            Link L; L.ChildIndex = I; L.Slot = Slot;
+        if (!N.is_object() || !N.contains("OVER") || !N["OVER"].is_array()) continue;
+        //One wire per REF, flattened in OVER order (EraseOverRef walks the same order). TOTAL over malformed
+        //entries: the editor renders raw on-disk JSON, and a wrong-shaped entry OCCUPIES a slot but draws no
+        //wire — so a slot always addresses the real element, and detaching never erases a neighbour.
+        int Slot = -1, OverIndex = -1;
+        auto Wire = [&](const std::string &Pid, int Member, bool Not) {
+            ++Slot;
+            if (Pid.empty()) return;
+            Link L; L.ChildIndex = I; L.Slot = Slot; L.OverIndex = OverIndex; L.Member = Member; L.Not = Not;
             auto It = ById.find(Pid);
             if (It != ById.end()) L.ParentIndex = It->second;
             else
             {
-                //Out-of-bundle parent (a shared library or runner) — a reference chip, not a box we own.
+                //Out-of-bundle ref (a shared library or runner) — a reference chip, not a box we own.
                 L.ExternalId = Pid;
                 if (SeenExternal.insert(Pid).second) G.Externals.push_back(Pid);
             }
             G.Links.push_back(std::move(L));
+        };
+        for (const auto &E : N["OVER"])
+        {
+            ++OverIndex;
+            if (E.is_string()) Wire(E.get<std::string>(), -1, false);
+            else if (E.is_array())
+            {
+                int M = -1;
+                for (const auto &Mm : E) { ++M; Wire(Mm.is_string() ? Mm.get<std::string>() : std::string(), M, false); }
+            }
+            else if (E.is_object() && E.contains("NOT") && E["NOT"].is_string()) Wire(E["NOT"].get<std::string>(), -1, true);
+            else Wire(std::string(), -1, false);                  // malformed: a slot, no wire
         }
     }
 
@@ -240,73 +251,151 @@ bool SetPos(json &Layout, const std::string &NodeId, float X, float Y)
     return true;
 }
 
-// ---- type vocabulary ------------------------------------------------------
+// ---- section vocabulary ---------------------------------------------------
 
 const std::vector<std::string> &AllTypes()
 {
     static const std::vector<std::string> T = {
-        "VFSLayer", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride",
-        "DeclarePersist", "CustomVar", "DeclareExec", "DeclareLibraryItem", "Group"
+        "LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "PERSISTS", "VARS", "ENTRYPOINTS", "TILE"
     };
     return T;
 }
 
-const char *TypeHelp(const std::string &Type)
+std::vector<std::string> SectionsOf(const json &Node)
 {
-    if (Type == "VFSLayer")           return "Files mounted into the runtime - a zip, a directory, a single file, or a delta over one.";
-    if (Type == "RegEdit")            return "Registry keys and values written into the prefix, per architecture.";
-    if (Type == "FileEdit")           return "Text edits applied to a file in the runtime (whole-file, key=value, or append).";
-    if (Type == "BinaryPatch")        return "Byte patches over the PRISTINE executable, guarded by an EXPECT check.";
-    if (Type == "DllOverride")        return "Which DLLs resolve native vs builtin (wine's n,b notation).";
-    if (Type == "DeclarePersist")     return "What survives the run: a file path or registry key is promoted to a named durable TARGET under the instance.";
-    if (Type == "CustomVar")          return "A variable the player sets before launch; substituted as %KEY% wherever it is used.";
-    if (Type == "DeclareExec")        return "What to run. No GUEST => this is a launchable; with GUEST => it is a runner providing those platforms.";
-    if (Type == "DeclareLibraryItem") return "The library tile: title, UID and cover. Parent of the launchables it groups.";
-    if (Type == "Group")              return "Pure composition - no payload, exists only to gather PARENTS under one name.";
+    std::vector<std::string> Out;
+    if (!Node.is_object()) return Out;
+    for (const std::string &S : AllTypes()) if (Node.contains(S)) Out.push_back(S);
+    return Out;
+}
+
+std::string KindOf(const json &Node)
+{
+    const std::vector<std::string> S = SectionsOf(Node);
+    return S.empty() ? std::string() : S.front();
+}
+
+const char *TypeHelp(const std::string &Section)
+{
+    if (Section == "LAYERS")       return "Files mounted into the runtime - a zip, a directory, a single file, or a delta over one.";
+    if (Section == "REGEDITS")     return "Registry keys and values written into the prefix, per architecture.";
+    if (Section == "FILEEDITS")    return "Text edits applied to files in the runtime (whole-file, key=value, or append).";
+    if (Section == "PATCHES")      return "Byte patches over PRISTINE executables, guarded by an EXPECT check.";
+    if (Section == "DLLOVERRIDES") return "Which DLLs resolve native vs builtin (wine's n,b notation).";
+    if (Section == "PERSISTS")     return "What survives the run: a file path or registry key is promoted to a named durable TARGET under the instance.";
+    if (Section == "VARS")         return "Variables the player sets before launch; substituted as %KEY% wherever they are used.";
+    if (Section == "ENTRYPOINTS")  return "What to run - each entry is a variant. No GUEST => a launchable; with GUEST => a runner providing those platforms.";
+    if (Section == "TILE")         return "The library tile this launchable belongs to: title, UID and cover. Everything OVER it inherits the identity.";
+    if (Section.empty())           return "A plain node - no payload, exists only to be OVER other nodes under one name.";
     return "";
 }
 
-void TypeColour(const std::string &Type, int &R, int &G, int &B)
+void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 {
     // Content = blue, transforms = amber, identity = green, composition = grey.
-    if (Type == "VFSLayer")                                      { R = 46;  G = 96;  B = 148; return; }
-    if (Type == "RegEdit" || Type == "FileEdit" ||
-        Type == "BinaryPatch" || Type == "DllOverride")          { R = 136; G = 92;  B = 36;  return; }
-    if (Type == "DeclarePersist" || Type == "CustomVar")         { R = 92;  G = 68;  B = 128; return; }
-    if (Type == "DeclareExec" || Type == "DeclareLibraryItem")   { R = 46;  G = 118; B = 78;  return; }
+    if (Kind == "LAYERS")                                      { R = 46;  G = 96;  B = 148; return; }
+    if (Kind == "REGEDITS" || Kind == "FILEEDITS" ||
+        Kind == "PATCHES" || Kind == "DLLOVERRIDES")           { R = 136; G = 92;  B = 36;  return; }
+    if (Kind == "PERSISTS" || Kind == "VARS")                  { R = 92;  G = 68;  B = 128; return; }
+    if (Kind == "ENTRYPOINTS" || Kind == "TILE")               { R = 46;  G = 118; B = 78;  return; }
     R = 74; G = 80; B = 88;
 }
 
-json NewPayload(const std::string &Type)
+//A section's starter value: required keys present from the start, so a fresh node is never malformed — the old
+//editor created content layers with no TARGET at all, which is what made Tonic Trouble die as "create process: 2".
+//Array sections start with ONE item, so a fresh node is valid + immediately editable (its ObjArray shows a row +
+//"+ add entry"). SOURCE on a layer is stamped by publish, not seeded here.
+static json SectionStarter(const std::string &S)
 {
-    // Required keys present from the start, so a fresh node is never malformed — the old editor created
-    // content layers with no TARGET at all, which is what made Tonic Trouble die as "create process: 2".
-    //Batched types start with ONE item, so a fresh node is valid + immediately editable (its ObjArray shows a
-    //row + "+ add entry"). SOURCE on a layer is stamped by publish, not seeded here.
-    if (Type == "VFSLayer")
-        return json::object({{"TYPE","VFSLayer"},{"LAYERS", json::array({
-            json::object({{"FORM","zip"},{"PATH",""},{"TARGET","%PrefixRoot%/drive_c/%PackageUID%"}}) })}});
-    if (Type == "RegEdit")
-        return json::object({{"TYPE","RegEdit"},{"EDITS", json::array({
-            json::object({{"ARCHITECTURE", json::array({"32"})}}) })}});
-    if (Type == "FileEdit")
-        return json::object({{"TYPE","FileEdit"},{"FILE",""},{"EDITS", json::array()}});
-    if (Type == "BinaryPatch")
-        return json::object({{"TYPE","BinaryPatch"},{"FILE",""},{"EDITS", json::array()}});
-    if (Type == "DllOverride")
-        return json::object({{"TYPE","DllOverride"},{"OVERRIDES", json::object()}});
-    if (Type == "DeclarePersist")
-        return json::object({{"TYPE","DeclarePersist"},{"PERSISTS", json::array({
-            json::object({{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}}) })}});
-    if (Type == "CustomVar")
-        return json::object({{"TYPE","CustomVar"},{"VARS", json::array({
-            json::object({{"KEY",""},{"DEFAULT",""}}) })}});
-    if (Type == "DeclareExec")
-        return json::object({{"TYPE","DeclareExec"},{"HOST","win32"},
-                             {"PATH","%PrefixRoot%/drive_c/%PackageUID%/"},{"ARGS", json::array()}});
-    if (Type == "DeclareLibraryItem")
-        return json::object({{"TYPE","DeclareLibraryItem"},{"UID",""},{"TITLE",""}});
-    return json::object({{"TYPE","Group"}});
+    if (S == "LAYERS")       return json::array({ json::object({{"FORM","zip"},{"PATH",""},{"TARGET","%PrefixRoot%/drive_c/%PackageUID%"}}) });
+    if (S == "REGEDITS")     return json::array({ json::object({{"ARCHITECTURE", json::array({"32"})}}) });
+    if (S == "FILEEDITS")    return json::array({ json::object({{"FILE",""},{"EDITS", json::array({ json::object({{"MODE","ConfigWrite"},{"KEY",""},{"VALUE",""}}) })}}) });
+    if (S == "PATCHES")      return json::array({ json::object({{"FILE",""},{"EDITS", json::array({ json::object({{"MODE","Replace"},{"OFFSET",""},{"EXPECT",""},{"REPLACE",""}}) })}}) });
+    if (S == "DLLOVERRIDES") return json::object();
+    if (S == "PERSISTS")     return json::array({ json::object({{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}}) });
+    if (S == "VARS")         return json::array({ json::object({{"KEY",""},{"DEFAULT",""}}) });
+    if (S == "ENTRYPOINTS")  return json::array({ json::object({{"LABEL","Play"},{"HOST","win32"},{"PATH","%PrefixRoot%/drive_c/%PackageUID%/"},{"ARGS", json::array()}}) });
+    if (S == "TILE")         return json::object({{"UID",""},{"TITLE",""}});
+    return json();
+}
+
+json NewPayload(const std::string &Section)
+{
+    //An unknown section name yields a PLAIN node rather than a null-valued key that every reader would then
+    //trip over — the palette only offers real sections, so this is a guard for callers, not a feature.
+    json N = json::object();
+    const json V = SectionStarter(Section);
+    if (!Section.empty() && !V.is_null()) N[Section] = V;
+    return N;
+}
+
+bool AddSection(json &Node, const std::string &Section)
+{
+    if (!Node.is_object() || Node.contains(Section)) return false;
+    const json V = SectionStarter(Section);
+    if (V.is_null()) return false;
+    Node[Section] = V;
+    return true;
+}
+
+bool EraseOverRef(json &Node, int Slot)
+{
+    if (!Node.is_object() || !Node.contains("OVER") || !Node["OVER"].is_array() || Slot < 0) return false;
+    json &Over = Node["OVER"];
+    int Ord = -1;
+    for (size_t I = 0; I < Over.size(); ++I)
+    {
+        json &E = Over[I];
+        if (E.is_array())
+        {
+            for (size_t M = 0; M < E.size(); ++M)
+            {
+                if (++Ord != Slot) continue;
+                E.erase(M);
+                if (E.size() == 1 && E[0].is_string()) Over[I] = E[0];   // a group of one is a plain entry
+                else if (E.empty()) Over.erase(I);
+                return true;
+            }
+        }
+        else if (++Ord == Slot) { Over.erase(I); return true; }   // plain, NOT, or malformed: one slot each
+    }
+    return false;
+}
+
+bool AddOverRef(json &Node, const std::string &Ref)
+{
+    if (!Node.is_object() || Ref.empty()) return false;
+    if (!Node.contains("OVER") || !Node["OVER"].is_array()) Node["OVER"] = json::array();
+    for (const auto &E : Node["OVER"])
+    {
+        if (E.is_string() && E.get<std::string>() == Ref) return false;
+        if (E.is_array()) for (const auto &M : E) if (M.is_string() && M.get<std::string>() == Ref) return false;
+        if (E.is_object() && E.contains("NOT") && E["NOT"].is_string() && E["NOT"].get<std::string>() == Ref) return false;
+    }
+    Node["OVER"].push_back(Ref);
+    return true;
+}
+
+bool RemoveOverRefs(json &Node, const std::string &Ref)
+{
+    if (!Node.is_object() || !Node.contains("OVER") || !Node["OVER"].is_array()) return false;
+    json Kept = json::array();
+    bool Changed = false;
+    for (const auto &E : Node["OVER"])
+    {
+        if (E.is_string()) { if (E.get<std::string>() == Ref) { Changed = true; continue; } Kept.push_back(E); }
+        else if (E.is_array())
+        {
+            json G = json::array();
+            for (const auto &M : E) { if (M.is_string() && M.get<std::string>() == Ref) { Changed = true; continue; } G.push_back(M); }
+            if (G.empty()) continue;
+            if (G.size() == 1 && G[0].is_string()) Kept.push_back(G[0]); else Kept.push_back(std::move(G));
+        }
+        else if (E.is_object() && E.contains("NOT") && E["NOT"].is_string() && E["NOT"].get<std::string>() == Ref) { Changed = true; continue; }
+        else Kept.push_back(E);
+    }
+    if (Changed) Node["OVER"] = std::move(Kept);
+    return Changed;
 }
 
 // ---- payload schema -------------------------------------------------------
@@ -327,9 +416,9 @@ const std::vector<std::pair<const char *, const char *>> ScopeOpts  = {{"file","
 
 std::vector<Field> MakeFields(const std::string &Type)
 {
-    if (Type == "VFSLayer")
-        //Batched: a node holds a LAYERS list, each entry a mount layer (SOURCE is stamped by publish, not
-        //hand-edited). Order = mount/precedence order.
+    if (Type == "LAYERS")
+        //A node's LAYERS list, each entry a mount layer (SOURCE is stamped by publish, not hand-edited). Order =
+        //mount/precedence order.
         return {
             {"LAYERS", "Layers", FieldKind::ObjArray, "", {}, {
                 {"FORM",        "Form",        FieldKind::Enum,       "",  FormOpts, {}},
@@ -340,44 +429,49 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"WHEN",        "When",        FieldKind::Text,       "condition - layer inert when false", {}, {}},
             }},
         };
-    if (Type == "RegEdit")
-        return {{"EDITS", "Registry", FieldKind::RegEdits, "", {}, {}}};
-    if (Type == "FileEdit")
+    if (Type == "REGEDITS")
+        return {{"REGEDITS", "Registry", FieldKind::RegEdits, "", {}, {}}};
+    if (Type == "FILEEDITS")
+        //One entry per FILE, each with its edit list. The nested EDITS list is edited as an ObjArray inside an
+        //ObjArray; drawField recurses.
         return {
-            {"FILE",     "File",     FieldKind::Text,  "path in the runtime - RELATIVE to the pass base", {}, {}},
-            {"OVERRIDE", "Override pass", FieldKind::Check, "run after content is mounted", {}, {}},
-            {"EDITS",    "Edits",    FieldKind::ObjArray, "", {}, {
-                {"MODE",  "Mode",  FieldKind::Enum, "", FModeOpts, {}},
-                {"KEY",   "Key",   FieldKind::Text, "ConfigWrite only", {}, {}},
-                {"VALUE", "Value", FieldKind::Text, "", {}, {}},
-                {"WHEN",  "When",  FieldKind::Text, "condition - inert when false", {}, {}},
+            {"FILEEDITS", "File edits", FieldKind::ObjArray, "", {}, {
+                {"FILE",     "File",     FieldKind::Text,  "path in the runtime - RELATIVE to the pass base", {}, {}},
+                {"OVERRIDE", "Override pass", FieldKind::Check, "run after content is mounted", {}, {}},
+                {"EDITS",    "Edits",    FieldKind::ObjArray, "", {}, {
+                    {"MODE",  "Mode",  FieldKind::Enum, "", FModeOpts, {}},
+                    {"KEY",   "Key",   FieldKind::Text, "ConfigWrite only", {}, {}},
+                    {"VALUE", "Value", FieldKind::Text, "", {}, {}},
+                    {"WHEN",  "When",  FieldKind::Text, "condition - inert when false", {}, {}},
+                }},
             }},
         };
-    if (Type == "BinaryPatch")
+    if (Type == "PATCHES")
         //Every field the patch engine reads. An earlier table offered Cave and Poke in the MODE combo while
         //giving no way to supply their PAYLOAD/VALUE, so picking either produced a node that validation then
-        //rejected with no way to fix it from the editor — and the four CAVE patches already in the library
-        //rendered as patches with no body.
+        //rejected with no way to fix it from the editor.
         return {
-            {"FILE",  "File",    FieldKind::Text,     "exe in the runtime", {}, {}},
-            {"EDITS", "Patches", FieldKind::ObjArray, "", {}, {
-                {"MODE",    "Mode",    FieldKind::Enum, "", BModeOpts, {}},
-                {"OFFSET",  "Offset",  FieldKind::Text, "0x... (VA or file offset)", {}, {}},
-                {"ANCHOR",  "Anchor",  FieldKind::Text, "hex signature, ?? = wildcard (instead of Offset)", {}, {}},
-                {"EXPECT",  "Expect",  FieldKind::Text, "pristine bytes (the guard)", {}, {}},
-                {"REPLACE", "Replace", FieldKind::Text, "Replace: new bytes", {}, {}},
-                {"VALUE",   "Value",   FieldKind::Text, "Poke: the scalar to write", {}, {}},
-                {"PAYLOAD", "Payload", FieldKind::Text, "Cave: the cave body (hex)", {}, {}},
-                {"CAVE",    "Cave at", FieldKind::Text, "Cave: 'auto' or a fixed VA", {}, {}},
-                {"APPLY",   "Apply",   FieldKind::Enum, "", ApplyOpts, {}},
-                {"COMMENT", "Comment", FieldKind::Text, "what this patch does", {}, {}},
-                {"WHEN",    "When",    FieldKind::Text, "condition - inert when false", {}, {}},
+            {"PATCHES", "Patches", FieldKind::ObjArray, "", {}, {
+                {"FILE",  "File",    FieldKind::Text,     "exe in the runtime", {}, {}},
+                {"EDITS", "Edits",   FieldKind::ObjArray, "", {}, {
+                    {"MODE",    "Mode",    FieldKind::Enum, "", BModeOpts, {}},
+                    {"OFFSET",  "Offset",  FieldKind::Text, "0x... (VA or file offset)", {}, {}},
+                    {"ANCHOR",  "Anchor",  FieldKind::Text, "hex signature, ?? = wildcard (instead of Offset)", {}, {}},
+                    {"EXPECT",  "Expect",  FieldKind::Text, "pristine bytes (the guard)", {}, {}},
+                    {"REPLACE", "Replace", FieldKind::Text, "Replace: new bytes", {}, {}},
+                    {"VALUE",   "Value",   FieldKind::Text, "Poke: the scalar to write", {}, {}},
+                    {"PAYLOAD", "Payload", FieldKind::Text, "Cave: the cave body (hex)", {}, {}},
+                    {"CAVE",    "Cave at", FieldKind::Text, "Cave: 'auto' or a fixed VA", {}, {}},
+                    {"APPLY",   "Apply",   FieldKind::Enum, "", ApplyOpts, {}},
+                    {"COMMENT", "Comment", FieldKind::Text, "what this patch does", {}, {}},
+                    {"WHEN",    "When",    FieldKind::Text, "condition - inert when false", {}, {}},
+                }},
             }},
         };
-    if (Type == "DllOverride")
-        return {{"OVERRIDES", "Overrides", FieldKind::KeyValue, "dll -> resolution order", DllOpts, {}}};
-    if (Type == "DeclarePersist")
-        //Batched: a node holds a PERSISTS list, each entry one durable path/registry subtree.
+    if (Type == "DLLOVERRIDES")
+        return {{"DLLOVERRIDES", "Overrides", FieldKind::KeyValue, "dll -> resolution order", DllOpts, {}}};
+    if (Type == "PERSISTS")
+        //A node's PERSISTS list, each entry one durable path/registry subtree.
         return {
             {"PERSISTS", "Persists", FieldKind::ObjArray, "", {}, {
                 {"SCOPE",  "Scope",  FieldKind::Enum,  "", ScopeOpts, {}},
@@ -387,8 +481,8 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"WHEN",   "When",   FieldKind::Text,  "condition - inert when false", {}, {}},
             }},
         };
-    if (Type == "CustomVar")
-        //Batched: a node holds a VARS list, each entry one variable + its optional launcher UI facet (VarUI).
+    if (Type == "VARS")
+        //A node's VARS list, each entry one variable + its optional launcher UI facet (VarUI).
         return {
             {"VARS", "Variables", FieldKind::ObjArray, "", {}, {
                 {"KEY",     "Key",     FieldKind::Text, "used as %KEY%", {}, {}},
@@ -397,28 +491,34 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"WHEN",    "When",    FieldKind::Text, "condition - var inert (resolves empty) when false", {}, {}},
             }, /*VarUI=*/true},
         };
-    if (Type == "DeclareExec")
+    if (Type == "ENTRYPOINTS")
+        //Each entry is a VARIANT (node, entrypoint). No GUEST ⇒ launchable; GUEST ⇒ runner.
         return {
-            {"HOST",        "Host",        FieldKind::Text,       "the platform this needs (win32 / linux64 / ...)", {}, {}},
-            {"GUEST",       "Guest",       FieldKind::StringList, "platforms this PROVIDES - set => runner, empty => launchable", {}, {}},
-            {"PATH",        "Path",        FieldKind::Text,       "the exe/ROM, anchored", {}, {}},
-            {"ARGS",        "Args",        FieldKind::StringList, "one per line", {}, {}},
-            {"LABEL",       "Label",       FieldKind::Text,       "shown in the variant picker", {}, {}},
-            {"RECOMMENDED", "Recommended", FieldKind::Check,      "default variant of its tile", {}, {}},
-            {"WORKDIR",     "Work dir",    FieldKind::Text,       "", {}, {}},
-            {"ENV",         "Env",         FieldKind::KeyValue,   "", {}, {}},
-            {"ENV_REMOVE",  "Env remove",  FieldKind::StringList, "", {}, {}},
-            {"CONTENT_ROOT","Content root",FieldKind::Text,       "runner only", {}, {}},
-            {"PREFIX_GENERATE", "Generate prefix", FieldKind::Check, "runner only - needs a wine/proton prefix", {}, {}},
-            {"UNIFIED_RUNTIME", "Unified runtime", FieldKind::Check, "runner only - mount the build INTO the game runtime", {}, {}},
-            {"RUNNER",      "Pin runner", FieldKind::Text,       "launchable only - a runner LABEL to prefer", {}, {}},
+            {"ENTRYPOINTS", "Entrypoints", FieldKind::ObjArray, "", {}, {
+                {"LABEL",       "Label",       FieldKind::Text,       "shown in the variant picker", {}, {}},
+                {"HOST",        "Host",        FieldKind::Text,       "the platform this needs (win32 / linux64 / ...)", {}, {}},
+                {"GUEST",       "Guest",       FieldKind::StringList, "platforms this PROVIDES - set => runner, empty => launchable", {}, {}},
+                {"PATH",        "Path",        FieldKind::Text,       "the exe/ROM, anchored", {}, {}},
+                {"ARGS",        "Args",        FieldKind::StringList, "one per line", {}, {}},
+                {"RECOMMENDED", "Recommended", FieldKind::Check,      "the default entry of this node", {}, {}},
+                {"WORKDIR",     "Work dir",    FieldKind::Text,       "", {}, {}},
+                {"ENV",         "Env",         FieldKind::KeyValue,   "", {}, {}},
+                {"ENV_REMOVE",  "Env remove",  FieldKind::StringList, "", {}, {}},
+                {"CONTENT_ROOT","Content root",FieldKind::Text,       "runner only", {}, {}},
+                {"PREFIX_GENERATE", "Generate prefix", FieldKind::Check, "runner only - needs a wine/proton prefix", {}, {}},
+                {"UNIFIED_RUNTIME", "Unified runtime", FieldKind::Check, "runner only - mount the build INTO the game runtime", {}, {}},
+                {"RUNNER",      "Pin runner", FieldKind::Text,       "launchable only - a runner LABEL to prefer", {}, {}},
+            }},
         };
-    if (Type == "DeclareLibraryItem")
+    if (Type == "TILE")
         return {
-            {"TITLE", "Title", FieldKind::Text,     "the library tile's name", {}, {}},
-            {"UID",   "UID",   FieldKind::Text,     "stable numeric id - keys saves and settings", {}, {}},
-            {"COVER", "Cover", FieldKind::Cover,    "", {}, {}},
-            {"META",  "Meta",  FieldKind::KeyValue, "catalog metadata", {}, {}},
+            {"TILE", "Tile", FieldKind::Object, "", {}, {
+                {"TITLE",     "Title",     FieldKind::Text,     "the library tile's name", {}, {}},
+                {"UID",       "UID",       FieldKind::Text,     "stable id - keys saves and settings; one UID = one card", {}, {}},
+                {"PARENTUID", "Parent UID",FieldKind::Text,     "the main game this nests under (expansions)", {}, {}},
+                {"COVER",     "Cover",     FieldKind::Cover,    "", {}, {}},
+                {"META",      "Meta",      FieldKind::KeyValue, "catalog metadata", {}, {}},
+            }},
         };
     return {};
 }
@@ -534,6 +634,14 @@ float FieldPx(const json &Node, const Field &F)
     case FieldKind::Check:
     case FieldKind::Cover:
         return kRowPx;
+    case FieldKind::Object:
+    {
+        float Px = kTextPx;                                     // the label line
+        static const json EmptyObj = json::object();
+        const json &O = (V && V->is_object()) ? *V : EmptyObj;
+        for (const Field &S : F.Sub) Px += FieldPx(O, S);
+        return Px;
+    }
     case FieldKind::StringList:
     case FieldKind::StringListKeepEmpty:
         //A value of the wrong shape draws as ONE line — the label, then a short description as disabled text
@@ -611,8 +719,6 @@ float EstimateHeight(const json &Node)
     //push_backs the placeholder before this is ever called — gave PkgLayout no vertical space for it at all,
     //so the next node in the column was stacked on top of it.
     if (!Node.is_object()) return kChromePx + kTitlePx + kTextPx;
-    const std::string Type = (Node.is_object() && Node.contains("TYPE") && Node["TYPE"].is_string())
-                                 ? Node["TYPE"].get<std::string>() : std::string("Group");
     float Px = kChromePx + kTitlePx;
     Px += kTextPx;                                   // the "depends on / used by" pin row
     //The "not wired yet" note, which drawNode shows on any non-launchable nothing depends on. Counted ALWAYS,
@@ -628,18 +734,9 @@ float EstimateHeight(const json &Node)
     //opening a collapsed node would make it 57px taller than the space the layout reserved, and it would
     //overlap its neighbour. Three rows of slack on every node is the price of that never happening.
     Px += kTextPx + 3.0f * kRowPx;
-    for (const Field &F : FieldsFor(Type))
-    {
-        //The same skip drawPayload makes, and for the same reason: BASE_TARGETS belongs to a delta, and a
-        //Content zip or dir never draws it. Charging it on every Content node reserved a row that nothing
-        //occupies — harmless for overlap, but this number is STAMPED into the package at publish, so an
-        //estimate that disagrees with what is drawn is a hole in the published layout on every peer's canvas.
-        //FORM is payload, so the skip stays as deterministic as the rest of this function.
-        if (F.Key == std::string("BASE_TARGETS")
-            && ((Node.contains("FORM") && Node["FORM"].is_string()) ? Node["FORM"].get<std::string>()
-                                                                    : std::string()) != "delta") continue;
-        Px += FieldPx(Node, F);
-    }
+    for (const std::string &S : SectionsOf(Node))
+        for (const Field &F : FieldsFor(S)) Px += FieldPx(Node, F);
+    Px += kBtnPx;                                    // the "+ section" row drawPayload always draws
     //The action row: a Separator, then one SmallButton line per wrap. drawActions starts a new line whenever
     //the next button would pass the node width, and a Content zip with a deflate hint and a zip parent has
     //five of them — but how many actions a node offers depends on HOST facts (a hint saying this zip is
@@ -667,15 +764,14 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
                                const std::vector<std::string> &Hints)
 {
     std::vector<Action> A;
-    const std::string Type = (Node.is_object() && Node.contains("TYPE") && Node["TYPE"].is_string())
-                                 ? Node["TYPE"].get<std::string>() : std::string("Group");
     auto HasHint = [&](const char *H) {
         return std::find(Hints.begin(), Hints.end(), H) != Hints.end();
     };
+    auto Has = [&](const char *S) { return Node.is_object() && Node.contains(S); };
 
-    if (Type == "VFSLayer")
+    if (Has("LAYERS"))
     {
-        //Batched: FORM lives in the first LAYERS entry. Per-node content actions target that primary layer.
+        //FORM lives in the first LAYERS entry. Per-node content actions target that primary layer.
         std::string Form;
         if (Node.contains("LAYERS") && Node["LAYERS"].is_array() && !Node["LAYERS"].empty()
             && Node["LAYERS"][0].is_object() && Node["LAYERS"][0].contains("FORM") && Node["LAYERS"][0]["FORM"].is_string())
@@ -692,9 +788,9 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
             //Must match what the action actually requires: a parent that is Content AND a zip. Offering it on
             //a delta or dir parent only to refuse afterwards is a button that lies.
             for (const Link &L : G.Links)
-                if (L.ChildIndex == Index && L.ParentIndex >= 0
-                    && G.Nodes[L.ParentIndex].Type == "VFSLayer" && G.Nodes[L.ParentIndex].Form == "zip")
-                { A.push_back({"to_delta", "-> delta", "Store this as a binary delta against its parent's content.", true}); break; }
+                if (L.ChildIndex == Index && L.ParentIndex >= 0 && !L.Not
+                    && G.Nodes[L.ParentIndex].Form == "zip")
+                { A.push_back({"to_delta", "-> delta", "Store this as a binary delta against its base's content.", true}); break; }
         }
         //The exact inverse of "-> delta": reconstruct the full archive and go back to being a plain zip. From
         //there the ordinary zip actions (-> dir, re-store) apply, so there is one reverse conversion rather
@@ -702,30 +798,29 @@ std::vector<Action> ActionsFor(const json &Node, const Graph &G, int Index,
         if (Form == "delta")
             A.push_back({"undelta", "undelta", "Reconstruct the full archive from this delta and store it as a plain zip again.", true});
     }
-    else if (Type == "RegEdit")
+    if (Has("REGEDITS"))
     {
         A.push_back({"capture_reg", "capture registry", "Open regedit on this point of the chain and capture what changes.", true});
         A.push_back({"import_reg", "import .reg", "Read a .reg file into this node's keys.", false});
     }
-    else if (Type == "CustomVar")
+    if (Has("VARS"))
+        A.push_back({"find_usages", "find usages", "Which nodes in the closure reference this node's %KEY%s.", false});
+    if (Has("ENTRYPOINTS"))
     {
-        A.push_back({"find_usages", "find usages", "Which nodes in the closure reference this %KEY%.", false});
+        //An entry without GUEST ⇒ a launchable variant: the thing you can actually run.
+        bool Launchable = false;
+        if (Node["ENTRYPOINTS"].is_array())
+            for (const auto &E : Node["ENTRYPOINTS"])
+                if (E.is_object() && !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty())) { Launchable = true; break; }
+        if (Launchable) A.push_back({"test_launch", "test launch", "Open the pre-launch window for this launchable and run it.", false});
     }
-    else if (Type == "DeclareExec")
-    {
-        //No GUEST ⇒ terminal ⇒ launchable: it is the thing you can actually run.
-        const bool IsRunner = Node.contains("GUEST") && Node["GUEST"].is_array() && !Node["GUEST"].empty();
-        if (!IsRunner) A.push_back({"test_launch", "test launch", "Open the pre-launch window for this launchable and run it.", false});
-    }
-    else if (Type == "DeclareLibraryItem")
-    {
+    if (Has("TILE"))
         A.push_back({"browse_cover", "cover...", "Pick the cover image for this tile.", false});
-    }
 
     //Available ANYWHERE along the chain: open a live runtime built from this node's closure, run an installer,
-    //and capture what it wrote — the captures become NEW nodes parented here.
+    //and capture what it wrote — the captures become NEW nodes OVER this one.
     A.push_back({"capture_setup", "capture setup", "Run an installer on a live runtime at this point and capture the files and registry it writes.", true});
-    if (Type != "VFSLayer")
+    if (!Has("LAYERS"))
         A.push_back({"browse_files", "browse files", "Open a file manager on a live runtime at this point and capture what you add.", true});
     return A;
 }

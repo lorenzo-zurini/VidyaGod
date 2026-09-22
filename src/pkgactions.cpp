@@ -35,24 +35,24 @@ std::string StrOf(const json & N, const char * Key)
     return (N.is_object() && N.contains(Key) && N[Key].is_string()) ? N[Key].get<std::string>() : std::string();
 }
 
-//Batched: a content node is a VFSLayer holding a LAYERS list; per-node content actions (browse/convert/delta/
-//capture) target its FIRST layer — the common single-layer case. A multi-layer node's other layers are edited
-//as rows in the canvas. Returns a mutable ref to that primary layer, materialising an empty one if needed.
+//A content node carries a LAYERS list; per-node content actions (browse/convert/delta/capture) target its FIRST
+//layer — the common single-layer case. A multi-layer node's other layers are edited as rows in the canvas.
+//Returns a mutable ref to that primary layer, materialising an empty one if needed.
 json & PrimaryLayer(json & N)
 {
-    if (StrOf(N, "TYPE") == "VFSLayer")
+    if (N.is_object() && N.contains("LAYERS"))
     {
-        if (!N.contains("LAYERS") || !N["LAYERS"].is_array()) N["LAYERS"] = json::array();
+        if (!N["LAYERS"].is_array()) N["LAYERS"] = json::array();
         if (N["LAYERS"].empty()) N["LAYERS"].push_back(json::object());
         return N["LAYERS"][0];
     }
-    return N;   // non-VFSLayer (e.g. a DeclareLibraryItem's COVER lives on the node itself)
+    return N;   // no LAYERS (e.g. a cover action targets the node's TILE)
 }
 
-//Read a content field from the primary layer of a VFSLayer node (or the node itself otherwise).
+//Read a content field from the primary layer of a content node (or the node itself otherwise).
 std::string LayerStr(const json & N, const char * Key)
 {
-    if (N.is_object() && StrOf(N, "TYPE") == "VFSLayer" && N.contains("LAYERS") && N["LAYERS"].is_array()
+    if (N.is_object() && N.contains("LAYERS") && N["LAYERS"].is_array()
         && !N["LAYERS"].empty() && N["LAYERS"][0].is_object())
         return StrOf(N["LAYERS"][0], Key);
     return StrOf(N, Key);
@@ -289,8 +289,9 @@ void PkgActions::browseCover(const std::string & NodeId)
     const int I = indexOf(NodeId);                // re-resolved after the modal — see browsePath
     if (I < 0) { tell("Browse", "That node is no longer in the package."); return; }
     json & N = Model->doc()["NODES"][I];
-    if (!N.contains("COVER") || !N["COVER"].is_object()) N["COVER"] = json::object();
-    N["COVER"]["PATH"] = Rel.toStdString();
+    if (!N.contains("TILE") || !N["TILE"].is_object()) N["TILE"] = json::object({{"UID", ""}, {"TITLE", ""}});
+    if (!N["TILE"].contains("COVER") || !N["TILE"]["COVER"].is_object()) N["TILE"]["COVER"] = json::object();
+    N["TILE"]["COVER"]["PATH"] = Rel.toStdString();
     Model->SaveNodes();
     Model->requestReload();
 }
@@ -489,7 +490,7 @@ void PkgActions::refreshHints()
     struct Probe { std::string Id; std::string Path; };
     auto Todo = std::make_shared<std::vector<Probe>>();
     for (const auto & N : Ns)
-        if (StrOf(N, "TYPE") == "VFSLayer" && LayerStr(N, "FORM") == "zip"
+        if (N.is_object() && N.contains("LAYERS") && LayerStr(N, "FORM") == "zip"
             && !LayerStr(N, "PATH").empty())
             Todo->push_back({StrOf(N, "CID"), LayerStr(N, "PATH")});   // Probe.Id = handle (Running is keyed by it)
     if (Todo->empty()) return;
@@ -560,26 +561,36 @@ void PkgActions::openCapture(const std::string & NodeId, int Mode)
 void PkgActions::findUsages(const std::string & NodeId)
 {
     const int I = indexOf(NodeId);
-    const std::string Key = StrOf(Model->doc()["NODES"][I], "KEY");
-    if (Key.empty()) { tell("Find usages", "This variable has no KEY yet."); return; }
+    //Every KEY this node's VARS declare — a node may carry many.
+    std::vector<std::string> Keys;
+    const json & Self = Model->doc()["NODES"][I];
+    if (Self.is_object() && Self.contains("VARS") && Self["VARS"].is_array())
+        for (const auto & V : Self["VARS"]) if (V.is_object() && !StrOf(V, "KEY").empty()) Keys.push_back(StrOf(V, "KEY"));
+    if (Keys.empty()) { tell("Find usages", "This node declares no variable KEY yet."); return; }
     // A whole-document text scan for %KEY%: a var nothing consumes is dead weight, and two nodes declaring the
     // same KEY is the ambiguity the lint is about.
-    const std::string Token = "%" + Key + "%";
-    QStringList Users;
+    QStringList Report;
     const json & Ns = Model->doc()["NODES"];
-    for (const auto & N : Ns)
+    for (const std::string & Key : Keys)
     {
-        const std::string H = StrOf(N, "CID");       // self-exclude by HANDLE (NodeId is a handle)
-        if (H == NodeId) continue;
-        const std::string Disp = !StrOf(N, "LABEL").empty() ? StrOf(N, "LABEL") : H;   // show the readable name
-        const std::string Dump = N.dump();
-        if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Disp);
-        else if (StrOf(N, "TYPE") == "CustomVar" && StrOf(N, "KEY") == Key)
-            Users << QString::fromStdString(Disp) + "  (declares the same KEY)";
+        const std::string Token = "%" + Key + "%";
+        QStringList Users;
+        for (const auto & N : Ns)
+        {
+            const std::string H = StrOf(N, "CID");       // self-exclude by HANDLE (NodeId is a handle)
+            if (H == NodeId) continue;
+            const std::string Disp = !StrOf(N, "LABEL").empty() ? StrOf(N, "LABEL") : H;   // show the readable name
+            const std::string Dump = N.dump();
+            bool SameKey = false;
+            if (N.is_object() && N.contains("VARS") && N["VARS"].is_array())
+                for (const auto & V : N["VARS"]) if (V.is_object() && StrOf(V, "KEY") == Key) SameKey = true;
+            if (Dump.find(Token) != std::string::npos) Users << QString::fromStdString(Disp);
+            else if (SameKey) Users << QString::fromStdString(Disp) + "  (declares the same KEY)";
+        }
+        Report << (Users.isEmpty() ? QString("Nothing in this bundle uses %1.").arg(QString::fromStdString(Token))
+                                   : QString("%1 is used by:\n").arg(QString::fromStdString(Token)) + Users.join("\n"));
     }
-    tell("Find usages",
-        Users.isEmpty() ? QString("Nothing in this bundle uses %1.").arg(QString::fromStdString(Token))
-                        : QString("%1 is used by:\n\n").arg(QString::fromStdString(Token)) + Users.join("\n"));
+    tell("Find usages", Report.join("\n\n"));
 }
 
 //Parse a .reg export into editable rows. Pure text in, rows out - no dialogs, no model - so the parser
@@ -726,14 +737,12 @@ void PkgActions::importReg(const std::string & NodeId)
 static bool DeltaBaseOf(const json & Nodes, int Index, std::string & BasePath, std::string & BaseTarget)
 {
     const json & N = Nodes[Index];
-    if (!N.contains("PARENTS") || !N["PARENTS"].is_array()) return false;
-    for (const auto & P : N["PARENTS"])
+    for (const std::string & P : ManifestModel::OverRefs(N))
     {
-        if (!P.is_string()) continue;
         for (const auto & C : Nodes)
         {
-            if (StrOf(C, "CID") != P.get<std::string>()) continue;   // PARENTS ref is a CID → match the handle
-            if (StrOf(C, "TYPE") != "VFSLayer") continue;
+            if (StrOf(C, "CID") != P) continue;   // an OVER ref is a CID → match the handle
+            if (!C.is_object() || !C.contains("LAYERS")) continue;
             if (LayerStr(C, "FORM") != "zip") continue;
             BasePath   = LayerStr(C, "PATH");
             BaseTarget = LayerStr(C, "TARGET");

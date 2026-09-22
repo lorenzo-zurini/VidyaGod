@@ -28,6 +28,9 @@
   ./game/data.txt
   ./game/deep
   ./game/deep/leaf.txt
+  ./game/grafted.txt
+  ./game/grafted_hd.txt
+  ./game/lib.txt
   ./game/patch.exe
   ./game/saves
   ./game/shadercache

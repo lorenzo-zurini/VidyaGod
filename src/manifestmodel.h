@@ -40,70 +40,102 @@ struct VariantInfo {
 };
 
 // ---------------------------------------------------------------------------
-// The unified node graph ("everything is a node"). The whole library is ONE flat graph of globally-
-// referenceable nodes; each node lives in its own <node_id>.json file inside a "bundle" directory
-// (the old package dir, which just groups node files + their shared content). A Node is equivalent for
-// every former taxonomy level (game / variant / component / runner / subcomponent-owner): it either
-// groups/selects other nodes (via PARENTS) or contributes concrete layers (via LAYERS), or both.
+// The one-edge graph ("everything is a node"). The whole library is ONE flat graph of globally-referenceable
+// nodes; each node lives in its own .json file inside a "bundle" directory (which just groups node files + their
+// shared content). There is ONE node kind and ONE edge:
+//
+//   node = facets (CID LABEL WHEN TOGGLE PUBLISH) + TILE + ENTRYPOINTS + payload arrays + OVER
+//
+// A node is one meaningful change, which may span kinds (a widescreen fix = PATCHES + FILEEDITS + VARS in one
+// node). A node with no payload is just a node. Everything else is DERIVED, never stored: launchable (has
+// ENTRYPOINTS), identity (own TILE, else inherited through OVER), runner (an entrypoint with GUEST), graft (in
+// nobody's list), canonical (a lint).
+//
+// OVER = "I am made of you; you are under me" — a CNF list of requirements: a CID (must be present), a list of
+// CIDs (any one), {"NOT": cid} (must be absent). Order is the mount order among a node's own entries (later =
+// higher). No other edge exists.
+//
+// Selection ≠ closure: what the user CHOOSES (the launchable, a member per any-of group, ticked grafts) is the
+// selected set; the MOUNT is its closure over plain OVER entries; a graft is OFFERED when the selected set
+// satisfies its identity-bearing requirements; execution runs an entrypoint of a SELECTED node only — a plain
+// OVER entry is never a choice and never a branch point (1.16.5 OVER [1.16.4] puts 1.16.4's bytes under you
+// and nothing else: not its entrypoint, not its mods).
 // ---------------------------------------------------------------------------
 
-//One node, parsed from a <node_id>.json file. Edges are bare global NODE_IDs in Parents (later = higher
-//CFS priority). Selection attributes (Optional/Default/Exclude) live on the node itself, not on the edge.
+//One requirement of a node's OVER list. Plain entry: Any = {cid}. Any-of group: Any = {cid, cid, …}.
+//Exclusion: Not = true, Any = {cid}.
+struct OverReq {
+    std::vector<std::string> Any;
+    bool Not = false;
+    bool IsGroup() const { return !Not && Any.size() > 1; }
+};
+
+//One node, parsed from a node .json file.
 struct Node {
     // Cid — the node's IDENTITY in the gigagraph: the CID of its canonical dag-json block, computed recursively over
-    // the CIDs it links (PARENTS/SOURCE/COVER). Empty for a working-tree node not yet frozen. When set, the index is
+    // the CIDs it links (OVER/SOURCE/COVER). Empty for a working-tree node not yet frozen. When set, the index is
     // keyed by this (NodeId demotes to a human label). Set by the DAG traversal / disk ingest, never parsed from the
     // block (a block does not contain its own CID). See [[gigagraph]] plan + nodegraph.cpp.
     std::string Cid;
-    std::string NodeId;                      // NODE_ID — globally unique bare slug (e.g. "aoe2_aok_base", "wine")
-    //Non-empty when the node's payload could not be lowered (unknown TYPE, unknown FORM, malformed EDITS…).
-    //Such a node is STILL INDEXED, deliberately: dropping it made the whole node vanish, so a leaf mistake —
-    //an unknown FORM on a Content node, a typo'd TYPE — was reported by NOTHING. --validate-nodes printed a
-    //perfect package while a layer had silently disappeared. It is indexed so validation can name it and so
-    //resolution can refuse to launch through it; it contributes NO layers, so it can never be applied.
+    std::string NodeId;                      // LABEL — the optional cosmetic name (may repeat; never a key)
+    //Non-empty when the node could not be lowered (unknown field, unknown FORM, malformed EDITS…).
+    //Such a node is STILL INDEXED, deliberately: dropping it made the whole node vanish, so a leaf mistake was
+    //reported by NOTHING. It is indexed so validation can name it and so resolution can refuse to launch through
+    //it; it contributes NO layers, so it can never be applied.
     std::string LowerError;
-    //The node's own WHEN as authored. Kept because a payload-less node (Group) emits no layer for the
-    //condition to ride on, so validation has nothing else to see it in — and a silently-dropped condition is
-    //a module that applies unconditionally.
+    //The node's own WHEN as authored. Kept because a payload-less node emits no layer for the condition to ride
+    //on, so validation has nothing else to see it in — and a silently-dropped condition applies unconditionally.
     std::string RawWhen;
-    // Identity is DERIVED from the node's Declare* layers (no ROLE field): DeclareExec ⇒ launchable, DeclareRunner ⇒
-    // runner, DeclareLibraryItem ⇒ a library tile. The fields below are populated by ParseNode from those layers (or,
-    // transitionally, from the legacy top-level ROLE/EXEC/META/PLATFORM until packages are migrated).
-    bool HasExec   = false;                  // a DeclareExec layer (or legacy ROLE:launchable) ⇒ this node is launchable
-    bool HasRunner = false;                  // a DeclareRunner layer (or legacy ROLE:runner) ⇒ this node is a runner
-    std::string Uid;                         // UID — numeric id for presentable nodes (from DeclareLibraryItem)
-    std::string Game;                        // the game-node id this variant belongs to (linked by LinkGames via the
-                                             // DeclareLibraryItem ancestor edge; "" ⇒ self = single-variant tile)
-    std::string Label;                       // variant label for the picker (DeclareExec.LABEL)
-    bool Recommended = false;                // RECOMMENDED — the default variant within its game (DeclareExec.RECOMMENDED)
-    std::string RecommendedRunner;           // RUNNER — a runner node id this launchable recommends (DeclareExec.RUNNER); a
-                                             // soft, package-side default that seeds USERSETTINGS.PREFERRED_RUNNER (register.
-                                             // time) — NOT a runner-pick tier; the user still overrides in the picker
-    nlohmann::ordered_json Meta;             // the library tile metadata (DeclareLibraryItem); inherited onto variants by LinkGames
-    std::string HostPlatform;                // DeclareExec.PLATFORM (launchable) or DeclareRunner.HOST
-    std::vector<std::string> GuestPlatform;  // DeclareRunner.GUEST[]
-    nlohmann::ordered_json Exec;             // the resolved invocation block: DeclareExec (CONTENTPATH/…) or DeclareRunner (EXECUTABLE/…)
-    bool Optional = false;                   // OPTIONAL — a toggleable add-on when referenced as a parent
-    bool Default  = true;                    // DEFAULT — initial enabled state when OPTIONAL
-    std::vector<std::string> Exclude;        // EXCLUDE — node ids mutually exclusive with this one (symmetric)
-    std::vector<std::string> Parents;        // PARENTS — bare global node ids (load order: later = higher priority)
-    // LIBRARYITEM — a DeclareExec's dedicated link to its DeclareLibraryItem tile, SEPARATE from Parents. The tile is
-    // a layer-less metadata node off the composition graph — only DeclareExecs reference it, and only through this
-    // field (never PARENTS). Drives %PackageUID%, Meta inheritance, tile grouping, and browse (all O(1), no ancestor
-    // walk). A CID when frozen, a NODE_ID handle in a working tree; "" if none. See [[gigagraph]] + nodegraph.cpp.
-    std::string LibraryItem;
-    nlohmann::ordered_json Layers;           // LAYERS — contribution payloads (array of TYPE-tagged objects, incl. Declare*)
-    std::filesystem::path File;              // source <node_id>.json path
+
+    // ---- ENTRYPOINTS (launchable iff non-empty). Each entry is a variant: {LABEL, HOST, PATH, ARGS, ENV, ENV_REMOVE,
+    // WORKDIR, RECOMMENDED, RUNNER} for a launchable; a runner entry additionally carries GUEST (+ CONTENT_ROOT /
+    // PREFIX_GENERATE / UNIFIED_RUNTIME). The fields below are the DEFAULT entry's view (the first RECOMMENDED one,
+    // else the first), lowered to the exec block the engine consumes; ExecFor() selects another entry by LABEL. ----
+    nlohmann::ordered_json Entrypoints;      // the raw ENTRYPOINTS array (empty array when none)
+    bool HasExec   = false;                  // an entrypoint without GUEST ⇒ this node is launchable
+    bool HasRunner = false;                  // an entrypoint with GUEST ⇒ this node is a runner
+    std::string Label;                       // the default entrypoint's LABEL (else the node LABEL)
+    bool Recommended = false;                // the default entrypoint's RECOMMENDED
+    std::string RecommendedRunner;           // the default entrypoint's RUNNER — a soft package-side runner default
+    std::string HostPlatform;                // the default entrypoint's HOST
+    std::vector<std::string> GuestPlatform;  // the default entrypoint's GUEST[] (runner)
+    nlohmann::ordered_json Exec;             // the default entrypoint lowered: CONTENTPATH/EXEARGS/PLATFORM/… or
+                                             // EXECUTABLE/ARGS/HOST/GUEST/… for a runner (see NodeLower::LowerEntrypoint)
+
+    // ---- TILE / identity. A launchable carries its own TILE {UID, PARENTUID?, TITLE, COVER, META…}; every other node
+    // inherits identity from what it is OVER. Uids = every UID this node belongs to (a mod for two games has two);
+    // Uid = the first (its grouping key); Meta = the tile fields, flat (own, else the first inherited tile's). ----
+    bool OwnTile = false;                    // carries a TILE of its own
+    std::string Uid;                         // primary identity (own TILE.UID, else the first inherited)
+    std::vector<std::string> Uids;           // every identity, in OVER order
+    std::string ParentUid;                   // TILE.PARENTUID — the main game this title nests under ("" = a main game)
+    nlohmann::ordered_json Meta;             // tile metadata, flat (TITLE/COVER/UID/PARENTUID + META fields)
+
+    bool Optional = false;                   // TOGGLE present ⇒ user-toggleable
+    bool Default  = true;                    // TOGGLE value ("on"/"off") — the author's default state
+    bool Publish  = false;                   // PUBLISH — a share-list root
+
+    std::vector<OverReq> Over;               // OVER — the one edge, as authored (CNF)
+    std::vector<std::string> Parents;        // every node OVER names POSITIVELY (plain entries + group members), flat,
+                                             // in list order — the reference set for validation/freeze/hydrate/canvas
+    std::vector<std::string> Excludes;       // every node OVER names under NOT
+    nlohmann::ordered_json Layers;           // the lowered payload: the executor's ordered layer sequence
+    std::filesystem::path File;              // source .json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
 
-    // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its NODE_ID in a legacy single-
+    // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its LABEL in a legacy single-
     // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog
     // (hydration maps, launch ids, download ids), or a CID-keyed index and a NodeId lookup silently miss.
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
     bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
     bool IsRunner()     const { return HasRunner; }
     bool IsLaunchable() const { return HasExec; }
-    std::string GameKey() const { return Game.empty() ? NodeId : Game; }   // the game this variant belongs to (library-tile key)
+    bool HasIdentity()  const { return !Uids.empty(); }
+    std::string GameKey() const { return Uid.empty() ? NodeId : Uid; }   // the tile this node belongs to (group-by-UID key)
+    // The lowered exec block of the entrypoint labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
+    nlohmann::ordered_json ExecFor(const std::string &Label) const;
+    // The entrypoint labels, in ENTRYPOINTS order (a nameless entry reads as its index).
+    std::vector<std::string> EntrypointLabels() const;
 };
 
 //The global node graph: NODE_ID → Node, built by scanning bundle dirs for node files.
@@ -115,43 +147,80 @@ struct NodeIndex {
 namespace ManifestModel {
 
 // ----- node graph (schema: everything is a node) -----
-// Parse a single node object (already-loaded JSON) sourced from File in BundleDir. False if it has no NODE_ID.
+// True iff J is a node object: an object carrying at least one node field (CID/LABEL/OVER/TILE/ENTRYPOINTS or a
+// payload array). The ONE definition of "is this JSON a node" — every scanner of node files must use it. A legacy
+// TYPE-bearing object is NOT a node (the library is migrated, never read two ways).
+bool IsNodeObject(const nlohmann::ordered_json &J);
+// The node fields the format defines (the whole top-level vocabulary). Anything else on a node is refused at lower.
+const std::set<std::string> &NodeFields();
+// The payload array keys (LAYERS PATCHES FILEEDITS REGEDITS DLLOVERRIDES VARS PERSISTS).
+const std::vector<std::string> &PayloadKeys();
+// Parse an OVER value (the raw JSON list) into requirements. Malformed entries are refused via *Error (if given).
+// Tolerant of dag-json links already normalized to strings.
+bool ParseOver(const nlohmann::ordered_json &Over, std::vector<OverReq> &Out, std::string *Error = nullptr);
+// The positive refs (plain entries + group members) of a RAW node JSON's OVER, in order — for readers that walk
+// node JSON without ParseNode (freeze, hydrate, publish). Negative (NOT) refs go to *Excludes if given.
+std::vector<std::string> OverRefs(const nlohmann::ordered_json &J, std::vector<std::string> *Excludes = nullptr);
+// Rewrite every ref in a RAW node JSON's OVER (plain, group members, NOT) through Map (unmapped refs pass
+// through). Returns whether anything changed. Shared by freeze and the CID write-back so they can never disagree
+// on where refs live.
+bool RemapOverRefs(nlohmann::ordered_json &J, const std::function<std::string(const std::string &)> &Map);
+// Parse a single node object (already-loaded JSON) sourced from File in BundleDir. False if it is not a node.
 bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &File,
                const std::filesystem::path &BundleDir, Node &Out);
-// Scan one bundle dir (non-recursive) for *.json node files (those carrying NODE_ID), adding them to Idx.
-// Duplicate NODE_IDs are reported and the first-seen wins.
+// Scan one bundle dir (non-recursive) for *.json node files, adding them to Idx. Duplicate handles are reported
+// and the first-seen wins.
 void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
-// Build the global index from library roots; each root holds bundle dirs (one level down). Runs LinkGames.
+// Build the global index from library roots; each root holds bundle dirs (one level down). Runs DeriveIdentity.
 // Scans each LibraryRoot's immediate subdirectories as bundles, plus any ExtraBundleDirs as bundles DIRECTLY (a
-// locally-added package's own dir, not a root of bundles), then links games. ExtraBundleDirs lets externally-added
-// local packages (their PATH is the bundle itself) be indexed alongside the repo-rooted ones.
+// locally-added package's own dir, not a root of bundles). ExtraBundleDirs lets externally-added local packages
+// (their PATH is the bundle itself) be indexed alongside the repo-rooted ones.
 NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
                          const std::vector<std::filesystem::path> &ExtraBundleDirs = {});
 
-// Post-parse pass over a fully-assembled index: link each launchable variant that lacks its own library metadata to
-// its game node (the nearest DeclareLibraryItem ancestor via PARENTS) — setting its Game key and inheriting the tile's
-// Meta/UID — so the catalog/library group + present variants under one tile by a graph edge, not a GAME string. Called
-// by BuildNodeIndex and must be re-run by any caller that assembles an index manually (ScanBundleNodes).
-void LinkGames(NodeIndex &Idx);
+// Post-parse pass over a fully-assembled index: derive every node's identity. A node with its own TILE is its own
+// identity; every other node inherits the union of its positive OVER requirements' identities (memoized, O(N+E)).
+// Sets Uid/Uids/Meta/ParentUid so the catalog/library group nodes under tiles BY UID. Called by BuildNodeIndex and
+// must be re-run by any caller that assembles an index manually (ScanBundleNodes).
+void DeriveIdentity(NodeIndex &Idx);
 
-// Field-level last-wins composition of an object-shaped identity layer across a node's resolved closure. Walks
-// ResolveNodeOrder (parents first, the node itself last = highest priority) and merges, key-by-key, the object
-// returned by Pick() for every node it accepts (Pick returns nullptr to skip a node). The one merge mechanism
-// behind both the launch-time DeclareExec composition (a base supplies CONTENTPATH, a variant overrides EXEARGS)
-// and the index-time DeclareLibraryItem/Meta inheritance (a variant inherits its tile's TITLE/COVER) — the two
-// object-shaped Declare* layers. Mirrors how CustomVar/Persist aggregate across the same closure.
-nlohmann::ordered_json ComposeAcrossClosure(
-    const NodeIndex &Idx, const std::string &NodeId, const std::map<std::string, bool> &Toggles,
-    const std::function<const nlohmann::ordered_json *(const Node &)> &Pick);
-
-// Resolve the load-ordered node closure for launching LaunchNodeId: walk PARENTS across the global graph,
-// keeping required parents always and optional ones per Toggles (else DEFAULT), applying EXCLUDE (symmetric,
-// first-kept wins) and the hierarchy gate (a node only enters if a kept child pulls it). Output is topo-ordered
-// parents-before-children, so the launchable is LAST (= highest CFS priority); PARENTS list order is the
-// tie-break (later parent = higher). Detects cycles. Any PARENTS id missing from Idx is appended to Missing.
+// Resolve the load-ordered node closure for launching LaunchNodeId: walk OVER across the global graph, keeping
+// plain requirements always (a TOGGLE'd one per Toggles, else its DEFAULT), choosing ONE member per any-of group
+// (an already-kept member, else the first present), refusing a node whose NOT names a kept node (symmetric,
+// first-kept wins), and the hierarchy gate (a node only enters if a kept dependant pulls it). Toggles are keyed by
+// node Key() (CID). Output is topo-ordered requirements-before-dependants, so the launchable is LAST (= highest
+// CFS priority); OVER list order is the tie-break (later = higher). Detects cycles. Any ref missing from Idx is
+// appended to Missing.
 std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                           const std::map<std::string, bool> &Toggles,
                                           std::vector<std::string> *Missing = nullptr);
+
+// ----- grafts (selection ≠ closure) -----
+// A graft is a node in nobody's OVER list that is OVER something; it enters a mount only when SELECTED (Toggles[key]
+// == true). It is APPLICABLE when every identity-bearing positive requirement is satisfied by the SELECTED set
+// (the launchable + selected grafts; a group by any member) — never by the closure (a mod OVER [1.16.4] is a
+// sibling branch off a node you did not choose when you play 1.16.5) — every identity-less requirement (a library:
+// no tile, nothing tiled under it) is SUBSTANCE, satisfied by mounting, and no NOT names a selected node. The
+// selected set grows to a fixpoint as grafts are ticked.
+struct GraftOffer {
+    const Node *Graft = nullptr;
+    bool Applicable = false;       // every requirement satisfied by the selected set
+    bool Selected   = false;       // ticked (Toggles), or TOGGLE "on" by default when Toggles has no entry
+    std::string Blocker;           // when !Applicable: the first unsatisfied requirement (a key), for the UI
+};
+// Every graft with the launchable's identity, in a deterministic order, with its applicability against Toggles.
+// Scope (optional) restricts candidates — the GUI passes "hydrated + in LIBRARY" so a CATALOG stub never grafts.
+std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                      const std::map<std::string, bool> &Toggles,
+                                      const std::function<bool(const Node &)> &Scope = nullptr);
+// The extra nodes a launch mounts ABOVE the launchable's own closure: the closure of every selected applicable
+// graft (minus nodes already in BaseOrder), grafts ordered by Precedence (higher = later = wins) then by key.
+// Returns them topo-ordered, requirements first. Substance requirements are pulled in here.
+std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                           const std::map<std::string, bool> &Toggles,
+                                           const std::vector<std::string> &BaseOrder,
+                                           const std::map<std::string, int> &Precedence = {},
+                                           const std::function<bool(const Node &)> &Scope = nullptr);
 
 // Visits every resolvable node in RootId's closure (ResolveNodeOrder order) EXCEPT RootId itself — the
 // "walk a runner's content closure" skeleton that used to be hand-rolled at four call sites (RunnerBuildNodes,

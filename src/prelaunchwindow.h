@@ -122,6 +122,7 @@ private:
     const NodeIndex*        Index            = nullptr;
     std::vector<std::string> GroupNodeIds;
     std::string             LaunchNodeId;   // current variant's node id
+    std::string             Entrypoint;     // current variant's ENTRYPOINTS LABEL ("" = the node's default)
     std::string             BundleDir;      // current variant's bundle dir
     std::string             PackageUID;     // current variant's UID — USERSETTINGS key
 
@@ -154,7 +155,7 @@ private:
     QFormLayout*  CustomVarForm         = nullptr;
     QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
-    std::map<std::string, std::set<std::string>> ModuleExcludes; // node -> mutually-exclusive nodes (symmetric)
+    std::map<std::string, std::set<std::string>> ModuleExcludes; // node key -> nodes its OVER NOTs (symmetric in effect)
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
     QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst

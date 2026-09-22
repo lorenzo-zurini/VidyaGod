@@ -70,7 +70,7 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     // MANIFEST/GAMES/VARIANTS branch that used to live here was unreachable: NodeIdx is always set).
     nlohmann::ordered_json Resolved = nlohmann::ordered_json::object();
     if (ContainerParams.ComposedExec.is_object() && !ContainerParams.ComposedExec.empty())
-        Resolved = ContainerParams.ComposedExec;          // the closure-composed DeclareExec (variant overrides base)
+        Resolved = ContainerParams.ComposedExec;          // the selected entrypoint, lowered
     else if (const Node *L = ContainerParams.NodeIdx->Find(ContainerParams.subgame_id); L && L->Exec.is_object())
         Resolved = L->Exec;                               // empty EXEC = self-contained launchable (e.g. gemrb) — OK
     LogSucc("ResolveExecutableDefinition", "Resolved exec for: " + ContainerParams.subgame_id);

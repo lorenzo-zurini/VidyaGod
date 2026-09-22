@@ -67,7 +67,8 @@ struct LaunchParameters
     std::string RuntimeDirOverride;                                       //--runtime-dir <PATH>: override the container runtime (FUSE mount) path
     std::string UserDataDirOverride;                                      //--userdata-dir <PATH>: override the save/persist (USERDATA) path
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
-    std::map<std::string, bool> ModuleStates;                             //Module toggles from --module COMPONENT=on|off
+    std::map<std::string, bool> ModuleStates;                             //Toggles from --module NODE=on|off (a node key/CID or its LABEL): a TOGGLE'd node in the closure, or a graft to select
+    std::string Entrypoint;                                               //--entrypoint LABEL: which ENTRYPOINTS entry of the launch node to run (default: RECOMMENDED, else first)
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID; = chain front, back-compat)
     std::vector<std::string> RunnerChain;                                 //Runner daisy-chain from repeated --runner (innermost→outermost); empty = auto-resolve

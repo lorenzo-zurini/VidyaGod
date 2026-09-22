@@ -46,15 +46,56 @@ static bool AnyContains(const std::vector<std::string> &V, const std::string &Ne
 TEST(parse_requires_type_label_optional)
 {
     Node N;
-    // A node is an object with a TYPE (identity is the CID; NODE_ID is gone, LABEL is optional).
-    CHECK(!ManifestModel::ParseNode(ordered_json{{"FOO", "bar"}}, "f.json", "/b", N));        // no TYPE ⇒ not a node
-    CHECK(!ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}}, "f.json", "/b", N));       // LABEL but no TYPE ⇒ not a node
-    // A node with a TYPE but an UNLOWERABLE payload is KEPT, carrying the reason (validation names it, resolution
-    // refuses to route through it). A LABEL is NOT required — a nameless node is still a node (identified by its CID).
-    CHECK(ManifestModel::ParseNode(ordered_json{{"TYPE", "Group"}}, "f.json", "/b", N));      // no LABEL ⇒ still a node
+    // A node is an object carrying a node field (identity is the CID; LABEL is optional). A legacy TYPE object is
+    // NOT a node — the library is migrated, never read two ways.
+    CHECK(!ManifestModel::ParseNode(ordered_json{{"FOO", "bar"}}, "f.json", "/b", N));        // no node field ⇒ not a node
+    CHECK(!ManifestModel::ParseNode(ordered_json{{"TYPE", "Group"}}, "f.json", "/b", N));     // legacy TYPE ⇒ not a node
+    CHECK(!ManifestModel::IsNodeObject(ordered_json{{"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array()}}));
+    // A LABEL alone makes a node; a nameless node with an OVER is still a node (identified by its CID).
+    CHECK(ManifestModel::ParseNode(ordered_json{{"OVER", ordered_json::array({"x"})}}, "f.json", "/b", N));
     CHECK(N.NodeId.empty());
-    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}, {"TYPE", "Group"}}, "f.json", "/b", N));
-    CHECK(!N.IsLaunchable() && !N.IsRunner());   // pure composition (no Declare* identity)
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}}, "f.json", "/b", N));
+    CHECK(!N.IsLaunchable() && !N.IsRunner());   // a plain node
+    CHECK(N.LowerError.empty());
+    // A node with an UNLOWERABLE payload is KEPT, carrying the reason (validation names it, resolution refuses to
+    // route through it).
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "bad"}, {"LAYERS", 5}}, "f.json", "/b", N));
+    CHECK(!N.LowerError.empty());
+}
+
+// The one edge, parsed: a ref, an any-of group, a NOT. Anything else is refused by name.
+TEST(parse_over_is_cnf)
+{
+    std::vector<OverReq> R; std::string Err;
+    CHECK(ManifestModel::ParseOver(ordered_json::array({"a", ordered_json::array({"b", "c"}), ordered_json{{"NOT", "d"}}}), R, &Err));
+    CHECK_EQ((int)R.size(), 3);
+    CHECK(!R[0].IsGroup() && !R[0].Not && R[0].Any == std::vector<std::string>{"a"});
+    CHECK(R[1].IsGroup() && R[1].Any == (std::vector<std::string>{"b", "c"}));
+    CHECK(R[2].Not && R[2].Any == std::vector<std::string>{"d"});
+    CHECK(!ManifestModel::ParseOver(ordered_json::array({ordered_json::array()}), R, &Err));           // empty group
+    CHECK(!ManifestModel::ParseOver(ordered_json::array({ordered_json{{"NOT", "d"}, {"X", 1}}}), R, &Err)); // not exactly {NOT}
+    CHECK(!ManifestModel::ParseOver(ordered_json::array({5}), R, &Err));
+    CHECK(!ManifestModel::ParseOver(ordered_json::array({""}), R, &Err));
+    CHECK(!ManifestModel::ParseOver(ordered_json("a"), R, &Err));                                          // not a list
+
+    // ParseNode flattens: Parents = every positive ref in order, Excludes = the NOTs.
+    Node N;
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "n"}, {"OVER", ordered_json::array({"a", ordered_json::array({"b", "c"}), ordered_json{{"NOT", "d"}}})}}, "f.json", "/b", N));
+    CHECK(N.Parents == (std::vector<std::string>{"a", "b", "c"}));
+    CHECK(N.Excludes == std::vector<std::string>{"d"});
+    // ...and a malformed OVER is a refusal that still carries the readable refs (a scoped validate can reach it).
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "n"}, {"OVER", ordered_json::array({5})}}, "f.json", "/b", N));
+    CHECK(!N.LowerError.empty());
+
+    // OverRefs / RemapOverRefs walk the RAW JSON the same way (freeze, hydrate and the CID write-back use them).
+    ordered_json Raw{{"OVER", ordered_json::array({"a", ordered_json::array({"b", "c"}), ordered_json{{"NOT", "d"}}})}};
+    std::vector<std::string> Nots;
+    CHECK(ManifestModel::OverRefs(Raw, &Nots) == (std::vector<std::string>{"a", "b", "c"}));
+    CHECK(Nots == std::vector<std::string>{"d"});
+    CHECK(ManifestModel::RemapOverRefs(Raw, [](const std::string &X) { return X == "c" ? std::string("C") : (X == "d" ? std::string("D") : X); }));
+    CHECK(Raw["OVER"][1][1] == "C");
+    CHECK(Raw["OVER"][2]["NOT"] == "D");
+    CHECK(!ManifestModel::RemapOverRefs(Raw, [](const std::string &X) { return X; }));   // nothing changed ⇒ false
 }
 
 TEST(resolve_order_parents_before_launchable)
@@ -81,14 +122,51 @@ TEST(resolve_order_optional_gated_by_toggle)
     CHECK(!Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"opt", false}}), "opt"));   // toggled off
 }
 
+static ordered_json Not(const char *Ref) { return ordered_json::array({ ordered_json{{"NOT", Ref}} }); }
+
 TEST(resolve_order_exclude_is_mutually_exclusive)
 {
     NodeIndex Idx;
-    AddChain(Idx, "a",    {}, {}, {{"TOGGLE", "on"}, {"EXCLUDE", {"b"}}});
-    AddChain(Idx, "b",    {}, {}, {{"TOGGLE", "on"}, {"EXCLUDE", {"a"}}});
+    AddChain(Idx, "a",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("b")}});
+    AddChain(Idx, "b",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("a")}});
     AddChain(Idx, "game", {}, {"a", "b"});
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "game", {});
     CHECK(Contains(Order, "a") != Contains(Order, "b"));   // exactly one of the mutually-exclusive pair
+
+    // A NOT is ONE-SIDED in the file and symmetric in effect: only `x` says NOT y, and still at most one is kept.
+    NodeIndex One;
+    AddChain(One, "x",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("y")}});
+    AddChain(One, "y",    {}, {}, {{"TOGGLE", "on"}});
+    AddChain(One, "game", {}, {"y", "x"});                  // y first in OVER order
+    const auto O2 = ManifestModel::ResolveNodeOrder(One, "game", {});
+    CHECK(Contains(O2, "y") && !Contains(O2, "x"));         // y kept first; x excludes a kept node ⇒ dropped
+}
+
+// An any-of group on a requirement: an already-kept member satisfies it, else an explicitly toggled-on one,
+// else the first member the index has — deterministic, and never two.
+TEST(resolve_order_any_of_group_picks_one_member)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "v640", {});
+    AddChain(Idx, "v659", {});
+    AddChain(Idx, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v640", "v659"}) })}});
+    const auto Def = ManifestModel::ResolveNodeOrder(Idx, "game", {});
+    CHECK(Contains(Def, "v640") && !Contains(Def, "v659"));                       // first present member
+    const auto Tog = ManifestModel::ResolveNodeOrder(Idx, "game", {{"v659", true}});
+    CHECK(Contains(Tog, "v659") && !Contains(Tog, "v640"));                       // an explicit choice wins
+    // A member already kept through another route satisfies the group without a second pick.
+    NodeIndex Two;
+    AddChain(Two, "v640", {});
+    AddChain(Two, "v659", {});
+    AddChain(Two, "game", {}, {}, {{"OVER", ordered_json::array({"v659", ordered_json::array({"v640", "v659"})})}});
+    const auto Kept = ManifestModel::ResolveNodeOrder(Two, "game", {});
+    CHECK(Contains(Kept, "v659") && !Contains(Kept, "v640"));
+    // A group with NO member present is reported missing, not silently skipped.
+    NodeIndex None;
+    AddChain(None, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"ghost1", "ghost2"}) })}});
+    std::vector<std::string> Missing;
+    ManifestModel::ResolveNodeOrder(None, "game", {}, &Missing);
+    CHECK(Contains(Missing, "ghost1"));
 }
 
 // Explicitly toggling a mutually-exclusive option ON wins over the conflicting DEFAULT-on option (the user's
@@ -96,8 +174,8 @@ TEST(resolve_order_exclude_is_mutually_exclusive)
 TEST(resolve_order_explicit_toggle_beats_conflicting_default)
 {
     NodeIndex Idx;
-    AddChain(Idx, "hd",   {}, {}, {{"TOGGLE", "on"},  {"EXCLUDE", {"lo"}}});
-    AddChain(Idx, "lo",   {}, {}, {{"TOGGLE", "off"}, {"EXCLUDE", {"hd"}}});
+    AddChain(Idx, "hd",   {}, {}, {{"TOGGLE", "on"},  {"OVER", Not("lo")}});
+    AddChain(Idx, "lo",   {}, {}, {{"TOGGLE", "off"}, {"OVER", Not("hd")}});
     AddChain(Idx, "game", {}, {"hd", "lo"});
 
     // Default: hd (default-on) kept, lo dropped.
@@ -204,7 +282,7 @@ TEST(validate_flags_missing_parent_and_cycle)
 TEST(validate_flags_vfs_layer_without_path)
 {
     NodeIndex Idx;
-    AddChain(Idx, "c", {ordered_json{{"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({
+    AddChain(Idx, "c", {ordered_json{{"LAYERS", ordered_json::array({
         ordered_json{{"FORM", "zip"}}})}}});   // no PATH/SOURCE
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
@@ -311,7 +389,7 @@ TEST(runtime_sourced_layer_separates_assembly_from_build)
     ordered_json rj = NodeFixture::Runner("linux64", {"win64"}, "x"); rj["LABEL"] = "r";
     CHECK(ManifestModel::ParseNode(rj, "f.json", "/b", R));
     CHECK(R.IsRunner());
-    CHECK_EQ((int)R.Layers.size(), 1);          // the declaration, and nothing else — no content can ride along
+    CHECK_EQ((int)R.Layers.size(), 0);          // ENTRYPOINTS is a facet: it lowers to no layer at all
 }
 
 // The two rules the FLAT model made checkable, and that replaced the "more than one Declare* layer on a node"
@@ -336,48 +414,70 @@ TEST(validate_errors_on_a_tile_with_no_uid)
     CHECK(!AnyContains(E2, "no UID"));
 }
 
-// A launchable reaching TWO tiles is bound to whichever comes first in PARENTS order — an order the format
-// says carries no meaning (I9). It shows under one game, keyed by that game's UID, and nothing reports that the
-// other was dropped.
-// NOTE the LinkGames() calls. BuildNodeIndex runs it, and it copies the tile's Meta onto every variant — so in
-// the real pipeline every linked launchable satisfies Presentable(). An earlier version of this test built the
-// index by hand, never ran LinkGames, and passed while the rule was DEAD against the actual binary: it asked
-// "is this node presentable?" to mean "is this node a tile", and after linking that is true of everything.
-// Run the same pass the runtime runs.
-TEST(validate_errors_on_a_launchable_reaching_two_tiles)
+// One UID = one card. Two launchables carrying the same UID must agree on TITLE/COVER (warned), a PARENTUID
+// names a tile the library has (warned), and never its own UID (error).
+TEST(validate_lints_tile_agreement_and_parentuid)
 {
     NodeIndex Idx;
-    AddChain(Idx, "tile_a", {NodeFixture::Tile("1", "A")});
-    AddChain(Idx, "tile_b", {NodeFixture::Tile("2", "B")});
-    AddChain(Idx, "game", {NodeFixture::Exec("win32", "g.exe")}, {"tile_a", "tile_b"});
-    ManifestModel::LinkGames(Idx);                      // as BuildNodeIndex does
+    AddChain(Idx, "a", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Tile("1", "Game")})});
+    AddChain(Idx, "b", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Tile("1", "Other Title")})});
+    ordered_json Exp = NodeFixture::Merge({NodeFixture::Exec("win32", "x.exe"), NodeFixture::Tile("2", "Expansion")});
+    Exp["TILE"]["PARENTUID"] = "nope";
+    AddChain(Idx, "exp", {Exp});
+    ordered_json Self = NodeFixture::Merge({NodeFixture::Exec("win32", "s.exe"), NodeFixture::Tile("3", "Self")});
+    Self["TILE"]["PARENTUID"] = "3";
+    AddChain(Idx, "self", {Self});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(AnyContains(Errors, "more than one DeclareLibraryItem"));
+    CHECK(AnyContains(Warnings, "one UID, one title"));
+    CHECK(AnyContains(Warnings, "names no tile"));
+    CHECK(AnyContains(Errors, "PARENTUID is its own UID"));
+}
 
-    // Reached through a CHAIN rather than directly — the shape a real package has, and the one a
-    // direct-parents-only check would miss.
-    NodeIndex Deep;
-    AddChain(Deep, "tile_a", {NodeFixture::Tile("1", "A")});
-    AddChain(Deep, "tile_b", {NodeFixture::Tile("2", "B")});
-    AddChain(Deep, "mid_a", {NodeFixture::Content("zip", "a.zip")}, {"tile_a"});
-    AddChain(Deep, "mid_b", {NodeFixture::Content("zip", "b.zip")}, {"tile_b"});
-    AddChain(Deep, "game", {NodeFixture::Exec("win32", "g.exe")}, {"mid_a", "mid_b"});
-    ManifestModel::LinkGames(Deep);
-    std::vector<std::string> E2, W2;
-    ManifestModel::ValidateNodeGraph(Deep, E2, W2);
-    CHECK(AnyContains(E2, "more than one DeclareLibraryItem"));
+// Validation names the OVER-specific mistakes: a group with no member in the library, a ref both required and
+// excluded, a missing NOT target (harmless — a word, not an error).
+TEST(validate_flags_over_mistakes)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "base", {});
+    AddChain(Idx, "g1", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"ghost1", "ghost2"}) })}});
+    AddChain(Idx, "g2", {}, {}, {{"OVER", ordered_json::array({"base", ordered_json{{"NOT", "base"}}})}});
+    AddChain(Idx, "g3", {}, {}, {{"OVER", ordered_json::array({ ordered_json{{"NOT", "ghost"}} })}});
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Errors, "unsatisfiable"));
+    CHECK(AnyContains(Errors, "both requires and excludes"));
+    CHECK(AnyContains(Warnings, "NOT references missing"));
+    CHECK(!AnyContains(Errors, "NOT references missing"));
+}
 
-    // One tile reached by several routes is NOT ambiguous — it is the normal diamond.
-    NodeIndex One;
-    AddChain(One, "tile", {NodeFixture::Tile("1", "A")});
-    AddChain(One, "mid1", {NodeFixture::Content("zip", "a.zip")}, {"tile"});
-    AddChain(One, "mid2", {NodeFixture::Content("zip", "b.zip")}, {"tile"});
-    AddChain(One, "game", {NodeFixture::Exec("win32", "g.exe")}, {"mid1", "mid2"});
-    ManifestModel::LinkGames(One);
-    std::vector<std::string> E3, W3;
-    ManifestModel::ValidateNodeGraph(One, E3, W3);
-    CHECK(!AnyContains(E3, "more than one DeclareLibraryItem"));
+// Identity follows the edge. A node with its own TILE IS its identity; every other node inherits the UNION of
+// its requirements' identities, in OVER order (a mod for two games belongs to both; a group contributes every
+// member). A node reaching no tile has no identity — it is substance (a library), never a card.
+TEST(derive_identity_follows_over)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "aok",  {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Tile("1", "AoK")})});
+    AddChain(Idx, "conq", {NodeFixture::Merge({NodeFixture::Exec("win32", "c.exe"), NodeFixture::Tile("2", "Conquerors")})}, {"aok"});
+    AddChain(Idx, "mod_a",    {NodeFixture::Content("dir", "m")}, {"aok"});
+    AddChain(Idx, "mod_both", {NodeFixture::Content("dir", "m")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"aok", "conq"}) })}});
+    AddChain(Idx, "mod_deep", {NodeFixture::Content("dir", "m")}, {"mod_a"});
+    AddChain(Idx, "lib",      {NodeFixture::Content("dir", "l")});
+    AddChain(Idx, "enh",      {NodeFixture::Content("dir", "e")}, {"aok", "lib"});
+    AddChain(Idx, "mod_conq", {NodeFixture::Content("dir", "c")}, {"conq"});
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK_EQ(Idx.Find("conq")->Uid, std::string("2"));                            // own tile wins over what is under it
+    CHECK(Idx.Find("conq")->Uids == std::vector<std::string>{"2"});
+    // ...and that boundary HOLDS through inheritance: a mod OVER the expansion belongs to the expansion only —
+    // the base game under it contributes nothing, or every Conquerors mod would show up under Age of Kings.
+    CHECK(Idx.Find("mod_conq")->Uids == std::vector<std::string>{"2"});
+    CHECK_EQ(Idx.Find("mod_a")->Uid, std::string("1"));
+    CHECK(Idx.Find("mod_both")->Uids == (std::vector<std::string>{"1", "2"}));  // both, in OVER order
+    CHECK_EQ(Idx.Find("mod_deep")->Uid, std::string("1"));                        // transitively
+    CHECK_EQ(Idx.Find("mod_deep")->Meta.value("TITLE", std::string()), std::string("AoK"));   // the tile's fields ride along
+    CHECK(!Idx.Find("lib")->HasIdentity());                                       // substance
+    CHECK(Idx.Find("enh")->Uids == std::vector<std::string>{"1"});                // a substance requirement adds nothing
+    CHECK_EQ(Idx.Find("aok")->GameKey(), std::string("1"));                       // the group-by key is the UID
 }
 
 // A node whose payload cannot be lowered must be REPORTED, not silently deleted. Dropping it made a referrer
@@ -388,13 +488,13 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     Node N;
     // ParseNode KEEPS it (so it is in the graph to be named) but gives it no layers (so it can never apply).
     CHECK(ManifestModel::ParseNode(
-        ordered_json{{"LABEL", "oops"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}},
+        ordered_json{{"LABEL", "oops"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}},
         "f.json", "/b", N));
     CHECK(!N.LowerError.empty());
     CHECK_EQ((int)N.Layers.size(), 0);
 
     NodeIndex Idx;
-    Add(Idx, ordered_json{{"LABEL", "oops"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
+    Add(Idx, ordered_json{{"LABEL", "oops"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
     CHECK_EQ((int)Idx.Nodes.size(), 1);                       // indexed, not vanished
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
@@ -403,7 +503,7 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
     // ...and a launch that routes through it is REFUSED, rather than quietly applying nothing where the
     // author declared something.
     NodeIndex L;
-    Add(L, ordered_json{{"LABEL", "bad"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
+    Add(L, ordered_json{{"LABEL", "bad"}, {"LAYERS", ordered_json::array({ordered_json{{"FORM", "tarball"}, {"PATH", "a.tar"}}})}});
     AddChain(L, "game", {NodeFixture::Exec("win32", "g.exe")}, {"bad"});
     std::vector<std::string> Miss;
     ManifestModel::ResolveNodeOrder(L, "game", {}, &Miss);   // Chain's TAIL owns the bare id
@@ -418,14 +518,14 @@ TEST(validate_errors_on_a_node_whose_payload_cannot_be_lowered)
 TEST(validate_errors_on_a_when_that_gates_nothing)
 {
     NodeIndex Idx;
-    Add(Idx, ordered_json{{"LABEL","g"}, {"TYPE","Group"}, {"WHEN","%NETMODE% == host"},
-                          {"PARENTS", ordered_json::array()}});
+    Add(Idx, ordered_json{{"LABEL","g"}, {"WHEN","%NETMODE% == host"},
+                          {"OVER", ordered_json::array()}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "never evaluated"));
 
     NodeIndex Ok;                                   // ...and a Group with no WHEN is perfectly fine
-    Add(Ok, ordered_json{{"LABEL","g"}, {"TYPE","Group"}, {"PARENTS", ordered_json::array()}});
+    Add(Ok, ordered_json{{"LABEL","g"}, {"OVER", ordered_json::array()}});
     std::vector<std::string> E2, W2;
     ManifestModel::ValidateNodeGraph(Ok, E2, W2);
     CHECK(!AnyContains(E2, "never evaluated"));
@@ -434,27 +534,30 @@ TEST(validate_errors_on_a_when_that_gates_nothing)
 TEST(validate_errors_on_an_unknown_toggle_value)
 {
     Node N;
-    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TYPE","Group"}, {"TOGGLE","of"}},
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TOGGLE","of"}},
                                    "f.json", "/b", N));
     CHECK(!N.LowerError.empty());
 
     for (const char *V : {"on", "off"})                    // ...and both legal values are accepted
     {
         Node Ok;
-        CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TYPE","Group"}, {"TOGGLE", V}},
+        CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TOGGLE", V}},
                                        "f.json", "/b", Ok));
         CHECK(Ok.LowerError.empty());
     }
 }
 
-TEST(validate_flags_asymmetric_exclude)
+// A launchable with no identity at all appears under no card — worth a warning; a runner legitimately has none.
+TEST(validate_warns_on_a_launchable_with_no_identity)
 {
     NodeIndex Idx;
-    AddChain(Idx, "a", {}, {}, {{"EXCLUDE", {"b"}}});   // a excludes b, but b does not exclude a
-    AddChain(Idx, "b", {});
+    AddChain(Idx, "lost", {NodeFixture::Exec("win32", "g.exe")});
+    AddChain(Idx, "wine", {NodeFixture::Runner("linux64", {"win32"}, "wine")});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(AnyContains(Warnings, "symmetric"));
+    CHECK(AnyContains(Warnings, "no identity"));
+    int N = 0; for (const auto &W : Warnings) if (W.find("no identity") != std::string::npos) ++N;
+    CHECK_EQ(N, 1);                                                    // the runner is not warned about
 }
 
 // ---- Role collapse: identity DERIVED from Declare* layers ----
@@ -462,14 +565,14 @@ TEST(validate_flags_asymmetric_exclude)
 TEST(declare_layers_derive_identity)
 {
     Node N;
-    ordered_json lj{{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","game.exe"},
-                    {"LABEL","Vanilla"},{"RECOMMENDED",true},{"RUNNER","geproton_9_20_runner"}};
+    ordered_json lj{{"ENTRYPOINTS", ordered_json::array({ ordered_json{{"HOST","win32"},{"PATH","game.exe"},
+                    {"LABEL","Vanilla"},{"RECOMMENDED",true},{"RUNNER","geproton_9_20_runner"}} })}};
     CHECK(ManifestModel::ParseNode(lj, "f.json", "/b", N));
     CHECK(N.IsLaunchable()); CHECK(!N.IsRunner());
     CHECK_EQ(N.HostPlatform, std::string("win32"));
     CHECK_EQ(N.Exec.value("CONTENTPATH", std::string()), std::string("game.exe"));
     CHECK_EQ(N.Label, std::string("Vanilla")); CHECK(N.Recommended);
-    CHECK_EQ(N.RecommendedRunner, std::string("geproton_9_20_runner"));   // DeclareExec.RUNNER → soft package-side runner
+    CHECK_EQ(N.RecommendedRunner, std::string("geproton_9_20_runner"));   // the entry's RUNNER → soft package-side runner
 
     Node R;
     // A runner is the SAME declaration with GUEST platforms — no GUEST ⇒ terminal ⇒ launchable.
@@ -485,46 +588,37 @@ TEST(declare_layers_derive_identity)
     ordered_json tj = NodeFixture::Tile("42", "My Game");
     tj["LABEL"] = "tile";
     CHECK(ManifestModel::ParseNode(tj, "f.json", "/b", L));
-    CHECK(L.Presentable()); CHECK(!L.IsLaunchable());
+    CHECK(L.Presentable()); CHECK(!L.IsLaunchable()); CHECK(L.OwnTile);
     CHECK_EQ(L.Uid, std::string("42"));
     CHECK_EQ(L.Meta.value("TITLE", std::string()), std::string("My Game"));
 }
 
 TEST(link_games_groups_variants_under_tile)
 {
-    auto exec = [](const char *label){ ordered_json E = NodeFixture::Exec("win32","g.exe"); E["LABEL"] = label; return E; };
+    auto exec = [](const char *label){ ordered_json E = NodeFixture::Exec("win32","g.exe"); E["ENTRYPOINTS"][0]["LABEL"] = label; return E; };
     NodeIndex Idx;
-    // The tile is a pure-Meta node and the PARENT of its variants — the Minecraft/WC3 shape.
+    // The tile-carrying node is a plain node UNDER its variants — the Minecraft/WC3 shape: identity is inherited
+    // through OVER, and the launcher groups the variants by UID.
     AddChain(Idx, "mygame",    {NodeFixture::Tile("7", "My Game")});
     AddChain(Idx, "mygame_v1", {exec("v1")}, {"mygame"});
     AddChain(Idx, "mygame_v2", {exec("v2")}, {"mygame"});
-    ManifestModel::LinkGames(Idx);
+    ManifestModel::DeriveIdentity(Idx);
     const Node *v1 = Idx.Find("mygame_v1");
     CHECK(v1->IsLaunchable());
-    CHECK_EQ(v1->GameKey(), std::string("mygame"));      // grouped under the tile by the PARENTS edge
+    CHECK_EQ(v1->GameKey(), std::string("7"));           // grouped under the tile by UID
     CHECK(v1->Presentable());                             // inherited the tile metadata
     CHECK_EQ(v1->Meta.value("TITLE", std::string()), std::string("My Game"));
     CHECK_EQ(v1->Uid, std::string("7"));
-    CHECK(Idx.Find("mygame")->Presentable());            // the tile is presentable
+    CHECK_EQ(v1->Label, std::string("v1"));
+    CHECK(Idx.Find("mygame")->Presentable());            // the tile node is presentable
     CHECK(!Idx.Find("mygame")->IsLaunchable());          // but not launchable itself
-}
-
-// Identity-layer composition is FIELD-LEVEL last-wins along the closure (ComposeAcrossClosure): a variant that carries
-// its OWN partial DeclareLibraryItem overrides just that field of its tile and inherits the rest. Same merge as the
-// launch-time DeclareExec composition.
-TEST(declare_library_item_composes_field_level)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "game", {NodeFixture::Tile("7", "Base Title", {{"DEVELOPER","Acme"}})});
-    // The variant carries a partial DeclareLibraryItem (overrides TITLE only) upstream of its DeclareExec.
-    AddChain(Idx, "variant", {ordered_json{{"TYPE","DeclareLibraryItem"},{"TITLE","Override Title"}},
-                              NodeFixture::Exec("win32","g.exe")}, {"game"});
-
-    const nlohmann::ordered_json Meta = ManifestModel::ComposeAcrossClosure(Idx, "variant", {},
-        [](const Node &N) -> const nlohmann::ordered_json * { return N.Presentable() ? &N.Meta : nullptr; });
-    CHECK_EQ(Meta.value("TITLE", std::string()), std::string("Override Title"));   // variant wins on its field
-    CHECK_EQ(Meta.value("DEVELOPER", std::string()), std::string("Acme"));         // inherited from the tile
-    CHECK_EQ(Meta.value("UID", std::string()), std::string("7"));                  // inherited from the tile
+    // ...and a launchable carrying its OWN TILE is its own card, with its own fields — nothing composes across
+    // the closure (a version under it contributes no identity, no exec, nothing).
+    AddChain(Idx, "mygame_v3", {NodeFixture::Merge({exec("v3"), NodeFixture::Tile("8", "Other")})}, {"mygame_v2"});
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK_EQ(Idx.Find("mygame_v3")->Uid, std::string("8"));
+    CHECK_EQ(Idx.Find("mygame_v3")->Meta.value("TITLE", std::string()), std::string("Other"));
+    CHECK_EQ(Idx.Find("mygame_v3")->Label, std::string("v3"));
 }
 
 // Cross-repo parity: the parent's NormalizeTargetPath and the FS's NormalizeVPath (layerspec.cpp) MUST agree
@@ -583,22 +677,126 @@ TEST(validate_flags_cross_layer_case_collision_after_memoization)
 
 //ENV is a BAG: composing a variant's ENV over a base's must keep the base's other keys. Previously the whole
 //object was replaced, which deleted them — harmless only while nothing consumed a launchable's ENV.
-TEST(compose_merges_ENV_key_wise_rather_than_replacing_it)
+// Execution is NOT transitive: the launch exec is the SELECTED entrypoint of the launch node and nothing under
+// it. A version under it (1.16.5 OVER 1.16.4) contributes no exec, no ENV, no args.
+TEST(exec_is_the_selected_entrypoint_and_nothing_under_it)
 {
     NodeIndex Idx;
-    Add(Idx, {{"LABEL","base"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
-                  {"ENV", {{"A","1"},{"SHARED","base"}}}});
-    Add(Idx, {{"LABEL","variant"},{"TYPE","DeclareExec"},{"PARENTS", ordered_json::array({"base"})},
-                  {"HOST","win32"},{"PATH","G.exe"},
-                  {"ENV", {{"B","2"},{"SHARED","variant"}}}});
-    const ordered_json Composed = ManifestModel::ComposeAcrossClosure(
-        Idx, "variant", {}, [](const Node &N) -> const ordered_json * {
-            return N.Exec.is_object() ? &N.Exec : nullptr;
-        });
-    CHECK(Composed.contains("ENV"));
-    if (!Composed.contains("ENV")) return;
-    const ordered_json &E = Composed["ENV"];
-    CHECK_EQ(E.value("A", std::string()), std::string("1"));        // the base's key survives
-    CHECK_EQ(E.value("B", std::string()), std::string("2"));        // the variant's key arrives
-    CHECK_EQ(E.value("SHARED", std::string()), std::string("variant"));   // ...and wins where they collide
+    ordered_json Old = NodeFixture::Exec("win32", "old.exe");
+    Old["ENTRYPOINTS"][0]["ENV"] = ordered_json{{"FROM_OLD", "1"}};
+    AddChain(Idx, "v1", {Old});
+    ordered_json New = NodeFixture::Exec("win32", "new.exe");
+    New["ENTRYPOINTS"][0]["ENV"] = ordered_json{{"FROM_NEW", "1"}};
+    New["ENTRYPOINTS"].push_back(ordered_json{{"LABEL", "Server"}, {"HOST", "win32"}, {"PATH", "srv.exe"}});
+    AddChain(Idx, "v2", {New}, {"v1"});
+    const Node *V2 = Idx.Find("v2");
+    CHECK_EQ(V2->ExecFor("").value("CONTENTPATH", std::string()), std::string("new.exe"));
+    CHECK(!V2->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
+    CHECK_EQ(V2->ExecFor("Server").value("CONTENTPATH", std::string()), std::string("srv.exe"));
+    // The closure still mounts v1 underneath — bytes travel, execution does not.
+    const auto Order = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
+    CHECK(Contains(Order, "v1") && Order.back() == "v2");
+}
+
+// ---- grafts: selection ≠ closure ----
+
+// A graft is a node in nobody's list that is OVER something of this title. It is OFFERED when the SELECTED set
+// (launchable + ticked grafts) satisfies its identity-bearing requirements — never the closure: a mod OVER a
+// version UNDER the one you play is a sibling branch, not a mod for you. Substance (no identity) is satisfied by
+// mounting. NOT is judged against the selected set. Ticking grows the set to a fixpoint.
+TEST(offered_grafts_follow_the_selected_set_not_the_closure)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "v1", {NodeFixture::Merge({NodeFixture::Content("zip", "v1.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})});
+    AddChain(Idx, "data", {NodeFixture::Content("zip", "d.zip")}, {"v1"});                        // part of v2's own composition
+    AddChain(Idx, "v2", {NodeFixture::Merge({NodeFixture::Content("zip", "v2.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})}, {"v1", "data"});
+    AddChain(Idx, "mod_v1",   {NodeFixture::Content("dir", "a")}, {"v1"});                       // a branch off v1
+    AddChain(Idx, "mod_v2",   {NodeFixture::Content("dir", "b")}, {"v2"});                       // a branch off v2
+    AddChain(Idx, "mod_any",  {NodeFixture::Content("dir", "c")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v1", "v2"}) })}});
+    AddChain(Idx, "hd",       {NodeFixture::Content("dir", "d")}, {"mod_v2"});                   // a graft on a graft
+    AddChain(Idx, "lib",      {NodeFixture::Content("dir", "l")});                               // substance
+    AddChain(Idx, "uses_lib", {NodeFixture::Content("dir", "e")}, {"v2", "lib"});
+    AddChain(Idx, "rival",    {NodeFixture::Content("dir", "r")}, {}, {{"OVER", ordered_json::array({"v2", ordered_json{{"NOT", "mod_v2"}}})}});
+    AddChain(Idx, "other_game", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "O")})});
+    AddChain(Idx, "mod_other", {NodeFixture::Content("dir", "o")}, {"other_game"});
+    ManifestModel::DeriveIdentity(Idx);
+
+    auto Offer = [&](const std::map<std::string, bool> &T) {
+        std::map<std::string, ManifestModel::GraftOffer> Out;
+        for (const auto &O : ManifestModel::OfferedGrafts(Idx, "v2", T)) Out[O.Graft->NodeId] = O;
+        return Out;
+    };
+    // Nothing ticked: playing v2.
+    auto O = Offer({});
+    CHECK(O.count("mod_v2") && O["mod_v2"].Applicable && !O["mod_v2"].Selected);
+    CHECK(O.count("mod_v1") && !O["mod_v1"].Applicable);            // v1 is UNDER v2, not selected ⇒ not for you
+    CHECK_EQ(O["mod_v1"].Blocker, std::string("v1"));
+    CHECK(O.count("mod_any") && O["mod_any"].Applicable);           // the group is satisfied by the launchable
+    CHECK(O.count("hd") && !O["hd"].Applicable);                    // needs mod_v2 ticked first
+    CHECK(O.count("uses_lib") && O["uses_lib"].Applicable);         // lib is substance: satisfied by mounting
+    CHECK(O.count("rival") && O["rival"].Applicable);
+    CHECK(!O.count("mod_other"));                                   // another title's mod is not offered here
+    CHECK(!O.count("v1") && !O.count("v2"));                        // launchables are variants, never grafts
+    CHECK(!O.count("lib"));                                         // substance is never offered
+    CHECK(!O.count("data"));                                        // a node in the launchable's OWN closure is not a graft
+
+    // Tick mod_v2: hd becomes applicable (fixpoint), rival's NOT trips.
+    auto O2 = Offer({{"mod_v2", true}});
+    CHECK(O2["mod_v2"].Selected);
+    CHECK(O2["hd"].Applicable && !O2["hd"].Selected);
+    CHECK(!O2["rival"].Applicable);
+    CHECK_EQ(O2["rival"].Blocker, std::string("mod_v2"));
+    // Tick hd too: selected through the fixpoint in ONE pass.
+    auto O3 = Offer({{"mod_v2", true}, {"hd", true}});
+    CHECK(O3["hd"].Selected);
+    // Tick hd WITHOUT mod_v2: not applicable ⇒ not selected, whatever the tick says.
+    auto O4 = Offer({{"hd", true}});
+    CHECK(!O4["hd"].Selected && !O4["hd"].Applicable);
+    // Tick rival AND mod_v2: rival is unsatisfied (NOT) ⇒ never selected.
+    auto O5 = Offer({{"mod_v2", true}, {"rival", true}});
+    CHECK(O5["mod_v2"].Selected && !O5["rival"].Selected);
+
+    // The author's default (TOGGLE "on") pre-selects a graft the user has not touched.
+    AddChain(Idx, "default_on", {NodeFixture::Content("dir", "z")}, {"v2"}, {{"TOGGLE", "on"}});
+    ManifestModel::DeriveIdentity(Idx);
+    auto O6 = Offer({});
+    CHECK(O6["default_on"].Selected);
+    CHECK(!Offer({{"default_on", false}})["default_on"].Selected);
+
+    // Scope: a candidate the scope predicate rejects (a CATALOG stub) is not offered at all.
+    std::vector<ManifestModel::GraftOffer> Scoped = ManifestModel::OfferedGrafts(Idx, "v2", {}, [](const Node &N) { return N.NodeId != "mod_v2"; });
+    bool SawModV2 = false; for (const auto &G : Scoped) if (G.Graft->NodeId == "mod_v2") SawModV2 = true;
+    CHECK(!SawModV2);
+}
+
+// The graft order: selected applicable grafts mount ABOVE the base closure, in instance precedence (higher =
+// later = wins), ties by key; each graft's own substance is pulled in beneath it; nothing already in the base
+// mount is repeated.
+TEST(resolve_graft_order_is_precedence_then_key_with_substance_beneath)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "game", {NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})});
+    AddChain(Idx, "lib",  {NodeFixture::Content("dir", "l")});
+    AddChain(Idx, "a",    {NodeFixture::Content("dir", "a")}, {"game", "lib"});
+    AddChain(Idx, "b",    {NodeFixture::Content("dir", "b")}, {"game"});
+    AddChain(Idx, "b_hd", {NodeFixture::Content("dir", "bh")}, {"b"});
+    ManifestModel::DeriveIdentity(Idx);
+    const std::vector<std::string> Base = ManifestModel::ResolveNodeOrder(Idx, "game", {});
+    const std::map<std::string, bool> Ticks{{"a", true}, {"b", true}, {"b_hd", true}};
+
+    // Default: key order (a, b, b_hd); lib is a's substance and comes right before a; game is never repeated.
+    const auto Def = ManifestModel::ResolveGraftOrder(Idx, "game", Ticks, Base);
+    CHECK(Contains(Def, "a") && Contains(Def, "b") && Contains(Def, "b_hd") && Contains(Def, "lib"));
+    CHECK(!Contains(Def, "game"));
+    CHECK(IndexOf(Def, "lib") < IndexOf(Def, "a"));
+    CHECK(IndexOf(Def, "a") < IndexOf(Def, "b"));
+    CHECK(IndexOf(Def, "b") < IndexOf(Def, "b_hd"));
+    // Precedence: b ranks above a ⇒ b mounts after a... and b_hd, which is OVER b, still follows b.
+    const auto Prec = ManifestModel::ResolveGraftOrder(Idx, "game", Ticks, Base, {{"a", 10}, {"b", 5}});
+    CHECK(IndexOf(Prec, "b") < IndexOf(Prec, "a"));
+    CHECK(IndexOf(Prec, "b") < IndexOf(Prec, "b_hd"));
+    // Nothing ticked ⇒ nothing above the base.
+    CHECK(ManifestModel::ResolveGraftOrder(Idx, "game", {}, Base).empty());
+    // An unapplicable tick (b_hd without b) contributes nothing.
+    CHECK(ManifestModel::ResolveGraftOrder(Idx, "game", {{"b_hd", true}}, Base).empty());
 }

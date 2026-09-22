@@ -7,7 +7,10 @@
 #include <vector>
 
 // ---------------------------------------------------------------------------
-// PkgGraph — the package as a graph, plus the per-TYPE payload schema the editor renders.
+// PkgGraph — the package as a graph, plus the per-SECTION payload schema the editor renders. A node has no TYPE:
+// it is facets + any subset of SECTIONS (the payload arrays LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/
+// PERSISTS and the facets ENTRYPOINTS/TILE) + the one edge OVER. The editor renders each section the node
+// carries; "Type" below is the node's derived KIND (its first section) — a display word, never stored.
 //
 // Pure data + description, NO UI and NO filesystem: the canvas renders a Graph and edits the SAME
 // `{"NODES":[…]}` document the model persists one-file-per-node, so the graph IS the package — there is no
@@ -33,9 +36,9 @@ namespace PkgGraph
 struct Node
 {
     int         Index = 0;      // position in doc()["NODES"] — the identity the canvas binds to
-    std::string Id;             // NODE_ID
-    std::string Type;           // TYPE ("Group" when payload-less)
-    std::string Form;           // Content's FORM ("" for other types) — what a delta can be based on
+    std::string Id;             // the wiring handle (stored CID)
+    std::string Type;           // the node's KIND: its first section key (LAYERS/…/ENTRYPOINTS/TILE), "" when plain
+    std::string Form;           // LAYERS[0].FORM ("" without content) — what a delta can be based on
     float       X = 0, Y = 0;   // canvas position: node POS, then this machine's override, then computed
     bool        HasPos = false; // false → nothing declared one, so PkgLayout placed it
     //Estimated DRAWN height, in the same units as X/Y. A node's box is as tall as its payload makes it — a
@@ -45,18 +48,20 @@ struct Node
     float       Height = 0.0f;
 };
 
-// A PARENTS edge. `ParentIndex` >= 0 is an in-bundle node; -1 means the parent lives in another bundle and is
-// drawn as a reference chip (MediaStack_MS, dgvoodoo, asiloader…) rather than a full box.
+// One OVER ref drawn as a wire. `ParentIndex` >= 0 is an in-bundle node; -1 means the ref names a node in another
+// bundle and is drawn as a reference chip (MediaStack_MS, dgvoodoo, asiloader…) rather than a full box.
 struct Link
 {
     int         ChildIndex  = 0;
     int         ParentIndex = -1;
     std::string ExternalId;     // set when ParentIndex < 0
-    //The exact index in the child's PARENTS array this edge came from. Carried rather than recovered: the
-    //renderer needs it every frame to key the wire, and re-finding it meant a linear scan with a std::string
-    //construction per comparison — on the 2775-node Minecraft bundle (39k links, 902 nodes with 75 parents
-    //each) that is millions of allocations per frame, for a value Build already knew.
+    //The ordinal of this ref among the child's OVER refs FLATTENED in list order (a group's members count one
+    //each, a NOT counts one). Carried rather than recovered: the renderer needs it every frame to key the wire.
+    //EraseOverRef(child, Slot) walks the same flattening, so a detach addresses exactly this ref.
     int         Slot        = 0;
+    int         OverIndex   = 0;    // the OVER entry this ref lives in
+    int         Member      = -1;   // -1: a plain entry; >= 0: this member of an any-of group
+    bool        Not         = false;// a {"NOT": ref} exclusion
 };
 
 //A declared position that was refused because no layout could have produced it. Carried rather than logged:
@@ -99,16 +104,29 @@ inline int OutPin(int Index) { return Index * 4 + 1; }
 inline int PinNode(int Pin)  { return Pin / 4;       }
 inline bool PinIsIn(int Pin) { return (Pin % 4) == 0; }
 
-// ---- type vocabulary ------------------------------------------------------
+// ---- section vocabulary ---------------------------------------------------
 
-//Every TYPE the format has. Order is palette order.
+//Every SECTION a node may carry, in palette order (the seven payload arrays, then ENTRYPOINTS, then TILE).
 const std::vector<std::string> &AllTypes();
-//One line for the palette and the node tooltip — discoverability in the type system, not in a manual.
-const char *TypeHelp(const std::string &Type);
-//Node accent colour (r,g,b) — content, transforms, identity and composition read differently at a glance.
-void TypeColour(const std::string &Type, int &R, int &G, int &B);
-//A fresh payload for a newly-created node of this type (valid by construction: required keys present).
-nlohmann::ordered_json NewPayload(const std::string &Type);
+//The sections THIS node carries, in palette order — what the canvas draws, what the height counts.
+std::vector<std::string> SectionsOf(const nlohmann::ordered_json &Node);
+//The node's KIND: its first section ("" for a plain node) — the display word and the accent colour key.
+std::string KindOf(const nlohmann::ordered_json &Node);
+//One line for the palette and the node tooltip — discoverability in the format, not in a manual.
+const char *TypeHelp(const std::string &Section);
+//Node accent colour (r,g,b) by kind — content, transforms, identity and composition read differently at a glance.
+void TypeColour(const std::string &Kind, int &R, int &G, int &B);
+//A fresh node carrying ONE section (valid by construction: required keys present). "" ⇒ a plain node.
+nlohmann::ordered_json NewPayload(const std::string &Section);
+//Add a section's starter value to an existing node (no-op when present). Returns whether it changed.
+bool AddSection(nlohmann::ordered_json &Node, const std::string &Section);
+//Erase the OVER ref at flattened ordinal `Slot` (the Link::Slot of its wire): a plain entry is removed, a group
+//member is removed (a group left with one member collapses to a plain entry), a NOT is removed. False if none.
+bool EraseOverRef(nlohmann::ordered_json &Node, int Slot);
+//Append a plain OVER ref (no-op if already referenced anywhere in OVER). Returns whether it changed.
+bool AddOverRef(nlohmann::ordered_json &Node, const std::string &Ref);
+//Remove every OVER ref naming `Ref` (plain, member or NOT). Returns whether anything changed.
+bool RemoveOverRefs(nlohmann::ordered_json &Node, const std::string &Ref);
 
 // ---- payload schema -------------------------------------------------------
 
@@ -126,8 +144,9 @@ enum class FieldKind
     StringListKeepEmpty,
     KeyValue,    // an object of string→string
     ObjArray,    // an array of objects, each described by `Sub`
-    RegEdits,    // RegEdit's EDITS[]: ARCHITECTURE + a hive tree, edited as flattened key paths
-    Cover,       // DeclareLibraryItem's COVER {PATH, SOURCE}
+    RegEdits,    // REGEDITS[]: ARCHITECTURE + a hive tree, edited as flattened key paths
+    Cover,       // a COVER {PATH, SOURCE}
+    Object,      // ONE nested object described by `Sub` (the TILE facet)
 };
 
 struct Field
@@ -141,8 +160,8 @@ struct Field
     bool VarUI = false;                                           // ObjArray of CustomVars: draw the UI facet per entry
 };
 
-//The rows to render for a node of this TYPE, in order. Empty for "Group" (pure composition).
-const std::vector<Field> &FieldsFor(const std::string &Type);
+//The rows to render for ONE section, in order (one Field per section today, keyed by the section itself).
+const std::vector<Field> &FieldsFor(const std::string &Section);
 
 //Toggle a CustomVar's launch-dialog visibility, which the format expresses as the PRESENCE of the UI facet
 //(08-variables.md): visible adds a minimal UI object (keeping any existing one), hidden removes it so the var
@@ -155,7 +174,7 @@ void SetVarVisible(nlohmann::ordered_json &node, bool visible);
 //
 //It is an estimate and is allowed to be generous: the cost of over-estimating is a little white space, the
 //cost of under-estimating is two nodes drawn on top of each other. It is pinned to the real renderer by
-//theEstimatedNodeHeightMatchesTheDrawnOne, which measures every TYPE and fails if the estimate falls short.
+//theEstimatedNodeHeightMatchesTheDrawnOne, which measures every SECTION and fails if the estimate falls short.
 float EstimateHeight(const nlohmann::ordered_json &Node);
 
 // ---- node actions ---------------------------------------------------------

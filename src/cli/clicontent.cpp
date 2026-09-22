@@ -433,7 +433,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
 
     //HEADLESS: MINT a working-tree bundle into the gigagraph — freeze its nodes to dag-json blocks (identity = CID),
     //print the launchable root CIDs (the library-list entries), then verify by re-reading the frozen DAG back. The
-    //end-to-end proof of Mint + FreezeNodeJson + BuildFrozenIndex + LinkGames on real data.
+    //end-to-end proof of Mint + FreezeNodeJson + BuildFrozenIndex + DeriveIdentity on real data.
     if (!LaunchParameters.MintDir.empty())
     {
         const std::string Dir = LaunchParameters.MintDir;
@@ -450,8 +450,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         if (Tree.empty()) { LogErr("main.cpp", "no nodes found in " + Dir); return 1; }
         LogOut("main.cpp", "gathered " + std::to_string(Tree.size()) + " node(s)");
 
-        // Lift the metadata edge (PARENTS tile -> LIBRARYITEM), then freeze deps-first.
-        NodeGraph::LiftLibraryItemEdge(Tree);
+        // Freeze deps-first.
         NodeGraph::MintResult MR;
         std::string Err;
         if (!NodeGraph::Mint(Tree, MR, &Err)) { LogErr("main.cpp", "mint failed: " + Err); return 1; }

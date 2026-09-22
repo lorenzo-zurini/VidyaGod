@@ -43,7 +43,7 @@ void AuthoringWorker::start(QString configDump, QString bundlePath, QString node
     ManifestModel::ScanBundleNodes(bundlePath.toStdString(), Idx);              // this bundle wins (first-seen)
     NodeIndex Cat = PackageCatalog::BuildCatalogIndex(Config);                  // CID package sources + local bundles
     for (auto & [Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
-    ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
+    ManifestModel::DeriveIdentity(Idx);   // grafts inherit their game's identity through OVER
 
     // The "Run Windows program" tool's choices: every Windows-capable runner usable on this machine (guest covers
     // win32/win64). Independent of the package's platform — you might run a Windows editor on a Linux game's runtime.
@@ -232,10 +232,10 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
         Edits.push_back(std::move(Entry));
     }
     const std::string NewId = Editor->createNode(
-        nlohmann::ordered_json::object({{"TYPE", "RegEdit"}, {"EDITS", Edits}}), {TargetNodeId}, "captured_registry");
+        nlohmann::ordered_json::object({{"REGEDITS", Edits}}), {TargetNodeId}, "captured_registry");
     emit registryCaptured(RegPaths);
     emit nodeCreated(QString::fromStdString(NewId));
-    emit captured(QString("Captured %1 registry key(s) → new RegEdit node '%2'.")
+    emit captured(QString("Captured %1 registry key(s) → new REGEDITS node '%2'.")
                       .arg((int)Picked.size()).arg(QString::fromStdString(NewId)));
 }
 
@@ -263,12 +263,12 @@ void AuthoringSessionModel::onFilesCopied(int count)
     if (!Editor) return;
     // A capture IS a node: one Content node holding what the run wrote, parented at the anchor so it applies
     // exactly where the capture was taken.
-    //Batched: a capture is one VFSLayer node holding a single dir layer.
+    //A capture is one node holding a single dir layer.
     nlohmann::ordered_json Layer = nlohmann::ordered_json::object({
         {"FORM", "dir"}, {"PATH", PendDestName.toStdString()}});
     if (!PendTarget.isEmpty()) Layer["TARGET"] = PendTarget.toStdString();
     nlohmann::ordered_json Payload = nlohmann::ordered_json::object({
-        {"TYPE", "VFSLayer"}, {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
+        {"LAYERS", nlohmann::ordered_json::array({std::move(Layer)})}});
     const std::string NewId = Editor->createNode(Payload, {TargetNodeId}, PendDestName.toStdString() + "_files");
     emit filesCaptured(PendRoots);
     emit nodeCreated(QString::fromStdString(NewId));

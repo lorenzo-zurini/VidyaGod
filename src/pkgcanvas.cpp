@@ -20,7 +20,7 @@ using namespace PkgGraph;
 
 namespace {
 
-//A PARENTS edge needs a stable int id for imnodes. Slot = position in the child's PARENTS array.
+//An OVER wire needs a stable int id for imnodes. Slot = the ref's ordinal among the child's OVER refs, flattened.
 constexpr int kMaxParents = 256;
 inline int LinkId(int ChildIndex, int Slot) { return ChildIndex * kMaxParents + Slot; }
 inline int LinkChild(int Id)                { return Id / kMaxParents; }
@@ -512,7 +512,7 @@ int PkgCanvas::addNode(const std::string &type, float x, float y)
     json N = NewPayload(type);
     // A readable default cosmetic name (LABEL). LABEL is cosmetic now, so it need NOT be unique — the counter just
     // keeps freshly-dropped nodes visually distinct until the author names them.
-    std::string Base = type == "Group" ? "group" : type;
+    std::string Base = type.empty() ? "node" : type;
     for (char &C : Base) C = (char)std::tolower((unsigned char)C);
     std::string Label = Base;
     for (int K = 2; ; ++K)
@@ -529,7 +529,7 @@ int PkgCanvas::addNode(const std::string &type, float x, float y)
     // freeze, so it never ships). The retry loop guards the astronomically-unlikely in-bundle collision.
     std::string Draft;
     do { Draft = MakeDraftHandle(); } while (indexOf(Draft) >= 0);
-    json Out = json::object({{"PARENTS", json::array()}});
+    json Out = json::object({{"OVER", json::array()}});
     for (const auto &[K, V] : N.items()) Out[K] = V;
     Out["CID"] = Draft;
     if (!Out.contains("LABEL")) Out["LABEL"] = Label;
@@ -566,10 +566,7 @@ bool PkgCanvas::removeNode(int index)
     // Drop every reference to it so the graph never carries a dangling parent after a delete.
     for (auto &N : Ns)
     {
-        if (!N.contains("PARENTS") || !N["PARENTS"].is_array()) continue;
-        json Keep = json::array();
-        for (const auto &P : N["PARENTS"]) if (!(P.is_string() && P.get<std::string>() == Id)) Keep.push_back(P);
-        N["PARENTS"] = std::move(Keep);
+        PkgGraph::RemoveOverRefs(N, Id);
     }
     //imnodes' own selection set stores INDICES, which every later node's index has just shifted under, and it
     //never validates them: leaving it populated makes the next frame report a selection for whichever node
@@ -587,10 +584,7 @@ bool PkgCanvas::connect(int parentIndex, int childIndex)
     if (parentIndex == childIndex) return false;
     const std::string Pid = Handle(Ns[parentIndex]);
     if (Pid.empty()) return false;
-    if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
-        Ns[childIndex]["PARENTS"] = json::array();
-    for (const auto &P : Ns[childIndex]["PARENTS"]) if (P.is_string() && P.get<std::string>() == Pid) return false;
-    Ns[childIndex]["PARENTS"].push_back(Pid);
+    if (!PkgGraph::AddOverRef(Ns[childIndex], Pid)) return false;
     m_s->MarkDirty();
     return true;
 }
@@ -600,15 +594,7 @@ bool PkgCanvas::disconnect(int parentIndex, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentIndex < 0 || childIndex < 0 || parentIndex >= (int)Ns.size() || childIndex >= (int)Ns.size()) return false;
     const std::string Pid = Handle(Ns[parentIndex]);
-    if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array()) return false;
-    json Keep = json::array();
-    bool Removed = false;
-    for (const auto &P : Ns[childIndex]["PARENTS"])
-    {
-        if (P.is_string() && P.get<std::string>() == Pid && !Removed) { Removed = true; continue; }
-        Keep.push_back(P);
-    }
-    Ns[childIndex]["PARENTS"] = std::move(Keep);
+    const bool Removed = PkgGraph::RemoveOverRefs(Ns[childIndex], Pid);
     if (Removed) m_s->MarkDirty();
     return Removed;
 }
@@ -618,10 +604,7 @@ bool PkgCanvas::connectExternal(const std::string &parentId, int childIndex)
     json &Ns = m_s->Nodes();
     if (parentId.empty() || childIndex < 0 || childIndex >= (int)Ns.size()) return false;
     if (Handle(Ns[childIndex]) == parentId) return false;
-    if (!Ns[childIndex].contains("PARENTS") || !Ns[childIndex]["PARENTS"].is_array())
-        Ns[childIndex]["PARENTS"] = json::array();
-    for (const auto &P : Ns[childIndex]["PARENTS"]) if (P.is_string() && P.get<std::string>() == parentId) return false;
-    Ns[childIndex]["PARENTS"].push_back(parentId);
+    if (!PkgGraph::AddOverRef(Ns[childIndex], parentId)) return false;
     m_s->MarkDirty();
     return true;
 }
@@ -872,6 +855,18 @@ void PkgCanvas::drawField(json &Node, const Field &F, int Index)
         }
         break;
     }
+    case FieldKind::Object:
+    {
+        //ONE nested object (the TILE facet): its sub-fields draw against the object. Refuses to draw into a
+        //value of the wrong shape, like every other writer here.
+        ImGui::TextUnformatted(F.Label);
+        if (Node.contains(F.Key) && !Node[F.Key].is_object())
+        { ImGui::TextDisabled("(this field is not an object - fix it in the JSON view)"); break; }
+        if (!Node.contains(F.Key)) Node[F.Key] = json::object();
+        json &O = Node[F.Key];
+        for (const Field &S : F.Sub) drawField(O, S, Index);
+        break;
+    }
     case FieldKind::RegEdits:
         drawRegEdits(Node, Index);
         break;
@@ -909,8 +904,8 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
 {
     (void)Index;
     static json EmptyEdits = json::array();      // see drawField/ObjArray: stays empty, writes go via Node
-    const bool HasEdits = Node.contains("EDITS") && Node["EDITS"].is_array();
-    json &Edits = HasEdits ? Node["EDITS"] : EmptyEdits;
+    const bool HasEdits = Node.contains("REGEDITS") && Node["REGEDITS"].is_array();
+    json &Edits = HasEdits ? Node["REGEDITS"] : EmptyEdits;
 
     int DelEntry = -1;
     for (int E = 0; E < (int)Edits.size(); ++E)
@@ -989,13 +984,13 @@ void PkgCanvas::drawRegEdits(json &Node, int Index)
     }
     if (DelEntry >= 0) { Edits.erase(DelEntry); m_s->MarkDirty(); }
     //Same refusal: a hand-edited `"EDITS": {"HKLM": {...}}` lost its entire registry tree to one click here.
-    const bool EditsReplaceable = !Node.is_object() || !Node.contains("EDITS")
-                               || Node["EDITS"].is_null() || Node["EDITS"].is_array();
+    const bool EditsReplaceable = !Node.is_object() || !Node.contains("REGEDITS")
+                               || Node["REGEDITS"].is_null() || Node["REGEDITS"].is_array();
     if (!EditsReplaceable) ImGui::TextDisabled("(EDITS is not a list - fix it in the JSON view)");
     else if (ImGui::SmallButton("+ group"))
     {
-        if (!HasEdits) Node["EDITS"] = json::array();
-        Node["EDITS"].push_back(json::object({{"ARCHITECTURE", json::array({"32"})}}));
+        if (!HasEdits) Node["REGEDITS"] = json::array();
+        Node["REGEDITS"].push_back(json::object({{"ARCHITECTURE", json::array({"32"})}}));
         m_s->MarkDirty();
     }
 }
@@ -1056,7 +1051,13 @@ void PkgCanvas::drawEnvelope(json &Node)
     const bool HasToggle     = Node.contains("TOGGLE") && Node["TOGGLE"].is_string();
     const std::string Toggle = HasToggle ? Node["TOGGLE"].get<std::string>() : std::string();
     const std::string When   = StrOf(Node, "WHEN");
-    const bool HasExclude    = Node.contains("EXCLUDE") && Node["EXCLUDE"].is_array() && !Node["EXCLUDE"].empty();
+    //The node's exclusions are its OVER NOT entries — one edge, with a negative form. Read here directly (the
+    //canvas renders raw JSON and must not pull the engine's Node type into a file that has its own).
+    std::vector<std::string> Nots;
+    if (Node.contains("OVER") && Node["OVER"].is_array())
+        for (const auto &E : Node["OVER"])
+            if (E.is_object() && E.contains("NOT") && E["NOT"].is_string()) Nots.push_back(E["NOT"].get<std::string>());
+    const bool HasExclude    = !Nots.empty();
     const bool Interesting   = HasToggle || !When.empty() || HasExclude;
 
     if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
@@ -1087,13 +1088,20 @@ void PkgCanvas::drawEnvelope(json &Node)
         m_s->MarkDirty();
     }
 
-    std::string Ex = ListToText(Node.contains("EXCLUDE") ? Node["EXCLUDE"] : json::array());
-    ImGui::TextUnformatted("excludes"); ImGui::SameLine(kLabelCol);
+    //NOT entries, edited as a list of handles: the positive entries of OVER are untouched, the NOT entries are
+    //replaced wholesale by what the box holds.
+    json NotList = json::array();
+    for (const std::string &N : Nots) NotList.push_back(N);
+    std::string Ex = ListToText(NotList);
+    ImGui::TextUnformatted("not with"); ImGui::SameLine(kLabelCol);
     ImGui::SetNextItemWidth(kFieldWidth);
-    if (ImGui::InputTextWithHint("##excl", "mutually-exclusive LABELs", &Ex))
+    if (ImGui::InputTextWithHint("##excl", "handles this node must not be selected with", &Ex))
     {
-        json A = TextToList(Ex);
-        if (A.empty()) Node.erase("EXCLUDE"); else Node["EXCLUDE"] = std::move(A);
+        json Kept = json::array();
+        if (Node.contains("OVER") && Node["OVER"].is_array())
+            for (const auto &E : Node["OVER"]) if (!(E.is_object() && E.contains("NOT"))) Kept.push_back(E);
+        for (const auto &H : TextToList(Ex)) Kept.push_back(json{{"NOT", H}});
+        if (Kept.empty()) Node.erase("OVER"); else Node["OVER"] = std::move(Kept);
         m_s->MarkDirty();
     }
     ImGui::TreePop();
@@ -1101,14 +1109,24 @@ void PkgCanvas::drawEnvelope(json &Node)
 
 void PkgCanvas::drawPayload(json &Node, int Index)
 {
-    const std::string Type = StrOf(Node, "TYPE", "Group");
-    const auto &Fields = FieldsFor(Type);
-    if (Fields.empty()) { ImGui::TextDisabled("no payload - composition only"); return; }
-    for (const Field &F : Fields)
+    //A node is any subset of the SECTIONS; each present one draws its declared field table, and a "+ section"
+    //popup adds an absent one. Removing a section is a JSON-view edit (it is destructive).
+    const std::vector<std::string> Sections = SectionsOf(Node);
+    if (Sections.empty()) ImGui::TextDisabled("no payload - a plain node (OVER only)");
+    for (const std::string &S : Sections)
+        for (const Field &F : FieldsFor(S))
+            drawField(Node, F, Index);   // BASE_TARGETS gating is per-LAYERS-entry (see the ObjArray loop)
+    if (ImGui::SmallButton("+ section")) ImGui::OpenPopup("##addsection");
+    if (ImGui::BeginPopup("##addsection"))
     {
-        drawField(Node, F, Index);   // BASE_TARGETS gating is per-LAYERS-entry now (see the ObjArray loop)
+        for (const std::string &S : AllTypes())
+        {
+            if (Node.contains(S)) continue;
+            if (ImGui::Selectable(S.c_str()) && PkgGraph::AddSection(Node, S)) m_s->MarkDirty();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(S));
+        }
+        ImGui::EndPopup();
     }
-    //A CustomVar's UI facet is now drawn PER VARS ENTRY inside the ObjArray loop (Field::VarUI), not per node.
 }
 
 //The CustomVar UI facet — the thing whose PRESENCE makes the var user-facing (08-variables.md). The generic field
@@ -1233,7 +1251,7 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     //the layout, the culling test and the overview all place it in its computed slot.
     const bool Malformed = !Ns[Index].is_object();
     json &Node = Ns[Index];
-    const std::string Type = Malformed ? std::string("Group") : StrOf(Node, "TYPE", "Group");
+    const std::string Type = Malformed ? std::string() : KindOf(Node);
     const std::string Id   = Malformed ? std::string()        : Handle(Node);   // wiring handle (CID): Issues/Running keys
 
     int R, Gc, B;
@@ -1259,16 +1277,16 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     }
 
     ImNodes::BeginNodeTitleBar();
-    // Title = the cosmetic name (LABEL) when the node has one, else the TYPE. The title-bar COLOUR already encodes
-    // the type, so a named node reads as its pretty name; an unnamed one falls back to its type.
-    { const std::string Nm = StrOf(Node, "LABEL"); ImGui::TextUnformatted(Nm.empty() ? Type.c_str() : Nm.c_str()); }
+    // Title = the cosmetic name (LABEL) when the node has one, else the KIND. The title-bar COLOUR already encodes
+    // the kind, so a named node reads as its pretty name; an unnamed one falls back to its kind.
+    { const std::string Nm = StrOf(Node, "LABEL"); ImGui::TextUnformatted(Nm.empty() ? (Type.empty() ? "node" : Type.c_str()) : Nm.c_str()); }
     ImNodes::EndNodeTitleBar();
 
     // Nothing depends on this node yet, and it is not a launchable — so nothing mounts it. That is NORMAL
     // while authoring (you capture, then wire, then declare the exec last), so it is a note rather than an
     // error: the canvas makes the state visible instead of silently rewiring the graph to "fix" it.
-    if (Type != "DeclareExec" && !m_s->HasDependent.count(Index))
-        ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.68f, 1.0f), "not wired yet - nothing depends on this");
+    if (!Node.contains("ENTRYPOINTS") && !m_s->HasDependent.count(Index))
+        ImGui::TextColored(ImVec4(0.55f, 0.60f, 0.68f, 1.0f), "not wired yet - nothing is OVER this");
 
     // A node's problems are drawn ON the node, at the moment it becomes wrong.
     auto It = m_s->Issues.find(Id);
@@ -1279,11 +1297,11 @@ void PkgCanvas::drawNode(int Index, Graph &G)
     // Dependency pins: one IN accepting many parents, one OUT. Nothing flows along the wire — this is a
     // composition graph, not dataflow — so there is no per-column pin fan-out.
     ImNodes::BeginInputAttribute(InPin(Index));
-    ImGui::TextUnformatted("depends on");
+    ImGui::TextUnformatted("over");
     ImNodes::EndInputAttribute();
     ImGui::SameLine();
     ImNodes::BeginOutputAttribute(OutPin(Index));
-    ImGui::TextUnformatted("used by");
+    ImGui::TextUnformatted("under");
     ImNodes::EndOutputAttribute();
 
     ImGui::Dummy(ImVec2(kNodeWidth, 1.0f));
@@ -1461,21 +1479,22 @@ void PkgCanvas::drawToolbar()
     {
         struct Grp { const char *Title; std::vector<const char *> Types; };
         static const std::vector<Grp> Groups = {
-            {"Payload",     {"VFSLayer", "RegEdit", "FileEdit", "BinaryPatch", "DllOverride", "DeclarePersist", "CustomVar"}},
-            {"Declare",     {"DeclareExec", "DeclareLibraryItem"}},
-            {"Composition", {"Group"}},
+            {"Payload",     {"LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "PERSISTS", "VARS"}},
+            {"Facet",       {"ENTRYPOINTS", "TILE"}},
+            {"Composition", {"plain node"}},
         };
-        std::string Pick;
+        std::string Pick; bool Picked = false;
         for (const Grp &Gp : Groups)
         {
             ImGui::SeparatorText(Gp.Title);
             for (const char *T : Gp.Types)
             {
-                if (ImGui::Selectable(T)) Pick = T;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(T));
+                const std::string Section = std::string(T) == "plain node" ? std::string() : std::string(T);
+                if (ImGui::Selectable(T)) { Pick = Section; Picked = true; }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TypeHelp(Section));
             }
         }
-        if (!Pick.empty())
+        if (Picked)
         {
             const ImVec2 Origin = ImNodes::EditorContextGetPanning();
             m_s->Selected = addNode(Pick, 80.0f - Origin.x, 80.0f - Origin.y);
@@ -1527,7 +1546,7 @@ void PkgCanvas::drawToolbar()
         ImGui::EndPopup();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("   |  drag from \"used by\" to \"depends on\"  -  ctrl-click a wire to detach  -  del removes a node");
+    ImGui::TextDisabled("   |  drag from \"under\" to \"over\"  -  ctrl-click a wire to detach  -  del removes a node");
 }
 
 void PkgCanvas::frame()
@@ -2238,9 +2257,7 @@ void PkgCanvas::frame()
     {
         const int Child = LinkChild(DeadLink), Slot = LinkSlot(DeadLink);
         json &Ns = m_s->Nodes();
-        if (Child >= 0 && Child < (int)Ns.size() && Ns[Child].contains("PARENTS")
-            && Slot < (int)Ns[Child]["PARENTS"].size())
-        { Ns[Child]["PARENTS"].erase(Slot); m_s->MarkDirty(); }
+        if (Child >= 0 && Child < (int)Ns.size() && PkgGraph::EraseOverRef(Ns[Child], Slot)) m_s->MarkDirty();
     }
 
     int Sel = -1;

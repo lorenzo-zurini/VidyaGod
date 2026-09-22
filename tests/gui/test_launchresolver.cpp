@@ -7,6 +7,7 @@
 #include "launchresolver.h"
 #include "launchparams.h"
 #include "manifestmodel.h"
+#include "nodefixture.h"
 #include "instancestore.h"
 #include <QTemporaryDir>
 
@@ -24,7 +25,7 @@ Node contentNode(const std::string & id, const json & layers = json::array())
 }
 Node launchNode(const std::string & id, const std::string & host, const std::vector<std::string> & parents)
 {
-    Node n; n.NodeId = id; n.HasExec = true; n.HostPlatform = host; n.Parents = parents;
+    Node n; n.NodeId = id; n.HasExec = true; n.HostPlatform = host; NodeFixture::Wire(n, parents);
     n.Meta = json{{"TITLE", id}};
     n.Exec = json{{"CONTENTPATH", "game.exe"}};
     n.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "game"}} });
@@ -33,7 +34,7 @@ Node launchNode(const std::string & id, const std::string & host, const std::vec
 Node runnerNode(const std::string & id, const std::vector<std::string> & guests,
                 const std::vector<std::string> & parents = {})
 {
-    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; n.Parents = parents;
+    Node n; n.NodeId = id; n.HasRunner = true; n.GuestPlatform = guests; NodeFixture::Wire(n, parents);
     n.HostPlatform = ManifestModel::MachinePlatform();
     n.Exec = json{{"EXECUTABLE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
                   {"PREFIX_GENERATE", true}, {"ARGS", json::array({"waitforexitandrun", "%Content%"})}};
@@ -420,9 +421,9 @@ private slots:
         ch.Nodes["emu_keep"] = contentNode("emu_keep", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","drive_c/emu_state"}} }));
         ch.Nodes["emu"]      = chainRunner("emu", {"vortex"}, "win32");
-        ch.Nodes["emu"].Parents = {"emu_keep"};
+        NodeFixture::Wire(ch.Nodes["emu"], {"emu_keep"});
         ch.Nodes["proton"]   = chainRunner("proton", {"win32"}, kMachine);
-        ch.Nodes["proton"].Parents = {"proton_keep"};
+        NodeFixture::Wire(ch.Nodes["proton"], {"proton_keep"});
         ch.Nodes["proton_keep"] = contentNode("proton_keep", json::array({
             json{{"TYPE","DeclarePersist"},{"SCOPE","file"},{"PATH","pfx/drive_c/users"}} }));
         ch.Nodes["nativerun"] = chainRunner("nativerun", {kMachine}, kMachine, "");

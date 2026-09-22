@@ -30,31 +30,24 @@ using namespace ManifestModel;
 
 namespace PackageCatalog {
 
-//A node file holds ONE node object or an ARRAY of them (grouping nodes into files is pure presentation), and a
-//node IS its layer — the payload is hoisted onto the node, so there is no LAYERS array to walk. These two
+//A node file holds ONE node object or an ARRAY of them (grouping nodes into files is pure presentation). These
 //helpers are the whole difference for the seed/publish readers, which parse node JSON directly rather than
 //through ParseNode (they must MUTATE it in place to record the minted SOURCE.CID).
 static std::vector<nlohmann::ordered_json *> NodeDocsOf(nlohmann::ordered_json &J)
 {
     std::vector<nlohmann::ordered_json *> Out;
-    // A node is any object with a TYPE (identity = CID; LABEL is optional). Detecting by LABEL silently
-    // skipped legal nameless nodes → their content was never seeded.
-    if (J.is_array()) { for (auto &N : J) if (N.is_object() && N.contains("TYPE") && N["TYPE"].is_string()) Out.push_back(&N); }
-    else if (J.is_object() && J.contains("TYPE") && J["TYPE"].is_string()) Out.push_back(&J);
+    // A node is any object carrying a node field (ManifestModel::IsNodeObject — the ONE definition). Detecting by
+    // LABEL silently skipped legal nameless nodes → their content was never seeded.
+    if (J.is_array()) { for (auto &N : J) if (ManifestModel::IsNodeObject(N)) Out.push_back(&N); }
+    else if (ManifestModel::IsNodeObject(J)) Out.push_back(&J);
     return Out;
 }
-//VFSLayer nodes are the ones carrying seedable bytes; each LAYERS entry has PATH + SOURCE (FORM says how it
-//is interpreted). Batched: one node holds many layers, so seeding must walk the LAYERS list, not the node.
-static bool IsContentNode(const nlohmann::ordered_json &N)
-{
-    return N.is_object() && N.contains("TYPE") && N["TYPE"].is_string() && N["TYPE"].get<std::string>() == "VFSLayer";
-}
-//The individual content-layer objects (each {FORM, PATH, SOURCE{ipfs,CID}, …}) of a VFSLayer node — the units
-//that carry seedable bytes. Mutable pointers so callers can backfill SOURCE.SIZE / re-stamp CIDs in place.
+//The individual content-layer objects (each {FORM, PATH, SOURCE{ipfs,CID}, …}) of a node's LAYERS — the units that
+//carry seedable bytes. Mutable pointers so callers can backfill SOURCE.SIZE / re-stamp CIDs in place.
 static std::vector<nlohmann::ordered_json *> ContentLayerDocsOf(nlohmann::ordered_json &N)
 {
     std::vector<nlohmann::ordered_json *> Out;
-    if (!IsContentNode(N) || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return Out;
+    if (!N.is_object() || !N.contains("LAYERS") || !N["LAYERS"].is_array()) return Out;
     for (auto &Ly : N["LAYERS"]) if (Ly.is_object()) Out.push_back(&Ly);
     return Out;
 }
@@ -138,12 +131,12 @@ bool StampNodePositions(const std::string &PackageDir, const nlohmann::ordered_j
                     "laid out, and every other node's position is computed without them.");
             continue;
         }
-        if (J.is_object() && J.contains("TYPE") && J["TYPE"].is_string())
+        if (ManifestModel::IsNodeObject(J))
         { Slots.push_back({F, false, 0}); Nodes.push_back(J); Loaded[F] = std::move(J); }
         else if (J.is_array())
         {
             for (size_t I = 0; I < J.size(); ++I)
-                if (J[I].is_object() && J[I].contains("TYPE") && J[I]["TYPE"].is_string())
+                if (ManifestModel::IsNodeObject(J[I]))
                 { Slots.push_back({F, true, I}); Nodes.push_back(J[I]); }
             Loaded[F] = std::move(J);
         }
@@ -342,15 +335,15 @@ bool PublishPackage(const std::string &PackageDir, const std::string &Dehydrated
         for (nlohmann::ordered_json *Np : NodeDocsOf(Frag))
         {
             nlohmann::ordered_json &S = *Np;
-            //Cover art lives on the DeclareLibraryItem node's COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
+            //Cover art lives on the node's TILE.COVER field ({PATH, SOURCE:{ipfs,CID}}, like content).
             //A COVER of any OTHER shape is content that will never be addressed: this was `is_object()` and
             //nothing else, so a bare-string COVER — the pre-node form — was stepped over in total silence.
             //One shipped that way (Tonic Trouble's library tile): the PNG sat in the bundle, was never seeded,
             //and ManifestTargets and PackageCoverCids both require the object form, so no peer could ever
             //receive the tile art and nothing anywhere said so. Counted as a gap, because that is what it is.
-            if (S.contains("COVER") && !S["COVER"].is_null())
+            if (S.contains("TILE") && S["TILE"].is_object() && S["TILE"].contains("COVER") && !S["TILE"]["COVER"].is_null())
             {
-                if (S["COVER"].is_object()) SeedCover(S);
+                if (S["TILE"]["COVER"].is_object()) SeedCover(S["TILE"]);
                 else ++BadCovers;
             }
             //Batched: a VFSLayer node carries a LAYERS list; seed each layer object (each {FORM,PATH,SOURCE}).
@@ -444,17 +437,10 @@ int StampNodeCids(const std::filesystem::path &Root,
     std::error_code Ec;
     if (!fs::is_directory(Root, Ec)) return 0;
 
-    // Remap one CID-string reference old→new. Returns whether it changed. A ref absent from the map is an already-
-    // frozen EXTERNAL dep (cross-bundle / shared library) — left as-is, exactly as FreezeNodeJson passes it through.
-    const auto Remap = [&](nlohmann::ordered_json &Field) -> bool {
-        if (!Field.is_string()) return false;
-        const auto It = HandleToCid.find(Field.get<std::string>());
-        if (It == HandleToCid.end() || It->second == Field.get<std::string>()) return false;
-        Field = It->second;
-        return true;
-    };
+    // A ref absent from the map is an already-frozen EXTERNAL dep (cross-bundle / shared library) — left as-is,
+    // exactly as FreezeNodeJson passes it through (the two share ManifestModel::RemapOverRefs).
     const auto UpdateNode = [&](nlohmann::ordered_json &N) -> bool {
-        if (!N.is_object() || !N.contains("TYPE") || !N["TYPE"].is_string()) return false;
+        if (!ManifestModel::IsNodeObject(N)) return false;
         // ONLY touch a locally-AUTHORED node — one that carries a stored "CID" handle. A node with no "CID" is a
         // fetched/received block (its handle was stripped on landing); rewriting its refs would corrupt the block it
         // was fetched as (an installed friend package's shared node) — leave it entirely alone.
@@ -463,9 +449,11 @@ int StampNodeCids(const std::filesystem::path &Root,
         // The node's own handle (its stored last-minted CID) → its fresh CID.
         const auto It = HandleToCid.find(N["CID"].get<std::string>());
         if (It != HandleToCid.end() && It->second != N["CID"].get<std::string>()) { N["CID"] = It->second; Ch = true; }
-        if (N.contains("PARENTS") && N["PARENTS"].is_array())
-            for (auto &P : N["PARENTS"]) Ch = Remap(P) || Ch;
-        if (N.contains("LIBRARYITEM")) Ch = Remap(N["LIBRARYITEM"]) || Ch;
+        // Every OVER ref (plain, any-of member, NOT) through the ONE remapper freeze uses.
+        Ch = ManifestModel::RemapOverRefs(N, [&](const std::string &R) {
+            const auto Rt = HandleToCid.find(R);
+            return Rt != HandleToCid.end() ? Rt->second : R;
+        }) || Ch;
         return Ch;
     };
 
@@ -569,7 +557,8 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
         for (nlohmann::ordered_json *Np : NodeDocsOf(J))
         {
             if (!CoversOnly) for (nlohmann::ordered_json *Lp : ContentLayerDocsOf(*Np)) Consider(*Lp);  // each VFSLayer LAYERS entry (skipped in covers-only)
-            if (Np->contains("COVER") && (*Np)["COVER"].is_object()) Consider((*Np)["COVER"]);
+            if (Np->contains("TILE") && (*Np)["TILE"].is_object() && (*Np)["TILE"].contains("COVER") && (*Np)["TILE"]["COVER"].is_object())
+                Consider((*Np)["TILE"]["COVER"]);
         }
     }
     return ToSeed;

@@ -95,7 +95,7 @@ void PackageEditorModel::LoadNodes()
         if (JSONOps::LoadJSON(&F, &J)) continue;                     // LoadJSON returns true on FAILURE
         //A file holds ONE node or an ARRAY of them — grouping nodes into files is pure presentation, so the
         //editor reads either and (see SaveNodes) writes back the grouping it found.
-        if (J.is_object() && J.contains("TYPE"))
+        if (ManifestModel::IsNodeObject(J))
         {
             J["__FILE__"] = FileName.toStdString();
             Doc["NODES"].push_back(std::move(J));
@@ -108,7 +108,7 @@ void PackageEditorModel::LoadNodes()
             nlohmann::ordered_json Strays = nlohmann::ordered_json::array();
             for (auto &N : J)
             {
-                if (N.is_object() && N.contains("TYPE"))
+                if (ManifestModel::IsNodeObject(N))
                 {
                     N["__FILE__"] = FileName.toStdString();
                     Doc["NODES"].push_back(std::move(N));
@@ -125,10 +125,10 @@ void PackageEditorModel::LoadNodes()
     }
 
     if (Doc["NODES"].empty())
-        // A fresh empty bundle gets one Group node with a GLOBALLY-unique draft HANDLE ("CID") so the canvas can wire
+        // A fresh empty bundle gets one plain node with a GLOBALLY-unique draft HANDLE ("CID") so the canvas can wire
         // it; the real CID is minted at Publish. (A hardcoded "draft-1" here would collide with every other fresh
-        // bundle at the library-wide publish and cross-wire them.) LABEL is empty (cosmetic — shows its type until named).
-        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"TYPE", "Group"} }));   // pure composition until given a payload
+        // bundle at the library-wide publish and cross-wire them.) LABEL is empty (cosmetic — shows its kind until named).
+        Doc["NODES"].push_back(json::object({ {"CID", MakeDraftHandle()}, {"LABEL", ""}, {"OVER", json::array()} }));   // a plain node until given a payload
 
     Validated = false; emit validationChanged();   // validation is on-demand ("Check Package Validity"); don't auto-run on load
     LoadLayout();
@@ -297,8 +297,8 @@ void PackageEditorModel::SaveNodes()
         if (ByFile.count(Existing)) continue;
         nlohmann::ordered_json J; QFile F(PackageDir->filePath(Existing));
         if (JSONOps::LoadJSON(&F, &J)) continue;
-        const bool IsNodeFile = (J.is_object() && J.contains("TYPE"))
-                             || (J.is_array() && !J.empty() && J[0].is_object() && J[0].contains("TYPE"));
+        const bool IsNodeFile = ManifestModel::IsNodeObject(J)
+                             || (J.is_array() && !J.empty() && ManifestModel::IsNodeObject(J[0]));
         if (IsNodeFile) PackageDir->remove(Existing);
     }
 
@@ -349,7 +349,7 @@ NodeIndex PackageEditorModel::BuildExecIndex() const
     // Merge in the rest of the catalog (CID package sources + local bundles); std::map::emplace keeps this bundle's nodes.
     NodeIndex Cat = PackageCatalog::BuildCatalogIndex(*GlobalConfigJSON);
     for (auto &[Id, N] : Cat.Nodes) Idx.Nodes.emplace(Id, N);
-    ManifestModel::LinkGames(Idx);   // link variants to their game nodes (graph-edge grouping)
+    ManifestModel::DeriveIdentity(Idx);   // grafts inherit their game's identity through OVER
     return Idx;
 }
 
@@ -434,7 +434,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
                                            const std::string & IdHint)
 {
     // Model C: a new node gets a unique, STABLE draft HANDLE (its "CID"); the real CID is minted at Publish. Callers
-    // wire by the RETURNED handle (they push it into another node's PARENTS). IdHint becomes the cosmetic LABEL — a
+    // wire by the RETURNED handle (they push it into another node's OVER). IdHint becomes the cosmetic LABEL — a
     // readable display name, not a key, so it need not be unique.
     auto HandleExists = [this](const std::string & H) {
         for (const auto & N : Doc["NODES"]) if (N.contains("CID") && N["CID"].is_string() && N["CID"].get<std::string>() == H) return true;
@@ -446,7 +446,7 @@ std::string PackageEditorModel::createNode(nlohmann::ordered_json Payload,
     nlohmann::ordered_json N = nlohmann::ordered_json::object({{"CID", Handle}, {"LABEL", IdHint}});
     nlohmann::ordered_json P = nlohmann::ordered_json::array();
     for (const std::string & X : Parents) if (!X.empty()) P.push_back(X);
-    N["PARENTS"] = std::move(P);
+    N["OVER"] = std::move(P);
     for (const auto & [K, V] : Payload.items()) N[K] = V;
     Doc["NODES"].push_back(std::move(N));
     SaveNodes();

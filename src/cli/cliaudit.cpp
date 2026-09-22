@@ -184,8 +184,11 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
                 const std::string Dir = std::filesystem::path(N->BundleDir).filename().string();
                 if (N->NodeId != Scope && N->Uid != Scope && Dir != Scope && Dir.find(Scope) == std::string::npos) continue;
             }
-            const std::string L = !N->Label.empty() ? N->Label
-                                  : (N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId);
+            //The name the picker SHOWS: a launchable's own TITLE qualifies its label when several titles share one
+            //card (a base game and its expansions under one UID) — "Reign of Chaos - v1.31.1" and "The Frozen
+            //Throne - v1.31.1" are distinguishable rows, so they are not duplicates.
+            const std::string Title = N->Meta.is_object() ? N->Meta.value("TITLE", std::string()) : std::string();
+            const std::string L = Title + "\x1f" + (!N->Label.empty() ? N->Label : (Title.empty() ? N->NodeId : Title));
             ByLabel[L].push_back(N);
         }
         for (const auto &[Label, Ns] : ByLabel)

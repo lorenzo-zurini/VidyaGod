@@ -80,7 +80,7 @@
     "lm_group",
     "lm_c_remote",
     "lm_unhydrated",
-    "lm_chained__self"
+    "lm_tile"
   ],
   "RunnerArgs": [
     "--run"

@@ -712,9 +712,14 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             if (eq != std::string::npos)
                 RuntimeParameters.VariableOverrides[kv.substr(0, eq)] = kv.substr(eq + 1);
         }
+        else if (arg == "--entrypoint" && i + 1 < argc)
+        {
+            RuntimeParameters.Entrypoint = argv[++i];
+        }
         else if (arg == "--module" && i + 1 < argc)
         {
-            //Expects COMPONENT=on|off (also true|false / 1|0); toggles one optional module. Malformed skipped.
+            //Expects NODE=on|off (also true|false / 1|0); NODE = a node key (CID) or LABEL. Toggles a TOGGLE'd node in
+            //the launch closure, or selects/deselects a graft. Malformed skipped.
             std::string kv = argv[++i];
             auto eq = kv.find('=');
             if (eq != std::string::npos)

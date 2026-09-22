@@ -68,13 +68,21 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
     if (!CP.AuthoringBare && !Launch->IsLaunchable())
-        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no DeclareExec (not launchable).");
+        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no ENTRYPOINTS (not launchable).");
 
-    CP.subgame_id = LaunchId;  CP.VariantID = "default";
+    //The exec is the SELECTED ENTRYPOINT of the launch node and nothing else: execution is not transitive, so a
+    //node under the launchable (a previous version, a base) never contributes to it.
+    CP.ComposedExec = Launch->ExecFor(CP.Entrypoint);
+    if (!CP.Entrypoint.empty() && !CP.ComposedExec.is_object())
+    {
+        LogErr("InitializeFromNode", "Node '" + LaunchId + "' has no entrypoint labelled '" + CP.Entrypoint + "'.");
+        return false;
+    }
+    CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;
     CP.PackageUID = Launch->Uid.empty() ? LaunchId : Launch->Uid;
     CP.PackageName= Launch->Meta.is_object() ? Launch->Meta.value("TITLE", LaunchId) : LaunchId;
     CP.GameName   = CP.PackageName;
-    CP.Platform   = Launch->HostPlatform;
+    CP.Platform   = CP.ComposedExec.is_object() ? CP.ComposedExec.value("PLATFORM", Launch->HostPlatform) : Launch->HostPlatform;
     CP.PackagePath= AppPaths::PackagePathOverride().empty() ? Launch->BundleDir : AppPaths::PackagePathOverride();  // --package-dir / in-package
     CP.UMUID      = Launch->Meta.is_object() ? Launch->Meta.value("UMUID", std::string("0")) : "0";
 
@@ -198,25 +206,28 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
 
     //Game content nodes (resolved order; runners + the launch node excluded), then the launch node's own layers.
     std::vector<std::string> Missing;
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates, &Missing))
+    const std::vector<std::string> BaseOrder = ManifestModel::ResolveNodeOrder(Idx, LaunchId, CP.ModuleStates, &Missing);
+    for (const std::string &Id : BaseOrder)
     {
         if (Id == LaunchId) continue;
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner()) continue;
         AddComponent(N);
     }
-    for (const auto &M : Missing) LogWarn("InitializeFromNode", "Unresolved parent: " + M);
+    for (const auto &M : Missing) LogWarn("InitializeFromNode", "Unresolved requirement: " + M);
     if (Launch->Layers.is_array() && !Launch->Layers.empty())
     { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
 
-    //Compose the launch EXEC across the closure: every DeclareExec contributor merges field-by-field in closure order
-    //(parents first, the launchable last → highest priority), so a base supplies CONTENTPATH/WORKDIR and a variant/mod
-    //overrides EXEARGS, etc. Runners are excluded (their EXEC is the runner's own, resolved via the chain). Uses the same
-    //ComposeAcrossClosure merge as the index-time DeclareLibraryItem/Meta inheritance and the CustomVar/Persist passes.
-    CP.ComposedExec = ManifestModel::ComposeAcrossClosure(Idx, LaunchId, CP.ModuleStates,
-        [](const Node &N) -> const nlohmann::ordered_json * {
-            return (!N.IsRunner() && N.IsLaunchable() && N.Exec.is_object()) ? &N.Exec : nullptr;
-        });
+    //GRAFTS — the selected nodes that are OVER this title without being in anybody's list — mount ABOVE the
+    //launchable's own closure (later component = higher priority), in instance precedence. Scope: a node with a
+    //bundle dir (the index carries none for a frozen browse stub) — a CATALOG stub never grafts.
+    for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchId, CP.ModuleStates, BaseOrder, CP.GraftPrecedence,
+                                                                  [](const Node &N) { return !N.BundleDir.empty(); }))
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N || N->IsRunner()) continue;
+        AddComponent(N);
+    }
 
     //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
     //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.

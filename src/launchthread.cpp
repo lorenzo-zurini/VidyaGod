@@ -112,6 +112,8 @@ void LaunchThread::run()
     Params.NodeIdx      = Index.get();
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
+    Params.Entrypoint   = this->Entrypoint;
+    Params.GraftPrecedence = this->GraftPrecedence;
     Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
 
     nlohmann::ordered_json UnusedManifest = nlohmann::ordered_json::object();

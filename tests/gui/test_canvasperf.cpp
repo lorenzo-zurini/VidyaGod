@@ -59,7 +59,7 @@ private slots:
                 const int Src = (I * 7 + K * 13) % std::max(1, chainLen);
                 if (Src < I) P.push_back("c" + std::to_string(Src));
             }
-            N["PARENTS"] = P;
+            N["OVER"] = P;
             Nodes.push_back(std::move(N));
         }
         return json{{"NODES", std::move(Nodes)}};

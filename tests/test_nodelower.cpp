@@ -40,17 +40,31 @@ bool Refused(const ordered_json &Node)
 // equivalence test then proves N items in one node lower to the same layers as N one-item nodes.
 ordered_json Vfs(ordered_json Item, ordered_json Extra = ordered_json::object())
 {
-    ordered_json N{{"LABEL", "c"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array({std::move(Item)})}};
+    ordered_json N{{"LABEL", "c"}, {"LAYERS", ordered_json::array({std::move(Item)})}};
     for (auto &[K, V] : Extra.items()) N[K] = V;                 // node-level WHEN/TOGGLE for a few tests
     return N;
 }
 ordered_json Var(ordered_json Item)
 {
-    return ordered_json{{"LABEL", "v"}, {"TYPE", "CustomVar"}, {"VARS", ordered_json::array({std::move(Item)})}};
+    return ordered_json{{"LABEL", "v"}, {"VARS", ordered_json::array({std::move(Item)})}};
 }
 ordered_json Persist(ordered_json Item)
 {
-    return ordered_json{{"LABEL", "p"}, {"TYPE", "DeclarePersist"}, {"PERSISTS", ordered_json::array({std::move(Item)})}};
+    return ordered_json{{"LABEL", "p"}, {"PERSISTS", ordered_json::array({std::move(Item)})}};
+}
+//An entrypoint entry, lowered through the SAME front-end the parser uses (LowerEntrypoint).
+ordered_json LowerEp(const ordered_json &Entry, std::string *Err = nullptr)
+{
+    std::string E;
+    ordered_json Out = NodeLower::LowerEntrypoint(Entry, "n", E);
+    if (Err) *Err = E;
+    return Out;
+}
+bool EpRefused(const ordered_json &Entry)
+{
+    std::string E;
+    NodeLower::LowerEntrypoint(Entry, "n", E);
+    return !E.empty();
 }
 
 } // namespace
@@ -65,14 +79,12 @@ ordered_json Persist(ordered_json Item)
 TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
 {
     const ordered_json Bad[] = {
-        {{"LABEL","a"}, {"TYPE", 5}},                                             // the TYPE itself
-        {{"LABEL","b"}, {"TYPE","DeclareExec"}, {"HOST","w"}, {"PATH","g"}, {"RECOMMENDED","yes"}},
-        {{"TYPE","DeclareExec"}, {"HOST","w"}, {"PATH","g"}, {"LABEL", 5}},   // non-string LABEL → refused
-        {{"LABEL","d"}, {"TYPE","DeclareExec"}, {"HOST","w"}, {"PATH","g"}, {"RUNNER", 5}},
-        {{"LABEL","e"}, {"TYPE","DeclareLibraryItem"}, {"UID", 749}},
+        {{"LABEL","a"}, {"LAYERS", 5}},                                           // a payload that is not a list
+        {{"LABEL","a2"}, {"LAYER", ordered_json::array()}},                       // an unknown field (a typo'd payload)
+        {{"LABEL","a3"}, {"TYPE", "VFSLayer"}, {"LAYERS", ordered_json::array()}}, // a legacy TYPE is unknown vocabulary
         Var({{"KEY", 5}}),                                                       // batched var, non-string KEY
         Vfs({{"FORM","zip"}, {"PATH", 5}}),                                       // batched layer, non-string PATH
-        {{"LABEL","h"}, {"TYPE","RegEdit"}, {"EDITS", ordered_json::array({
+        {{"LABEL","h"}, {"REGEDITS", ordered_json::array({
             ordered_json{{"OVERRIDE","true"}, {"HKCU", {{"S", {{"v","1"}}}}}}})}},
         Vfs({{"FORM","zip"}, {"PATH","a.zip"}, {"SUBMOUNTS","a:b"}}),             // SUBMOUNTS must be a str-array
     };
@@ -83,11 +95,14 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
     // value may legitimately be named "PATH"), but every reader takes their values as strings. A tile's META
     // is hoisted FLAT onto the layer, so a key whitelist could not see it at all — `"UMUID": 12345` sailed
     // through and aborted the launch.
-    CHECK(Refused(ordered_json{{"LABEL","t"}, {"TYPE","DeclareLibraryItem"}, {"UID","1"},
-                               {"META", {{"UMUID", 12345}}}}));
-    CHECK(Refused(ordered_json{{"LABEL","e"}, {"TYPE","DeclareExec"}, {"HOST","l"},
-                               {"GUEST", ordered_json::array({"w"})}, {"PATH","p"}, {"ENV", {{"K", 5}}}}));
-    CHECK(Refused(ordered_json{{"LABEL","r"}, {"TYPE","RegEdit"}, {"EDITS", ordered_json::array({
+    //ENTRYPOINTS entries go through the same well-typed contract (LowerEntrypoint): a refusal, never a throw.
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"RECOMMENDED","yes"}}));
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"LABEL", 5}}));
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"RUNNER", 5}}));
+    CHECK(EpRefused(ordered_json{{"HOST","l"}, {"GUEST", ordered_json::array({"w"})}, {"PATH","p"}, {"ENV", {{"K", 5}}}}));
+    CHECK(EpRefused(ordered_json{{"PATH","g"}}));                                   // no HOST
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"WHEN","%A%==1"}}));  // never conditional
+    CHECK(Refused(ordered_json{{"LABEL","r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"HKCU", {{"S", {{"v", 5}}}}}}})}}));
     // ...but a NUMBER where the schema says number is fine, and an unlisted key inside a schema sub-object is
     // simply one the table has not learned — constraining it would be the COVER mistake again.
@@ -98,11 +113,15 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
                         {"UI", {{"CHOICES", ordered_json::array({"60", "120"})}}}})));
 
     // COVER is deliberately unconstrained: it is dual-form (a bare filename OR a {PATH,SOURCE} object) and
-    // every consumer branches on which. Constraining it rejected a real shipping node.
-    CHECK(!Refused(ordered_json{{"LABEL","t"}, {"TYPE","DeclareLibraryItem"}, {"UID","1"},
-                                {"COVER","cover.jpg"}}));
-    CHECK(!Refused(ordered_json{{"LABEL","t"}, {"TYPE","DeclareLibraryItem"}, {"UID","1"},
-                                {"COVER", {{"PATH","c.jpg"}}}}));
+    // every consumer branches on which. A TILE is a facet, not payload — it lowers to no layer and is read by
+    // ParseNode, which accepts both cover forms.
+    for (const ordered_json &Cover : {ordered_json("cover.jpg"), ordered_json{{"PATH","c.jpg"}}})
+    {
+        Node P;
+        CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TILE", {{"UID","1"}, {"COVER", Cover}}}}, "f.json", "/b", P));
+        CHECK(P.LowerError.empty());
+        CHECK(P.OwnTile);
+    }
 }
 
 // A non-string WHEN was SILENTLY IGNORED — the layer applied unconditionally, which is the precise failure
@@ -120,7 +139,7 @@ TEST(lower_refuses_a_non_string_when)
 TEST(parse_node_refuses_a_type_confused_raw_field_instead_of_throwing)
 {
     Node N;
-    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","e"}, {"TYPE","Group"}, {"TOGGLE", true}},
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","e"}, {"TOGGLE", true}},
                                    "f.json", "/b", N));
     CHECK(!N.LowerError.empty());          // indexed and named, not dropped and not thrown
     CHECK_EQ((int)N.Layers.size(), 0);
@@ -147,7 +166,7 @@ TEST(lower_content_maps_form_to_layer_type_and_carries_placement)
         CHECK(L[0].contains("SUBMOUNTS") && L[0].contains("SOURCE"));
     }
     CHECK(Refused(Vfs({{"FORM", "tarball"}})));                                   // unknown FORM
-    CHECK(Refused(ordered_json{{"LABEL","c"}, {"TYPE","VFSLayer"}}));             // no LAYERS array
+    CHECK(Refused(ordered_json{{"LABEL","c"}, {"LAYERS", ordered_json::array()}}));             // no LAYERS array
 }
 
 // A delta's byte-base(s) are BASE_TARGETS: ONE key, ALWAYS a list, node and layer alike. One entry is the
@@ -206,7 +225,7 @@ TEST(lower_content_base_targets_only_means_something_on_a_delta)
 // emits one layer per level, and an EMPTY object is "create this key, no values".
 TEST(lower_regedit_flattens_the_hive_tree)
 {
-    ordered_json N{{"LABEL", "r"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
+    ordered_json N{{"LABEL", "r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"ARCHITECTURE", ordered_json::array({"32"})},
                      {"HKLM", {{"Software", {{"App", {{"v", "1"}, {"Sub", {{"w", "2"}}}}}}}}}}})}};
     const ordered_json L = Lower(N);
@@ -219,12 +238,12 @@ TEST(lower_regedit_flattens_the_hive_tree)
     //whole-key replace against the live prefix.
     for (const auto &E : L) CHECK(!E.contains("OVERRIDE"));
     //...and no ARCHITECTURE key at all when none was declared — a literal null throws in the executor.
-    ordered_json NoArch{{"LABEL","r"}, {"TYPE","RegEdit"}, {"EDITS", ordered_json::array({
+    ordered_json NoArch{{"LABEL","r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"HKCU", {{"S", {{"v","1"}}}}}}})}};
     CHECK(!Lower(NoArch)[0].contains("ARCHITECTURE"));
 
     // create-key-only
-    ordered_json E{{"LABEL", "r"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
+    ordered_json E{{"LABEL", "r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"HKCU", {{"Software", {{"Empty", ordered_json::object()}}}}}}})}};
     const ordered_json K = Lower(E);
     CHECK_EQ((int)K.size(), 1);
@@ -236,7 +255,7 @@ TEST(lower_regedit_flattens_the_hive_tree)
 // applies to exactly one).
 TEST(lower_regedit_arrayable_architecture_emits_one_layer_per_view)
 {
-    ordered_json N{{"LABEL", "r"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
+    ordered_json N{{"LABEL", "r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"ARCHITECTURE", ordered_json::array({"32", "64"})}, {"OVERRIDE", true},
                      {"HKLM", {{"S", {{"v", "1"}}}}}}})}};
     const ordered_json L = Lower(N);
@@ -251,7 +270,7 @@ TEST(lower_regedit_arrayable_architecture_emits_one_layer_per_view)
 // both fired every launch, the second overwriting the first. Inert-looking in the file, live at launch.
 TEST(lower_regedit_entry_when_reaches_every_layer_it_produced)
 {
-    ordered_json N{{"LABEL", "r"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
+    ordered_json N{{"LABEL", "r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"ARCHITECTURE", ordered_json::array({"32", "64"})},
                      {"WHEN", "%NETMODE% == host"},
                      {"HKCU", {{"S", {{"Hosting", "1"}, {"Deep", {{"x", "2"}}}}}}}},
@@ -271,8 +290,8 @@ TEST(lower_regedit_entry_when_reaches_every_layer_it_produced)
 // hold — taking either alone silently widens or narrows what the author wrote.
 TEST(lower_node_when_and_entry_when_are_combined_not_replaced)
 {
-    ordered_json N{{"LABEL", "r"}, {"TYPE", "RegEdit"}, {"WHEN", "%A% == 1"},
-                   {"EDITS", ordered_json::array({
+    ordered_json N{{"LABEL", "r"}, {"WHEN", "%A% == 1"},
+                   {"REGEDITS", ordered_json::array({
                        ordered_json{{"WHEN", "%B% == 2"}, {"HKCU", {{"S", {{"v", "1"}}}}}},
                        ordered_json{{"HKCU", {{"T", {{"v", "1"}}}}}}})}};
     const ordered_json L = Lower(N);
@@ -285,8 +304,8 @@ TEST(lower_node_when_and_entry_when_are_combined_not_replaced)
 
     //A whitespace-only own-condition composes to "(A) && (  )", which the parser REJECTS — and an unparseable
     //WHEN fails OPEN, so the node's real condition would silently evaporate. Trimmed to empty instead.
-    ordered_json Blank{{"LABEL","r"}, {"TYPE","RegEdit"}, {"WHEN","%A% == 1"},
-                       {"EDITS", ordered_json::array({
+    ordered_json Blank{{"LABEL","r"}, {"WHEN","%A% == 1"},
+                       {"REGEDITS", ordered_json::array({
                            ordered_json{{"WHEN","   "}, {"HKCU", {{"S", {{"v","1"}}}}}}})}};
     CHECK_EQ(Lower(Blank)[0].value("WHEN", std::string()), std::string("%A% == 1"));
 }
@@ -303,13 +322,13 @@ TEST(lower_node_when_reaches_every_gated_type)
 {
     const ordered_json Nodes[] = {
         Vfs({{"FORM", "zip"}, {"PATH", "a.zip"}}),
-        {{"LABEL", "b"}, {"TYPE", "RegEdit"}, {"EDITS", ordered_json::array({
+        {{"LABEL", "b"}, {"REGEDITS", ordered_json::array({
             ordered_json{{"HKCU", {{"S", {{"v", "1"}}}}}}})}},
-        {{"LABEL", "c"}, {"TYPE", "FileEdit"}, {"FILE", "f.ini"}, {"EDITS", ordered_json::array({
-            ordered_json{{"MODE", "AppendLine"}, {"VALUE", "x"}}})}},
-        {{"LABEL", "d"}, {"TYPE", "BinaryPatch"}, {"FILE", "g.exe"}, {"EDITS", ordered_json::array({
-            ordered_json{{"MODE", "Replace"}, {"OFFSET", "0x1"}, {"EXPECT", "01"}, {"REPLACE", "00"}}})}},
-        {{"LABEL", "e"}, {"TYPE", "DllOverride"}, {"OVERRIDES", {{"d3d8", "n,b"}}}},
+        {{"LABEL", "c"}, {"FILEEDITS", ordered_json::array({ ordered_json{{"FILE", "f.ini"}, {"EDITS", ordered_json::array({
+            ordered_json{{"MODE", "AppendLine"}, {"VALUE", "x"}}})}} })}},
+        {{"LABEL", "d"}, {"PATCHES", ordered_json::array({ ordered_json{{"FILE", "g.exe"}, {"EDITS", ordered_json::array({
+            ordered_json{{"MODE", "Replace"}, {"OFFSET", "0x1"}, {"EXPECT", "01"}, {"REPLACE", "00"}}})}} })}},
+        {{"LABEL", "e"}, {"DLLOVERRIDES", {{"d3d8", "n,b"}}}},
         Persist({{"SCOPE", "file"}, {"PATH", "a"}, {"TARGET", "a"}}),
         Var({{"KEY", "K"}, {"DEFAULT", "1"}}),
     };
@@ -324,13 +343,16 @@ TEST(lower_node_when_reaches_every_gated_type)
 }
 
 // The other half of the same contract: a WHEN whose consumer does not exist must be REFUSED, not accepted and
-// ignored. Enforced by ValidateNodeGraph (the lowering still carries it, so the error can name it).
+// ignored. A TILE or an ENTRYPOINTS facet emits no layer, so a node carrying only those has nothing to gate —
+// enforced by ValidateNodeGraph ("WHEN on a payload-less node").
 TEST(lower_when_on_an_identity_type_is_rejected_by_validation)
 {
-    for (const char *T : {"DeclareExec", "DeclareLibraryItem"})
+    const ordered_json Facets[] = {
+        ordered_json{{"LABEL", "n"}, {"WHEN", "%A% == 1"}, {"ENTRYPOINTS", ordered_json::array({ ordered_json{{"HOST", "win32"}, {"PATH", "g.exe"}} })}},
+        ordered_json{{"LABEL", "n"}, {"WHEN", "%A% == 1"}, {"TILE", {{"UID", "1"}}}},
+    };
+    for (const ordered_json &N : Facets)
     {
-        ordered_json N{{"LABEL", "n"}, {"TYPE", T}, {"WHEN", "%A% == 1"},
-                       {"HOST", "win32"}, {"PATH", "g.exe"}, {"UID", "1"}};
         NodeIndex Idx;
         Node Parsed;
         CHECK(ManifestModel::ParseNode(N, "f.json", "/b", Parsed));
@@ -358,10 +380,10 @@ TEST(lower_when_on_an_identity_type_is_rejected_by_validation)
 // whatever the engine learns to read next.
 TEST(lower_fileedit_and_binarypatch_batch_onto_the_node_file)
 {
-    ordered_json F{{"LABEL", "f"}, {"TYPE", "FileEdit"}, {"FILE", "cfg.ini"}, {"OVERRIDE", true},
+    ordered_json F{{"LABEL", "f"}, {"FILEEDITS", ordered_json::array({ ordered_json{{"FILE", "cfg.ini"}, {"OVERRIDE", true},
                    {"EDITS", ordered_json::array({
                        ordered_json{{"MODE", "ConfigWrite"}, {"KEY", "R="}, {"VALUE", "1"}},
-                       ordered_json{{"MODE", "AppendLine"}, {"VALUE", "x"}}})}};
+                       ordered_json{{"MODE", "AppendLine"}, {"VALUE", "x"}}})}} })}};
     const ordered_json LF = Lower(F);
     CHECK_EQ((int)LF.size(), 2);
     for (const auto &L : LF)
@@ -372,19 +394,19 @@ TEST(lower_fileedit_and_binarypatch_batch_onto_the_node_file)
     }
     CHECK_EQ(LF[0].value("KEY", std::string()), std::string("R="));
     //OVERRIDE is a FileEdit pass selector; it must not leak onto BinaryPatch layers, where it means nothing.
-    ordered_json BOv{{"LABEL","b"}, {"TYPE","BinaryPatch"}, {"FILE","g.exe"}, {"OVERRIDE", true},
+    ordered_json BOv{{"LABEL","b"}, {"PATCHES", ordered_json::array({ ordered_json{{"FILE","g.exe"}, {"OVERRIDE", true},
                      {"EDITS", ordered_json::array({ordered_json{{"MODE","Replace"}, {"OFFSET","0x1"},
-                                                                 {"EXPECT","aa"}, {"REPLACE","bb"}}})}};
+                                                                 {"EXPECT","aa"}, {"REPLACE","bb"}}})}} })}};
     CHECK(!Lower(BOv)[0].contains("OVERRIDE"));
 
     // Every BinaryPatch mode's payload field survives — the editor offers Cave and Poke, so the lowering must
     // carry PAYLOAD/CAVE/VALUE/ANCHOR/APPLY or the patch is a no-op with no diagnostic.
-    ordered_json B{{"LABEL", "b"}, {"TYPE", "BinaryPatch"}, {"FILE", "g.exe"},
+    ordered_json B{{"LABEL", "b"}, {"PATCHES", ordered_json::array({ ordered_json{{"FILE", "g.exe"},
                    {"EDITS", ordered_json::array({
                        ordered_json{{"MODE", "Cave"}, {"OFFSET", "0x1"}, {"EXPECT", "aa"},
                                     {"PAYLOAD", "90"}, {"CAVE", "auto"}, {"COMMENT", "c"}},
                        ordered_json{{"MODE", "Poke"}, {"ANCHOR", "8b ?? 24"}, {"VALUE", "%W:u16le%"},
-                                    {"APPLY", "memory"}}})}};
+                                    {"APPLY", "memory"}}})}} })}};
     const ordered_json LB = Lower(B);
     CHECK_EQ((int)LB.size(), 2);
     CHECK_EQ(LB[0].value("PAYLOAD", std::string()), std::string("90"));
@@ -393,14 +415,26 @@ TEST(lower_fileedit_and_binarypatch_batch_onto_the_node_file)
     CHECK_EQ(LB[1].value("VALUE", std::string()), std::string("%W:u16le%"));
     CHECK_EQ(LB[1].value("APPLY", std::string()), std::string("memory"));
     for (const auto &L : LB) CHECK_EQ(L.value("FILE", std::string()), std::string("g.exe"));
+
+    //One node may patch SEVERAL files: each PATCHES/FILEEDITS entry carries its own FILE.
+    ordered_json Two{{"LABEL", "two"}, {"PATCHES", ordered_json::array({
+        ordered_json{{"FILE", "a.exe"}, {"EDITS", ordered_json::array({ordered_json{{"MODE","Replace"},{"OFFSET","0x1"},{"EXPECT","aa"},{"REPLACE","bb"}}})}},
+        ordered_json{{"FILE", "b.exe"}, {"EDITS", ordered_json::array({ordered_json{{"MODE","Replace"},{"OFFSET","0x2"},{"EXPECT","cc"},{"REPLACE","dd"}}})}} })}};
+    const ordered_json LT = Lower(Two);
+    CHECK_EQ((int)LT.size(), 2);
+    CHECK_EQ(LT[0].value("FILE", std::string()), std::string("a.exe"));
+    CHECK_EQ(LT[1].value("FILE", std::string()), std::string("b.exe"));
+    //...and an entry with no FILE or no EDITS is refused, not applied to nothing.
+    CHECK(Refused(ordered_json{{"LABEL","x"}, {"PATCHES", ordered_json::array({ ordered_json{{"EDITS", ordered_json::array({ordered_json{{"MODE","Replace"}}})}} })}}));
+    CHECK(Refused(ordered_json{{"LABEL","x"}, {"FILEEDITS", ordered_json::array({ ordered_json{{"FILE","f"}} })}}));
 }
 
 // An EMPTY override order means DISABLED in wine. Defaulting it to "n,b" inverts what the package asked for —
 // which is how a media stack's deliberate "winegstreamer=" once became "winegstreamer=n,b".
 TEST(lower_dlloverride_preserves_an_empty_order)
 {
-    ordered_json N{{"LABEL", "d"}, {"TYPE", "DllOverride"},
-                   {"OVERRIDES", {{"d3d8", "n,b"}, {"winegstreamer", ""}}}};
+    ordered_json N{{"LABEL", "d"},
+                   {"DLLOVERRIDES", {{"d3d8", "n,b"}, {"winegstreamer", ""}}}};
     const ordered_json L = Lower(N);
     CHECK_EQ((int)L.size(), 2);
     bool SawEmpty = false, SawNb = false;
@@ -414,7 +448,7 @@ TEST(lower_dlloverride_preserves_an_empty_order)
     CHECK(SawNb);
 
     // package JSON arrives from peers: refuse, don't throw
-    CHECK(Refused(ordered_json{{"LABEL", "d"}, {"TYPE", "DllOverride"}, {"OVERRIDES", {{"d3d8", 7}}}}));
+    CHECK(Refused(ordered_json{{"LABEL", "d"}, {"DLLOVERRIDES", {{"d3d8", 7}}}}));
 }
 
 // DeclarePersist is one-node = one-persist (no arrays to expand): every field is type-checked and a malformed one
@@ -426,7 +460,7 @@ TEST(lower_declarepersist_refuses_a_malformed_field)
     CHECK(Refused(Persist({{"PATH", ordered_json::array()}})));
     CHECK(Refused(Persist({{"TARGET", 7}})));
     CHECK(Refused(Persist({{"CLOUD", "yes"}})));
-    CHECK(Refused(ordered_json{{"LABEL","p"}, {"TYPE","DeclarePersist"}}));       // no PERSISTS array
+    CHECK(Refused(ordered_json{{"LABEL","p"}, {"PERSISTS", ordered_json::array()}}));   // an EMPTY PERSISTS list
     // ...and a well-formed persist lowers without complaint.
     CHECK(!Refused(Persist({{"SCOPE","file"}, {"PATH","drive_c/Saves"}, {"TARGET","Saves"}, {"CLOUD",true}})));
 }
@@ -471,7 +505,7 @@ TEST(lower_customvar_carries_the_ui_facet_and_comment)
 TEST(lower_batched_node_equals_the_same_items_as_separate_nodes)
 {
     // CustomVar: 3 vars in one node == 3 one-var nodes (order preserved, all fields carried).
-    ordered_json Batched{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", ordered_json::array({
+    ordered_json Batched{{"LABEL","v"}, {"VARS", ordered_json::array({
         ordered_json{{"KEY","A"},{"DEFAULT","1"}},
         ordered_json{{"KEY","B"},{"DEFAULT","2"},{"WHEN","%A%==1"}},
         ordered_json{{"KEY","C"},{"DEFAULT","3"},{"UI",{{"CONTROL","text"}}}}})}};
@@ -491,7 +525,7 @@ TEST(lower_batched_node_equals_the_same_items_as_separate_nodes)
     CHECK_EQ(OneEach[0], L[0]);
 
     // VFSLayer: two layers in one node, order = mount/precedence order.
-    ordered_json Vl{{"LABEL","c"}, {"TYPE","VFSLayer"}, {"LAYERS", ordered_json::array({
+    ordered_json Vl{{"LABEL","c"}, {"LAYERS", ordered_json::array({
         ordered_json{{"FORM","zip"},{"PATH","base.zip"},{"SOURCE",{{"TYPE","ipfs"},{"CID","Qm1"}}}},
         ordered_json{{"FORM","delta"},{"PATH","p.vgdelta"},{"BASE_TARGETS",ordered_json::array({""})},
                      {"SOURCE",{{"TYPE","ipfs"},{"CID","Qm2"}}}}})}};
@@ -503,7 +537,7 @@ TEST(lower_batched_node_equals_the_same_items_as_separate_nodes)
     CHECK_EQ(VL[1].value("PATH", std::string()), std::string("p.vgdelta"));
 
     // DeclarePersist: two persists in one node.
-    ordered_json Pn{{"LABEL","p"}, {"TYPE","DeclarePersist"}, {"PERSISTS", ordered_json::array({
+    ordered_json Pn{{"LABEL","p"}, {"PERSISTS", ordered_json::array({
         ordered_json{{"SCOPE","file"},{"PATH","Saves"},{"TARGET","Saves"}},
         ordered_json{{"SCOPE","registry"},{"PATH","HKCU\\Game"},{"TARGET","Game"}}})}};
     const ordered_json PL = Lower(Pn);
@@ -516,7 +550,7 @@ TEST(lower_batched_node_equals_the_same_items_as_separate_nodes)
 // alone silently widens or narrows what the author wrote.
 TEST(lower_batched_node_when_ands_with_each_item_when)
 {
-    ordered_json N{{"LABEL","v"}, {"TYPE","CustomVar"}, {"WHEN","%MODE%==mp"}, {"VARS", ordered_json::array({
+    ordered_json N{{"LABEL","v"}, {"WHEN","%MODE%==mp"}, {"VARS", ordered_json::array({
         ordered_json{{"KEY","A"},{"DEFAULT","1"}},                                 // no own WHEN -> gets the node's
         ordered_json{{"KEY","B"},{"DEFAULT","2"},{"WHEN","%A%==1"}}})}};           // own WHEN -> ANDed
     const ordered_json L = Lower(N);
@@ -528,26 +562,26 @@ TEST(lower_batched_node_when_ands_with_each_item_when)
 // A malformed item is a NAMED refusal (not a throw, not a silent drop of the rest of the batch).
 TEST(lower_batched_node_refuses_a_malformed_item)
 {
-    CHECK(Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", ordered_json::array({
+    CHECK(Refused(ordered_json{{"LABEL","v"}, {"VARS", ordered_json::array({
         ordered_json{{"KEY","A"},{"DEFAULT","1"}}, ordered_json{{"DEFAULT","2"}}})}}));   // 2nd has no KEY
-    CHECK(Refused(ordered_json{{"LABEL","c"}, {"TYPE","VFSLayer"}, {"LAYERS", ordered_json::array({
+    CHECK(Refused(ordered_json{{"LABEL","c"}, {"LAYERS", ordered_json::array({
         ordered_json{{"FORM","zip"},{"PATH","a"}}, ordered_json{{"FORM","nope"}}})}}));   // 2nd unknown FORM
-    CHECK(Refused(ordered_json{{"LABEL","v"}, {"TYPE","CustomVar"}, {"VARS", "notarray"}}));  // VARS not an array
+    CHECK(Refused(ordered_json{{"LABEL","v"}, {"VARS", "notarray"}}));  // VARS not an array
 }
 
 // ---- DeclareExec / DeclareLibraryItem / Group ----------------------------------------------------
 
-// ONE type, two readings. No GUEST => a launchable (DeclareExec, PLATFORM/CONTENTPATH/EXEARGS); GUEST =>
-// a runner (DeclareRunner, HOST/GUEST/EXECUTABLE/ARGS). Getting this backwards makes a game unlaunchable or a
-// runner invisible, so it is pinned in both directions.
+// ONE entry shape, two readings. No GUEST => a launchable (PLATFORM/CONTENTPATH/EXEARGS); GUEST => a runner
+// (HOST/GUEST/EXECUTABLE/ARGS). Getting this backwards makes a game unlaunchable or a runner invisible, so it is
+// pinned in both directions.
 TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
 {
-    ordered_json Game{{"TYPE", "DeclareExec"}, {"HOST", "win32"}, {"PATH", "g.exe"},
+    ordered_json Game{{"HOST", "win32"}, {"PATH", "g.exe"},
                       {"ARGS", ordered_json::array({"xres=1920", "a b"})}, {"LABEL", "GOTY"},
                       {"RECOMMENDED", true}, {"WORKDIR", "w"}, {"RUNNER", "pinned"}};
-    const ordered_json LG = Lower(Game);
+    const ordered_json LG = ordered_json::array({LowerEp(Game)});
     CHECK_EQ((int)LG.size(), 1);
-    CHECK_EQ(LG[0].value("TYPE", std::string()), std::string("DeclareExec"));
+    CHECK(!LG[0].contains("GUEST"));
     CHECK_EQ(LG[0].value("PLATFORM", std::string()), std::string("win32"));
     CHECK_EQ(LG[0].value("CONTENTPATH", std::string()), std::string("g.exe"));
     CHECK_EQ(LG[0].value("LABEL", std::string()), std::string("GOTY"));
@@ -561,14 +595,14 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     CHECK_EQ(LG[0].value("WORKDIR", std::string()), std::string("w"));
     CHECK(LG[0].value("RECOMMENDED", false));
 
-    ordered_json Runner{{"LABEL", "r"}, {"TYPE", "DeclareExec"}, {"HOST", "linux64"},
+    ordered_json Runner{{"LABEL", "r"}, {"HOST", "linux64"},
                         {"GUEST", ordered_json::array({"win32", "win64"})},
                         {"PATH", "%RunnerMount%/proton"}, {"ARGS", ordered_json::array({"waitforexitandrun"})},
                         {"ENV", {{"K", "V"}}}, {"ENV_REMOVE", ordered_json::array({"LD_LIBRARY_PATH"})},
                         {"CONTENT_ROOT", "pfx/drive_c/1"}, {"PREFIX_GENERATE", true}};
-    const ordered_json LR = Lower(Runner);
+    const ordered_json LR = ordered_json::array({LowerEp(Runner)});
     CHECK_EQ((int)LR.size(), 1);
-    CHECK_EQ(LR[0].value("TYPE", std::string()), std::string("DeclareRunner"));
+    CHECK(LR[0].contains("GUEST"));
     CHECK_EQ(LR[0].value("EXECUTABLE", std::string()), std::string("%RunnerMount%/proton"));
     CHECK_EQ((int)LR[0].value("GUEST", ordered_json::array()).size(), 2);
     //The runner's own ARGS are the launcher verb (proton's "waitforexitandrun"). Dropping them silently runs
@@ -581,70 +615,99 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     CHECK_EQ(LR[0].value("CONTENT_ROOT", std::string()), std::string("pfx/drive_c/1"));
     CHECK_EQ(LR[0].value("ENV", ordered_json::object()).value("K", std::string()), std::string("V"));
     ordered_json Unified = Runner; Unified["UNIFIED_RUNTIME"] = true;
-    CHECK(Lower(Unified)[0].value("UNIFIED_RUNTIME", false));
+    CHECK(LowerEp(Unified).value("UNIFIED_RUNTIME", false));
 
     // An EMPTY guest list is a launchable, not a runner with no guests.
     ordered_json Empty = Game; Empty["GUEST"] = ordered_json::array();
-    CHECK_EQ(Lower(Empty)[0].value("TYPE", std::string()), std::string("DeclareExec"));
+    CHECK(!LowerEp(Empty).contains("GUEST"));
+    CHECK_EQ(LowerEp(Empty).value("PLATFORM", std::string()), std::string("win32"));
+
+    //A node carries the ENTRYPOINTS as a FACET: they never lower into layers, and the node's launch fields are
+    //the DEFAULT entry's view — the first RECOMMENDED one, else the first. ExecFor() selects another by LABEL.
+    ordered_json Two{{"LABEL", "n"}, {"ENTRYPOINTS", ordered_json::array({
+        ordered_json{{"LABEL", "Play"}, {"HOST", "win32"}, {"PATH", "g.exe"}},
+        ordered_json{{"LABEL", "Editor"}, {"HOST", "win32"}, {"PATH", "ed.exe"}, {"RECOMMENDED", true}} })}};
+    CHECK(Lower(Two).empty());
+    Node P;
+    CHECK(ManifestModel::ParseNode(Two, "f.json", "/b", P));
+    CHECK(P.IsLaunchable()); CHECK(!P.IsRunner());
+    CHECK_EQ(P.Exec.value("CONTENTPATH", std::string()), std::string("ed.exe"));      // RECOMMENDED wins the default
+    CHECK_EQ(P.Label, std::string("Editor"));
+    CHECK_EQ(P.ExecFor("Play").value("CONTENTPATH", std::string()), std::string("g.exe"));
+    CHECK(P.ExecFor("nope").is_null());
+    CHECK_EQ(P.EntrypointLabels().size(), (size_t)2);
+    //A node whose entries include a GUEST one is a runner too; both readings coexist on one node.
+    ordered_json Both = Two; Both["ENTRYPOINTS"].push_back(Runner);
+    Node PB;
+    CHECK(ManifestModel::ParseNode(Both, "f.json", "/b", PB));
+    CHECK(PB.IsLaunchable() && PB.IsRunner());
 }
 
 // The tile's core fields stay named; everything else rides in an opaque META bag on disk and is flattened back
-// out here, because the catalog reads those fields flat.
+// out onto the node's Meta by ParseNode, because the catalog reads those fields flat.
 TEST(lower_librarayitem_flattens_the_meta_bag)
 {
-    ordered_json N{{"LABEL", "t"}, {"TYPE", "DeclareLibraryItem"}, {"UID", "749"}, {"TITLE", "AoE2"},
+    ordered_json N{{"LABEL", "t"}, {"TILE", {{"UID", "749"}, {"TITLE", "AoE2"}, {"PARENTUID", "700"},
                    {"COVER", {{"PATH", "c.jpg"}, {"SOURCE", {{"CID", "Qm1"}}}}},
-                   {"META", {{"DEVELOPER", "Ensemble"}, {"TGDBID", "12"}}}};
-    const ordered_json L = Lower(N);
-    CHECK_EQ((int)L.size(), 1);
-    CHECK_EQ(L[0].value("UID", std::string()), std::string("749"));
-    CHECK_EQ(L[0].value("TITLE", std::string()), std::string("AoE2"));
+                   {"META", {{"DEVELOPER", "Ensemble"}, {"TGDBID", "12"}}}}}};
+    CHECK(Lower(N).empty());                                  // a facet, not a layer
+    Node P;
+    CHECK(ManifestModel::ParseNode(N, "f.json", "/b", P));
+    CHECK(P.OwnTile);
+    CHECK_EQ(P.Uid, std::string("749"));
+    CHECK_EQ(P.ParentUid, std::string("700"));
+    CHECK_EQ(P.Meta.value("TITLE", std::string()), std::string("AoE2"));
     // COVER travels as a content CID and is what every tile in the library renders.
-    CHECK(L[0].contains("COVER"));
-    if (L[0].contains("COVER"))
+    CHECK(P.Meta.contains("COVER"));
+    if (P.Meta.contains("COVER"))
     {
-        CHECK_EQ(L[0]["COVER"].value("PATH", std::string()), std::string("c.jpg"));
-        CHECK_EQ(L[0]["COVER"].value("SOURCE", ordered_json::object()).value("CID", std::string()),
+        CHECK_EQ(P.Meta["COVER"].value("PATH", std::string()), std::string("c.jpg"));
+        CHECK_EQ(P.Meta["COVER"].value("SOURCE", ordered_json::object()).value("CID", std::string()),
                  std::string("Qm1"));
     }
-    CHECK_EQ(L[0].value("DEVELOPER", std::string()), std::string("Ensemble"));   // flattened, not nested
-    CHECK_EQ(L[0].value("TGDBID", std::string()), std::string("12"));
-    CHECK(!L[0].contains("META"));
+    CHECK_EQ(P.Meta.value("DEVELOPER", std::string()), std::string("Ensemble"));   // flattened, not nested
+    CHECK_EQ(P.Meta.value("TGDBID", std::string()), std::string("12"));
+    CHECK(!P.Meta.contains("META"));
+    //A TILE without a UID is refused: the UID keys saves, settings and the content root.
+    Node Q;
+    CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL","t"}, {"TILE", {{"TITLE","x"}}}}, "f.json", "/b", Q));
+    CHECK(!Q.LowerError.empty());
 }
 
-// Group contributes NOTHING but must still lower cleanly — it exists so a payload-less composition node is a
-// real node. Dropping it made every referrer silently lose an edge rather than dangle.
+// A plain node contributes NOTHING but must still lower cleanly — it exists so a payload-less composition node
+// is a real node. Dropping it made every referrer silently lose an edge rather than dangle.
 TEST(lower_group_is_empty_but_not_an_error)
 {
     std::string Err;
-    const ordered_json L = Lower(ordered_json{{"LABEL", "g"}, {"TYPE", "Group"},
-                                              {"PARENTS", ordered_json::array({"a"})}}, &Err);
+    const ordered_json L = Lower(ordered_json{{"LABEL", "g"}, 
+                                              {"OVER", ordered_json::array({"a"})}}, &Err);
     CHECK(L.is_array());
     CHECK(L.empty());
     CHECK(Err.empty());
 
-    // A Group's empty result and a REFUSAL are both empty arrays — only Err separates them.
+    // A plain node's empty result and a REFUSAL are both empty arrays — only Err separates them.
     //A REFUSAL must SET Err. Returning an empty array with an empty Err is indistinguishable from a valid
-    //Group — the node would be indexed with no LowerError, contribute nothing, and be reported by nobody.
+    //plain node — the node would be indexed with no LowerError, contribute nothing, and be reported by nobody.
     {
         std::string E;
-        NodeLower::Lower(ordered_json{{"LABEL", "x"}, {"TYPE", 5}}, "x", E);
+        NodeLower::Lower(ordered_json{{"LABEL", "x"}, {"NONSENSE", 5}}, "x", E);
         CHECK(!E.empty());
     }
-    CHECK(Refused(ordered_json{{"LABEL", "x"}}));                        // no TYPE at all is an ERROR
-    CHECK(Refused(ordered_json{{"LABEL", "x"}, {"TYPE", "Nonsense"}}));
+    CHECK(!Refused(ordered_json{{"LABEL", "x"}}));                       // a plain node is fine
+    CHECK(Refused(ordered_json{{"LABEL", "x"}, {"TYPE", "Nonsense"}}));  // unknown vocabulary is an ERROR
+    CHECK(Refused(ordered_json{{"LABEL", "x"}, {"VARS", ordered_json::array()}}));   // an EMPTY payload is an ERROR
 }
 
 //ENV on a LAUNCHABLE was copied for runners only, so a game's own environment was lowered away in silence —
 //the field survived every save and never reached the process. Tonic Trouble paid for this with a binary patch.
 TEST(declareexec_launchable_keeps_ENV_and_ENV_REMOVE)
 {
-    ordered_json N = {{"LABEL","g"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"},
+    ordered_json N = {{"LABEL","g"},{"HOST","win32"},{"PATH","G.exe"},
                       {"ENV", {{"SDL_JOYSTICK_WGI","0"}}},
                       {"ENV_REMOVE", ordered_json::array({"LD_PRELOAD"})}};
-    const ordered_json L = Lower(N);
+    const ordered_json L = ordered_json::array({LowerEp(N)});
     CHECK_EQ(L.size(), (size_t)1);
-    CHECK_EQ(L[0].value("TYPE", std::string()), std::string("DeclareExec"));   // launchable, not runner
+    CHECK(!L[0].contains("GUEST"));                                             // launchable, not runner
     //Guarded: CHECK does not abort, so dereferencing a missing key on the next line would throw and take the
     //WHOLE suite down — a regression that hides every other result instead of naming itself.
     CHECK(L[0].contains("ENV"));
@@ -660,8 +723,8 @@ TEST(declareexec_launchable_keeps_ENV_and_ENV_REMOVE)
 //...and a launchable that declares none must not sprout empty ones: an absent ENV is absent, not {}.
 TEST(declareexec_launchable_without_ENV_emits_none)
 {
-    ordered_json N = {{"LABEL","g"},{"TYPE","DeclareExec"},{"HOST","win32"},{"PATH","G.exe"}};
-    const ordered_json L = Lower(N);
+    ordered_json N = {{"LABEL","g"},{"HOST","win32"},{"PATH","G.exe"}};
+    const ordered_json L = ordered_json::array({LowerEp(N)});
     CHECK(!L[0].contains("ENV"));
     CHECK(!L[0].contains("REMOVE_ENV"));
 }
