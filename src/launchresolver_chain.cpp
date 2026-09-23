@@ -53,11 +53,15 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             Preferred = std::string(US["PREFERRED_RUNNER"]);
     }
+    //The platform to bridge and the declared runner are the SELECTED entrypoint's (CP.Entrypoint), never the
+    //node's default view: a node may carry a native and a win32 entry, and the chain serves the one that runs.
+    const std::string Host   = Launch.HostFor(CP.Entrypoint);
+    const std::string Runner = Launch.RunnerFor(CP.Entrypoint);
     auto Qualifies = [&](const Node &N) -> bool
     {
         if (!N.IsRunner()) return false;
         bool Guest = false;
-        for (const auto &G : N.GuestPlatform) if (G == Launch.HostPlatform) { Guest = true; break; }
+        for (const auto &G : N.GuestPlatform) if (G == Host) { Guest = true; break; }
         if (!Guest) return false;
         if (N.HostPlatform != MachinePlatform()) return false;
         return RunnerWrapper::ExecutableAvailable(N.Exec);
@@ -68,8 +72,8 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
     // pin / persisted preference, before the generic default. Restores what the removed appmodel PREFERRED_RUNNER
     // seed did — a package that names a specific runner gets it — but at the resolver, so a FRESH (un-persisted)
     // game honours it too. (Distinct from the runner NODE's own Recommended flag used in the default rank below.)
-    if (!Launch.RecommendedRunner.empty())
-    { const Node *N = Idx.Find(Launch.RecommendedRunner); if (N && Qualifies(*N)) return N; }
+    if (!Runner.empty())
+    { const Node *N = Idx.Find(Runner); if (N && Qualifies(*N)) return N; }
 
     //Default pick — rank by (RECOMMENDED, package-local, node-id).
     auto Local  = [&](const Node &N) { return !Launch.BundleDir.empty() && N.BundleDir == Launch.BundleDir; };
@@ -247,17 +251,20 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     //Nothing pinned → fall back to the launchable's DECLARED runner (DeclareExec.RUNNER) as a SOFT pin, so a package
     //that names a specific runner gets it on a fresh launch (the removed appmodel seed's job, now at the resolver).
     //The pin-validation below vets it and appends a terminal; if it doesn't reach the machine it falls to the BFS.
-    if (Pinned.empty() && !Launch.RecommendedRunner.empty())
+    //Platform and declared runner are the SELECTED entrypoint's (CP.Entrypoint), not the node's default view.
+    const std::string Host   = Launch.HostFor(CP.Entrypoint);
+    const std::string Runner = Launch.RunnerFor(CP.Entrypoint);
+    if (Pinned.empty() && !Runner.empty())
     {
-        const Node *R = Idx.Find(Launch.RecommendedRunner);
-        if (R && R->IsRunner()) Pinned.push_back(Launch.RecommendedRunner);
+        const Node *R = Idx.Find(Runner);
+        if (R && R->IsRunner()) Pinned.push_back(Runner);
     }
     //A MULTI-VERSION package selects its runner through the PLATFORM GRAPH (below), not a per-node pin: e.g. each
     //Minecraft version declares PLATFORM "java_<N>" and the matching java_<N> runner declares GUEST ["java_<N>"], so
     //FindBridge routes it to exactly that runner — the native cross-platform mechanism, no runner recommendation needed.
     if (!Pinned.empty())
     {
-        std::string Cur = Launch.HostPlatform;
+        std::string Cur = Host;
         bool Ok = true;
         for (const std::string &Id : Pinned)
         {
@@ -281,7 +288,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
 
     //2. BFS default: bridge content-platform → machine, then append the native terminal.
     std::vector<std::string> Bridge;
-    if (!FindBridge(Launch.HostPlatform, Machine, Runners, Bridge)) return {};   // unreachable on this machine
+    if (!FindBridge(Host, Machine, Runners, Bridge)) return {};   // unreachable on this machine
     const Node *Term = PickNativeTerminal(Runners, Machine);
     Bridge.push_back(Term ? Term->NodeId : std::string(kNativeTerminalId));
     return Bridge;

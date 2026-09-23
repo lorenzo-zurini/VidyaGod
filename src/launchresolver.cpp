@@ -219,10 +219,10 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
 
     //GRAFTS — the selected nodes that are OVER this title without being in anybody's list — mount ABOVE the
-    //launchable's own closure (later component = higher priority), in instance precedence. Scope: a node with a
-    //bundle dir (the index carries none for a frozen browse stub) — a CATALOG stub never grafts.
+    //launchable's own closure (later component = higher priority), in instance precedence. Scope: never a
+    //RECEIVED browse stub (a friend's node, not hydrated) — only nodes of our own tree.
     for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchId, CP.ModuleStates, BaseOrder, CP.GraftPrecedence,
-                                                                  [](const Node &N) { return !N.BundleDir.empty(); }))
+                                                                  [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
     {
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner()) continue;

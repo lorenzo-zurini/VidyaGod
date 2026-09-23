@@ -122,6 +122,8 @@ struct Node {
     nlohmann::ordered_json Layers;           // the lowered payload: the executor's ordered layer sequence
     std::filesystem::path File;              // source .json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
+    bool Received = false;                   // a browse stub gathered from CATALOG (a friend's bytes, not hydrated):
+                                             // browsable and downloadable, never a graft candidate
 
     // The node's key in a NodeIndex: its CID in the gigagraph catalog (identity), or its LABEL in a legacy single-
     // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog
@@ -134,6 +136,10 @@ struct Node {
     std::string GameKey() const { return Uid.empty() ? NodeId : Uid; }   // the tile this node belongs to (group-by-UID key)
     // The lowered exec block of the entrypoint labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
     nlohmann::ordered_json ExecFor(const std::string &Label) const;
+    //The SELECTED entry's platform / declared runner ("" = the default entry). The runner chain bridges the entry
+    //that runs — a node may carry a native and a win32 entry — never the default view.
+    std::string HostFor(const std::string &Label) const;
+    std::string RunnerFor(const std::string &Label) const;
     // The entrypoint labels, in ENTRYPOINTS order (a nameless entry reads as its index).
     std::vector<std::string> EntrypointLabels() const;
 };
@@ -204,12 +210,14 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
 // selected set grows to a fixpoint as grafts are ticked.
 struct GraftOffer {
     const Node *Graft = nullptr;
-    bool Applicable = false;       // every requirement satisfied by the selected set
-    bool Selected   = false;       // ticked (Toggles), or TOGGLE "on" by default when Toggles has no entry
-    std::string Blocker;           // when !Applicable: the first unsatisfied requirement (a key), for the UI
+    bool Applicable = false;       // every requirement satisfied by the selected set (minus itself)
+    bool Selected   = false;       // in the settled selected set: ticked (Toggles, else TOGGLE "on") AND applicable
+    std::string Blocker;           // when !Applicable: the first unsatisfied requirement (a key), for the UI…
+    std::string ExcludedBy;        // …or the selected node whose NOT (its own, or one naming it) blocks it
 };
 // Every graft with the launchable's identity, in a deterministic order, with its applicability against Toggles.
-// Scope (optional) restricts candidates — the GUI passes "hydrated + in LIBRARY" so a CATALOG stub never grafts.
+// The selected set is a fixpoint WITH retraction (a later selection can untick an earlier one through NOT).
+// Scope (optional) restricts candidates — callers pass "not Received" so a CATALOG browse stub never grafts.
 std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                       const std::map<std::string, bool> &Toggles,
                                       const std::function<bool(const Node &)> &Scope = nullptr);

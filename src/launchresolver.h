@@ -23,7 +23,8 @@ inline constexpr const char *kNativeTerminalId = "__native__";
 void AbsolutizeLayerPaths(nlohmann::ordered_json &L, const std::filesystem::path &BundleDir);
 
 //Resolves the shortest runner CHAIN (innermost→outermost runner node ids) to run a launch node's content on this
-//machine: a BFS over runner edges GUEST→HOST from the launch node's platform to MachinePlatform(), ALWAYS terminated
+//machine: a BFS over runner edges GUEST→HOST from the SELECTED entrypoint's platform (CP.Entrypoint, else the
+//node's default entry) to MachinePlatform(), ALWAYS terminated
 //by a native runner (HOST==GUEST==machine) — an authored native runner if one is available, else kNativeTerminalId.
 //A pinned chain (CP.RunnerChainIds, else USERSETTINGS RUNNER_CHAIN) is honored when it forms a valid path. Per-step
 //default tie-break: RECOMMENDED > package-local > node-id. Empty if the platform is unreachable (no bridging runner).

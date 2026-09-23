@@ -254,6 +254,16 @@ private slots:
         QCOMPARE((int)cfg["PublishedList"].size(), 3);      // exactly the three flagged roots
         QCOMPARE((int)Published.size(), 3);                 // return value == the share list
 
+        // The library MANIFEST: one stored block whose links are exactly the published roots — the single pin a
+        // pinning service needs (its closure = the library once, not once per root).
+        const std::string MCid = cfg.value("PublishedManifest", std::string());
+        QVERIFY2(!MCid.empty(), "PublishLibrary records the manifest block's CID");
+        const json M = json::parse(IpfsWrapper::DagGet(MCid, &Err), nullptr, false);
+        QVERIFY2(M.is_object() && M.contains("ROOTS") && M["ROOTS"].is_array(), "manifest block reads back");
+        std::set<std::string> Linked;
+        for (const auto & L : M["ROOTS"]) Linked.insert(L.is_object() ? L.value("/", std::string()) : L.get<std::string>());
+        QCOMPARE(Linked, std::set<std::string>(Published.begin(), Published.end()));
+
         // Each entry carries the RECEIVER's routing metadata — enough to compute the final library path pre-fetch.
         const auto & G = Libs["VidyaGod"][0];
         QVERIFY2(!G.value("cid", std::string()).empty(), "entry names its node-block CID");
@@ -352,6 +362,9 @@ private slots:
         auto It = Idx.Nodes.find(Cid0);
         QVERIFY2(It != Idx.Nodes.end(), "a landed raw block freezes back to the SAME CID in the plain tree scan");
         QVERIFY2(!It->second.BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
+        QVERIFY2(It->second.Received, "…marked RECEIVED (it lives under CATALOG): never a graft candidate");
+        for (const auto & [K, N] : Idx.Nodes)
+            if (N.BundleDir.string().rfind(Catalog, 0) != 0) QVERIFY2(!N.Received, "a LIBRARY node is not Received");
 
         // Vacuous-hydration guard: an un-installed received game (PARENTS not fetched) must read NOT hydrated —
         // that is what routes it to the Catalog tab (downloadable) instead of the Library tab (playable).

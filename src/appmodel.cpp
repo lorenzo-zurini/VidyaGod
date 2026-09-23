@@ -271,24 +271,21 @@ void AppModel::removePackage(const QString & uid)
 //    the worker never mutates the live GlobalConfigJSON the GUI may be reading/writing. The model outlives every view,
 //    so capturing `this` is safe. Called on node-ready (bootstrap of the default runners source) and "Sync now". ──
 
-// Give the node the 3-level meta-CIDs (collections = Settings.PackageSources[].CID, packages = Settings.PackageCids
-// values) so its seed announce goes out ordered — the shareable units first — with content being every other pinned
-// root. Called on node-ready + whenever sources/package CIDs change; idempotent on the node side.
+// Give the node what to announce FIRST, tracked, ahead of the batched content queue: the published ROOT CIDs (the
+// share record — what a friend or a pin-by-CID service looks up) and then every node block of our own tree (the
+// current library; stale blocks of earlier publishes stay pinned and are announced after). Called on node-ready +
+// after every publish; idempotent on the node side.
 void AppModel::pushSeedLevels()
 {
-    std::vector<std::string> Collections, Packages;
-    const auto & S = (*Config)["Settings"];
-    if (S.contains("PackageSources") && S["PackageSources"].is_array())
-        for (const auto & Src : S["PackageSources"])
-        {
-            const std::string Cid = Src.is_object() ? Src.value("CID", std::string())
-                                  : (Src.is_string() ? Src.get<std::string>() : std::string());
-            if (!Cid.empty()) Collections.push_back(Cid);
-        }
-    if (S.contains("PackageCids") && S["PackageCids"].is_object())
-        for (const auto & [Key, Val] : S["PackageCids"].items())
-            if (Val.is_string() && !Val.get<std::string>().empty()) Packages.push_back(Val.get<std::string>());
-    IpfsWrapper::SetSeedLevels(Collections, Packages);
+    std::vector<std::string> Roots, Nodes;
+    if (Config->contains("Libraries") && (*Config)["Libraries"].is_object())
+        for (const auto & [Lib, Rows] : (*Config)["Libraries"].items())
+            if (Rows.is_array())
+                for (const auto & R : Rows)
+                    if (R.is_object() && R.value("cid", std::string()).size()) Roots.push_back(R["cid"].get<std::string>());
+    for (const auto & [Cid, N] : CatalogIndex.Nodes)
+        if (!N.Received && !N.Cid.empty()) Nodes.push_back(Cid);
+    IpfsWrapper::SetSeedLevels(Roots, Nodes);
 }
 
 void AppModel::syncSources()
@@ -919,6 +916,7 @@ void AppModel::publishLibraries()
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
             (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
+            if (Cfg->contains("PublishedManifest")) (*Config)["PublishedManifest"] = (*Cfg)["PublishedManifest"];   // …and the one-pin manifest
             save();
             pushSeedLevels();
             reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)

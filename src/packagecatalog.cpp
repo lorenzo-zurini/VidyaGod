@@ -1080,6 +1080,20 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         Libs[LibName].push_back(std::move(E));
         Flat.push_back(CidIt->second);
     }
+    // ONE block for the whole share: the library MANIFEST links every published root. A pinning service pins by
+    // hash RECURSIVELY and bills every pin its full closure, so 971 roots pinned one by one are billed 971
+    // closures (1.2 TB for a 63 GB library); the manifest's closure is the library exactly once, and one pin of
+    // it keeps every node block and every content CID reachable through the service's gateway. Not a node: no
+    // share record names it, and a scan would refuse its vocabulary.
+    {
+        nlohmann::ordered_json Roots = nlohmann::ordered_json::array();
+        for (const auto &C : Flat) Roots.push_back(nlohmann::ordered_json{{"/", C}});
+        nlohmann::ordered_json Manifest{{"VIDYAGOD_LIBRARY_MANIFEST", 1}, {"ROOTS", std::move(Roots)}};
+        std::string MErr;
+        const std::string MCid = IpfsWrapper::DagPut(Manifest.dump(), &MErr);
+        if (MCid.empty()) LogWarn("PackageCatalog::PublishLibrary", "library manifest block not stored: " + MErr);
+        else { Config["PublishedManifest"] = MCid; LogOut("PackageCatalog::PublishLibrary", "library manifest " + MCid + " links " + std::to_string(Flat.size()) + " root(s)"); }
+    }
     Config["Libraries"]     = std::move(Libs);
     Config["PublishedList"] = std::move(Flat);
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
@@ -1323,6 +1337,17 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     else
         LogOut("PackageCatalog::BuildCatalogIndex", "Indexed " + std::to_string(Idx.Nodes.size())
                + " node(s) by CID from " + LibraryRootDir(GlobalConfigJSON));
+    //A node that lives under CATALOG is a RECEIVED stub: a friend's bytes, browsable and downloadable, never a
+    //graft candidate (it would mount un-hydrated). Decided by where its file lives — the only fact that
+    //distinguishes it, since the frozen index is one flat graph.
+    const std::filesystem::path Cat = std::filesystem::path(CatalogRootDir(GlobalConfigJSON)).lexically_normal();
+    for (auto &[Id, N] : Idx.Nodes)
+    {
+        (void)Id;
+        const std::filesystem::path D = N.BundleDir.lexically_normal();
+        auto [CatEnd, DEnd] = std::mismatch(Cat.begin(), Cat.end(), D.begin(), D.end());
+        N.Received = !Cat.empty() && CatEnd == Cat.end();
+    }
 
     return Idx;
 }
@@ -1435,9 +1460,19 @@ std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::strin
 //path + ipfs CID (resolved against the OWNING node's bundle dir — cross-bundle-correct).
 static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchNodeId,
     const std::map<std::string, bool> &Toggles,
-    const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn)
+    const std::function<void(const nlohmann::ordered_json&, const std::filesystem::path&, const std::string&)> &Fn,
+    bool WithGrafts = false)
 {
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, Toggles))
+    //The launchable's own closure — and, for the FETCH pool only (WithGrafts), the SELECTED grafts above it (same
+    //toggles, same scope as the launch): a ticked mod's content is part of what the launch mounts, so a hydrate
+    //fetches it too. A dehydrate / hydration verdict never walks grafts: a graft is shared across every variant
+    //of its title, so deleting or dropping its bytes with one variant would break the others.
+    std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, Toggles);
+    if (WithGrafts)
+        for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchNodeId, Toggles, Order, {},
+                                                                      [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
+            Order.push_back(Id);
+    for (const std::string &Id : Order)
     {
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
@@ -1641,20 +1676,30 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
     const Node *Launch = Idx.Find(LaunchNodeId);
     if (!Launch) return Fail("launch node not found: " + LaunchNodeId);
 
-    // Required content layers: fetch any that aren't already on disk; a missing layer with no IPFS source is fatal.
+    // Required content layers: fetch any that aren't already on disk; a missing layer with no IPFS source is fatal
+    // for the game's OWN closure — a graft's (a ticked mod's) is reported and skipped, so one broken mod never
+    // bricks the base game's download.
     bool MissingSource = false; std::string MissingErr;
+    std::set<std::string> OwnLayers;
+    ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &, const std::filesystem::path &Local, const std::string &){
+        OwnLayers.insert(Local.string()); });
     ForEachContentLayer(Idx, LaunchNodeId, Toggles, [&](const nlohmann::ordered_json &L, const std::filesystem::path &Local, const std::string &Cid){
         if (MissingSource) return;
         std::error_code Ec;
         if (std::filesystem::exists(Local, Ec)) return;                          // already present
-        if (Cid.empty()) { MissingSource = true; MissingErr = "missing local content with no IPFS source: " + Local.string(); return; }
+        if (Cid.empty())
+        {
+            if (!OwnLayers.count(Local.string()))
+            { LogWarn("PackageCatalog::CollectContentTargets", "graft layer has no local file and no IPFS source, skipped: " + Local.string()); return; }
+            MissingSource = true; MissingErr = "missing local content with no IPFS source: " + Local.string(); return;
+        }
         // Push the stamped SOURCE.SIZE to the node so a gateway-fallback fetch of this layer reports a real % (and a
         // pre-fetch total). Done HERE — at fetch-build, on the shared path for the GUI download, --fetch AND
         // --download-all — so it works headless with no GUI model, and before getRoot's gateway phase runs.
         if (L.contains("SOURCE") && L["SOURCE"].is_object())
         { const long long Sz = L["SOURCE"].value("SIZE", (long long)0); if (Sz > 0) IpfsWrapper::SetExpectedSize(Cid, Sz); }
         Out.push_back({Cid, Local.string(), false});
-    });
+    }, /*WithGrafts=*/true);
     if (MissingSource) return Fail(MissingErr);
 
     // Cover: fetch if remote; if already on disk but un-seeded/orphaned, seed it by reference so a downloader serves
@@ -1712,12 +1757,21 @@ bool CollectRunnerChainTargets(const NodeIndex &Idx, const std::string &LaunchNo
     if (!Launch) return true;
     ContainerParams Cp(Launch->BundleDir, LaunchNodeId, std::string());
     Cp.NodeIdx = &Idx; Cp.LaunchNodeId = LaunchNodeId; Cp.PackageUID = Launch->Uid;   // for the per-package runner pin lookup
-    for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
+    //Every ENTRYPOINT's chain: the entries may run on different platforms (a native and a win32 build), and a
+    //hydrated game must be playable through whichever the user picks.
+    std::set<std::string> Pooled;
+    std::vector<std::string> Labels = Launch->EntrypointLabels();
+    if (Labels.empty()) Labels.push_back(std::string());
+    for (const std::string &Label : Labels)
     {
-        if (RunnerId == LaunchResolver::kNativeTerminalId) continue;
-        std::string E;
-        if (!RunnerInstall::CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))
-            LogWarn("PackageCatalog::CollectRunnerChainTargets", "runner '" + RunnerId + "': " + E);
+        Cp.Entrypoint = Label;
+        for (const std::string &RunnerId : LaunchResolver::ResolveChainIds(Idx, *Launch, Cp, GlobalConfigJSON))
+        {
+            if (RunnerId == LaunchResolver::kNativeTerminalId || !Pooled.insert(RunnerId).second) continue;
+            std::string E;
+            if (!RunnerInstall::CollectRunnerNodeTargets(Idx, RunnerId, Out, &E))
+                LogWarn("PackageCatalog::CollectRunnerChainTargets", "runner '" + RunnerId + "': " + E);
+        }
     }
     (void)Error;
     return true;

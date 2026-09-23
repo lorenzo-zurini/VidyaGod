@@ -329,7 +329,7 @@ bool PreLaunchWindow::eventFilter(QObject* Obj, QEvent* Event)
 
 std::string PreLaunchWindow::ChainStepInput(int Step) const
 {
-    if (Step <= 0) { const Node* L = CurrentLaunch(); return L ? L->HostPlatform : ManifestModel::MachinePlatform(); }
+    if (Step <= 0) { const Node* L = CurrentLaunch(); return L ? L->HostFor(Entrypoint) : ManifestModel::MachinePlatform(); }
     if (Step - 1 >= (int)CurrentChain.size()) return ManifestModel::MachinePlatform();
     const std::string& Prev = CurrentChain[Step - 1];
     if (Prev == LaunchResolver::kNativeTerminalId) return ManifestModel::MachinePlatform();
@@ -489,11 +489,16 @@ void PreLaunchWindow::RebuildModuleTree()
     //Grafts are judged against the SAVED ticks (the selected set), scoped to hydrated LIBRARY nodes.
     std::map<std::string, bool> Ticks;
     for (const auto& [K, V] : SavedMods.items()) if (V.is_boolean()) Ticks[K] = V.get<bool>();
+    auto NameOf = [&](const std::string& Key) {
+        const Node* B = Index->Find(Key);
+        return QString::fromStdString(B && !B->NodeId.empty() ? B->NodeId : Key.substr(0, 12));
+    };
     for (const ManifestModel::GraftOffer& O : ManifestModel::OfferedGrafts(*Index, LaunchNodeId, Ticks,
-                                                  [](const Node& N) { return !N.BundleDir.empty(); }))
+                                                  [](const Node& N) { return !N.Received && !N.BundleDir.empty(); }))
         Row(O.Graft, O.Selected, O.Applicable,
-            O.Applicable ? QStringLiteral("mod") : QStringLiteral("needs ") + QString::fromStdString(
-                (Index->Find(O.Blocker) && !Index->Find(O.Blocker)->NodeId.empty()) ? Index->Find(O.Blocker)->NodeId : O.Blocker.substr(0, 12)));
+            O.Applicable ? QStringLiteral("mod")
+                         : !O.ExcludedBy.empty() ? QStringLiteral("excluded by ") + NameOf(O.ExcludedBy)
+                                                 : QStringLiteral("needs ") + NameOf(O.Blocker));
     ModuleGroup->setVisible(ModuleTree->topLevelItemCount() > 0);
     // Size the tree to its content (capped at 8 rows) so all modules are visible without an inner scrollbar — the
     // group then claims its proper space in the control pane instead of being squashed to a couple of rows.

@@ -232,7 +232,15 @@ def migrate(nodes):
                 m["TILE"] = tile_of(old[found[0]])
         new[h] = m
 
-    # 2. Fold each exec into its single non-tile parent when possible.
+    # 2. Fold each exec into its single non-tile parent when possible. The fold takes ENTRYPOINTS/TILE/PUBLISH/LABEL
+    # and nothing else, so an exec carrying a facet the parent would not (TOGGLE, WHEN, COMMENT) stays standalone —
+    # as does one some node EXCLUDEs: remapping that NOT onto the parent would widen an exclusion of one launchable
+    # into an exclusion of shared substance under every title composed through it.
+    not_targets = set()
+    for m in new.values():
+        for x in m.get("OVER", []):
+            if isinstance(x, dict):
+                not_targets.add(x["NOT"])
     refmap = {}
     folded = {}
     for h in sorted(execs):
@@ -240,9 +248,9 @@ def migrate(nodes):
         ps = [p for p in parents(h) if p not in tiles]
         if len(ps) != 1 or ps[0] not in new:
             continue
+        if any(k in e for k in ("TOGGLE", "WHEN", "COMMENT")) or h in not_targets:
+            continue
         p = ps[0]
-        if p in execs or p in folded.values() and False:
-            pass
         target = new[p]
         if "TILE" in target and "TILE" in e and target["TILE"].get("UID") != e["TILE"].get("UID"):
             continue                                      # a shared node under two titles: keep the exec standalone
@@ -271,7 +279,8 @@ def migrate(nodes):
                 if x in o2:
                     continue
             elif isinstance(x, dict):
-                x = {"NOT": refmap.get(x["NOT"], x["NOT"])}
+                if x["NOT"] in refmap:
+                    raise Fail(f"NOT names folded exec {x['NOT']!r} (never folded by construction)")
             o2.append(x)
         m["OVER"] = o2
     # A folded node must never be OVER itself (P OVER exec, exec folded into P): drop self refs.
@@ -450,6 +459,11 @@ def _fixture():
     # EXCLUDE by label and by handle
     add("optA", TYPE="VFSLayer", LABEL="optA", LAYERS=[{"FORM": "dir", "PATH": "a"}], PARENTS=["base"], TOGGLE="off", EXCLUDE=["optB"])
     add("optB", TYPE="VFSLayer", LABEL="optB", LAYERS=[{"FORM": "dir", "PATH": "b"}], PARENTS=["base"], TOGGLE="off", EXCLUDE=["optA"])
+    # an exec with a facet the fold would drop (TOGGLE) -> stays standalone with it
+    add("ex5", TYPE="DeclareExec", LABEL="Beta Play", HOST="win32", PATH="beta.exe", ARGS=[], PARENTS=["lib"], TOGGLE="off")
+    # an exec some node EXCLUDEs -> stays standalone so the NOT keeps naming exactly that launchable
+    add("ex6", TYPE="DeclareExec", LABEL="Old Play", HOST="win32", PATH="old.exe", ARGS=[], PARENTS=["dll"])
+    add("optC", TYPE="VFSLayer", LABEL="optC", LAYERS=[{"FORM": "dir", "PATH": "c"}], PARENTS=["base"], TOGGLE="off", EXCLUDE=["ex6"])
     return N
 
 
@@ -468,6 +482,9 @@ def self_test():
     except Fail as e:
         check(f"verify passes on the fixture ({e})", False)
     check("ex1 folded into grp", refmap.get("ex1") == "grp" and "ex1" not in new)
+    check("ex5 (TOGGLE) stays standalone with its toggle", "ex5" in new and new["ex5"].get("TOGGLE") == "off" and "ENTRYPOINTS" not in new["lib"])
+    check("ex6 (a NOT target) stays standalone", "ex6" in new and "ENTRYPOINTS" not in new["dll"]
+          and {"NOT": "ex6"} in new["optC"]["OVER"])
     check("grp became the launchable with the exec's LABEL, TILE, PUBLISH", new["grp"].get("LABEL") == "Play"
           and new["grp"].get("TILE", {}).get("UID") == "100" and new["grp"].get("PUBLISH") is True
           and new["grp"]["ENTRYPOINTS"][0]["PATH"] == "g.exe" and new["grp"]["ENTRYPOINTS"][0]["RECOMMENDED"] is True)

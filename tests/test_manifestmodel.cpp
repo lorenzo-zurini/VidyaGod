@@ -167,6 +167,29 @@ TEST(resolve_order_any_of_group_picks_one_member)
     std::vector<std::string> Missing;
     ManifestModel::ResolveNodeOrder(None, "game", {}, &Missing);
     CHECK(Contains(Missing, "ghost1"));
+
+    // A pick the gate REFUSES is not the pick: the next member is tried. v640 toggled off by the user (or
+    // excluded by a kept node) ⇒ v659 mounts — never a closure with NEITHER member and no word said.
+    NodeIndex Off;
+    AddChain(Off, "v640", {}, {}, {{"TOGGLE", "on"}});
+    AddChain(Off, "v659", {});
+    AddChain(Off, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v640", "v659"}) })}});
+    std::vector<std::string> M2;
+    const auto Fallback = ManifestModel::ResolveNodeOrder(Off, "game", {{"v640", false}}, &M2);
+    CHECK(!Contains(Fallback, "v640") && Contains(Fallback, "v659") && M2.empty());
+    NodeIndex Excl;
+    AddChain(Excl, "v640", {});
+    AddChain(Excl, "v659", {});
+    AddChain(Excl, "purist", {}, {}, {{"OVER", Not("v640")}});
+    AddChain(Excl, "game", {}, {}, {{"OVER", ordered_json::array({"purist", ordered_json::array({"v640", "v659"})})}});
+    const auto Excluded = ManifestModel::ResolveNodeOrder(Excl, "game", {}, &M2);
+    CHECK(Contains(Excluded, "purist") && !Contains(Excluded, "v640") && Contains(Excluded, "v659") && M2.empty());
+    // Every present member refused ⇒ MISSING, loudly.
+    AddChain(Excl, "purist2", {}, {}, {{"OVER", Not("v659")}});
+    AddChain(Excl, "game2", {}, {}, {{"OVER", ordered_json::array({"purist", "purist2", ordered_json::array({"v640", "v659"})})}});
+    std::vector<std::string> M3;
+    const auto NoneKept = ManifestModel::ResolveNodeOrder(Excl, "game2", {}, &M3);
+    CHECK(!Contains(NoneKept, "v640") && !Contains(NoneKept, "v659") && Contains(M3, "v640"));
 }
 
 // Explicitly toggling a mutually-exclusive option ON wins over the conflicting DEFAULT-on option (the user's
@@ -443,12 +466,17 @@ TEST(validate_flags_over_mistakes)
     AddChain(Idx, "g1", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"ghost1", "ghost2"}) })}});
     AddChain(Idx, "g2", {}, {}, {{"OVER", ordered_json::array({"base", ordered_json{{"NOT", "base"}}})}});
     AddChain(Idx, "g3", {}, {}, {{"OVER", ordered_json::array({ ordered_json{{"NOT", "ghost"}} })}});
+    // A group with ONE member present resolves (it is a choice), so an absent member is a warning, never an error.
+    AddChain(Idx, "g4", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"base", "ghost3"}) })}});
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Errors, "unsatisfiable"));
     CHECK(AnyContains(Errors, "both requires and excludes"));
     CHECK(AnyContains(Warnings, "NOT references missing"));
     CHECK(!AnyContains(Errors, "NOT references missing"));
+    CHECK(AnyContains(Warnings, "any-of member 'ghost3'"));
+    CHECK(!AnyContains(Errors, "ghost3"));
+    CHECK(!AnyContains(Errors, "missing node 'ghost1'"));                   // members of an unsatisfiable group: one error, not three
 }
 
 // Identity follows the edge. A node with its own TILE IS its identity; every other node inherits the UNION of
@@ -745,16 +773,34 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     CHECK(O2["mod_v2"].Selected);
     CHECK(O2["hd"].Applicable && !O2["hd"].Selected);
     CHECK(!O2["rival"].Applicable);
-    CHECK_EQ(O2["rival"].Blocker, std::string("mod_v2"));
+    CHECK_EQ(O2["rival"].ExcludedBy, std::string("mod_v2"));                // a NOT block names the excluder, not a need
     // Tick hd too: selected through the fixpoint in ONE pass.
     auto O3 = Offer({{"mod_v2", true}, {"hd", true}});
     CHECK(O3["hd"].Selected);
     // Tick hd WITHOUT mod_v2: not applicable ⇒ not selected, whatever the tick says.
     auto O4 = Offer({{"hd", true}});
     CHECK(!O4["hd"].Selected && !O4["hd"].Applicable);
-    // Tick rival AND mod_v2: rival is unsatisfied (NOT) ⇒ never selected.
+    // Tick rival AND mod_v2: mod_v2 comes first in candidate order and wins; rival (whose NOT names it) is out.
     auto O5 = Offer({{"mod_v2", true}, {"rival", true}});
     CHECK(O5["mod_v2"].Selected && !O5["rival"].Selected);
+    CHECK_EQ(O5["rival"].ExcludedBy, std::string("mod_v2"));
+    // NOT is SYMMETRIC: "arch" sorts before mod_v2 and its NOT names mod_v2 — with both ticked, arch (first) is
+    // selected and mod_v2 is EXCLUDED BY it, even though mod_v2 carries no NOT of its own; and hd, ticked and
+    // standing on mod_v2, is RETRACTED with it — never mounted next to the node that excludes its base.
+    AddChain(Idx, "arch", {NodeFixture::Content("dir", "x")}, {}, {{"OVER", ordered_json::array({"v2", ordered_json{{"NOT", "mod_v2"}}})}});
+    ManifestModel::DeriveIdentity(Idx);
+    auto O5b = Offer({{"arch", true}, {"mod_v2", true}, {"hd", true}});
+    CHECK(O5b["arch"].Selected);
+    CHECK(!O5b["mod_v2"].Selected && !O5b["mod_v2"].Applicable);
+    CHECK_EQ(O5b["mod_v2"].ExcludedBy, std::string("arch"));
+    CHECK(!O5b["hd"].Selected && !O5b["hd"].Applicable);
+    CHECK_EQ(O5b["hd"].Blocker, std::string("mod_v2"));
+    const auto Base5 = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
+    const auto Mount5 = ManifestModel::ResolveGraftOrder(Idx, "v2", {{"arch", true}, {"mod_v2", true}, {"hd", true}}, Base5);
+    CHECK(Contains(Mount5, "arch") && !Contains(Mount5, "mod_v2") && !Contains(Mount5, "hd"));
+    // Untick arch ⇒ mod_v2 and hd are back.
+    auto O5c = Offer({{"arch", false}, {"mod_v2", true}, {"hd", true}});
+    CHECK(O5c["mod_v2"].Selected && O5c["hd"].Selected && !O5c["arch"].Selected);
 
     // The author's default (TOGGLE "on") pre-selects a graft the user has not touched.
     AddChain(Idx, "default_on", {NodeFixture::Content("dir", "z")}, {"v2"}, {{"TOGGLE", "on"}});
@@ -791,7 +837,7 @@ TEST(resolve_graft_order_is_precedence_then_key_with_substance_beneath)
     CHECK(IndexOf(Def, "lib") < IndexOf(Def, "a"));
     CHECK(IndexOf(Def, "a") < IndexOf(Def, "b"));
     CHECK(IndexOf(Def, "b") < IndexOf(Def, "b_hd"));
-    // Precedence: b ranks above a ⇒ b mounts after a... and b_hd, which is OVER b, still follows b.
+    // Precedence: a ranks 10, b ranks 5 ⇒ b mounts BEFORE a (higher = later = wins); b_hd, OVER b, still follows b.
     const auto Prec = ManifestModel::ResolveGraftOrder(Idx, "game", Ticks, Base, {{"a", 10}, {"b", 5}});
     CHECK(IndexOf(Prec, "b") < IndexOf(Prec, "a"));
     CHECK(IndexOf(Prec, "b") < IndexOf(Prec, "b_hd"));

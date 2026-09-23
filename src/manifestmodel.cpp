@@ -237,6 +237,7 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         LogWarn("ManifestModel::ParseNode", "Malformed node — " + Why + " (" + File.string() + ")");
         Out.LowerError = Why;
         Out.Layers = nlohmann::ordered_json::array();
+        Out.Excludes.clear();                         // the CNF loop below may have filled it before the refusal
         Out.Parents = OverRefs(J, &Out.Excludes);
         return true;
     };
@@ -332,6 +333,20 @@ nlohmann::ordered_json Node::ExecFor(const std::string &Lbl) const
             return NodeLower::LowerEntrypoint(Entrypoints[i], NodeId, Err);
         }
     return nlohmann::ordered_json();
+}
+
+std::string Node::HostFor(const std::string &Lbl) const
+{
+    if (Lbl.empty()) return HostPlatform;
+    const nlohmann::ordered_json E = ExecFor(Lbl);
+    return E.is_object() ? E.value("PLATFORM", HostPlatform) : HostPlatform;
+}
+
+std::string Node::RunnerFor(const std::string &Lbl) const
+{
+    if (Lbl.empty()) return RecommendedRunner;
+    const nlohmann::ordered_json E = ExecFor(Lbl);
+    return E.is_object() ? E.value("RUNNER", std::string()) : RecommendedRunner;
 }
 
 std::vector<std::string> Node::EntrypointLabels() const
@@ -499,13 +514,15 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
     //first, then each pending group is resolved against the kept set, and the walk resumes for what the pick
     //pulled in. Repeats until nothing is pending.
     std::vector<const OverReq *> PendingGroups;
-    auto Consider = [&](const std::string &Pid) {
-        if (Enabled.count(Pid)) return;
+    //Returns whether the candidate is KEPT (already, or now): a group needs to know that its pick was refused.
+    auto Consider = [&](const std::string &Pid) -> bool {
+        if (Enabled.count(Pid)) return true;
         const Node *P = Idx.Find(Pid);
-        if (!P || !P->LowerError.empty()) { if (Missing) Missing->push_back(Pid); return; }
-        if (P->Optional && !ToggleOf(Pid, P)) return;
-        if (Conflicts(Pid, *P)) return;
+        if (!P || !P->LowerError.empty()) { if (Missing) Missing->push_back(Pid); return false; }
+        if (P->Optional && !ToggleOf(Pid, P)) return false;
+        if (Conflicts(Pid, *P)) return false;
         Keep(Pid, P); Frontier.push_back(Pid);
+        return true;
     };
     for (;;)
     {
@@ -532,14 +549,29 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
         //Resolve ONE pending group per round: an already-kept member satisfies it; else an explicitly toggled-on
         //member; else the first member the index has. Then walk what that pulled in before the next group, so a
         //later group can be satisfied by an earlier pick.
+        //A member the gate REFUSES (toggled off by the user, excluded by a kept node) is not the pick: the next
+        //member in preference order is tried — explicitly toggled-on ones first, then list order — and a group no
+        //present member satisfies is reported as missing. Never silently a mount with no member (a launch on
+        //incomplete content that validation, judging the group structurally, would not see).
         const OverReq *R = PendingGroups.front();
         PendingGroups.erase(PendingGroups.begin());
-        std::string Pick;
-        for (const std::string &M : R->Any) if (Enabled.count(M)) { Pick = M; break; }
-        if (Pick.empty()) for (const std::string &M : R->Any) if (ExplicitOn(M) && Idx.Find(M)) { Pick = M; break; }
-        if (Pick.empty()) for (const std::string &M : R->Any) if (Idx.Find(M)) { Pick = M; break; }
-        if (Pick.empty()) { if (Missing) Missing->push_back(R->Any.front()); continue; }
-        Consider(Pick);
+        bool Satisfied = false;
+        for (const std::string &M : R->Any) if (Enabled.count(M)) { Satisfied = true; break; }
+        if (!Satisfied)
+        {
+            std::vector<std::string> Members;
+            for (const std::string &M : R->Any)
+                if (const Node *P = Idx.Find(M); P && P->LowerError.empty()) Members.push_back(M);
+            std::stable_sort(Members.begin(), Members.end(),
+                             [&](const std::string &A, const std::string &B) { return ExplicitOn(A) && !ExplicitOn(B); });
+            for (const std::string &M : Members) if (Consider(M)) { Satisfied = true; break; }
+        }
+        if (!Satisfied)
+        {
+            LogWarn("ManifestModel::ResolveNodeOrder", "any-of group [" + R->Any.front() + (R->Any.size() > 1 ? ", …" : "")
+                    + "] has no member that can be kept — reported as missing.");
+            if (Missing) Missing->push_back(R->Any.front());
+        }
     }
 
     //Phase 2 — topo-order the enabled subgraph: emit a node only after all its enabled requirements (post-order
@@ -614,16 +646,17 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
         return N.Optional && N.Default;                        // TOGGLE "on" = the author's default: pre-ticked
     };
 
-    //Fixpoint: the selected set = the launchable + every ticked graft that is applicable against the set so far.
-    //Ticking a graft can make another applicable (tex → tex-hd), so iterate until nothing changes.
+    //Applicable against the selected set (the caller holds the graft itself OUT of it): every identity-bearing
+    //requirement selected (a group by any member), substance always, no NOT of its own naming a selected node —
+    //and no SELECTED node's NOT naming it: NOT is one-sided in the file, symmetric in effect.
     std::unordered_set<std::string> Selected{ LaunchKey };
-    std::unordered_map<const Node *, std::string> Blocker;
-    auto Applicable = [&](const Node &G, std::string &Why) {
+    auto Applicable = [&](const Node &G, std::string &Why, std::string &ExcludedBy) {
+        Why.clear(); ExcludedBy.clear();
         for (const OverReq &R : G.Over)
         {
             if (R.Not)
             {
-                if (Selected.count(R.Any.front())) { Why = R.Any.front(); return false; }
+                if (Selected.count(R.Any.front())) { ExcludedBy = R.Any.front(); return false; }
                 continue;
             }
             bool Ok = false;
@@ -635,24 +668,40 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
             }
             if (!Ok) { Why = R.Any.front(); return false; }
         }
+        for (const std::string &E : Launch->Excludes) if (E == G.Key()) { ExcludedBy = LaunchKey; return false; }
+        for (const Node *H : Cands)
+            if (H != &G && Selected.count(H->Key()))
+                for (const std::string &E : H->Excludes) if (E == G.Key()) { ExcludedBy = H->Key(); return false; }
         return true;
     };
-    for (bool Changed = true; Changed;)
+    //Fixpoint WITH RETRACTION: the set is re-derived in candidate order until it settles — a ticked graft enters
+    //when applicable against the others and LEAVES when a selection made after it (a NOT, a lost requirement)
+    //makes it inapplicable, and whatever stood on it leaves on the next pass. Between two ticked grafts that
+    //exclude each other the first in candidate order wins (the GUI unticks the loser at tick time, so the stored
+    //ticks rarely disagree). NOT makes this non-monotone, so the pass count is bounded; a set that will not
+    //settle is reported and the last pass stands.
+    bool Settled = false;
+    for (size_t Pass = 0; Pass <= Cands.size() + 1 && !Settled; ++Pass)
     {
-        Changed = false;
+        Settled = true;
         for (const Node *G : Cands)
         {
-            if (Selected.count(G->Key()) || !SelectedByUser(*G)) continue;
-            std::string Why;
-            if (Applicable(*G, Why)) { Selected.insert(G->Key()); Changed = true; }
+            const bool In = Selected.erase(G->Key()) != 0;
+            std::string Why, ExcludedBy;
+            const bool Want = SelectedByUser(*G) && Applicable(*G, Why, ExcludedBy);
+            if (Want) Selected.insert(G->Key());
+            if (Want != In) Settled = false;
         }
     }
+    if (!Settled)
+        LogWarn("ManifestModel::OfferedGrafts", "graft selection for '" + Launch->NodeId + "' did not settle — last pass stands.");
     for (const Node *G : Cands)
     {
         GraftOffer O;
         O.Graft = G;
-        O.Applicable = Applicable(*G, O.Blocker);
-        O.Selected = O.Applicable && Selected.count(G->Key()) != 0;
+        O.Selected = Selected.erase(G->Key()) != 0;            // in the settled set ⇒ applicable by construction
+        O.Applicable = Applicable(*G, O.Blocker, O.ExcludedBy);
+        if (O.Selected) Selected.insert(G->Key());
         Out.push_back(std::move(O));
     }
     return Out;
@@ -669,7 +718,8 @@ std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::stri
     std::vector<const Node *> Active;
     for (const GraftOffer &O : Offers) if (O.Selected) Active.push_back(O.Graft);
     if (Active.empty()) return Out;
-    //Precedence: higher = mounted later = wins at a conflict; ties by key so an untouched instance is reproducible.
+    //Precedence: higher = mounted later = wins at a conflict; ties by LABEL then key, so an untouched instance is
+    //reproducible AND survives a re-mint (a CID changes with every edit; a label does not).
     auto PrecOf = [&](const Node *N) {
         auto It = Precedence.find(N->Key());
         if (It != Precedence.end()) return It->second;
@@ -679,6 +729,7 @@ std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::stri
     std::stable_sort(Active.begin(), Active.end(), [&](const Node *A, const Node *B) {
         const int Pa = PrecOf(A), Pb = PrecOf(B);
         if (Pa != Pb) return Pa < Pb;
+        if (A->NodeId != B->NodeId) return A->NodeId < B->NodeId;
         return A->Key() < B->Key();
     });
     //Each graft's own closure (its substance requirements, its private ancestors) topo-ordered beneath it; nodes
@@ -1100,10 +1151,18 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         if (OnlyNodes && !OnlyNodes->count(Id)) continue;   // scoped validation: skip nodes outside the requested set
         const std::string Tag = "node '" + Id + "'";
 
-        //OVER resolves: every positive ref must exist; a NOT naming a node we do not have is harmless (the excluded
+        //OVER resolves: every PLAIN ref must exist; an any-of MEMBER may be absent (the group is a choice, and
+        //resolution picks among the present members — a partial library holding one version of [[SP, MP]] is
+        //fine) as long as SOME member is present; a NOT naming a node we do not have is harmless (the excluded
         //node cannot be selected) but worth a word.
+        std::set<std::string> GroupMembers;
+        for (const OverReq &R : N.Over) if (R.IsGroup()) for (const std::string &M : R.Any) GroupMembers.insert(M);
         for (const std::string &P : N.Parents)
-            if (!Idx.Find(P)) Errors.push_back(Tag + ": OVER references missing node '" + P + "'");
+            if (!Idx.Find(P))
+            {
+                if (GroupMembers.count(P)) Warnings.push_back(Tag + ": OVER any-of member '" + P + "' is not in the library");
+                else Errors.push_back(Tag + ": OVER references missing node '" + P + "'");
+            }
         for (const std::string &E : N.Excludes)
             if (!Idx.Find(E)) Warnings.push_back(Tag + ": OVER NOT references missing node '" + E + "'");
         for (const OverReq &R : N.Over)

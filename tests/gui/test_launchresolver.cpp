@@ -509,6 +509,30 @@ private slots:
         QCOMPARE(ids.back(), std::string("nativerun"));        // native terminal always last
     }
 
+    // The chain bridges the SELECTED entrypoint's platform, never the node's default view: a node carrying a
+    // native entry (the default) and a win32 entry routes the win32 one through proton — and the win32 entry's
+    // own RUNNER is honoured as its soft pin.
+    void chain_follows_the_selected_entrypoint()
+    {
+        NodeIndex idx;
+        idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
+        idx.Nodes["protonB"] = chainRunner("protonB", {"win32"}, kMachine);
+        Node launch = launchNode("game", kMachine, {});
+        launch.Entrypoints = json::array({
+            json{{"LABEL", "Native"}, {"HOST", kMachine}, {"PATH", "game"}},
+            json{{"LABEL", "Windows"}, {"HOST", "win32"}, {"PATH", "game.exe"}, {"RUNNER", "protonB"}} });
+        ContainerParams cp("/tmp/vg_bundle");
+        const json cfg = json{{"Settings", json::object()}};
+        auto def = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QCOMPARE((int)def.size(), 1);                                          // native: terminal only
+        cp.Entrypoint = "Windows";
+        auto win = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QCOMPARE((int)win.size(), 2);
+        QCOMPARE(win[0], std::string("protonB"));                              // the ENTRY's declared runner, not BFS's protonA
+        cp.Entrypoint = "Native";
+        QCOMPARE((int)LaunchResolver::ResolveChainIds(idx, launch, cp, cfg).size(), 1);
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {
