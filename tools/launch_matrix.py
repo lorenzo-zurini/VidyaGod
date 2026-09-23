@@ -27,7 +27,10 @@ BINARY   = os.path.join(ROOT, "build", "VidyaGod")
 #The runtime probe's report, delimited so the surrounding launch log never reaches the golden.
 #Every launchable that is meant to RUN, not just resolve. lm_run_chained goes through a two-hop runner
 #chain, where the environment is assembled in a different order — a property no plan can show.
-RUN_NODES = ["lm_run", "lm_run_chained"]
+#(node, entry node): the entry node is a ticked graft that carries an entry (a mod loader) — its entry runs over
+#the variant's mount. None = the variant's own (or inherited) entry.
+RUN_CASES = [("lm_run", None), ("lm_run_chained", None), ("lm_inherits", None), ("lm_run", "lm_graft_entry")]
+ENTRY_CASES = [("lm_run", "lm_graft_entry")]
 RUN_BEGIN = "=== argv"
 RUN_END   = "=== done"
 
@@ -39,10 +42,15 @@ VOLATILE_VARS = ("VIDYAGOD_SELF_NAME", "VIDYAGOD_SELF_VIP", "VIDYAGOD_PEER_NAMES
 def launchables(bundle):
     with open(os.path.join(bundle, "launchmatrix.json")) as F:
         nodes = json.load(F)
-    #A launchable is a node with an ENTRYPOINTS entry that has no GUEST — the terminal link of a chain. Derived,
-    #not listed, so a launchable added to the fixture is covered without touching this script.
-    return sorted(n["LABEL"] for n in nodes
-                  if any(isinstance(e, dict) and not e.get("GUEST") for e in n.get("ENTRYPOINTS", [])))
+    #A launchable is a VARIANT — a node on the shelf; its entry may be its own or inherited from beneath. Derived,
+    #not listed, so a variant added to the fixture is covered without touching this script.
+    return sorted(n["LABEL"] for n in nodes if n.get("VARIANT"))
+
+def case_name(node, entry):
+    return f"{node}@{entry}" if entry else node
+
+def entry_args(entry):
+    return ["--entry-node", entry] if entry else []
 
 def normalise(obj, data_dir):
     """Strip everything that is a property of WHERE this ran rather than WHAT was resolved."""
@@ -93,59 +101,61 @@ def main():
 
         os.makedirs(GOLDEN, exist_ok=True)
         failures, checked = [], 0
-        for node in launchables(bundle):
+        for node, entry in [(n, None) for n in launchables(bundle)] + ENTRY_CASES:
+            name = case_name(node, entry)
             #--bypass-single-instance-lock so the harness runs while the GUI is open; the lock is about one
             #app owning the real data dir, and this run owns a throwaway one.
             try:
                 run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
-                                      "--resolve-only", node],
+                                      "--resolve-only", node] + entry_args(entry),
                                      capture_output=True, text=True, timeout=300)
             except subprocess.TimeoutExpired:
                 #A hung resolve is a result, not a crash in the harness: report it the way every other failure
                 #is reported instead of unwinding out of main() with a traceback.
-                failures.append(f"{node}: resolve TIMED OUT after 300s")
+                failures.append(f"{name}: resolve TIMED OUT after 300s")
                 continue
             dump = os.path.join(data, f"vg_resolve_{node}.json")
             if run.returncode != 0 or not os.path.isfile(dump):
-                failures.append(f"{node}: resolve FAILED (exit {run.returncode})")
+                failures.append(f"{name}: resolve FAILED (exit {run.returncode})")
                 tail = [l for l in run.stdout.splitlines() if "[ERR" in l][-3:]
                 failures += [f"    {l}" for l in tail]
                 continue
             with open(dump) as F:
                 got = normalise(json.load(F), data)
             text = json.dumps(got, indent=2, sort_keys=True) + "\n"
-            gpath = os.path.join(GOLDEN, f"{node}.json")
+            gpath = os.path.join(GOLDEN, f"{name}.json")
             checked += 1
             if args.update:
                 with open(gpath, "w") as F: F.write(text)
                 continue
             if not os.path.isfile(gpath):
-                failures.append(f"{node}: NO GOLDEN — run with --update and review the new file")
+                failures.append(f"{name}: NO GOLDEN — run with --update and review the new file")
                 continue
             with open(gpath) as F: want = F.read()
             if want != text:
                 import difflib
                 d = list(difflib.unified_diff(want.splitlines(True), text.splitlines(True),
-                                              f"golden/{node}.json", "resolved", n=2))
-                failures.append(f"{node}: PLAN CHANGED ({sum(1 for l in d if l.startswith(('+','-')) and not l.startswith(('+++','---')))} line(s))")
+                                              f"golden/{name}.json", "resolved", n=2))
+                failures.append(f"{name}: PLAN CHANGED ({sum(1 for l in d if l.startswith(('+','-')) and not l.startswith(('+++','---')))} line(s))")
                 failures += ["    " + l.rstrip("\n") for l in d[:40]]
 
-        for node in RUN_NODES:
+        for node, entry in RUN_CASES:
+            name = case_name(node, entry)
             # ---- the RUNTIME case: mount for real, run the probe, golden what it saw ------------------------
             # The plan goldens above stop at resolution. This one actually composes the mount, applies the edits
             # and patches, starts a process inside it, and records what that process could see — which is the only
             # way to catch a plan that is perfectly correct and mounts to the wrong thing.
             try:
                 run = subprocess.run([binary, "--bypass-single-instance-lock", "--data-dir", data,
-                                      "--node", node],
+                                      "--node", node] + entry_args(entry),
                                      capture_output=True, text=True, timeout=600)
             except subprocess.TimeoutExpired:
-                failures.append(f"{node}: the run TIMED OUT after 600s — the probe never finished")
+                failures.append(f"{name}: the run TIMED OUT after 600s — the probe never finished")
                 run = None
             #The plan loop checks the exit code; this one did not, so a run that printed a good report and then
             #failed during teardown compared clean and the harness said "match".
             if run is not None and run.returncode != 0:
-                failures.append(f"{node}: the run exited {run.returncode}")
+                failures.append(f"{name}: the run exited {run.returncode}")
                 failures += ["    " + l for l in run.stdout.splitlines() if "[ERR" in l][-4:]
             report = []
             inside = False
@@ -153,9 +163,9 @@ def main():
                 if line.startswith(RUN_BEGIN): inside = True
                 if inside: report.append(line)
                 if line.startswith(RUN_END):   inside = False
-            rpath = os.path.join(GOLDEN, f"{node}.runtime.txt")
+            rpath = os.path.join(GOLDEN, f"{name}.runtime.txt")
             if not report:
-                failures.append(f"{node}: the probe produced NO report — it never ran inside the mount")
+                failures.append(f"{name}: the probe produced NO report — it never ran inside the mount")
                 failures += ["    " + l for l in (run.stdout.splitlines() if run else []) if "[ERR" in l][-4:]
             #A partial report from a run that then DIED is not an observation. Guarding only on "the report is
             #empty" left the other shape open: the probe printed some of its report, exited non-zero, and
@@ -175,12 +185,12 @@ def main():
                     checked += 1
                     want = open(rpath).read() if os.path.isfile(rpath) else None
                     if want is None:
-                        failures.append(f"{node} runtime: NO GOLDEN — run with --update and review it")
+                        failures.append(f"{name} runtime: NO GOLDEN — run with --update and review it")
                     elif want != text:
                         import difflib
                         d = list(difflib.unified_diff(want.splitlines(True), text.splitlines(True),
-                                                      f"golden/{node}.runtime.txt", "observed", n=2))
-                        failures.append(f"{node} runtime: WHAT THE GAME SEES CHANGED")
+                                                      f"golden/{name}.runtime.txt", "observed", n=2))
+                        failures.append(f"{name} runtime: WHAT THE GAME SEES CHANGED")
                         failures += ["    " + l.rstrip("\n") for l in d[:60]]
 
         if args.update:

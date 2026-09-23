@@ -82,11 +82,8 @@
     "lm_persist_hklm",
     "lm_group",
     "lm_tile",
-    "lm_graft_entry",
-    "lm_graft_on",
-    "lm_graft_hd",
-    "lm_graft_lib",
-    "lm_graft_uses_lib"
+    "lm_run",
+    "lm_inherits__self"
   ],
   "RunnerArgs": [
     "%Content%"
@@ -308,22 +305,7 @@
       "TYPE": "DllOverride"
     },
     {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftentry",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftdir",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/grafthd",
-      "TARGET": "/drive_c/90000000000001",
-      "TYPE": "VFSDirLayer"
-    },
-    {
-      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/graftlib",
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/inheritdir",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
     }

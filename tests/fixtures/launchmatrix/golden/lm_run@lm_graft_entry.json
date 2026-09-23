@@ -18,8 +18,7 @@
   },
   "DLLOverrides": [],
   "ExeArgs": [
-    "--matrix",
-    "hello-beta"
+    "--via-graft-entry"
   ],
   "GameName": "Launch Matrix",
   "KeepDirs": [
@@ -103,15 +102,14 @@
     }
   ],
   "RunnerEnv": {
-    "LM_EXEC_ENV": "arrived",
-    "LM_FROM_VAR": "%lm_derived%",
-    "LM_RUNNER_ONLY": "from-runner"
+    "LM_EXEC_ENV": "from-the-graft-entry",
+    "LM_RUNNER_ONLY": "from-runner",
+    "LM_SHOULD_BE_GONE": "runner-set-this"
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",
   "RunnerRemoveEnv": [
-    "LM_GAME_KEEPS_THIS",
-    "LM_SHOULD_BE_GONE"
+    "LM_GAME_KEEPS_THIS"
   ],
   "RunnerShipsBuild": false,
   "SubComponentsArray": [

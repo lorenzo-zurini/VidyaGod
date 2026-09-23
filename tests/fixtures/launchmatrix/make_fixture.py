@@ -136,6 +136,9 @@ def make_content(B):
     write(f"{B}/graftoff/game/never.txt", "an unticked graft must not mount\n")
     write(f"{B}/graftwrong/game/wrong.txt", "a branch off an ancestor must not mount\n")
     write(f"{B}/graftlib/game/lib.txt", "substance pulled in beneath a graft\n")
+    # The final chain: a variant that inherits its entry, and a graft that carries one.
+    write(f"{B}/inheritdir/game/inherited.txt", "a variant over lm_run, running lm_run's inherited entry\n")
+    write(f"{B}/graftentry/game/from_graft_entry.txt", "a graft that is also a way to run\n")
     # FORM delta — REAL ones, generated below by vg_make_delta.
     #
     # A delta reconstructs a COMPLETE archive and is OPAQUE: it masks everything below it at its own target.
@@ -426,6 +429,20 @@ def nodes():
     add(LABEL="lm_graft_lib", TYPE="Content", PARENTS=[], FORM="dir", PATH="graftlib",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")
     add(LABEL="lm_graft_uses_lib", TYPE="Group", PARENTS=["lm_run", "lm_graft_lib"], TOGGLE="on")
+    # ---- the final chain: facts fold, choices don't ---------------------------------------------------------
+    # lm_inherits is a VARIANT over lm_run that declares no entry: it runs lm_run's entry (inherited — the
+    # nearest beneath), mounts lm_run's whole closure plus its own dir, and NONE of lm_run's grafts: picking
+    # lm_inherits selects exactly lm_inherits, and a graft OVER lm_run needs lm_run — a variant — selected.
+    add(LABEL="lm_inherits", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="inheritdir",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", VARIANT="lm_inherits")
+    # lm_graft_entry is a graft that CARRIES an entry (a mod loader): ticked on lm_run it mounts above lm_run
+    # like any graft, and it is also a way to RUN that mount — `--entry-node lm_graft_entry` runs its entry
+    # over lm_run's closure + grafts. It is not a variant, so it is never on the shelf by itself.
+    add(LABEL="lm_graft_entry", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftentry",
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on",
+        ENTRYPOINTS=[{"LABEL": "lm_graft_entry", "HOST": "linux64",
+                      "PATH": "%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", "ARGS": ["--via-graft-entry"],
+                      "WORKDIR": "%PrefixRoot%/drive_c/%PackageUID%", "ENV": {"LM_EXEC_ENV": "from-the-graft-entry"}}])
 
     add(LABEL="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")

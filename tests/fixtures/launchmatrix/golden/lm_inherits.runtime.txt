@@ -28,12 +28,10 @@
   ./game/data.txt
   ./game/deep
   ./game/deep/leaf.txt
-  ./game/from_graft_entry.txt
-  ./game/grafted.txt
-  ./game/grafted_hd.txt
-  ./game/lib.txt
+  ./game/inherited.txt
   ./game/patch.exe
   ./game/saves
+  ./game/saves/save.txt
   ./game/shadercache
   ./game/shared.txt
   ./game/written.txt

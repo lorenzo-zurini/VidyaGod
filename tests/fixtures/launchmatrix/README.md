@@ -42,6 +42,9 @@ One bundle, three launchables:
 | `lm_minimal` | The least that can launch: one zip, one exec. The control — a regression that shows up *here* is in the spine, not in a feature. |
 | `lm_all` | Everything below, on the native runner. |
 | `lm_chained` | The same content reached through a two-hop runner chain (`fixture32` → `linux64`). |
+| `lm_run` | The runtime case: mounts for real and runs the probe. Its grafts (`lm_graft_*`) mount above it when ticked. |
+| `lm_inherits` | A variant `OVER` `lm_run` with content and **no entry**: runs `lm_run`'s entry (inherited), mounts its closure — and none of `lm_run`'s grafts (picking a variant selects exactly that node). |
+| `lm_run@lm_graft_entry` | `lm_run` run through `--entry-node lm_graft_entry`: a ticked graft that carries an entry (a mod loader) runs over the variant's mount + grafts. |
 
 Covered, by type:
 
@@ -59,6 +62,9 @@ Covered, by type:
 - **Persist** — `KEEP` of a dir, a file, a whole hive and a single key; a `DROP` hole punched inside a `KEEP`.
 - **DeclareExec** — launchable and runner forms, runner `ENV`/`ENV_REMOVE`/`CONTENT_ROOT`, a two-hop chain.
 - **DeclareLibraryItem** (`UID`, `TITLE`, `META`) and **Group** (payload-less composition).
+- **The final chain** — `VARIANT` on the shelf nodes; an entry inherited from beneath (`lm_inherits`); grafts:
+  pre-ticked, unticked, a graft on a graft, a branch off an ancestor (never offered), substance pulled in
+  beneath, and a graft carrying an entry (`lm_graft_entry`).
 
 ## Two layers of golden
 

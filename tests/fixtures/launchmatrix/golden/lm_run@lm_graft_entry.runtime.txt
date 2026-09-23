@@ -1,12 +1,11 @@
 === argv
-  [0] --matrix
-  [1] hello-beta
+  [0] --via-graft-entry
 === cwd
   <TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
-  LM_EXEC_ENV=arrived
-  LM_FROM_VAR=hello-beta
+  LM_EXEC_ENV=from-the-graft-entry
   LM_RUNNER_ONLY=from-runner
+  LM_SHOULD_BE_GONE=runner-set-this
 === mounted tree
   .
   ./bin
@@ -34,6 +33,7 @@
   ./game/lib.txt
   ./game/patch.exe
   ./game/saves
+  ./game/saves/save.txt
   ./game/shadercache
   ./game/shared.txt
   ./game/written.txt
