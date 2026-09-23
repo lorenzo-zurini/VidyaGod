@@ -21,7 +21,8 @@ if dry: sys.exit(0)
 if todo:
     ts = time.strftime("%Y%m%d-%H%M%S")
     tar = os.path.normpath(root) + f".pre-strip-publish-backup-{ts}.tar"
-    with tarfile.open(tar, "w") as T: T.add(root, arcname=os.path.basename(os.path.normpath(root)))
+    with tarfile.open(tar, "w") as T:   # node files only — content never changes here (and it is tens of GB)
+        for p, _ in todo: T.add(p, arcname=os.path.relpath(p, os.path.dirname(os.path.normpath(root))))
     for p, d in todo:
         for n in (d if isinstance(d, list) else [d]):
             if isinstance(n, dict): n.pop("PUBLISH", None)
