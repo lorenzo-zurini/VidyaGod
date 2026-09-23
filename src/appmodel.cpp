@@ -547,11 +547,13 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
     if (Clean.empty())
     {
         if (!Had) return;                               // nothing to drop, nothing changed
+        dropReceivedStubs(P);                           // they share nothing now: the stubs of what they did go too
         FL.erase(P);
     }
     else
     {
         if (Had && FL[P] == Clean) return;              // identical snapshot → no-op (no disk/UI churn)
+        if (Had) dropReceivedStubs(P);                  // a CHANGED snapshot replaces the last one's stubs, never joins them
         FL[P] = std::move(Clean);
     }
     save();
@@ -619,23 +621,8 @@ void AppModel::forgetFriend(const QString & peer)
     if (Config->contains("Sharing") && (*Config)["Sharing"].is_object() && (*Config)["Sharing"].contains(P))
     { (*Config)["Sharing"].erase(P); Changed = true; }   // Go already dropped its side via VgFriendRemove→purgeShares
     // Ending the friendship also stops their still-pending fetches (same as receive-off): plan from the snapshot
-    // BEFORE erasing it, cancel what we enqueued. Landed files stay — they are ordinary packages.
-    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
-        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
-    {
-        std::string Nick;
-        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
-        std::set<std::filesystem::path> LibDirs;
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
-        {
-            LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());
-            if (!FriendBrowseCids.erase(T.Cid)) continue;
-            IpfsWrapper::CancelDownload(T.Cid);
-        }
-        std::error_code Ec;
-        for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // browse stubs; LIBRARY installs untouched
-    }
+    // BEFORE erasing it, cancel what we enqueued, drop the browse stubs. LIBRARY installs are untouched.
+    dropReceivedStubs(P);
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
         && (*Config)["FriendLibraries"].contains(P))
     { (*Config)["FriendLibraries"].erase(P); Changed = true; }   // drops the peer's packages from future reconciles
@@ -702,6 +689,29 @@ void AppModel::setReceivingFrom(const QString & peer, bool on)
     else    stopReceivingFromFriend(peer);           // drop what we've already materialised
 }
 
+void AppModel::dropReceivedStubs(const std::string & P)
+{
+    // A friend's received library is a SNAPSHOT: the roots they share now, and the node closure under them. It lives
+    // in CATALOG/<Nick> - <Lib>/ as browse stubs (blocks only; installs are in LIBRARY). Whenever that snapshot goes
+    // away or is replaced, the stubs go with it — otherwise every publish they ever made stays on disk beside the
+    // current one (three "v1.30.4" of three generations, each indexed, each a card). Plans from the snapshot we hold
+    // to name this peer's dirs and CIDs, cancels what we enqueued for them, removes the dirs.
+    if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
+        || !(*Config)["FriendLibraries"].contains(P) || !(*Config)["FriendLibraries"][P].is_object()) return;
+    std::string Nick;
+    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+    if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+    std::set<std::filesystem::path> LibDirs;   // CATALOG/<Nick> - <Lib> subtrees (pure browse stubs)
+    for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+    {
+        LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
+        if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
+        IpfsWrapper::CancelDownload(T.Cid);
+    }
+    std::error_code Ec;
+    for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // installed games are in LIBRARY, untouched
+}
+
 void AppModel::stopReceivingFromFriend(const QString & peer)
 {
     const std::string P = peer.toStdString();
@@ -710,22 +720,7 @@ void AppModel::stopReceivingFromFriend(const QString & peer)
     // keep arriving into the library. Re-plan from the snapshot (cheap, pure) to name this peer's CIDs, cancel each
     // in the queue, and drop them from the landed-block reaction set. Files already landed stay (they are ordinary
     // packages now; withdrawal never deletes).
-    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
-        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
-    {
-        std::string Nick;
-        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
-        std::set<std::filesystem::path> LibDirs;   // CATALOG/<Nick> - <Lib> subtrees to remove (pure browse stubs)
-        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
-        {
-            LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
-            if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
-            IpfsWrapper::CancelDownload(T.Cid);
-        }
-        std::error_code Ec;
-        for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // installed games are in LIBRARY, untouched
-    }
+    dropReceivedStubs(P);
     // Dropping the peer's snapshot removes its packages from future reconciles (enqueueReceivedShares plans only
     // from FriendLibraries of peers we still Receive from).
     if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()

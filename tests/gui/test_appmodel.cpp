@@ -8,6 +8,8 @@
 #include <QFile>
 
 #include "appmodel.h"
+#include "packagecatalog.h"
+#include <filesystem>
 #include "apppaths.h"
 #include "nodefixture.h"
 
@@ -222,6 +224,37 @@ private slots:
     // "receiver". This is what makes a withdrawn library un-loseable: a snapshot that no longer lists a library drops
     // it, even if the specific "unshare" push was never received. An empty snapshot drops the peer entirely; an
     // identical snapshot is a no-op (no disk write, no UI refresh).
+    // A friend's received stubs (CATALOG/<Nick> - <Lib>/…) are the materialisation of ONE snapshot. A changed
+    // snapshot must replace them, not join them: with three publishes' worth of "v1.30.4" side by side, the index
+    // held three variants of three generations and the library showed every one. An identical snapshot leaves them.
+    void a_changed_snapshot_replaces_the_received_stubs()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        QVERIFY(!Plan.empty());
+        const std::filesystem::path LibDir = std::filesystem::path(Plan.front().Dest).parent_path().parent_path();
+        std::filesystem::create_directories(std::filesystem::path(Plan.front().Dest).parent_path());
+        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        QVERIFY(std::filesystem::exists(Plan.front().Dest));
+        // identical snapshot → stubs stay
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        QVERIFY(std::filesystem::exists(Plan.front().Dest));
+        // a re-publish: the same library, a new root CID → the old generation's stubs are gone
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafynew","node":"Old Game"}]})");
+        QVERIFY(!std::filesystem::exists(LibDir));
+        QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
+        // they share nothing any more → stubs go with the snapshot
+        { std::filesystem::create_directories(LibDir); std::ofstream S(LibDir / "x.json"); S << "{}"; }
+        m.applyFriendLibrarySnapshot(peer, R"({})");
+        QVERIFY(!std::filesystem::exists(LibDir));
+    }
+
     void friend_snapshot_replaces_wholesale_and_dedups()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

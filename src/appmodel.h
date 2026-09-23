@@ -135,7 +135,8 @@ public:
     void setNewPeerDefault(const QString & key, bool on);
     QStringList newPeerShareDefaults() const;
     void setNewPeerShareDefault(const QString & lib, bool on);
-    void stopReceivingFromFriend(const QString & peer);   // drop the friend's stub sources + LIBRARY entries
+    void stopReceivingFromFriend(const QString & peer);
+    void dropReceivedStubs(const std::string & peer);   // remove a friend's received browse stubs + cancel their fetches   // drop the friend's stub sources + LIBRARY entries
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
     void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path

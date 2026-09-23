@@ -496,7 +496,10 @@ void DeriveIdentity(NodeIndex &Idx)
 
     for (auto &[Id, N] : Idx.Nodes)
     {
-        if (!N.OwnTile)
+        // A face's key is its INDEX key. ParseNode stamped Key() before the caller assigned the node's CID (a frozen
+        // or fetched block carries no handle, so Key() was the LABEL then) — re-derive it here, where the key is known.
+        if (N.OwnTile) { N.FaceKey = Id; N.FaceDistance = 0; }
+        else
         {
             const G &g = Of(Id);
             N.Uids = g.Uids;

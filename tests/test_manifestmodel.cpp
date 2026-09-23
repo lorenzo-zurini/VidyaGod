@@ -717,6 +717,30 @@ TEST(exec_is_the_effective_entry_declared_or_inherited)
     CHECK(!V3->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
 }
 
+// A frozen or fetched block carries no handle: ParseNode keys it by LABEL, and the index then files it under its
+// real CID. The face's FaceKey must be that index key — a label-keyed FaceKey found a DIFFERENT node with the same
+// label (a stale copy from an earlier publish), depth -1, null Meta, and OrderVariants threw on it.
+TEST(a_faces_key_is_its_index_key_not_its_label)
+{
+    NodeIndex Idx;
+    auto Parse = [&](const ordered_json &J, const std::string &Cid) {
+        Node N; CHECK(ManifestModel::ParseNode(J, {}, {}, N)); N.Cid = Cid; Idx.Nodes.emplace(Cid, std::move(N));
+    };
+    ordered_json Tile = NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Tile("1", "G"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("v2")});
+    Tile["LABEL"] = "v2";                                                   // no CID field: keyed by LABEL at parse
+    ordered_json Stale = NodeFixture::Merge({NodeFixture::Content("zip", "old.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("v2")});
+    Stale["LABEL"] = "v2";                                                  // same label, no tile, another CID
+    Parse(Tile, "bafyTILE"); Parse(Stale, "bafySTALE");
+    ManifestModel::DeriveIdentity(Idx);
+    const Node *T = Idx.Find("bafyTILE");
+    CHECK_EQ(T->NodeId, std::string("v2"));
+    CHECK_EQ(T->FaceKey, std::string("bafyTILE"));
+    CHECK(Idx.Find(T->FaceKey)->OwnTile);
+    CHECK_EQ(ManifestModel::FaceDepth(Idx, *T), 0);
+    const auto O = ManifestModel::OrderVariants(Idx, {Idx.Find("bafySTALE"), T});   // must not throw
+    CHECK_EQ(O.front()->Cid, std::string("bafyTILE"));                      // the faced variant first, the faceless last
+}
+
 // ---- grafts: selection ≠ closure ----
 
 // A graft is a node in nobody's list that is OVER something of this title. It is OFFERED when the SELECTED set
