@@ -421,7 +421,8 @@ private slots:
         QCOMPARE(Ordered.front()->NodeId, std::string("a_exec"));                                   // the main names the card
         QCOMPARE(Ordered.front()->Meta.value("TITLE", std::string()), std::string("A"));
         QCOMPARE(Ordered.back()->NodeId, std::string("a_x"));                                       // the expansion under it
-        QCOMPARE(ManifestModel::SameTitleDepth(Idx2, *Ordered.back()), 1);
+        QVERIFY2(ManifestModel::TitleHeight(Idx2, *Ordered.back()) > ManifestModel::TitleHeight(Idx2, *Ordered.front()),
+                 "the expansion sits higher on the title's chain than the base");
 
         // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
         const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"pkg", "../../.."}, {"uid", ".."}, {"title", "../.."},

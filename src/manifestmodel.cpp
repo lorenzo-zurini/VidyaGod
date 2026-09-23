@@ -12,6 +12,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <climits>
 #include <algorithm>
 #include <bit>
 #include <regex>
@@ -456,20 +457,49 @@ void DeriveIdentity(NodeIndex &Idx)
         N.Uid       = g.Uids.empty() ? std::string() : g.Uids.front();
         N.Meta      = g.Meta;
     }
+    // The reverse fact: which titles are BUILT ON each node. One walk per launchable over its closure; a node's
+    // Owners are the UIDs of every launchable whose closure holds it. This is what tells a title's own chain (one
+    // owner) from shared substance (many) when the chain is read bottom-up for nesting.
+    for (auto &[Id, N] : Idx.Nodes) N.Owners.clear();
+    for (const auto &[Id, L] : Idx.Nodes)
+    {
+        if (!L.IsLaunchable() || L.Uid.empty()) continue;
+        std::unordered_set<std::string> Seen;
+        std::vector<std::string> Stack{Id};
+        while (!Stack.empty())
+        {
+            const std::string Cur = Stack.back(); Stack.pop_back();
+            if (!Seen.insert(Cur).second) continue;
+            auto It = Idx.Nodes.find(Cur);
+            if (It == Idx.Nodes.end()) continue;
+            Node &M = It->second;
+            if (std::find(M.Owners.begin(), M.Owners.end(), L.Uid) == M.Owners.end()) M.Owners.push_back(L.Uid);
+            for (const std::string &P : M.Parents) Stack.push_back(P);
+        }
+    }
 }
 
-static std::unordered_set<std::string> Reachable(const NodeIndex &Idx, const std::string &Start);
-
-int SameTitleDepth(const NodeIndex &Idx, const Node &N)
+int TitleHeight(const NodeIndex &Idx, const Node &N)
 {
-    int D = 0;
-    for (const std::string &Id : Reachable(Idx, N.Key()))
-    {
-        if (Id == N.Key()) continue;
-        const Node *P = Idx.Find(Id);
-        if (P && P->IsLaunchable() && !P->Uid.empty() && P->Uid == N.Uid) ++D;   // own or inherited tile alike
-    }
-    return D;
+    // Longest OVER path from N through nodes that ONLY N's title is built on. Memoized; a cycle scores 0.
+    std::unordered_map<std::string, int> Memo;
+    std::unordered_set<std::string> OnStack;
+    std::function<int(const std::string &)> H = [&](const std::string &Id) -> int {
+        if (auto It = Memo.find(Id); It != Memo.end()) return It->second;
+        if (!OnStack.insert(Id).second) return 0;
+        int Best = 0;
+        if (const Node *C = Idx.Find(Id))
+            for (const std::string &P : C->Parents)
+            {
+                const Node *Pn = Idx.Find(P);
+                if (!Pn || Pn->Owners.size() != 1 || Pn->Owners.front() != N.Uid) continue;   // shared, or another title's
+                Best = std::max(Best, 1 + H(P));
+            }
+        OnStack.erase(Id);
+        Memo[Id] = Best;
+        return Best;
+    };
+    return N.Uid.empty() ? 0 : H(N.Key());
 }
 
 bool SameTile(const Node &A, const Node &B)
@@ -482,8 +512,8 @@ std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const 
 {
     if (Group.empty()) return Group;
     std::map<const Node *, int> Depth;
-    for (const Node *N : Group) Depth[N] = SameTitleDepth(Idx, *N);
-    //The main: shallowest, ties by label — the one card-naming choice that has to be deterministic.
+    for (const Node *N : Group) Depth[N] = TitleHeight(Idx, *N);
+    //The main: the shortest chain, ties by label — the one card-naming choice that has to be deterministic.
     const Node *Main = *std::min_element(Group.begin(), Group.end(), [&](const Node *A, const Node *B) {
         if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];
         return A->NodeId < B->NodeId;
@@ -1373,21 +1403,29 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             Warnings.push_back(Tag + ": launchable has no identity (no TILE of its own and none reachable through OVER) — it appears under no tile");
     }
 
-    //----- TILE lint: a UID with several MAINS (launchables of one UID none of which is OVER another) shows more
-    //than one top-level entry on its card — legitimate for two independent installs, worth a word. A different
-    //TITLE/COVER under the main is an expansion by construction, never a mistake. -----
+    //----- TILE lint: a UID whose shortest-chain launchables carry DIFFERENT tiles has several MAINS — the card
+    //cannot tell which title names it (two independent installs, or an expansion authored beside the base rather
+    //than on its chain). A different tile HIGHER up the chain is an expansion by construction, never a mistake. -----
     {
         std::map<std::string, std::vector<const Node *>> ByUid;
         for (const auto &[Id, N] : Idx.Nodes) if (N.IsLaunchable() && !N.Uid.empty()) ByUid[N.Uid].push_back(&N);
         for (const auto &[Uid, Ns] : ByUid)
         {
-            std::vector<std::string> Mains;
+            int Min = INT_MAX;
+            std::map<const Node *, int> Hs;
+            for (const Node *N : Ns) { Hs[N] = TitleHeight(Idx, *N); Min = std::min(Min, Hs[N]); }
+            std::vector<const Node *> Mains;
             for (const Node *N : Ns)
-                if (SameTitleDepth(Idx, *N) == 0 && (OnlyNodes == nullptr || OnlyNodes->count(N->Key()))) Mains.push_back(N->NodeId);
+                if (Hs[N] == Min && (OnlyNodes == nullptr || OnlyNodes->count(N->Key())))
+                {
+                    bool NewTile = true;
+                    for (const Node *M : Mains) if (SameTile(*M, *N)) { NewTile = false; break; }
+                    if (NewTile) Mains.push_back(N);
+                }
             if (Mains.size() > 1)
             {
-                std::string List; for (const auto &M : Mains) List += (List.empty() ? "" : ", ") + M;
-                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " mains (launchables OVER no other of this UID: " + List + ") — the card shows each at top level");
+                std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->NodeId;
+                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " mains with different tiles at the same chain height (" + List + ") — the card cannot tell which names it");
             }
         }
     }

@@ -438,9 +438,9 @@ TEST(validate_errors_on_a_tile_with_no_uid)
 }
 
 // One UID = one card, and the nesting INSIDE the card is derived from the chain, never declared: the main is
-// the launchable OVER no other of its UID; a different tile OVER it is a child (an expansion); the same tile OVER
-// it is a variant. The card reads its title off the front of the ordered group; the recommended edition may be
-// a child. Two mains in one UID (two independent installs) is legitimate and merely noted.
+// the launchable with the SHORTEST chain of the title's own nodes beneath it; a different tile higher up is a
+// child (an expansion); the same tile is a variant. The card reads its title off the front of the ordered group;
+// the recommended edition may be a child. Two different tiles at the same height are two mains — noted.
 TEST(card_nesting_is_derived_from_the_chain)
 {
     NodeIndex Idx;
@@ -455,9 +455,10 @@ TEST(card_nesting_is_derived_from_the_chain)
     AddChain(Idx, "hd",   {Hd},   {"aok"});
     AddChain(Idx, "mod",  {NodeFixture::Content("dir", "m")}, {"conq"});         // not a launchable: never in the group
     ManifestModel::DeriveIdentity(Idx);
-    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("aok")),  0);
-    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("conq")), 1);
-    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("fe")),   2);
+    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("aok")),  0);
+    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("conq")), 1);
+    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("fe")),   2);
+    CHECK(Idx.Find("aok")->Owners == std::vector<std::string>{"749"});           // built on by its own title only
     CHECK(ManifestModel::SameTile(*Idx.Find("hd"), *Idx.Find("aok")));
     CHECK(!ManifestModel::SameTile(*Idx.Find("conq"), *Idx.Find("aok")));
     std::vector<const Node *> G{Idx.Find("fe"), Idx.Find("conq"), Idx.Find("hd"), Idx.Find("aok")};
@@ -468,11 +469,40 @@ TEST(card_nesting_is_derived_from_the_chain)
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(!AnyContains(Warnings, "TITLE differs") && !AnyContains(Warnings, "mains"));       // an expansion is not a lint
-    // Two mains: a standalone install sharing the UID but OVER nothing of it.
+    // Two mains: a standalone install sharing the UID but OVER nothing of it — the same height as the base.
     AddChain(Idx, "custom", {NodeFixture::Merge({NodeFixture::Content("zip", "c.zip"), NodeFixture::Exec("win32", "c.exe"), NodeFixture::Tile("749", "Custom Edition")})});
     ManifestModel::DeriveIdentity(Idx);
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
     CHECK(AnyContains(Warnings, "2 mains"));
+}
+
+// The real shape of a migrated library: the expansion is NOT over the base launchable — both sit over one
+// pristine, each with its own patches on top, and the expansion's chain is longer. Shared substance (a library
+// another title is built on too) never counts toward a chain, so a launchable OVER a deep library chain is not
+// mistaken for an expansion.
+TEST(card_nesting_follows_the_chain_above_a_shared_pristine)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "pristine", {NodeFixture::Content("zip", "aok.zip")});
+    AddChain(Idx, "nocd",     {NodeFixture::Content("dir", "nocd")}, {"pristine"});
+    AddChain(Idx, "lib1",     {NodeFixture::Content("dir", "l1")});                 // a library chain, three deep,
+    AddChain(Idx, "lib2",     {NodeFixture::Content("dir", "l2")}, {"lib1"});       // used by another title too
+    AddChain(Idx, "lib3",     {NodeFixture::Content("dir", "l3")}, {"lib2"});
+    AddChain(Idx, "aok",  {NodeFixture::Merge({NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")})}, {"nocd", "lib3"});
+    AddChain(Idx, "tc_base",  {NodeFixture::Content("zip", "tc.zip")}, {"pristine"});
+    AddChain(Idx, "tc_patch", {NodeFixture::Content("dir", "tcp")}, {"tc_base"});
+    AddChain(Idx, "conq", {NodeFixture::Merge({NodeFixture::Exec("win32", "x1.exe"), NodeFixture::Tile("749", "The Conquerors")})}, {"tc_patch"});
+    AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "Other")})}, {"lib3"});
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK(Idx.Find("pristine")->Owners == std::vector<std::string>{"749"});
+    CHECK_EQ(Idx.Find("lib3")->Owners.size(), (size_t)2);                              // shared: stops every chain
+    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("aok")),  2);                  // aok → nocd → pristine
+    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("conq")), 3);                  // conq → tc_patch → tc_base → pristine
+    const auto O = ManifestModel::OrderVariants(Idx, {Idx.Find("conq"), Idx.Find("aok")});
+    CHECK_EQ(O.front()->NodeId, std::string("aok"));                                   // the base names the card
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(!AnyContains(Warnings, "mains"));
 }
 
 // Validation names the OVER-specific mistakes: a group with no member in the library, a ref both required and

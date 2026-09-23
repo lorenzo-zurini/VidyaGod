@@ -108,6 +108,10 @@ struct Node {
     bool OwnTile = false;                    // carries a TILE of its own
     std::string Uid;                         // primary identity (own TILE.UID, else the first inherited)
     std::vector<std::string> Uids;           // every identity, in OVER order
+    std::vector<std::string> Owners;         // DERIVED, the reverse fact: every UID whose launchables are BUILT ON this
+                                             // node (its closure contains it). A pristine has no identity of its own
+                                             // (nothing under it carries a tile) but exactly one owner; a shared
+                                             // library has many; a node of one title's chain has that one owner.
     nlohmann::ordered_json Meta;             // tile metadata, flat (TITLE/COVER/UID + META fields)
 
     bool Optional = false;                   // TOGGLE present ⇒ user-toggleable
@@ -190,12 +194,16 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
 void DeriveIdentity(NodeIndex &Idx);
 
 // Nesting inside one card is DERIVED from the chain, never declared. Among the launchables of one UID, the MAIN is
-// the one that is OVER no other launchable of that UID; a launchable OVER the main that carries a different
-// TITLE or COVER is a CHILD (an expansion: The Conquerors OVER Age of Kings); one with the same tile is a VARIANT
-// (an edition, a version — Minecraft's 903). SameTitleDepth = how many launchables of its own UID a launchable is
-// OVER (0 = a main). OrderVariants puts the main's tile first (RECOMMENDED, then label), then the children in
-// chain order — so a card reads its TITLE/COVER off the front.
-int SameTitleDepth(const NodeIndex &Idx, const Node &N);
+// the one with the SHORTEST chain of the title's own nodes beneath it — an expansion is built on the base's chain
+// (its pristine, its patches) and so always sits higher: The Conquerors is OVER content that is OVER Age of Kings'
+// pristine, even though it is not OVER the Age of Kings launchable itself. TitleHeight = the longest OVER path
+// from a launchable through nodes that ONLY this title is built on (shared substance — dgVoodoo, DirectPlay — and
+// other titles' chains stop the walk). A launchable OVER another of its title is higher by construction. A
+// launchable above the main with a different TITLE or COVER is a CHILD (an expansion); with the same tile it is a
+// VARIANT (an edition, a version — Minecraft's 903). OrderVariants puts the main's tile first (RECOMMENDED, then
+// label), then the children by height — so a card reads its TITLE/COVER off the front. Equal heights with
+// different tiles are equally main (the validator says so).
+int TitleHeight(const NodeIndex &Idx, const Node &N);
 bool SameTile(const Node &A, const Node &B);
 std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Group);
 
