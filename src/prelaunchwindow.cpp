@@ -333,7 +333,12 @@ bool PreLaunchWindow::eventFilter(QObject* Obj, QEvent* Event)
 
 std::string PreLaunchWindow::ChainStepInput(int Step) const
 {
-    if (Step <= 0) { const Node* L = CurrentLaunch(); return L ? L->HostFor(Entrypoint) : ManifestModel::MachinePlatform(); }
+    if (Step <= 0)
+    {
+        const Node* E = (!EntryNode.empty() && Index) ? Index->Find(EntryNode) : nullptr;
+        const Node* L = E ? E : CurrentLaunch();
+        return L ? L->HostFor(Entrypoint) : ManifestModel::MachinePlatform();
+    }
     if (Step - 1 >= (int)CurrentChain.size()) return ManifestModel::MachinePlatform();
     const std::string& Prev = CurrentChain[Step - 1];
     if (Prev == LaunchResolver::kNativeTerminalId) return ManifestModel::MachinePlatform();
@@ -358,7 +363,7 @@ void PreLaunchWindow::RebuildRunnerChain()
     if (L)
     {
         ContainerParams Cp(std::filesystem::path(BundleDir), LaunchNodeId, std::string());
-        Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.PackageUID = PackageUID;
+        Cp.NodeIdx = Index; Cp.LaunchNodeId = LaunchNodeId; Cp.Entrypoint = Entrypoint; Cp.EntryNode = EntryNode; Cp.PackageUID = PackageUID;
         CurrentChain = LaunchResolver::ResolveChainIds(*Index, *L, Cp, *GlobalConfigJSON);
     }
     RenderChainCombos();
@@ -562,6 +567,7 @@ void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
     }
     RebuildModuleTree();
     RebuildCustomVarPickers();   // toggling a module changes the enabled closure's CustomVars
+    RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
 }
 
 std::map<std::string, bool> PreLaunchWindow::CollectModuleStates() const
@@ -918,15 +924,58 @@ void PreLaunchWindow::onVariantChanged()
 {
     if (VariantCombo->currentIndex() < 0) return;
     //Combo data = "<node key>\x1f<entrypoint label>": a variant is (node, entrypoint).
+    //Combo data = "<variant key>\x1f<entry label>[\x1f<graft key>]": a row is (variant, entry) — of the variant's own
+    //effective entries, or of a ticked graft that carries entries (a mod loader: "run Forge").
     const std::string Data = VariantCombo->currentData().toString().toStdString();
     const size_t Sep = Data.find('\x1f');
+    const std::string PrevLaunch = LaunchNodeId;
     LaunchNodeId = Data.substr(0, Sep);
-    Entrypoint   = Sep == std::string::npos ? std::string() : Data.substr(Sep + 1);
+    std::string Rest = Sep == std::string::npos ? std::string() : Data.substr(Sep + 1);
+    const size_t Sep2 = Rest.find('\x1f');
+    Entrypoint = Rest.substr(0, Sep2);
+    EntryNode  = Sep2 == std::string::npos ? std::string() : Rest.substr(Sep2 + 1);
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
     RebuildCover();
     RebuildRunnerChain();
     RebuildModuleTree();
     RebuildCustomVarPickers();
+    if (PrevLaunch != LaunchNodeId) RefreshGraftEntryRows();
+}
+
+void PreLaunchWindow::RefreshGraftEntryRows()
+{
+    //Rows a ticked graft with entries adds for the CURRENT variant — appended after the variant rows (data with a
+    //third field), removed and re-added on every tick change or variant change. Selection is preserved by data.
+    QSignalBlocker B(VariantCombo);
+    const QString Keep = VariantCombo->currentData().toString();
+    for (int i = VariantCombo->count() - 1; i >= 0; --i)
+        if (VariantCombo->itemData(i).toString().count(QChar(0x1f)) >= 2) VariantCombo->removeItem(i);
+    const Node* L = CurrentLaunch();
+    if (L && Index)
+    {
+        std::map<std::string, bool> Ticks;
+        const auto US = PackageCatalog::GetPackageUserSettings(*GlobalConfigJSON, PackageUID, std::string());
+        if (US.contains("MODULES") && US["MODULES"].is_object())
+            for (const auto& [K, V] : US["MODULES"].items()) if (V.is_boolean()) Ticks[K] = V.get<bool>();
+        for (const ManifestModel::GraftOffer& O : ManifestModel::OfferedGrafts(*Index, LaunchNodeId, Ticks,
+                                                      [](const Node& N) { return !N.Received && !N.BundleDir.empty(); }))
+        {
+            if (!O.Selected || !O.Graft->IsRunnable()) continue;
+            const std::vector<std::string> Labels = O.Graft->EntrypointLabels();
+            for (size_t I = 0; I < Labels.size(); ++I)
+            {
+                const auto& Ep = O.Graft->EffectiveEntrypoints[I];
+                if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;
+                const std::string GName = O.Graft->NodeId.empty() ? O.Graft->Key().substr(0, 12) : O.Graft->NodeId;
+                const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
+                const std::string Shown = "run " + GName + ((Labels.size() > 1 && !EpLabel.empty()) ? " - " + EpLabel : std::string());
+                VariantCombo->addItem(QString::fromStdString(Shown),
+                                      QString::fromStdString(LaunchNodeId + "\x1f" + Labels[I] + "\x1f" + O.Graft->Key()));
+            }
+        }
+    }
+    const int Sel = VariantCombo->findData(Keep);
+    if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
 }
 
 void PreLaunchWindow::ReloadAndRebuild()
@@ -937,7 +986,7 @@ void PreLaunchWindow::ReloadAndRebuild()
     GroupNodeIds = Live;
     QSignalBlocker B(VariantCombo);
     FillVariantCombo();
-    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
+    int Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint + (EntryNode.empty() ? std::string() : "\x1f" + EntryNode)));
     if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
     VariantCombo->setCurrentIndex(Sel >= 0 ? Sel : 0);
     onVariantChanged();
@@ -959,22 +1008,22 @@ void PreLaunchWindow::FillVariantCombo()
     {
         const Node* N = Index ? Index->Find(Id) : nullptr;
         if (!N) continue;
-        //A variant is (node, entrypoint): one combo row per ENTRYPOINTS entry. A single-entry node reads as the
-        //node's own name; a multi-entry node names each entry. The combo's data carries both halves.
+        //A row is (variant, entry): one per EFFECTIVE entry (own, else inherited from beneath). A single-entry
+        //variant reads as its VARIANT name; a multi-entry one names each entry. Faces qualify the row when the
+        //card has several.
         const std::vector<std::string> Labels = N->EntrypointLabels();
-        std::string NodeName = !N->NodeId.empty() ? N->NodeId
-                               : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id);
+        std::string NodeName = !N->Variant.empty() ? N->Variant : (!N->NodeId.empty() ? N->NodeId
+                               : (N->Meta.is_object() ? N->Meta.value("TITLE", Id) : Id));
         if (Qualify && N->Meta.is_object() && !N->Meta.value("TITLE", std::string()).empty())
             NodeName = N->Meta.value("TITLE", std::string()) + " - " + NodeName;
         for (size_t I = 0; I < Labels.size(); ++I)
         {
-            const auto& Ep = N->Entrypoints[I];
+            const auto& Ep = N->EffectiveEntrypoints[I];
             if (Ep.is_object() && Ep.contains("GUEST") && Ep["GUEST"].is_array() && !Ep["GUEST"].empty()) continue;   // a runner entry
             const std::string EpLabel = Ep.is_object() ? Ep.value("LABEL", std::string()) : std::string();
             const std::string Shown = (Labels.size() == 1 || EpLabel.empty()) ? (EpLabel.empty() ? NodeName : (NodeName == EpLabel ? EpLabel : NodeName + " - " + EpLabel))
                                                                                 : NodeName + " - " + EpLabel;
-            const bool Rec = Ep.is_object() && Ep.value("RECOMMENDED", false);
-            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), Rec });
+            Es.push_back({ Id + "\x1f" + Labels[I], QString::fromStdString(Shown), N->Recommended && I == 0 });
         }
     }
     // Recommended first, then NATURAL version order (1.9 < 1.10 < 1.10.2, NaturalLess) — with hundreds of variants
@@ -1051,6 +1100,7 @@ void PreLaunchWindow::onLaunchClicked()
     LaunchWorker->GlobalConfigJSON = *GlobalConfigJSON;
     LaunchWorker->LaunchNodeId     = LaunchNodeId;
     LaunchWorker->Entrypoint       = Entrypoint;
+    LaunchWorker->EntryNode        = EntryNode;
     LaunchWorker->VariableOverrides = PickerVars;
     LaunchWorker->ModuleStates      = CollectModuleStates();
     LaunchWorker->RunnerChain       = SelectedChain;                          // the full daisy-chain (innermost→outermost)

@@ -1058,7 +1058,9 @@ void PkgCanvas::drawEnvelope(json &Node)
         for (const auto &E : Node["OVER"])
             if (E.is_object() && E.contains("NOT") && E["NOT"].is_string()) Nots.push_back(E["NOT"].get<std::string>());
     const bool HasExclude    = !Nots.empty();
-    const bool Interesting   = HasToggle || !When.empty() || HasExclude;
+    const std::string Variant = StrOf(Node, "VARIANT");
+    const bool Recommended   = Node.contains("RECOMMENDED") && Node["RECOMMENDED"].is_boolean() && Node["RECOMMENDED"].get<bool>();
+    const bool Interesting   = HasToggle || !When.empty() || HasExclude || !Variant.empty() || Recommended;
 
     if (Interesting) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (!ImGui::TreeNodeEx("node options")) return;   // no SpanAvailWidth: it spans the WINDOW, overrunning the node
@@ -1077,6 +1079,24 @@ void PkgCanvas::drawEnvelope(json &Node)
         if (ImGui::Selectable("toggle, starts OFF", HasToggle && Toggle == "off"))
         { Node["TOGGLE"] = "off"; m_s->MarkDirty(); }
         ImGui::EndCombo();
+    }
+
+    //The two declared facets: VARIANT (on the shelf under this name) and RECOMMENDED (prefer me among my
+    //siblings). Empty VARIANT = not on the shelf (runnable from the CLI if something beneath declares an entry).
+    std::string V = Variant;
+    ImGui::TextUnformatted("variant"); ImGui::SameLine(kLabelCol);
+    ImGui::SetNextItemWidth(kFieldWidth);
+    if (ImGui::InputTextWithHint("##variant", "name in the picker - empty = not on the shelf", &V))
+    {
+        if (V.empty()) Node.erase("VARIANT"); else Node["VARIANT"] = V;
+        m_s->MarkDirty();
+    }
+    bool R = Recommended;
+    ImGui::TextUnformatted("recommended"); ImGui::SameLine(kLabelCol);
+    if (ImGui::Checkbox("##recommended", &R))
+    {
+        if (R) Node["RECOMMENDED"] = true; else Node.erase("RECOMMENDED");
+        m_s->MarkDirty();
     }
 
     std::string W = When;

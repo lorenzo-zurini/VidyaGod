@@ -95,6 +95,7 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         NewContainerParams.VariableOverrides = LaunchParameters.VariableOverrides;
         NewContainerParams.ModuleStates      = LaunchParameters.ModuleStates;
         NewContainerParams.Entrypoint        = LaunchParameters.Entrypoint;
+        NewContainerParams.EntryNode         = LaunchParameters.EntryNode;
         //Same engine-injected session facts as the GUI path (see LaunchThread::run): the virtual-LAN vIPs + the
         //player's own display name, so `--node` behaves identically to a GUI launch.
         NewContainerParams.SessionVars = IpfsWrapper::LanLaunchVars();

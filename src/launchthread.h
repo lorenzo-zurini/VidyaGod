@@ -25,7 +25,8 @@ public:
     // Fields must be populated before calling start().
     nlohmann::ordered_json GlobalConfigJSON;
     std::string            LaunchNodeId;      // Native node-graph launch: the launchable node to run
-    std::string            Entrypoint;        // which ENTRYPOINTS entry of it (LABEL; "" = default)
+    std::string            Entrypoint;        // which entry (LABEL; "" = default)
+    std::string            EntryNode;         // whose entries: "" = the launch node's effective ones, else a ticked graft's
     std::map<std::string, int> GraftPrecedence;  // per-graft rank (node key → rank) from the instance config
     std::string            InstanceName;      // Which INSTANCE to launch (config + USERDATA); "" ⇒ the active one
     std::string                        RunnerID;          // RUNNER_ID chosen in the picker (legacy single-runner; = chain front)

@@ -500,7 +500,6 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"GUEST",       "Guest",       FieldKind::StringList, "platforms this PROVIDES - set => runner, empty => launchable", {}, {}},
                 {"PATH",        "Path",        FieldKind::Text,       "the exe/ROM, anchored", {}, {}},
                 {"ARGS",        "Args",        FieldKind::StringList, "one per line", {}, {}},
-                {"RECOMMENDED", "Recommended", FieldKind::Check,      "the default entry of this node", {}, {}},
                 {"WORKDIR",     "Work dir",    FieldKind::Text,       "", {}, {}},
                 {"ENV",         "Env",         FieldKind::KeyValue,   "", {}, {}},
                 {"ENV_REMOVE",  "Env remove",  FieldKind::StringList, "", {}, {}},
@@ -726,13 +725,13 @@ float EstimateHeight(const json &Node)
     //cheap direction to be wrong in — the expensive one is a node drawn taller than the space reserved for it.
     Px += kTextPx;
     Px += kRowPx;                                    // the id row
-    //"node options" counted as though it were OPEN, always — its three rows plus the tree line. Whether it is
+    //"node options" counted as though it were OPEN, always — its five rows plus the tree line. Whether it is
     //open is not a property of the payload at all: it opens itself when TOGGLE/WHEN/EXCLUDE is set, and after
     //that the author can open or close it on any node, with the state living in ImGui's own per-window storage.
     //Predicting it is therefore impossible and guessing it is unsafe in the one direction that matters —
     //opening a collapsed node would make it 57px taller than the space the layout reserved, and it would
     //overlap its neighbour. Three rows of slack on every node is the price of that never happening.
-    Px += kTextPx + 3.0f * kRowPx;
+    Px += kTextPx + 5.0f * kRowPx;                   // toggle, variant, recommended, when, NOT list
     for (const std::string &S : SectionsOf(Node))
         for (const Field &F : FieldsFor(S)) Px += FieldPx(Node, F);
     Px += kBtnPx;                                    // the "+ section" row drawPayload always draws

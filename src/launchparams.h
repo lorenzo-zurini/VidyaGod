@@ -163,9 +163,11 @@ public:
     //NOT transitive — nothing under the launch node contributes to it. Set by InitializeFromNode; consumed by
     //ResolveExecutableDefinition. Empty ⇒ fall back to the launch node's default Exec.
     nlohmann::ordered_json ComposedExec;
-    //Which ENTRYPOINTS entry of the launch node to run, by LABEL ("" = the default: the first RECOMMENDED, else the
-    //first). A variant = (node, entrypoint). PASSED (picker / --entrypoint).
+    //Which entry to run, by LABEL ("" = the default: the first) — of the launch node's EFFECTIVE entrypoints, or of
+    //EntryNode's when set: a ticked graft that carries an entry (a mod loader) is a way to run the selected
+    //variant's mount. PASSED (picker / --entrypoint / --entry-node).
     std::string Entrypoint;
+    std::string EntryNode;
     //Per-graft precedence (node key → rank; higher = mounted later = wins at a conflict). Grafts absent from the
     //map rank 0 and order by key. PASSED (instance config).
     std::map<std::string, int> GraftPrecedence;

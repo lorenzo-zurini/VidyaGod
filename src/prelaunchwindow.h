@@ -112,6 +112,7 @@ private:
     void FillVariantCombo();
     // Rebuilds the optional-node toggle tree from the current variant's optional ancestors.
     void RebuildModuleTree();
+    void RefreshGraftEntryRows();           // the picker rows a ticked graft with an entry adds ("run Forge") for the current variant
     void PropagateModuleItem(QTreeWidgetItem* Item);
     void RefreshModuleLocks();
     // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
@@ -122,7 +123,8 @@ private:
     const NodeIndex*        Index            = nullptr;
     std::vector<std::string> GroupNodeIds;
     std::string             LaunchNodeId;   // current variant's node id
-    std::string             Entrypoint;     // current variant's ENTRYPOINTS LABEL ("" = the node's default)
+    std::string             Entrypoint;     // current entry LABEL ("" = the default)
+    std::string             EntryNode;      // "" = the variant's effective entries; else a ticked graft that carries an entry
     std::string             BundleDir;      // current variant's bundle dir
     std::string             PackageUID;     // current variant's UID — USERSETTINGS key
 

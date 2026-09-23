@@ -70,12 +70,19 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     if (!CP.AuthoringBare && !Launch->IsRunnable())
         LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no effective ENTRYPOINTS (nothing beneath declares one) — not runnable.");
 
-    //The exec is the SELECTED ENTRYPOINT of the launch node and nothing else: execution is not transitive, so a
-    //node under the launchable (a previous version, a base) never contributes to it.
-    CP.ComposedExec = Launch->ExecFor(CP.Entrypoint);
+    //The exec is the SELECTED entry of the launch node's EFFECTIVE entrypoints (own, else inherited — a fact that
+    //folds along the chain), or of EntryNode's: a ticked graft carrying an entry (a mod loader) runs over the
+    //selected variant's mount. Nothing beneath the variant is OFFERED as a way to run it.
+    const Node *ExecNode = Launch;
+    if (!CP.EntryNode.empty())
+    {
+        ExecNode = Idx.Find(CP.EntryNode);
+        if (!ExecNode) { LogErr("InitializeFromNode", "Entry node not found: " + CP.EntryNode); return false; }
+    }
+    CP.ComposedExec = ExecNode->ExecFor(CP.Entrypoint);
     if (!CP.Entrypoint.empty() && !CP.ComposedExec.is_object())
     {
-        LogErr("InitializeFromNode", "Node '" + LaunchId + "' has no entrypoint labelled '" + CP.Entrypoint + "'.");
+        LogErr("InitializeFromNode", "Node '" + ExecNode->NodeId + "' has no entrypoint labelled '" + CP.Entrypoint + "'.");
         return false;
     }
     CP.subgame_id = LaunchId;  CP.VariantID = CP.Entrypoint.empty() ? "default" : CP.Entrypoint;

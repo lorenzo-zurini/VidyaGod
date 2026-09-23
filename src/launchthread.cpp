@@ -113,6 +113,7 @@ void LaunchThread::run()
     Params.NodeIdxOwned = Index;         // the wrapper's ContainerParams copy co-owns the index — no dangling
     Params.LaunchNodeId = this->LaunchNodeId;
     Params.Entrypoint   = this->Entrypoint;
+    Params.EntryNode    = this->EntryNode;
     Params.GraftPrecedence = this->GraftPrecedence;
     Params.InstanceName = this->InstanceName;   // which instance's config + USERDATA to use ("" ⇒ active)
 

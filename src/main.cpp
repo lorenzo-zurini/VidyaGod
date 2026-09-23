@@ -716,6 +716,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
         {
             RuntimeParameters.Entrypoint = argv[++i];
         }
+        else if (arg == "--entry-node" && i + 1 < argc)
+        {
+            RuntimeParameters.EntryNode = argv[++i];   // run a ticked graft's entry (a mod loader) over the variant's mount
+        }
         else if (arg == "--module" && i + 1 < argc)
         {
             //Expects NODE=on|off (also true|false / 1|0); NODE = a node key (CID) or LABEL. Toggles a TOGGLE'd node in

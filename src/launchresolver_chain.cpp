@@ -53,10 +53,11 @@ const Node *LaunchResolver::PickRunnerNode(const NodeIndex &Idx, const Node &Lau
         if (US.contains("PREFERRED_RUNNER") && US["PREFERRED_RUNNER"].is_string())
             Preferred = std::string(US["PREFERRED_RUNNER"]);
     }
-    //The platform to bridge and the declared runner are the SELECTED entrypoint's (CP.Entrypoint), never the
-    //node's default view: a node may carry a native and a win32 entry, and the chain serves the one that runs.
-    const std::string Host   = Launch.HostFor(CP.Entrypoint);
-    const std::string Runner = Launch.RunnerFor(CP.Entrypoint);
+    //The platform to bridge and the declared runner are the SELECTED entry's (CP.Entrypoint of CP.EntryNode, else
+    //of the launch node), never the node's default view: the chain serves the entry that runs.
+    const Node *EN = CP.EntryNode.empty() ? nullptr : Idx.Find(CP.EntryNode);
+    const std::string Host   = (EN ? *EN : Launch).HostFor(CP.Entrypoint);
+    const std::string Runner = (EN ? *EN : Launch).RunnerFor(CP.Entrypoint);
     auto Qualifies = [&](const Node &N) -> bool
     {
         if (!N.IsRunner()) return false;
@@ -252,9 +253,10 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     //Nothing pinned → fall back to the launchable's DECLARED runner (DeclareExec.RUNNER) as a SOFT pin, so a package
     //that names a specific runner gets it on a fresh launch (the removed appmodel seed's job, now at the resolver).
     //The pin-validation below vets it and appends a terminal; if it doesn't reach the machine it falls to the BFS.
-    //Platform and declared runner are the SELECTED entrypoint's (CP.Entrypoint), not the node's default view.
-    const std::string Host   = Launch.HostFor(CP.Entrypoint);
-    const std::string Runner = Launch.RunnerFor(CP.Entrypoint);
+    //Platform and declared runner are the SELECTED entry's (of CP.EntryNode when set), not the node's default view.
+    const Node *EN = CP.EntryNode.empty() ? nullptr : Idx.Find(CP.EntryNode);
+    const std::string Host   = (EN ? *EN : Launch).HostFor(CP.Entrypoint);
+    const std::string Runner = (EN ? *EN : Launch).RunnerFor(CP.Entrypoint);
     if (Pinned.empty() && !Runner.empty())
     {
         const Node *R = Idx.Find(Runner);

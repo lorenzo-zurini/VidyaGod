@@ -69,6 +69,7 @@ struct LaunchParameters
     std::map<std::string, std::string> VariableOverrides;                 //Custom variable overrides from --var KEY=VALUE flags
     std::map<std::string, bool> ModuleStates;                             //Toggles from --module NODE=on|off (a node key/CID or its LABEL): a TOGGLE'd node in the closure, or a graft to select
     std::string Entrypoint;                                               //--entrypoint LABEL: which ENTRYPOINTS entry of the launch node to run (default: RECOMMENDED, else first)
+    std::string EntryNode;                                                //--entry-node KEY: run this ticked graft's entry (a mod loader) over the variant's mount
     std::string VariantID;                                                //Variant override from --variant (selects which variant to build)
     std::string RunnerID;                                                 //Runner override from --runner (RUNNER_ID; = chain front, back-compat)
     std::vector<std::string> RunnerChain;                                 //Runner daisy-chain from repeated --runner (innermost→outermost); empty = auto-resolve

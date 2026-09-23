@@ -564,6 +564,35 @@ private slots:
         QCOMPARE(chain2[0].Layers.back().value("TARGET", std::string()), std::string("__jre"));   // own layer last = on top
     }
 
+    // A ticked graft that carries an entry (a mod loader) is a WAY TO RUN the selected variant: EntryNode names it,
+    // its entry becomes the exec and its HOST drives the chain, while the mount stays the variant's closure plus
+    // the graft. The variant is never replaced as the launch node.
+    void a_grafts_entry_runs_over_the_variants_mount()
+    {
+        NodeIndex idx;
+        idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
+        Node game = launchNode("game", kMachine, {});
+        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
+        idx.Nodes["game"] = game;
+        Node loader = launchNode("loader", "win32", {"game"});           // the graft: OVER the game, its own win32 entry
+        loader.Entrypoints = json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"PATH", "loader.exe"}} });
+        loader.EffectiveEntrypoints = loader.Entrypoints;
+        loader.Exec = json{{"CONTENTPATH", "loader.exe"}, {"PLATFORM", "win32"}};
+        loader.Uid = "1"; loader.Uids = {"1"};
+        idx.Nodes["loader"] = loader;
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"loader", true}};
+        cp.EntryNode = "loader";
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QCOMPARE(cp.ComposedExec.value("CONTENTPATH", std::string()), std::string("loader.exe"));   // the graft's entry
+        QCOMPARE(cp.LaunchNodeId, std::string("game"));                                              // over the variant's mount
+        QVERIFY(recipeHas(cp.Recipe, "loader"));                                                     // the graft is mounted
+        auto ids = LaunchResolver::ResolveChainIds(idx, game, cp, cfg);
+        QVERIFY2(!ids.empty() && ids[0] == "protonA", "the chain serves the ENTRY's platform (win32), not the variant's");
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {
