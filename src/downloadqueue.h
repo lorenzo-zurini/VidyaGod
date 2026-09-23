@@ -39,6 +39,10 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error = nu
 // Cancel a CID's download: drop it if still queued, abort it (RequestCancel) if active. A batch waiting on a required
 // cancelled CID sees the cancellation as a failure.
 void CancelDownload(const std::string &Cid);
+// A destination path belongs to ONE CID at a time. Forget every dest under Dir (a directory prefix) from every job:
+// called when those files are removed on purpose (a friend's stubs replaced by a new generation), so a job re-run
+// later never materialises a path nobody asked for any more.
+void ForgetDestsUnder(const std::string &Dir);
 
 // Move a still-queued CID ahead of all other queued jobs so the dispatcher picks it next. No-op once it is active/done.
 void PrioritizeDownload(const std::string &Cid);

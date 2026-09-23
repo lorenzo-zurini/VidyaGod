@@ -764,6 +764,23 @@ TEST(tile_meta_cannot_override_the_tiles_own_fields)
     CHECK_EQ(N.Meta.value("YEAR", std::string()), std::string("1999"));
 }
 
+// A %KEY% inside a node's ENV value is a USE of that variable: the validator must not call the knob dead.
+TEST(validate_counts_env_values_as_variable_uses)
+{
+    NodeIndex Idx;
+    ordered_json Knob = NodeFixture::Content("dir", "k");
+    Knob["VARS"] = ordered_json::array({ ordered_json{{"KEY", "PROTON_LOG"}, {"DEFAULT", "0"}, {"UI", ordered_json{{"TYPE", "bool"}}}} });
+    ordered_json Runner = NodeFixture::Merge({NodeFixture::Content("zip", "r.zip"), NodeFixture::Tile("1", "R"), NodeFixture::Exec("linux64", "run"), NodeFixture::Variant("Run")});
+    Runner["ENV"] = ordered_json{{"PROTON_LOG", "%PROTON_LOG%"}};
+    AddChain(Idx, "knob", {Knob});
+    AddChain(Idx, "runner", {Runner}, {"knob"});
+    ManifestModel::DeriveIdentity(Idx);
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    for (const auto &W : Warnings) CHECK(W.find("dead knob") == std::string::npos);
+    for (const auto &E : Errors)   CHECK(E.find("undefined variable") == std::string::npos);
+}
+
 // PUBLISH is per node and the share list silently lacks an unflagged variant: a card shared by halves is an omission
 // the validator must name.
 TEST(validate_warns_on_an_unpublished_variant_beside_published_ones)

@@ -120,6 +120,46 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(IpfsWrapper::DebugJobState(C), 3 /* Failed */, 5000);
     }
 
+    // A dest belongs to ONE CID. A node path is reused across generations (same label, new CID), and a job
+    // materialises every dest it remembers — so when a NEW cid claims a path, the OLD cid's job must forget it, or
+    // its next run rewrites the path with the old block (three "Vanilla" files, all the Age of Kings block).
+    void aDestClaimedByANewCidIsForgottenByTheOldOne()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string X = (dir.path() + "/Vanilla.json").toStdString();
+        const std::string Y = (dir.path() + "/Vanilla (aaa).json").toStdString();
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *) {
+            std::ofstream(dest) << cid; return 0; });
+        auto Read = [](const std::string &P) { std::ifstream I(P); std::string S; std::getline(I, S); return S; };
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_OLD_GEN", X, false, false, true}}), 5000));
+        QCOMPARE(Read(X), std::string("CID_OLD_GEN"));
+        // the next generation: another cid claims X; the old cid moves to Y
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_NEW_GEN", X, false, false, true},
+                                                                 {"CID_OLD_GEN", Y, false, false, true}}), 5000));
+        QCOMPARE(Read(Y), std::string("CID_OLD_GEN"));
+        QCOMPARE(Read(X), std::string("CID_NEW_GEN"));          // the old cid's job did NOT rewrite X
+    }
+
+    // Forgetting a directory's dests: after a friend's stubs were removed on purpose, a later run of a job that
+    // remembered a path under that directory must not recreate it.
+    void forgottenDestsAreNeverMaterialisedAgain()
+    {
+        QTemporaryDir dir; QVERIFY(dir.isValid());
+        const std::string Old = (dir.path() + "/gen1/node.json").toStdString();
+        const std::string New = (dir.path() + "/gen2/node.json").toStdString();
+        std::filesystem::create_directories(dir.path().toStdString() + "/gen1");
+        std::filesystem::create_directories(dir.path().toStdString() + "/gen2");   // the hook writes flat (no parent creation)
+        IpfsWrapper::SetFetchOnceHook([](const std::string &cid, const std::string &dest, bool, std::string *) {
+            std::ofstream(dest) << cid; return 0; });
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_FORGET", Old, false, false, true}}), 5000));
+        std::filesystem::remove_all(dir.path().toStdString() + "/gen1");
+        IpfsWrapper::ForgetDestsUnder(dir.path().toStdString() + "/gen1");
+        QVERIFY(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch({{"CID_FORGET", New, false, false, true}}), 5000));
+        std::error_code Ec;
+        QVERIFY(std::filesystem::exists(New, Ec));
+        QVERIFY2(!std::filesystem::exists(Old, Ec), "a forgotten path was materialised again");
+    }
+
     // A DONE attempt completes and materializes EVERY dest from the fetched primary.
     void aDoneAttemptCompletesAndMaterializesEveryDest()
     {

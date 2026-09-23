@@ -82,6 +82,16 @@ bool PathExists(const std::string &P)
     return fs::exists(P, Ec);
 }
 
+// A dest belongs to exactly ONE CID: a node path is reused across generations (the same label, a new CID; a
+// collision-qualified name whose owner changes with the plan's order), and a job materialises EVERY dest it
+// remembers from its primary. Without this, a re-run of the OLD cid's job rewrote a path the NEW cid now owns —
+// three "Vanilla" files that all held the Age of Kings block, and no Conquerors.
+static void ClaimDest(const std::string &Cid, const std::string &Dest)
+{
+    for (auto &[C, J] : Q().Jobs)
+        if (C != Cid) J.Dests.erase(std::remove(J.Dests.begin(), J.Dests.end(), Dest), J.Dests.end());
+}
+
 // Add Dest to Job.Dests if not already present (keeps Dests a small deduped set).
 void AddDest(Job &J, const std::string &Dest)
 {
@@ -249,6 +259,7 @@ BatchHandle EnqueueBatch(const std::vector<FetchTarget> &Targets)
         for (const FetchTarget &T : Targets) {
             Handle.Items.emplace_back(T.Cid, T.Optional);
             ClearCancel(T.Cid);   // a fresh request clears any prior user-cancel so a re-download is not pre-aborted
+            ClaimDest(T.Cid, T.LocalPath);   // whatever job held this path before, it is this CID's now
             auto It = Q().Jobs.find(T.Cid);
             if (It != Q().Jobs.end()) {
                 Job &J = It->second;
@@ -395,6 +406,16 @@ bool WaitBatch(const BatchHandle &Handle, int TimeoutMs, std::string *Error)
 }
 
 bool WaitBatch(const BatchHandle &Handle, std::string *Error) { return WaitBatch(Handle, 0, Error); }
+
+void ForgetDestsUnder(const std::string &Dir)
+{
+    std::lock_guard<std::mutex> Lk(Q().Mu);
+    const std::string Prefix = Dir.empty() || Dir.back() == '/' ? Dir : Dir + "/";
+    for (auto &[C, J] : Q().Jobs)
+        J.Dests.erase(std::remove_if(J.Dests.begin(), J.Dests.end(),
+                                     [&](const std::string &D) { return D.compare(0, Prefix.size(), Prefix) == 0; }),
+                      J.Dests.end());
+}
 
 void CancelDownload(const std::string &Cid)
 {

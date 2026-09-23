@@ -1552,6 +1552,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         std::string Scan;
         if (N.Layers.is_array()) Scan += N.Layers.dump();
         if (N.Exec.is_object())  Scan += N.Exec.dump();
+        if (N.Env.is_object())   Scan += N.Env.dump();      // the environment is a node section now: %KEY% in a value is a use
         std::set<std::string> Refs;
         for (auto It = std::sregex_iterator(Scan.begin(), Scan.end(), Tok); It != std::sregex_iterator(); ++It)
             Refs.insert((*It)[1].str());

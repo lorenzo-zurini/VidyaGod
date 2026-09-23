@@ -725,6 +725,7 @@ void AppModel::dropReceivedStubs(const std::string & P)
     // but node files: a dir with content is an install and stays, whatever the snapshot says. Its stale node files
     // are overwritten or joined by the new generation's — the installed bytes are never the thing at risk.
     std::error_code Ec;
+    int Removed = 0, KeptN = 0;
     for (const auto & D : LibDirs)
     {
         if (!std::filesystem::is_directory(D, Ec)) continue;
@@ -732,11 +733,14 @@ void AppModel::dropReceivedStubs(const std::string & P)
         for (const auto & E : std::filesystem::directory_iterator(D, Ec))
         {
             if (!E.is_directory(Ec)) { std::filesystem::remove(E.path(), Ec); continue; }
-            if (PackageCatalog::DirHasContent(E.path().string())) { Kept = true; continue; }   // an install — never
-            std::filesystem::remove_all(E.path(), Ec);
+            if (PackageCatalog::DirHasContent(E.path().string())) { Kept = true; ++KeptN; continue; }   // an install — never
+            IpfsWrapper::ForgetDestsUnder(E.path().string());   // the queue must not re-materialise these paths later
+            std::filesystem::remove_all(E.path(), Ec); ++Removed;
         }
-        if (!Kept) std::filesystem::remove_all(D, Ec);
+        if (!Kept) { IpfsWrapper::ForgetDestsUnder(D.string()); std::filesystem::remove_all(D, Ec); }
     }
+    LogOut("AppModel::dropReceivedStubs", "friend " + P.substr(P.size() > 8 ? P.size() - 8 : 0) + ": " + std::to_string(Removed)
+           + " stub package dir(s) removed, " + std::to_string(KeptN) + " installed package(s) kept");
 }
 
 void AppModel::stopReceivingFromFriend(const QString & peer)
