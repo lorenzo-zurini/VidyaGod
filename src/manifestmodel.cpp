@@ -652,49 +652,82 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
         return N.Optional && N.Default;                        // TOGGLE "on" = shipped pre-ticked
     };
 
-    //Applicable against the selected set (the caller holds the graft itself OUT of it): every identity-bearing
-    //requirement selected (a group by any member), substance always, no NOT of its own naming a selected node —
-    //and no SELECTED node's NOT naming it: NOT is one-sided in the file, symmetric in effect.
     std::unordered_set<std::string> Selected{ LaunchKey };
-    auto Applicable = [&](const Node &G, std::string &Why, std::string &ExcludedBy) {
-        Why.clear(); ExcludedBy.clear();
-        for (const OverReq &R : G.Over)
+    //What a graft BRINGS: its own closure minus the selection's own composition — mounted beneath it when ticked.
+    std::unordered_map<const Node *, std::vector<std::string>> Brings;
+    for (const Node *G : Cands)
+        for (const std::string &Id : Reachable(Idx, G->Key()))
+            if (Id != G->Key() && !Own.count(Id)) Brings[G].push_back(Id);
+
+    //Applicable against a selected set S (the graft itself and what it brings held OUT of S). A BARE ref REQUIRES
+    //only when it names a VARIANT (that variant must be the selection — a mod OVER [640] is not for you on 659);
+    //anything else it names it is MADE OF and brings along beneath it when ticked (tex-hd brings tex; a fix brings
+    //its library). A group requires one member selected; a NOT requires the node not selected. NOT is one-sided
+    //in the file and symmetric in effect: a selected node's NOT naming this graft — or anything it brings — blocks
+    //it, and a NOT carried by anything it brings counts as its own.
+    //The requirements of ONE node against S. Applicability is transitive over composition: a graft made of a
+    //graft that requires version 640 requires 640 too, so every node a graft brings is checked the same way.
+    auto Requirements = [&](const Node &N, const std::unordered_set<std::string> &S, std::string &Why, std::string &ExcludedBy) {
+        for (const OverReq &R : N.Over)
         {
             if (R.Not)
             {
-                if (Selected.count(R.Any.front())) { ExcludedBy = R.Any.front(); return false; }
+                if (S.count(R.Any.front())) { ExcludedBy = R.Any.front(); return false; }
                 continue;
             }
-            bool Ok = false;
-            for (const std::string &M : R.Any)
+            if (R.Composes())
             {
-                if (Selected.count(M)) { Ok = true; break; }
-                const Node *Mn = Idx.Find(M);
-                if (Mn && !Mn->HasIdentity() && !Mn->OwnRunner) { Ok = true; break; }   // substance: satisfied by mounting
+                const Node *Mn = Idx.Find(R.Any.front());
+                if (Mn && Mn->IsVariant() && !S.count(R.Any.front())) { Why = R.Any.front(); return false; }
+                continue;                                                    // composition: mounted beneath the graft
             }
+            bool Ok = false;
+            for (const std::string &M : R.Any) if (S.count(M)) { Ok = true; break; }
             if (!Ok) { Why = R.Any.front(); return false; }
         }
-        for (const std::string &E : Launch->Excludes) if (E == G.Key()) { ExcludedBy = LaunchKey; return false; }
-        for (const Node *H : Cands)
-            if (H != &G && Selected.count(H->Key()))
-                for (const std::string &E : H->Excludes) if (E == G.Key()) { ExcludedBy = H->Key(); return false; }
         return true;
     };
-    //Fixpoint WITH RETRACTION: the set is re-derived in candidate order until it settles — a ticked graft enters
-    //when applicable against the others and LEAVES when a selection made after it (a NOT, a lost requirement)
-    //makes it inapplicable, and whatever stood on it leaves on the next pass. Between two ticked grafts that
-    //exclude each other the first in candidate order wins (the GUI unticks the loser at tick time). NOT makes this
-    //non-monotone, so the pass count is bounded; a set that will not settle is reported and the last pass stands.
+    auto Applicable = [&](const Node &G, const std::unordered_set<std::string> &S, std::string &Why, std::string &ExcludedBy) {
+        Why.clear(); ExcludedBy.clear();
+        if (!Requirements(G, S, Why, ExcludedBy)) return false;
+        for (const std::string &B : Brings[&G])
+            if (const Node *Bn = Idx.Find(B))
+                if (!Requirements(*Bn, S, Why, ExcludedBy)) return false;
+        auto NamedBy = [&](const std::vector<std::string> &Ex, std::string &Who, const std::string &Owner) {
+            for (const std::string &E : Ex)
+            {
+                if (E == G.Key()) { Who = Owner; return true; }
+                for (const std::string &B : Brings[&G]) if (E == B) { Who = Owner; return true; }
+            }
+            return false;
+        };
+        if (NamedBy(Launch->Excludes, ExcludedBy, LaunchKey)) return false;
+        for (const Node *H : Cands)
+            if (H != &G && S.count(H->Key()) && NamedBy(H->Excludes, ExcludedBy, H->Key())) return false;
+        return true;
+    };
+    //Fixpoint WITH RETRACTION: the selected set = the launch node, every ticked graft applicable against the
+    //others, and everything those bring. Re-derived in candidate order until it settles — a ticked graft enters
+    //when applicable and LEAVES when a selection made after it (a NOT, a lost requirement) blocks it, and whatever
+    //it brought leaves with it. Between two ticked grafts that exclude each other the first in candidate order wins
+    //(the GUI unticks the loser at tick time). NOT makes this non-monotone, so the pass count is bounded; a set that
+    //will not settle is reported and the last pass stands.
+    std::unordered_set<const Node *> Chosen;
+    auto Rebuild = [&]() {
+        Selected.clear(); Selected.insert(LaunchKey);
+        for (const Node *G : Chosen) { Selected.insert(G->Key()); for (const std::string &B : Brings[G]) Selected.insert(B); }
+    };
     bool Settled = false;
     for (size_t Pass = 0; Pass <= Cands.size() + 1 && !Settled; ++Pass)
     {
         Settled = true;
         for (const Node *G : Cands)
         {
-            const bool In = Selected.erase(G->Key()) != 0;
+            const bool In = Chosen.count(G) != 0;
+            Chosen.erase(G); Rebuild();
             std::string Why, ExcludedBy;
-            const bool Want = SelectedByUser(*G) && Applicable(*G, Why, ExcludedBy);
-            if (Want) Selected.insert(G->Key());
+            const bool Want = SelectedByUser(*G) && Applicable(*G, Selected, Why, ExcludedBy);
+            if (Want) { Chosen.insert(G); Rebuild(); }
             if (Want != In) Settled = false;
         }
     }
@@ -704,9 +737,10 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
     {
         GraftOffer O;
         O.Graft = G;
-        O.Selected = Selected.erase(G->Key()) != 0;            // in the settled set ⇒ applicable by construction
-        O.Applicable = Applicable(*G, O.Blocker, O.ExcludedBy);
-        if (O.Selected) Selected.insert(G->Key());
+        O.Selected = Chosen.count(G) != 0;                      // in the settled set ⇒ applicable by construction
+        Chosen.erase(G); Rebuild();
+        O.Applicable = Applicable(*G, Selected, O.Blocker, O.ExcludedBy);
+        if (O.Selected) { Chosen.insert(G); Rebuild(); }
         Out.push_back(std::move(O));
     }
     return Out;

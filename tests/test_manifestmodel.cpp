@@ -717,6 +717,7 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     AddChain(Idx, "mod_v2",   {NodeFixture::Content("dir", "b")}, {"v2"});                       // a branch off v2
     AddChain(Idx, "mod_any",  {NodeFixture::Content("dir", "c")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v1", "v2"}) })}});
     AddChain(Idx, "hd",       {NodeFixture::Content("dir", "d")}, {"mod_v2"});                   // a graft on a graft
+    AddChain(Idx, "hd_v1",    {NodeFixture::Content("dir", "d1")}, {"mod_v1"});                  // made of a v1-only mod
     AddChain(Idx, "lib",      {NodeFixture::Content("dir", "l")});                               // substance
     AddChain(Idx, "uses_lib", {NodeFixture::Content("dir", "e")}, {"v2", "lib"});
     AddChain(Idx, "rival",    {NodeFixture::Content("dir", "r")}, {}, {{"OVER", ordered_json::array({"v2", ordered_json{{"NOT", "mod_v2"}}})}});
@@ -735,7 +736,9 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     CHECK(O.count("mod_v1") && !O["mod_v1"].Applicable);            // v1 is UNDER v2, not selected ⇒ not for you
     CHECK_EQ(O["mod_v1"].Blocker, std::string("v1"));
     CHECK(O.count("mod_any") && O["mod_any"].Applicable);           // the group is satisfied by the launchable
-    CHECK(O.count("hd") && !O["hd"].Applicable);                    // needs mod_v2 ticked first
+    CHECK(O.count("hd") && O["hd"].Applicable);                     // made of mod_v2: ticking hd brings mod_v2
+    CHECK(O.count("hd_v1") && !O["hd_v1"].Applicable);              // requirements are TRANSITIVE over composition:
+    CHECK_EQ(O["hd_v1"].Blocker, std::string("v1"));                // what hd_v1 brings (mod_v1) needs v1
     CHECK(O.count("uses_lib") && O["uses_lib"].Applicable);         // lib is substance: satisfied by mounting
     CHECK(O.count("rival") && O["rival"].Applicable);
     CHECK(!O.count("mod_other"));                                   // another title's mod is not offered here
@@ -743,7 +746,7 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     CHECK(!O.count("lib"));                                         // substance is never offered
     CHECK(!O.count("data"));                                        // a node in the launchable's OWN closure is not a graft
 
-    // Tick mod_v2: hd becomes applicable (fixpoint), rival's NOT trips.
+    // Tick mod_v2: rival's NOT trips.
     auto O2 = Offer({{"mod_v2", true}});
     CHECK(O2["mod_v2"].Selected);
     CHECK(O2["hd"].Applicable && !O2["hd"].Selected);
@@ -752,9 +755,14 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     // Tick hd too: selected through the fixpoint in ONE pass.
     auto O3 = Offer({{"mod_v2", true}, {"hd", true}});
     CHECK(O3["hd"].Selected);
-    // Tick hd WITHOUT mod_v2: not applicable ⇒ not selected, whatever the tick says.
+    // Tick hd WITHOUT mod_v2: hd is MADE OF mod_v2 — ticking hd brings mod_v2 along (it mounts beneath hd, and
+    // counts as selected: rival's NOT trips through it).
     auto O4 = Offer({{"hd", true}});
-    CHECK(!O4["hd"].Selected && !O4["hd"].Applicable);
+    CHECK(O4["hd"].Selected && O4["hd"].Applicable);
+    CHECK(!O4["rival"].Applicable);
+    const auto Base4 = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
+    const auto Mount4 = ManifestModel::ResolveGraftOrder(Idx, "v2", {{"hd", true}}, Base4);
+    CHECK(Contains(Mount4, "mod_v2") && Contains(Mount4, "hd") && IndexOf(Mount4, "mod_v2") < IndexOf(Mount4, "hd"));
     // Tick rival AND mod_v2: mod_v2 comes first in candidate order and wins; rival (whose NOT names it) is out.
     auto O5 = Offer({{"mod_v2", true}, {"rival", true}});
     CHECK(O5["mod_v2"].Selected && !O5["rival"].Selected);
@@ -768,8 +776,8 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     CHECK(O5b["arch"].Selected);
     CHECK(!O5b["mod_v2"].Selected && !O5b["mod_v2"].Applicable);
     CHECK_EQ(O5b["mod_v2"].ExcludedBy, std::string("arch"));
-    CHECK(!O5b["hd"].Selected && !O5b["hd"].Applicable);
-    CHECK_EQ(O5b["hd"].Blocker, std::string("mod_v2"));
+    CHECK(!O5b["hd"].Selected && !O5b["hd"].Applicable);                    // hd brings mod_v2, which arch excludes
+    CHECK_EQ(O5b["hd"].ExcludedBy, std::string("arch"));
     const auto Base5 = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
     const auto Mount5 = ManifestModel::ResolveGraftOrder(Idx, "v2", {{"arch", true}, {"mod_v2", true}, {"hd", true}}, Base5);
     CHECK(Contains(Mount5, "arch") && !Contains(Mount5, "mod_v2") && !Contains(Mount5, "hd"));
@@ -818,6 +826,7 @@ TEST(resolve_graft_order_is_precedence_then_key_with_substance_beneath)
     CHECK(IndexOf(Prec, "b") < IndexOf(Prec, "b_hd"));
     // Nothing ticked ⇒ nothing above the base.
     CHECK(ManifestModel::ResolveGraftOrder(Idx, "game", {}, Base).empty());
-    // An unapplicable tick (b_hd without b) contributes nothing.
-    CHECK(ManifestModel::ResolveGraftOrder(Idx, "game", {{"b_hd", true}}, Base).empty());
+    // b_hd is MADE OF b: ticking it alone brings b beneath it.
+    const auto Alone = ManifestModel::ResolveGraftOrder(Idx, "game", {{"b_hd", true}}, Base);
+    CHECK(Contains(Alone, "b") && Contains(Alone, "b_hd") && IndexOf(Alone, "b") < IndexOf(Alone, "b_hd"));
 }

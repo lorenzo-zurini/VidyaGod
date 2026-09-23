@@ -773,8 +773,8 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     CHECK_EQ(G.Nodes.size(), (size_t)5);
     CHECK_EQ(G.Nodes[0].X,  60.0f);  CHECK_EQ(G.Nodes[0].Y,  60.0f);   // root, layer 0
     CHECK_EQ(G.Nodes[1].X, 490.0f);  CHECK_EQ(G.Nodes[1].Y,  60.0f);   // a,    layer 1 row 0
-    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 409.0f);   // b,    after a's 259 + 90 gap
-    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 943.0f);   // c,    after b's 444 + 90 gap (LAYERS ObjArray)
+    CHECK_EQ(G.Nodes[2].X, 490.0f);  CHECK_EQ(G.Nodes[2].Y, 447.0f);   // b,    after a's 297 + 90 gap
+    CHECK_EQ(G.Nodes[3].X, 490.0f);  CHECK_EQ(G.Nodes[3].Y, 1019.0f);  // c,    after b's 482 + 90 gap (LAYERS ObjArray)
     CHECK_EQ(G.Nodes[4].X, 920.0f);  CHECK_EQ(G.Nodes[4].Y,  60.0f);   // tail, layer 2
     //And the heights those Y values are made of, so a failure says WHICH half moved. These moved by 2px when
     //the height estimate stopped charging a full label-and-widget row for rows that hold only SmallButtons —
@@ -783,9 +783,10 @@ TEST(a_layered_graph_lays_out_at_pinned_coordinates)
     //-> 318) when the estimate stopped charging BASE_TARGETS on a Content node that is not a delta — the
     //canvas has never drawn that field there, so the 35px were a hole reserved in every published layout.
     //A fourth move (+17 on every node) when the one-edge editor started drawing the "+ section" button row on
-    //every node — a node is any subset of sections now, and adding one is a per-node act.
-    CHECK_EQ(G.Nodes[1].Height, 259.0f);
-    CHECK_EQ(G.Nodes[2].Height, 444.0f);   // b: a node with one LAYERS entry (ObjArray)
+    //every node — a node is any subset of sections now, and adding one is a per-node act. A fifth (+38) when the
+    //final chain gave the envelope its two declared facets, VARIANT and RECOMMENDED, as rows.
+    CHECK_EQ(G.Nodes[1].Height, 297.0f);
+    CHECK_EQ(G.Nodes[2].Height, 482.0f);   // b: a node with one LAYERS entry (ObjArray)
 }
 
 TEST(an_impossible_declared_position_is_rejected_not_honoured)

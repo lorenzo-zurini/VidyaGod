@@ -233,12 +233,12 @@ std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::strin
 // ----- grafts (facts fold, choices don't) -----
 // Relative to a selected VARIANT, a graft is a node with the variant's identity that is not itself a variant (or a
 // runner), is not in the variant's closure, and is OVER something; it enters a mount only when TICKED (Toggles[key]
-// == true, else its TOGGLE default). It is APPLICABLE when every requirement in its OVER holds against the SELECTED
-// set — a bare ref to a node with identity: that node is selected (the variant, or a selected graft); a bare ref
-// to substance: always (satisfied by mounting); a group: any member; a NOT: not selected, symmetrically — never
-// against the closure (a mod OVER [1.16.4] is not for you when you play 1.16.5). Picking a variant selects exactly
-// that node. A graft may carry entries (a mod loader): ticked, it is a way to run. For a RUNNER as the selection,
-// candidates are the nodes anchored on it.
+// == true, else its TOGGLE default). It is APPLICABLE when every REQUIREMENT in its OVER holds against the SELECTED
+// set: a bare ref to a VARIANT requires that variant to be the selection (a mod OVER [1.16.4] is not for you when
+// you play 1.16.5); a bare ref to anything else is COMPOSITION — it mounts beneath the graft when ticked (tex-hd
+// brings tex; a fix brings its library) and counts as selected from then on; a group: any member selected; a NOT:
+// not selected, symmetrically. Picking a variant selects exactly that node. A graft may carry entries (a mod
+// loader): ticked, it is a way to run. For a RUNNER as the selection, candidates are the nodes anchored on it.
 struct GraftOffer {
     const Node *Graft = nullptr;
     bool Applicable = false;       // every requirement satisfied by the selected set (minus itself)
