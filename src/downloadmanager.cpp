@@ -522,6 +522,23 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
                         }
             if (Ok && Completed) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
         }
+        // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a
+        // byte of content is fetched, so the content lands in the library and the package is ours from here on —
+        // launchable, its grafts offered, re-published with our library. Every selected launchable, every ticked
+        // runner and every runner the resolved chains reach: whatever is received, adopt; then re-index once.
+        if (Ok)
+        {
+            std::set<std::filesystem::path> Adopt;
+            auto Consider = [&](const std::string &Id) { if (const Node *N = Idx.Find(Id); N && N->Received && !N->BundleDir.empty()) Adopt.insert(N->BundleDir); };
+            for (const std::string & Lid : LaunchIds) { Consider(Lid); for (const std::string & Rid : PackageCatalog::RunnerChainIds(Idx, Lid, ConfigSnap)) Consider(Rid); }
+            for (const std::string & Rid : RunnerIds) Consider(Rid);
+            for (const std::filesystem::path & D : Adopt)
+            {
+                std::string AErr;
+                if (!PackageCatalog::AdoptReceivedPackage(ConfigSnap, D, nullptr, &AErr)) { Err = AErr; Ok = false; break; }
+            }
+            if (Ok && !Adopt.empty()) Idx = PackageCatalog::BuildCatalogIndex(ConfigSnap);
+        }
         // Pool EVERY fetch — all selected launchables' content layers + each launchable's RESOLVED runner chain build +
         // any extra runners the user ticked — into ONE concurrent batch, so a game downloads TOGETHER with the runtime
         // it needs (bounded by MaxConcurrentDownloads). Auto-pooling the resolved chain makes a downloaded game

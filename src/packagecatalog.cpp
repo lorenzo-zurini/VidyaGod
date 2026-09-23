@@ -1133,6 +1133,10 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             std::string PkgSeg = It.value("pkg", std::string());
             if (PkgSeg.empty()) PkgSeg = It.value("node", std::string());
             if (PkgSeg.empty()) PkgSeg = Cid.substr(0, 12);
+            // A package the library already holds under this library and dir name was INSTALLED (adopted out of
+            // CATALOG) or authored here: it is ours now and is not re-landed as a stub beside itself.
+            std::error_code Ec;
+            if (fs::is_directory(fs::path(LibraryRootDir(GlobalConfigJSON)) / San(LibName) / San(PkgSeg), Ec)) continue;
             Add(Cid, LibDir / San(PkgSeg) / kPackageManifestFile);
         }
     }
@@ -1282,6 +1286,67 @@ static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackage
     return Out;
 }
 
+// The library NAME a received lib dir ("<nick> - <lib>") was planned under: the same shape the planner builds,
+// matched against the snapshots we hold. "" when nothing matches (a dir of a forgotten friend).
+static std::string ReceivedLibraryName(const nlohmann::ordered_json &Config, const std::string &LibDirName)
+{
+    auto San = [](const std::string &In) {
+        std::string O;
+        for (char c : In) O.push_back((std::isalnum((unsigned char)c) || c == '_' || c == '-' || c == '.'
+                                       || c == ' ' || c == '[' || c == ']') ? c : '_');
+        if (O.size() > 120) O.resize(120);
+        return O.empty() ? std::string("x") : O;
+    };
+    if (!Config.contains("FriendLibraries") || !Config["FriendLibraries"].is_object()) return {};
+    const auto Friends = IpfsWrapper::FriendList();
+    for (const auto &[P, Libs] : Config["FriendLibraries"].items())
+    {
+        std::string Nick;
+        for (const auto &C : Friends) if (C.PeerID == P) { Nick = C.Nick; break; }
+        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        if (!Libs.is_object()) continue;
+        for (const auto &[L, Items] : Libs.items())
+            if (San(Nick + " - " + L) == LibDirName) return L;
+    }
+    return {};
+}
+
+bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::filesystem::path &PkgDir, std::filesystem::path *NewDir, std::string *Error)
+{
+    // Installing a received package MOVES it out of CATALOG into LIBRARY/<lib>/<pkg>: from then on it is an ordinary
+    // local package — launchable, its grafts offered, published with the library under the same CIDs. CATALOG holds
+    // only un-installed stubs. A name collision with a package already in the library is refused, never merged.
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    const fs::path Cat = fs::path(CatalogRootDir(Config)).lexically_normal();
+    const fs::path Src = PkgDir.lexically_normal();
+    auto [CatEnd, SrcEnd] = std::mismatch(Cat.begin(), Cat.end(), Src.begin(), Src.end());
+    if (Cat.empty() || CatEnd != Cat.end() || !fs::is_directory(Src, Ec))
+    { if (Error) *Error = "not a received package dir: " + PkgDir.string(); return false; }
+    const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
+    if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
+    const fs::path Dest = fs::path(LibraryRootDir(Config)) / Lib / Src.filename();
+    if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
+    // The manifest was the receive artifact; the package's own nodes are what moves.
+    for (const auto &F : fs::directory_iterator(Src, Ec))
+        if (F.is_regular_file(Ec) && F.path().filename().string().rfind(".package", 0) == 0 && F.path().extension() == ".json")
+            fs::remove(F.path(), Ec);
+    fs::create_directories(Dest.parent_path(), Ec);
+    fs::rename(Src, Dest, Ec);
+    if (Ec)
+    {   // a different filesystem: copy, then remove the source
+        Ec.clear();
+        fs::copy(Src, Dest, fs::copy_options::recursive, Ec);
+        if (Ec) { if (Error) *Error = "cannot move " + Src.string() + " to " + Dest.string() + ": " + Ec.message(); return false; }
+        fs::remove_all(Src, Ec);
+    }
+    IpfsWrapper::ForgetDestsUnder(Src.string());   // the queue must never re-materialise the old paths
+    if (fs::is_empty(Src.parent_path(), Ec)) fs::remove(Src.parent_path(), Ec);
+    if (NewDir) *NewDir = Dest;
+    LogOut("PackageCatalog::AdoptReceivedPackage", "installed '" + Src.filename().string() + "' into library '" + Lib + "'");
+    return true;
+}
+
 bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
 {
     std::error_code Ec;
@@ -1313,12 +1378,18 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
         // Normalize what landed: links to plain CIDs, any embedded handle stripped (the block is identified by the
         // CID we fetched it BY — a forged "CID" must never reach the working tree).
         const auto Blocks = IpfsWrapper::DagGetManyLocal(Wave);
+        auto Bad = [&](const std::string &C, const char *Why) {
+            if (Error) *Error = "package " + Dir.filename().string() + ": block " + C.substr(0, 16) + "… " + Why;
+            LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': block " + C + " " + Why);
+            Ok = false;
+        };
         for (const std::string &C : Wave)
         {
             const auto It = Blocks.find(C);
-            if (It == Blocks.end() || !NodeGraph::JsonDepthWithinLimit(It->second, 64)) { Ok = false; continue; }
+            if (It == Blocks.end()) { Bad(C, "did not land"); continue; }
+            if (!NodeGraph::JsonDepthWithinLimit(It->second, 64)) { Bad(C, "is too deep"); continue; }
             nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
-            if (J.is_discarded() || !J.is_object()) { Ok = false; continue; }
+            if (J.is_discarded() || !J.is_object()) { Bad(C, "is not a node"); continue; }
             NodeGraph::NormalizeLinks(J);
             J.erase("CID");
             std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << J.dump(2) << "\n";

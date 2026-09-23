@@ -569,6 +569,57 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // INSTALL = ADOPT: a received package moves out of CATALOG into LIBRARY/<lib>/<pkg> — an ordinary local package
+    // from then on (not Received: launchable, grafts offered, published with the library). The planner then never
+    // re-lands it as a stub beside itself, and a name collision is refused, never merged.
+    void install_adopts_a_received_package_into_the_library()
+    {
+        std::string Err;
+        QTemporaryDir Repo; QVERIFY(Repo.isValid());
+        QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
+        QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
+        const json Items = publishTwoGames(SeedRoot.path());
+        QCOMPARE((int)Items.size(), 2);
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}},
+                       {"FriendLibraries", {{"12D3KooWSeederAlice", {{"Games", Items}}}}}};   // nick = peer tail "derAlice"
+        const std::string Nick = "derAlice";
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
+        {
+            std::vector<IpfsWrapper::FetchTarget> B;
+            for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, Nick, json{{"Games", Items}}))
+                B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
+        }
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());
+        const std::filesystem::path Stub = std::filesystem::path(Catalog) / (Nick + " - Games") / "[1] A";
+        QVERIFY(std::filesystem::exists(Stub / ".package.json"));
+
+        std::filesystem::path NewDir;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &NewDir, &Err), Err.c_str());
+        QCOMPARE(NewDir, std::filesystem::path(RxData.path().toStdString()) / "LIBRARY" / "Games" / "[1] A");
+        QVERIFY2(!std::filesystem::exists(Stub), "the stub dir is gone from CATALOG");
+        QVERIFY2(std::filesystem::exists(NewDir) && !std::filesystem::exists(NewDir / ".package.json"), "moved, manifest dropped");
+        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+        const Node * A = Idx.Find("a_exec");
+        QVERIFY(A);
+        QVERIFY2(!A->Received, "an installed package is ours: never 'Received' again");
+        QCOMPARE(A->BundleDir, NewDir);
+        QVERIFY2(Idx.Find("b_exec") && Idx.Find("b_exec")->Received, "the un-installed package stays a stub");
+        // The planner skips the adopted package (the library holds it) and still plans the other.
+        const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, Nick, json{{"Games", Items}});
+        QCOMPARE((int)Plan2.size(), 1);
+        QVERIFY(Plan2[0].Dest.find("[2] B") != std::string::npos);
+        // A second adopt of a package whose name the library already holds is refused.
+        std::filesystem::create_directories(Stub);
+        { std::ofstream S(Stub / ".package.json"); S << "{}"; }
+        QVERIFY(!PackageCatalog::AdoptReceivedPackage(rx, Stub, nullptr, &Err));
+        QVERIFY(Err.find("already exists") != std::string::npos);
+        IpfsWrapper::DebugResetQueue();
+        IpfsWrapper::StopNode();
+    }
+
     // A RE-PUBLISHED node (same NODE_ID → same dest, NEW cid) must land OVER the occupied dest through the REAL
     // rolling queue — the receiver's whole update path. Two independent refusals used to eat it silently: the C++
     // queue marked a new-CID job Done on PathExists(dest) alone, and Go's fetchToPathOnce no-op'd on "dest present,
