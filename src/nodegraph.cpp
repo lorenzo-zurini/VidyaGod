@@ -43,44 +43,9 @@ static bool PathWithin(const std::filesystem::path &Base, const std::filesystem:
     return Rel.begin()->native() != "..";                // first COMPONENT ".." ⇒ escapes (a leading-dot NAME like .wine is fine)
 }
 
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing, bool Shallow, bool LocalOnly)
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing)
 {
     NodeIndex Idx;
-    if (Shallow)
-    {
-        // Browse: batch-fetch the roots via the windowed session (the SAME rolling want-window + friend-provider
-        // routing content uses) — NOT serial single-block gets; 900+ tiny blocks must not be 900 round-trips. A
-        // launchable carries its TILE itself, so ONE round renders every card; a graft root's identity is inherited
-        // through OVER, so a shared MOD's card needs its game's block too — a second round for the roots' direct
-        // OVER refs that carry no tile of their own is the cheap browse view (never the full composition graph).
-        // LocalOnly (catalog-build): read only blocks already in the store, so we never stall on a friend block that
-        // hasn't landed yet — the catalog shows what's present and re-renders as more arrive.
-        const auto Fetch = LocalOnly ? &IpfsWrapper::DagGetManyLocal : &IpfsWrapper::DagGetMany;
-        auto Land = [&](const std::vector<std::string> &Cids, bool Report, std::set<std::string> *NextRefs) {
-            const std::map<std::string, std::string> Blocks = Fetch(Cids);
-            for (const std::string &C : Cids)
-            {
-                if (C.empty() || Idx.Nodes.count(C)) continue;
-                const auto It = Blocks.find(C);
-                if (It == Blocks.end()) { if (Report && Missing) Missing->push_back(C); continue; }
-                nlohmann::ordered_json J;
-                if (!ParseBlockBounded(It->second, J)) { if (Report && Missing) Missing->push_back(C); continue; }
-                NormalizeLinks(J);
-                Node N;
-                if (!ManifestModel::ParseNode(J, {}, {}, N)) continue;
-                N.Cid = C;
-                auto [Nit, Ins] = Idx.Nodes.emplace(C, std::move(N));
-                (void)Ins;
-                if (NextRefs && !Nit->second.OwnTile)
-                    for (const std::string &P : Nit->second.Parents) NextRefs->insert(P);
-            }
-        };
-        std::set<std::string> Refs;
-        Land(RootCids, /*Report=*/true, &Refs);
-        if (!Refs.empty()) Land(std::vector<std::string>(Refs.begin(), Refs.end()), /*Report=*/false, nullptr);
-        ManifestModel::DeriveIdentity(Idx);
-        return Idx;
-    }
     std::set<std::string> Seen;
     std::deque<std::string> Q(RootCids.begin(), RootCids.end());
     while (!Q.empty())
@@ -124,8 +89,7 @@ NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector
         // Recurse into OVER's positive refs (the composition). A NOT ref is deliberately NOT followed: the excluded
         // node's block is not part of this node's closure (it is a plain string in the frozen block, not a link).
         // SOURCE/COVER are content-leaf (dag-pb) CIDs fetched lazily at hydrate — never enqueued here.
-        if (!Shallow)                                                    // full closure: composition edges too
-            for (const std::string &P : It->second.Parents) Q.push_back(P);
+        for (const std::string &P : It->second.Parents) Q.push_back(P);   // the full closure: composition edges too
     }
     ManifestModel::DeriveIdentity(Idx);
     return Idx;

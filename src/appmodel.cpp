@@ -315,6 +315,10 @@ void AppModel::syncSources()
                 emit packageSourcesChanged();
             }
             healOrphansIfAny();            // re-point any orphaned no-copy refs so the node can actually SERVE its content
+            completeReceivedClosures();    // node-ready → finish landing any received root's node closure (resumes after a restart)
+            reRegisterShares();            // node-ready → replay config["Sharing"] into the node's in-memory share table: a
+                                           // restarted seeder shared NOTHING until its next publish (the durable record
+                                           // never reached Go), so friends saw empty snapshots
             pushSeedLevels();              // node-ready → announce our seeded content to the DHT, meta-CIDs first
             pushLanRoster();               // node-ready → apply the persisted Virtual-LAN roster (excluded members)
             // A source that couldn't be fetched (hostile network, provider unreachable — the node-side retries are
@@ -900,7 +904,43 @@ void AppModel::onFriendBlockLanded(const QString & cid, bool /*ok*/)
         FriendReconcilePending = false;
         rebuildCatalog();               // the landed blocks ARE ordinary tree packages — just re-scan
         emit friendCatalogChanged();
+        completeReceivedClosures();
     });
+}
+
+void AppModel::completeReceivedClosures()
+{
+    // A friend's share is a set of ROOT CIDs; what makes those roots a library is the graph under them. The receiver
+    // lands the whole NODE-BLOCK closure of every received root (blocks only — kilobytes per game, ~10 MB for a
+    // whole library; content stays lazy until install), so it holds the same graph the seeder holds and derives the
+    // same things from it: which launchable is the main of a card and which is an expansion under it, which mod
+    // belongs to which game, what a graft needs. Before this the receiver had the roots plus one hop and could
+    // derive none of that. Re-entrant-safe: blocks landing while a pass runs queue exactly one more pass.
+    if (FriendClosureRunning) { FriendClosureAgain = true; return; }
+    std::vector<std::string> Roots;
+    for (const auto & [Key, N] : CatalogIndex.Nodes)
+        if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, Key)) Roots.push_back(Key);
+    if (Roots.empty()) return;
+    FriendClosureRunning = true;
+    LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received root(s)");
+    auto Snap = std::make_shared<const NodeIndex>(CatalogIndex);
+    AsyncWork::Run(this,
+        [Snap, Roots]{
+            size_t Ok = 0;
+            for (const std::string & R : Roots)
+            {
+                std::string Err;
+                if (PackageCatalog::CompleteClosure(*Snap, R, &Err)) ++Ok;
+                else LogWarn("AppModel::completeReceivedClosures", "closure of received '" + R + "': " + Err);
+            }
+            LogOut("AppModel::completeReceivedClosures", std::to_string(Ok) + "/" + std::to_string(Roots.size()) + " received closure(s) landed");
+        },
+        [this]{
+            FriendClosureRunning = false;
+            rebuildCatalog();           // the landed closure blocks are ordinary tree nodes, marked Received by the scan
+            emit friendCatalogChanged();
+            if (FriendClosureAgain) { FriendClosureAgain = false; completeReceivedClosures(); }
+        });
 }
 
 void AppModel::publishLibraries()

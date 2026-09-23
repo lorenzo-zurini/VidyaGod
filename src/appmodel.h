@@ -140,6 +140,7 @@ public:
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
     void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
     void onFriendBlockLanded(const QString & cid, bool ok); // a received node block landed → debounced catalog rebuild
+    void completeReceivedClosures();                      // land the node-block closure of every received root (blocks only)
 
     // Move a source to a new collection CID. TWO PHASE on purpose: planning fetches the new manifest tree to a
     // staging dir and diffs it WITHOUT touching anything, so the user approves a concrete plan (what is kept, moved
@@ -187,6 +188,8 @@ private:
     std::map<std::string, quint64> FriendLibSeq;         // per-peer highest applied snapshot stamp (last-writer-wins; session-only)
     std::set<std::string>          FriendBrowseCids;     // received-share CIDs we enqueued (roots+tiles) — scopes the transferFinished reaction
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
+    bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
+    bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
 };
 
 #endif // APPMODEL_H

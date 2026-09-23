@@ -75,14 +75,9 @@ bool TopoOrderForMint(const std::map<std::string, nlohmann::ordered_json> &Worki
 // they are dag-pb blobs fetched lazily at hydrate. A shared node reached many times is fetched once. A block that
 // cannot be fetched/parsed, or is not a node, is recorded in Missing (if given) and skipped. Runs DeriveIdentity.
 // Frozen nodes carry no BundleDir (browse-before-download); local content location is filled in at hydrate.
-// Shallow=false: the full closure — for launch/hydrate. Shallow=true: fetch each root plus, for a root with no TILE
-// of its own (a shared mod), its direct OVER refs (its game's block, which carries the tile) — the cheap BROWSE view
-// for a friend's shared library (a title/cover is enough to render a card; the full graph is walked only on
-// install). Content leaves are never fetched either way, so Shallow bounds only the node-block fan-out.
-// LocalOnly=true reads only blocks already in the store (no bitswap) — for catalog-build over friend share CIDs that
-// may not all be fetched yet. Only meaningful with Shallow=true.
-NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr,
-                           bool Shallow = false, bool LocalOnly = false);
+// Always the FULL node closure: there is no shallow "browse" view any more — a receiver lands a share's whole
+// node-block closure (AppModel::completeReceivedClosures) so it derives everything the seeder derives.
+NodeIndex BuildFrozenIndex(const std::vector<std::string> &RootCids, std::vector<std::string> *Missing = nullptr);
 
 // Freeze a gathered working tree directly into a CID-keyed NodeIndex (identity = CID) WITHOUT storing blocks — uses
 // DagCid (side-effect-free), so it is safe at catalog-build time. Resolves OVER handles → CIDs, sets

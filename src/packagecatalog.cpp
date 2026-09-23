@@ -1143,10 +1143,18 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
     std::vector<ReceivedFetch> Out;
     if (!Libs.is_object()) return Out;
     const fs::path Root = fs::path(CatalogRootDir(GlobalConfigJSON));   // received stubs live in CATALOG, not LIBRARY
-    std::set<std::string> UsedDests;   // 900 variants share ONE tile → one target; a NODE_ID collision keeps first-seen
-    auto Add = [&](const std::string &Cid, const fs::path &Dest) {
+    std::map<std::string, std::string> DestCid;   // dest → the CID that claimed it (the same CID twice = one target)
+    auto Add = [&](const std::string &Cid, fs::path Dest) {
         if (Cid.empty() || Cid.size() > 128) return;
-        if (!UsedDests.insert(Dest.string()).second) return;
+        // Two ROOTS of one package sharing a LABEL (Reign of Chaos' and The Frozen Throne's "v1.29.2", AoE2's two
+        // "Vanilla") map to the same file: the second gets a CID-qualified name instead of being silently dropped.
+        if (auto It = DestCid.find(Dest.string()); It != DestCid.end())
+        {
+            if (It->second == Cid) return;
+            Dest = Dest.parent_path() / (Dest.stem().string() + " (" + Cid.substr(0, 12) + ")" + Dest.extension().string());
+            if (DestCid.count(Dest.string())) return;
+        }
+        DestCid[Dest.string()] = Cid;
         Out.push_back(ReceivedFetch{Cid, Dest.string()});
     };
     size_t Total = 0;   // snapshot-wide bound (a hostile friend could send many libs x many items)

@@ -467,7 +467,7 @@ int SameTitleDepth(const NodeIndex &Idx, const Node &N)
     {
         if (Id == N.Key()) continue;
         const Node *P = Idx.Find(Id);
-        if (P && P->IsLaunchable() && P->OwnTile && P->Uid == N.Uid) ++D;
+        if (P && P->IsLaunchable() && !P->Uid.empty() && P->Uid == N.Uid) ++D;   // own or inherited tile alike
     }
     return D;
 }
@@ -1378,7 +1378,7 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //TITLE/COVER under the main is an expansion by construction, never a mistake. -----
     {
         std::map<std::string, std::vector<const Node *>> ByUid;
-        for (const auto &[Id, N] : Idx.Nodes) if (N.IsLaunchable() && N.OwnTile) ByUid[N.Uid].push_back(&N);
+        for (const auto &[Id, N] : Idx.Nodes) if (N.IsLaunchable() && !N.Uid.empty()) ByUid[N.Uid].push_back(&N);
         for (const auto &[Uid, Ns] : ByUid)
         {
             std::vector<std::string> Mains;

@@ -281,6 +281,27 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // Two roots of one package with the SAME label (Reign of Chaos' and The Frozen Throne's "v1.29.2") must both
+    // land: the second gets a CID-qualified file name. Before, the planner kept first-seen and the second root of
+    // every shared-UID title silently never arrived.
+    void planner_keeps_both_roots_that_share_a_label()
+    {
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", "/tmp/vg_rx_plan/LIBRARY"}}}}}};
+        const json Items = json::array({
+            json{{"cid", "bafyroc"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "Warcraft III: Reign of Chaos"}},
+            json{{"cid", "bafytft"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "Warcraft III: The Frozen Throne"}},
+            json{{"cid", "bafyroc"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "dup of the same CID"}} });
+        const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
+        QCOMPARE((int)Plan.size(), 2);                               // both roots, the same CID once
+        std::set<std::string> Dests, Cids;
+        for (const auto & T : Plan) { Dests.insert(T.Dest); Cids.insert(T.Cid); }
+        QCOMPARE((int)Dests.size(), 2);
+        QVERIFY(Cids.count("bafyroc") && Cids.count("bafytft"));
+        bool Qualified = false;
+        for (const auto & T : Plan) if (T.Cid == "bafytft" && T.Dest.find("v1.29.2 (bafytft") != std::string::npos) Qualified = true;
+        QVERIFY2(Qualified, "the colliding root's file carries its CID");
+    }
+
     // Helper: publish two distinct PUBLISH'd games in one collection and return their two share entries
     // ({cid,node,uid,title,tilecid,tilenode} routing objects, as PublishLibrary emits them).
     json publishTwoGames(const QString & root)
@@ -305,6 +326,11 @@ private slots:
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
                   NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
+        // An EXPANSION of A: its own tile (same UID, another title), OVER the main launchable. Nesting is derived
+        // from that edge — on the seeder and, once the closure lands, on the receiver.
+        writeJson(root + "/VidyaGod/[1] A/ax.json",
+                  NodeFixture::Chain("a_x", {NodeFixture::Merge({NodeFixture::Exec("win32", "ax.exe"), NodeFixture::Tile("1", "A: Expansion")})},
+                                     {"a_exec"}, {{"PUBLISH", true}}));
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
                   NodeFixture::Chain("b_exec", {NodeFixture::Exec("win32", "b.exe")}, {"b_tile"}, {{"PUBLISH", true}}));
@@ -327,7 +353,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
-        QCOMPARE((int)Items.size(), 2);
+        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
@@ -335,7 +361,7 @@ private slots:
 
         // Plan: every node + its tile gets a FINAL CATALOG dest, computed pre-fetch from the snapshot alone.
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan.size(), 4);                          // 2 roots + their 2 tiles
+        QCOMPARE((int)Plan.size(), 5);                          // 3 roots + the 2 tile nodes (the expansion carries its own)
         const std::string Lib = Catalog + "/Alice - Games";     // received stubs land in CATALOG, not LIBRARY
         std::set<std::string> Dests;
         for (const auto & T : Plan) Dests.insert(T.Dest);
@@ -373,6 +399,30 @@ private slots:
         QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated,
                  "a received, un-installed package must not count as hydrated (its closure is not fetched)");
 
+        // FULL-LIBRARY DEHYDRATED SHARING: the receiver lands every root's NODE closure (blocks only — what
+        // AppModel::completeReceivedClosures runs after the roots land), so it holds the same graph the seeder
+        // holds. Before: a landed root is incomplete (a_content, a_base are two hops of blocks away). After: the
+        // two content levels are ordinary Received nodes under the same package dir, the closure is complete, and
+        // the card nests exactly as it does on the seeder — A is the main, "A: Expansion" its child.
+        QVERIFY2(PackageCatalog::NodeClosureIncomplete(Idx, Cid0), "a landed root alone is an incomplete closure");
+        std::string CErr;
+        QVERIFY2(PackageCatalog::CompleteClosure(Idx, Cid0, &CErr), CErr.c_str());
+        const auto Idx2 = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Idx2, Cid0), "the closure landed");
+        QVERIFY(std::filesystem::exists(Lib + "/[1] A/a_content.json") && std::filesystem::exists(Lib + "/[1] A/a_base.json"));
+        int LandedA = 0;
+        for (const auto & [K, N] : Idx2.Nodes)
+            if (N.Received && N.BundleDir.string().rfind(Lib + "/[1] A", 0) == 0) ++LandedA;
+        QCOMPARE(LandedA, 5);                                   // a_exec, a_x, a_tile, a_content, a_base — all Received
+        std::vector<const Node *> Card;
+        for (const auto & [K, N] : Idx2.Nodes) if (N.IsLaunchable() && N.Uid == "1") Card.push_back(&N);
+        QCOMPARE((int)Card.size(), 2);
+        const auto Ordered = ManifestModel::OrderVariants(Idx2, Card);
+        QCOMPARE(Ordered.front()->NodeId, std::string("a_exec"));                                   // the main names the card
+        QCOMPARE(Ordered.front()->Meta.value("TITLE", std::string()), std::string("A"));
+        QCOMPARE(Ordered.back()->NodeId, std::string("a_x"));                                       // the expansion under it
+        QCOMPARE(ManifestModel::SameTitleDepth(Idx2, *Ordered.back()), 1);
+
         // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
         const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"pkg", "../../.."}, {"uid", ".."}, {"title", "../.."},
                                             {"tilecid", Items[0].value("tilecid", std::string())}, {"tilenode", "/etc/passwd"}}});
@@ -385,9 +435,9 @@ private slots:
             QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the CATALOG root: " + Canon).c_str());
         }
 
-        // Planner dedupe: the same snapshot plans the same 4 targets again (stable), never duplicates within one plan.
+        // Planner dedupe: the same snapshot plans the same 5 targets again (stable), never duplicates within one plan.
         const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan2.size(), 4);
+        QCOMPARE((int)Plan2.size(), 5);
         std::set<std::string> D2; for (const auto & T : Plan2) D2.insert(T.Dest);
         QCOMPARE(D2.size(), Plan2.size());
 
@@ -512,7 +562,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 2);
+        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
@@ -561,7 +611,7 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 2);
+        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
         const std::string CidV1 = Items[0].value("cid", std::string());
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
