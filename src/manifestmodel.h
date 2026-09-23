@@ -136,6 +136,8 @@ struct Node {
                                              // in list order — the reference set for validation/freeze/hydrate/canvas
     std::vector<std::string> Excludes;       // every node OVER names under NOT
     nlohmann::ordered_json Layers;           // the lowered payload: the executor's ordered layer sequence
+    nlohmann::ordered_json Env;              // ENV — this node's environment mutation (name → value), folded along the chain
+    std::vector<std::string> EnvRemove;      // ENV_REMOVE — names this node removes at its point of the chain
     std::filesystem::path File;              // source .json path
     std::filesystem::path BundleDir;         // owning bundle dir — content PATHs inside LAYERS resolve here
     bool Received = false;                   // a browse stub gathered from CATALOG (a friend's bytes, not hydrated):
@@ -218,6 +220,11 @@ void DeriveIdentity(NodeIndex &Idx);
 // faces by depth — so a card reads its TITLE/COVER off the front and opens on the main face's default.
 bool SameTile(const Node &A, const Node &B);
 int FaceDepth(const NodeIndex &Idx, const Node &FaceNode);
+// Fold the environment of a mount: for each node in ORDER (lowest first) apply its ENV_REMOVE, then its ENV — a later
+// node wins a shared name, a later set undoes an earlier remove, a later remove undoes an earlier set. Env = the
+// names to set, Remove = the names removed and never set again. Values are not substituted here.
+void FoldEnv(const NodeIndex &Idx, const std::vector<std::string> &Order, nlohmann::ordered_json &Env, std::vector<std::string> &Remove);
+
 std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Variants);
 
 // The CLOSURE of a node: everything reachable from it through the BARE refs of OVER — what it is made of — as a

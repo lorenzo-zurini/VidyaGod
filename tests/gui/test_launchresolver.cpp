@@ -593,6 +593,44 @@ private slots:
         QVERIFY2(!ids.empty() && ids[0] == "protonA", "the chain serves the ENTRY's platform (win32), not the variant's");
     }
 
+    // The game's environment is the fold of its MOUNT: every node beneath it, itself, and the ticked grafts above —
+    // not a field of the entry. The runner link's environment is the fold of the runner's build closure.
+    void the_environment_folds_from_the_mount_and_from_the_runner_build()
+    {
+        NodeIndex idx;
+        Node lib = Node(); lib.NodeId = "lib"; lib.Env = json{{"A", "lib"}, {"B", "lib"}, {"C", "lib"}};
+        lib.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "lib"}} }); lib.BundleDir = "/tmp/vg_bundle";
+        idx.Nodes["lib"] = lib;
+        Node game = launchNode("game", kMachine, {"lib"});
+        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
+        game.Env = json{{"A", "game"}}; game.EnvRemove = {"B", "HOST_ONLY"};
+        idx.Nodes["game"] = game;
+        Node mod = Node(); mod.NodeId = "mod"; NodeFixture::Wire(mod, {"game"}); mod.Uid = "1"; mod.Uids = {"1"};
+        mod.Env = json{{"C", "mod"}}; mod.Layers = json::array({ json{{"TYPE", "VFSDirLayer"}, {"PATH", "mod"}} }); mod.BundleDir = "/tmp/vg_bundle";
+        idx.Nodes["mod"] = mod;
+        Node rlib = Node(); rlib.NodeId = "rlib"; rlib.Env = json{{"R", "rlib"}, {"S", "rlib"}, {"T", "rlib"}};
+        rlib.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "rlib.zip"}} }); rlib.BundleDir = "/tmp/vg_runner";
+        idx.Nodes["rlib"] = rlib;
+        Node runner = chainRunner("native", {kMachine}, kMachine);
+        NodeFixture::Wire(runner, {"rlib"}); runner.Env = json{{"S", "runner"}}; runner.EnvRemove = {"R"};
+        idx.Nodes["native"] = runner;
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"mod", true}};
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        QCOMPARE(cp.LaunchEnv.value("A", std::string()), std::string("game"));   // the game over the library beneath
+        QCOMPARE(cp.LaunchEnv.value("C", std::string()), std::string("mod"));    // the graft over the game
+        QVERIFY(!cp.LaunchEnv.contains("B"));                                       // removed by the game
+        QVERIFY(std::find(cp.LaunchRemoveEnv.begin(), cp.LaunchRemoveEnv.end(), "HOST_ONLY") != cp.LaunchRemoveEnv.end());
+        auto chain = LaunchResolver::ResolveRunnerChain(idx, game, cp, cfg);
+        QVERIFY(!chain.empty());
+        QCOMPARE(chain[0].Env.value("S", std::string()), std::string("runner"));   // the runner over its library
+        QCOMPARE(chain[0].Env.value("T", std::string()), std::string("rlib"));     // the library beneath the runner reaches the link
+        QVERIFY(!chain[0].Env.contains("R"));                                        // removed by the runner
+        QVERIFY(std::find(chain[0].RemoveEnv.begin(), chain[0].RemoveEnv.end(), "R") != chain[0].RemoveEnv.end());
+    }
+
     // A label may repeat (a friend's received stub of "proton" beside the local "proton"): every closure walk on the
     // launch path is keyed by the INDEX key, or the first label match — the stub, sorted first here — is walked
     // instead of the runner that ships the build.

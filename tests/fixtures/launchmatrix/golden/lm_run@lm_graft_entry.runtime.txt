@@ -4,8 +4,11 @@
   <TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
   LM_EXEC_ENV=from-the-graft-entry
+  LM_FOLDED=from-below
+  LM_FROM_VAR=hello-beta
+  LM_GRAFT_ENV=grafted
+  LM_OVERRIDDEN=above
   LM_RUNNER_ONLY=from-runner
-  LM_SHOULD_BE_GONE=runner-set-this
 === mounted tree
   .
   ./bin

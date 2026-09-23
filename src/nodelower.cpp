@@ -71,6 +71,8 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
         return Fail("carries a WHEN — an entrypoint is never conditional (its payload becomes the node's identity at index time). Use two entries, or two variants.");
     if (E.contains("RECOMMENDED"))
         return Fail("carries RECOMMENDED — that is a node facet (prefer me among my siblings), not an entry field; the first entry is the default");
+    if (E.contains("ENV") || E.contains("ENV_REMOVE"))
+        return Fail("carries ENV/ENV_REMOVE — the environment is a NODE section that folds along the chain (like the registry), not an entry field; move it up to the node");
     const bool IsRunner = E.contains("GUEST") && !E["GUEST"].empty();
     ordered_json L = ordered_json::object();
     if (IsRunner)
@@ -79,8 +81,6 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
         L["GUEST"] = E["GUEST"];
         L["EXECUTABLE"] = E.value("PATH", std::string());
         L["ARGS"] = E.contains("ARGS") ? E["ARGS"] : ordered_json::array();
-        L["ENV"]  = E.contains("ENV")  ? E["ENV"]  : ordered_json::object();
-        L["REMOVE_ENV"] = E.contains("ENV_REMOVE") ? E["ENV_REMOVE"] : ordered_json::array();
         CopyIf(E, L, {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "LABEL"});
     }
     else
@@ -88,11 +88,6 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
         L["PLATFORM"] = E["HOST"];
         if (E.contains("PATH")) L["CONTENTPATH"] = E["PATH"];
         if (E.contains("ARGS")) L["EXEARGS"]     = E["ARGS"];
-        //ENV was once copied for a RUNNER and silently dropped for a LAUNCHABLE, so a game's own environment
-        //never reached its process. Same spelling as the runner branch (ENV_REMOVE on disk, REMOVE_ENV on the
-        //block) so one consumer reads both.
-        if (E.contains("ENV"))        L["ENV"]        = E["ENV"];
-        if (E.contains("ENV_REMOVE")) L["REMOVE_ENV"] = E["ENV_REMOVE"];
         CopyIf(E, L, {"LABEL", "WORKDIR", "RUNNER"});
     }
     return L;
@@ -117,12 +112,24 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
     //whole front-end exists to make impossible.
     static const std::set<std::string> Known = {
         "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
-        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS",
+        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
     };
     for (const auto &[K, V] : J.items())
         if (!Known.count(K))
             return Fail("unknown field '" + K + "' (a node is CID/LABEL/WHEN/TOGGLE/PUBLISH/TILE/ENTRYPOINTS/OVER + "
-                        "LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/PERSISTS)");
+                        "LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/PERSISTS/ENV/ENV_REMOVE)");
+    //ENV / ENV_REMOVE are node sections (the environment folds along the chain); ParseNode reads them, the
+    //lowerer only refuses the wrong shape so a typo is never a value that silently fails to apply.
+    if (J.contains("ENV"))
+    {
+        if (!J["ENV"].is_object()) return Fail("ENV must be an object (name -> value)");
+        for (const auto &[K, V] : J["ENV"].items()) if (!V.is_string()) return Fail("ENV." + K + " must be a string (quote the number)");
+    }
+    if (J.contains("ENV_REMOVE"))
+    {
+        if (!J["ENV_REMOVE"].is_array()) return Fail("ENV_REMOVE must be a list of names");
+        for (const auto &V : J["ENV_REMOVE"]) if (!V.is_string() || V.get<std::string>().empty()) return Fail("ENV_REMOVE entries are names (strings)");
+    }
 
     //An EMPTY payload array is a node that says it contributes something and contributes nothing — refused, like
     //an unknown key. A node with NO payload arrays at all is fine: it is just a node (composition, a tile, an

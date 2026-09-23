@@ -100,10 +100,10 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
     //at Execute, so without this the game's ENV has a layer and no consumer — lowered, carried, and dropped at
     //the last step. The game wins over the runner on a shared key: the runner states how its platform is run,
     //the game states what THIS program needs, and the more specific one is the game's.
-    if (Resolved.contains("ENV") && Resolved["ENV"].is_object())
+    if (ContainerParams.LaunchEnv.is_object())
     {
         if (!ContainerParams.RunnerEnv.is_object()) ContainerParams.RunnerEnv = nlohmann::ordered_json::object();
-        for (const auto &[K, V] : Resolved["ENV"].items())
+        for (const auto &[K, V] : ContainerParams.LaunchEnv.items())
         {
             //Refuse a non-string LOUDLY. Dropping it silently and letting the runner path reach
             //Value.get<std::string>() at Execute gives the same authoring mistake two opposite endings — one
@@ -118,11 +118,8 @@ bool LaunchResolver::ResolveExecutableDefinition(const nlohmann::ordered_json &M
             ContainerParams.RunnerEnv[K] = V;
         }
     }
-    if (Resolved.contains("REMOVE_ENV") && Resolved["REMOVE_ENV"].is_array())
-        for (const auto &K : Resolved["REMOVE_ENV"])
+    for (const std::string &Key : ContainerParams.LaunchRemoveEnv)
         {
-            if (!K.is_string()) continue;
-            const std::string Key = K.get<std::string>();
             //A removal must also drop the key from the merged env. Execute applies removals FIRST and then
             //inserts RunnerEnv, so a launchable asking to remove a key its RUNNER sets would watch the runner
             //put it straight back — "the game wins over the runner" has to hold in both directions or it is

@@ -256,7 +256,7 @@ bool SetPos(json &Layout, const std::string &NodeId, float X, float Y)
 const std::vector<std::string> &AllTypes()
 {
     static const std::vector<std::string> T = {
-        "LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "PERSISTS", "VARS", "ENTRYPOINTS", "TILE"
+        "LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "ENV", "PERSISTS", "VARS", "ENTRYPOINTS", "TILE"
     };
     return T;
 }
@@ -282,6 +282,7 @@ const char *TypeHelp(const std::string &Section)
     if (Section == "FILEEDITS")    return "Text edits applied to files in the runtime (whole-file, key=value, or append).";
     if (Section == "PATCHES")      return "Byte patches over PRISTINE executables, guarded by an EXPECT check.";
     if (Section == "DLLOVERRIDES") return "Which DLLs resolve native vs builtin (wine's n,b notation).";
+    if (Section == "ENV")          return "Process environment, folded along the chain: later nodes win a name; ENV_REMOVE drops one at this point.";
     if (Section == "PERSISTS")     return "What survives the run: a file path or registry key is promoted to a named durable TARGET under the instance.";
     if (Section == "VARS")         return "Variables the player sets before launch; substituted as %KEY% wherever they are used.";
     if (Section == "ENTRYPOINTS")  return "What to run - each entry is a variant. No GUEST => a launchable; with GUEST => a runner providing those platforms.";
@@ -295,7 +296,7 @@ void TypeColour(const std::string &Kind, int &R, int &G, int &B)
     // Content = blue, transforms = amber, identity = green, composition = grey.
     if (Kind == "LAYERS")                                      { R = 46;  G = 96;  B = 148; return; }
     if (Kind == "REGEDITS" || Kind == "FILEEDITS" ||
-        Kind == "PATCHES" || Kind == "DLLOVERRIDES")           { R = 136; G = 92;  B = 36;  return; }
+        Kind == "PATCHES" || Kind == "DLLOVERRIDES" || Kind == "ENV") { R = 136; G = 92;  B = 36;  return; }
     if (Kind == "PERSISTS" || Kind == "VARS")                  { R = 92;  G = 68;  B = 128; return; }
     if (Kind == "ENTRYPOINTS" || Kind == "TILE")               { R = 46;  G = 118; B = 78;  return; }
     R = 74; G = 80; B = 88;
@@ -312,6 +313,7 @@ static json SectionStarter(const std::string &S)
     if (S == "FILEEDITS")    return json::array({ json::object({{"FILE",""},{"EDITS", json::array({ json::object({{"MODE","ConfigWrite"},{"KEY",""},{"VALUE",""}}) })}}) });
     if (S == "PATCHES")      return json::array({ json::object({{"FILE",""},{"EDITS", json::array({ json::object({{"MODE","Replace"},{"OFFSET",""},{"EXPECT",""},{"REPLACE",""}}) })}}) });
     if (S == "DLLOVERRIDES") return json::object();
+    if (S == "ENV")          return json::object();
     if (S == "PERSISTS")     return json::array({ json::object({{"SCOPE","file"},{"PATH",""},{"TARGET",""},{"CLOUD",true}}) });
     if (S == "VARS")         return json::array({ json::object({{"KEY",""},{"DEFAULT",""}}) });
     if (S == "ENTRYPOINTS")  return json::array({ json::object({{"LABEL","Play"},{"HOST","win32"},{"PATH","%PrefixRoot%/drive_c/%PackageUID%/"},{"ARGS", json::array()}}) });
@@ -470,6 +472,9 @@ std::vector<Field> MakeFields(const std::string &Type)
         };
     if (Type == "DLLOVERRIDES")
         return {{"DLLOVERRIDES", "Overrides", FieldKind::KeyValue, "dll -> resolution order", DllOpts, {}}};
+    if (Type == "ENV")
+        return {{"ENV",        "Env",        FieldKind::KeyValue,   "name -> value; folds along the chain, later wins", {}, {}},
+                {"ENV_REMOVE", "Env remove", FieldKind::StringList, "names dropped at this point of the chain", {}, {}}};
     if (Type == "PERSISTS")
         //A node's PERSISTS list, each entry one durable path/registry subtree.
         return {
@@ -501,8 +506,6 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"PATH",        "Path",        FieldKind::Text,       "the exe/ROM, anchored", {}, {}},
                 {"ARGS",        "Args",        FieldKind::StringList, "one per line", {}, {}},
                 {"WORKDIR",     "Work dir",    FieldKind::Text,       "", {}, {}},
-                {"ENV",         "Env",         FieldKind::KeyValue,   "", {}, {}},
-                {"ENV_REMOVE",  "Env remove",  FieldKind::StringList, "", {}, {}},
                 {"CONTENT_ROOT","Content root",FieldKind::Text,       "runner only", {}, {}},
                 {"PREFIX_GENERATE", "Generate prefix", FieldKind::Check, "runner only - needs a wine/proton prefix", {}, {}},
                 {"UNIFIED_RUNTIME", "Unified runtime", FieldKind::Check, "runner only - mount the build INTO the game runtime", {}, {}},

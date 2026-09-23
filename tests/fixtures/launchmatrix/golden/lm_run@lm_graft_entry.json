@@ -98,18 +98,23 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "baguqeeragshkqllr66yda5ssb4ghcfq3pafraitll7d2ubkubpwyswzrhq4q"
+      "NodeId": "baguqeerao6hwt2a5bltaftwjbwo2wenrnjhypth4tbdrbohc6wvdbi6cjgca"
     }
   ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "from-the-graft-entry",
-    "LM_RUNNER_ONLY": "from-runner",
-    "LM_SHOULD_BE_GONE": "runner-set-this"
+    "LM_FOLDED": "from-below",
+    "LM_FROM_VAR": "%lm_derived%",
+    "LM_GRAFT_ENV": "grafted",
+    "LM_OVERRIDDEN": "above",
+    "LM_RUNNER_ONLY": "from-runner"
   },
   "RunnerExecutable": "/bin/sh",
   "RunnerName": "lm_runner_native",
   "RunnerRemoveEnv": [
-    "LM_GAME_KEEPS_THIS"
+    "LM_GAME_KEEPS_THIS",
+    "LM_SHOULD_BE_GONE",
+    "LM_REMOVED_ABOVE"
   ],
   "RunnerShipsBuild": false,
   "SubComponentsArray": [

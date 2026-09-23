@@ -102,6 +102,8 @@ TEST(lower_refuses_type_confused_payloads_instead_of_throwing)
     CHECK(EpRefused(ordered_json{{"HOST","l"}, {"GUEST", ordered_json::array({"w"})}, {"PATH","p"}, {"ENV", {{"K", 5}}}}));
     CHECK(EpRefused(ordered_json{{"PATH","g"}}));                                   // no HOST
     CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"WHEN","%A%==1"}}));  // never conditional
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"ENV", ordered_json{{"A","1"}}}}));        // the environment is a node section
+    CHECK(EpRefused(ordered_json{{"HOST","w"}, {"PATH","g"}, {"ENV_REMOVE", ordered_json::array({"A"})}}));
     CHECK(Refused(ordered_json{{"LABEL","r"}, {"REGEDITS", ordered_json::array({
         ordered_json{{"HKCU", {{"S", {{"v", 5}}}}}}})}}));
     // ...but a NUMBER where the schema says number is fine, and an unlisted key inside a schema sub-object is
@@ -598,7 +600,6 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     ordered_json Runner{{"LABEL", "r"}, {"HOST", "linux64"},
                         {"GUEST", ordered_json::array({"win32", "win64"})},
                         {"PATH", "%RunnerMount%/proton"}, {"ARGS", ordered_json::array({"waitforexitandrun"})},
-                        {"ENV", {{"K", "V"}}}, {"ENV_REMOVE", ordered_json::array({"LD_LIBRARY_PATH"})},
                         {"CONTENT_ROOT", "pfx/drive_c/1"}, {"PREFIX_GENERATE", true}};
     const ordered_json LR = ordered_json::array({LowerEp(Runner)});
     CHECK_EQ((int)LR.size(), 1);
@@ -608,12 +609,10 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     //The runner's own ARGS are the launcher verb (proton's "waitforexitandrun"). Dropping them silently runs
     //the game with no verb at all.
     CHECK_EQ(LR[0].value("ARGS", ordered_json()).dump(), ordered_json::array({"waitforexitandrun"}).dump());
-    CHECK_EQ(LR[0].value("REMOVE_ENV", ordered_json::array()).dump(), ordered_json::array({"LD_LIBRARY_PATH"}).dump());
     CHECK(LR[0].value("PREFIX_GENERATE", false));
     // CONTENT_ROOT decides where the game's content lands inside the prefix. Dropping it mounts content off
     // drive_c\<UID> and the Windows program cannot find itself — the "create process: 2" instant crash.
     CHECK_EQ(LR[0].value("CONTENT_ROOT", std::string()), std::string("pfx/drive_c/1"));
-    CHECK_EQ(LR[0].value("ENV", ordered_json::object()).value("K", std::string()), std::string("V"));
     ordered_json Unified = Runner; Unified["UNIFIED_RUNTIME"] = true;
     CHECK(LowerEp(Unified).value("UNIFIED_RUNTIME", false));
 
@@ -697,27 +696,8 @@ TEST(lower_group_is_empty_but_not_an_error)
     CHECK(Refused(ordered_json{{"LABEL", "x"}, {"VARS", ordered_json::array()}}));   // an EMPTY payload is an ERROR
 }
 
-//ENV on a LAUNCHABLE was copied for runners only, so a game's own environment was lowered away in silence —
-//the field survived every save and never reached the process. Tonic Trouble paid for this with a binary patch.
-TEST(declareexec_launchable_keeps_ENV_and_ENV_REMOVE)
-{
-    ordered_json N = {{"LABEL","g"},{"HOST","win32"},{"PATH","G.exe"},
-                      {"ENV", {{"SDL_JOYSTICK_WGI","0"}}},
-                      {"ENV_REMOVE", ordered_json::array({"LD_PRELOAD"})}};
-    const ordered_json L = ordered_json::array({LowerEp(N)});
-    CHECK_EQ(L.size(), (size_t)1);
-    CHECK(!L[0].contains("GUEST"));                                             // launchable, not runner
-    //Guarded: CHECK does not abort, so dereferencing a missing key on the next line would throw and take the
-    //WHOLE suite down — a regression that hides every other result instead of naming itself.
-    CHECK(L[0].contains("ENV"));
-    if (L[0].contains("ENV"))
-        CHECK_EQ(L[0]["ENV"].value("SDL_JOYSTICK_WGI", std::string()), std::string("0"));
-    CHECK(L[0].contains("REMOVE_ENV"));                                        // same spelling as the runner layer
-    if (L[0].contains("REMOVE_ENV") && L[0]["REMOVE_ENV"].is_array() && L[0]["REMOVE_ENV"].size() == 1)
-        CHECK_EQ(L[0]["REMOVE_ENV"][0].get<std::string>(), std::string("LD_PRELOAD"));
-    else
-        CHECK(false);
-}
+//The environment is a NODE section now (it folds along the chain); on an entry it is refused, never lowered —
+//see lower_entrypoint_refuses_malformed_entries.
 
 //...and a launchable that declares none must not sprout empty ones: an absent ENV is absent, not {}.
 TEST(declareexec_launchable_without_ENV_emits_none)

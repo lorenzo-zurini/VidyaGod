@@ -46,14 +46,14 @@ const std::set<std::string> &NodeFields()
     static const std::set<std::string> F = {
         "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT",
         "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
-        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS",
+        "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
     };
     return F;
 }
 
 const std::vector<std::string> &PayloadKeys()
 {
-    static const std::vector<std::string> K = { "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS" };
+    static const std::vector<std::string> K = { "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE" };
     return K;
 }
 
@@ -65,7 +65,7 @@ bool IsNodeObject(const nlohmann::ordered_json &J)
     //payload-less node — a package that quietly does less than it says.
     if (J.contains("TYPE")) return false;
     static const char *Marks[] = { "CID", "LABEL", "OVER", "TILE", "ENTRYPOINTS",
-                                   "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS" };
+                                   "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE" };
     for (const char *M : Marks) if (J.contains(M)) return true;
     return false;
 }
@@ -318,6 +318,25 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         Out.FaceDistance = 0;
         Out.AnchorKey = Out.Key();
         Out.Meta      = std::move(Meta);
+    }
+
+    //--- ENV / ENV_REMOVE: the process environment is mutation, folded along the chain like the registry. A value
+    //that is not a string is refused here (not skipped at exec, where the same mistake used to have two endings).
+    if (J.contains("ENV"))
+    {
+        if (!J["ENV"].is_object()) return Refuse("node '" + Out.NodeId + "': ENV must be an object (name → value)");
+        for (const auto &[K, V] : J["ENV"].items())
+            if (!V.is_string()) return Refuse("node '" + Out.NodeId + "': ENV." + K + " is " + std::string(V.type_name()) + ", not a string — quote it");
+        Out.Env = J["ENV"];
+    }
+    if (J.contains("ENV_REMOVE"))
+    {
+        if (!J["ENV_REMOVE"].is_array()) return Refuse("node '" + Out.NodeId + "': ENV_REMOVE must be a list of names");
+        for (const auto &V : J["ENV_REMOVE"])
+        {
+            if (!V.is_string() || V.get<std::string>().empty()) return Refuse("node '" + Out.NodeId + "': ENV_REMOVE entries are names (strings)");
+            Out.EnvRemove.push_back(V.get<std::string>());
+        }
     }
 
     //--- ENTRYPOINTS: the node's OWN list. Each entry lowers to the exec block the engine consumes. The node's
@@ -585,6 +604,27 @@ std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const 
         return A->Key() < B->Key();
     });
     return Variants;
+}
+
+void FoldEnv(const NodeIndex &Idx, const std::vector<std::string> &Order, nlohmann::ordered_json &Env, std::vector<std::string> &Remove)
+{
+    if (!Env.is_object()) Env = nlohmann::ordered_json::object();
+    std::vector<std::string> Removed;
+    auto Forget = [&](const std::string &K) { Removed.erase(std::remove(Removed.begin(), Removed.end(), K), Removed.end()); };
+    for (const std::string &Id : Order)
+    {
+        const Node *N = Idx.Find(Id);
+        if (!N) continue;
+        for (const std::string &K : N->EnvRemove)
+        {
+            Env.erase(K);
+            if (std::find(Removed.begin(), Removed.end(), K) == Removed.end()) Removed.push_back(K);
+        }
+        if (N->Env.is_object())
+            for (const auto &[K, V] : N->Env.items()) { Env[K] = V; Forget(K); }
+    }
+    for (const std::string &K : Removed)
+        if (std::find(Remove.begin(), Remove.end(), K) == Remove.end()) Remove.push_back(K);
 }
 
 std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,

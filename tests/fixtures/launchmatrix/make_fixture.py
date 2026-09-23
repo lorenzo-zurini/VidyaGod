@@ -192,8 +192,9 @@ def nodes():
         SECTION = {"Content":        ("LAYERS",   ("FORM", "PATH", "TARGET", "SOURCE", "WHEN", "SUBMOUNTS", "BASE_TARGETS", "COMMENT")),
                    "CustomVar":      ("VARS",     ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
                    "DeclarePersist": ("PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN")),
-                   "DeclareExec":    ("ENTRYPOINTS", ("HOST", "GUEST", "PATH", "ARGS", "ENV", "ENV_REMOVE", "WORKDIR",
+                   "DeclareExec":    ("ENTRYPOINTS", ("HOST", "GUEST", "PATH", "ARGS", "WORKDIR",
                                                       "RUNNER", "CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME"))}
+        # ENV / ENV_REMOVE are NODE sections (the environment folds along the chain) — they pass through in kw.
         t = kw.pop("TYPE", "Group")
         if t in SECTION:
             key, fields = SECTION[t]
@@ -375,7 +376,10 @@ def nodes():
               SCOPE="registry", PATH="HKLM\\Software\\LaunchMatrix")
 
     # ---- Group: payload-less composition --------------------------------------------------------------
-    grp = add(LABEL="lm_group", TYPE="Group", PARENTS=[per])
+    # ENV on a node BENEATH the launchable: the environment folds along the mount, so these reach the process
+    # unless a node above overrides (LM_OVERRIDDEN) or removes (LM_REMOVED_ABOVE) them.
+    grp = add(LABEL="lm_group", TYPE="Group", PARENTS=[per],
+              ENV={"LM_FOLDED": "from-below", "LM_OVERRIDDEN": "below", "LM_REMOVED_ABOVE": "set-below"})
 
     # ---- launchables ----------------------------------------------------------------------------------
     # (1) the whole matrix, on the native runner.
@@ -394,7 +398,8 @@ def nodes():
         WORKDIR="%PrefixRoot%/drive_c/%PackageUID%",
         # A launchable's own ENV, including a %var% reference — the probe prints every LM_* it was given, so
         # this is the end-to-end proof that a game's environment reaches its process.
-        ENV={"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%"}, ENV_REMOVE=["LM_SHOULD_BE_GONE"])
+        ENV={"LM_EXEC_ENV": "arrived", "LM_FROM_VAR": "%lm_derived%", "LM_OVERRIDDEN": "above"},
+        ENV_REMOVE=["LM_SHOULD_BE_GONE", "LM_REMOVED_ABOVE"])
     # (3) THE RUNTIME TWO-HOP CASE. Same runnable closure as lm_run, reached through the chain, and its ENV
     # collides with the OUTER link's on purpose: the game's value must survive, which is a property of the
     # order the environment is assembled in at exec time and is invisible in a plan.
@@ -419,7 +424,8 @@ def nodes():
     # that is never SELECTED — a sibling branch, not a mod for lm_run) do not. None of these touch lm_all /
     # lm_chained / lm_minimal / lm_run_chained: lm_run is not selected there, so nothing is applicable.
     add(LABEL="lm_graft_on", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftdir",
-        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
+        TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on",
+        ENV={"LM_GRAFT_ENV": "grafted"})            # a ticked graft's ENV folds ABOVE the variant's
     add(LABEL="lm_graft_hd", TYPE="Content", PARENTS=["lm_graft_on"], FORM="dir", PATH="grafthd",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on")
     add(LABEL="lm_graft_off", TYPE="Content", PARENTS=["lm_run"], FORM="dir", PATH="graftoff",
@@ -442,7 +448,8 @@ def nodes():
         TARGET="%PrefixRoot%/drive_c/%PackageUID%", TOGGLE="on",
         ENTRYPOINTS=[{"LABEL": "lm_graft_entry", "HOST": "linux64",
                       "PATH": "%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh", "ARGS": ["--via-graft-entry"],
-                      "WORKDIR": "%PrefixRoot%/drive_c/%PackageUID%", "ENV": {"LM_EXEC_ENV": "from-the-graft-entry"}}])
+                      "WORKDIR": "%PrefixRoot%/drive_c/%PackageUID%"}],
+        ENV={"LM_EXEC_ENV": "from-the-graft-entry"})   # the graft's own ENV: a node section, folded above lm_run's
 
     add(LABEL="lm_minimal_content", TYPE="Content", PARENTS=[], FORM="zip", PATH="base.zip",
         TARGET="%PrefixRoot%/drive_c/%PackageUID%")

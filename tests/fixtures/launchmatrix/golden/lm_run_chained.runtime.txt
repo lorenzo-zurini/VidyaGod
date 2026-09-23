@@ -6,8 +6,11 @@
   <TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
   LM_EXEC_ENV=game-beats-the-outer-link
+  LM_FOLDED=from-below
   LM_FROM_VAR=hello
   LM_GAME_KEEPS_THIS=survived-the-outer-remove
+  LM_OVERRIDDEN=below
+  LM_REMOVED_ABOVE=set-below
   LM_RUNNER_ENV=set
   LM_RUNNER_ONLY=from-runner
   LM_SHOULD_BE_GONE=runner-set-this

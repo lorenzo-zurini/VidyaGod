@@ -1499,7 +1499,7 @@ void PkgCanvas::drawToolbar()
     {
         struct Grp { const char *Title; std::vector<const char *> Types; };
         static const std::vector<Grp> Groups = {
-            {"Payload",     {"LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "PERSISTS", "VARS"}},
+            {"Payload",     {"LAYERS", "REGEDITS", "FILEEDITS", "PATCHES", "DLLOVERRIDES", "ENV", "PERSISTS", "VARS"}},
             {"Facet",       {"ENTRYPOINTS", "TILE"}},
             {"Composition", {"plain node"}},
         };

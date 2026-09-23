@@ -196,8 +196,9 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     L.NodeId = R->Key(); L.Name = R->NodeId; L.PackagePath = R->BundleDir;   // the link is keyed by the INDEX key: a label may repeat (a received stub beside a local runner)
     L.Executable = E.value("EXECUTABLE", std::string());
     if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
-    if (E.contains("ENV") && E["ENV"].is_object())              L.Env = E["ENV"];
-    if (E.contains("REMOVE_ENV") && E["REMOVE_ENV"].is_array()) for (const auto &X : E["REMOVE_ENV"]) L.RemoveEnv.push_back(std::string(X));
+    //The link's environment is its BUILD's folded ENV: the runner node and everything beneath it (a shared
+    //library chain sets what its runner needs), lowest first — the same fold as the game's mount.
+    ManifestModel::FoldEnv(Idx, ManifestModel::ResolveNodeOrder(Idx, R->Key(), Toggles), L.Env, L.RemoveEnv);
     L.ContentRoot      = E.value("CONTENT_ROOT", std::string());
     L.PrefixGenerate   = E.value("PREFIX_GENERATE", false);
     L.UnifiedRuntime   = E.value("UNIFIED_RUNTIME", false);

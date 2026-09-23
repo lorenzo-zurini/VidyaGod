@@ -5,7 +5,9 @@
   <TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001
 === env (matrix only)
   LM_EXEC_ENV=arrived
+  LM_FOLDED=from-below
   LM_FROM_VAR=hello-beta
+  LM_OVERRIDDEN=above
   LM_RUNNER_ONLY=from-runner
 === mounted tree
   .

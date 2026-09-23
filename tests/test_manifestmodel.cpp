@@ -685,24 +685,25 @@ TEST(validate_flags_cross_layer_case_collision_after_memoization)
     fs::remove_all(Dir);
 }
 
-//ENV is a BAG: composing a variant's ENV over a base's must keep the base's other keys. Previously the whole
-//object was replaced, which deleted them — harmless only while nothing consumed a launchable's ENV.
-// Execution is NOT transitive: the launch exec is the SELECTED entrypoint of the launch node and nothing under
-// it. A version under it (1.16.5 OVER 1.16.4) contributes no exec, no ENV, no args.
+// The entry is a CHOICE of how to run and is replaced whole by a declaration above; the environment is a FACT
+// and folds: v2's own entry does not carry v1's, but the mount's environment carries both nodes' ENV (a bag).
 TEST(exec_is_the_effective_entry_declared_or_inherited)
 {
     NodeIndex Idx;
     ordered_json Old = NodeFixture::Exec("win32", "old.exe");
-    Old["ENTRYPOINTS"][0]["ENV"] = ordered_json{{"FROM_OLD", "1"}};
+    Old["ENV"] = ordered_json{{"FROM_OLD", "1"}};
     AddChain(Idx, "v1", {Old});
     ordered_json New = NodeFixture::Exec("win32", "new.exe");
-    New["ENTRYPOINTS"][0]["ENV"] = ordered_json{{"FROM_NEW", "1"}};
+    New["ENV"] = ordered_json{{"FROM_NEW", "1"}};
     New["ENTRYPOINTS"].push_back(ordered_json{{"LABEL", "Server"}, {"HOST", "win32"}, {"PATH", "srv.exe"}});
     AddChain(Idx, "v2", {New}, {"v1"});
     const Node *V2 = Idx.Find("v2");
     CHECK_EQ(V2->ExecFor("").value("CONTENTPATH", std::string()), std::string("new.exe"));
-    CHECK(!V2->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
+    CHECK(!V2->ExecFor("").contains("ENV"));                                                    // an entry carries no environment
     CHECK_EQ(V2->ExecFor("Server").value("CONTENTPATH", std::string()), std::string("srv.exe"));
+    ordered_json Env; std::vector<std::string> Rm;
+    ManifestModel::FoldEnv(Idx, ManifestModel::ResolveNodeOrder(Idx, "v2", {}), Env, Rm);
+    CHECK(Env.contains("FROM_OLD") && Env.contains("FROM_NEW"));                                // the mount's environment folds
     // The closure still mounts v1 underneath — bytes travel; the entry is REPLACED by v2's own declaration.
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
     CHECK(Contains(Order, "v1") && Order.back() == "v2");
@@ -714,7 +715,39 @@ TEST(exec_is_the_effective_entry_declared_or_inherited)
     CHECK_EQ(V3->EntrySource, std::string("v2"));
     CHECK_EQ(V3->ExecFor("").value("CONTENTPATH", std::string()), std::string("new.exe"));
     CHECK_EQ(V3->ExecFor("Server").value("CONTENTPATH", std::string()), std::string("srv.exe"));
-    CHECK(!V3->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
+}
+
+// The environment is mutation: it folds along the mount, lowest first — a later node wins a name, a later set
+// undoes an earlier remove, a later remove undoes an earlier set; what is removed and never set again is reported.
+TEST(env_folds_along_the_mount_order)
+{
+    NodeIndex Idx;
+    ordered_json Lib = NodeFixture::Content("dir", "lib");
+    Lib["ENV"] = ordered_json{{"A", "lib"}, {"B", "lib"}, {"C", "lib"}};
+    ordered_json Game = NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G"), NodeFixture::Variant("Play")});
+    Game["ENV"] = ordered_json{{"A", "game"}, {"D", "game"}};
+    Game["ENV_REMOVE"] = ordered_json::array({"B", "Z"});
+    ordered_json Mod = NodeFixture::Content("dir", "m");
+    Mod["ENV"] = ordered_json{{"B", "mod"}};                                 // sets what the game removed: a later set wins
+    Mod["ENV_REMOVE"] = ordered_json::array({"D"});                           // removes what the game set: a later remove wins
+    AddChain(Idx, "lib", {Lib});
+    AddChain(Idx, "game", {Game}, {"lib"});
+    AddChain(Idx, "mod", {Mod}, {"game"});
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK_EQ(Idx.Find("game")->EnvRemove.size(), (size_t)2);
+    ordered_json Env; std::vector<std::string> Remove;
+    ManifestModel::FoldEnv(Idx, {"lib", "game", "mod"}, Env, Remove);
+    CHECK_EQ(Env.value("A", std::string()), std::string("game"));            // later wins
+    CHECK_EQ(Env.value("B", std::string()), std::string("mod"));             // removed by the game, set again by the mod
+    CHECK_EQ(Env.value("C", std::string()), std::string("lib"));             // untouched from below
+    CHECK(!Env.contains("D"));                                                // set by the game, removed by the mod
+    CHECK(std::find(Remove.begin(), Remove.end(), "D") != Remove.end());
+    CHECK(std::find(Remove.begin(), Remove.end(), "Z") != Remove.end());     // removed, never set: reported for the host env
+    CHECK(std::find(Remove.begin(), Remove.end(), "B") == Remove.end());     // set again after the remove: not a removal
+    // a non-string value is refused at parse, never skipped at exec
+    Node N; ordered_json Bad = NodeFixture::Content("dir", "x"); Bad["ENV"] = ordered_json{{"N", 5}};
+    ManifestModel::ParseNode(Bad, {}, {}, N);                                 // stays indexed (referrers must not dangle)…
+    CHECK(!N.LowerError.empty() && N.Env.empty());                            // …but malformed: no environment, an error
 }
 
 // TILE.META is free-form (and foreign on a received block): it must not overwrite the tile's own validated fields.

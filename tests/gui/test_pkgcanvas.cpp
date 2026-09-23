@@ -478,9 +478,11 @@ private slots:
                     }
 
         const auto ex = keys("ENTRYPOINTS");
-        for (const char *k : {"HOST","GUEST","PATH","ARGS","ENV","ENV_REMOVE","CONTENT_ROOT",
+        for (const char *k : {"HOST","GUEST","PATH","ARGS","CONTENT_ROOT",
                               "PREFIX_GENERATE","UNIFIED_RUNTIME","RUNNER"})
             QVERIFY2(has(ex, k), k);
+        QVERIFY2(!has(ex, "ENV") && !has(ex, "ENV_REMOVE"), "the environment is a node section, not an entry field");
+        for (const char *k : {"ENV", "ENV_REMOVE"}) QVERIFY2(has(keys("ENV"), k), k);
 
         QVERIFY(has(keys("FILEEDITS"), "WHEN"));
         for (const char *k : {"UID","TITLE","COVER","META"}) QVERIFY2(has(keys("TILE"), k), k);
@@ -2552,7 +2554,9 @@ private slots:
         // The height estimate agrees with the short form those entries actually draw as.
         const float Est = Canvas->graph().Nodes[(size_t)N].Height;
         const float Drawn = ImNodes::GetNodeDimensions(N).y;
-        QVERIFY2(Est >= Drawn && Est - Drawn < 120.0f,
+        //The slack is the "node options" block counted as though open (five rows: toggle, variant, recommended,
+        //when, NOT list) — 95px on a node that keeps it closed — plus the short-form entries' own margin.
+        QVERIFY2(Est >= Drawn && Est - Drawn < 160.0f,
                  qPrintable(QString("a node of malformed entries is drawn %1px and estimated %2px")
                                 .arg(Drawn).arg(Est)));
     }

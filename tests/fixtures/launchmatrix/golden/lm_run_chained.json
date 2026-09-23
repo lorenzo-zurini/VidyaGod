@@ -93,7 +93,7 @@
       ],
       "Host": "linux64",
       "Native": false,
-      "NodeId": "baguqeeracsk5azbbd4un67ppl4kc735trwmo7nw5bcsyhtmxarmgluqqcoqa"
+      "NodeId": "baguqeerafh3ogny4vdlkz3x6ihb2druditmajmlwt6yesosjcbfvr4csriwa"
     },
     {
       "Executable": "/bin/sh",
@@ -102,13 +102,16 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "baguqeeragshkqllr66yda5ssb4ghcfq3pafraitll7d2ubkubpwyswzrhq4q"
+      "NodeId": "baguqeerao6hwt2a5bltaftwjbwo2wenrnjhypth4tbdrbohc6wvdbi6cjgca"
     }
   ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "game-beats-the-outer-link",
+    "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_text%",
     "LM_GAME_KEEPS_THIS": "survived-the-outer-remove",
+    "LM_OVERRIDDEN": "below",
+    "LM_REMOVED_ABOVE": "set-below",
     "LM_RUNNER_ENV": "set"
   },
   "RunnerExecutable": "%RunnerMount%/runner/fakerunner.sh",

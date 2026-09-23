@@ -226,16 +226,22 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     if (Launch->Layers.is_array() && !Launch->Layers.empty())
     { Components.push_back({{"COMPONENTID", LaunchId + "__self"}, {"SUBCOMPONENTS", AbsLayers(Launch)}}); CP.Recipe.push_back(LaunchId + "__self"); }
 
+    std::vector<std::string> MountOrder = BaseOrder;   // every node the mount is made of, lowest first — the fold order
+
     //GRAFTS — the selected nodes that are OVER this title without being in anybody's list — mount ABOVE the
     //launchable's own closure (later component = higher priority), in instance precedence. Scope: never a
     //RECEIVED browse stub (a friend's node, not hydrated) — only nodes of our own tree.
     for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchId, CP.ModuleStates, BaseOrder, CP.GraftPrecedence,
                                                                   [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
     {
+        MountOrder.push_back(Id);
         const Node *N = Idx.Find(Id);
         if (!N) continue;
         AddComponent(N);
     }
+    //The environment is mutation and folds like the registry: every node of the mount, lowest first, the
+    //grafts above. What comes out is THE GAME's environment — merged over the runner boundary's at exec.
+    ManifestModel::FoldEnv(Idx, MountOrder, CP.LaunchEnv, CP.LaunchRemoveEnv);
 
     //The internal component pool the generic iterators (BuildSubComponentsArray/ResolveCustomVariables/
     //DerivePersistence/BuildDefaultData) consume — built from nodes, never authored or read from disk.
