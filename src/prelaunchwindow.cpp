@@ -50,8 +50,12 @@ PreLaunchWindow::PreLaunchWindow(
     setMinimumSize(800, 600);
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // Initial variant = the first in the group (PresentableGroups put RECOMMENDED first).
+    // Initial variant = the RECOMMENDED one anywhere in the group (the main's tile comes first in the group so the
+    // card is named after it, but the recommended edition may be an expansion: The Conquerors over Age of Kings),
+    // else the first.
     if (!this->GroupNodeIds.empty()) LaunchNodeId = this->GroupNodeIds.front();
+    for (const std::string& Id : this->GroupNodeIds)
+        if (const Node* N = Index ? Index->Find(Id) : nullptr; N && N->Recommended) { LaunchNodeId = Id; break; }
     if (const Node* L = CurrentLaunch()) { BundleDir = L->BundleDir.string(); PackageUID = L->Uid; }
 
     // ----- Layout: cover (left) | controls+console (right) -----

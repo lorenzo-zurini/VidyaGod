@@ -1359,15 +1359,10 @@ std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
         if (N.IsLaunchable() && N.Presentable())
             Groups[N.GameKey()].push_back(&N);
 
+    //Within a card: the main's tile first (it names the card), RECOMMENDED first among those, then the children
+    //(expansions: a different tile OVER the main) in chain order — nesting derived from OVER, never declared.
     std::vector<std::vector<const Node*>> Out;
-    for (auto &[K, V] : Groups)
-    {
-        std::sort(V.begin(), V.end(), [](const Node *A, const Node *B){
-            if (A->Recommended != B->Recommended) return A->Recommended;     // recommended edition first
-            return A->NodeId < B->NodeId;
-        });
-        Out.push_back(std::move(V));
-    }
+    for (auto &[K, V] : Groups) Out.push_back(ManifestModel::OrderVariants(Idx, std::move(V)));
     auto Title = [](const Node *N){ return N->Meta.is_object() ? N->Meta.value("TITLE", N->NodeId) : N->NodeId; };
     std::sort(Out.begin(), Out.end(), [&](const std::vector<const Node*> &A, const std::vector<const Node*> &B){
         return Title(A.front()) < Title(B.front());

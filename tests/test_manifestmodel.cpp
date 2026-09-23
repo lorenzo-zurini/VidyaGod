@@ -437,24 +437,42 @@ TEST(validate_errors_on_a_tile_with_no_uid)
     CHECK(!AnyContains(E2, "no UID"));
 }
 
-// One UID = one card. Two launchables carrying the same UID must agree on TITLE/COVER (warned), a PARENTUID
-// names a tile the library has (warned), and never its own UID (error).
-TEST(validate_lints_tile_agreement_and_parentuid)
+// One UID = one card, and the nesting INSIDE the card is derived from the chain, never declared: the main is
+// the launchable OVER no other of its UID; a different tile OVER it is a child (an expansion); the same tile OVER
+// it is a variant. The card reads its title off the front of the ordered group; the recommended edition may be
+// a child. Two mains in one UID (two independent installs) is legitimate and merely noted.
+TEST(card_nesting_is_derived_from_the_chain)
 {
     NodeIndex Idx;
-    AddChain(Idx, "a", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Tile("1", "Game")})});
-    AddChain(Idx, "b", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Tile("1", "Other Title")})});
-    ordered_json Exp = NodeFixture::Merge({NodeFixture::Exec("win32", "x.exe"), NodeFixture::Tile("2", "Expansion")});
-    Exp["TILE"]["PARENTUID"] = "nope";
-    AddChain(Idx, "exp", {Exp});
-    ordered_json Self = NodeFixture::Merge({NodeFixture::Exec("win32", "s.exe"), NodeFixture::Tile("3", "Self")});
-    Self["TILE"]["PARENTUID"] = "3";
-    AddChain(Idx, "self", {Self});
+    ordered_json Aok  = NodeFixture::Merge({NodeFixture::Content("zip", "aok.zip"), NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")});
+    ordered_json Conq = NodeFixture::Merge({NodeFixture::Content("zip", "x1.zip"), NodeFixture::Exec("win32", "x1.exe"), NodeFixture::Tile("749", "The Conquerors")});
+    Conq["ENTRYPOINTS"][0]["RECOMMENDED"] = true;
+    ordered_json Fe   = NodeFixture::Merge({NodeFixture::Content("zip", "fe.zip"), NodeFixture::Exec("win32", "fe.exe"), NodeFixture::Tile("749", "Forgotten Empires")});
+    ordered_json Hd   = NodeFixture::Merge({NodeFixture::Content("zip", "hd.zip"), NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")});   // same tile = a variant
+    AddChain(Idx, "aok",  {Aok});
+    AddChain(Idx, "conq", {Conq}, {"aok"});
+    AddChain(Idx, "fe",   {Fe},   {"conq"});
+    AddChain(Idx, "hd",   {Hd},   {"aok"});
+    AddChain(Idx, "mod",  {NodeFixture::Content("dir", "m")}, {"conq"});         // not a launchable: never in the group
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("aok")),  0);
+    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("conq")), 1);
+    CHECK_EQ(ManifestModel::SameTitleDepth(Idx, *Idx.Find("fe")),   2);
+    CHECK(ManifestModel::SameTile(*Idx.Find("hd"), *Idx.Find("aok")));
+    CHECK(!ManifestModel::SameTile(*Idx.Find("conq"), *Idx.Find("aok")));
+    std::vector<const Node *> G{Idx.Find("fe"), Idx.Find("conq"), Idx.Find("hd"), Idx.Find("aok")};
+    const auto O = ManifestModel::OrderVariants(Idx, G);
+    std::vector<std::string> Ids; for (const Node *N : O) Ids.push_back(N->NodeId);
+    CHECK(Ids == (std::vector<std::string>{"aok", "hd", "conq", "fe"}));      // main's tile first, then children in chain order
+    CHECK_EQ(O.front()->Meta.value("TITLE", std::string()), std::string("Age of Kings"));   // the card's name
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(AnyContains(Warnings, "one UID, one title"));
-    CHECK(AnyContains(Warnings, "names no tile"));
-    CHECK(AnyContains(Errors, "PARENTUID is its own UID"));
+    CHECK(!AnyContains(Warnings, "TITLE differs") && !AnyContains(Warnings, "mains"));       // an expansion is not a lint
+    // Two mains: a standalone install sharing the UID but OVER nothing of it.
+    AddChain(Idx, "custom", {NodeFixture::Merge({NodeFixture::Content("zip", "c.zip"), NodeFixture::Exec("win32", "c.exe"), NodeFixture::Tile("749", "Custom Edition")})});
+    ManifestModel::DeriveIdentity(Idx);
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Warnings, "2 mains"));
 }
 
 // Validation names the OVER-specific mistakes: a group with no member in the library, a ref both required and

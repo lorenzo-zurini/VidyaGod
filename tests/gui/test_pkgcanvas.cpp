@@ -483,7 +483,7 @@ private slots:
             QVERIFY2(has(ex, k), k);
 
         QVERIFY(has(keys("FILEEDITS"), "WHEN"));
-        for (const char *k : {"UID","PARENTUID","TITLE","COVER","META"}) QVERIFY2(has(keys("TILE"), k), k);
+        for (const char *k : {"UID","TITLE","COVER","META"}) QVERIFY2(has(keys("TILE"), k), k);
 
         // The envelope: settable on ANY node, so it must not live in a per-section table.
         for (const std::string &t : PkgGraph::AllTypes())

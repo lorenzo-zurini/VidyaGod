@@ -647,7 +647,7 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
 // out onto the node's Meta by ParseNode, because the catalog reads those fields flat.
 TEST(lower_librarayitem_flattens_the_meta_bag)
 {
-    ordered_json N{{"LABEL", "t"}, {"TILE", {{"UID", "749"}, {"TITLE", "AoE2"}, {"PARENTUID", "700"},
+    ordered_json N{{"LABEL", "t"}, {"TILE", {{"UID", "749"}, {"TITLE", "AoE2"},
                    {"COVER", {{"PATH", "c.jpg"}, {"SOURCE", {{"CID", "Qm1"}}}}},
                    {"META", {{"DEVELOPER", "Ensemble"}, {"TGDBID", "12"}}}}}};
     CHECK(Lower(N).empty());                                  // a facet, not a layer
@@ -655,7 +655,6 @@ TEST(lower_librarayitem_flattens_the_meta_bag)
     CHECK(ManifestModel::ParseNode(N, "f.json", "/b", P));
     CHECK(P.OwnTile);
     CHECK_EQ(P.Uid, std::string("749"));
-    CHECK_EQ(P.ParentUid, std::string("700"));
     CHECK_EQ(P.Meta.value("TITLE", std::string()), std::string("AoE2"));
     // COVER travels as a content CID and is what every tile in the library renders.
     CHECK(P.Meta.contains("COVER"));

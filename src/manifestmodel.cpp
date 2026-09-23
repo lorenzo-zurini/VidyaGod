@@ -273,8 +273,6 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         if (!T.is_object()) return Refuse("node '" + Out.NodeId + "': TILE must be an object");
         if (!T.contains("UID") || !T["UID"].is_string() || T["UID"].get<std::string>().empty())
             return Refuse("node '" + Out.NodeId + "': TILE has no UID (it keys saves, settings and the content root)");
-        if (T.contains("PARENTUID") && !T["PARENTUID"].is_string())
-            return Refuse("node '" + Out.NodeId + "': TILE.PARENTUID must be a string");
         if (T.contains("TITLE") && !T["TITLE"].is_string())
             return Refuse("node '" + Out.NodeId + "': TILE.TITLE must be a string");
         //Descriptive catalog fields live in an opaque META bag on disk (the engine names only a handful of
@@ -293,7 +291,6 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         Out.OwnTile   = true;
         Out.Uid       = T["UID"].get<std::string>();
         Out.Uids      = { Out.Uid };
-        Out.ParentUid = T.value("PARENTUID", std::string());
         Out.Meta      = std::move(Meta);
     }
 
@@ -427,7 +424,7 @@ void DeriveIdentity(NodeIndex &Idx)
     // any-of group contributes every member's). Memoized in ONE pass (O(N+E)) — a per-node closure walk is O(N²)
     // on a 900-deep Minecraft chain. Meta is the first identity's tile fields (own, else the first inherited tile's),
     // so the picker can show a graft under its game's title/cover.
-    struct G { std::vector<std::string> Uids; nlohmann::ordered_json Meta; std::string ParentUid; bool Done = false; };
+    struct G { std::vector<std::string> Uids; nlohmann::ordered_json Meta; bool Done = false; };
     std::unordered_map<std::string, G> Memo;
     std::function<const G &(const std::string &)> Of = [&](const std::string &Id) -> const G & {
         auto It = Memo.find(Id);
@@ -437,7 +434,7 @@ void DeriveIdentity(NodeIndex &Idx)
         if (!N) return g;
         if (N->OwnTile)
         {
-            g.Uids = { N->Uid }; g.Meta = N->Meta; g.ParentUid = N->ParentUid; g.Done = true;
+            g.Uids = { N->Uid }; g.Meta = N->Meta; g.Done = true;
             return g;
         }
         for (const std::string &P : N->Parents)
@@ -446,7 +443,7 @@ void DeriveIdentity(NodeIndex &Idx)
             const G &pg = Of(P);
             for (const std::string &U : pg.Uids)
                 if (std::find(g.Uids.begin(), g.Uids.end(), U) == g.Uids.end()) g.Uids.push_back(U);
-            if (g.Meta.empty() && !pg.Meta.empty()) { g.Meta = pg.Meta; g.ParentUid = pg.ParentUid; }
+            if (g.Meta.empty() && !pg.Meta.empty()) g.Meta = pg.Meta;
         }
         g.Done = true;
         return g;
@@ -458,8 +455,47 @@ void DeriveIdentity(NodeIndex &Idx)
         N.Uids      = g.Uids;
         N.Uid       = g.Uids.empty() ? std::string() : g.Uids.front();
         N.Meta      = g.Meta;
-        N.ParentUid = g.ParentUid;
     }
+}
+
+static std::unordered_set<std::string> Reachable(const NodeIndex &Idx, const std::string &Start);
+
+int SameTitleDepth(const NodeIndex &Idx, const Node &N)
+{
+    int D = 0;
+    for (const std::string &Id : Reachable(Idx, N.Key()))
+    {
+        if (Id == N.Key()) continue;
+        const Node *P = Idx.Find(Id);
+        if (P && P->IsLaunchable() && P->OwnTile && P->Uid == N.Uid) ++D;
+    }
+    return D;
+}
+
+bool SameTile(const Node &A, const Node &B)
+{
+    auto F = [](const Node &N, const char *K) { return N.Meta.is_object() && N.Meta.contains(K) ? N.Meta[K] : nlohmann::ordered_json(); };
+    return F(A, "TITLE") == F(B, "TITLE") && F(A, "COVER") == F(B, "COVER");
+}
+
+std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Group)
+{
+    if (Group.empty()) return Group;
+    std::map<const Node *, int> Depth;
+    for (const Node *N : Group) Depth[N] = SameTitleDepth(Idx, *N);
+    //The main: shallowest, ties by label — the one card-naming choice that has to be deterministic.
+    const Node *Main = *std::min_element(Group.begin(), Group.end(), [&](const Node *A, const Node *B) {
+        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];
+        return A->NodeId < B->NodeId;
+    });
+    std::stable_sort(Group.begin(), Group.end(), [&](const Node *A, const Node *B) {
+        const bool Ta = SameTile(*A, *Main), Tb = SameTile(*B, *Main);
+        if (Ta != Tb) return Ta;                                   // the main's own tile first: it names the card
+        if (!Ta && Depth[A] != Depth[B]) return Depth[A] < Depth[B];   // children in chain order
+        if (A->Recommended != B->Recommended) return A->Recommended;    // recommended edition first
+        return A->NodeId < B->NodeId;
+    });
+    return Group;
 }
 
 //The one place the CNF is evaluated for CLOSURE building. Returns the members of a requirement that are kept,
@@ -1337,30 +1373,22 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             Warnings.push_back(Tag + ": launchable has no identity (no TILE of its own and none reachable through OVER) — it appears under no tile");
     }
 
-    //----- TILE lint: every node of one UID agrees on TITLE/COVER (the launcher shows one card per UID and reads
-    //the fields off any of its nodes); PARENTUID names a UID some node carries. -----
+    //----- TILE lint: a UID with several MAINS (launchables of one UID none of which is OVER another) shows more
+    //than one top-level entry on its card — legitimate for two independent installs, worth a word. A different
+    //TITLE/COVER under the main is an expansion by construction, never a mistake. -----
     {
-        std::map<std::string, const Node *> FirstOf;
-        std::set<std::string> AllUids;
-        for (const auto &[Id, N] : Idx.Nodes) if (N.OwnTile) AllUids.insert(N.Uid);
-        for (const auto &[Id, N] : Idx.Nodes)
+        std::map<std::string, std::vector<const Node *>> ByUid;
+        for (const auto &[Id, N] : Idx.Nodes) if (N.IsLaunchable() && N.OwnTile) ByUid[N.Uid].push_back(&N);
+        for (const auto &[Uid, Ns] : ByUid)
         {
-            if (!N.OwnTile) continue;
-            auto It = FirstOf.find(N.Uid);
-            if (It == FirstOf.end()) { FirstOf[N.Uid] = &N; }
-            else if (OnlyNodes == nullptr || OnlyNodes->count(Id))
+            std::vector<std::string> Mains;
+            for (const Node *N : Ns)
+                if (SameTitleDepth(Idx, *N) == 0 && (OnlyNodes == nullptr || OnlyNodes->count(N->Key()))) Mains.push_back(N->NodeId);
+            if (Mains.size() > 1)
             {
-                const Node &F = *It->second;
-                if (F.Meta.value("TITLE", std::string()) != N.Meta.value("TITLE", std::string()))
-                    Warnings.push_back("node '" + Id + "': TILE UID '" + N.Uid + "' TITLE differs from node '" + F.Key() + "' ('"
-                                       + N.Meta.value("TITLE", std::string()) + "' vs '" + F.Meta.value("TITLE", std::string()) + "') — one UID, one title");
-                if (F.Meta.contains("COVER") && N.Meta.contains("COVER") && F.Meta["COVER"] != N.Meta["COVER"])
-                    Warnings.push_back("node '" + Id + "': TILE UID '" + N.Uid + "' COVER differs from node '" + F.Key() + "' — one UID, one cover");
+                std::string List; for (const auto &M : Mains) List += (List.empty() ? "" : ", ") + M;
+                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " mains (launchables OVER no other of this UID: " + List + ") — the card shows each at top level");
             }
-            if (!N.ParentUid.empty() && !AllUids.count(N.ParentUid) && (OnlyNodes == nullptr || OnlyNodes->count(Id)))
-                Warnings.push_back("node '" + Id + "': TILE PARENTUID '" + N.ParentUid + "' names no tile in the library");
-            if (!N.ParentUid.empty() && N.ParentUid == N.Uid)
-                Errors.push_back("node '" + Id + "': TILE PARENTUID is its own UID");
         }
     }
 

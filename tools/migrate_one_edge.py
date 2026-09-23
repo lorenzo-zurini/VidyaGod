@@ -3,7 +3,7 @@
 
 One node kind, one edge:
   node = CID LABEL WHEN TOGGLE PUBLISH POS COMMENT
-       + TILE {UID, PARENTUID?, TITLE, COVER, META}      (identity — on launchables)
+       + TILE {UID, TITLE, COVER, META}                  (identity — on launchables)
        + ENTRYPOINTS [{LABEL, HOST, GUEST?, PATH, ARGS, ENV, ENV_REMOVE, WORKDIR, RECOMMENDED, RUNNER, ...}]
        + LAYERS | PATCHES | FILEEDITS | REGEDITS | DLLOVERRIDES | VARS | PERSISTS   (payload, any subset)
        + OVER [ ref | [ref, ...] | {"NOT": ref} ]        (the edge)

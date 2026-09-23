@@ -515,7 +515,6 @@ std::vector<Field> MakeFields(const std::string &Type)
             {"TILE", "Tile", FieldKind::Object, "", {}, {
                 {"TITLE",     "Title",     FieldKind::Text,     "the library tile's name", {}, {}},
                 {"UID",       "UID",       FieldKind::Text,     "stable id - keys saves and settings; one UID = one card", {}, {}},
-                {"PARENTUID", "Parent UID",FieldKind::Text,     "the main game this nests under (expansions)", {}, {}},
                 {"COVER",     "Cover",     FieldKind::Cover,    "", {}, {}},
                 {"META",      "Meta",      FieldKind::KeyValue, "catalog metadata", {}, {}},
             }},

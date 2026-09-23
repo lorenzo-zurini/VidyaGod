@@ -102,14 +102,13 @@ struct Node {
     nlohmann::ordered_json Exec;             // the default entrypoint lowered: CONTENTPATH/EXEARGS/PLATFORM/… or
                                              // EXECUTABLE/ARGS/HOST/GUEST/… for a runner (see NodeLower::LowerEntrypoint)
 
-    // ---- TILE / identity. A launchable carries its own TILE {UID, PARENTUID?, TITLE, COVER, META…}; every other node
+    // ---- TILE / identity. A launchable carries its own TILE {UID, TITLE, COVER, META…}; every other node
     // inherits identity from what it is OVER. Uids = every UID this node belongs to (a mod for two games has two);
     // Uid = the first (its grouping key); Meta = the tile fields, flat (own, else the first inherited tile's). ----
     bool OwnTile = false;                    // carries a TILE of its own
     std::string Uid;                         // primary identity (own TILE.UID, else the first inherited)
     std::vector<std::string> Uids;           // every identity, in OVER order
-    std::string ParentUid;                   // TILE.PARENTUID — the main game this title nests under ("" = a main game)
-    nlohmann::ordered_json Meta;             // tile metadata, flat (TITLE/COVER/UID/PARENTUID + META fields)
+    nlohmann::ordered_json Meta;             // tile metadata, flat (TITLE/COVER/UID + META fields)
 
     bool Optional = false;                   // TOGGLE present ⇒ user-toggleable
     bool Default  = true;                    // TOGGLE value ("on"/"off") — the author's default state
@@ -186,9 +185,19 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
 
 // Post-parse pass over a fully-assembled index: derive every node's identity. A node with its own TILE is its own
 // identity; every other node inherits the union of its positive OVER requirements' identities (memoized, O(N+E)).
-// Sets Uid/Uids/Meta/ParentUid so the catalog/library group nodes under tiles BY UID. Called by BuildNodeIndex and
+// Sets Uid/Uids/Meta so the catalog/library group nodes under tiles BY UID. Called by BuildNodeIndex and
 // must be re-run by any caller that assembles an index manually (ScanBundleNodes).
 void DeriveIdentity(NodeIndex &Idx);
+
+// Nesting inside one card is DERIVED from the chain, never declared. Among the launchables of one UID, the MAIN is
+// the one that is OVER no other launchable of that UID; a launchable OVER the main that carries a different
+// TITLE or COVER is a CHILD (an expansion: The Conquerors OVER Age of Kings); one with the same tile is a VARIANT
+// (an edition, a version — Minecraft's 903). SameTitleDepth = how many launchables of its own UID a launchable is
+// OVER (0 = a main). OrderVariants puts the main's tile first (RECOMMENDED, then label), then the children in
+// chain order — so a card reads its TITLE/COVER off the front.
+int SameTitleDepth(const NodeIndex &Idx, const Node &N);
+bool SameTile(const Node &A, const Node &B);
+std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Group);
 
 // Resolve the load-ordered node closure for launching LaunchNodeId: walk OVER across the global graph, keeping
 // plain requirements always (a TOGGLE'd one per Toggles, else its DEFAULT), choosing ONE member per any-of group
