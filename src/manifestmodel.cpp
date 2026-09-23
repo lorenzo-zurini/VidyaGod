@@ -2045,7 +2045,7 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
         if (!LN.IsVariant()) continue;
         std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
 
-        for (const std::string &Id : ResolveNodeOrder(Idx, LN.NodeId, {}))
+        for (const std::string &Id : ResolveNodeOrder(Idx, LN.Key(), {}))
         {
             const Node *N = Idx.Find(Id);
             if (!N || N->IsRunner() || !N->Layers.is_array()) continue;

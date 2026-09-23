@@ -399,7 +399,7 @@ void PreLaunchWindow::RenderChainCombos()
         {
             QSignalBlocker B(Combo);
             for (const Node* R : PackageCatalog::CandidateRunners(*Index, Input))
-                Combo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->NodeId));
+                Combo->addItem(QString::fromStdString(R->NodeId), QString::fromStdString(R->Key()));   // shown by label, keyed by the index key
             // The native terminal step also offers the built-in passthrough (used when no native runner is authored).
             if (Input == Machine)
                 Combo->addItem("native (passthrough)", QString::fromStdString(LaunchResolver::kNativeTerminalId));
@@ -663,7 +663,8 @@ void PreLaunchWindow::RebuildCustomVarPickers()
 
     // The enabled content-node closure (package), then every chain runner's content closure — both contribute knobs.
     std::vector<std::pair<std::string, bool>> Nodes;   // (node id, isRunnerKnob)
-    for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, LaunchNodeId, Toggles)) Nodes.push_back({Id, false});
+    const Node* CL = CurrentLaunch();
+    for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, CL ? CL->Key() : LaunchNodeId, Toggles)) Nodes.push_back({Id, false});
     for (const std::string& Rid : CurrentChain)
     {
         if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;

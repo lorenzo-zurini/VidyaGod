@@ -264,6 +264,32 @@ private slots:
         QVERIFY(std::filesystem::exists(Installed / "game.zip"));
     }
 
+    // Receive-off erases the peer's snapshot record, but a closure pass in flight can still land one late block into
+    // the dir it just swept. The dirs a drop swept are remembered per peer, so a second drop after the record is
+    // gone sweeps them again instead of no-oping on the missing record and leaving a ghost stub dir.
+    void a_late_stub_after_receive_off_is_swept_again()
+    {
+        QTemporaryDir d; QVERIFY(d.isValid());
+        QDir appDir(d.path());
+        json cfg = json{{"Settings", json::object()}};
+        AppModel m(&cfg, &appDir);
+        const QString peer = "12D3KooWSeeder";
+        const std::string P = peer.toStdString();
+        m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
+        const auto Plan = PackageCatalog::PlanReceivedFetches(cfg, P.substr(P.size() - 8), cfg["FriendLibraries"][P]);
+        QVERIFY(!Plan.empty());
+        const std::filesystem::path Pkg = std::filesystem::path(Plan.front().Dest).parent_path();
+        std::filesystem::create_directories(Pkg);
+        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        m.stopReceivingFromFriend(peer);                                     // record erased, stubs swept
+        QVERIFY(!std::filesystem::exists(Pkg));
+        QVERIFY(!cfg["FriendLibraries"].contains(P));
+        std::filesystem::create_directories(Pkg);                            // a late block from the in-flight pass
+        { std::ofstream S(Plan.front().Dest); S << "{}"; }
+        m.stopReceivingFromFriend(peer);                                     // the re-drop path with NO record
+        QVERIFY(!std::filesystem::exists(Pkg));
+    }
+
     void friend_snapshot_replaces_wholesale_and_dedups()
     {
         QTemporaryDir d; QVERIFY(d.isValid());

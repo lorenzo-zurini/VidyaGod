@@ -6,6 +6,7 @@
 
 #include <utility>
 #include <atomic>
+#include <filesystem>
 #include <set>
 #include <map>
 #include <string>
@@ -192,7 +193,8 @@ private:
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
     std::atomic<unsigned>          FriendClosureGen{0};             // bumped by dropReceivedStubs: an older pass stops at its next root
-    bool                           FriendStubsDirty = false;        // stubs dropped while a pass ran → drop again when it ends
+    std::set<std::string>          FriendStubsDirtyPeers;           // peers whose stubs were dropped while a pass ran → drop again when it ends
+    std::map<std::string, std::set<std::filesystem::path>> DroppedStubDirs;   // peer → the lib dirs last dropped: swept again after the snapshot is gone
 };
 
 #endif // APPMODEL_H

@@ -1409,7 +1409,7 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
     // Ships its own build (any VFS layer in its closure — local PATH or a remote CID) → must be imported (build
     // hydrated + DEFPREFIX). Otherwise it's a PATH runner → usable iff its executable resolves on this system.
     bool ShipsBuild = false;
-    ManifestModel::ForEachClosureNode(Idx, RunnerNodeId, {}, [&](const Node &N) {
+    ManifestModel::ForEachClosureNode(Idx, R->Key(), {}, [&](const Node &N) {
         if (ShipsBuild || !N.Layers.is_array()) return;
         for (const auto &L : N.Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; return; }
     });
@@ -1449,7 +1449,7 @@ std::vector<const Node*> CandidateRunners(const NodeIndex &Idx, const std::strin
         if (!N.IsRunner()) continue;
         bool Serves = false;
         for (const auto &G : N.GuestPlatform) if (G == InputPlatform) { Serves = true; break; }
-        if (Serves && RunnerInstalled(Idx, N.NodeId)) Out.push_back(&N);
+        if (Serves && RunnerInstalled(Idx, N.Key())) Out.push_back(&N);
     }
     return Out;   // std::map iteration = sorted by node id
 }
@@ -1465,9 +1465,11 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
     //toggles, same scope as the launch): a ticked mod's content is part of what the launch mounts, so a hydrate
     //fetches it too. A dehydrate / hydration verdict never walks grafts: a graft is shared across every variant
     //of its title, so deleting or dropping its bytes with one variant would break the others.
-    std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(Idx, LaunchNodeId, Toggles);
+    const Node *LN = Idx.Find(LaunchNodeId);
+    const std::string LaunchKey = LN ? LN->Key() : LaunchNodeId;   // walk by the index key, never by a label that may repeat
+    std::vector<std::string> Order = ManifestModel::ResolveNodeOrder(Idx, LaunchKey, Toggles);
     if (WithGrafts)
-        for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchNodeId, Toggles, Order, {},
+        for (const std::string &Id : ManifestModel::ResolveGraftOrder(Idx, LaunchKey, Toggles, Order, {},
                                                                       [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
             Order.push_back(Id);
     for (const std::string &Id : Order)

@@ -696,23 +696,30 @@ void AppModel::dropReceivedStubs(const std::string & P)
     // away or is replaced, the stubs go with it — otherwise every publish they ever made stays on disk beside the
     // current one (three "v1.30.4" of three generations, each indexed, each a card). Plans from the snapshot we hold
     // to name this peer's dirs and CIDs, cancels what we enqueued for them, removes the dirs.
-    if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
-        || !(*Config)["FriendLibraries"].contains(P) || !(*Config)["FriendLibraries"][P].is_object()) return;
     // A closure pass in flight walks a SNAPSHOT of the index taken before this drop and would write the old
     // generation's blocks right back into the dirs removed here. Bump the generation so the pass stops at its next
     // root, and remember to drop once more when it ends (the root it was on may have landed after the rm).
     ++FriendClosureGen;
-    if (FriendClosureRunning) FriendStubsDirty = true;
-    std::string Nick;
-    for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
-    if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+    if (FriendClosureRunning) FriendStubsDirtyPeers.insert(P);
+    // The dirs come from the snapshot we hold — or, once that is gone (receive-off / forget erased it), from what
+    // this peer's last drop swept: a late block from the pass can still recreate a dir after the record is gone.
     std::set<std::filesystem::path> LibDirs;   // CATALOG/<Nick> - <Lib> subtrees (pure browse stubs)
-    for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+    if (Config->contains("FriendLibraries") && (*Config)["FriendLibraries"].is_object()
+        && (*Config)["FriendLibraries"].contains(P) && (*Config)["FriendLibraries"][P].is_object())
     {
-        LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
-        if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
-        IpfsWrapper::CancelDownload(T.Cid);
+        std::string Nick;
+        for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
+        if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
+        for (const auto & T : PackageCatalog::PlanReceivedFetches(*Config, Nick, (*Config)["FriendLibraries"][P]))
+        {
+            LibDirs.insert(std::filesystem::path(T.Dest).parent_path().parent_path());   // …/<Nick> - <Lib>
+            if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
+            IpfsWrapper::CancelDownload(T.Cid);
+        }
     }
+    else if (const auto It = DroppedStubDirs.find(P); It != DroppedStubDirs.end()) LibDirs = It->second;
+    if (LibDirs.empty()) return;
+    DroppedStubDirs[P] = LibDirs;
     // A received package that was INSTALLED is fetched into the same CATALOG/<Nick> - <Lib>/<Pkg> dir the stubs
     // live in (there is no adopt-to-LIBRARY step), so the dir is removed per PACKAGE and only when it holds nothing
     // but node files: a dir with content is an install and stays, whatever the snapshot says. Its stale node files
@@ -959,12 +966,14 @@ void AppModel::completeReceivedClosures()
         },
         [this]{
             FriendClosureRunning = false;
-            if (FriendStubsDirty)
-            {   // a drop happened mid-pass: what the pass wrote after it is the old generation's — drop again, re-enqueue
-                if (Config->contains("ReceiveFrom") && (*Config)["ReceiveFrom"].is_array())
-                    for (const auto & X : (*Config)["ReceiveFrom"]) if (X.is_string()) dropReceivedStubs(X.get<std::string>());
-                FriendStubsDirty = false;
-                reconcileReceivedLibraries();   // the CURRENT generation's roots, into the now-clean dirs
+            if (!FriendStubsDirtyPeers.empty())
+            {   // a drop happened mid-pass: what the pass wrote after it is the old generation's — drop those peers'
+                // stubs again (a stopped peer's dirs are remembered, so this works after its record is gone), re-enqueue
+                const std::set<std::string> Peers = std::move(FriendStubsDirtyPeers);
+                FriendStubsDirtyPeers.clear();
+                for (const std::string & P : Peers) dropReceivedStubs(P);
+                FriendStubsDirtyPeers.clear();   // the drops above ran with no pass in flight: nothing new to remember
+                reconcileReceivedLibraries();    // the CURRENT generation's roots, into the now-clean dirs
             }
             rebuildCatalog();           // the landed closure blocks are ordinary tree nodes, marked Received by the scan
             emit friendCatalogChanged();

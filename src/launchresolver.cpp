@@ -199,7 +199,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
         //CustomVar resolution (RunnerComponents/RunnerRecipe) and the UNIFIED fold.
         nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
         std::vector<std::string> RunnerBuildIds;
-        ManifestModel::ForEachClosureNode(Idx, RunnerNode->NodeId, CP.ModuleStates, [&](const Node &N) {
+        ManifestModel::ForEachClosureNode(Idx, RunnerNode->Key(), CP.ModuleStates, [&](const Node &N) {
             RunnerComps.push_back({{"COMPONENTID", N.NodeId}, {"SUBCOMPONENTS", AbsLayers(&N)}});
             RunnerBuildIds.push_back(N.NodeId);
         });

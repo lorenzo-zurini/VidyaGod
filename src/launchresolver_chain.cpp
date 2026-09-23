@@ -154,7 +154,7 @@ bool FindBridge(const std::string &Start, const std::string &Goal, const std::ve
             const std::string &Next = R->HostPlatform;
             if (Visited.count(Next)) continue;
             Visited.insert(Next);
-            Prev[Next] = {R->NodeId, Cur};
+            Prev[Next] = {R->Key(), Cur};
             if (Next == Goal) { Found = true; break; }
             Q.push(Next);
         }
@@ -193,7 +193,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     if (!R) { L.NodeId = Id; L.Name = Id; L.HostPlatform = Machine; L.GuestPlatform = {Machine}; return L; }
 
     const nlohmann::ordered_json E = R->Exec.is_object() ? R->Exec : nlohmann::ordered_json::object();
-    L.NodeId = R->NodeId; L.Name = R->NodeId; L.PackagePath = R->BundleDir;
+    L.NodeId = R->Key(); L.Name = R->NodeId; L.PackagePath = R->BundleDir;   // the link is keyed by the INDEX key: a label may repeat (a received stub beside a local runner)
     L.Executable = E.value("EXECUTABLE", std::string());
     if (E.contains("ARGS") && E["ARGS"].is_array())             for (const auto &X : E["ARGS"])       L.Args.push_back(std::string(X));
     if (E.contains("ENV") && E["ENV"].is_object())              L.Env = E["ENV"];
@@ -284,7 +284,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
             const bool LastIsTerminal = (Last == kNativeTerminalId) ||
                 (LastR && LastR->HostPlatform == Machine && RunnerServes(LastR, Machine));
             if (!LastIsTerminal)
-            { const Node *T = PickNativeTerminal(Runners, Machine); Pinned.push_back(T ? T->NodeId : std::string(kNativeTerminalId)); }
+            { const Node *T = PickNativeTerminal(Runners, Machine); Pinned.push_back(T ? T->Key() : std::string(kNativeTerminalId)); }
             return Pinned;
         }
     }
@@ -293,7 +293,7 @@ std::vector<std::string> LaunchResolver::ResolveChainIds(const NodeIndex &Idx, c
     std::vector<std::string> Bridge;
     if (!FindBridge(Host, Machine, Runners, Bridge)) return {};   // unreachable on this machine
     const Node *Term = PickNativeTerminal(Runners, Machine);
-    Bridge.push_back(Term ? Term->NodeId : std::string(kNativeTerminalId));
+    Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
     return Bridge;
 }
 
@@ -307,7 +307,7 @@ std::vector<std::string> LaunchResolver::ResolveChainTail(const NodeIndex &Idx, 
     std::vector<std::string> Bridge;
     if (!FindBridge(FromPlatform, Machine, Runners, Bridge)) return {};          // FromPlatform can't reach the machine
     const Node *Term = PickNativeTerminal(Runners, Machine);
-    Bridge.push_back(Term ? Term->NodeId : std::string(kNativeTerminalId));
+    Bridge.push_back(Term ? Term->Key() : std::string(kNativeTerminalId));
     return Bridge;
 }
 

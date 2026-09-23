@@ -593,6 +593,35 @@ private slots:
         QVERIFY2(!ids.empty() && ids[0] == "protonA", "the chain serves the ENTRY's platform (win32), not the variant's");
     }
 
+    // A label may repeat (a friend's received stub of "proton" beside the local "proton"): every closure walk on the
+    // launch path is keyed by the INDEX key, or the first label match — the stub, sorted first here — is walked
+    // instead of the runner that ships the build.
+    void closure_walks_are_keyed_by_the_index_key_not_the_label()
+    {
+        NodeIndex idx;
+        Node stub = chainRunner("proton", {"nothing"}, kMachine);         // same LABEL, no build, sorts first, serves nothing
+        stub.Cid = "aaa_stub"; stub.Received = true;
+        idx.Nodes["aaa_stub"] = stub;
+        Node local = chainRunner("proton", {"win32"}, kMachine);
+        local.Cid = "zzz_local";
+        local.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "proton.zip"}, {"TARGET", "__build"}} });
+        idx.Nodes["zzz_local"] = local;
+        Node launch = launchNode("game", "win32", {});
+        idx.Nodes["game"] = launch;
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game";
+        const json cfg = json{{"Settings", json::object()}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QVERIFY(!ids.empty());
+        QCOMPARE(ids[0], std::string("zzz_local"));
+        auto chain = LaunchResolver::ResolveRunnerChain(idx, launch, cp, cfg);
+        QVERIFY(!chain.empty());
+        QCOMPARE(chain[0].NodeId, std::string("zzz_local"));                 // the link carries the key…
+        QCOMPARE(chain[0].Name, std::string("proton"));                      // …and shows the label
+        QVERIFY2(chain[0].ShipsBuild, "the LOCAL runner's build is found, not the stub's nothing");
+        QCOMPARE((int)chain[0].Layers.size(), 1);
+    }
+
     // An entry node that is not a SELECTED graft of the launch is refused: its loader would not be on the mount.
     void an_unticked_grafts_entry_is_refused()
     {
