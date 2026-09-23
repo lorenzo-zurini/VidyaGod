@@ -946,14 +946,23 @@ void AppModel::completeReceivedClosures()
     std::vector<std::string> Roots;
     for (const auto & [Key, N] : CatalogIndex.Nodes)
         if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, Key)) Roots.push_back(Key);
-    if (Roots.empty()) return;
+    const bool Packages = PackageCatalog::ReceivedPackagesIncomplete(*Config);   // a manifest naming blocks not yet on disk
+    if (Roots.empty() && !Packages) return;
     FriendClosureRunning = true;
-    LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received root(s)");
+    if (Packages) LogOut("AppModel::completeReceivedClosures", "landing received package(s)");
+    if (!Roots.empty()) LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received node(s)");
     auto Snap = std::make_shared<const NodeIndex>(CatalogIndex);
+    auto Cfg  = std::make_shared<const nlohmann::ordered_json>(*Config);
     const unsigned Gen = FriendClosureGen.load();
     AsyncWork::Run(this,
-        [this, Snap, Roots, Gen]{
+        [this, Snap, Cfg, Roots, Packages, Gen]{
             size_t Ok = 0, Done = 0;
+            if (Packages)
+            {   // the packages first: every node block each manifest names, into the package's dir
+                std::string PErr;
+                if (!PackageCatalog::LandReceivedPackages(*Cfg, &PErr))
+                    LogWarn("AppModel::completeReceivedClosures", "received package(s): " + PErr);
+            }
             for (const std::string & R : Roots)
             {
                 if (FriendClosureGen.load() != Gen)
@@ -980,8 +989,16 @@ void AppModel::completeReceivedClosures()
                 reconcileReceivedLibraries();    // the CURRENT generation's roots, into the now-clean dirs
             }
             rebuildCatalog();           // the landed closure blocks are ordinary tree nodes, marked Received by the scan
+            if (const int Pruned = PackageCatalog::PruneStaleReceived(CatalogIndex, *Config); Pruned > 0)
+            {   // older generations' node files in kept (installed) dirs — gone now that the current ones landed
+                LogOut("AppModel::completeReceivedClosures", "pruned " + std::to_string(Pruned) + " stale received node file(s)");
+                rebuildCatalog();
+            }
             emit friendCatalogChanged();
             if (FriendClosureAgain) { FriendClosureAgain = false; completeReceivedClosures(); }
+            else if (PackageCatalog::ReceivedPackagesIncomplete(*Config)
+                     || [&]{ for (const auto & [K, N] : CatalogIndex.Nodes) if (N.Received && !N.BundleDir.empty() && PackageCatalog::NodeClosureIncomplete(CatalogIndex, K)) return true; return false; }())
+                completeReceivedClosures();   // the packages landed this pass: their closures are the next pass
         });
 }
 
@@ -998,7 +1015,7 @@ void AppModel::publishLibraries()
             if (Cids->empty()) { emit libraryPublishFailed(QString::fromStdString(*Err)); return; }
             (*Config)["PublishedList"] = (*Cfg)["PublishedList"];   // adopt the freshly-written flat list…
             (*Config)["Libraries"]     = (*Cfg)["Libraries"];       // …AND the per-library grouping (drives Share ▾)
-            if (Cfg->contains("PublishedManifest")) (*Config)["PublishedManifest"] = (*Cfg)["PublishedManifest"];   // …and the one-pin manifest
+            Config->erase("PublishedManifest");   // the one-pin library block is gone: packages are the pins
             save();
             pushSeedLevels();
             reRegisterShares();   // re-push every active share with the fresh CIDs (a re-publish can move them)

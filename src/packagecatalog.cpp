@@ -983,123 +983,70 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
         LogWarn("PackageCatalog::PublishLibrary", "could not write minted CIDs back to the working tree: " + WbErr
                 + " — handles left stale; re-run Verify & Publish");
 
-    // Group PUBLISH'd nodes by LIBRARY (the collection dir the package lives in), so sharing is per-library. The share
-    // axis is the author's PUBLISH flag, decoupled from type — so runners (GUEST exec) and libraries (no exec) are
-    // shareable too, not just games. `Libraries` = {libName: [{cid,node,uid,title,tilecid,tilenode}]} — each entry
-    // carries, besides the node-block CID, the metadata a RECEIVER needs to route the block to its FINAL library path
-    // (LIBRARY/<nick> - <lib>/[uid] <title>/<node>.json) BEFORE fetching it, so a received share rides the ordinary
-    // rolling queue straight into the library tree with no intermediary dir and no post-fetch materialize step.
-    // A flat `PublishedList` of bare CIDs stays for convenience. Off-IPFS VidyaGod app data (friend channel).
-    std::map<std::string, std::string> CidToHandle;   // resolve an OVER ref that is already a CID (re-published
-    for (const auto &[H, C] : MR.HandleToCid) CidToHandle[C] = H;   // received package) back to its tree handle
-    // The tile of a PUBLISH'd node: its OWN TILE, else the first TILE reachable through its positive OVER refs (a
-    // graft belongs to its game). Returns the handle of the tile-carrying node ("" if none reachable). Bounded walk.
-    const auto TileHandleOf = [&](const std::string &Start) -> std::string {
-        std::deque<std::string> Q{Start};
-        std::set<std::string> Seen;
-        while (!Q.empty())
-        {
-            std::string H = Q.front(); Q.pop_front();
-            if (!Tree.count(H)) { const auto Rit = CidToHandle.find(H); if (Rit == CidToHandle.end()) continue; H = Rit->second; }
-            if (!Seen.insert(H).second) continue;
-            const nlohmann::ordered_json &D = Tree.at(H);
-            if (D.contains("TILE") && D["TILE"].is_object()) return H;
-            for (const std::string &P : ManifestModel::OverRefs(D)) Q.push_back(P);
-            if (Seen.size() > 100000) break;
-        }
-        return {};
-    };
-    nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
-    nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
+    // SHARING IS PER PACKAGE. Every node of every bundle dir is shared with whoever gets its library — there is no
+    // per-node flag (a forgotten one was an unshared game with nothing anywhere saying so). For each package one
+    // MANIFEST block links every node block of the package — and that is the only manifest there is. The
+    // package manifest is the unit a receiver lands, the unit a pinning service pins (its closure = the package once,
+    // and only a changed package re-pins), and `Libraries` = {lib: [{cid: <package manifest>, pkg: <dir>}]} is what the
+    // share sheet pushes to a friend. Off-IPFS VidyaGod app data (friend channel).
+    std::map<std::string, std::map<std::string, std::vector<std::string>>> ByLibPkg;   // lib → package dir → node cids
     for (const auto &[Handle, Doc] : Tree)
     {
-        if (!(Doc.contains("PUBLISH") && Doc["PUBLISH"].is_boolean() && Doc["PUBLISH"].get<bool>())) continue;   // SHARE axis (guarded: a hostile non-bool PUBLISH must not throw).
-                                                       // Replaces the old "DeclareExec && !GUEST" filter (which
-                                                       // silently excluded runners and no-exec library heads).
+        (void)Doc;
         const auto CidIt = MR.HandleToCid.find(Handle);
         if (CidIt == MR.HandleToCid.end()) continue;   // node was skipped (dangling/bad) — not shareable
-        // A PUBLISH'd node is always safe to share now that its Handle is its CID (identity) — a LABEL is OPTIONAL.
-        // node = the cosmetic display name for the receiver's filename/section; fall back to the fresh CID when there
-        // is none (never a filesystem path — the synthetic-key leak that once forced a mandatory LABEL is gone).
-        const std::string NodeLabel = (Doc.contains("LABEL") && Doc["LABEL"].is_string() && !Doc["LABEL"].get<std::string>().empty())
-                                          ? Doc["LABEL"].get<std::string>() : CidIt->second;
-
-        // The node's tile: its own TILE, or its game's (reached through OVER). The receiver names the package dir
-        // after its UID/TITLE — everything of one title lands in ONE package dir, exactly like the local tree. A
-        // graft whose game is not in the tree (a received mod whose game block hasn't landed) is held out this
-        // round; it re-enters the share list once its game is in the tree.
-        const std::string TileHandle = TileHandleOf(Handle);
-        if (TileHandle.empty() && !Doc.contains("ENTRYPOINTS") && !ManifestModel::OverRefs(Doc).empty())
-        {
-            LogWarn("PackageCatalog::PublishLibrary", "'" + Handle + "' reaches no TILE through OVER — held out of the share list until its game lands");
-            continue;
-        }
-        std::string TileCid;
-        if (!TileHandle.empty() && TileHandle != Handle)
-            if (const auto Tit = MR.HandleToCid.find(TileHandle); Tit != MR.HandleToCid.end()) TileCid = Tit->second;
-
-        std::string Uid = NodeLabel, Title = NodeLabel;   // no tile → the node stands alone under its own LABEL
-        if (!TileHandle.empty())
-        {
-            const nlohmann::ordered_json &T = Tree.at(TileHandle)["TILE"];
-            Uid = (T.contains("UID") && T["UID"].is_string()) ? T["UID"].get<std::string>() : std::string();
-            if (Uid.empty()) Uid = TileHandle;
-            Title = (T.contains("TITLE") && T["TITLE"].is_string()) ? T["TITLE"].get<std::string>() : Uid;
-        }
-        // Bound the emitted title (user-authored, unbounded) at a UTF-8 boundary: the receiver's inbound gate
-        // rejects a WHOLE snapshot over one >512-byte field — silently, at the far end — and its dir segment must
-        // stay under NAME_MAX. 120 bytes is ample for a display title.
-        if (Title.size() > 120)
-        {
-            Title.resize(120);
-            while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
-        }
-
-        std::string LibName = LibraryOf(Dirs[Handle], Root);
-        if (LibName.empty()) LibName = "Library";
-        // pkg = the node's ACTUAL package dir basename: the receiver reproduces the seeder's tree exactly, so a
-        // multi-game package (AoE2: AoK + Conquerors + …) lands as ONE dir and the catalog's by-bundle sibling
-        // grouping ("Other games in this package") survives the wire. uid/title stay for display + legacy fallback.
-        nlohmann::ordered_json E{{"cid", CidIt->second}, {"node", NodeLabel},
-                                 {"pkg", Dirs[Handle].filename().string()},
-                                 {"uid", Uid}, {"title", Title}};
-        if (!TileCid.empty())
-        {
-            // tilenode = the tile's cosmetic LABEL (display / receiver section), NOT its CID handle. Fall back to the
-            // tile CID when it has no LABEL.
-            std::string TileLabel = TileCid;
-            if (Tree.count(TileHandle))
-            {
-                const auto &T = Tree.at(TileHandle);
-                if (T.contains("LABEL") && T["LABEL"].is_string() && !T["LABEL"].get<std::string>().empty())
-                    TileLabel = T["LABEL"].get<std::string>();
-            }
-            E["tilecid"] = TileCid; E["tilenode"] = TileLabel;
-        }
-        Libs[LibName].push_back(std::move(E));
-        Flat.push_back(CidIt->second);
+        std::error_code Ec;
+        const std::filesystem::path Rel = std::filesystem::relative(Dirs[Handle], Root, Ec);
+        std::vector<std::string> Seg;
+        for (const auto &Part : Rel) if (Part != "." && !Part.empty()) Seg.push_back(Part.string());
+        if (Ec || Seg.empty()) continue;
+        const std::string LibName = Seg.size() >= 2 ? Seg[0] : std::string("Library");   // the collection dir
+        const std::string Pkg     = Seg.size() >= 2 ? Seg[1] : Seg[0];                    // the bundle dir under it
+        ByLibPkg[LibName][Pkg].push_back(CidIt->second);
     }
-    // ONE block for the whole share: the library MANIFEST links every published root. A pinning service pins by
-    // hash RECURSIVELY and bills every pin its full closure, so 971 roots pinned one by one are billed 971
-    // closures (1.2 TB for a 63 GB library); the manifest's closure is the library exactly once, and one pin of
-    // it keeps every node block and every content CID reachable through the service's gateway. Not a node: no
-    // share record names it, and a scan would refuse its vocabulary.
+    nlohmann::ordered_json Libs = nlohmann::ordered_json::object();
+    nlohmann::ordered_json Flat = nlohmann::ordered_json::array();
+    size_t PkgCount = 0;
+    for (auto &[LibName, Pkgs] : ByLibPkg)
     {
-        nlohmann::ordered_json Roots = nlohmann::ordered_json::array();
-        for (const auto &C : Flat) Roots.push_back(nlohmann::ordered_json{{"/", C}});
-        nlohmann::ordered_json Manifest{{"VIDYAGOD_LIBRARY_MANIFEST", 1}, {"ROOTS", std::move(Roots)}};
-        std::string MErr;
-        const std::string MCid = IpfsWrapper::DagPut(Manifest.dump(), &MErr);
-        if (MCid.empty()) LogWarn("PackageCatalog::PublishLibrary", "library manifest block not stored: " + MErr);
-        else { Config["PublishedManifest"] = MCid; LogOut("PackageCatalog::PublishLibrary", "library manifest " + MCid + " links " + std::to_string(Flat.size()) + " root(s)"); }
+        for (auto &[Pkg, Cids] : Pkgs)
+        {
+            std::sort(Cids.begin(), Cids.end());
+            Cids.erase(std::unique(Cids.begin(), Cids.end()), Cids.end());
+            nlohmann::ordered_json Nodes = nlohmann::ordered_json::array();
+            for (const auto &C : Cids) Nodes.push_back(nlohmann::ordered_json{{"/", C}});
+            nlohmann::ordered_json Manifest{{"VIDYAGOD_PACKAGE_MANIFEST", 1}, {"PKG", Pkg}, {"NODES", std::move(Nodes)}};
+            std::string MErr;
+            const std::string PCid = IpfsWrapper::DagPut(Manifest.dump(), &MErr);
+            if (PCid.empty()) { if (Error) *Error = "package manifest for '" + Pkg + "' not stored: " + MErr; return {}; }
+            // A bounded display title for the receiver's dir segment (NAME_MAX): the dir basename, cut at a UTF-8 boundary.
+            std::string Title = Pkg;
+            if (Title.size() > 120)
+            {
+                Title.resize(120);
+                while (!Title.empty() && (static_cast<unsigned char>(Title.back()) & 0xC0) == 0x80) Title.pop_back();
+            }
+            Libs[LibName].push_back(nlohmann::ordered_json{{"cid", PCid}, {"node", Title}, {"pkg", Title}, {"title", Title},
+                                                            {"nodes", Cids.size()}});
+            Flat.push_back(PCid);
+            ++PkgCount;
+        }
     }
+    // No library-level block: a library is a NAME that groups packages in the share sheet, never a CID — a CID over
+    // the whole library would re-mint on every change to any package, and the package is the unit that changes.
     Config["Libraries"]     = std::move(Libs);
     Config["PublishedList"] = std::move(Flat);
+    Config.erase("PublishedManifest");
     LogSucc("PackageCatalog::PublishLibrary", "published " + std::to_string(MR.HandleToCid.size())
-            + " node block(s), " + std::to_string(Config["Libraries"].size()) + " library(ies), "
-            + std::to_string(Config["PublishedList"].size()) + " launchable(s)");
-    return MR.Published;   // the share list (PUBLISH'd roots), not the launch axis
+            + " node block(s) in " + std::to_string(PkgCount) + " package manifest(s), "
+            + std::to_string(Config["Libraries"].size()) + " library(ies)");
+    std::vector<std::string> Out;
+    for (const auto &C : Config["PublishedList"]) Out.push_back(C.get<std::string>());
+    return Out;   // the share list: one package manifest per package
 }
+
+// The file a received package manifest lands as, inside the package dir (never a node: the scan skips it).
+static constexpr const char *kPackageManifestFile = ".package.json";
 
 // Bounds for the received-share planner (a friend's snapshot is UNTRUSTED input).
 static constexpr size_t kMaxFriendRootsPerLib = 20000;    // cap a hostile/huge per-library item set (Go caps at 100k)
@@ -1180,24 +1127,13 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
             if (!It.is_object()) continue;
             const std::string Cid = It.value("cid", std::string());
             if (Cid.empty()) continue;
-            std::string NodeId = It.value("node", std::string());
-            if (NodeId.empty()) NodeId = Cid.substr(0, 12);
-            std::string Uid = It.value("uid", std::string());
-            if (Uid.empty()) Uid = NodeId;
-            std::string Title = It.value("title", std::string());
-            if (Title.empty()) Title = NodeId;
-            // The seeder's real package dir name keeps multi-game packages ONE dir (sibling grouping is by bundle
-            // dir); the "[uid] title" shape is only the fallback for a snapshot without it.
+            // One entry = one PACKAGE: its manifest block lands as <pkg dir>/.package.json and names every node
+            // block of the package; LandReceivedPackages fetches those. The seeder's real dir name keeps a
+            // multi-game package ONE dir; a snapshot without it falls back to the CID.
             std::string PkgSeg = It.value("pkg", std::string());
-            if (PkgSeg.empty()) PkgSeg = "[" + Uid + "] " + Title;
-            const fs::path PkgDir = LibDir / San(PkgSeg);
-            Add(Cid, PkgDir / (San(NodeId) + ".json"));
-            if (const std::string TileCid = It.value("tilecid", std::string()); !TileCid.empty())
-            {
-                std::string TileNode = It.value("tilenode", std::string());
-                if (TileNode.empty()) TileNode = TileCid.substr(0, 12);
-                Add(TileCid, PkgDir / (San(TileNode) + ".json"));
-            }
+            if (PkgSeg.empty()) PkgSeg = It.value("node", std::string());
+            if (PkgSeg.empty()) PkgSeg = Cid.substr(0, 12);
+            Add(Cid, LibDir / San(PkgSeg) / kPackageManifestFile);
         }
     }
     return Out;
@@ -1296,20 +1232,130 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             LandedDoc[C] = J;
 
             // The Go fetch wrote the RAW block bytes (which may carry the forged "CID"); overwrite that file with the
-            // normalized, handle-stripped J so the on-disk working tree never carries a hijackable handle. Prefer a
-            // pretty NodeId(LABEL) filename when it is free.
-            const std::string NodeId = (J.contains("LABEL") && J["LABEL"].is_string()) ? J["LABEL"].get<std::string>() : std::string();
-            std::error_code Ec;
-            const fs::path From = Bundle / (San(C) + ".json");
-            fs::path Dest = From;
-            if (!NodeId.empty()) { const fs::path To = Bundle / (San(NodeId) + ".json");
-                                   if (To == From || !fs::exists(To, Ec)) Dest = To; }
-            if (Dest != From) fs::remove(From, Ec);   // relocating to the pretty name
-            { std::ofstream Out(Dest, std::ios::binary); Out << J.dump(2) << "\n"; }
+            // normalized, handle-stripped J so the on-disk working tree never carries a hijackable handle. The file
+            // keeps its CID name: a label-named file was a path two generations could both claim.
+            { std::ofstream Out(Bundle / (San(C) + ".json"), std::ios::binary); Out << J.dump(2) << "\n"; }
         }
         Missing = std::move(Next);
     }
     return true;
+}
+
+// The received package manifests on disk: every CATALOG/<nick - lib>/<pkg>/.package.json (a collision-qualified
+// ".package (cid).json" too). Returns dir → the node CIDs its manifest names. Bounded, untrusted bytes.
+static std::map<std::filesystem::path, std::vector<std::string>> ReceivedPackageManifests(const nlohmann::ordered_json &Config)
+{
+    namespace fs = std::filesystem;
+    std::map<fs::path, std::vector<std::string>> Out;
+    std::error_code Ec;
+    const fs::path Root = fs::path(CatalogRootDir(Config));
+    if (!fs::is_directory(Root, Ec)) return Out;
+    for (const auto &Lib : fs::directory_iterator(Root, Ec))
+    {
+        if (!Lib.is_directory(Ec)) continue;
+        for (const auto &Pkg : fs::directory_iterator(Lib.path(), Ec))
+        {
+            if (!Pkg.is_directory(Ec)) continue;
+            for (const auto &F : fs::directory_iterator(Pkg.path(), Ec))
+            {
+                const std::string Name = F.path().filename().string();
+                if (!F.is_regular_file(Ec) || Name.rfind(".package", 0) != 0 || F.path().extension() != ".json") continue;
+                std::ifstream In(F.path(), std::ios::binary);
+                std::string Text((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+                if (Text.size() > 8 * 1024 * 1024 || !NodeGraph::JsonDepthWithinLimit(Text, 8)) continue;
+                nlohmann::ordered_json J = nlohmann::ordered_json::parse(Text, nullptr, false);
+                if (J.is_discarded() || !J.is_object() || !J.contains("NODES") || !J["NODES"].is_array()) continue;
+                auto &Cids = Out[Pkg.path()];
+                for (const auto &L : J["NODES"])
+                {
+                    std::string C;
+                    if (L.is_object() && L.contains("/") && L["/"].is_string()) C = L["/"].get<std::string>();
+                    else if (L.is_string()) C = L.get<std::string>();
+                    if (C.empty() || C.size() > 128) continue;
+                    for (unsigned char ch : C) if (!std::isalnum(ch)) { C.clear(); break; }   // a CID is base32/58: a path is not
+                    if (!C.empty()) Cids.push_back(C);
+                    if (Cids.size() > 100000) break;
+                }
+            }
+        }
+    }
+    return Out;
+}
+
+bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &Config)
+{
+    std::error_code Ec;
+    for (const auto &[Dir, Cids] : ReceivedPackageManifests(Config))
+        for (const std::string &C : Cids)
+            if (!std::filesystem::exists(Dir / (C + ".json"), Ec)) return true;
+    return false;
+}
+
+bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Error)
+{
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    bool Ok = true;
+    for (const auto &[Dir, Cids] : ReceivedPackageManifests(Config))
+    {
+        std::vector<IpfsWrapper::FetchTarget> Batch;
+        std::vector<std::string> Wave;
+        for (const std::string &C : Cids)
+            if (!fs::exists(Dir / (C + ".json"), Ec))
+            {
+                Batch.push_back(IpfsWrapper::FetchTarget{ C, (Dir / (C + ".json")).string(), /*Optional=*/false, /*Dir=*/false, /*Verify=*/true });
+                Wave.push_back(C);
+            }
+        if (Batch.empty()) continue;
+        std::string WErr;
+        if (!IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(Batch), 10 * 60 * 1000, &WErr))
+        { if (Error) *Error = "package " + Dir.filename().string() + ": " + WErr; Ok = false; continue; }
+        // Normalize what landed: links to plain CIDs, any embedded handle stripped (the block is identified by the
+        // CID we fetched it BY — a forged "CID" must never reach the working tree).
+        const auto Blocks = IpfsWrapper::DagGetManyLocal(Wave);
+        for (const std::string &C : Wave)
+        {
+            const auto It = Blocks.find(C);
+            if (It == Blocks.end() || !NodeGraph::JsonDepthWithinLimit(It->second, 64)) { Ok = false; continue; }
+            nlohmann::ordered_json J = nlohmann::ordered_json::parse(It->second, nullptr, false);
+            if (J.is_discarded() || !J.is_object()) { Ok = false; continue; }
+            NodeGraph::NormalizeLinks(J);
+            J.erase("CID");
+            std::ofstream Out(Dir / (C + ".json"), std::ios::binary); Out << J.dump(2) << "\n";
+        }
+    }
+    return Ok;
+}
+
+int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Config)
+{
+    // A received package dir holds exactly what its manifest names plus the closure blocks landed for them. A node
+    // file that neither the manifest names nor the closure reaches is an older generation's — a re-published node
+    // under its previous CID, kept because the dir is an install — and it was one of three "v1.30.4" once. Remove it.
+    namespace fs = std::filesystem;
+    std::error_code Ec;
+    int Removed = 0;
+    for (const auto &[Dir, Cids] : ReceivedPackageManifests(Config))
+    {
+        std::set<std::string> Keep(Cids.begin(), Cids.end());
+        std::deque<std::string> Q(Cids.begin(), Cids.end());
+        while (!Q.empty())
+        {
+            const Node *N = Idx.Find(Q.front()); Q.pop_front();
+            if (!N) continue;
+            for (const std::string &P : N->Parents) if (Keep.insert(P).second) Q.push_back(P);
+        }
+        // Per FILE, not per index node: the same CID landed in two libraries is ONE index entry, and a landed file is
+        // named by its CID (a label-named file is a pre-manifest root: stale by definition).
+        for (const auto &F : fs::directory_iterator(Dir, Ec))
+        {
+            const std::string Name = F.path().filename().string();
+            if (!F.is_regular_file(Ec) || F.path().extension() != ".json" || Name.rfind(".package", 0) == 0) continue;
+            if (Keep.count(F.path().stem().string())) continue;
+            if (fs::remove(F.path(), Ec)) ++Removed;
+        }
+    }
+    return Removed;
 }
 
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id)

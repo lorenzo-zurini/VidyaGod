@@ -44,7 +44,7 @@ struct VariantInfo {
 // nodes; each node lives in its own .json file inside a "bundle" directory (which just groups node files + their
 // shared content). There is ONE node kind and ONE edge:
 //
-//   node = facets (CID LABEL WHEN TOGGLE PUBLISH) + TILE + ENTRYPOINTS + payload arrays + OVER
+//   node = facets (CID LABEL WHEN TOGGLE) + TILE + ENTRYPOINTS + payload arrays + OVER
 //
 // A node is one meaningful change, which may span kinds (a widescreen fix = PATCHES + FILEEDITS + VARS in one
 // node). A node with no payload is just a node. Everything else is DERIVED, never stored: launchable (has
@@ -127,7 +127,6 @@ struct Node {
 
     bool Optional = false;                   // TOGGLE present ⇒ (on a graft) user-toggleable
     bool Default  = true;                    // TOGGLE value ("on"/"off") — pre-ticked or not
-    bool Publish  = false;                   // PUBLISH — a share-list root
 
     std::vector<OverReq> Over;               // OVER — the one edge, as authored (CNF)
     std::vector<std::string> Composes;       // the BARE refs — what the node is made of: the closure, identity,

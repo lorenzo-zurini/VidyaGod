@@ -286,6 +286,14 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
 // NodeContentCids can enumerate nothing from the incomplete graph.
 bool NodeClosureIncomplete(const NodeIndex &Idx, const std::string &Id);
 
+// Received PACKAGES: a friend's share entry is a package manifest (landed as <pkg dir>/.package.json). True while any
+// manifest names a node block not yet on disk; LandReceivedPackages fetches them through the one rolling queue
+// (synchronous — OFF the GUI thread); PruneStaleReceived removes received node files that neither a manifest names
+// nor its closure reaches (an older generation's copy in a kept, installed dir). Returns the number removed.
+bool ReceivedPackagesIncomplete(const nlohmann::ordered_json &GlobalConfigJSON);
+[[nodiscard]] bool LandReceivedPackages(const nlohmann::ordered_json &GlobalConfigJSON, std::string *Error = nullptr);
+int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &GlobalConfigJSON);
+
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.
 bool IsIpnsSource(const nlohmann::ordered_json &Source);

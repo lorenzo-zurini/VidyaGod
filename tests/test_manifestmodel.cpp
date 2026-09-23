@@ -781,23 +781,6 @@ TEST(validate_counts_env_values_as_variable_uses)
     for (const auto &E : Errors)   CHECK(E.find("undefined variable") == std::string::npos);
 }
 
-// PUBLISH is per node and the share list silently lacks an unflagged variant: a card shared by halves is an omission
-// the validator must name.
-TEST(validate_warns_on_an_unpublished_variant_beside_published_ones)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "base", {NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Tile("1", "G")})});
-    AddChain(Idx, "sp", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("SP")})}, {"base"});
-    AddChain(Idx, "mp", {NodeFixture::Merge({NodeFixture::Exec("win32", "m.exe"), NodeFixture::Variant("MP")})}, {"base"}, {{"PUBLISH", true}});
-    AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Content("zip", "o.zip"), NodeFixture::Tile("2", "O"), NodeFixture::Exec("win32", "o.exe"), NodeFixture::Variant("Play")})});
-    ManifestModel::DeriveIdentity(Idx);
-    std::vector<std::string> Errors, Warnings;
-    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(Errors.empty());
-    int Hits = 0; for (const auto &W : Warnings) if (W.find("'sp'") != std::string::npos && W.find("no PUBLISH") != std::string::npos) ++Hits;
-    CHECK_EQ(Hits, 1);
-    for (const auto &W : Warnings) CHECK(W.find("'other'") == std::string::npos || W.find("no PUBLISH") == std::string::npos);   // a wholly unpublished title is the author's choice
-}
 
 // A frozen or fetched block carries no handle: ParseNode keys it by LABEL, and the index then files it under its
 // real CID. The face's FaceKey must be that index key — a label-keyed FaceKey found a DIFFERENT node with the same

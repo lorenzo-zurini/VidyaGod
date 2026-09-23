@@ -209,11 +209,12 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
-    // The share list is driven by the PUBLISH flag, decoupled from node type: a game (launchable exec), a runner
-    // (GUEST-bearing exec) AND a no-exec library head all publish when flagged; an unflagged launchable never does.
-    // Grouping is by the collection dir. Teeth: the OLD predicate ("DeclareExec && !GUEST") dropped the runner and the
-    // library head and published the unflagged game — every QCOMPARE below fails under it.
-    void publish_share_list_is_driven_by_the_PUBLISH_flag()
+    // Sharing is per PACKAGE: every bundle dir publishes as ONE manifest block linking every node block in it,
+    // grouped by collection dir. There is no per-node flag — a runner package, a library package and a plain game all
+    // share alike, and a package nobody flagged is still shared (a forgotten flag used to be an unshared game with
+    // nothing anywhere saying so). Teeth: gate on any node field and a package drops; link fewer than all of a
+    // package's nodes and the NODES count fails; mint a library-level block and the PublishedManifest assert fails.
+    void publish_shares_every_package_as_one_manifest()
     {
         std::string Err;
         QTemporaryDir Repo; QVERIFY(Repo.isValid());
@@ -222,22 +223,17 @@ private slots:
         QTemporaryDir Root; QVERIFY(Root.isValid());
         const QString R = Root.path();
         QDir().mkpath(R + "/VidyaGod/[1] Game");
-        QDir().mkpath(R + "/VidyaGod/[2] Unshared");
+        QDir().mkpath(R + "/VidyaGod/[2] Other");
         QDir().mkpath(R + "/VidyaGodRunners/wine");
         QDir().mkpath(R + "/VidyaGodLibraries/dgvoodoo");
-
-        // A shared game: tile + a launchable exec flagged PUBLISH.
         writeJson(R + "/VidyaGod/[1] Game/tile.json", NodeFixture::Chain("g_tile", {NodeFixture::Tile("1", "Game")}));
         writeJson(R + "/VidyaGod/[1] Game/game.json",
-                  NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}, {{"PUBLISH", true}}));
-        // A runner: a GUEST-bearing exec flagged PUBLISH (the old predicate EXCLUDED this).
+                  NodeFixture::Chain("g_exec", {NodeFixture::Exec("win32", "g.exe")}, {"g_tile"}));
         writeJson(R + "/VidyaGodRunners/wine/wine.json",
-                  NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}, {}, {{"PUBLISH", true}}));
-        // A library head: NO exec at all, flagged PUBLISH (the old predicate EXCLUDED this — not a DeclareExec).
+                  NodeFixture::Chain("r_wine", {NodeFixture::Runner("linux", {"win32"}, "wine")}));
         writeJson(R + "/VidyaGodLibraries/dgvoodoo/dg.json",
-                  NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}, {}, {{"PUBLISH", true}}));
-        // An UNSHARED launchable: a valid game exec but NOT flagged (the old predicate would have published it).
-        writeJson(R + "/VidyaGod/[2] Unshared/u.json",
+                  NodeFixture::Chain("l_dg", {NodeFixture::Content("zip", "dgvoodoo.zip")}));
+        writeJson(R + "/VidyaGod/[2] Other/u.json",
                   NodeFixture::Chain("u_exec", {NodeFixture::Exec("win32", "u.exe")}));
 
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
@@ -245,75 +241,56 @@ private slots:
 
         QVERIFY2(cfg.contains("Libraries") && cfg["Libraries"].is_object(), "PublishLibrary writes config[\"Libraries\"]");
         const auto & Libs = cfg["Libraries"];
-        QVERIFY2(Libs.contains("VidyaGod"),          "a flagged game publishes under its collection");
-        QVERIFY2(Libs.contains("VidyaGodRunners"),   "a flagged GUEST-bearing runner publishes (old predicate dropped it)");
-        QVERIFY2(Libs.contains("VidyaGodLibraries"), "a flagged no-exec library head publishes (old predicate dropped it)");
-        QCOMPARE((int)Libs["VidyaGod"].size(), 1);          // only the flagged game — not the unshared exec
+        QCOMPARE((int)Libs["VidyaGod"].size(), 2);          // BOTH packages — nothing is gated
         QCOMPARE((int)Libs["VidyaGodRunners"].size(), 1);
         QCOMPARE((int)Libs["VidyaGodLibraries"].size(), 1);
-        QCOMPARE((int)cfg["PublishedList"].size(), 3);      // exactly the three flagged roots
-        QCOMPARE((int)Published.size(), 3);                 // return value == the share list
+        QCOMPARE((int)cfg["PublishedList"].size(), 4);      // one manifest per package
+        QCOMPARE((int)Published.size(), 4);
+        QVERIFY2(!cfg.contains("PublishedManifest"), "no library-level block: a library is a name, never a CID");
 
-        // The library MANIFEST: one stored block whose links are exactly the published roots — the single pin a
-        // pinning service needs (its closure = the library once, not once per root).
-        const std::string MCid = cfg.value("PublishedManifest", std::string());
-        QVERIFY2(!MCid.empty(), "PublishLibrary records the manifest block's CID");
-        const json M = json::parse(IpfsWrapper::DagGet(MCid, &Err), nullptr, false);
-        QVERIFY2(M.is_object() && M.contains("ROOTS") && M["ROOTS"].is_array(), "manifest block reads back");
-        std::set<std::string> Linked;
-        for (const auto & L : M["ROOTS"]) Linked.insert(L.is_object() ? L.value("/", std::string()) : L.get<std::string>());
-        QCOMPARE(Linked, std::set<std::string>(Published.begin(), Published.end()));
-
-        // Each entry carries the RECEIVER's routing metadata — enough to compute the final library path pre-fetch.
-        const auto & G = Libs["VidyaGod"][0];
-        QVERIFY2(!G.value("cid", std::string()).empty(), "entry names its node-block CID");
-        QCOMPARE(G.value("node", std::string()),  std::string("g_exec"));
-        QCOMPARE(G.value("uid", std::string()),   std::string("1"));       // from the LIBRARYITEM tile
-        QCOMPARE(G.value("title", std::string()), std::string("Game"));
-        QVERIFY2(!G.value("tilecid", std::string()).empty(), "the tile block rides along");
-        QCOMPARE(G.value("tilenode", std::string()), std::string("g_tile"));
-        QCOMPARE(G.value("pkg", std::string()), std::string("[1] Game"));   // the REAL dir — sibling grouping survives
-        const auto & W = Libs["VidyaGodRunners"][0];
-        QCOMPARE(W.value("node", std::string()),  std::string("r_wine"));
-        QCOMPARE(W.value("uid", std::string()),   std::string("r_wine"));  // no tile -> stands under its own handle
-        QVERIFY2(!W.contains("tilecid"), "a tile-less node ships no tile fields");
-
+        // The package manifest: one stored block whose links are exactly the package's node blocks.
+        const json * G = nullptr;
+        for (const auto & E : Libs["VidyaGod"]) if (E.value("pkg", std::string()) == "[1] Game") G = &E;
+        QVERIFY2(G, "the entry names the seeder's real package dir");
+        QCOMPARE(G->value("nodes", 0), 2);
+        const json M = json::parse(IpfsWrapper::DagGet(G->value("cid", std::string()), &Err), nullptr, false);
+        QVERIFY2(M.is_object() && M.contains("NODES") && M["NODES"].is_array(), "manifest block reads back");
+        QCOMPARE((int)M["NODES"].size(), 2);                 // tile + exec: every node of the package
+        QCOMPARE(M.value("PKG", std::string()), std::string("[1] Game"));
+        for (const auto & L : M["NODES"])
+        {
+            const std::string C = L.is_object() ? L.value("/", std::string()) : std::string();
+            const json B = json::parse(IpfsWrapper::DagGet(C, &Err), nullptr, false);
+            QVERIFY2(B.is_object() && (B.contains("TILE") || B.contains("ENTRYPOINTS")), "each link is a node block of that package");
+        }
         IpfsWrapper::StopNode();
     }
 
-    // Two roots of one package with the SAME label (Reign of Chaos' and The Frozen Throne's "v1.29.2") must both
-    // land: the second gets a CID-qualified file name. Before, the planner kept first-seen and the second root of
-    // every shared-UID title silently never arrived.
-    void planner_keeps_both_roots_that_share_a_label()
+    // One entry = one package manifest. Two manifests naming the same package dir (only a hostile or a mid-change
+    // snapshot does that) both land, the second under a CID-qualified name; the same CID twice is one target.
+    void planner_lands_one_manifest_per_package()
     {
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", "/tmp/vg_rx_plan/LIBRARY"}}}}}};
         const json Items = json::array({
-            json{{"cid", "bafyroc"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "Warcraft III: Reign of Chaos"}},
-            json{{"cid", "bafytft"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "Warcraft III: The Frozen Throne"}},
-            json{{"cid", "bafyroc"}, {"node", "v1.29.2"}, {"pkg", "[802] Warcraft III"}, {"uid", "802"}, {"title", "dup of the same CID"}} });
+            json{{"cid", "bafypkgone"}, {"pkg", "[802] Warcraft III"}},
+            json{{"cid", "bafypkgtwo"}, {"pkg", "[802] Warcraft III"}},
+            json{{"cid", "bafypkgone"}, {"pkg", "[802] Warcraft III"}} });
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan.size(), 2);                               // both roots, the same CID once
-        std::set<std::string> Dests, Cids;
-        for (const auto & T : Plan) { Dests.insert(T.Dest); Cids.insert(T.Cid); }
-        QCOMPARE((int)Dests.size(), 2);
-        QVERIFY(Cids.count("bafyroc") && Cids.count("bafytft"));
-        bool Qualified = false;
-        for (const auto & T : Plan) if (T.Cid == "bafytft" && T.Dest.find("v1.29.2 (bafytft") != std::string::npos) Qualified = true;
-        QVERIFY2(Qualified, "the colliding root's file carries its CID");
+        QCOMPARE((int)Plan.size(), 2);
+        QCOMPARE(std::filesystem::path(Plan[0].Dest).parent_path(), std::filesystem::path(Plan[1].Dest).parent_path());
+        QVERIFY(Plan[0].Dest.size() > 13 && Plan[0].Dest.compare(Plan[0].Dest.size() - 13, 13, ".package.json") == 0);
+        QVERIFY2(Plan[1].Dest.find(".package (bafypkgtwo") != std::string::npos, "the colliding manifest's file carries its CID");
     }
 
-    // Helper: publish two distinct PUBLISH'd games in one collection and return their two share entries
-    // ({cid,node,uid,title,tilecid,tilenode} routing objects, as PublishLibrary emits them).
+    // Helper: publish two games in one collection and return the share entries — one per PACKAGE, as
+    // PublishLibrary emits them ({cid: <package manifest>, pkg, node, title, nodes}).
     json publishTwoGames(const QString & root)
     {
         std::string Err;
         QDir().mkpath(root + "/VidyaGod/[1] A");
         QDir().mkpath(root + "/VidyaGod/[2] B");
         writeJson(root + "/VidyaGod/[1] A/tile.json", NodeFixture::Chain("a_tile", {NodeFixture::Tile("1", "A")}));
-        // Real games carry content in PARENT nodes; a share ships only exec+tile, so a receiver's copy has an
-        // INCOMPLETE closure until install — exactly what the vacuous-hydration guard must classify as NOT hydrated.
-        // TWO content levels below the exec: closure completion must converge over WAVES (a_content's block only
-        // reveals a_base once fetched), not stop at the first frontier.
+        // Real games carry content in PARENT nodes, TWO levels below the exec: the whole package lands, closure and all.
         writeJson(root + "/VidyaGod/[1] A/base.json",
                   NodeFixture::Chain("a_base", {[]{
                       auto L = NodeFixture::ContentCid("file", "base.bin",
@@ -325,27 +302,40 @@ private slots:
                   NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}));
         // An EXPANSION of A: its own tile (same UID, another title), OVER the main launchable. Nesting is derived
-        // from that edge — on the seeder and, once the closure lands, on the receiver.
+        // from that edge — on the seeder and, once the package lands, on the receiver.
         writeJson(root + "/VidyaGod/[1] A/ax.json",
                   NodeFixture::Chain("a_x", {NodeFixture::Merge({NodeFixture::Exec("win32", "ax.exe"), NodeFixture::Tile("1", "A: Expansion"), NodeFixture::Variant("Expansion")})},
-                                     {"a_exec"}, {{"PUBLISH", true}}));
+                                     {"a_exec"}));
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
-                  NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
         return seeder["Libraries"].contains("VidyaGod") ? seeder["Libraries"]["VidyaGod"] : json::array();
     }
 
-    // A received share goes STRAIGHT to the library: PlanReceivedFetches turns the snapshot's routing metadata into
-    // rolling-queue targets whose dests ARE the final tree paths ("<Nick> - <Lib>/[uid] Title/<node>.json"); the queue
-    // lands each node block VERBATIM at its dest (simulated below), and from there zero friend-specific code runs —
-    // the plain catalog scan indexes the raw dag-json (link normalization at scan), CID identity survives, and the
-    // vacuous-hydration guard routes the un-installed package to the Catalog tab. Teeth: break the dest layout, the
-    // tile ride-along, scan-time NormalizeLinks (CID identity dies), the hydration guard, or planner idempotency and
-    // the asserts below fail. Hostile uid/title/node must never escape the library root.
+    // The cid of the node labelled `Label` inside a package manifest (reads the manifest and its node blocks back).
+    std::string cidOfLabel(const std::string & ManifestCid, const std::string & Label)
+    {
+        std::string Err;
+        const json M = json::parse(IpfsWrapper::DagGet(ManifestCid, &Err), nullptr, false);
+        if (!M.is_object() || !M.contains("NODES")) return {};
+        for (const auto & L : M["NODES"])
+        {
+            const std::string C = L.is_object() ? L.value("/", std::string()) : std::string();
+            const json B = json::parse(IpfsWrapper::DagGet(C, &Err), nullptr, false);
+            if (B.is_object() && B.value("LABEL", std::string()) == Label) return C;
+        }
+        return {};
+    }
+
+    // A received share is a set of PACKAGE manifests: the planner lands each at "<Nick> - <Lib>/<pkg>/.package.json"
+    // through the rolling queue; LandReceivedPackages then fetches every node block the manifest names into that dir,
+    // and from there zero friend-specific code runs — the plain catalog scan indexes the raw dag-json (links
+    // normalize at scan), CID identity survives, the whole package is Received, its closure is complete, and the
+    // card nests exactly as on the seeder. Hostile pkg/node must never escape the CATALOG root.
     void received_share_lands_at_final_library_paths()
     {
         std::string Err;
@@ -353,80 +343,62 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());   // blocks now in the local blockstore
-        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
+        QCOMPARE((int)Items.size(), 2);                         // packages A and B
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);   // sibling of LIBRARY → RxData/CATALOG
 
-        // Plan: every node + its tile gets a FINAL CATALOG dest, computed pre-fetch from the snapshot alone.
         const auto Plan = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan.size(), 5);                          // 3 roots + the 2 tile nodes (the expansion carries its own)
+        QCOMPARE((int)Plan.size(), 2);
         const std::string Lib = Catalog + "/Alice - Games";     // received stubs land in CATALOG, not LIBRARY
         std::set<std::string> Dests;
         for (const auto & T : Plan) Dests.insert(T.Dest);
-        QVERIFY2(Dests.count(Lib + "/[1] A/a_exec.json"), "root dest = NODE_ID-named file in its [uid] Title dir");
-        QVERIFY2(Dests.count(Lib + "/[1] A/a_tile.json"), "the tile rides along into the SAME package dir");
-        QVERIFY2(Dests.count(Lib + "/[2] B/b_exec.json"), "second game gets its own package dir");
-        QVERIFY2(Dests.count(Lib + "/[2] B/b_tile.json"), "…with its tile");
+        QVERIFY2(Dests.count(Lib + "/[1] A/.package.json"), "a package's manifest lands in the seeder's package dir name");
+        QVERIFY2(Dests.count(Lib + "/[2] B/.package.json"), "second package gets its own dir");
 
-        // Land the blocks exactly as the rolling queue does: the block's RAW dag-json bytes, verbatim, at the dest.
-        for (const auto & T : Plan)
-        {
-            const auto Blk = IpfsWrapper::DagGetManyLocal({T.Cid});
-            const auto It = Blk.find(T.Cid);
-            QVERIFY2(It != Blk.end(), "published block must be locally readable");
-            std::filesystem::create_directories(std::filesystem::path(T.Dest).parent_path());
-            std::ofstream Out(T.Dest, std::ios::binary);
-            Out << It->second;
+        {   // the manifests land through the REAL queue (what the share flow does)
+            std::vector<IpfsWrapper::FetchTarget> B;
+            for (const auto & T : Plan) B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
+            std::string WErr;
+            QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         }
+        QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "a landed manifest names blocks not yet on disk");
+        std::string LErr;
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &LErr), LErr.c_str());
+        QVERIFY2(!PackageCatalog::ReceivedPackagesIncomplete(rx), "every node block the manifests name is on disk");
 
-        // The ORDINARY catalog scan indexes them — raw dag-json links normalize at scan, so the node freezes back to
-        // the SAME CID (identity survives the wire; a re-publish re-mints identically — the multi-seeder design).
         auto Idx = PackageCatalog::BuildCatalogIndex(rx);
-        const std::string Cid0 = Items[0].value("cid", std::string());
-        auto It = Idx.Nodes.find(Cid0);
-        QVERIFY2(It != Idx.Nodes.end(), "a landed raw block freezes back to the SAME CID in the plain tree scan");
-        QVERIFY2(!It->second.BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
-        QVERIFY2(It->second.Received, "…marked RECEIVED (it lives under CATALOG): never a graft candidate");
+        const Node * A = Idx.Find("a_exec");
+        QVERIFY2(A, "a landed raw block freezes back in the plain tree scan");
+        QVERIFY2(!A->BundleDir.empty(), "it is an ordinary tree node with a real bundle dir");
+        QVERIFY2(A->Received, "…marked RECEIVED (it lives under CATALOG): never a graft candidate");
         for (const auto & [K, N] : Idx.Nodes)
             if (N.BundleDir.string().rfind(Catalog, 0) != 0) QVERIFY2(!N.Received, "a LIBRARY node is not Received");
-
-        // Vacuous-hydration guard: an un-installed received game (PARENTS not fetched) must read NOT hydrated —
-        // that is what routes it to the Catalog tab (downloadable) instead of the Library tab (playable).
-        const auto Hyd = PackageCatalog::HydrationMap(Idx);
-        const auto Hit = Hyd.find(It->second.Key());
-        QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated,
-                 "a received, un-installed package must not count as hydrated (its closure is not fetched)");
-
-        // FULL-LIBRARY DEHYDRATED SHARING: the receiver lands every root's NODE closure (blocks only — what
-        // AppModel::completeReceivedClosures runs after the roots land), so it holds the same graph the seeder
-        // holds. Before: a landed root is incomplete (a_content, a_base are two hops of blocks away). After: the
-        // two content levels are ordinary Received nodes under the same package dir, the closure is complete, and
-        // the card nests exactly as it does on the seeder — A is the main, "A: Expansion" its child.
-        QVERIFY2(PackageCatalog::NodeClosureIncomplete(Idx, Cid0), "a landed root alone is an incomplete closure");
-        std::string CErr;
-        QVERIFY2(PackageCatalog::CompleteClosure(Idx, Cid0, &CErr), CErr.c_str());
-        const auto Idx2 = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Idx2, Cid0), "the closure landed");
-        QVERIFY(std::filesystem::exists(Lib + "/[1] A/a_content.json") && std::filesystem::exists(Lib + "/[1] A/a_base.json"));
+        QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Idx, A->Key()), "the whole package landed: the closure is complete");
         int LandedA = 0;
-        for (const auto & [K, N] : Idx2.Nodes)
+        for (const auto & [K, N] : Idx.Nodes)
             if (N.Received && N.BundleDir.string().rfind(Lib + "/[1] A", 0) == 0) ++LandedA;
         QCOMPARE(LandedA, 5);                                   // a_exec, a_x, a_tile, a_content, a_base — all Received
+
+        // Vacuous-hydration guard: an un-installed received game (content not fetched) reads NOT hydrated —
+        // that is what routes it to the Catalog tab (downloadable) instead of the Library tab (playable).
+        const auto Hyd = PackageCatalog::HydrationMap(Idx);
+        const auto Hit = Hyd.find(A->Key());
+        QVERIFY2(Hit != Hyd.end() && !Hit->second.Hydrated, "a received, un-installed package must not count as hydrated");
+
         std::vector<const Node *> Card;
-        for (const auto & [K, N] : Idx2.Nodes) if (N.IsVariant() && N.Uid == "1") Card.push_back(&N);
+        for (const auto & [K, N] : Idx.Nodes) if (N.IsVariant() && N.Uid == "1") Card.push_back(&N);
         QCOMPARE((int)Card.size(), 2);
-        const auto Ordered = ManifestModel::OrderVariants(Idx2, Card);
+        const auto Ordered = ManifestModel::OrderVariants(Idx, Card);
         QCOMPARE(Ordered.front()->NodeId, std::string("a_exec"));                                   // the main names the card
         QCOMPARE(Ordered.front()->Meta.value("TITLE", std::string()), std::string("A"));
         QCOMPARE(Ordered.back()->NodeId, std::string("a_x"));                                       // the expansion under it
-        QVERIFY2(ManifestModel::FaceDepth(Idx2, *Idx2.Find(Ordered.back()->FaceKey)) > ManifestModel::FaceDepth(Idx2, *Idx2.Find(Ordered.front()->FaceKey)),
+        QVERIFY2(ManifestModel::FaceDepth(Idx, *Idx.Find(Ordered.back()->FaceKey)) > ManifestModel::FaceDepth(Idx, *Idx.Find(Ordered.front()->FaceKey)),
                  "the expansion's face is a child of the base's face (a tile above a tile)");
 
-        // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
-        const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"pkg", "../../.."}, {"uid", ".."}, {"title", "../.."},
-                                            {"tilecid", Items[0].value("tilecid", std::string())}, {"tilenode", "/etc/passwd"}}});
+        // A HOSTILE snapshot (traversal in every routed field) must stay inside the CATALOG root.
+        const json Evil = json::array({json{{"cid", Items[0].value("cid", std::string())}, {"node", "../../pwn"}, {"pkg", "../../.."}}});
         const auto EvilPlan = PackageCatalog::PlanReceivedFetches(rx, "..", json{{"..", Evil}});
         QVERIFY(!EvilPlan.empty());
         const std::string RootPrefix = Catalog + "/";
@@ -436,21 +408,20 @@ private slots:
             QVERIFY2(Canon.rfind(RootPrefix, 0) == 0, ("hostile dest escaped the CATALOG root: " + Canon).c_str());
         }
 
-        // Planner dedupe: the same snapshot plans the same 5 targets again (stable), never duplicates within one plan.
+        // Planner dedupe: the same snapshot plans the same targets again (stable), never duplicates within one plan.
         const auto Plan2 = PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}});
-        QCOMPARE((int)Plan2.size(), 5);
+        QCOMPARE((int)Plan2.size(), 2);
         std::set<std::string> D2; for (const auto & T : Plan2) D2.insert(T.Dest);
         QCOMPARE(D2.size(), Plan2.size());
 
         // CATALOG stubs are BROWSE-ONLY: publish scans LIBRARY only, so a re-publish must NOT include a received
-        // stub — you re-share what you've installed, not everything you've browsed. (The scan-finds-Cid0 assert
-        // above is the NormalizeLinks-at-scan tooth: drop scan-time normalization and the raw {"/":cid} block
-        // re-freezes to a DIFFERENT CID → Cid0 not found.)
+        // package — you re-share what you've installed, not everything you've browsed.
         std::string PubErr;
         PackageCatalog::PublishLibrary(rx, &PubErr);
         QVERIFY2(!rx.value("Libraries", json::object()).contains("Alice - Games"),
                  "a CATALOG browse stub is NOT published (LIBRARY-only publish; browse != share)");
 
+        IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();
     }
 
@@ -474,15 +445,16 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[2] Good");
         writeJson(R + "/VidyaGod/[2] Good/tile.json", NodeFixture::Chain("gd_tile", {NodeFixture::Tile("2", "Good")}));
         writeJson(R + "/VidyaGod/[2] Good/g.json",
-                  NodeFixture::Chain("gd_exec", {NodeFixture::Exec("win32", "g.exe")}, {"gd_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("gd_exec", {NodeFixture::Exec("win32", "g.exe")}, {"gd_tile"}));
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);   // MUST NOT throw
         QVERIFY2(cfg.contains("Libraries"), "publish completed over a hostile block without crashing");
-        // The hostile node's PUBLISH:"yes" (non-bool) is NOT treated as shared; only the good game publishes.
+        // The hostile legacy-typed object is not a node: its package has no nodes and no manifest; only Good publishes.
         int shared = 0;
         for (const auto & E : cfg.value("Libraries", json::object()).value("VidyaGod", json::array()))
-            if (E.value("node", std::string()) == "gd_exec") shared++;
+            if (E.value("pkg", std::string()) == "[2] Good") shared++;
         QCOMPARE(shared, 1);
+        QCOMPARE((int)cfg["Libraries"]["VidyaGod"].size(), 1);
         IpfsWrapper::StopNode();
     }
 
@@ -501,11 +473,10 @@ private slots:
         QDir().mkpath(R + "/VidyaGod/[2] Nameless");
         writeJson(R + "/VidyaGod/[1] Named/tile.json", NodeFixture::Chain("n_tile", {NodeFixture::Tile("1", "Named")}));
         writeJson(R + "/VidyaGod/[1] Named/g.json",
-                  NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}, {{"PUBLISH", true}}));
-        // A nameless node (no LABEL) flagged PUBLISH — a content node that happens to be shareable-flagged.
+                  NodeFixture::Chain("n_exec", {NodeFixture::Exec("win32", "g.exe")}, {"n_tile"}));
+        // A nameless node (no LABEL): a content node in a package of its own.
         writeJson(R + "/VidyaGod/[2] Nameless/c.json",
-                  json{{"PUBLISH", true},
-                       {"LAYERS", json::array({ json{{"FORM", "zip"}, {"PATH", "c.zip"},
+                  json{{"LAYERS", json::array({ json{{"FORM", "zip"}, {"PATH", "c.zip"},
                            {"SOURCE", {{"TYPE","ipfs"},{"CID","bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e"}}}} })}});
         json cfg = json{{"Settings", {{"Paths", {{"LibraryRoot", R.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(cfg, &Err);
@@ -517,14 +488,14 @@ private slots:
         bool sawNamed = false, sawNameless = false;
         for (const auto & E : cfg["Libraries"]["VidyaGod"])
         {
-            const std::string node = E.value("node", std::string()), uid = E.value("uid", std::string());
-            const std::string Msg = "no filesystem path in a share entry: node=" + node + " uid=" + uid;
-            QVERIFY2(node.find('/') == std::string::npos && uid.find('/') == std::string::npos, Msg.c_str());
-            if (node == "n_exec") sawNamed = true;
-            else sawNameless = true;                             // the nameless node rides under its own CID
+            const std::string node = E.value("node", std::string()), pkg = E.value("pkg", std::string());
+            const std::string Msg = "no filesystem path in a share entry: node=" + node + " pkg=" + pkg;
+            QVERIFY2(node.find('/') == std::string::npos && pkg.find('/') == std::string::npos, Msg.c_str());
+            if (pkg == "[1] Named") sawNamed = true;
+            if (pkg == "[2] Nameless") { sawNameless = true; QCOMPARE(E.value("nodes", 0), 1); }
         }
-        QVERIFY2(sawNamed, "the named launchable publishes");
-        QVERIFY2(sawNameless, "the nameless PUBLISH'd node publishes under its CID (no longer skipped)");
+        QVERIFY2(sawNamed, "the named game's package publishes");
+        QVERIFY2(sawNameless, "the nameless node's package publishes — a manifest links it under its CID");
         IpfsWrapper::StopNode();
     }
 
@@ -563,28 +534,27 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
+        QCOMPARE((int)Items.size(), 2);                         // packages A and B
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
         const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
-        {   // Receive: exec + tile land at their final CATALOG paths through the queue (the share flow).
+        {   // Receive: the package manifests land at their CATALOG paths through the queue (the share flow).
             std::vector<IpfsWrapper::FetchTarget> B;
             for (const auto & T : PackageCatalog::PlanReceivedFetches(rx, "Alice", json{{"Games", Items}}))
                 B.push_back(IpfsWrapper::FetchTarget{ T.Cid, T.Dest, false, false, /*Verify=*/true });
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(IpfsWrapper::EnqueueBatch(B), 30000, &WErr), WErr.c_str());
         }
-
-        NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
-        QVERIFY2(PackageCatalog::NodeClosureIncomplete(Idx, "a_exec"), "precondition: a received card is incomplete");
-        QVERIFY2(PackageCatalog::NodeContentCids(Idx, "a_exec").empty(), "precondition: nothing to download yet");
-
-        QVERIFY2(PackageCatalog::CompleteClosure(Idx, "a_exec", &Err), Err.c_str());
+        QVERIFY2(PackageCatalog::ReceivedPackagesIncomplete(rx), "precondition: the manifests name blocks not yet on disk");
+        QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &Err), Err.c_str());   // every node block of both packages
 
         const QString Pkg = QString::fromStdString(Catalog) + "/Alice - Games/[1] A";
-        QVERIFY2(QFile::exists(Pkg + "/a_content.json"), "wave 1 landed NODE_ID-named in the package dir");
-        QVERIFY2(QFile::exists(Pkg + "/a_base.json"),    "wave 2 landed (frontier discovered from wave 1's block)");
+        const std::string CidContent = cidOfLabel(Items[0].value("cid", std::string()), "a_content");
+        const std::string CidBase    = cidOfLabel(Items[0].value("cid", std::string()), "a_base");
+        QVERIFY(!CidContent.empty() && !CidBase.empty());
+        QVERIFY2(QFile::exists(Pkg + "/" + QString::fromStdString(CidContent) + ".json"), "content node landed CID-named in the package dir");
+        QVERIFY2(QFile::exists(Pkg + "/" + QString::fromStdString(CidBase) + ".json"),    "…and the level beneath it");
 
         NodeIndex Fresh = PackageCatalog::BuildCatalogIndex(rx);
         QVERIFY2(!PackageCatalog::NodeClosureIncomplete(Fresh, "a_exec"), "the closure is complete after the fetch");
@@ -612,8 +582,10 @@ private slots:
         QVERIFY2(IpfsWrapper::StartNode((Repo.path() + "/ipfs").toStdString(), &Err), Err.c_str());
         QTemporaryDir SeedRoot; QVERIFY(SeedRoot.isValid());
         const json Items = publishTwoGames(SeedRoot.path());
-        QCOMPARE((int)Items.size(), 3);                         // A, A's expansion, B
-        const std::string CidV1 = Items[0].value("cid", std::string());
+        QCOMPARE((int)Items.size(), 2);                         // packages A and B
+        const std::string ManV1 = Items[0].value("cid", std::string());
+        const std::string CidV1 = cidOfLabel(ManV1, "a_exec");
+        QVERIFY(!CidV1.empty());
 
         QTemporaryDir RxData; QVERIFY(RxData.isValid());
         json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
@@ -629,14 +601,21 @@ private slots:
             const auto H = IpfsWrapper::EnqueueBatch(B);
             std::string WErr;
             QVERIFY2(IpfsWrapper::WaitBatch(H, 30000, &WErr), WErr.c_str());
+            std::string LErr;
+            QVERIFY2(PackageCatalog::LandReceivedPackages(rx, &LErr), LErr.c_str());   // the manifests' node blocks
         };
-        auto DestBytes = [&](const std::string & Lib, const std::string & Node) {
-            std::ifstream In(Catalog + "/Alice - " + Lib + "/[1] A/" + Node + ".json", std::ios::binary);
+        auto DestBytes = [&](const std::string & Lib, const std::string & Cid) {
+            std::ifstream In(Catalog + "/Alice - " + Lib + "/[1] A/" + Cid + ".json", std::ios::binary);
+            return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
+        };
+        auto ManifestBytes = [&](const std::string & Lib) {
+            std::ifstream In(Catalog + "/Alice - " + Lib + "/[1] A/.package.json", std::ios::binary);
             return std::string((std::istreambuf_iterator<char>(In)), std::istreambuf_iterator<char>());
         };
         Land(Items);
-        QCOMPARE(DestBytes("Games", "a_exec"), IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // v1 landed verbatim
-        QCOMPARE(DestBytes("Favs", "a_exec"),  IpfsWrapper::DagGetManyLocal({CidV1})[CidV1]);   // …into BOTH libraries
+        QCOMPARE(ManifestBytes("Games"), IpfsWrapper::DagGetManyLocal({ManV1})[ManV1]);      // v1 manifest landed verbatim
+        QCOMPARE(ManifestBytes("Favs"),  IpfsWrapper::DagGetManyLocal({ManV1})[ManV1]);      // …into BOTH libraries
+        QVERIFY2(!DestBytes("Games", CidV1).empty() && !DestBytes("Favs", CidV1).empty(), "v1's node block landed in both");
 
         // Seeder updates the node (same NODE_ID, new content) and re-publishes → NEW cid, SAME dest.
         {
@@ -650,14 +629,21 @@ private slots:
         json seeder2 = json{{"Settings", {{"Paths", {{"LibraryRoot", SeedRoot.path().toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder2, &Err);
         json Items2 = seeder2["Libraries"]["VidyaGod"];
-        std::string CidV2;
-        for (const auto & E : Items2) if (E.value("node", std::string()) == "a_exec") CidV2 = E.value("cid", std::string());
-        QVERIFY2(!CidV2.empty() && CidV2 != CidV1, "the update re-minted to a NEW cid");
+        std::string ManV2;
+        for (const auto & E : Items2) if (E.value("pkg", std::string()) == "[1] A") ManV2 = E.value("cid", std::string());
+        const std::string CidV2 = cidOfLabel(ManV2, "a_exec");
+        QVERIFY2(!ManV2.empty() && ManV2 != ManV1, "the package re-minted to a NEW manifest");
+        QVERIFY2(!CidV2.empty() && CidV2 != CidV1, "the update re-minted the node to a NEW cid");
 
         Land(Items2);
-        QCOMPARE(DestBytes("Games", "a_exec"), IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // v2 REPLACED the stale file
-        QCOMPARE(DestBytes("Favs", "a_exec"),  IpfsWrapper::DagGetManyLocal({CidV2})[CidV2]);   // …at EVERY dest, not just
-                                                                                                // the fetch's primary
+        QCOMPARE(ManifestBytes("Games"), IpfsWrapper::DagGetManyLocal({ManV2})[ManV2]);      // v2 manifest REPLACED the stale one
+        QCOMPARE(ManifestBytes("Favs"),  IpfsWrapper::DagGetManyLocal({ManV2})[ManV2]);      // …at EVERY dest
+        QVERIFY2(!DestBytes("Games", CidV2).empty() && !DestBytes("Favs", CidV2).empty(), "v2's node block landed in both");
+        // The previous generation's node file is neither named by the manifest nor reached by its closure: pruned.
+        NodeIndex After = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY(PackageCatalog::PruneStaleReceived(After, rx) >= 2);
+        QVERIFY2(DestBytes("Games", CidV1).empty() && DestBytes("Favs", CidV1).empty(), "the stale v1 file is gone from both");
+        QVERIFY2(!DestBytes("Games", CidV2).empty(), "the current one stays");
 
         IpfsWrapper::DebugResetQueue();
         IpfsWrapper::StopNode();

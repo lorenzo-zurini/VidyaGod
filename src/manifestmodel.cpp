@@ -44,7 +44,7 @@ const std::set<std::string> &NodeFields()
     //"LAYER" — would otherwise be a payload that silently never applies, the exact failure the lowerer exists to
     //prevent). COMMENT is author prose; POS is the canvas layout (stripped at freeze).
     static const std::set<std::string> F = {
-        "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT",
+        "CID", "LABEL", "WHEN", "TOGGLE", "POS", "COMMENT",
         "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
         "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
     };
@@ -234,7 +234,6 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
     Out.Entrypoints = nlohmann::ordered_json::array();
     Out.EffectiveEntrypoints = nlohmann::ordered_json::array();
     Out.Layers = nlohmann::ordered_json::array();
-    Out.Publish = J.contains("PUBLISH") && J["PUBLISH"].is_boolean() && J["PUBLISH"].get<bool>();
     Out.Recommended = J.contains("RECOMMENDED") && J["RECOMMENDED"].is_boolean() && J["RECOMMENDED"].get<bool>();
     Out.RawWhen = (J.contains("WHEN") && J["WHEN"].is_string()) ? J["WHEN"].get<std::string>() : std::string();
 
@@ -1457,21 +1456,6 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->Meta.value("TITLE", M->NodeId);
                 Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " main faces (" + List + ") — the card cannot tell which names it");
             }
-        }
-        // A card shared by halves is almost always an omission, and a silent one: PUBLISH is per node, the share
-        // list simply lacks the unflagged variant, and the receiver's card shows fewer choices than the author's
-        // with nothing anywhere saying so (Wipeout XL shipped for weeks as Multiplayer-only this way).
-        std::map<std::string, std::vector<const Node *>> VariantsOf;
-        for (const auto &[Id, N] : Idx.Nodes) if (N.IsVariant() && !N.Uid.empty()) VariantsOf[N.Uid].push_back(&N);
-        for (const auto &[Uid, Vs] : VariantsOf)
-        {
-            bool AnyPublished = false;
-            for (const Node *V : Vs) if (V->Publish) { AnyPublished = true; break; }
-            if (!AnyPublished) continue;
-            for (const Node *V : Vs)
-                if (!V->Publish)
-                    Warnings.push_back("node '" + V->Key() + "': VARIANT '" + V->Variant + "' has no PUBLISH while other variants of UID '"
-                                       + Uid + "' are published — it is missing from the share list");
         }
     }
 

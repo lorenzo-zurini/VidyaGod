@@ -152,6 +152,9 @@ NodeIndex FreezeToIndex(const std::map<std::string, nlohmann::ordered_json> &Wor
         N.Cid = Cid;
         const auto It = Dirs.find(Handle);
         if (It != Dirs.end()) N.BundleDir = It->second;   // on-disk content home → launch mounts from here
+        // A handle-less node was gathered under "\x01<file>#<n>": that IS its file — the received-stub pruner needs it.
+        if (!Handle.empty() && Handle[0] == '\x01')
+            if (const size_t Hash = Handle.rfind('#'); Hash != std::string::npos) N.File = Handle.substr(1, Hash - 1);
         // Two copies of one node (same content ⇒ same CID) can both be present: a LOCAL authored/installed one and a
         // RECEIVED one inside a just-hydrated friend package's closure. They are byte-identical, but their BundleDir
         // differs and launch mounts/seeds from BundleDir — so the LOCAL copy must win regardless of topo order. A
@@ -297,11 +300,6 @@ bool Mint(const std::map<std::string, nlohmann::ordered_json> &WorkingTree, Mint
             for (const auto &E : Raw["ENTRYPOINTS"])
                 if (E.is_object() && !(E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty()))
                 { Out.Launchables.push_back(Cid); break; }
-
-        // The SHARE axis, decoupled from type: a node the author flagged PUBLISH=true is a shareable root (a game's
-        // launchable, a runner exec, or a no-exec library head). This — not the launch axis — drives the share list.
-        if (Raw.contains("PUBLISH") && Raw["PUBLISH"].is_boolean() && Raw["PUBLISH"].get<bool>())
-            Out.Published.push_back(Cid);   // guarded: a hostile hydrated block's non-bool PUBLISH must not throw in the mint thread
     }
     if (Skipped) LogWarn("NodeGraph::Mint", "skipped " + std::to_string(Skipped) + " node(s) with dangling/bad refs");
     LogSucc("NodeGraph::Mint", "froze " + std::to_string(Out.HandleToCid.size()) + " node(s), "

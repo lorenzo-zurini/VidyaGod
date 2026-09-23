@@ -111,12 +111,12 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
     //("LAYER", "PATCHS") is a node that validates clean and applies nothing — the one silent failure the
     //whole front-end exists to make impossible.
     static const std::set<std::string> Known = {
-        "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
+        "CID", "LABEL", "WHEN", "TOGGLE", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
         "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS", "ENV", "ENV_REMOVE",
     };
     for (const auto &[K, V] : J.items())
         if (!Known.count(K))
-            return Fail("unknown field '" + K + "' (a node is CID/LABEL/WHEN/TOGGLE/PUBLISH/TILE/ENTRYPOINTS/OVER + "
+            return Fail("unknown field '" + K + "' (a node is CID/LABEL/WHEN/TOGGLE/TILE/ENTRYPOINTS/OVER + "
                         "LAYERS/PATCHES/FILEEDITS/REGEDITS/DLLOVERRIDES/VARS/PERSISTS/ENV/ENV_REMOVE)");
     //ENV / ENV_REMOVE are node sections (the environment folds along the chain); ParseNode reads them, the
     //lowerer only refuses the wrong shape so a typo is never a value that silently fails to apply.
