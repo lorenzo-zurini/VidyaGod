@@ -360,7 +360,23 @@ TEST(faces_nest_by_containment_and_entries_fold)
     AddChain(Idx, "fe_base", {NodeFixture::Merge({NodeFixture::Content("zip", "fe.zip"), NodeFixture::Tile("749", "Forgotten Empires")})}, {"tc_base"});
     AddChain(Idx, "fe",   {NodeFixture::Merge({NodeFixture::Variant("Forgotten Empires"), NodeFixture::Exec("win32", "age2_x1.5.exe")})}, {"fe_base"});
     AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "Other"), NodeFixture::Variant("Play")})}, {"lib2"});
+    AddChain(Idx, "step",  {NodeFixture::Content("dir", "s")}, {"tc_base"});                   // no tile: tc_base is 1 beneath
+    AddChain(Idx, "near_face",  {NodeFixture::Content("dir", "nf")}, {"step", "pristine"});    // pristine at 1, tc_base at 2
+    AddChain(Idx, "near_entry", {NodeFixture::Content("dir", "ne")}, {"nocd", "conq"});        // conq's entry at 1, pristine's at 2
+    AddChain(Idx, "grouped", {NodeFixture::Content("dir", "gr")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"conq", "aok"}) })}});
+    AddChain(Idx, "conq_copy", {NodeFixture::Merge({NodeFixture::Variant("The Conquerors (copy)"), NodeFixture::Tile("749", "The Conquerors")})}, {"tc_base"});
     ManifestModel::DeriveIdentity(Idx);
+    // a group is a requirement, not composition: nothing is inherited THROUGH it (face yes — identity ascends
+    // over every positive ref — but the entry, a fact of the composed chain, no)
+    CHECK_EQ(Idx.Find("grouped")->Uid, std::string("749"));
+    CHECK(!Idx.Find("grouped")->IsRunnable());
+    CHECK(Idx.Find("grouped")->EntrySource.empty());
+    // the SAME tile repeated above itself is the same face, not a nested one
+    CHECK_EQ(ManifestModel::FaceDepth(Idx, *Idx.Find("conq_copy")), 1);
+    // NEAREST beneath, by OVER distance — not the first found, not the deepest
+    CHECK_EQ(Idx.Find("near_face")->FaceKey, std::string("pristine"));   CHECK_EQ(Idx.Find("near_face")->FaceDistance, 1);
+    CHECK_EQ(Idx.Find("near_entry")->EntrySource, std::string("conq"));
+    CHECK_EQ(Idx.Find("near_entry")->ExecFor("").value("CONTENTPATH", std::string()), std::string("age2_x1.exe"));
     // faces
     CHECK_EQ(Idx.Find("aok")->FaceKey, std::string("pristine"));  CHECK_EQ(Idx.Find("aok")->FaceDistance, 2);
     CHECK_EQ(Idx.Find("conq")->FaceKey, std::string("tc_base"));
