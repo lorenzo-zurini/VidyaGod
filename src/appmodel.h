@@ -136,7 +136,7 @@ public:
     QStringList newPeerShareDefaults() const;
     void setNewPeerShareDefault(const QString & lib, bool on);
     void stopReceivingFromFriend(const QString & peer);
-    void dropReceivedStubs(const std::string & peer);   // remove a friend's received browse stubs + cancel their fetches   // drop the friend's stub sources + LIBRARY entries
+    void dropReceivedStubs(const std::string & peer);   // remove a friend's received browse stubs (installs kept) + cancel their fetches
     void pushPresenceDeny();                              // Settings/config PresenceDeny → Go (node-ready + on change)
     void applyNewPeerDefaults(const QString & peer);      // used by acceptPeer + the auto-accept path
     void enqueueReceivedShares(const QString & peer);     // shared node+tile CIDs → rolling queue, dest = final library path
@@ -191,6 +191,8 @@ private:
     bool                           FriendReconcilePending = false;  // debounce: coalesce a burst of landed blocks into one catalog rebuild
     bool                           FriendClosureRunning = false;    // a closure-completion worker is in flight
     bool                           FriendClosureAgain = false;      // blocks landed while it ran → run once more
+    std::atomic<unsigned>          FriendClosureGen{0};             // bumped by dropReceivedStubs: an older pass stops at its next root
+    bool                           FriendStubsDirty = false;        // stubs dropped while a pass ran → drop again when it ends
 };
 
 #endif // APPMODEL_H

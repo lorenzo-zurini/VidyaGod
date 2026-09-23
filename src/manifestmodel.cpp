@@ -45,7 +45,7 @@ const std::set<std::string> &NodeFields()
     //prevent). COMMENT is author prose; POS is the canvas layout (stripped at freeze).
     static const std::set<std::string> F = {
         "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT",
-        "TILE", "ENTRYPOINTS", "OVER",
+        "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
         "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS",
     };
     return F;
@@ -306,7 +306,10 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         if (T.contains("META"))
         {
             if (!T["META"].is_object()) return Refuse("node '" + Out.NodeId + "': TILE.META must be an object");
-            for (const auto &[K, V] : T["META"].items()) Meta[K] = V;
+            // The tile's own fields win: META is free-form (and, on a received block, foreign) — a META "TITLE": 5
+            // must not overwrite the validated string the consumers read without a type check.
+            for (const auto &[K, V] : T["META"].items())
+                if (K != "UID" && K != "TITLE" && K != "COVER") Meta[K] = V;
         }
         Out.OwnTile   = true;
         Out.Uid       = T["UID"].get<std::string>();
@@ -681,7 +684,11 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
             if (R.Composes())
             {
                 const Node *Mn = Idx.Find(R.Any.front());
-                if (Mn && Mn->IsVariant() && !S.count(R.Any.front())) { Why = R.Any.front(); return false; }
+                if (!Mn) { Why = R.Any.front(); return false; }              // a ref not in the graph is a blocker, never "composed"
+                // The DECLARED facet decides — not IsVariant(), which also needs HasExec and flips to false while the
+                // entry-bearing node beneath has not landed yet (a receiver mid-closure), turning a requirement
+                // into composition that would bring the wrong version's whole chain.
+                if (!Mn->Variant.empty() && !S.count(R.Any.front())) { Why = R.Any.front(); return false; }
                 continue;                                                    // composition: mounted beneath the graft
             }
             bool Ok = false;
@@ -999,7 +1006,7 @@ void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
         std::set<std::string> &Files, bool &AnyLocal, bool &AllLocal)
 {
     AnyLocal = false; AllLocal = true;
-    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
+    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.Key(), {}))
     {
         const Node *N = Idx.Find(Id);
         if (!N || !N->Layers.is_array()) continue;
@@ -1105,7 +1112,7 @@ void FindCrossLayerCaseCollisions(const NodeIndex &Idx, const Node &Launch,
     };
 
     std::deque<std::string> Labels;                              // stable storage — Seen holds pointers into it
-    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
+    for (const std::string &Id : ResolveNodeOrder(Idx, Launch.Key(), {}))
     {
         const Node *N = Idx.Find(Id);
         if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
@@ -1410,6 +1417,21 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
                 std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->Meta.value("TITLE", M->NodeId);
                 Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " main faces (" + List + ") — the card cannot tell which names it");
             }
+        }
+        // A card shared by halves is almost always an omission, and a silent one: PUBLISH is per node, the share
+        // list simply lacks the unflagged variant, and the receiver's card shows fewer choices than the author's
+        // with nothing anywhere saying so (Wipeout XL shipped for weeks as Multiplayer-only this way).
+        std::map<std::string, std::vector<const Node *>> VariantsOf;
+        for (const auto &[Id, N] : Idx.Nodes) if (N.IsVariant() && !N.Uid.empty()) VariantsOf[N.Uid].push_back(&N);
+        for (const auto &[Uid, Vs] : VariantsOf)
+        {
+            bool AnyPublished = false;
+            for (const Node *V : Vs) if (V->Publish) { AnyPublished = true; break; }
+            if (!AnyPublished) continue;
+            for (const Node *V : Vs)
+                if (!V->Publish)
+                    Warnings.push_back("node '" + V->Key() + "': VARIANT '" + V->Variant + "' has no PUBLISH while other variants of UID '"
+                                       + Uid + "' are published — it is missing from the share list");
         }
     }
 

@@ -74,10 +74,16 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     //folds along the chain), or of EntryNode's: a ticked graft carrying an entry (a mod loader) runs over the
     //selected variant's mount. Nothing beneath the variant is OFFERED as a way to run it.
     const Node *ExecNode = Launch;
-    if (!CP.EntryNode.empty())
+    if (!CP.EntryNode.empty() && CP.EntryNode != LaunchId)
     {
         ExecNode = Idx.Find(CP.EntryNode);
         if (!ExecNode) { LogErr("InitializeFromNode", "Entry node not found: " + CP.EntryNode); return false; }
+        // The entry node must be a graft that is SELECTED for this launch (ticked and applicable): its entry runs
+        // over a mount that contains it. A stale or unticked one would exec a loader that is not on the mount.
+        bool Selected = false;
+        for (const auto &O : ManifestModel::OfferedGrafts(Idx, LaunchId, CP.ModuleStates))
+            if (O.Graft == ExecNode || O.Graft->Key() == ExecNode->Key()) { Selected = O.Selected && O.Applicable; break; }
+        if (!Selected) { LogErr("InitializeFromNode", "Entry node '" + CP.EntryNode + "' is not a selected graft of '" + LaunchId + "' — it would run off a mount that does not contain it."); return false; }
     }
     CP.ComposedExec = ExecNode->ExecFor(CP.Entrypoint);
     if (!CP.Entrypoint.empty() && !CP.ComposedExec.is_object())

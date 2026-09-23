@@ -883,7 +883,6 @@ std::set<std::string> SourceContentCids(const nlohmann::ordered_json &GlobalConf
     return Cids;
 }
 
-static bool DirHasContent(const std::string &Dir);   // defined below, near PlanReceivedFetches
 
 void RemovePackageSource(nlohmann::ordered_json &GlobalConfigJSON, int Index, bool PreserveInstalled)
 {
@@ -1109,7 +1108,7 @@ static constexpr size_t kMaxFriendRootsTotal  = 100000;   // snapshot-wide cap a
 // True if a dir holds any HYDRATED content (a file that isn't a node *.json) — i.e. the user has INSTALLED this
 // package. Source removal must never delete such a dir: a withdrawal (or a transient failure) must never rm a
 // user's installed game.
-static bool DirHasContent(const std::string &Dir)
+bool DirHasContent(const std::string &Dir)
 {
     std::error_code Ec;
     if (!std::filesystem::is_directory(Dir, Ec)) return false;

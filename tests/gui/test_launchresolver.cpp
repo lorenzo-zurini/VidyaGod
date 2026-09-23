@@ -593,6 +593,30 @@ private slots:
         QVERIFY2(!ids.empty() && ids[0] == "protonA", "the chain serves the ENTRY's platform (win32), not the variant's");
     }
 
+    // An entry node that is not a SELECTED graft of the launch is refused: its loader would not be on the mount.
+    void an_unticked_grafts_entry_is_refused()
+    {
+        NodeIndex idx;
+        idx.Nodes["protonA"] = chainRunner("protonA", {"win32"}, kMachine);
+        Node game = launchNode("game", kMachine, {});
+        game.Variant = "Play"; game.OwnTile = true; game.Uid = "1"; game.Uids = {"1"};
+        idx.Nodes["game"] = game;
+        Node loader = launchNode("loader", "win32", {"game"});
+        loader.Entrypoints = json::array({ json{{"LABEL", "Loader"}, {"HOST", "win32"}, {"PATH", "loader.exe"}} });
+        loader.EffectiveEntrypoints = loader.Entrypoints;
+        loader.Exec = json{{"CONTENTPATH", "loader.exe"}, {"PLATFORM", "win32"}};
+        loader.Uid = "1"; loader.Uids = {"1"};
+        idx.Nodes["loader"] = loader;
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "game"; cp.ModuleStates = {{"loader", false}};   // unticked
+        cp.EntryNode = "loader";
+        json pool = json::object();
+        const json cfg = json{{"Settings", json::object()}};
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
+        cp.EntryNode = "nowhere";                                                                 // not a node at all
+        QVERIFY(!LaunchResolver::InitializeFromNode(cp, pool, cfg));
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {

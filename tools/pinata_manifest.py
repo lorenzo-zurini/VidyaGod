@@ -52,8 +52,12 @@ def unpin_all(rows, label):
     print(f"{label}: unpinned {ok}, errors {err}")
 
 
-args = [a for a in sys.argv[1:] if not a.startswith("--data-dir")]
-dd = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--data-dir=")), "~/.VidyaGodSeeder")
+argv = sys.argv[1:]
+dd = "~/.VidyaGodSeeder"
+if "--data-dir" in argv:
+    i = argv.index("--data-dir"); dd = argv[i + 1]; del argv[i:i + 2]
+args = [a for a in argv if not a.startswith("--data-dir=")]
+dd = next((a.split("=", 1)[1] for a in argv if a.startswith("--data-dir=")), dd)
 cfg = json.load(open(os.path.expanduser(dd + "/GlobalConfig.JSON")))
 manifest = cfg.get("PublishedManifest", "")
 phase = args[0] if args else "status"
@@ -67,6 +71,7 @@ elif phase == "pin-manifest":
     if not manifest: sys.exit("no PublishedManifest in config — publish first")
     print(call("/pinning/pinByHash", {"hashToPin": manifest, "pinataMetadata": {"name": "VidyaGod library manifest"}}))
 elif phase == "wipe-rest":
+    if not manifest: sys.exit("no PublishedManifest in config — refusing to unpin everything; publish first")
     rest = [r for r in pins() if r["ipfs_pin_hash"] != manifest]
     print("pins to drop (everything but the manifest):", len(rest))
     unpin_all(rest, "rest")

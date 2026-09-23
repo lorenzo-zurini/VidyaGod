@@ -547,8 +547,8 @@ void AppModel::applyFriendLibrarySnapshot(const QString & peer, const QString & 
     if (Clean.empty())
     {
         if (!Had) return;                               // nothing to drop, nothing changed
-        dropReceivedStubs(P);                           // they share nothing now: the stubs of what they did go too
-        FL.erase(P);
+        FL.erase(P);                                    // stubs stay: an empty set is also what a seeder pushes while its
+                                                        // library is still loading (a restart) — a transient, not a withdrawal
     }
     else
     {
@@ -698,6 +698,11 @@ void AppModel::dropReceivedStubs(const std::string & P)
     // to name this peer's dirs and CIDs, cancels what we enqueued for them, removes the dirs.
     if (!Config->contains("FriendLibraries") || !(*Config)["FriendLibraries"].is_object()
         || !(*Config)["FriendLibraries"].contains(P) || !(*Config)["FriendLibraries"][P].is_object()) return;
+    // A closure pass in flight walks a SNAPSHOT of the index taken before this drop and would write the old
+    // generation's blocks right back into the dirs removed here. Bump the generation so the pass stops at its next
+    // root, and remember to drop once more when it ends (the root it was on may have landed after the rm).
+    ++FriendClosureGen;
+    if (FriendClosureRunning) FriendStubsDirty = true;
     std::string Nick;
     for (const auto & C : IpfsWrapper::FriendList()) if (C.PeerID == P) { Nick = C.Nick; break; }
     if (Nick.empty()) Nick = P.size() > 8 ? P.substr(P.size() - 8) : P;
@@ -708,8 +713,23 @@ void AppModel::dropReceivedStubs(const std::string & P)
         if (!FriendBrowseCids.erase(T.Cid)) continue;   // only cancel what WE enqueued for this browse flow
         IpfsWrapper::CancelDownload(T.Cid);
     }
+    // A received package that was INSTALLED is fetched into the same CATALOG/<Nick> - <Lib>/<Pkg> dir the stubs
+    // live in (there is no adopt-to-LIBRARY step), so the dir is removed per PACKAGE and only when it holds nothing
+    // but node files: a dir with content is an install and stays, whatever the snapshot says. Its stale node files
+    // are overwritten or joined by the new generation's — the installed bytes are never the thing at risk.
     std::error_code Ec;
-    for (const auto & D : LibDirs) std::filesystem::remove_all(D, Ec);   // installed games are in LIBRARY, untouched
+    for (const auto & D : LibDirs)
+    {
+        if (!std::filesystem::is_directory(D, Ec)) continue;
+        bool Kept = false;
+        for (const auto & E : std::filesystem::directory_iterator(D, Ec))
+        {
+            if (!E.is_directory(Ec)) { std::filesystem::remove(E.path(), Ec); continue; }
+            if (PackageCatalog::DirHasContent(E.path().string())) { Kept = true; continue; }   // an install — never
+            std::filesystem::remove_all(E.path(), Ec);
+        }
+        if (!Kept) std::filesystem::remove_all(D, Ec);
+    }
 }
 
 void AppModel::stopReceivingFromFriend(const QString & peer)
@@ -919,19 +939,33 @@ void AppModel::completeReceivedClosures()
     FriendClosureRunning = true;
     LogOut("AppModel::completeReceivedClosures", "landing the node closure of " + std::to_string(Roots.size()) + " received root(s)");
     auto Snap = std::make_shared<const NodeIndex>(CatalogIndex);
+    const unsigned Gen = FriendClosureGen.load();
     AsyncWork::Run(this,
-        [Snap, Roots]{
-            size_t Ok = 0;
+        [this, Snap, Roots, Gen]{
+            size_t Ok = 0, Done = 0;
             for (const std::string & R : Roots)
             {
+                if (FriendClosureGen.load() != Gen)
+                {   // the snapshot changed under us: these roots are the OLD generation's — stop, never resurrect them
+                    LogOut("AppModel::completeReceivedClosures", "snapshot changed — stopped after " + std::to_string(Done) + "/" + std::to_string(Roots.size()) + " root(s) of the previous generation");
+                    return;
+                }
                 std::string Err;
                 if (PackageCatalog::CompleteClosure(*Snap, R, &Err)) ++Ok;
                 else LogWarn("AppModel::completeReceivedClosures", "closure of received '" + R + "': " + Err);
+                ++Done;
             }
             LogOut("AppModel::completeReceivedClosures", std::to_string(Ok) + "/" + std::to_string(Roots.size()) + " received closure(s) landed");
         },
         [this]{
             FriendClosureRunning = false;
+            if (FriendStubsDirty)
+            {   // a drop happened mid-pass: what the pass wrote after it is the old generation's — drop again, re-enqueue
+                if (Config->contains("ReceiveFrom") && (*Config)["ReceiveFrom"].is_array())
+                    for (const auto & X : (*Config)["ReceiveFrom"]) if (X.is_string()) dropReceivedStubs(X.get<std::string>());
+                FriendStubsDirty = false;
+                reconcileReceivedLibraries();   // the CURRENT generation's roots, into the now-clean dirs
+            }
             rebuildCatalog();           // the landed closure blocks are ordinary tree nodes, marked Received by the scan
             emit friendCatalogChanged();
             if (FriendClosureAgain) { FriendClosureAgain = false; completeReceivedClosures(); }

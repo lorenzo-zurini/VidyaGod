@@ -121,7 +121,7 @@ bool RunnerServes(const Node *R, const std::string &Platform)
 bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
 {
     bool Ships = false;
-    ManifestModel::ForEachClosureNode(Idx, R.NodeId, {}, [&](const Node &N) {
+    ManifestModel::ForEachClosureNode(Idx, R.Key(), {}, [&](const Node &N) {
         if (Ships || !N.Layers.is_array()) return;
         for (const auto &L : N.Layers)
             if (ManifestModel::IsRunnerBuildLayer(L)) { Ships = true; return; }
@@ -204,7 +204,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     L.GuestPathTemplate= E.value("GUEST_PATH", std::string());
     L.HostPlatform     = R->HostPlatform;
     L.GuestPlatform    = R->GuestPlatform;
-    ManifestModel::ForEachClosureNode(Idx, R->NodeId, Toggles, [&](const Node &N) {
+    ManifestModel::ForEachClosureNode(Idx, R->Key(), Toggles, [&](const Node &N) {
         if (!N.Layers.is_array()) return;
         for (nlohmann::ordered_json Lay : N.Layers)
         {

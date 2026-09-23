@@ -245,14 +245,23 @@ private slots:
         // identical snapshot → stubs stay
         m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafyold","node":"Old Game"}]})");
         QVERIFY(std::filesystem::exists(Plan.front().Dest));
+        // an INSTALLED received package lives in the same tree (its content was fetched beside its stubs): it stays,
+        // whatever the snapshot says — only pure-stub package dirs go
+        const std::filesystem::path Installed = LibDir / "[9] Installed Game";
+        std::filesystem::create_directories(Installed);
+        { std::ofstream S(Installed / "game.json"); S << "{}"; }
+        { std::ofstream S(Installed / "game.zip"); S << "bytes"; }
         // a re-publish: the same library, a new root CID → the old generation's stubs are gone
         m.applyFriendLibrarySnapshot(peer, R"({"Games":[{"cid":"bafynew","node":"Old Game"}]})");
-        QVERIFY(!std::filesystem::exists(LibDir));
+        QVERIFY(!std::filesystem::exists(Plan.front().Dest));
+        QVERIFY(!std::filesystem::exists(std::filesystem::path(Plan.front().Dest).parent_path()));
+        QVERIFY(std::filesystem::exists(Installed / "game.zip"));
         QVERIFY(cfg["FriendLibraries"][P].contains("Games"));
-        // they share nothing any more → stubs go with the snapshot
-        { std::filesystem::create_directories(LibDir); std::ofstream S(LibDir / "x.json"); S << "{}"; }
+        // an EMPTY snapshot is what a restarting seeder pushes before its library loads: a transient, nothing is dropped
+        { std::filesystem::create_directories(std::filesystem::path(Plan.front().Dest).parent_path()); std::ofstream S(Plan.front().Dest); S << "{}"; }
         m.applyFriendLibrarySnapshot(peer, R"({})");
-        QVERIFY(!std::filesystem::exists(LibDir));
+        QVERIFY(std::filesystem::exists(Plan.front().Dest));
+        QVERIFY(std::filesystem::exists(Installed / "game.zip"));
     }
 
     void friend_snapshot_replaces_wholesale_and_dedups()

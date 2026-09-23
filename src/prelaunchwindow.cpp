@@ -974,8 +974,18 @@ void PreLaunchWindow::RefreshGraftEntryRows()
             }
         }
     }
-    const int Sel = VariantCombo->findData(Keep);
+    int Sel = VariantCombo->findData(Keep);
+    bool Vanished = false;
+    if (Sel < 0)
+    {
+        // The selected row was a graft's entry and that graft was just unticked: fall back to the variant's own
+        // rows and RE-READ the selection, or Entrypoint/EntryNode keep naming a loader the mount no longer holds.
+        Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId + "\x1f" + Entrypoint));
+        if (Sel < 0) Sel = VariantCombo->findData(QString::fromStdString(LaunchNodeId), Qt::UserRole, Qt::MatchStartsWith);
+        Vanished = Sel >= 0;
+    }
     if (Sel >= 0) VariantCombo->setCurrentIndex(Sel);
+    if (Vanished) onVariantChanged();
 }
 
 void PreLaunchWindow::ReloadAndRebuild()

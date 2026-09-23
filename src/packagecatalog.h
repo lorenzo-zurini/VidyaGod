@@ -269,6 +269,10 @@ std::vector<std::string> PublishLibrary(nlohmann::ordered_json &Config, std::str
 // {libName: [item]} record; `NickLabel` prefixes the per-library dir names. UNTRUSTED input: every path segment is
 // sanitized and item counts are bounded. Pure planning — touches no disk, fetches nothing.
 struct ReceivedFetch { std::string Cid; std::string Dest; };
+// True when a directory holds any file that is not a node (.json): content that was fetched or authored there.
+// Source removal and stub replacement must never delete such a dir — it is an install, not a stub.
+bool DirHasContent(const std::string &Dir);
+
 std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &GlobalConfigJSON,
                                                const std::string &NickLabel, const nlohmann::ordered_json &Libs);
 

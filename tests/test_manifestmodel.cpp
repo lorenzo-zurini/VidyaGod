@@ -717,6 +717,38 @@ TEST(exec_is_the_effective_entry_declared_or_inherited)
     CHECK(!V3->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
 }
 
+// TILE.META is free-form (and foreign on a received block): it must not overwrite the tile's own validated fields.
+TEST(tile_meta_cannot_override_the_tiles_own_fields)
+{
+    Node N;
+    ordered_json J = NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Tile("1", "G")});
+    J["TILE"]["META"] = ordered_json{{"TITLE", 5}, {"UID", "9"}, {"COVER", 7}, {"YEAR", "1999"}};
+    CHECK(ManifestModel::ParseNode(J, {}, {}, N));
+    CHECK_EQ(N.Meta.value("TITLE", std::string()), std::string("G"));
+    CHECK_EQ(N.Uid, std::string("1"));
+    CHECK(N.Meta["UID"].is_string() && N.Meta["UID"] == "1");
+    CHECK(!N.Meta.contains("COVER") || !N.Meta["COVER"].is_number());
+    CHECK_EQ(N.Meta.value("YEAR", std::string()), std::string("1999"));
+}
+
+// PUBLISH is per node and the share list silently lacks an unflagged variant: a card shared by halves is an omission
+// the validator must name.
+TEST(validate_warns_on_an_unpublished_variant_beside_published_ones)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "base", {NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Tile("1", "G")})});
+    AddChain(Idx, "sp", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("SP")})}, {"base"});
+    AddChain(Idx, "mp", {NodeFixture::Merge({NodeFixture::Exec("win32", "m.exe"), NodeFixture::Variant("MP")})}, {"base"}, {{"PUBLISH", true}});
+    AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Content("zip", "o.zip"), NodeFixture::Tile("2", "O"), NodeFixture::Exec("win32", "o.exe"), NodeFixture::Variant("Play")})});
+    ManifestModel::DeriveIdentity(Idx);
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(Errors.empty());
+    int Hits = 0; for (const auto &W : Warnings) if (W.find("'sp'") != std::string::npos && W.find("no PUBLISH") != std::string::npos) ++Hits;
+    CHECK_EQ(Hits, 1);
+    for (const auto &W : Warnings) CHECK(W.find("'other'") == std::string::npos || W.find("no PUBLISH") == std::string::npos);   // a wholly unpublished title is the author's choice
+}
+
 // A frozen or fetched block carries no handle: ParseNode keys it by LABEL, and the index then files it under its
 // real CID. The face's FaceKey must be that index key — a label-keyed FaceKey found a DIFFERENT node with the same
 // label (a stale copy from an earlier publish), depth -1, null Meta, and OrderVariants threw on it.
@@ -758,6 +790,9 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     AddChain(Idx, "mod_any",  {NodeFixture::Content("dir", "c")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v1", "v2"}) })}});
     AddChain(Idx, "hd",       {NodeFixture::Content("dir", "d")}, {"mod_v2"});                   // a graft on a graft
     AddChain(Idx, "hd_v1",    {NodeFixture::Content("dir", "d1")}, {"mod_v1"});                  // made of a v1-only mod
+    AddChain(Idx, "mod_gone", {NodeFixture::Content("dir", "g")}, {"v2", "v_missing"});          // names a node that never landed
+    AddChain(Idx, "v3",       {NodeFixture::Merge({NodeFixture::Content("delta", "v3.vgdelta"), NodeFixture::Variant("v3"), NodeFixture::Tile("1", "G")})}, {"lib"});   // declared VARIANT, no entry beneath (not yet landed)
+    AddChain(Idx, "mod_v3",   {NodeFixture::Content("dir", "m3")}, {"v3", "v2"});
     AddChain(Idx, "lib",      {NodeFixture::Content("dir", "l")});                               // substance
     AddChain(Idx, "uses_lib", {NodeFixture::Content("dir", "e")}, {"v2", "lib"});
     AddChain(Idx, "rival",    {NodeFixture::Content("dir", "r")}, {}, {{"OVER", ordered_json::array({"v2", ordered_json{{"NOT", "mod_v2"}}})}});
@@ -779,6 +814,10 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     CHECK(O.count("hd") && O["hd"].Applicable);                     // made of mod_v2: ticking hd brings mod_v2
     CHECK(O.count("hd_v1") && !O["hd_v1"].Applicable);              // requirements are TRANSITIVE over composition:
     CHECK_EQ(O["hd_v1"].Blocker, std::string("v1"));                // what hd_v1 brings (mod_v1) needs v1
+    CHECK(O.count("mod_gone") && !O["mod_gone"].Applicable);        // a ref not in the graph is a blocker, never composed
+    CHECK_EQ(O["mod_gone"].Blocker, std::string("v_missing"));
+    CHECK(O.count("mod_v3") && !O["mod_v3"].Applicable);            // v3 DECLARES VARIANT: a requirement even before its
+    CHECK_EQ(O["mod_v3"].Blocker, std::string("v3"));               // entry source has landed (IsVariant() would be false)
     CHECK(O.count("uses_lib") && O["uses_lib"].Applicable);         // lib is substance: satisfied by mounting
     CHECK(O.count("rival") && O["rival"].Applicable);
     CHECK(!O.count("mod_other"));                                   // another title's mod is not offered here
