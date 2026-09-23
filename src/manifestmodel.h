@@ -230,9 +230,9 @@ std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::stri
                                            const std::map<std::string, int> &Precedence = {},
                                            const std::function<bool(const Node &)> &Scope = nullptr);
 
-// Visits every resolvable node in RootId's closure (ResolveNodeOrder order) EXCEPT RootId itself — the
-// "walk a runner's content closure" skeleton that used to be hand-rolled at four call sites (RunnerBuildNodes,
-// RunnerShipsBuild, BuildLink, InitializeFromNode). Each caller keeps its own per-node filter/body.
+// Visits every resolvable node in RootId's closure — RootId INCLUDED, in ResolveNodeOrder order — with no special
+// case for what the nodes are: a node's mount IS its closure, whether the root is a launchable or a runner used
+// as a chain link (its build = its own layers + what it is OVER, exactly like a game's).
 void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
                         const std::map<std::string, bool> &Toggles,
                         const std::function<void(const Node &)> &Visit);

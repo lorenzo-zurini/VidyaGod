@@ -1404,17 +1404,13 @@ bool RunnerInstalled(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     const Node *R = Idx.Find(RunnerNodeId);
     if (!R || !R->IsRunner()) return false;
-    // Ships its own build (any VFS layer in its content closure — local PATH or a remote CID) → must be imported
-    // (build hydrated + DEFPREFIX). Otherwise it's a PATH runner → usable iff its executable resolves on this system.
+    // Ships its own build (any VFS layer in its closure — local PATH or a remote CID) → must be imported (build
+    // hydrated + DEFPREFIX). Otherwise it's a PATH runner → usable iff its executable resolves on this system.
     bool ShipsBuild = false;
-    for (const std::string &Id : ManifestModel::ResolveNodeOrder(Idx, RunnerNodeId, {}))
-    {
-        if (Id == RunnerNodeId) continue;
-        const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
-        for (const auto &L : N->Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; break; }
-        if (ShipsBuild) break;
-    }
+    ManifestModel::ForEachClosureNode(Idx, RunnerNodeId, {}, [&](const Node &N) {
+        if (ShipsBuild || !N.Layers.is_array()) return;
+        for (const auto &L : N.Layers) if (ManifestModel::IsRunnerBuildLayer(L)) { ShipsBuild = true; return; }
+    });
     if (ShipsBuild)
         return RunnerInstall::RunnerNodeImported(Idx, RunnerNodeId);
     return RunnerWrapper::ExecutableAvailable(R->Exec);
@@ -1475,7 +1471,7 @@ static void ForEachContentLayer(const NodeIndex &Idx, const std::string &LaunchN
     for (const std::string &Id : Order)
     {
         const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        if (!N || !N->Layers.is_array()) continue;
         for (const auto &L : N->Layers)
         {
             if (!IsVfsLayer(LayerType(L))) continue;
@@ -1579,8 +1575,8 @@ std::unordered_map<std::string, NodeHydration> HydrationMap(const NodeIndex &Idx
         Memo[Id] = {true, false};                                    // cycle guard (graph is a DAG; validation checks this)
         NodeHydration R;                                             // {Hydrated=true, HasContent=false}
         const Node *N = Idx.Find(Id);
-        // Own content layers (runner nodes contribute nothing — their layers are never mounted as content).
-        if (N && !N->IsRunner() && N->Layers.is_array())
+        // Own content layers.
+        if (N && N->Layers.is_array())
             for (const auto &L : N->Layers)
             {
                 if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;

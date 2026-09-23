@@ -11,9 +11,8 @@
 using namespace ManifestModel;
 
 namespace {
-//A runner's BUILD = its content closure (PARENTS), excluding the runner node itself: the content nodes carrying the
-//runner's VFS layers (proton/wine binaries, …), in load order. A runner node's OWN LAYERS are never the build (they
-//are ignored — validation warns); the build always lives on PARENT content nodes.
+//A runner's BUILD = its closure, itself included (its own layers — the java runners carry the JRE zip on the node
+//— plus what it is OVER — proton's wine chain), in load order. The same rule as a game's mount; nothing special.
 std::vector<const Node *> RunnerBuildNodes(const NodeIndex &Idx, const std::string &RunnerNodeId)
 {
     std::vector<const Node *> Out;

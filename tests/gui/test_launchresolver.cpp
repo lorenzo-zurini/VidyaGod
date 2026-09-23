@@ -533,6 +533,37 @@ private slots:
         QCOMPARE((int)LaunchResolver::ResolveChainIds(idx, launch, cp, cfg).size(), 1);
     }
 
+    // A runner's build is its closure, ITSELF INCLUDED — the same rule as a game's mount, no runner special case.
+    // A runner whose build lives ON the runner node (ENTRYPOINTS + LAYERS in one node — the java runners after the
+    // one-edge fold) ships that build: it is available with a bare EXECUTABLE, and its link mounts the layer.
+    // Before this, every runner-build walk skipped the runner node itself, so Minecraft's JRE was never mounted
+    // (execvp of /__jre/bin/java → exit 127) while proton, whose build is a chain it is OVER, kept working.
+    void runner_build_on_the_runner_node_itself_ships()
+    {
+        NodeIndex idx;
+        Node java = chainRunner("java8", {"java_8"}, kMachine, "%RunnerMount%/__jre/bin/java");
+        java.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "jre_8.zip"}, {"TARGET", "__jre"}} });
+        idx.Nodes["java8"] = java;
+        Node launch = launchNode("mc", "java_8", {});
+        ContainerParams cp("/tmp/vg_bundle");
+        const json cfg = json{{"Settings", json::object()}};
+        auto ids = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);
+        QVERIFY2(!ids.empty() && ids[0] == "java8", "the self-built runner bridges java_8 (it ships its build)");
+        auto chain = LaunchResolver::ResolveRunnerChain(idx, launch, cp, cfg);
+        QVERIFY(!chain.empty());
+        QVERIFY2(chain[0].ShipsBuild, "the link ships a build");
+        QCOMPARE((int)chain[0].Layers.size(), 1);                  // the runner's OWN layer is the build
+        QCOMPARE(chain[0].Layers[0].value("TARGET", std::string()), std::string("__jre"));
+        // What the runner is OVER is part of its build too — whatever kind of node it is (no special case).
+        Node lib = chainRunner("lib", {"snes"}, "win32", "snes9x.exe");
+        lib.Layers = json::array({ json{{"TYPE", "VFSZipLayer"}, {"PATH", "lib.zip"}} });
+        idx.Nodes["lib"] = lib;
+        NodeFixture::Wire(idx.Nodes["java8"], {"lib"});
+        auto chain2 = LaunchResolver::ResolveRunnerChain(idx, launch, cp, cfg);
+        QCOMPARE((int)chain2[0].Layers.size(), 2);
+        QCOMPARE(chain2[0].Layers.back().value("TARGET", std::string()), std::string("__jre"));   // own layer last = on top
+    }
+
     // No authored native runner → the terminal is the synthesized passthrough sentinel.
     void chain_synthesizes_native_terminal_when_unauthored()
     {

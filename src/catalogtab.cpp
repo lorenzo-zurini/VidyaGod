@@ -208,8 +208,7 @@ void CatalogTab::rebuild()
         if (Lid.empty()) return 0;
         int n = 0;
         for (const std::string & Nid : ManifestModel::ResolveNodeOrder(Model.catalogIndex(), Lid, {})) {
-            const Node * N = Model.catalogIndex().Find(Nid);
-            if (N && !N->IsRunner()) n++;
+            if (Model.catalogIndex().Find(Nid)) n++;
         }
         return n;
     };

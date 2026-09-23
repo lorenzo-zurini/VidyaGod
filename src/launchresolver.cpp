@@ -181,20 +181,15 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
 
     if (RunnerNode)
     {
-        //Runner build = the boundary runner node's content closure (its PARENTS) — for runner CustomVar resolution
-        //(RunnerComponents/RunnerRecipe) and the UNIFIED fold.
+        //Runner build = the boundary runner node's closure, itself LAST (highest priority: it carries the placement
+        //CustomVars — %DXVK_TARGET%/%FONTS_TARGET% — and, for a folded runner, the build layer itself) — for runner
+        //CustomVar resolution (RunnerComponents/RunnerRecipe) and the UNIFIED fold.
         nlohmann::ordered_json RunnerComps = nlohmann::ordered_json::array();
         std::vector<std::string> RunnerBuildIds;
         ManifestModel::ForEachClosureNode(Idx, RunnerNode->NodeId, CP.ModuleStates, [&](const Node &N) {
-            if (N.IsRunner()) return;
             RunnerComps.push_back({{"COMPONENTID", N.NodeId}, {"SUBCOMPONENTS", AbsLayers(&N)}});
             RunnerBuildIds.push_back(N.NodeId);
         });
-        //The runner NODE itself carries the placement CustomVars (e.g. %DXVK_TARGET%/%FONTS_TARGET% that mount its lib
-        //components at the right prefix paths). The loop above skips it (it's the DeclareRunner boundary), so add it
-        //back — otherwise those knobs never reach ResolveCustomVariables and the components mount at literal %TARGET%.
-        RunnerComps.push_back({{"COMPONENTID", RunnerNode->NodeId}, {"SUBCOMPONENTS", AbsLayers(RunnerNode)}});
-        RunnerBuildIds.push_back(RunnerNode->NodeId);
         CP.RunnerComponents = RunnerComps;
         CP.RunnerRecipe     = RunnerBuildIds;
         CP.RunnerEndpoints  = CP.UnifiedRuntime ? RunnerBuildIds : std::vector<std::string>{};
@@ -211,7 +206,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     {
         if (Id == LaunchId) continue;
         const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner()) continue;
+        if (!N) continue;
         AddComponent(N);
     }
     for (const auto &M : Missing) LogWarn("InitializeFromNode", "Unresolved requirement: " + M);
@@ -225,7 +220,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
                                                                   [](const Node &N) { return !N.Received && !N.BundleDir.empty(); }))
     {
         const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner()) continue;
+        if (!N) continue;
         AddComponent(N);
     }
 

@@ -113,14 +113,15 @@ bool RunnerBetterPtr(const Node *A, const Node *B, const Node &Launch)
 bool RunnerServes(const Node *R, const std::string &Platform)
 { for (const auto &G : R->GuestPlatform) if (G == Platform) return true; return false; }
 
-//True if a runner SHIPS ITS OWN BUILD: any VFS layer in its content closure (its PARENTS). Such a runner's executable
-//resolves from the mounted build, not the system PATH — so it's "available" even when EXECUTABLE is a bare command
-//(e.g. a win32 emulator "snes9x.exe" nested under proton). Local-PATH or CID layers both count.
+//True if a runner SHIPS ITS OWN BUILD: any VFS layer in its closure (its own layers, or what it is OVER — the
+//same rule as a game's mount). Such a runner's executable resolves from the mounted build, not the system PATH —
+//so it's "available" even when EXECUTABLE is a bare command (e.g. a win32 emulator "snes9x.exe" nested under
+//proton). Local-PATH or CID layers both count.
 bool RunnerShipsBuild(const NodeIndex &Idx, const Node &R)
 {
     bool Ships = false;
     ManifestModel::ForEachClosureNode(Idx, R.NodeId, {}, [&](const Node &N) {
-        if (Ships || N.IsRunner() || !N.Layers.is_array()) return;
+        if (Ships || !N.Layers.is_array()) return;
         for (const auto &L : N.Layers)
             if (ManifestModel::IsRunnerBuildLayer(L)) { Ships = true; return; }
     });
@@ -203,7 +204,7 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id, const std::map
     L.HostPlatform     = R->HostPlatform;
     L.GuestPlatform    = R->GuestPlatform;
     ManifestModel::ForEachClosureNode(Idx, R->NodeId, Toggles, [&](const Node &N) {
-        if (N.IsRunner() || !N.Layers.is_array()) return;
+        if (!N.Layers.is_array()) return;
         for (nlohmann::ordered_json Lay : N.Layers)
         {
             //A runtime-sourced layer (a %variable% PATH — the prefix-assembly mounts) is NOT part of the

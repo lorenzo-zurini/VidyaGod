@@ -1219,6 +1219,19 @@ private slots:
         NodeIndex idx2; ManifestModel::ScanBundleNodes(dir.path().toStdString(), idx2);
         QVERIFY(!RunnerInstall::RunnerBuildPresent(idx2, "wine"));
         QVERIFY(!PackageCatalog::RunnerInstalled(idx2, "wine"));
+
+        // A runner whose build is ON the runner node (folded: ENTRYPOINTS + LAYERS) is a build-shipping runner
+        // too: installed iff its zip is here, and its zip is what a fetch collects when it is not.
+        QTemporaryDir d3; QVERIFY(d3.isValid());
+        writeJson(d3.path() + "/java.json",
+                  NodeFixture::Chain("java", {NodeFixture::Merge({NodeFixture::Runner(ManifestModel::MachinePlatform(), {"java_8"}, "%RunnerMount%/__jre/bin/java"),
+                                                                  NodeFixture::Content("zip", "jre.zip")})}));
+        NodeIndex idx3; ManifestModel::ScanBundleNodes(d3.path().toStdString(), idx3);
+        QVERIFY2(!PackageCatalog::RunnerInstalled(idx3, "java"), "build on the runner node, zip absent ⇒ not installed");
+        QVERIFY(!RunnerInstall::RunnerBuildPresent(idx3, "java"));
+        writeFile(d3.path() + "/jre.zip");
+        NodeIndex idx4; ManifestModel::ScanBundleNodes(d3.path().toStdString(), idx4);
+        QVERIFY2(RunnerInstall::RunnerBuildPresent(idx4, "java"), "…and present once the zip is here");
     }
 
     // Full-closure hydrate: CollectRunnerChainTargets auto-resolves the game's runner via the PLATFORM GRAPH (no

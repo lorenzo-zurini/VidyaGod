@@ -777,7 +777,7 @@ std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &
         {
             if (!Seen.insert(P).second) continue;
             const Node *PN = Idx.Find(P);
-            if (!PN || PN->IsRunner()) continue;
+            if (!PN) continue;
             if (PN->Optional) Out.push_back(PN);
             Frontier.push_back(P);
         }
@@ -813,7 +813,7 @@ std::vector<EndpointInfo> TileEndpoints(const NodeIndex &Idx, const std::vector<
     for (int i = 0; i < Nn; ++i) IxOf[Union[i]->NodeId] = i;
 
     auto CarriesContent = [](const Node *N) {
-        if (N->IsRunner() || !N->Layers.is_array()) return false;
+        if (!N->Layers.is_array()) return false;
         for (const auto &L : N->Layers) if (IsVfsLayer(LayerType(L))) return true;
         return false;
     };
@@ -993,7 +993,7 @@ void GatherLaunchContentFiles(const NodeIndex &Idx, const Node &Launch,
     for (const std::string &Id : ResolveNodeOrder(Idx, Launch.NodeId, {}))
     {
         const Node *N = Idx.Find(Id);
-        if (!N || N->IsRunner() || !N->Layers.is_array()) continue;
+        if (!N || !N->Layers.is_array()) continue;
         for (const auto &L : N->Layers)
         {
             if (!L.is_object() || !IsVfsLayer(LayerType(L))) continue;
@@ -1528,11 +1528,7 @@ void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
                         const std::function<void(const Node &)> &Visit)
 {
     for (const std::string &Id : ResolveNodeOrder(Idx, RootId, Toggles))
-    {
-        if (Id == RootId) continue;
-        const Node *N = Idx.Find(Id);
-        if (N) Visit(*N);
-    }
+        if (const Node *N = Idx.Find(Id)) Visit(*N);
 }
 
 bool IsVfsLayer(const std::string &Type) { return !VfsSpecType(Type).empty(); }

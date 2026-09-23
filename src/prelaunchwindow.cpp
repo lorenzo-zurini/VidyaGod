@@ -658,7 +658,7 @@ void PreLaunchWindow::RebuildCustomVarPickers()
     {
         if (Rid == LaunchResolver::kNativeTerminalId || !Index->Find(Rid)) continue;
         for (const std::string& Id : ManifestModel::ResolveNodeOrder(*Index, Rid, Toggles))
-        { const Node* N = Index->Find(Id); if (N && !N->IsRunner()) Nodes.push_back({Id, true}); }
+        { if (Index->Find(Id)) Nodes.push_back({Id, true}); }
     }
 
     const nlohmann::ordered_json SavedVars = PackageCatalog::GetPackageVariables(*GlobalConfigJSON, PackageUID);
