@@ -199,11 +199,10 @@ private slots:
         QCOMPARE(prefixVfs, 0);    // runner-tree build layer stays in the runner mount, not the prefix
     }
 
-    // A runner-closure node the user switched ON must contribute its prefix-assembly layers. The walk that
-    // collects them used to derive its own toggle map by first walking with DEFAULTS - which never visits an
-    // off-by-default node, so the node got no entry and was gated off again. The toggle could only ever move a
-    // node OFF; turning one ON silently did nothing.
-    void runner_optional_node_toggled_on_contributes_prefix_layers()
+    // A node in a runner's closure is COMPOSITION: it contributes its prefix-assembly layers whatever the
+    // toggles say — a TOGGLE inside a closure is inert (an optional runner piece is a graft on the runner, ticked
+    // from the outside). This pins that the runner-side walk uses the same pure closure as the game side.
+    void runner_closure_nodes_always_contribute_prefix_layers()
     {
         auto build = [](const std::map<std::string, bool> & states) {
             NodeIndex idx;
@@ -227,9 +226,9 @@ private slots:
             return n;
         };
 
-        QCOMPARE(build({}), 0);                                        // off by default
-        QCOMPARE(build({{"wine_extra_dlls", false}}), 0);               // explicitly off
-        QCOMPARE(build({{"wine_extra_dlls", true}}), 1);                // explicitly ON - the regression
+        QCOMPARE(build({}), 1);                                        // composed: mounted
+        QCOMPARE(build({{"wine_extra_dlls", false}}), 1);               // a toggle changes nothing inside a closure
+        QCOMPARE(build({{"wine_extra_dlls", true}}), 1);
     }
 
     // No qualifying runner (guest platform mismatch) → no runner picked.
@@ -521,6 +520,7 @@ private slots:
         launch.Entrypoints = json::array({
             json{{"LABEL", "Native"}, {"HOST", kMachine}, {"PATH", "game"}},
             json{{"LABEL", "Windows"}, {"HOST", "win32"}, {"PATH", "game.exe"}, {"RUNNER", "protonB"}} });
+        launch.EffectiveEntrypoints = launch.Entrypoints;   // a hand-built node: what DeriveIdentity would set
         ContainerParams cp("/tmp/vg_bundle");
         const json cfg = json{{"Settings", json::object()}};
         auto def = LaunchResolver::ResolveChainIds(idx, launch, cp, cfg);

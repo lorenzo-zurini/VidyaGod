@@ -178,15 +178,6 @@ bool ParseNode(const nlohmann::ordered_json &J, const std::filesystem::path &Fil
     }
 }
 
-//The default entrypoint of an ENTRYPOINTS array: the first RECOMMENDED one, else the first. -1 if none.
-static int DefaultEntrypointIndex(const nlohmann::ordered_json &Eps)
-{
-    if (!Eps.is_array() || Eps.empty()) return -1;
-    for (size_t i = 0; i < Eps.size(); ++i)
-        if (Eps[i].is_object() && Eps[i].value("RECOMMENDED", false)) return (int)i;
-    return 0;
-}
-
 static bool EntryIsRunner(const nlohmann::ordered_json &E)
 {
     return E.is_object() && E.contains("GUEST") && E["GUEST"].is_array() && !E["GUEST"].empty();
@@ -208,8 +199,23 @@ static void ApplyEntrypoint(Node &N, const nlohmann::ordered_json &Entry, const 
         N.GuestPlatform.clear();
     }
     N.Label            = Entry.value("LABEL", N.NodeId);
-    N.Recommended      = Entry.value("RECOMMENDED", false);
     N.RecommendedRunner= Entry.value("RUNNER", std::string());
+}
+
+//Set a node's launch fields from an ENTRYPOINTS list (its own, or the inherited one): HasExec/HasRunner over every
+//entry, the default (first) entry's view. Empty list ⇒ nothing runs.
+static void ApplyEntrypoints(Node &N, const nlohmann::ordered_json &Eps, const std::string &Source)
+{
+    N.EffectiveEntrypoints = Eps.is_array() ? Eps : nlohmann::ordered_json::array();
+    N.EntrySource = N.EffectiveEntrypoints.empty() ? std::string() : Source;
+    N.HasExec = N.HasRunner = false;
+    N.Exec = nlohmann::ordered_json();
+    N.HostPlatform.clear(); N.GuestPlatform.clear(); N.RecommendedRunner.clear();
+    N.Label = N.NodeId;
+    if (N.EffectiveEntrypoints.empty()) return;
+    for (const auto &E : N.EffectiveEntrypoints) { if (EntryIsRunner(E)) N.HasRunner = true; else N.HasExec = true; }
+    std::string Err;
+    ApplyEntrypoint(N, N.EffectiveEntrypoints[0], NodeLower::LowerEntrypoint(N.EffectiveEntrypoints[0], N.NodeId, Err));
 }
 
 static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesystem::path &File,
@@ -226,8 +232,10 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
     Out.File      = File;
     Out.BundleDir = BundleDir;
     Out.Entrypoints = nlohmann::ordered_json::array();
+    Out.EffectiveEntrypoints = nlohmann::ordered_json::array();
     Out.Layers = nlohmann::ordered_json::array();
     Out.Publish = J.contains("PUBLISH") && J["PUBLISH"].is_boolean() && J["PUBLISH"].get<bool>();
+    Out.Recommended = J.contains("RECOMMENDED") && J["RECOMMENDED"].is_boolean() && J["RECOMMENDED"].get<bool>();
     Out.RawWhen = (J.contains("WHEN") && J["WHEN"].is_string()) ? J["WHEN"].get<std::string>() : std::string();
 
     //A refusal keeps the node INDEXED with the reason attached and no layers: validation names it, and
@@ -251,7 +259,18 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
     {
         if (R.Not) Out.Excludes.push_back(R.Any.front());
         else for (const std::string &M : R.Any) Out.Parents.push_back(M);
+        if (R.Composes()) Out.Composes.push_back(R.Any.front());
     }
+
+    //--- VARIANT: on the shelf under this name. A non-string or empty value is refused, never guessed. ---
+    if (J.contains("VARIANT"))
+    {
+        if (!J["VARIANT"].is_string() || J["VARIANT"].get<std::string>().empty())
+            return Refuse("node '" + Out.NodeId + "': VARIANT must be a non-empty name");
+        Out.Variant = J["VARIANT"].get<std::string>();
+    }
+    if (J.contains("RECOMMENDED") && !J["RECOMMENDED"].is_boolean())
+        return Refuse("node '" + Out.NodeId + "': RECOMMENDED must be true or false");
 
     //--- the payload: every present payload array lowers into the executor's flat layer stream ---
     std::string LowerErr;
@@ -292,27 +311,30 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
         Out.OwnTile   = true;
         Out.Uid       = T["UID"].get<std::string>();
         Out.Uids      = { Out.Uid };
+        Out.FaceKey   = Out.Key();
+        Out.FaceDistance = 0;
+        Out.AnchorKey = Out.Key();
         Out.Meta      = std::move(Meta);
     }
 
-    //--- ENTRYPOINTS: launchable iff present. Each entry lowers to the exec block the engine consumes; the
-    //node's launch fields are the DEFAULT entry's view. ---
+    //--- ENTRYPOINTS: the node's OWN list. Each entry lowers to the exec block the engine consumes. The node's
+    //launch fields are set from it here; DeriveIdentity replaces them with the INHERITED list for a node that
+    //declares none (a fact that folds along the chain). ---
     if (J.contains("ENTRYPOINTS"))
     {
         const auto &Eps = J["ENTRYPOINTS"];
         if (!Eps.is_array()) return Refuse("node '" + Out.NodeId + "': ENTRYPOINTS must be a list");
-        if (Eps.empty()) return Refuse("node '" + Out.NodeId + "': ENTRYPOINTS is empty (a launchable with nothing to run — remove it or add an entry)");
+        if (Eps.empty()) return Refuse("node '" + Out.NodeId + "': ENTRYPOINTS is empty (nothing to run — remove it or add an entry)");
         for (const auto &E : Eps)
         {
             std::string EpErr;
             const nlohmann::ordered_json Ex = NodeLower::LowerEntrypoint(E, Out.NodeId, EpErr);
             if (!EpErr.empty()) return Refuse(EpErr);
-            if (EntryIsRunner(E)) Out.HasRunner = true; else Out.HasExec = true;
+            if (EntryIsRunner(E)) Out.OwnRunner = true;
         }
         Out.Entrypoints = Eps;
-        const int D = DefaultEntrypointIndex(Eps);
-        std::string EpErr;
-        ApplyEntrypoint(Out, Eps[D], NodeLower::LowerEntrypoint(Eps[D], Out.NodeId, EpErr));
+        ApplyEntrypoints(Out, Eps, Out.Key());
+        if (Out.OwnRunner && Out.AnchorKey.empty()) Out.AnchorKey = Out.Key();
     }
     return true;
 }
@@ -321,14 +343,14 @@ static bool ParseNodeOrThrow(const nlohmann::ordered_json &J, const std::filesys
 
 nlohmann::ordered_json Node::ExecFor(const std::string &Lbl) const
 {
-    if (!Entrypoints.is_array() || Entrypoints.empty()) return nlohmann::ordered_json();
+    if (!EffectiveEntrypoints.is_array() || EffectiveEntrypoints.empty()) return nlohmann::ordered_json();
     if (Lbl.empty()) return Exec;
     const std::vector<std::string> Labels = EntrypointLabels();
     for (size_t i = 0; i < Labels.size(); ++i)
         if (Labels[i] == Lbl)
         {
             std::string Err;
-            return NodeLower::LowerEntrypoint(Entrypoints[i], NodeId, Err);
+            return NodeLower::LowerEntrypoint(EffectiveEntrypoints[i], NodeId, Err);
         }
     return nlohmann::ordered_json();
 }
@@ -350,10 +372,10 @@ std::string Node::RunnerFor(const std::string &Lbl) const
 std::vector<std::string> Node::EntrypointLabels() const
 {
     std::vector<std::string> Out;
-    if (!Entrypoints.is_array()) return Out;
-    for (size_t i = 0; i < Entrypoints.size(); ++i)
+    if (!EffectiveEntrypoints.is_array()) return Out;
+    for (size_t i = 0; i < EffectiveEntrypoints.size(); ++i)
     {
-        const auto &E = Entrypoints[i];
+        const auto &E = EffectiveEntrypoints[i];
         const std::string L = E.is_object() ? E.value("LABEL", std::string()) : std::string();
         Out.push_back(L.empty() ? std::to_string(i) : L);
     }
@@ -420,12 +442,9 @@ NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
 
 void DeriveIdentity(NodeIndex &Idx)
 {
-    // Identity follows the edge: a node with its own TILE IS its identity; every other node belongs to whatever it
-    // is OVER — the union of its positive requirements' identities, in OVER order (a mod for two games has both; an
-    // any-of group contributes every member's). Memoized in ONE pass (O(N+E)) — a per-node closure walk is O(N²)
-    // on a 900-deep Minecraft chain. Meta is the first identity's tile fields (own, else the first inherited tile's),
-    // so the picker can show a graft under its game's title/cover.
-    struct G { std::vector<std::string> Uids; nlohmann::ordered_json Meta; bool Done = false; };
+    // ---- identity: the union of the faces beneath a node, across EVERY positive ref (bare refs and group members
+    // alike — a mod OVER [[aok, conq]] belongs to both). Own tile = itself. Memoized, cycle-guarded. ----
+    struct G { std::vector<std::string> Uids; bool Done = false; };
     std::unordered_map<std::string, G> Memo;
     std::function<const G &(const std::string &)> Of = [&](const std::string &Id) -> const G & {
         auto It = Memo.find(Id);
@@ -433,234 +452,80 @@ void DeriveIdentity(NodeIndex &Idx)
         G &g = Memo[Id];                                                     // placeholder first: cycle guard
         const Node *N = Idx.Find(Id);
         if (!N) return g;
-        if (N->OwnTile)
-        {
-            g.Uids = { N->Uid }; g.Meta = N->Meta; g.Done = true;
-            return g;
-        }
+        if (N->OwnTile) { g.Uids = { N->Uid }; g.Done = true; return g; }
         for (const std::string &P : N->Parents)
         {
             if (!Idx.Find(P)) continue;
             const G &pg = Of(P);
             for (const std::string &U : pg.Uids)
                 if (std::find(g.Uids.begin(), g.Uids.end(), U) == g.Uids.end()) g.Uids.push_back(U);
-            if (g.Meta.empty() && !pg.Meta.empty()) g.Meta = pg.Meta;
         }
         g.Done = true;
         return g;
     };
+    // ---- nearest-beneath facts, one generic memoized DP: the nearest node beneath (own = 0) that satisfies a
+    // predicate, by OVER distance over the given refs, ties by OVER order. A placeholder entry is the cycle guard. ----
+    struct Near { std::string Key; int Dist = -1; };
+    struct NearestDP {
+        const NodeIndex &Idx; std::function<bool(const Node &)> Base; bool BareOnly;
+        std::unordered_map<std::string, Near> Memo;
+        const Near &operator()(const std::string &Id)
+        {
+            auto It = Memo.find(Id);
+            if (It != Memo.end()) return It->second;
+            Near &n = Memo[Id];
+            const Node *N = Idx.Find(Id);
+            if (!N) return n;
+            if (Base(*N)) { n.Key = Id; n.Dist = 0; return n; }
+            Near Best;
+            for (const std::string &P : (BareOnly ? N->Composes : N->Parents))
+            {
+                if (!Idx.Find(P)) continue;
+                const Near pn = (*this)(P);                    // by value: the recursion may rehash Memo
+                if (pn.Dist < 0) continue;
+                if (Best.Dist < 0 || pn.Dist + 1 < Best.Dist) { Best.Dist = pn.Dist + 1; Best.Key = pn.Key; }
+            }
+            Near &out = Memo[Id];                              // re-find: Memo may have rehashed
+            out = Best;
+            return out;
+        }
+    };
+    NearestDP Face  { Idx, [](const Node &N) { return N.OwnTile; }, /*BareOnly=*/false, {} };
+    NearestDP Anchor{ Idx, [](const Node &N) { return N.OwnTile || N.OwnRunner; }, /*BareOnly=*/false, {} };
+    NearestDP Entry { Idx, [](const Node &N) { return N.Entrypoints.is_array() && !N.Entrypoints.empty(); }, /*BareOnly=*/true, {} };
+
     for (auto &[Id, N] : Idx.Nodes)
     {
-        if (N.OwnTile) continue;
-        const G &g = Of(Id);
-        N.Uids      = g.Uids;
-        N.Uid       = g.Uids.empty() ? std::string() : g.Uids.front();
-        N.Meta      = g.Meta;
-    }
-    // The reverse fact: which titles are BUILT ON each node. One walk per launchable over its closure; a node's
-    // Owners are the UIDs of every launchable whose closure holds it. This is what tells a title's own chain (one
-    // owner) from shared substance (many) when the chain is read bottom-up for nesting.
-    for (auto &[Id, N] : Idx.Nodes) N.Owners.clear();
-    for (const auto &[Id, L] : Idx.Nodes)
-    {
-        if (!L.IsLaunchable() || L.Uid.empty()) continue;
-        std::unordered_set<std::string> Seen;
-        std::vector<std::string> Stack{Id};
-        while (!Stack.empty())
+        if (!N.OwnTile)
         {
-            const std::string Cur = Stack.back(); Stack.pop_back();
-            if (!Seen.insert(Cur).second) continue;
-            auto It = Idx.Nodes.find(Cur);
-            if (It == Idx.Nodes.end()) continue;
-            Node &M = It->second;
-            if (std::find(M.Owners.begin(), M.Owners.end(), L.Uid) == M.Owners.end()) M.Owners.push_back(L.Uid);
-            for (const std::string &P : M.Parents) Stack.push_back(P);
+            const G &g = Of(Id);
+            N.Uids = g.Uids;
+            const Near &f = Face(Id);
+            N.FaceKey = f.Key; N.FaceDistance = f.Dist;
+            const Node *F = f.Key.empty() ? nullptr : Idx.Find(f.Key);
+            N.Uid  = F ? F->Uid : (g.Uids.empty() ? std::string() : g.Uids.front());
+            N.Meta = F ? F->Meta : nlohmann::ordered_json();
+        }
+        const Near &a = Anchor(Id);
+        N.AnchorKey = a.Key;
+        // Entries: a node with its own list keeps it (ParseNode applied it); one without inherits the nearest.
+        if (!(N.Entrypoints.is_array() && !N.Entrypoints.empty()))
+        {
+            const Near &e = Entry(Id);
+            const Node *S = e.Key.empty() ? nullptr : Idx.Find(e.Key);
+            ApplyEntrypoints(N, S ? S->Entrypoints : nlohmann::ordered_json::array(), e.Key);
         }
     }
-}
-
-int TitleHeight(const NodeIndex &Idx, const Node &N)
-{
-    // Longest OVER path from N through nodes that ONLY N's title is built on. Memoized; a cycle scores 0.
-    std::unordered_map<std::string, int> Memo;
-    std::unordered_set<std::string> OnStack;
-    std::function<int(const std::string &)> H = [&](const std::string &Id) -> int {
-        if (auto It = Memo.find(Id); It != Memo.end()) return It->second;
-        if (!OnStack.insert(Id).second) return 0;
-        int Best = 0;
-        if (const Node *C = Idx.Find(Id))
-            for (const std::string &P : C->Parents)
-            {
-                const Node *Pn = Idx.Find(P);
-                if (!Pn || Pn->Owners.size() != 1 || Pn->Owners.front() != N.Uid) continue;   // shared, or another title's
-                Best = std::max(Best, 1 + H(P));
-            }
-        OnStack.erase(Id);
-        Memo[Id] = Best;
-        return Best;
-    };
-    return N.Uid.empty() ? 0 : H(N.Key());
 }
 
 bool SameTile(const Node &A, const Node &B)
 {
     auto F = [](const Node &N, const char *K) { return N.Meta.is_object() && N.Meta.contains(K) ? N.Meta[K] : nlohmann::ordered_json(); };
-    return F(A, "TITLE") == F(B, "TITLE") && F(A, "COVER") == F(B, "COVER");
+    return A.Uid == B.Uid && F(A, "TITLE") == F(B, "TITLE") && F(A, "COVER") == F(B, "COVER");
 }
 
-std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Group)
-{
-    if (Group.empty()) return Group;
-    std::map<const Node *, int> Depth;
-    for (const Node *N : Group) Depth[N] = TitleHeight(Idx, *N);
-    //The main: the shortest chain, ties by label — the one card-naming choice that has to be deterministic.
-    const Node *Main = *std::min_element(Group.begin(), Group.end(), [&](const Node *A, const Node *B) {
-        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];
-        return A->NodeId < B->NodeId;
-    });
-    std::stable_sort(Group.begin(), Group.end(), [&](const Node *A, const Node *B) {
-        const bool Ta = SameTile(*A, *Main), Tb = SameTile(*B, *Main);
-        if (Ta != Tb) return Ta;                                   // the main's own tile first: it names the card
-        if (!Ta && Depth[A] != Depth[B]) return Depth[A] < Depth[B];   // children in chain order
-        if (A->Recommended != B->Recommended) return A->Recommended;    // recommended edition first
-        return A->NodeId < B->NodeId;
-    });
-    return Group;
-}
-
-//The one place the CNF is evaluated for CLOSURE building. Returns the members of a requirement that are kept,
-//choosing for a group: an already-kept member wins; else the first member present in the index (a group with
-//nothing selected on a launchable is a choice the instance has not made yet — the CLI/audit takes the first so
-//resolution stays deterministic; the picker offers the choice).
-std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
-                                          const std::map<std::string, bool> &Toggles,
-                                          std::vector<std::string> *Missing)
-{
-    std::vector<std::string> Order;
-    const Node *Launch = Idx.Find(LaunchNodeId);
-    //A node whose payload never lowered is unusable: routing through it would apply nothing where the author
-    //declared something. Treated as missing so the launch refuses loudly instead of quietly doing less.
-    if (!Launch || !Launch->LowerError.empty())
-    { if (Missing) Missing->push_back(LaunchNodeId); return Order; }
-
-    //Phase 1 — determine the ENABLED set by a breadth-first walk over OVER from the launch node, applying each
-    //node's own toggle/NOT gate. A plain requirement is always pulled; a TOGGLE'd one only if its toggle (else
-    //DEFAULT) is on and no kept node excludes it. We only descend INTO a node we keep, so a toggled node's unique
-    //ancestors are naturally dropped with it (the hierarchy gate).
-    std::unordered_set<std::string> Enabled;
-    std::unordered_set<std::string> ExcludedByKept;                        // ∪ of NOT targets of every kept node
-    auto ToggleOf = [&](const std::string &Key, const Node *N) {
-        auto It = Toggles.find(Key);
-        if (It != Toggles.end()) return It->second;
-        //Toggles are keyed by Key() (CID); a label-keyed entry (a CLI --module by LABEL) resolves too.
-        if (N && !N->NodeId.empty()) { It = Toggles.find(N->NodeId); if (It != Toggles.end()) return It->second; }
-        return N ? N->Default : true;
-    };
-    auto Keep = [&](const std::string &Id, const Node *N) {
-        Enabled.insert(Id);
-        if (N) for (const auto &E : N->Excludes) ExcludedByKept.insert(E);
-    };
-    //A candidate conflicts if it excludes an already-kept node, OR an already-kept node excludes it.
-    auto Conflicts = [&](const std::string &Id, const Node &N) {
-        for (const auto &E : N.Excludes) if (Enabled.count(E)) return true;
-        return ExcludedByKept.count(Id) != 0;
-    };
-    std::vector<std::string> Frontier = { LaunchNodeId };
-    size_t FrontierHead = 0;
-    Keep(LaunchNodeId, Launch);
-    auto ExplicitOn = [&](const std::string &Id) {
-        auto It = Toggles.find(Id);
-        if (It != Toggles.end() && It->second) return true;
-        const Node *P = Idx.Find(Id);
-        if (P && !P->NodeId.empty()) { It = Toggles.find(P->NodeId); return It != Toggles.end() && It->second; }
-        return false;
-    };
-    //Any-of groups are DEFERRED: a group is a choice, and a member already kept through any other route (a plain
-    //requirement elsewhere in the closure) must satisfy it — so plain requirements are walked to exhaustion
-    //first, then each pending group is resolved against the kept set, and the walk resumes for what the pick
-    //pulled in. Repeats until nothing is pending.
-    std::vector<const OverReq *> PendingGroups;
-    //Returns whether the candidate is KEPT (already, or now): a group needs to know that its pick was refused.
-    auto Consider = [&](const std::string &Pid) -> bool {
-        if (Enabled.count(Pid)) return true;
-        const Node *P = Idx.Find(Pid);
-        if (!P || !P->LowerError.empty()) { if (Missing) Missing->push_back(Pid); return false; }
-        if (P->Optional && !ToggleOf(Pid, P)) return false;
-        if (Conflicts(Pid, *P)) return false;
-        Keep(Pid, P); Frontier.push_back(Pid);
-        return true;
-    };
-    for (;;)
-    {
-        while (FrontierHead < Frontier.size())
-        {
-            const std::string Cur = Frontier[FrontierHead++];
-            const Node *N = Idx.Find(Cur);
-            if (!N) continue;
-            //Plain candidates in OVER order, with the explicitly-toggled-on ones first so an explicit choice is
-            //kept before a conflicting DEFAULT-on sibling (first-kept wins the NOT). Otherwise toggling a
-            //mutually-exclusive option on would be silently dropped in favour of the other option's default.
-            std::vector<std::string> Cands;
-            for (const OverReq &R : N->Over)
-            {
-                if (R.Not) continue;
-                if (R.IsGroup()) { PendingGroups.push_back(&R); continue; }
-                Cands.push_back(R.Any.front());
-            }
-            std::stable_sort(Cands.begin(), Cands.end(),
-                             [&](const std::string &A, const std::string &B) { return ExplicitOn(A) && !ExplicitOn(B); });
-            for (const std::string &Pid : Cands) Consider(Pid);
-        }
-        if (PendingGroups.empty()) break;
-        //Resolve ONE pending group per round: an already-kept member satisfies it; else an explicitly toggled-on
-        //member; else the first member the index has. Then walk what that pulled in before the next group, so a
-        //later group can be satisfied by an earlier pick.
-        //A member the gate REFUSES (toggled off by the user, excluded by a kept node) is not the pick: the next
-        //member in preference order is tried — explicitly toggled-on ones first, then list order — and a group no
-        //present member satisfies is reported as missing. Never silently a mount with no member (a launch on
-        //incomplete content that validation, judging the group structurally, would not see).
-        const OverReq *R = PendingGroups.front();
-        PendingGroups.erase(PendingGroups.begin());
-        bool Satisfied = false;
-        for (const std::string &M : R->Any) if (Enabled.count(M)) { Satisfied = true; break; }
-        if (!Satisfied)
-        {
-            std::vector<std::string> Members;
-            for (const std::string &M : R->Any)
-                if (const Node *P = Idx.Find(M); P && P->LowerError.empty()) Members.push_back(M);
-            std::stable_sort(Members.begin(), Members.end(),
-                             [&](const std::string &A, const std::string &B) { return ExplicitOn(A) && !ExplicitOn(B); });
-            for (const std::string &M : Members) if (Consider(M)) { Satisfied = true; break; }
-        }
-        if (!Satisfied)
-        {
-            LogWarn("ManifestModel::ResolveNodeOrder", "any-of group [" + R->Any.front() + (R->Any.size() > 1 ? ", …" : "")
-                    + "] has no member that can be kept — reported as missing.");
-            if (Missing) Missing->push_back(R->Any.front());
-        }
-    }
-
-    //Phase 2 — topo-order the enabled subgraph: emit a node only after all its enabled requirements (post-order
-    //DFS following OVER in list order). The launchable, having no enabled dependants, is emitted last = highest
-    //priority. Cycles are reported and broken (the back-edge is skipped) so resolution still completes.
-    std::unordered_set<std::string> Visited;
-    std::unordered_set<std::string> OnStack;
-    std::function<void(const std::string &)> Emit = [&](const std::string &Id) {
-        if (Visited.count(Id)) return;
-        if (OnStack.count(Id)) { LogWarn("ManifestModel::ResolveNodeOrder", "Cycle through node '" + Id + "' — breaking edge."); return; }
-        OnStack.insert(Id);
-        const Node *N = Idx.Find(Id);
-        if (N) for (const std::string &Pid : N->Parents) if (Enabled.count(Pid)) Emit(Pid);
-        OnStack.erase(Id);
-        Visited.insert(Id);
-        Order.push_back(Id);
-    };
-    Emit(LaunchNodeId);
-    return Order;
-}
-
-//Everything reachable from `Start` through positive OVER refs (the launchable's own composition, toggles
-//ignored): a node in there is part of the launchable, never a graft on it.
+//Everything reachable from `Start` through BARE OVER refs — the node's own composition. A node in there is part
+//of the node, never a graft on it.
 static std::unordered_set<std::string> Reachable(const NodeIndex &Idx, const std::string &Start)
 {
     std::unordered_set<std::string> Seen;
@@ -670,9 +535,82 @@ static std::unordered_set<std::string> Reachable(const NodeIndex &Idx, const std
         const std::string Cur = Stack.back(); Stack.pop_back();
         if (!Seen.insert(Cur).second) continue;
         const Node *N = Idx.Find(Cur);
-        if (N) for (const std::string &P : N->Parents) Stack.push_back(P);
+        if (N) for (const std::string &P : N->Composes) Stack.push_back(P);
     }
     return Seen;
+}
+
+int FaceDepth(const NodeIndex &Idx, const Node &FaceNode)
+{
+    if (!FaceNode.OwnTile) return -1;
+    int D = 0;
+    for (const std::string &Id : Reachable(Idx, FaceNode.Key()))
+    {
+        if (Id == FaceNode.Key()) continue;
+        const Node *P = Idx.Find(Id);
+        if (P && P->OwnTile && P->Uid == FaceNode.Uid && !SameTile(*P, FaceNode)) ++D;
+    }
+    return D;
+}
+
+std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Variants)
+{
+    if (Variants.empty()) return Variants;
+    //Each variant's face node; its depth (0 = a main face). A variant with no face sorts last.
+    std::map<const Node *, int> Depth;
+    std::map<const Node *, const Node *> FaceOf;
+    std::map<std::string, int> DepthOfFace;
+    for (const Node *V : Variants)
+    {
+        const Node *F = V->FaceKey.empty() ? nullptr : Idx.Find(V->FaceKey);
+        FaceOf[V] = F;
+        if (!F) { Depth[V] = 1 << 20; continue; }
+        auto It = DepthOfFace.find(F->Key());
+        if (It == DepthOfFace.end()) It = DepthOfFace.emplace(F->Key(), FaceDepth(Idx, *F)).first;
+        Depth[V] = It->second;
+    }
+    std::stable_sort(Variants.begin(), Variants.end(), [&](const Node *A, const Node *B) {
+        if (Depth[A] != Depth[B]) return Depth[A] < Depth[B];                      // main face first, then children by depth
+        const std::string Fa = FaceOf[A] ? FaceOf[A]->Meta.value("TITLE", std::string()) : std::string();
+        const std::string Fb = FaceOf[B] ? FaceOf[B]->Meta.value("TITLE", std::string()) : std::string();
+        if (Fa != Fb) return Fa < Fb;                                                 // faces of equal depth by title
+        if (A->Recommended != B->Recommended) return A->Recommended;                  // the face's default variant
+        if (A->Variant != B->Variant) return A->Variant < B->Variant;
+        return A->Key() < B->Key();
+    });
+    return Variants;
+}
+
+std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
+                                          const std::map<std::string, bool> &Toggles,
+                                          std::vector<std::string> *Missing)
+{
+    (void)Toggles;   // nothing inside a closure is a choice
+    std::vector<std::string> Order;
+    const Node *Launch = Idx.Find(LaunchNodeId);
+    //A node whose payload never lowered is unusable: routing through it would apply nothing where the author
+    //declared something. Treated as missing so the launch refuses loudly instead of quietly doing less.
+    if (!Launch || !Launch->LowerError.empty())
+    { if (Missing) Missing->push_back(LaunchNodeId); return Order; }
+
+    //The closure: post-order DFS over BARE refs in list order — a node is emitted after everything it is made of,
+    //so the launch node is last (= highest priority). Cycles are reported and broken (the back-edge is skipped).
+    std::unordered_set<std::string> Visited, OnStack;
+    std::function<void(const std::string &)> Emit = [&](const std::string &Id) {
+        if (Visited.count(Id)) return;
+        if (OnStack.count(Id)) { LogWarn("ManifestModel::ResolveNodeOrder", "Cycle through node '" + Id + "' — breaking edge."); return; }
+        const Node *N = Idx.Find(Id);
+        if (!N || !N->LowerError.empty()) { if (Missing) Missing->push_back(Id); Visited.insert(Id); return; }
+        OnStack.insert(Id);
+        for (const std::string &P : N->Composes) Emit(P);
+        OnStack.erase(Id);
+        Visited.insert(Id);
+        Order.push_back(Id);
+    };
+    Emit(Launch->Key() == LaunchNodeId ? LaunchNodeId : Launch->Key());
+    //The caller's spelling of the launch id (a LABEL from the CLI) must head the result under that spelling.
+    if (!Order.empty() && Order.back() != LaunchNodeId) Order.back() = LaunchNodeId;
+    return Order;
 }
 
 std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,
@@ -681,22 +619,24 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
 {
     std::vector<GraftOffer> Out;
     const Node *Launch = Idx.Find(LaunchNodeId);
-    if (!Launch || Launch->Uids.empty()) return Out;
+    if (!Launch) return Out;
     const std::string LaunchKey = Launch->Key();
+    const bool OnRunner = Launch->IsRunner() && !Launch->HasExec;
+    if (!OnRunner && Launch->Uids.empty()) return Out;
     const std::unordered_set<std::string> Own = Reachable(Idx, LaunchKey);
 
-    //Candidates: every node with the launchable's identity that is OVER something and is NOT part of the
-    //launchable's own composition — a branch off somewhere in this title (a graft, or a graft on a graft) —
-    //excluding launchables (those are VARIANTS, picked from the tile, never ticked). Deterministic order: by
-    //label, then key.
+    //Candidates: every node with the selection's identity (the same UID; for a runner: anchored on it) that is
+    //OVER something, is NOT part of the selection's own composition, and is neither a variant nor a runner
+    //(those are picked, never ticked). Deterministic order: by label, then key.
     std::vector<const Node *> Cands;
     for (const auto &[Id, N] : Idx.Nodes)
     {
-        if (N.Parents.empty() || Own.count(Id)) continue;
-        if (N.IsLaunchable() || N.IsRunner() || !N.LowerError.empty()) continue;
-        bool SameTitle = false;
-        for (const std::string &U : N.Uids) for (const std::string &LU : Launch->Uids) if (U == LU) { SameTitle = true; break; }
-        if (!SameTitle) continue;
+        if (N.Over.empty() || Own.count(Id)) continue;
+        if (N.IsVariant() || N.OwnRunner || !N.LowerError.empty()) continue;
+        bool Mine = false;
+        if (OnRunner) Mine = (N.AnchorKey == LaunchKey && Id != LaunchKey);
+        else for (const std::string &U : N.Uids) for (const std::string &LU : Launch->Uids) if (U == LU) { Mine = true; break; }
+        if (!Mine) continue;
         if (Scope && !Scope(N)) continue;
         Cands.push_back(&N);
     }
@@ -709,7 +649,7 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
         auto It = Toggles.find(N.Key());
         if (It != Toggles.end()) return It->second;
         if (!N.NodeId.empty()) { It = Toggles.find(N.NodeId); if (It != Toggles.end()) return It->second; }
-        return N.Optional && N.Default;                        // TOGGLE "on" = the author's default: pre-ticked
+        return N.Optional && N.Default;                        // TOGGLE "on" = shipped pre-ticked
     };
 
     //Applicable against the selected set (the caller holds the graft itself OUT of it): every identity-bearing
@@ -730,7 +670,7 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
             {
                 if (Selected.count(M)) { Ok = true; break; }
                 const Node *Mn = Idx.Find(M);
-                if (Mn && !Mn->HasIdentity()) { Ok = true; break; }        // substance: satisfied by mounting
+                if (Mn && !Mn->HasIdentity() && !Mn->OwnRunner) { Ok = true; break; }   // substance: satisfied by mounting
             }
             if (!Ok) { Why = R.Any.front(); return false; }
         }
@@ -743,9 +683,8 @@ std::vector<GraftOffer> OfferedGrafts(const NodeIndex &Idx, const std::string &L
     //Fixpoint WITH RETRACTION: the set is re-derived in candidate order until it settles — a ticked graft enters
     //when applicable against the others and LEAVES when a selection made after it (a NOT, a lost requirement)
     //makes it inapplicable, and whatever stood on it leaves on the next pass. Between two ticked grafts that
-    //exclude each other the first in candidate order wins (the GUI unticks the loser at tick time, so the stored
-    //ticks rarely disagree). NOT makes this non-monotone, so the pass count is bounded; a set that will not
-    //settle is reported and the last pass stands.
+    //exclude each other the first in candidate order wins (the GUI unticks the loser at tick time). NOT makes this
+    //non-monotone, so the pass count is bounded; a set that will not settle is reported and the last pass stands.
     bool Settled = false;
     for (size_t Pass = 0; Pass <= Cands.size() + 1 && !Settled; ++Pass)
     {
@@ -798,55 +737,22 @@ std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::stri
         if (A->NodeId != B->NodeId) return A->NodeId < B->NodeId;
         return A->Key() < B->Key();
     });
-    //Each graft's own closure (its substance requirements, its private ancestors) topo-ordered beneath it; nodes
-    //already in the base mount, or already emitted by an earlier graft, are not repeated. Its identity-bearing
-    //requirements are SELECTED by construction (that is what made it applicable) — they are in BaseOrder or among
-    //the grafts — so descending into a plain requirement never pulls a second copy of the game.
+    //Each graft's own closure (its substance, its private ancestors) beneath it; nodes already in the base mount,
+    //or already emitted by an earlier graft, are not repeated. Its identity-bearing requirements are SELECTED by
+    //construction (that is what made it applicable) — they are in BaseOrder or among the grafts — so descending
+    //into a bare ref never pulls a second copy of the game.
     std::unordered_set<std::string> Seen(BaseOrder.begin(), BaseOrder.end());
-    //The launch node is in BaseOrder under the id the CALLER passed (a LABEL from the CLI resolves through
-    //Find), while a graft's closure names it by its Key(): both spellings are the same node, already mounted.
     if (const Node *L = Idx.Find(LaunchNodeId)) { Seen.insert(L->Key()); Seen.insert(LaunchNodeId); }
-    std::unordered_set<std::string> ActiveKeys;
-    for (const Node *G : Active) ActiveKeys.insert(G->Key());
     for (const Node *G : Active)
     {
         std::vector<std::string> Missing;
-        //ResolveNodeOrder over the graft's closure with the same toggles: for a group, an already-selected member
-        //(one in Seen) is preferred — mirror that by passing the selected keys as toggles-on.
-        std::map<std::string, bool> T = Toggles;
-        for (const std::string &S : Seen) T[S] = true;
-        for (const std::string &Id : ResolveNodeOrder(Idx, G->Key(), T, &Missing))
+        for (const std::string &Id : ResolveNodeOrder(Idx, G->Key(), Toggles, &Missing))
         {
             if (Seen.count(Id)) continue;
-            //A node OUTSIDE this graft's substance that the closure reached through a plain requirement (a
-            //selected game/graft not yet mounted — cannot happen once BaseOrder holds the game) is emitted here
-            //anyway: the mount must be complete before the graft applies.
             Seen.insert(Id);
             Out.push_back(Id);
         }
         for (const auto &M : Missing) LogWarn("ManifestModel::ResolveGraftOrder", "graft '" + G->NodeId + "': unresolved requirement " + M);
-    }
-    return Out;
-}
-
-std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId)
-{
-    std::vector<const Node*> Out;
-    std::set<std::string> Seen{LaunchNodeId};
-    std::vector<std::string> Frontier{LaunchNodeId};
-    while (!Frontier.empty())
-    {
-        const std::string Cur = Frontier.back(); Frontier.pop_back();
-        const Node *N = Idx.Find(Cur);
-        if (!N) continue;
-        for (const std::string &P : N->Parents)
-        {
-            if (!Seen.insert(P).second) continue;
-            const Node *PN = Idx.Find(P);
-            if (!PN) continue;
-            if (PN->Optional) Out.push_back(PN);
-            Frontier.push_back(P);
-        }
     }
     return Out;
 }
@@ -1325,9 +1231,9 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //(A NOT is one-sided by design and symmetric in EFFECT: selecting the named node makes this one unsatisfied.
         //There is no symmetry rule to lint.)
 
-        if (N.IsLaunchable())
+        if (N.Entrypoints.is_array() && !N.Entrypoints.empty())
         {
-            //Every entrypoint is a variant the user can pick, so every one is checked — not just the default.
+            //Every entry is a way to run the user can pick, so every one is checked — not just the default.
             std::set<std::string> EpLabels;
             for (const std::string &L : N.EntrypointLabels())
                 if (!EpLabels.insert(L).second) Errors.push_back(Tag + ": two ENTRYPOINTS share the LABEL '" + L + "' (the picker could not tell them apart)");
@@ -1397,35 +1303,75 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
             if (PrefixGen && CR.find("drive_c") == std::string::npos)
                 Warnings.push_back(Tag + ": PREFIX_GENERATE runner's CONTENT_ROOT has no drive_c");
         }
-        //A launchable with NO identity of its own and none inherited is a game nobody can find: it appears under
-        //no tile. A runner legitimately has none (runners are listed by platform, not by tile).
-        if (N.IsLaunchable() && !N.IsRunner() && N.Uids.empty())
-            Warnings.push_back(Tag + ": launchable has no identity (no TILE of its own and none reachable through OVER) — it appears under no tile");
+        //----- the two declared facets -----
+        //A VARIANT with nothing to run, or whose effective entries are a runner's, is on the shelf for nothing.
+        if (!N.Variant.empty() && !N.HasExec)
+            Errors.push_back(Tag + ": VARIANT '" + N.Variant + "' has no effective entrypoint (nothing beneath declares one"
+                             + (N.HasRunner ? ", only a runner's" : "") + ") — nothing to run");
+        //A variant with no face beneath it appears under no card.
+        if (N.IsVariant() && N.Uids.empty())
+            Warnings.push_back(Tag + ": VARIANT '" + N.Variant + "' has no face (no TILE beneath it) — it appears under no card");
+        //Requirements (TOGGLE, a group, a NOT) mean something only when the node is OFFERED as a graft. On a
+        //variant (picked, never offered) or on substance (no identity, nothing offers it) they are inert.
+        bool HasReq = N.Optional;
+        for (const OverReq &R : N.Over) if (R.Not || R.IsGroup()) { HasReq = true; break; }
+        if (HasReq && (N.IsVariant() || N.OwnRunner))
+            Warnings.push_back(Tag + ": TOGGLE / any-of / NOT on a " + std::string(N.IsVariant() ? "variant" : "runner")
+                               + " are inert — requirements are evaluated only when a node is offered as a graft");
+        else if (HasReq && N.Uids.empty() && N.AnchorKey.empty())
+            Warnings.push_back(Tag + ": TOGGLE / any-of / NOT on substance (no face or runner beneath) are inert — nothing offers it");
+        //Inheritance is unambiguous: two nodes at the same nearest distance beneath declare DIFFERENT entries (or
+        //different faces). OVER order decides; the author should mean it.
+        if (!(N.Entrypoints.is_array() && !N.Entrypoints.empty()) && !N.EntrySource.empty())
+        {
+            const Node *Src = Idx.Find(N.EntrySource);
+            for (const std::string &P : N.Composes)
+            {
+                const Node *Pn = Idx.Find(P);
+                if (!Pn || Pn->EntrySource.empty() || Pn->EntrySource == N.EntrySource || !Src) continue;
+                const Node *Alt = Idx.Find(Pn->EntrySource);
+                if (Alt && Alt->Entrypoints != Src->Entrypoints && Pn->EffectiveEntrypoints == Alt->Entrypoints)
+                {
+                    //Same distance? Src is nearest; Alt is nearest through P. Ambiguous only if P is a direct
+                    //ref reaching Alt at the same depth as the chosen one — approximate by "another branch
+                    //declares a different list": worth a word either way.
+                    Warnings.push_back(Tag + ": inherits its entrypoints from '" + Src->NodeId + "' while another branch (via '" + Pn->NodeId + "') would give '" + Alt->NodeId + "' — OVER order decides");
+                    break;
+                }
+            }
+        }
     }
 
-    //----- TILE lint: a UID whose shortest-chain launchables carry DIFFERENT tiles has several MAINS — the card
-    //cannot tell which title names it (two independent installs, or an expansion authored beside the base rather
-    //than on its chain). A different tile HIGHER up the chain is an expansion by construction, never a mistake. -----
+    //----- Faces: within one UID, a tile with no same-UID tile beneath it is a MAIN face; two different main faces
+    //leave the card unable to say which title names it (two independent installs). A tile equal to one beneath
+    //it adds nothing. -----
     {
-        std::map<std::string, std::vector<const Node *>> ByUid;
-        for (const auto &[Id, N] : Idx.Nodes) if (N.IsLaunchable() && !N.Uid.empty()) ByUid[N.Uid].push_back(&N);
-        for (const auto &[Uid, Ns] : ByUid)
+        std::map<std::string, std::vector<const Node *>> Tiles;
+        for (const auto &[Id, N] : Idx.Nodes) if (N.OwnTile && !N.LowerError.empty() == false) Tiles[N.Uid].push_back(&N);
+        for (const auto &[Uid, Ns] : Tiles)
         {
-            int Min = INT_MAX;
-            std::map<const Node *, int> Hs;
-            for (const Node *N : Ns) { Hs[N] = TitleHeight(Idx, *N); Min = std::min(Min, Hs[N]); }
             std::vector<const Node *> Mains;
             for (const Node *N : Ns)
-                if (Hs[N] == Min && (OnlyNodes == nullptr || OnlyNodes->count(N->Key())))
+            {
+                if (OnlyNodes && !OnlyNodes->count(N->Key())) continue;
+                bool Redundant = false;
+                for (const std::string &Id : Reachable(Idx, N->Key()))
                 {
-                    bool NewTile = true;
-                    for (const Node *M : Mains) if (SameTile(*M, *N)) { NewTile = false; break; }
-                    if (NewTile) Mains.push_back(N);
+                    const Node *P = Idx.Find(Id);
+                    if (Id != N->Key() && P && P->OwnTile && SameTile(*P, *N)) { Redundant = true; break; }
                 }
+                if (Redundant) Warnings.push_back("node '" + N->Key() + "': TILE equals one beneath it — the face is already inherited");
+                if (FaceDepth(Idx, *N) == 0)
+                {
+                    bool New = true;
+                    for (const Node *M : Mains) if (SameTile(*M, *N)) { New = false; break; }
+                    if (New) Mains.push_back(N);
+                }
+            }
             if (Mains.size() > 1)
             {
-                std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->NodeId;
-                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " mains with different tiles at the same chain height (" + List + ") — the card cannot tell which names it");
+                std::string List; for (const Node *M : Mains) List += (List.empty() ? "" : ", ") + M->Meta.value("TITLE", M->NodeId);
+                Warnings.push_back("UID '" + Uid + "': " + std::to_string(Mains.size()) + " main faces (" + List + ") — the card cannot tell which names it");
             }
         }
     }
@@ -1444,10 +1390,10 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         //condition to ride on. TOGGLE is the mechanism for "this node is off".
         if (N.Layers.empty() && !N.RawWhen.empty())
             Errors.push_back(Tag + ": WHEN on a payload-less node is never evaluated (it emits no layer to gate). "
-                             "Use TOGGLE to make the node opt-in, or move the condition to a payload entry.");
-        //A node that is nothing at all — no payload, no tile, no entrypoint, no edge — is a mistake, not a node.
-        if (N.Layers.empty() && !N.OwnTile && !N.IsLaunchable() && !N.IsRunner() && N.Over.empty())
-            Warnings.push_back(Tag + ": pointless node (no payload, no TILE, no ENTRYPOINTS, no OVER)");
+                             "Move the condition to a payload entry.");
+        //A node that is nothing at all — no payload, no tile, no entrypoint, no variant, no edge — is a mistake.
+        if (N.Layers.empty() && !N.OwnTile && N.Entrypoints.empty() && N.Variant.empty() && N.Over.empty())
+            Warnings.push_back(Tag + ": pointless node (no payload, no TILE, no ENTRYPOINTS, no VARIANT, no OVER)");
     }
 
     //----- WHEN lint: a malformed condition fail-opens (silently always-applies), so catch it statically. -----
@@ -2037,7 +1983,7 @@ ComputeCaseRenames(const NodeIndex &Idx, std::vector<std::string> &Log)
 
     for (const auto &[LId, LN] : Idx.Nodes)
     {
-        if (!LN.IsLaunchable()) continue;
+        if (!LN.IsVariant()) continue;
         std::map<std::string, std::string> Canon;   // lowercased prefix key -> canonical exact component
 
         for (const std::string &Id : ResolveNodeOrder(Idx, LN.NodeId, {}))

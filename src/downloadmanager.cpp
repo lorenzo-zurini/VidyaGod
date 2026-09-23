@@ -325,11 +325,14 @@ void DownloadManager::startDownload(LibraryGameCard *card)
         const std::shared_ptr<const NodeIndex> S = *Snap;   // GUI-thread copy
         AsyncWork::Run(&Dlg,
             [S, SelL, Found]{
+                //The optional pieces of a download are the GRAFTS offered on the selected variants — the author's
+                //pre-ticked ones (a soundtrack, a fix) default on; the hydrate fetches whatever is ticked here.
                 std::set<std::string> Seen;
                 for (const std::string & Lid : SelL)
-                    for (const Node * O : ManifestModel::OptionalNodes(*S, Lid))
-                        if (Seen.insert(O->NodeId).second)
-                            Found->push_back({ O->NodeId, O->Label.empty() ? O->NodeId : O->Label, O->Default });
+                    for (const ManifestModel::GraftOffer & O : ManifestModel::OfferedGrafts(*S, Lid, {},
+                             [](const Node & N) { return !N.Received && !N.BundleDir.empty(); }))
+                        if (Seen.insert(O.Graft->Key()).second)
+                            Found->push_back({ O.Graft->Key(), O.Graft->NodeId.empty() ? O.Graft->Key().substr(0, 12) : O.Graft->NodeId, O.Selected });
             },
             [Found, OptStates, OptBox, OptL, Debounce]{
                 QLayoutItem * It;

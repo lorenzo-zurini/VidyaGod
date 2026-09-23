@@ -27,10 +27,10 @@ static std::string LaunchableForNode(const NodeIndex & Idx, const std::string & 
 {
     const Node * N = Idx.Find(nodeId);
     if (!N) return "";
-    if (N->IsLaunchable()) return nodeId;
+    if (N->IsVariant()) return nodeId;
     for (const auto & [Id, Node] : Idx.Nodes)
     {
-        if (!Node.IsLaunchable()) continue;
+        if (!Node.IsVariant()) continue;
         const auto Order = ManifestModel::ResolveNodeOrder(Idx, Id, {});
         if (std::find(Order.begin(), Order.end(), nodeId) != Order.end()) return Id;
     }

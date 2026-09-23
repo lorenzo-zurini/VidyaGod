@@ -89,7 +89,7 @@ private slots:
             std::filesystem::create_directories(Dest);
             json Nodes = json::array({
                 json{{"LABEL","pkg1_tile"},{"TILE",{{"UID","pkg1"},{"TITLE","Game One"}}}},
-                json{{"LABEL","pkg1_exec"},{"ENTRYPOINTS",json::array({json{{"HOST","linux64"},{"PATH","run.sh"}}})},{"OVER",json::array({"pkg1_tile"})}} });
+                json{{"LABEL","pkg1_exec"},{"VARIANT","Play"},{"ENTRYPOINTS",json::array({json{{"HOST","linux64"},{"PATH","run.sh"}}})},{"OVER",json::array({"pkg1_tile"})}} });
             writeFile(QString::fromStdString(Dest) + "/pkg1.json", Nodes.dump(2));
             (void)Err;
             return 0;
@@ -325,15 +325,15 @@ private slots:
                   NodeFixture::Chain("a_content", {NodeFixture::ContentCid("file", "data.bin",
                       "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e")}, {"a_base"}));
         writeJson(root + "/VidyaGod/[1] A/a.json",
-                  NodeFixture::Chain("a_exec", {NodeFixture::Exec("win32", "a.exe")}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("a_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "a.exe"), NodeFixture::Variant("Play")})}, {"a_content", "a_tile"}, {{"PUBLISH", true}}));
         // An EXPANSION of A: its own tile (same UID, another title), OVER the main launchable. Nesting is derived
         // from that edge — on the seeder and, once the closure lands, on the receiver.
         writeJson(root + "/VidyaGod/[1] A/ax.json",
-                  NodeFixture::Chain("a_x", {NodeFixture::Merge({NodeFixture::Exec("win32", "ax.exe"), NodeFixture::Tile("1", "A: Expansion")})},
+                  NodeFixture::Chain("a_x", {NodeFixture::Merge({NodeFixture::Exec("win32", "ax.exe"), NodeFixture::Tile("1", "A: Expansion"), NodeFixture::Variant("Expansion")})},
                                      {"a_exec"}, {{"PUBLISH", true}}));
         writeJson(root + "/VidyaGod/[2] B/tile.json", NodeFixture::Chain("b_tile", {NodeFixture::Tile("2", "B")}));
         writeJson(root + "/VidyaGod/[2] B/b.json",
-                  NodeFixture::Chain("b_exec", {NodeFixture::Exec("win32", "b.exe")}, {"b_tile"}, {{"PUBLISH", true}}));
+                  NodeFixture::Chain("b_exec", {NodeFixture::Merge({NodeFixture::Exec("win32", "b.exe"), NodeFixture::Variant("Play")})}, {"b_tile"}, {{"PUBLISH", true}}));
         json seeder = json{{"Settings", {{"Paths", {{"LibraryRoot", root.toStdString()}}}}}};
         PackageCatalog::PublishLibrary(seeder, &Err);
         return seeder["Libraries"].contains("VidyaGod") ? seeder["Libraries"]["VidyaGod"] : json::array();
@@ -415,14 +415,14 @@ private slots:
             if (N.Received && N.BundleDir.string().rfind(Lib + "/[1] A", 0) == 0) ++LandedA;
         QCOMPARE(LandedA, 5);                                   // a_exec, a_x, a_tile, a_content, a_base — all Received
         std::vector<const Node *> Card;
-        for (const auto & [K, N] : Idx2.Nodes) if (N.IsLaunchable() && N.Uid == "1") Card.push_back(&N);
+        for (const auto & [K, N] : Idx2.Nodes) if (N.IsVariant() && N.Uid == "1") Card.push_back(&N);
         QCOMPARE((int)Card.size(), 2);
         const auto Ordered = ManifestModel::OrderVariants(Idx2, Card);
         QCOMPARE(Ordered.front()->NodeId, std::string("a_exec"));                                   // the main names the card
         QCOMPARE(Ordered.front()->Meta.value("TITLE", std::string()), std::string("A"));
         QCOMPARE(Ordered.back()->NodeId, std::string("a_x"));                                       // the expansion under it
-        QVERIFY2(ManifestModel::TitleHeight(Idx2, *Ordered.back()) > ManifestModel::TitleHeight(Idx2, *Ordered.front()),
-                 "the expansion sits higher on the title's chain than the base");
+        QVERIFY2(ManifestModel::FaceDepth(Idx2, *Idx2.Find(Ordered.back()->FaceKey)) > ManifestModel::FaceDepth(Idx2, *Idx2.Find(Ordered.front()->FaceKey)),
+                 "the expansion's face is a child of the base's face (a tile above a tile)");
 
         // A HOSTILE snapshot (traversal in every routed field) must stay inside the library root.
         const json Evil = json::array({json{{"cid", Cid0}, {"node", "../../pwn"}, {"pkg", "../../.."}, {"uid", ".."}, {"title", "../.."},
@@ -1123,11 +1123,11 @@ private slots:
     {
         QTemporaryDir dir; QVERIFY(dir.isValid());
         writeJson(dir.path() + "/game1.json",
-                  NodeFixture::Chain("game1", {NodeFixture::Tile("g1"), NodeFixture::Exec("win32", "g1.exe")}, {"content1", "lib"}));
+                  NodeFixture::Chain("game1", {NodeFixture::Tile("g1"), NodeFixture::Merge({NodeFixture::Exec("win32", "g1.exe"), NodeFixture::Variant("Play")})}, {"content1", "lib"}));
         writeJson(dir.path() + "/content1.json", NodeFixture::Chain("content1", {NodeFixture::ContentCid("zip", "g1.zip", "CID_G1")}));
         writeJson(dir.path() + "/lib.json",      NodeFixture::Chain("lib",      {NodeFixture::ContentCid("zip", "lib.zip", "CID_LIB")}));
         writeJson(dir.path() + "/game2.json",
-                  NodeFixture::Chain("game2", {NodeFixture::Tile("g2"), NodeFixture::Exec("win32", "g2.exe")}, {"content2"}));
+                  NodeFixture::Chain("game2", {NodeFixture::Tile("g2"), NodeFixture::Merge({NodeFixture::Exec("win32", "g2.exe"), NodeFixture::Variant("Play")})}, {"content2"}));
         writeJson(dir.path() + "/content2.json", NodeFixture::Chain("content2", {NodeFixture::ContentCid("zip", "g2.zip", "CID_G2")}));
         // A runner + its dehydrated build (reached only via the IsRunner branch).
         writeJson(dir.path() + "/wine.json",
@@ -1396,7 +1396,7 @@ private slots:
         QDir().mkpath(dir);
         writeJson(dir + "/tile.json", NodeFixture::Chain("solotile", {NodeFixture::Tile("7777", "Solo Game")}));
         writeJson(dir + "/variant.json",
-                  NodeFixture::Chain("solovariant", {NodeFixture::Exec("win32", "g.exe")}, {"solotile"}));
+                  NodeFixture::Chain("solovariant", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})}, {"solotile"}));
 
         json cfg = json{{"Settings", {{"Repositories", json::array()},
                                       {"PackageSources", json::array({ json{{"CID", "QmSoloPackageCID"}, {"NAME", "solopkg"}} })}}}};

@@ -55,7 +55,7 @@ TEST(parse_requires_type_label_optional)
     CHECK(ManifestModel::ParseNode(ordered_json{{"OVER", ordered_json::array({"x"})}}, "f.json", "/b", N));
     CHECK(N.NodeId.empty());
     CHECK(ManifestModel::ParseNode(ordered_json{{"LABEL", "ok"}}, "f.json", "/b", N));
-    CHECK(!N.IsLaunchable() && !N.IsRunner());   // a plain node
+    CHECK(!N.IsRunnable() && !N.IsRunner());   // a plain node
     CHECK(N.LowerError.empty());
     // A node with an UNLOWERABLE payload is KEPT, carrying the reason (validation names it, resolution refuses to
     // route through it).
@@ -110,104 +110,24 @@ TEST(resolve_order_parents_before_launchable)
     CHECK_EQ(Order.back(), std::string("game"));              // launchable last = highest priority
 }
 
-TEST(resolve_order_optional_gated_by_toggle)
+static ordered_json Not(const char *Ref) { return ordered_json::array({ ordered_json{{"NOT", Ref}} }); }
+
+// The closure is a PURE CONJUNCTION: everything reachable through BARE refs, and nothing else. A TOGGLE on a
+// node in the closure is inert (it mounts, whatever the toggles say); an any-of group is a requirement, never
+// followed; a NOT is a requirement, never followed. Facts fold, choices don't — and there are no choices here.
+TEST(closure_is_a_pure_conjunction)
 {
     NodeIndex Idx;
     AddChain(Idx, "base", {});
     AddChain(Idx, "opt",  {}, {}, {{"TOGGLE", "off"}});
-    AddChain(Idx, "game", {}, {"base", "opt"});
-
-    CHECK(!Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {}), "opt"));                 // default off
-    CHECK(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"opt", true}}), "opt"));     // toggled on
-    CHECK(!Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"opt", false}}), "opt"));   // toggled off
-}
-
-static ordered_json Not(const char *Ref) { return ordered_json::array({ ordered_json{{"NOT", Ref}} }); }
-
-TEST(resolve_order_exclude_is_mutually_exclusive)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "a",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("b")}});
-    AddChain(Idx, "b",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("a")}});
-    AddChain(Idx, "game", {}, {"a", "b"});
+    AddChain(Idx, "m1", {}); AddChain(Idx, "m2", {}); AddChain(Idx, "x", {});
+    AddChain(Idx, "game", {}, {}, {{"OVER", ordered_json::array({"base", "opt", ordered_json::array({"m1", "m2"}), ordered_json{{"NOT", "x"}}})}});
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "game", {});
-    CHECK(Contains(Order, "a") != Contains(Order, "b"));   // exactly one of the mutually-exclusive pair
-
-    // A NOT is ONE-SIDED in the file and symmetric in effect: only `x` says NOT y, and still at most one is kept.
-    NodeIndex One;
-    AddChain(One, "x",    {}, {}, {{"TOGGLE", "on"}, {"OVER", Not("y")}});
-    AddChain(One, "y",    {}, {}, {{"TOGGLE", "on"}});
-    AddChain(One, "game", {}, {"y", "x"});                  // y first in OVER order
-    const auto O2 = ManifestModel::ResolveNodeOrder(One, "game", {});
-    CHECK(Contains(O2, "y") && !Contains(O2, "x"));         // y kept first; x excludes a kept node ⇒ dropped
-}
-
-// An any-of group on a requirement: an already-kept member satisfies it, else an explicitly toggled-on one,
-// else the first member the index has — deterministic, and never two.
-TEST(resolve_order_any_of_group_picks_one_member)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "v640", {});
-    AddChain(Idx, "v659", {});
-    AddChain(Idx, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v640", "v659"}) })}});
-    const auto Def = ManifestModel::ResolveNodeOrder(Idx, "game", {});
-    CHECK(Contains(Def, "v640") && !Contains(Def, "v659"));                       // first present member
-    const auto Tog = ManifestModel::ResolveNodeOrder(Idx, "game", {{"v659", true}});
-    CHECK(Contains(Tog, "v659") && !Contains(Tog, "v640"));                       // an explicit choice wins
-    // A member already kept through another route satisfies the group without a second pick.
-    NodeIndex Two;
-    AddChain(Two, "v640", {});
-    AddChain(Two, "v659", {});
-    AddChain(Two, "game", {}, {}, {{"OVER", ordered_json::array({"v659", ordered_json::array({"v640", "v659"})})}});
-    const auto Kept = ManifestModel::ResolveNodeOrder(Two, "game", {});
-    CHECK(Contains(Kept, "v659") && !Contains(Kept, "v640"));
-    // A group with NO member present is reported missing, not silently skipped.
-    NodeIndex None;
-    AddChain(None, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"ghost1", "ghost2"}) })}});
-    std::vector<std::string> Missing;
-    ManifestModel::ResolveNodeOrder(None, "game", {}, &Missing);
-    CHECK(Contains(Missing, "ghost1"));
-
-    // A pick the gate REFUSES is not the pick: the next member is tried. v640 toggled off by the user (or
-    // excluded by a kept node) ⇒ v659 mounts — never a closure with NEITHER member and no word said.
-    NodeIndex Off;
-    AddChain(Off, "v640", {}, {}, {{"TOGGLE", "on"}});
-    AddChain(Off, "v659", {});
-    AddChain(Off, "game", {}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v640", "v659"}) })}});
-    std::vector<std::string> M2;
-    const auto Fallback = ManifestModel::ResolveNodeOrder(Off, "game", {{"v640", false}}, &M2);
-    CHECK(!Contains(Fallback, "v640") && Contains(Fallback, "v659") && M2.empty());
-    NodeIndex Excl;
-    AddChain(Excl, "v640", {});
-    AddChain(Excl, "v659", {});
-    AddChain(Excl, "purist", {}, {}, {{"OVER", Not("v640")}});
-    AddChain(Excl, "game", {}, {}, {{"OVER", ordered_json::array({"purist", ordered_json::array({"v640", "v659"})})}});
-    const auto Excluded = ManifestModel::ResolveNodeOrder(Excl, "game", {}, &M2);
-    CHECK(Contains(Excluded, "purist") && !Contains(Excluded, "v640") && Contains(Excluded, "v659") && M2.empty());
-    // Every present member refused ⇒ MISSING, loudly.
-    AddChain(Excl, "purist2", {}, {}, {{"OVER", Not("v659")}});
-    AddChain(Excl, "game2", {}, {}, {{"OVER", ordered_json::array({"purist", "purist2", ordered_json::array({"v640", "v659"})})}});
-    std::vector<std::string> M3;
-    const auto NoneKept = ManifestModel::ResolveNodeOrder(Excl, "game2", {}, &M3);
-    CHECK(!Contains(NoneKept, "v640") && !Contains(NoneKept, "v659") && Contains(M3, "v640"));
-}
-
-// Explicitly toggling a mutually-exclusive option ON wins over the conflicting DEFAULT-on option (the user's
-// explicit choice isn't silently dropped in favour of the other's default).
-TEST(resolve_order_explicit_toggle_beats_conflicting_default)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "hd",   {}, {}, {{"TOGGLE", "on"},  {"OVER", Not("lo")}});
-    AddChain(Idx, "lo",   {}, {}, {{"TOGGLE", "off"}, {"OVER", Not("hd")}});
-    AddChain(Idx, "game", {}, {"hd", "lo"});
-
-    // Default: hd (default-on) kept, lo dropped.
-    const auto Def = ManifestModel::ResolveNodeOrder(Idx, "game", {});
-    CHECK(Contains(Def, "hd") && !Contains(Def, "lo"));
-
-    // Toggle lo ON → lo wins, hd dropped (was kept only by default).
-    const auto Tog = ManifestModel::ResolveNodeOrder(Idx, "game", {{"lo", true}});
-    CHECK(Contains(Tog, "lo") && !Contains(Tog, "hd"));
+    CHECK(Contains(Order, "base") && Contains(Order, "opt") && Order.back() == "game");
+    CHECK(!Contains(Order, "m1") && !Contains(Order, "m2") && !Contains(Order, "x"));   // requirements are not composition
+    CHECK(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"opt", false}}), "opt"));   // toggles change nothing
+    CHECK_EQ(Idx.Find("game")->Composes.size(), (size_t)2);
+    CHECK_EQ(Idx.Find("game")->Parents.size(), (size_t)4);                        // every positive ref, for freeze/fetch
 }
 
 TEST(resolve_order_missing_parent_reported)
@@ -217,22 +137,6 @@ TEST(resolve_order_missing_parent_reported)
     std::vector<std::string> Missing;
     ManifestModel::ResolveNodeOrder(Idx, "game", {}, &Missing);
     CHECK(Contains(Missing, "ghost"));
-}
-
-TEST(optional_nodes_lists_toggleable_ancestors)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "base", {});
-    AddChain(Idx, "opt",  {}, {}, {{"TOGGLE", "on"}});
-    AddChain(Idx, "game", {}, {"base", "opt"});
-    bool SawOpt = false, SawBase = false;
-    for (const Node *N : ManifestModel::OptionalNodes(Idx, "game"))
-    {
-        if (N->NodeId == "opt")  SawOpt = true;
-        if (N->NodeId == "base") SawBase = true;
-    }
-    CHECK(SawOpt);
-    CHECK(!SawBase);   // required content is not an "optional" node
 }
 
 TEST(tile_endpoints_chain_collapses_to_tip)
@@ -437,76 +341,88 @@ TEST(validate_errors_on_a_tile_with_no_uid)
     CHECK(!AnyContains(E2, "no UID"));
 }
 
-// One UID = one card, and the nesting INSIDE the card is derived from the chain, never declared: the main is
-// the launchable with the SHORTEST chain of the title's own nodes beneath it; a different tile higher up is a
-// child (an expansion); the same tile is a variant. The card reads its title off the front of the ordered group;
-// the recommended edition may be a child. Two different tiles at the same height are two mains — noted.
-TEST(card_nesting_is_derived_from_the_chain)
+// The final chain: the TILE sits at the base (the pristine) and identity ascends; a tile above another of the
+// same UID is a CHILD face (an expansion), nested by containment; a runnable node with VARIANT is on the shelf;
+// how to run folds along the chain — own entries, else the nearest beneath. The card reads its name off the
+// main face and opens on its RECOMMENDED variant. Two main faces in one UID are noted.
+TEST(faces_nest_by_containment_and_entries_fold)
 {
     NodeIndex Idx;
-    ordered_json Aok  = NodeFixture::Merge({NodeFixture::Content("zip", "aok.zip"), NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")});
-    ordered_json Conq = NodeFixture::Merge({NodeFixture::Content("zip", "x1.zip"), NodeFixture::Exec("win32", "x1.exe"), NodeFixture::Tile("749", "The Conquerors")});
-    Conq["ENTRYPOINTS"][0]["RECOMMENDED"] = true;
-    ordered_json Fe   = NodeFixture::Merge({NodeFixture::Content("zip", "fe.zip"), NodeFixture::Exec("win32", "fe.exe"), NodeFixture::Tile("749", "Forgotten Empires")});
-    ordered_json Hd   = NodeFixture::Merge({NodeFixture::Content("zip", "hd.zip"), NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")});   // same tile = a variant
-    AddChain(Idx, "aok",  {Aok});
-    AddChain(Idx, "conq", {Conq}, {"aok"});
-    AddChain(Idx, "fe",   {Fe},   {"conq"});
-    AddChain(Idx, "hd",   {Hd},   {"aok"});
-    AddChain(Idx, "mod",  {NodeFixture::Content("dir", "m")}, {"conq"});         // not a launchable: never in the group
-    ManifestModel::DeriveIdentity(Idx);
-    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("aok")),  0);
-    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("conq")), 1);
-    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("fe")),   2);
-    CHECK(Idx.Find("aok")->Owners == std::vector<std::string>{"749"});           // built on by its own title only
-    CHECK(ManifestModel::SameTile(*Idx.Find("hd"), *Idx.Find("aok")));
-    CHECK(!ManifestModel::SameTile(*Idx.Find("conq"), *Idx.Find("aok")));
-    std::vector<const Node *> G{Idx.Find("fe"), Idx.Find("conq"), Idx.Find("hd"), Idx.Find("aok")};
-    const auto O = ManifestModel::OrderVariants(Idx, G);
-    std::vector<std::string> Ids; for (const Node *N : O) Ids.push_back(N->NodeId);
-    CHECK(Ids == (std::vector<std::string>{"aok", "hd", "conq", "fe"}));      // main's tile first, then children in chain order
-    CHECK_EQ(O.front()->Meta.value("TITLE", std::string()), std::string("Age of Kings"));   // the card's name
-    std::vector<std::string> Errors, Warnings;
-    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(!AnyContains(Warnings, "TITLE differs") && !AnyContains(Warnings, "mains"));       // an expansion is not a lint
-    // Two mains: a standalone install sharing the UID but OVER nothing of it — the same height as the base.
-    AddChain(Idx, "custom", {NodeFixture::Merge({NodeFixture::Content("zip", "c.zip"), NodeFixture::Exec("win32", "c.exe"), NodeFixture::Tile("749", "Custom Edition")})});
-    ManifestModel::DeriveIdentity(Idx);
-    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(AnyContains(Warnings, "2 mains"));
-}
-
-// The real shape of a migrated library: the expansion is NOT over the base launchable — both sit over one
-// pristine, each with its own patches on top, and the expansion's chain is longer. Shared substance (a library
-// another title is built on too) never counts toward a chain, so a launchable OVER a deep library chain is not
-// mistaken for an expansion.
-TEST(card_nesting_follows_the_chain_above_a_shared_pristine)
-{
-    NodeIndex Idx;
-    AddChain(Idx, "pristine", {NodeFixture::Content("zip", "aok.zip")});
+    ordered_json Pristine = NodeFixture::Merge({NodeFixture::Content("zip", "aok.zip"), NodeFixture::Tile("749", "Age of Kings"),
+                                                NodeFixture::Exec("win32", "empires2.exe")});
+    AddChain(Idx, "pristine", {Pristine});
     AddChain(Idx, "nocd",     {NodeFixture::Content("dir", "nocd")}, {"pristine"});
-    AddChain(Idx, "lib1",     {NodeFixture::Content("dir", "l1")});                 // a library chain, three deep,
-    AddChain(Idx, "lib2",     {NodeFixture::Content("dir", "l2")}, {"lib1"});       // used by another title too
-    AddChain(Idx, "lib3",     {NodeFixture::Content("dir", "l3")}, {"lib2"});
-    AddChain(Idx, "aok",  {NodeFixture::Merge({NodeFixture::Exec("win32", "e.exe"), NodeFixture::Tile("749", "Age of Kings")})}, {"nocd", "lib3"});
-    AddChain(Idx, "tc_base",  {NodeFixture::Content("zip", "tc.zip")}, {"pristine"});
-    AddChain(Idx, "tc_patch", {NodeFixture::Content("dir", "tcp")}, {"tc_base"});
-    AddChain(Idx, "conq", {NodeFixture::Merge({NodeFixture::Exec("win32", "x1.exe"), NodeFixture::Tile("749", "The Conquerors")})}, {"tc_patch"});
-    AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "Other")})}, {"lib3"});
+    AddChain(Idx, "lib1", {NodeFixture::Content("dir", "l1")});                   // a library chain, shared with another title
+    AddChain(Idx, "lib2", {NodeFixture::Content("dir", "l2")}, {"lib1"});
+    AddChain(Idx, "aok",  {NodeFixture::Variant("Age of Kings")}, {"nocd", "lib2"});          // inherits its entry from the pristine
+    AddChain(Idx, "tc_base", {NodeFixture::Merge({NodeFixture::Content("zip", "tc.zip"), NodeFixture::Tile("749", "The Conquerors")})}, {"pristine"});
+    AddChain(Idx, "conq", {NodeFixture::Merge({NodeFixture::Variant("The Conquerors"), NodeFixture::Exec("win32", "age2_x1.exe")})}, {"tc_base"}, {{"RECOMMENDED", true}});
+    AddChain(Idx, "fe_base", {NodeFixture::Merge({NodeFixture::Content("zip", "fe.zip"), NodeFixture::Tile("749", "Forgotten Empires")})}, {"tc_base"});
+    AddChain(Idx, "fe",   {NodeFixture::Merge({NodeFixture::Variant("Forgotten Empires"), NodeFixture::Exec("win32", "age2_x1.5.exe")})}, {"fe_base"});
+    AddChain(Idx, "other", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "Other"), NodeFixture::Variant("Play")})}, {"lib2"});
     ManifestModel::DeriveIdentity(Idx);
-    CHECK(Idx.Find("pristine")->Owners == std::vector<std::string>{"749"});
-    CHECK_EQ(Idx.Find("lib3")->Owners.size(), (size_t)2);                              // shared: stops every chain
-    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("aok")),  2);                  // aok → nocd → pristine
-    CHECK_EQ(ManifestModel::TitleHeight(Idx, *Idx.Find("conq")), 3);                  // conq → tc_patch → tc_base → pristine
-    const auto O = ManifestModel::OrderVariants(Idx, {Idx.Find("conq"), Idx.Find("aok")});
-    CHECK_EQ(O.front()->NodeId, std::string("aok"));                                   // the base names the card
+    // faces
+    CHECK_EQ(Idx.Find("aok")->FaceKey, std::string("pristine"));  CHECK_EQ(Idx.Find("aok")->FaceDistance, 2);
+    CHECK_EQ(Idx.Find("conq")->FaceKey, std::string("tc_base"));
+    CHECK_EQ(Idx.Find("fe")->FaceKey, std::string("fe_base"));
+    CHECK_EQ(Idx.Find("aok")->Meta.value("TITLE", std::string()), std::string("Age of Kings"));
+    CHECK_EQ(Idx.Find("conq")->Meta.value("TITLE", std::string()), std::string("The Conquerors"));
+    CHECK_EQ(Idx.Find("nocd")->Uid, std::string("749"));                                      // identity ascends
+    CHECK(!Idx.Find("lib1")->HasIdentity());                                                  // substance
+    CHECK_EQ(ManifestModel::FaceDepth(Idx, *Idx.Find("pristine")), 0);                         // the main face
+    CHECK_EQ(ManifestModel::FaceDepth(Idx, *Idx.Find("tc_base")), 1);                          // a child
+    CHECK_EQ(ManifestModel::FaceDepth(Idx, *Idx.Find("fe_base")), 2);                          // a grandchild
+    // entries fold: aok declares none and runs the pristine's; conq declares its own
+    CHECK(Idx.Find("aok")->IsVariant() && Idx.Find("aok")->IsRunnable());
+    CHECK_EQ(Idx.Find("aok")->EntrySource, std::string("pristine"));
+    CHECK_EQ(Idx.Find("aok")->ExecFor("").value("CONTENTPATH", std::string()), std::string("empires2.exe"));
+    CHECK_EQ(Idx.Find("conq")->EntrySource, std::string("conq"));
+    CHECK(Idx.Find("nocd")->IsRunnable() && !Idx.Find("nocd")->IsVariant());                  // runnable, not on the shelf
+    // the card: main face first (its variants), then children by depth; the recommended variant may be a child
+    const auto O = ManifestModel::OrderVariants(Idx, {Idx.Find("fe"), Idx.Find("conq"), Idx.Find("aok")});
+    std::vector<std::string> Ids; for (const Node *N : O) Ids.push_back(N->NodeId);
+    CHECK(Ids == (std::vector<std::string>{"aok", "conq", "fe"}));
+    CHECK_EQ(O.front()->Meta.value("TITLE", std::string()), std::string("Age of Kings"));
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(!AnyContains(Warnings, "mains"));
+    CHECK(Errors.empty());
+    CHECK(!AnyContains(Warnings, "main faces"));
+    // Two main faces: a standalone install sharing the UID, OVER nothing of it.
+    AddChain(Idx, "custom", {NodeFixture::Merge({NodeFixture::Content("zip", "c.zip"), NodeFixture::Tile("749", "Custom Edition"),
+                                                 NodeFixture::Exec("win32", "c.exe"), NodeFixture::Variant("Custom")})});
+    ManifestModel::DeriveIdentity(Idx);
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Warnings, "2 main faces"));
 }
 
-// Validation names the OVER-specific mistakes: a group with no member in the library, a ref both required and
-// excluded, a missing NOT target (harmless — a word, not an error).
+// A version chain: one tile, one entry at the base, every version a delta and a VARIANT. The entry folds up the
+// chain until a version declares a new one; a VARIANT with nothing to run is an error; TOGGLE / any-of / NOT on
+// a variant are inert and said so.
+TEST(entries_fold_along_a_version_chain)
+{
+    NodeIndex Idx;
+    AddChain(Idx, "mc", {NodeFixture::Merge({NodeFixture::Content("file", "rd.jar"), NodeFixture::Tile("320", "Minecraft"), NodeFixture::Exec("java8", "")})});
+    AddChain(Idx, "v1", {NodeFixture::Merge({NodeFixture::Content("delta", "v1.vgdelta"), NodeFixture::Variant("1.16.4")})}, {"mc"});
+    AddChain(Idx, "v2", {NodeFixture::Merge({NodeFixture::Content("delta", "v2.vgdelta"), NodeFixture::Variant("1.16.5")})}, {"v1"});
+    AddChain(Idx, "v3", {NodeFixture::Merge({NodeFixture::Content("delta", "v3.vgdelta"), NodeFixture::Variant("1.17"), NodeFixture::Exec("java16", "")})}, {"v2"});
+    AddChain(Idx, "v4", {NodeFixture::Merge({NodeFixture::Content("delta", "v4.vgdelta"), NodeFixture::Variant("1.17.1")})}, {"v3"});
+    AddChain(Idx, "lonely", {NodeFixture::Merge({NodeFixture::Content("dir", "x"), NodeFixture::Variant("Nothing to run")})});
+    AddChain(Idx, "sp", {NodeFixture::Variant("SP")}, {"v4"}, {{"TOGGLE", "on"}});
+    ManifestModel::DeriveIdentity(Idx);
+    CHECK_EQ(Idx.Find("v2")->EntrySource, std::string("mc"));   CHECK_EQ(Idx.Find("v2")->HostPlatform, std::string("java8"));
+    CHECK_EQ(Idx.Find("v3")->EntrySource, std::string("v3"));   CHECK_EQ(Idx.Find("v3")->HostPlatform, std::string("java16"));
+    CHECK_EQ(Idx.Find("v4")->EntrySource, std::string("v3"));   CHECK_EQ(Idx.Find("v4")->HostPlatform, std::string("java16"));
+    CHECK(Idx.Find("v4")->IsVariant() && Idx.Find("v4")->Uid == "320");
+    CHECK(!Idx.Find("lonely")->IsRunnable() && !Idx.Find("lonely")->IsVariant());
+    std::vector<std::string> Errors, Warnings;
+    ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
+    CHECK(AnyContains(Errors, "VARIANT 'Nothing to run' has no effective entrypoint"));
+    CHECK(AnyContains(Warnings, "TOGGLE / any-of / NOT on a variant are inert"));
+    // The mount of a version is its chain; nothing beneath is a choice.
+    const auto Order = ManifestModel::ResolveNodeOrder(Idx, "v4", {});
+    CHECK(Contains(Order, "mc") && Contains(Order, "v1") && Order.back() == "v4");
+}
+
 TEST(validate_flags_over_mistakes)
 {
     NodeIndex Idx;
@@ -624,16 +540,18 @@ TEST(validate_errors_on_an_unknown_toggle_value)
 }
 
 // A launchable with no identity at all appears under no card — worth a warning; a runner legitimately has none.
-TEST(validate_warns_on_a_launchable_with_no_identity)
+TEST(validate_warns_on_a_variant_with_no_face)
 {
     NodeIndex Idx;
-    AddChain(Idx, "lost", {NodeFixture::Exec("win32", "g.exe")});
+    AddChain(Idx, "lost", {NodeFixture::Merge({NodeFixture::Exec("win32", "g.exe"), NodeFixture::Variant("Play")})});
     AddChain(Idx, "wine", {NodeFixture::Runner("linux64", {"win32"}, "wine")});
+    AddChain(Idx, "tool", {NodeFixture::Exec("win32", "t.exe")});     // runnable, not on the shelf: no card, no warning
+    ManifestModel::DeriveIdentity(Idx);
     std::vector<std::string> Errors, Warnings;
     ManifestModel::ValidateNodeGraph(Idx, Errors, Warnings);
-    CHECK(AnyContains(Warnings, "no identity"));
-    int N = 0; for (const auto &W : Warnings) if (W.find("no identity") != std::string::npos) ++N;
-    CHECK_EQ(N, 1);                                                    // the runner is not warned about
+    CHECK(AnyContains(Warnings, "has no face"));
+    int N = 0; for (const auto &W : Warnings) if (W.find("has no face") != std::string::npos) ++N;
+    CHECK_EQ(N, 1);                                                    // the runner and the tool are not warned about
 }
 
 // ---- Role collapse: identity DERIVED from Declare* layers ----
@@ -641,10 +559,10 @@ TEST(validate_warns_on_a_launchable_with_no_identity)
 TEST(declare_layers_derive_identity)
 {
     Node N;
-    ordered_json lj{{"ENTRYPOINTS", ordered_json::array({ ordered_json{{"HOST","win32"},{"PATH","game.exe"},
-                    {"LABEL","Vanilla"},{"RECOMMENDED",true},{"RUNNER","geproton_9_20_runner"}} })}};
+    ordered_json lj{{"RECOMMENDED", true}, {"ENTRYPOINTS", ordered_json::array({ ordered_json{{"HOST","win32"},{"PATH","game.exe"},
+                    {"LABEL","Vanilla"},{"RUNNER","geproton_9_20_runner"}} })}};
     CHECK(ManifestModel::ParseNode(lj, "f.json", "/b", N));
-    CHECK(N.IsLaunchable()); CHECK(!N.IsRunner());
+    CHECK(N.IsRunnable()); CHECK(!N.IsRunner()); CHECK(!N.IsVariant());   // runnable, not on the shelf (no VARIANT)
     CHECK_EQ(N.HostPlatform, std::string("win32"));
     CHECK_EQ(N.Exec.value("CONTENTPATH", std::string()), std::string("game.exe"));
     CHECK_EQ(N.Label, std::string("Vanilla")); CHECK(N.Recommended);
@@ -655,7 +573,7 @@ TEST(declare_layers_derive_identity)
     ordered_json rj = NodeFixture::Runner("linux64", {"win32","win64"}, "wine");
     rj["LABEL"] = "wine";
     CHECK(ManifestModel::ParseNode(rj, "f.json", "/b", R));
-    CHECK(R.IsRunner()); CHECK(!R.IsLaunchable());
+    CHECK(R.IsRunner()); CHECK(!R.IsRunnable());
     CHECK_EQ(R.HostPlatform, std::string("linux64"));
     CHECK_EQ((int)R.GuestPlatform.size(), 2);
     CHECK_EQ(R.Exec.value("EXECUTABLE", std::string()), std::string("wine"));
@@ -664,7 +582,7 @@ TEST(declare_layers_derive_identity)
     ordered_json tj = NodeFixture::Tile("42", "My Game");
     tj["LABEL"] = "tile";
     CHECK(ManifestModel::ParseNode(tj, "f.json", "/b", L));
-    CHECK(L.Presentable()); CHECK(!L.IsLaunchable()); CHECK(L.OwnTile);
+    CHECK(L.Presentable()); CHECK(!L.IsRunnable()); CHECK(L.OwnTile);
     CHECK_EQ(L.Uid, std::string("42"));
     CHECK_EQ(L.Meta.value("TITLE", std::string()), std::string("My Game"));
 }
@@ -680,14 +598,14 @@ TEST(link_games_groups_variants_under_tile)
     AddChain(Idx, "mygame_v2", {exec("v2")}, {"mygame"});
     ManifestModel::DeriveIdentity(Idx);
     const Node *v1 = Idx.Find("mygame_v1");
-    CHECK(v1->IsLaunchable());
+    CHECK(v1->IsRunnable());
     CHECK_EQ(v1->GameKey(), std::string("7"));           // grouped under the tile by UID
     CHECK(v1->Presentable());                             // inherited the tile metadata
     CHECK_EQ(v1->Meta.value("TITLE", std::string()), std::string("My Game"));
     CHECK_EQ(v1->Uid, std::string("7"));
     CHECK_EQ(v1->Label, std::string("v1"));
     CHECK(Idx.Find("mygame")->Presentable());            // the tile node is presentable
-    CHECK(!Idx.Find("mygame")->IsLaunchable());          // but not launchable itself
+    CHECK(!Idx.Find("mygame")->IsRunnable());            // but not runnable itself
     // ...and a launchable carrying its OWN TILE is its own card, with its own fields — nothing composes across
     // the closure (a version under it contributes no identity, no exec, nothing).
     AddChain(Idx, "mygame_v3", {NodeFixture::Merge({exec("v3"), NodeFixture::Tile("8", "Other")})}, {"mygame_v2"});
@@ -755,7 +673,7 @@ TEST(validate_flags_cross_layer_case_collision_after_memoization)
 //object was replaced, which deleted them — harmless only while nothing consumed a launchable's ENV.
 // Execution is NOT transitive: the launch exec is the SELECTED entrypoint of the launch node and nothing under
 // it. A version under it (1.16.5 OVER 1.16.4) contributes no exec, no ENV, no args.
-TEST(exec_is_the_selected_entrypoint_and_nothing_under_it)
+TEST(exec_is_the_effective_entry_declared_or_inherited)
 {
     NodeIndex Idx;
     ordered_json Old = NodeFixture::Exec("win32", "old.exe");
@@ -769,9 +687,18 @@ TEST(exec_is_the_selected_entrypoint_and_nothing_under_it)
     CHECK_EQ(V2->ExecFor("").value("CONTENTPATH", std::string()), std::string("new.exe"));
     CHECK(!V2->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
     CHECK_EQ(V2->ExecFor("Server").value("CONTENTPATH", std::string()), std::string("srv.exe"));
-    // The closure still mounts v1 underneath — bytes travel, execution does not.
+    // The closure still mounts v1 underneath — bytes travel; the entry is REPLACED by v2's own declaration.
     const auto Order = ManifestModel::ResolveNodeOrder(Idx, "v2", {});
     CHECK(Contains(Order, "v1") && Order.back() == "v2");
+    // A version that declares no entry INHERITS the nearest one beneath — the whole list, so "Server" rides up.
+    AddChain(Idx, "v3", {NodeFixture::Content("delta", "v3.vgdelta")}, {"v2"});
+    ManifestModel::DeriveIdentity(Idx);
+    const Node *V3 = Idx.Find("v3");
+    CHECK(V3->IsRunnable());
+    CHECK_EQ(V3->EntrySource, std::string("v2"));
+    CHECK_EQ(V3->ExecFor("").value("CONTENTPATH", std::string()), std::string("new.exe"));
+    CHECK_EQ(V3->ExecFor("Server").value("CONTENTPATH", std::string()), std::string("srv.exe"));
+    CHECK(!V3->ExecFor("").value("ENV", ordered_json::object()).contains("FROM_OLD"));
 }
 
 // ---- grafts: selection ≠ closure ----
@@ -783,9 +710,9 @@ TEST(exec_is_the_selected_entrypoint_and_nothing_under_it)
 TEST(offered_grafts_follow_the_selected_set_not_the_closure)
 {
     NodeIndex Idx;
-    AddChain(Idx, "v1", {NodeFixture::Merge({NodeFixture::Content("zip", "v1.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})});
+    AddChain(Idx, "v1", {NodeFixture::Merge({NodeFixture::Content("zip", "v1.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G"), NodeFixture::Variant("v1")})});
     AddChain(Idx, "data", {NodeFixture::Content("zip", "d.zip")}, {"v1"});                        // part of v2's own composition
-    AddChain(Idx, "v2", {NodeFixture::Merge({NodeFixture::Content("zip", "v2.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})}, {"v1", "data"});
+    AddChain(Idx, "v2", {NodeFixture::Merge({NodeFixture::Content("zip", "v2.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G"), NodeFixture::Variant("v2")})}, {"v1", "data"});
     AddChain(Idx, "mod_v1",   {NodeFixture::Content("dir", "a")}, {"v1"});                       // a branch off v1
     AddChain(Idx, "mod_v2",   {NodeFixture::Content("dir", "b")}, {"v2"});                       // a branch off v2
     AddChain(Idx, "mod_any",  {NodeFixture::Content("dir", "c")}, {}, {{"OVER", ordered_json::array({ ordered_json::array({"v1", "v2"}) })}});
@@ -793,7 +720,7 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
     AddChain(Idx, "lib",      {NodeFixture::Content("dir", "l")});                               // substance
     AddChain(Idx, "uses_lib", {NodeFixture::Content("dir", "e")}, {"v2", "lib"});
     AddChain(Idx, "rival",    {NodeFixture::Content("dir", "r")}, {}, {{"OVER", ordered_json::array({"v2", ordered_json{{"NOT", "mod_v2"}}})}});
-    AddChain(Idx, "other_game", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "O")})});
+    AddChain(Idx, "other_game", {NodeFixture::Merge({NodeFixture::Exec("win32", "o.exe"), NodeFixture::Tile("2", "O"), NodeFixture::Variant("Play")})});
     AddChain(Idx, "mod_other", {NodeFixture::Content("dir", "o")}, {"other_game"});
     ManifestModel::DeriveIdentity(Idx);
 
@@ -869,7 +796,7 @@ TEST(offered_grafts_follow_the_selected_set_not_the_closure)
 TEST(resolve_graft_order_is_precedence_then_key_with_substance_beneath)
 {
     NodeIndex Idx;
-    AddChain(Idx, "game", {NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G")})});
+    AddChain(Idx, "game", {NodeFixture::Merge({NodeFixture::Content("zip", "g.zip"), NodeFixture::Exec("win32", "g.exe"), NodeFixture::Tile("1", "G"), NodeFixture::Variant("Play")})});
     AddChain(Idx, "lib",  {NodeFixture::Content("dir", "l")});
     AddChain(Idx, "a",    {NodeFixture::Content("dir", "a")}, {"game", "lib"});
     AddChain(Idx, "b",    {NodeFixture::Content("dir", "b")}, {"game"});

@@ -81,6 +81,9 @@ inline nlohmann::ordered_json Exec(const std::string &Host, const std::string &P
     return {{"ENTRYPOINTS", nlohmann::ordered_json::array({ nlohmann::ordered_json{{"HOST", Host}, {"PATH", Path}} })}};
 }
 
+// On the shelf: a variant named `Name` (a node also needs effective entries to be a variant).
+inline nlohmann::ordered_json Variant(const std::string &Name) { return {{"VARIANT", Name}}; }
+
 // A runner is the same declaration with GUEST platforms — it provides an environment instead of being the
 // terminal link.
 inline nlohmann::ordered_json Runner(const std::string &Host, const std::vector<std::string> &Guest,
@@ -106,7 +109,7 @@ inline nlohmann::ordered_json Tile(const std::string &Uid, const std::string &Ti
 // ParseNode would.
 inline void Wire(struct Node &N, const std::vector<std::string> &Refs)
 {
-    N.Over.clear(); N.Parents = Refs;
+    N.Over.clear(); N.Parents = Refs; N.Composes = Refs;
     for (const std::string &R : Refs) { OverReq Q; Q.Any = {R}; N.Over.push_back(Q); }
 }
 

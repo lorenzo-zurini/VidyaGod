@@ -190,12 +190,14 @@ def nodes():
                    "CustomVar":      ("VARS",     ("KEY", "DEFAULT", "COMMENT", "UI", "WHEN")),
                    "DeclarePersist": ("PERSISTS", ("SCOPE", "PATH", "TARGET", "CLOUD", "WHEN")),
                    "DeclareExec":    ("ENTRYPOINTS", ("HOST", "GUEST", "PATH", "ARGS", "ENV", "ENV_REMOVE", "WORKDIR",
-                                                      "RECOMMENDED", "RUNNER", "CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME"))}
+                                                      "RUNNER", "CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME"))}
         t = kw.pop("TYPE", "Group")
         if t in SECTION:
             key, fields = SECTION[t]
             item = {f: kw.pop(f) for f in fields if f in kw}
-            if t == "DeclareExec": item["LABEL"] = kw["LABEL"]      # the entry's variant label = the node's name
+            if t == "DeclareExec":
+                item["LABEL"] = kw["LABEL"]                        # the entry's label = the node's name
+                if "GUEST" not in item: kw["VARIANT"] = kw["LABEL"]   # a game entry ⇒ on the shelf; RECOMMENDED stays a NODE facet
             kw[key] = [item]
         elif t == "RegEdit":      kw["REGEDITS"] = kw.pop("EDITS")
         elif t == "FileEdit":     kw["FILEEDITS"] = [{k: kw.pop(k) for k in ("FILE", "EDITS", "OVERRIDE") if k in kw}]

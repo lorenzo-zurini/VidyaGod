@@ -67,7 +67,7 @@ void PackagesView::rebuildList()
     std::set<std::string> HydratedBundles;
     for (const auto & [NodeId, N] : Idx.Nodes)
     {
-        if (!N.IsLaunchable() || N.BundleDir.empty()) continue;
+        if (!N.IsVariant() || N.BundleDir.empty()) continue;
         const auto It = Hyd.find(NodeId);
         if (It != Hyd.end() && It->second.HasContent && It->second.Hydrated)
             HydratedBundles.insert(Norm(N.BundleDir));

@@ -161,8 +161,8 @@ std::pair<int, int> AppModel::importPackagesFromDir(const QString & Sel)
         ManifestModel::DeriveIdentity(BIdx);   // the representative launchable carries (or inherits) its UID/TITLE
         const Node * Rep = nullptr;
         for (const auto & [Id, N] : BIdx.Nodes)
-            if (N.IsLaunchable() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
-        if (!Rep) { LogWarn("AppModel::importPackagesFromDir", "Skipping " + Path.toStdString() + ": no launchable node."); ++Skipped; continue; }
+            if (N.IsVariant() && (!Rep || (N.Presentable() && !Rep->Presentable()))) Rep = &N;
+        if (!Rep) { LogWarn("AppModel::importPackagesFromDir", "Skipping " + Path.toStdString() + ": no variant node."); ++Skipped; continue; }
 
         const std::string Uid  = Rep->Uid.empty() ? Rep->NodeId : Rep->Uid;
         const std::string Name = Rep->Meta.is_object() ? Rep->Meta.value("TITLE", Rep->NodeId) : Rep->NodeId;
@@ -248,7 +248,7 @@ void AppModel::removePackage(const QString & uid)
         const std::string CanonPath = std::filesystem::weakly_canonical(std::filesystem::path(Path), Ec).string();
         std::vector<std::string> ToDehydrate;
         for (const auto & [NodeId, N] : CatalogIndex.Nodes)
-            if (N.IsLaunchable() &&
+            if (N.IsVariant() &&
                 std::filesystem::weakly_canonical(N.BundleDir, Ec).string() == CanonPath)
                 ToDehydrate.push_back(NodeId);
         if (ToDehydrate.empty()) return;   // nothing hydrated under this bundle

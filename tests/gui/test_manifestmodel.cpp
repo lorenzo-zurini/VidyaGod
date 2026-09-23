@@ -135,8 +135,9 @@ private slots:
 
     // ---- OPTIONAL nodes: the selection axis ----
 
-    // An OPTIONAL parent is included only when its toggle says so; DEFAULT decides when the user has not chosen.
-    void optional_nodes_follow_their_toggle_and_default()
+    // A TOGGLE inside a closure is INERT: a node reached through a bare ref is composed, whatever the toggles say.
+    // Choices live on grafts (offered from outside the closure), never on what a node is made of.
+    void toggles_inside_a_closure_are_inert()
     {
         NodeIndex Idx;
         Node Opt = MakeNode("hd_textures");
@@ -145,38 +146,10 @@ private slots:
         Idx.Nodes["hd_textures"] = Opt;
         Idx.Nodes["game"] = MakeLaunchable("game", {"hd_textures"});
 
-        const auto Off = ManifestModel::ResolveNodeOrder(Idx, "game", {});
-        QVERIFY2(!Contains(Off, "hd_textures"), "an optional node defaulting to off must be excluded");
-
-        const auto On = ManifestModel::ResolveNodeOrder(Idx, "game", {{"hd_textures", true}});
-        QVERIFY2(Contains(On, "hd_textures"), "enabling the toggle must include it");
-
-        Idx.Nodes["hd_textures"].Default = true;
-        const auto DefOn = ManifestModel::ResolveNodeOrder(Idx, "game", {});
-        QVERIFY2(Contains(DefOn, "hd_textures"), "DEFAULT true must include it when the user has not chosen");
-
-        const auto ForcedOff = ManifestModel::ResolveNodeOrder(Idx, "game", {{"hd_textures", false}});
-        QVERIFY2(!Contains(ForcedOff, "hd_textures"), "an explicit toggle must beat DEFAULT");
+        QVERIFY(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {}), "hd_textures"));
+        QVERIFY(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"hd_textures", false}}), "hd_textures"));
+        QVERIFY(Contains(ManifestModel::ResolveNodeOrder(Idx, "game", {{"hd_textures", true}}), "hd_textures"));
     }
-
-    void optional_nodes_are_listed_for_the_picker()
-    {
-        NodeIndex Idx;
-        Node Opt = MakeNode("mod");
-        Opt.Optional = true;
-        Idx.Nodes["mod"]  = Opt;
-        Idx.Nodes["base"] = MakeNode("base");
-        Idx.Nodes["game"] = MakeLaunchable("game", {"base", "mod"});
-
-        const auto Opts = ManifestModel::OptionalNodes(Idx, "game");
-        bool Found = false;
-        for (const Node *N : Opts) if (N->NodeId == "mod") Found = true;
-        QVERIFY2(Found, "an optional ancestor must be offered to the picker");
-        for (const Node *N : Opts)
-            QVERIFY2(N->NodeId != "base", "a non-optional node must not appear as a choice");
-    }
-
-    // ---- ValidateNodeGraph: the thing that is supposed to catch package bugs ----
 
     void validate_accepts_a_healthy_graph()
     {

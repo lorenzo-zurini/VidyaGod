@@ -488,9 +488,9 @@ void PreLaunchWindow::RebuildModuleTree()
         if (SavedMods.contains(N->Key()) && SavedMods[N->Key()].is_boolean()) return bool(SavedMods[N->Key()]);
         return Def;
     };
-    for (const Node* N : ManifestModel::OptionalNodes(*Index, LaunchNodeId))
-        Row(N, Saved(N, N->Default), true, QString());
-    //Grafts are judged against the SAVED ticks (the selected set), scoped to hydrated LIBRARY nodes.
+    (void)Saved;
+    //Every tick is a graft: the author's pre-ticked pieces and the mods alike, judged against the SAVED ticks (the
+    //selected set), scoped to our own tree.
     std::map<std::string, bool> Ticks;
     for (const auto& [K, V] : SavedMods.items()) if (V.is_boolean()) Ticks[K] = V.get<bool>();
     auto NameOf = [&](const std::string& Key) {

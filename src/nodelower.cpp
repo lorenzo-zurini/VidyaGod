@@ -68,7 +68,9 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
     if (E.contains("GUEST") && !E["GUEST"].is_array()) return Fail("GUEST must be a list of platforms");
     if (!E.contains("HOST") || !E["HOST"].is_string()) return Fail("has no HOST platform");
     if (E.contains("WHEN"))
-        return Fail("carries a WHEN — an entrypoint is never conditional (its payload becomes the node's identity at index time). Use TOGGLE on the node.");
+        return Fail("carries a WHEN — an entrypoint is never conditional (its payload becomes the node's identity at index time). Use two entries, or two variants.");
+    if (E.contains("RECOMMENDED"))
+        return Fail("carries RECOMMENDED — that is a node facet (prefer me among my siblings), not an entry field; the first entry is the default");
     const bool IsRunner = E.contains("GUEST") && !E["GUEST"].empty();
     ordered_json L = ordered_json::object();
     if (IsRunner)
@@ -79,7 +81,7 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
         L["ARGS"] = E.contains("ARGS") ? E["ARGS"] : ordered_json::array();
         L["ENV"]  = E.contains("ENV")  ? E["ENV"]  : ordered_json::object();
         L["REMOVE_ENV"] = E.contains("ENV_REMOVE") ? E["ENV_REMOVE"] : ordered_json::array();
-        CopyIf(E, L, {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "LABEL", "RECOMMENDED"});
+        CopyIf(E, L, {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "LABEL"});
     }
     else
     {
@@ -91,7 +93,7 @@ static ordered_json LowerEntrypointOrThrow(const ordered_json &E, const std::str
         //block) so one consumer reads both.
         if (E.contains("ENV"))        L["ENV"]        = E["ENV"];
         if (E.contains("ENV_REMOVE")) L["REMOVE_ENV"] = E["ENV_REMOVE"];
-        CopyIf(E, L, {"LABEL", "RECOMMENDED", "WORKDIR", "RUNNER"});
+        CopyIf(E, L, {"LABEL", "WORKDIR", "RUNNER"});
     }
     return L;
 }
@@ -114,7 +116,7 @@ static ordered_json LowerOrThrow(const ordered_json &J, const std::string &NodeI
     //("LAYER", "PATCHS") is a node that validates clean and applies nothing — the one silent failure the
     //whole front-end exists to make impossible.
     static const std::set<std::string> Known = {
-        "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER",
+        "CID", "LABEL", "WHEN", "TOGGLE", "PUBLISH", "POS", "COMMENT", "TILE", "ENTRYPOINTS", "OVER", "VARIANT", "RECOMMENDED",
         "LAYERS", "PATCHES", "FILEEDITS", "REGEDITS", "DLLOVERRIDES", "VARS", "PERSISTS",
     };
     for (const auto &[K, V] : J.items())

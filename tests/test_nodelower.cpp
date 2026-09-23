@@ -578,7 +578,7 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
 {
     ordered_json Game{{"HOST", "win32"}, {"PATH", "g.exe"},
                       {"ARGS", ordered_json::array({"xres=1920", "a b"})}, {"LABEL", "GOTY"},
-                      {"RECOMMENDED", true}, {"WORKDIR", "w"}, {"RUNNER", "pinned"}};
+                      {"WORKDIR", "w"}, {"RUNNER", "pinned"}};
     const ordered_json LG = ordered_json::array({LowerEp(Game)});
     CHECK_EQ((int)LG.size(), 1);
     CHECK(!LG[0].contains("GUEST"));
@@ -590,10 +590,10 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     CHECK_EQ(LG[0].value("EXEARGS", ordered_json()).dump(),
              ordered_json::array({"xres=1920", "a b"}).dump());
 
-    // The launchable's remaining fields, each a silent failure if dropped: a wrong cwd, or the wrong variant
-    // pre-selected in the picker.
+    // The remaining field, a silent failure if dropped: a wrong cwd. (RECOMMENDED is a NODE facet: on an entry it
+    // is refused, never silently kept — see lower_entrypoint_refuses_malformed_entries.)
     CHECK_EQ(LG[0].value("WORKDIR", std::string()), std::string("w"));
-    CHECK(LG[0].value("RECOMMENDED", false));
+    CHECK(!LG[0].contains("RECOMMENDED"));
 
     ordered_json Runner{{"LABEL", "r"}, {"HOST", "linux64"},
                         {"GUEST", ordered_json::array({"win32", "win64"})},
@@ -623,24 +623,24 @@ TEST(lower_declareexec_splits_launchable_from_runner_on_guest)
     CHECK_EQ(LowerEp(Empty).value("PLATFORM", std::string()), std::string("win32"));
 
     //A node carries the ENTRYPOINTS as a FACET: they never lower into layers, and the node's launch fields are
-    //the DEFAULT entry's view — the first RECOMMENDED one, else the first. ExecFor() selects another by LABEL.
+    //the DEFAULT entry's view — the FIRST. ExecFor() selects another by LABEL.
     ordered_json Two{{"LABEL", "n"}, {"ENTRYPOINTS", ordered_json::array({
         ordered_json{{"LABEL", "Play"}, {"HOST", "win32"}, {"PATH", "g.exe"}},
-        ordered_json{{"LABEL", "Editor"}, {"HOST", "win32"}, {"PATH", "ed.exe"}, {"RECOMMENDED", true}} })}};
+        ordered_json{{"LABEL", "Editor"}, {"HOST", "win32"}, {"PATH", "ed.exe"}} })}};
     CHECK(Lower(Two).empty());
     Node P;
     CHECK(ManifestModel::ParseNode(Two, "f.json", "/b", P));
-    CHECK(P.IsLaunchable()); CHECK(!P.IsRunner());
-    CHECK_EQ(P.Exec.value("CONTENTPATH", std::string()), std::string("ed.exe"));      // RECOMMENDED wins the default
-    CHECK_EQ(P.Label, std::string("Editor"));
-    CHECK_EQ(P.ExecFor("Play").value("CONTENTPATH", std::string()), std::string("g.exe"));
+    CHECK(P.IsRunnable()); CHECK(!P.IsRunner());
+    CHECK_EQ(P.Exec.value("CONTENTPATH", std::string()), std::string("g.exe"));       // the first entry is the default
+    CHECK_EQ(P.Label, std::string("Play"));
+    CHECK_EQ(P.ExecFor("Editor").value("CONTENTPATH", std::string()), std::string("ed.exe"));
     CHECK(P.ExecFor("nope").is_null());
     CHECK_EQ(P.EntrypointLabels().size(), (size_t)2);
     //A node whose entries include a GUEST one is a runner too; both readings coexist on one node.
     ordered_json Both = Two; Both["ENTRYPOINTS"].push_back(Runner);
     Node PB;
     CHECK(ManifestModel::ParseNode(Both, "f.json", "/b", PB));
-    CHECK(PB.IsLaunchable() && PB.IsRunner());
+    CHECK(PB.IsRunnable() && PB.IsRunner());
 }
 
 // The tile's core fields stay named; everything else rides in an opaque META bag on disk and is flattened back

@@ -290,7 +290,7 @@ BundleIdentity ScanBundleIdentity(const std::string &BundleDir)   // decl + Bund
     const Node *Rep = nullptr;                                                    // prefer a presentable launchable
     for (const auto &[NodeId, N] : Idx.Nodes)
     {
-        if (N.IsLaunchable()) { Id.HasLaunchable = true; if (!Rep || (N.Presentable() && !Rep->Presentable())) Rep = &N; }
+        if (N.IsVariant()) { Id.HasLaunchable = true; if (!Rep || (N.Presentable() && !Rep->Presentable())) Rep = &N; }
         if (N.IsRunner())     Id.HasRunner = true;
     }
     if (!Rep)                                                                     // runner-only / content-only bundle
@@ -1364,7 +1364,7 @@ std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
 {
     std::map<std::string, std::vector<const Node*>> Groups;
     for (const auto &[Id, N] : Idx.Nodes)
-        if (N.IsLaunchable() && N.Presentable())
+        if (N.IsVariant() && N.Presentable())
             Groups[N.GameKey()].push_back(&N);
 
     //Within a card: the main's tile first (it names the card), RECOMMENDED first among those, then the children
@@ -1426,7 +1426,7 @@ bool IsEmbeddedRunner(const NodeIndex &Idx, const std::string &RunnerNodeId)
     for (const auto &[Id, N] : Idx.Nodes)
     {
         (void)Id;
-        if (N.IsLaunchable() && N.BundleDir == R->BundleDir) return true;   // a game shares its bundle → embedded
+        if (N.IsVariant() && N.BundleDir == R->BundleDir) return true;   // a game shares its bundle → embedded
     }
     return false;
 }

@@ -67,8 +67,8 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     const std::string LaunchId = CP.LaunchNodeId;
     const Node *Launch = Idx.Find(LaunchId);
     if (!Launch) { LogErr("InitializeFromNode", "Launch node not found: " + LaunchId); return false; }
-    if (!CP.AuthoringBare && !Launch->IsLaunchable())
-        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no ENTRYPOINTS (not launchable).");
+    if (!CP.AuthoringBare && !Launch->IsRunnable())
+        LogWarn("InitializeFromNode", "Node '" + LaunchId + "' has no effective ENTRYPOINTS (nothing beneath declares one) — not runnable.");
 
     //The exec is the SELECTED ENTRYPOINT of the launch node and nothing else: execution is not transitive, so a
     //node under the launchable (a previous version, a base) never contributes to it.

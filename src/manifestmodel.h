@@ -62,12 +62,14 @@ struct VariantInfo {
 // and nothing else: not its entrypoint, not its mods).
 // ---------------------------------------------------------------------------
 
-//One requirement of a node's OVER list. Plain entry: Any = {cid}. Any-of group: Any = {cid, cid, …}.
-//Exclusion: Not = true, Any = {cid}.
+//One entry of a node's OVER list. A bare ref COMPOSES (Any = {cid}): it is in the node's closure — and, when the
+//node is offered as a graft, a requirement too. An any-of group (Any = {cid, cid, …}) and an exclusion (Not = true,
+//Any = {cid}) only REQUIRE: evaluated when the node is offered, never followed by the closure walk.
 struct OverReq {
     std::vector<std::string> Any;
     bool Not = false;
     bool IsGroup() const { return !Not && Any.size() > 1; }
+    bool Composes() const { return !Not && Any.size() == 1; }
 };
 
 //One node, parsed from a node .json file.
@@ -87,39 +89,50 @@ struct Node {
     //on, so validation has nothing else to see it in — and a silently-dropped condition applies unconditionally.
     std::string RawWhen;
 
-    // ---- ENTRYPOINTS (launchable iff non-empty). Each entry is a variant: {LABEL, HOST, PATH, ARGS, ENV, ENV_REMOVE,
-    // WORKDIR, RECOMMENDED, RUNNER} for a launchable; a runner entry additionally carries GUEST (+ CONTENT_ROOT /
-    // PREFIX_GENERATE / UNIFIED_RUNTIME). The fields below are the DEFAULT entry's view (the first RECOMMENDED one,
-    // else the first), lowered to the exec block the engine consumes; ExecFor() selects another entry by LABEL. ----
-    nlohmann::ordered_json Entrypoints;      // the raw ENTRYPOINTS array (empty array when none)
-    bool HasExec   = false;                  // an entrypoint without GUEST ⇒ this node is launchable
-    bool HasRunner = false;                  // an entrypoint with GUEST ⇒ this node is a runner
-    std::string Label;                       // the default entrypoint's LABEL (else the node LABEL)
-    bool Recommended = false;                // the default entrypoint's RECOMMENDED
-    std::string RecommendedRunner;           // the default entrypoint's RUNNER — a soft package-side runner default
-    std::string HostPlatform;                // the default entrypoint's HOST
-    std::vector<std::string> GuestPlatform;  // the default entrypoint's GUEST[] (runner)
-    nlohmann::ordered_json Exec;             // the default entrypoint lowered: CONTENTPATH/EXEARGS/PLATFORM/… or
+    // ---- ENTRYPOINTS: how to run — a FACT that folds along the chain. Entrypoints = the node's OWN list (empty
+    // when it declares none); EffectiveEntrypoints = own, else the nearest node's beneath (by OVER distance over
+    // bare refs, ties by OVER order), EntrySource = the key of the node they come from. Each entry: {LABEL, HOST,
+    // PATH, ARGS, ENV, ENV_REMOVE, WORKDIR, RUNNER}; a runner entry additionally carries GUEST (+ CONTENT_ROOT /
+    // PREFIX_GENERATE / UNIFIED_RUNTIME). The fields below are the DEFAULT effective entry's view (the first),
+    // lowered to the exec block the engine consumes; ExecFor() selects another entry by LABEL. Derived by
+    // DeriveIdentity; for a node parsed alone they reflect its own entries. ----
+    nlohmann::ordered_json Entrypoints;      // the raw OWN ENTRYPOINTS array (empty array when none)
+    nlohmann::ordered_json EffectiveEntrypoints;   // own, else inherited (empty array when nothing beneath declares)
+    std::string EntrySource;                 // key of the node whose entries apply ("" when none)
+    bool HasExec   = false;                  // an effective entry without GUEST ⇒ RUNNABLE
+    bool HasRunner = false;                  // an effective entry with GUEST ⇒ a RUNNER
+    bool OwnRunner = false;                  // declares a GUEST entry itself (an anchor for grafts on runners)
+    std::string Label;                       // the default entry's LABEL (else the node LABEL)
+    std::string RecommendedRunner;           // the default entry's RUNNER — a soft package-side runner default
+    std::string HostPlatform;                // the default entry's HOST
+    std::vector<std::string> GuestPlatform;  // the default entry's GUEST[] (runner)
+    nlohmann::ordered_json Exec;             // the default entry lowered: CONTENTPATH/EXEARGS/PLATFORM/… or
                                              // EXECUTABLE/ARGS/HOST/GUEST/… for a runner (see NodeLower::LowerEntrypoint)
 
-    // ---- TILE / identity. A launchable carries its own TILE {UID, TITLE, COVER, META…}; every other node
-    // inherits identity from what it is OVER. Uids = every UID this node belongs to (a mod for two games has two);
-    // Uid = the first (its grouping key); Meta = the tile fields, flat (own, else the first inherited tile's). ----
-    bool OwnTile = false;                    // carries a TILE of its own
-    std::string Uid;                         // primary identity (own TILE.UID, else the first inherited)
-    std::vector<std::string> Uids;           // every identity, in OVER order
-    std::vector<std::string> Owners;         // DERIVED, the reverse fact: every UID whose launchables are BUILT ON this
-                                             // node (its closure contains it). A pristine has no identity of its own
-                                             // (nothing under it carries a tile) but exactly one owner; a shared
-                                             // library has many; a node of one title's chain has that one owner.
-    nlohmann::ordered_json Meta;             // tile metadata, flat (TITLE/COVER/UID + META fields)
+    // ---- the two declared facets ----
+    std::string Variant;                     // VARIANT — non-empty ⇒ ON THE SHELF under this name; picking it selects it alone
+    bool Recommended = false;                // RECOMMENDED — prefer me among my siblings (variants of a face; runners of a platform)
 
-    bool Optional = false;                   // TOGGLE present ⇒ user-toggleable
-    bool Default  = true;                    // TOGGLE value ("on"/"off") — the author's default state
+    // ---- TILE / identity. A TILE is a FACE placed at the base of what it names; identity ASCENDS from it. Uids =
+    // every UID this node belongs to (the faces beneath it, across branches; a mod for two games has two); Uid =
+    // the first (its grouping key); FaceKey = the nearest tile beneath (own = distance 0); Meta = that face's
+    // fields, flat; AnchorKey = the nearest PICKABLE beneath — a face, or a runner (grafts on runners). ----
+    bool OwnTile = false;                    // carries a TILE of its own
+    std::string Uid;                         // primary identity (the nearest face's UID)
+    std::vector<std::string> Uids;           // every identity, in OVER order
+    std::string FaceKey;                     // the node carrying the nearest tile beneath (own counts), "" if none
+    int FaceDistance = -1;                   // OVER distance to that tile (0 = own), -1 = no face
+    std::string AnchorKey;                   // nearest pickable beneath: the face, or a runner node (own counts)
+    nlohmann::ordered_json Meta;             // the face's fields, flat (TITLE/COVER/UID + META)
+
+    bool Optional = false;                   // TOGGLE present ⇒ (on a graft) user-toggleable
+    bool Default  = true;                    // TOGGLE value ("on"/"off") — pre-ticked or not
     bool Publish  = false;                   // PUBLISH — a share-list root
 
     std::vector<OverReq> Over;               // OVER — the one edge, as authored (CNF)
-    std::vector<std::string> Parents;        // every node OVER names POSITIVELY (plain entries + group members), flat,
+    std::vector<std::string> Composes;       // the BARE refs — what the node is made of: the closure, identity,
+                                             // inheritance of entries and face all follow these
+    std::vector<std::string> Parents;        // every node OVER names POSITIVELY (bare refs + group members), flat,
                                              // in list order — the reference set for validation/freeze/hydrate/canvas
     std::vector<std::string> Excludes;       // every node OVER names under NOT
     nlohmann::ordered_json Layers;           // the lowered payload: the executor's ordered layer sequence
@@ -132,9 +145,10 @@ struct Node {
     // bundle scan (Cid unset). Use this — never NodeId directly — whenever an id must index back into the catalog
     // (hydration maps, launch ids, download ids), or a CID-keyed index and a NodeId lookup silently miss.
     std::string Key() const { return Cid.empty() ? NodeId : Cid; }
-    bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }
+    bool Presentable()  const { return Meta.is_object() && !Meta.empty(); }   // has a face
     bool IsRunner()     const { return HasRunner; }
-    bool IsLaunchable() const { return HasExec; }
+    bool IsRunnable()   const { return HasExec; }                              // effective entries without GUEST
+    bool IsVariant()    const { return !Variant.empty() && HasExec; }          // on the shelf
     bool HasIdentity()  const { return !Uids.empty(); }
     std::string GameKey() const { return Uid.empty() ? NodeId : Uid; }   // the tile this node belongs to (group-by-UID key)
     // The lowered exec block of the entrypoint labelled `Label` ("" ⇒ the default entry). Null json if no such entry.
@@ -187,44 +201,44 @@ void ScanBundleNodes(const std::filesystem::path &BundleDir, NodeIndex &Idx);
 NodeIndex BuildNodeIndex(const std::vector<std::filesystem::path> &LibraryRoots,
                          const std::vector<std::filesystem::path> &ExtraBundleDirs = {});
 
-// Post-parse pass over a fully-assembled index: derive every node's identity. A node with its own TILE is its own
-// identity; every other node inherits the union of its positive OVER requirements' identities (memoized, O(N+E)).
-// Sets Uid/Uids/Meta so the catalog/library group nodes under tiles BY UID. Called by BuildNodeIndex and
-// must be re-run by any caller that assembles an index manually (ScanBundleNodes).
+// Post-parse pass over a fully-assembled index: derive every FACT that folds along the chain (memoized, O(N+E)).
+//  identity — the union of the faces beneath a node across every positive ref (a mod OVER [[aok, conq]] belongs to
+//             both); Uid = the nearest face's; Meta = its fields.
+//  face     — the nearest tile beneath (own = 0), by OVER distance, ties by OVER order.
+//  anchor   — the nearest pickable beneath: a tile, or a runner (a graft on a runner is offered on the runner).
+//  entries  — EffectiveEntrypoints/EntrySource: own, else the nearest beneath over BARE refs; and the derived
+//             launch fields (HasExec/HasRunner/Host/Guest/Exec/Label/RecommendedRunner) from the default entry.
+// Called by BuildNodeIndex and must be re-run by any caller that assembles an index manually (ScanBundleNodes).
 void DeriveIdentity(NodeIndex &Idx);
 
-// Nesting inside one card is DERIVED from the chain, never declared. Among the launchables of one UID, the MAIN is
-// the one with the SHORTEST chain of the title's own nodes beneath it — an expansion is built on the base's chain
-// (its pristine, its patches) and so always sits higher: The Conquerors is OVER content that is OVER Age of Kings'
-// pristine, even though it is not OVER the Age of Kings launchable itself. TitleHeight = the longest OVER path
-// from a launchable through nodes that ONLY this title is built on (shared substance — dgVoodoo, DirectPlay — and
-// other titles' chains stop the walk). A launchable OVER another of its title is higher by construction. A
-// launchable above the main with a different TITLE or COVER is a CHILD (an expansion); with the same tile it is a
-// VARIANT (an edition, a version — Minecraft's 903). OrderVariants puts the main's tile first (RECOMMENDED, then
-// label), then the children by height — so a card reads its TITLE/COVER off the front. Equal heights with
-// different tiles are equally main (the validator says so).
-int TitleHeight(const NodeIndex &Idx, const Node &N);
+// Nesting inside one card is CONTAINMENT, never declared. Two tiles with equal fields are one FACE. Within one UID,
+// a tile with no same-UID tile beneath it is the card's MAIN face; a tile with one beneath it is a CHILD face,
+// nested under the nearest face beneath it. FaceDepth = how many same-UID tiles a face has beneath it (0 = main).
+// OrderVariants orders a card's VARIANTS: main face first (its RECOMMENDED variant, then by label), then the child
+// faces by depth — so a card reads its TITLE/COVER off the front and opens on the main face's default.
 bool SameTile(const Node &A, const Node &B);
-std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Group);
+int FaceDepth(const NodeIndex &Idx, const Node &FaceNode);
+std::vector<const Node *> OrderVariants(const NodeIndex &Idx, std::vector<const Node *> Variants);
 
-// Resolve the load-ordered node closure for launching LaunchNodeId: walk OVER across the global graph, keeping
-// plain requirements always (a TOGGLE'd one per Toggles, else its DEFAULT), choosing ONE member per any-of group
-// (an already-kept member, else the first present), refusing a node whose NOT names a kept node (symmetric,
-// first-kept wins), and the hierarchy gate (a node only enters if a kept dependant pulls it). Toggles are keyed by
-// node Key() (CID). Output is topo-ordered requirements-before-dependants, so the launchable is LAST (= highest
-// CFS priority); OVER list order is the tie-break (later = higher). Detects cycles. Any ref missing from Idx is
-// appended to Missing.
+// The CLOSURE of a node: everything reachable from it through the BARE refs of OVER — what it is made of — as a
+// topologically-ordered mount, requirements before dependants, the node itself LAST (= highest overlay priority);
+// OVER list order is the tie-break (later = higher). No gates, no groups, no exclusions, no toggles: a bare ref
+// composes, and requirements are evaluated only when a node is OFFERED (OfferedGrafts). Detects cycles. Any ref
+// missing from Idx (or unlowerable) is appended to Missing. The Toggles parameter is accepted for call-site
+// compatibility and IGNORED: nothing inside a closure is a choice.
 std::vector<std::string> ResolveNodeOrder(const NodeIndex &Idx, const std::string &LaunchNodeId,
                                           const std::map<std::string, bool> &Toggles,
                                           std::vector<std::string> *Missing = nullptr);
 
-// ----- grafts (selection ≠ closure) -----
-// A graft is a node in nobody's OVER list that is OVER something; it enters a mount only when SELECTED (Toggles[key]
-// == true). It is APPLICABLE when every identity-bearing positive requirement is satisfied by the SELECTED set
-// (the launchable + selected grafts; a group by any member) — never by the closure (a mod OVER [1.16.4] is a
-// sibling branch off a node you did not choose when you play 1.16.5) — every identity-less requirement (a library:
-// no tile, nothing tiled under it) is SUBSTANCE, satisfied by mounting, and no NOT names a selected node. The
-// selected set grows to a fixpoint as grafts are ticked.
+// ----- grafts (facts fold, choices don't) -----
+// Relative to a selected VARIANT, a graft is a node with the variant's identity that is not itself a variant (or a
+// runner), is not in the variant's closure, and is OVER something; it enters a mount only when TICKED (Toggles[key]
+// == true, else its TOGGLE default). It is APPLICABLE when every requirement in its OVER holds against the SELECTED
+// set — a bare ref to a node with identity: that node is selected (the variant, or a selected graft); a bare ref
+// to substance: always (satisfied by mounting); a group: any member; a NOT: not selected, symmetrically — never
+// against the closure (a mod OVER [1.16.4] is not for you when you play 1.16.5). Picking a variant selects exactly
+// that node. A graft may carry entries (a mod loader): ticked, it is a way to run. For a RUNNER as the selection,
+// candidates are the nodes anchored on it.
 struct GraftOffer {
     const Node *Graft = nullptr;
     bool Applicable = false;       // every requirement satisfied by the selected set (minus itself)
@@ -253,11 +267,6 @@ std::vector<std::string> ResolveGraftOrder(const NodeIndex &Idx, const std::stri
 void ForEachClosureNode(const NodeIndex &Idx, const std::string &RootId,
                         const std::map<std::string, bool> &Toggles,
                         const std::function<void(const Node &)> &Visit);
-
-// The OPTIONAL nodes reachable from a launchable via the PARENTS closure (for the picker's toggle list),
-// in discovery order. Runner nodes are excluded. Gating/EXCLUDE between them is resolved at launch by
-// ResolveNodeOrder; the picker just lists them as checkboxes.
-std::vector<const Node*> OptionalNodes(const NodeIndex &Idx, const std::string &LaunchNodeId);
 
 // The DOWNLOAD units of a tile, derived from its CONTENT structure (not raw graph sinks — every launchable variant
 // is typically a graph sink, e.g. MC's content-free per-version "_game" wrappers hanging off the delta chain).

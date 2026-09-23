@@ -71,7 +71,7 @@ int main(int argc, char ** argv)
                                   json{{"DEVELOPER", "Ensemble Studios"}, {"PUBLISHER", "Microsoft"},
                                        {"RELEASEDATE", "1999"}, {"SERIES", "Age of Empires"}});
     json exec = NodeFixture::Exec("win32", "AoK HD.exe");
-    exec["LABEL"] = "HD Edition"; exec["RECOMMENDED"] = true; exec["ARGS"] = json::array();
+    exec["LABEL"] = "HD Edition"; exec["VARIANT"] = "HD Edition"; exec["RECOMMENDED"] = true; exec["ARGS"] = json::array();
     writeNodes(bundle, NodeFixture::Chain("aoe2", {
         NodeFixture::Content("zip", "game.zip", "drive_c/aoe2"),
         json{{"TYPE", "RegEdit"},

@@ -102,6 +102,7 @@ private slots:
         QTemporaryDir pkg; QVERIFY(pkg.isValid());
         json exec = NodeFixture::Exec("win32", "g.exe");
         exec["ENTRYPOINTS"][0]["RUNNER"] = "geproton_10_20_runner";
+        exec["VARIANT"] = "Play";                                    // on the shelf: what an import registers
         // The tile is the launchable's PARENT (pure Meta upstream, exec terminal).
         json node = NodeFixture::Chain("tg", {NodeFixture::Tile("999", "Test Game"), exec});
         { std::ofstream f((pkg.path() + "/tg.json").toStdString()); f << node.dump(); }

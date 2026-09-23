@@ -38,7 +38,7 @@ void CliModes::CollectCatalogTargets(const NodeIndex &Idx,
             ++St.SourcelessNodes;                       // counted, reported, never fatal (see climodes.h)
             if (OnSourceless) OnSourceless(Id, Err);
         }
-        if (N.IsLaunchable()) ++St.Launchables;   // (its runner chain's builds are catalog nodes → the IsRunner branch)
+        if (N.IsVariant()) ++St.Launchables;   // (its runner chain's builds are catalog nodes → the IsRunner branch)
         if (N.IsRunner()) { ++St.Runners; (void)RunnerInstall::CollectRunnerNodeTargets(Idx, Id, Out, &Err); }
     }
     if (Stats) *Stats = St;
@@ -379,7 +379,7 @@ int CliModes::RunContentModes(LaunchParameters &LaunchParameters, nlohmann::orde
         NodeIndex Index = PackageCatalog::BuildCatalogIndex(GlobalConfigJSON);   // repos + locally-added packages
         std::string LaunchId;
         for (const auto &[NId, N] : Index.Nodes)
-            if (N.IsLaunchable() && (N.Uid == Uid || N.NodeId == Uid)) { LaunchId = NId; break; }
+            if (N.IsVariant() && (N.Uid == Uid || N.NodeId == Uid)) { LaunchId = NId; break; }
         if (LaunchId.empty()) { LogErr("main.cpp", "No launchable node found for '" + Uid + "'."); return 1; }
         std::string Err;
         const bool Ok = PackageCatalog::HydrateNode(Index, LaunchId, {}, &Err, &GlobalConfigJSON);   // pool the runner chain → playable

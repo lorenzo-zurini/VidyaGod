@@ -131,7 +131,7 @@ int CliModes::RunAuditPackages(nlohmann::ordered_json &GlobalConfigJSON, const s
     std::vector<std::string> Launchables;
     for (const auto &[Id, N] : Index.Nodes)
     {
-        if (!N.IsLaunchable()) continue;
+        if (!N.IsVariant()) continue;
         if (!Scope.empty())
         {
             const std::string Dir = std::filesystem::path(N.BundleDir).filename().string();
