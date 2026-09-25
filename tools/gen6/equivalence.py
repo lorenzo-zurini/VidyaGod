@@ -307,7 +307,8 @@ def check_game(cid, d, R, g6root, g5root, runner_plans, config=None):
     # keep
     k5 = sorted((x.get("path", "").rstrip("/"), x.get("target"), x.get("cloud")) for x in (d.get("KeepDirs") or []) + (d.get("KeepFiles") or []))
     k6 = sorted((P(a.split("/", 1)[1]).rstrip("/") if "/" in a else "", (v or {}).get("NAME") if isinstance(v, dict) else None,
-                 (v or {}).get("CLOUD", True) if isinstance(v, dict) else True) for a, v in plan["keep"].items() if a.startswith("FILES"))
+                 (v or {}).get("CLOUD", True) if isinstance(v, dict) else True) for a, v in plan["keep"].items()
+                if a.startswith("FILES") and v is not False)             # what persists = the user-owned addresses
     if k5 != k6:
         diffs["keep"] = f"gen5 {k5} gen6 {k6}"
     for ev in plan["events"]:
@@ -380,9 +381,16 @@ def main():
     ap.add_argument("g5work"); ap.add_argument("g6lib")
     ap.add_argument("--allow", default="generic"); ap.add_argument("--show", type=int, default=3)
     ap.add_argument("--only"); ap.add_argument("--json")
+    ap.add_argument("--record", help="append every resolve this run performs to FILE (JSONL) — fold_gate.py replays them")
     a = ap.parse_args()
     g5root = os.path.join(a.g5work, "base", "LIBRARY")
     R = Resolver(load_nodes(a.g6lib))
+    if a.record:
+        rec, orig = open(a.record, "w"), R.resolve
+        def recording(root, instance=None, builtins=None, grafts=()):
+            rec.write(json.dumps({"root": root, "instance": instance or {}, "builtins": builtins or {}, "grafts": list(grafts)}) + "\n")
+            return orig(root, instance, builtins, grafts)
+        R.resolve = recording
     GIDX.update(graft_index(R.nodes))
     GRAFTS.update(g for gs in GIDX.values() for g in gs)
     for n, _ in R.nodes.values():

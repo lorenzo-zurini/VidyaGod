@@ -429,6 +429,13 @@ if(NOT WIN32)
     target_link_libraries(vg_make_delta PRIVATE vgfs_core PkgConfig::LIBZIP PkgConfig::LIBZSTD)
 endif()
 
+# vg_fold — the generation-6 resolver in batch, gated plan-for-plan against tools/gen6/resolve.py (fold_gate.py).
+add_executable(vg_fold tools/gen6/vg_fold.cpp src/fold.cpp src/varsubst.cpp src/commonutils.cpp)
+target_include_directories(vg_fold PRIVATE src)
+target_link_libraries(vg_fold PRIVATE nlohmann_json::nlohmann_json)
+target_compile_options(vg_fold PRIVATE ${VG_WARNINGS} $<$<BOOL:${VIDYAGOD_WERROR}>:-Werror>)
+set_target_properties(vg_fold PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+
 # ---- Launch matrix — a synthetic package exercising every launch-engine feature, diffed against golden plans.
 # Not a unit test: it runs the built binary against a generated fixture in a throwaway data dir and compares the
 # resolved plan for each launchable. Touch the launch engine and this says which plans moved.

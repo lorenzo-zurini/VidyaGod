@@ -74,7 +74,7 @@ def gather(root):
 # ---------------------------------------------------------------- gen-5 facts the transform needs
 def new_report():
     return {"overrides_dropped": [], "layer_toggles_dropped": [], "toggles": [], "graft_refs_to_variant_dropped": [],
-            "reg_null_to_empty": [], "edits_moved": [], "canonical_layers": [], "grafts_kept": []}
+            "reg_null_to_empty": [], "edits_moved": [], "canonical_layers": [], "grafts_kept": [], "overrides_taken_back": []}
 
 
 def bare(n):
@@ -153,9 +153,10 @@ def content_layer(L, where, report):
 def edit_layer(E, where, kind, report):
     if set(E) - {"FILE", "EDITS", "OVERRIDE", "COMMENT"}:
         raise Fail(f"{where}: {kind} entry fields {sorted(set(E) - {'FILE', 'EDITS', 'OVERRIDE', 'COMMENT'})}")
+    out = {"EDIT": copy.deepcopy(E["EDITS"]), "TARGET": files_addr(E["FILE"])}
     if E.get("OVERRIDE"):
         report["overrides_dropped"].append(f"{where}: {kind} {E['FILE']}")
-    out = {"EDIT": copy.deepcopy(E["EDITS"]), "TARGET": files_addr(E["FILE"])}
+        out["__override__"] = True                         # consumed by take_back_overrides(), never written
     if "COMMENT" in E:
         out["COMMENT"] = E["COMMENT"]
     return out
@@ -397,6 +398,7 @@ def migrate(nodes, report, paths=None):
         L[at:at] = [{"VARS": decl}] + [{"NODE": g, "WHEN": f"%{grafts[g]['key']}%==1"} for g in gs]
         report["toggles"].append(f"{nodes[v].get('LABEL')}: " + ", ".join(f"{grafts[g]['key']}={'on' if grafts[g]['on'] else 'off'}" for g in gs))
     canonicalize(out, report)
+    take_back_overrides(out, variants, report)
     place_edits(out, variants, paths or {}, report,
                 {v: sorted((g for g, i in grafts.items() if i["kept"] and v in i["targets"]), key=lambda g: (nodes[g].get("LABEL", ""), g))
                  for v in variants})
@@ -450,6 +452,41 @@ def canonicalize(out, report):
                     d["DEFAULT"] = canon(d["DEFAULT"])                  # a path-valued default (asi_dir, DirectPlayPath)
             n_changed += before != json.dumps(L, sort_keys=True)
     report["canonical_layers"] += [n_changed]
+
+
+# ---------------------------------------------------------------- overrides → ownership (§6 step 2)
+def take_back_overrides(out, variants, report):
+    """An OVERRIDE edit re-applied after the user's saved state was restored. Ownership says the same thing: where
+    the edited address lies inside something a variant KEEPs, a KEEP false beside the edit takes it back (whole
+    files for Overwrite/AppendLine/binary ops, #keys for ConfigWrite-only edits). Elsewhere it was a pass-order
+    artefact and is just a layer."""
+    import resolve as R6
+    res = R6.Resolver({h: (n, "") for h, n in out.items()})
+    kept = {}                                              # node -> the KEEP-true addresses of variants containing it
+    for v in sorted(variants):
+        plan = res.resolve(v)
+        trues = [a for a, val in plan["keep"].items() if val is not False]
+        for x in plan["order"]:
+            kept.setdefault(x, set()).update(trues)
+    for h, n in out.items():
+        L = n["LAYERS"]
+        i = 0
+        while i < len(L):
+            lay = L[i]
+            if not lay.pop("__override__", False):
+                i += 1; continue
+            f = lay["TARGET"]
+            inside = [k for k in kept.get(h, ()) if f == k.rstrip("/") or f.startswith(k.rstrip("/") + "/")]
+            if inside:
+                ops = lay["EDIT"]
+                if all(o.get("MODE") == "ConfigWrite" for o in ops):
+                    addrs = {f"{f}#{o['KEY']}": False for o in ops}
+                else:
+                    addrs = {f: False}
+                L.insert(i + 1, {"KEEP": addrs})
+                report["overrides_taken_back"].append(f"{n['LABEL']}: {', '.join(addrs)} (inside {inside[0]})")
+                i += 1
+            i += 1
 
 
 # ---------------------------------------------------------------- edit placement (§6 step 1)

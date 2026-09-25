@@ -471,6 +471,26 @@ def merge(a, b):
     return out
 
 
+def plan_json(plan):
+    """The plan in the shape src/fold.cpp's PlanToJson emits (what fold_gate.py compares)."""
+    seq = []
+    for it in plan["seq"]:
+        e = {"kind": it["kind"]}
+        if it["kind"] == "EDIT":
+            e["ops"] = it["ops"]
+        else:
+            e.update(payload=it["payload"], dir=it["dir"], source=it["source"], submounts=it["submounts"], take=it["take"])
+        e.update({"target": it["target"], "from": it["from"], "at": it["at"]})
+        seq.append(e)
+    return {"seq": seq,
+            "reg": sorted([[a, p, n, dp, dn, v] for (a, p, n), (dp, dn, v) in plan["reg"].items()], key=lambda r: (r[0] or "", r[1], r[2])),
+            "regkeys": sorted([[a, p, dp] for (a, p), dp in plan["regkeys"].items()], key=lambda r: (r[0] or "", r[1])),
+            "dll": [[k, v] for k, v in plan["dll"].items()], "env": [[k, v] for k, v in plan["env"].items()],
+            "exec": [[k, v] for k, v in plan["exec"].items()], "keep": [[k, v] for k, v in plan["keep"].items()],
+            "decls": [[k, v] for k, v in plan["decls"].items()], "order": plan["order"],
+            "events": [list(e) for e in plan["events"]], "when_vars": dict(sorted(plan["when_vars"].items())), "error": ""}
+
+
 # ---------------------------------------------------------------- grafts (§4.4)
 def graft_index(nodes):
     """member CID -> the grafts whose list begins with an ANY naming it."""
@@ -610,6 +630,54 @@ def covers(seq, j, f, vars_=None):
     return fl in p
 
 
+def fixtures():
+    """Rule fixtures shared by the self-test and fold_gate.py (which runs them through the C++ port too):
+    [(name, {cid: node}, [(root, instance, grafts), ...])]."""
+    N = lambda layers, **kw: dict(kw, LAYERS=layers)
+    Z = lambda name, t="FILES/C:/g": {"ZIP": name, "TARGET": t}
+    return [
+        ("diamond+move", {"a": N([Z("a")]), "b": N([{"NODE": "a"}, Z("b")]), "c": N([{"NODE": "a"}, Z("c")]),
+                          "x": N([{"NODE": "b"}, {"NODE": "c"}]), "y": N([{"NODE": "a"}, {"NODE": "b"}, Z("y"), {"NODE": "a"}])},
+         [("x", {}, []), ("y", {}, [])]),
+        ("cycle+missing", {"p": N([{"NODE": "q"}, {"NODE": "nope"}]), "q": N([{"NODE": "p"}, Z("q")])}, [("p", {}, [])]),
+        ("when", {"opt": N([Z("opt"), {"VARS": {"inner": {"DEFAULT": "%o%x"}}}]),
+                  "v": N([{"VARS": {"o": {"DEFAULT": "0"}, "g": {"DEFAULT": "a", "WHEN": "%o%==1"}}},
+                          {"NODE": "opt", "WHEN": "%o%==1 && %g%==a"}, Z("v"), {"DLL": {"x": "n"}, "WHEN": "!(%o%==1)"}])},
+         [("v", {}, []), ("v", {"o": "1"}, [])]),
+        ("placement", {"lib": N([Z("l1", "FILES/sub"), Z("l2", "FILES/C:/abs"), {"NODE": "leaf", "TARGET": "FILES/deep"},
+                                 {"EDIT": [{"MODE": "Overwrite", "VALUE": "v"}], "TARGET": "FILES/sub/f.ini"},
+                                 {"KEEP": {"FILES/sub/save/": True, "REG/HKCU/S": False}},
+                                 {"EXEC": [{"LABEL": "L", "HOST": "h", "EXE": "bin/x.exe", "WORKDIR": "bin"}]}]),
+                       "leaf": N([Z("leafz", "FILES/in")]),
+                       "g": N([{"NODE": "lib", "TARGET": "FILES/C:/g/lib"}])}, [("g", {}, [])]),
+        ("take", {"lib": N([{"DLL": {"d3d8": "n,b", "ddraw": "n,b"}}, {"VARS": {"a": {"DEFAULT": "1"}, "b": {"DEFAULT": "2"}}},
+                            {"ENV": {"E1": "1", "E2": None}}, Z("lz", "FILES/MS"),
+                            {"EDIT": [{"MODE": "Poke", "OFFSET": "0x1", "VALUE": "00"}], "TARGET": "FILES/MS/x86/D3D8.dll"},
+                            {"REG": {"HKCU": {"A": {"v": "1"}, "B": {"w": "2"}, "E": {}}}},
+                            {"EXEC": [{"LABEL": "Play", "HOST": "win32", "EXE": "x.exe"}, {"LABEL": "Tool", "HOST": "win32"}]}]),
+                  "mid": N([{"NODE": "lib", "TAKE": ["DLL", "VARS/a", "FILES/MS/x86/D3D8.dll", "REG/HKCU/A", "REG/HKCU/E", "ENV/E1"]}]),
+                  "g": N([{"NODE": "lib", "TAKE": ["DLL/d3d8", ["VARS/a", "VARS/z"], "EXEC/Tool", ["ENV/E2", "ENV/E9"],
+                                                  "FILES/MS/x86/", ["REG/HKCU/B", "REG/HKCU/C"]]},
+                          {"NODE": "mid", "TAKE": ["DLL/ddraw", "FILES/MS/"], "TARGET": "FILES/C:/g"}])},
+         [("g", {}, [])]),
+        ("exec-fold", {"t": N([{"EXEC": [{"LABEL": "Play", "TILE": {"UID": "1", "TITLE": "T", "META": {"A": 1, "B": 2}}},
+                                          {"LABEL": "B", "HOST": "h", "ARGS": ["x"]}]}]),
+                       "v": N([{"NODE": "t"}, {"EXEC": [{"LABEL": "Play", "HOST": "win32", "TILE": {"TITLE": "T2", "META": {"B": None, "C": 3}}},
+                                                         {"LABEL": "B", "ARGS": None}]}])}, [("v", {}, [])]),
+        ("reg+dll+env", {"r": N([{"REG": {"HKCU": {"S": {"a": "1", "b": "2"}}}, "ARCH": ["32", "64"]},
+                                 {"REG": {"HKCU": {"S": {"a": "0", "b": "1", "c": "k"}}}},
+                                 {"REG": {"HKCU": {"S": {"a": "3", "b": None}, "E": {}}, "HKLM": {"X": {"v": 1}}}},
+                                 {"DLL": {"D3D8": "n,b", "ddraw": "b"}}, {"DLL": {"d3d8": None}},
+                                 {"ENV": {"A": "1", "B": "2"}}, {"ENV": {"A": None}}])}, [("r", {}, [])]),
+        ("any+not+grafts", {"base": N([Z("b")]), "m": N([{"ANY": ["base"]}, Z("m")]), "w": N([{"NOT": "base"}]),
+                            "v1": N([{"NODE": "base"}, {"EXEC": [{"LABEL": "Play", "HOST": "h", "TILE": {"UID": "9", "TITLE": "t"}}]}]),
+                            "v2": N([{"NODE": "m"}]), "v3": N([{"NODE": "base"}, {"NODE": "w"}]),
+                            "g1": N([{"ANY": ["base", "zzz"]}, Z("g1"), {"NODE": "base"}], LABEL="b-graft", RECOMMENDED=["9"]),
+                            "g2": N([{"ANY": ["v1"]}, Z("g2")], LABEL="a-graft")},
+         [("v1", {}, []), ("v1", {}, ["g2", "g1"]), ("v2", {}, []), ("v3", {}, [])]),
+    ]
+
+
 def self_test():
     def N(layers, **kw):
         return dict(kw, LAYERS=layers)
@@ -674,6 +742,10 @@ def self_test():
     # identity: Kubo-parity raw CID of the canonical bytes, CID/POS never part of them
     assert cid_of(b"hello\n") == "bafkreicysg23kiwv34eg2d7qweipxwosdo2py4ldv42nbauguluen5v6am"
     assert canonical({"CID": "x", "POS": [1], "LABEL": "l", "LAYERS": []}) == b'{"LABEL":"l","LAYERS":[]}'
+    for name, fx, cases in fixtures():
+        r = Resolver({k: (dict(v, CID=k), "") for k, v in fx.items()})
+        for root, inst, gs in cases:
+            r.resolve(root, inst, {}, gs)
     print("self-test OK")
 
 
