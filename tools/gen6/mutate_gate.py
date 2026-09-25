@@ -14,6 +14,11 @@ from resolve import load_nodes
 
 
 def gate(tools, g5, g6, only=None):
+    """The gate as gate.sh runs it: the self-tests, then the equivalence check."""
+    for t in ("resolve.py", "migrate.py"):
+        r = subprocess.run([sys.executable, os.path.join(tools, t), "--self-test"], capture_output=True, text=True, cwd=tools)
+        if r.returncode != 0:
+            return True, [f"[BLOCK] {t} self-test: " + (r.stdout + r.stderr).strip().splitlines()[-1][:120]]
     cmd = [sys.executable, os.path.join(tools, "equivalence.py"), g5, g6] + (["--only", only] if only else [])
     r = subprocess.run(cmd, capture_output=True, text=True, cwd=tools)
     return r.returncode != 0, [l for l in r.stdout.splitlines() if l.startswith("[BLOCK]")]
@@ -58,7 +63,12 @@ def tile_title(n):
                 e["TILE"]["TITLE"] += " (mutated)"; return
 
 
-DATA = [("w3d_patch_sp2_content", False, swap_patch_under_base, "w3d_anniversary"),
+def graft_unticked(n):             # a pre-ticked graft no longer recommended: the default launch loses it
+    n.pop("RECOMMENDED")
+
+
+DATA = [("wipeout_xl_widescreen_patch_wipeout2_exe", False, graft_unticked, "Single Player"),
+        ("w3d_patch_sp2_content", False, swap_patch_under_base, "w3d_anniversary"),
         ("sh2_enhanced_content_delta_from_sh2_base", False, drop_reg, "sh2_enhanced"),
         ("w4m_base_content_worms_4_mayhem", False, edit_first, "w4m_anniversary"),
         ("tonic_trouble_retail_content", False, var_default, "Tonic Trouble Retail"),
@@ -71,6 +81,8 @@ CODE = [("resolve.py", 'reg[(arch, path.lower(), k.lower())] = (path, k, v)',
          'reg.setdefault((arch, path.lower(), k.lower()), (path, k, v))'),                       # registry: first wins
         ("resolve.py", '            if "WHEN" in L and not when(L["WHEN"], self.wv):\n                continue\n            t = type_of(L)',
          '            t = type_of(L)'),                                                           # layer WHEN ignored
+        ("resolve.py", 'if not any(m in present for m in L["ANY"]):', 'if False:'),                    # ANY never checked
+        ("resolve.py", '    present = set(plan["order"])', '    present = set(idx)'),                        # every graft offered everywhere
         ("resolve.py", 'exe[lab] = merge(exe.get(lab), e) if lab in exe else copy.deepcopy(e)',
          'exe[lab] = copy.deepcopy(e)'),                                                         # entries replaced whole
         ("gen5model.py", "    emit(root)\n    return out", "    emit(root)\n    return out[::-1]"),  # gen-5 closure order

@@ -471,6 +471,27 @@ def merge(a, b):
     return out
 
 
+# ---------------------------------------------------------------- grafts (§4.4)
+def graft_index(nodes):
+    """member CID -> the grafts whose list begins with an ANY naming it."""
+    idx = {}
+    for h, (n, _) in nodes.items():
+        L = n["LAYERS"]
+        if L and "ANY" in L[0]:
+            for m in L[0]["ANY"]:
+                idx.setdefault(m, set()).add(h)
+    return idx
+
+
+def offered_grafts(nodes, idx, plan, face_uid=None):
+    """(offered, pre-ticked): the grafts whose ANY holds against the resolved row, in the default order (LABEL, then
+    CID); pre-ticked = RECOMMENDED under the row's tile."""
+    present = set(plan["order"])
+    offered = sorted({g for m in present for g in idx.get(m, ())}, key=lambda g: (nodes[g][0].get("LABEL", ""), g))
+    ticked = [g for g in offered if face_uid is not None and face_uid in (nodes[g][0].get("RECOMMENDED") or [])]
+    return offered, ticked
+
+
 # ---------------------------------------------------------------- the shelf (§2)
 def shelf(nodes, builtins=None):
     """Tiles merged by UID and nested by PARENTUID; rows = variant nodes × the tiled entries in their fold.

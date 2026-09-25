@@ -19,7 +19,7 @@ Usage: equivalence.py <gen5-work-dir> <gen6-library> [--allow STEP] [--show N] [
 """
 import argparse, glob, json, os, sys
 from collections import defaultdict
-from resolve import Resolver, load_nodes, subst, subst_json, when, resolve_vars, covers, provided, to_layout
+from resolve import Resolver, load_nodes, subst, subst_json, when, resolve_vars, covers, provided, to_layout, graft_index, offered_grafts
 
 VFS = {"VFSZipLayer": "ZIP", "VFSDeltaLayer": "DELTA", "VFSDirLayer": "DIR", "VFSFileLayer": "FILE"}
 EDITS = ("FileEdit", "BinaryPatch")
@@ -31,6 +31,8 @@ ALLOW = {
     "generic": {
         "vars-new-option": "§6 step 4: a TOGGLE'd graft is now the variant's own bool option (default = its TOGGLE)",
         "content-order": "the same layers in another order with every path's winner unchanged (§4.2 occurrences)",
+        "shelf-order": "a tile's child faces all hang off the base game (PARENTUID = family) and sort by title; gen 5 "
+                       "ordered them by how deep their content was built (user, 2026-09-25)",
     },
 }
 
@@ -215,6 +217,7 @@ def compare_state(g5, g6, diffs, pre=""):
 
 
 PARENT = {}                                                # tile UID -> PARENTUID, over the whole library
+GRAFTS, GIDX = set(), {}                                   # graft CIDs; member -> grafts (ANY index)
 
 
 def pooled(decls):
@@ -225,10 +228,15 @@ def check_game(cid, d, R, g6root, g5root, runner_plans, config=None):
     """config: a non-default gen-5 launch ({"modules": {graft: on}, "vars": {K: V}}) → the same choices as gen-6
     instance values: a graft's on/off is its bool option (keyed by its LABEL), vars pass through."""
     diffs = {}
-    chosen = {}
+    chosen, picked = {}, None
     if config:
+        picked = []
         for g, on in config["modules"].items():
-            chosen[R.nodes[g][0]["LABEL"]] = "1" if on else "0"
+            if g in GRAFTS:                                  # a graft: ticked = in the instance's graft list
+                if on:
+                    picked.append(g)
+            else:                                            # a variant's own option: its bool variable
+                chosen[R.nodes[g][0]["LABEL"]] = "1" if on else "0"
         chosen.update(config["vars"])
     custom = set(d["CustomVariables"])
     builtins = {k: v for k, v in d["Variables"].items() if k not in custom}
@@ -238,8 +246,11 @@ def check_game(cid, d, R, g6root, g5root, runner_plans, config=None):
     rplan = runner_plans[rid]
     # the pool draw is instance data: give gen 6 the same draw gen 5 made
     plan0 = R.resolve(cid, chosen, builtins)
+    face = next((e["TILE"]["UID"] for e in plan0["exec"].values() if not e.get("GUEST") and e.get("TILE")), None)
+    offered, ticked = offered_grafts(R.nodes, GIDX, plan0, face)
+    grafts = [g for g in offered if g in picked] if picked is not None else ticked
     inst = dict(chosen, **{k: d["CustomVariables"][k] for k in pooled(plan0["decls"]) if k in d["CustomVariables"]})
-    plan = R.resolve(cid, inst, builtins) if inst != chosen else plan0
+    plan = R.resolve(cid, inst, builtins, grafts=grafts)
     decls = dict((rplan or {}).get("decls", {}))
     for k, v in plan["decls"].items():
         decls.pop(k, None); decls[k] = v
@@ -372,6 +383,8 @@ def main():
     a = ap.parse_args()
     g5root = os.path.join(a.g5work, "base", "LIBRARY")
     R = Resolver(load_nodes(a.g6lib))
+    GIDX.update(graft_index(R.nodes))
+    GRAFTS.update(g for gs in GIDX.values() for g in gs)
     for n, _ in R.nodes.values():
         for L in n["LAYERS"]:
             for e in L.get("EXEC", []):
@@ -382,6 +395,19 @@ def main():
         allow.update(ALLOW.get(step, {}))
     bycat, report, runner_plans, runners = defaultdict(list), {}, {}, {}
     dumps = sorted(glob.glob(os.path.join(a.g5work, "dumps", "*.json")))
+    # which grafts each row offers: gen 5 offered a graft to the variants its any-of names; gen 6 to the rows whose
+    # expansion holds its ANY
+    import gen5model
+    g5nodes = gen5model.load(g5root)
+    anyof = {g: {m for x in n.get("OVER", []) if isinstance(x, list) for m in x} for g, (n, _) in g5nodes.items()}
+    for f in dumps:
+        cid = os.path.basename(f)[:-5]
+        if "@" in cid or (a.only and cid != a.only) or cid not in R.nodes:
+            continue
+        want = sorted(g for g, ms in anyof.items() if cid in ms)
+        got = sorted(offered_grafts(R.nodes, GIDX, R.resolve(cid, {}, {}))[0])
+        if want != got:
+            bycat["grafts-offered"].append((R.nodes[cid][0].get("LABEL"), f"gen5 {len(want)} gen6 {len(got)}"))
     for f in dumps:
         name = os.path.basename(f)[:-5]
         cid = name.split("@")[0]
@@ -418,8 +444,6 @@ def main():
         report["runner:" + rid] = diffs
     # runner roots no launch covers (the chain never picks them by default): gen 5's build from gen5model, which
     # must first reproduce every runner build the dumps DO contain
-    import gen5model
-    g5nodes = gen5model.load(g5root)
     for rid, d in runners.items():
         if d is not None and rid in g5nodes and not model_matches_dump(d, gen5model.runner_dump(g5nodes, rid), g5root):
             bycat["runner-model"].append((R.nodes[rid][0].get("LABEL"), "gen5model does not reproduce the dumped build"))
@@ -442,13 +466,29 @@ def main():
         lab = lambda c: R.nodes[c][0].get("LABEL")
         a5 = [(t["title"], t["uid"], t["rows"]) for t in g5s]
         a6 = [(f["title"], f["uid"], [lab(v) for face in f["faces"] for v in face["rows"]]) for f in g6s]
-        if a5 != a6:
-            for x, y in zip(a5, a6):
-                if x != y:
-                    bycat["shelf"].append((x[0], f"gen5 {x[1]} {x[2][:6]}… | gen6 {y[0]} {y[1]} {y[2][:6]}…"))
-            if len(a5) != len(a6):
-                bycat["shelf"].append(("tiles", f"gen5 {len(a5)} gen6 {len(a6)}"))
-        report["shelf"] = {} if a5 == a6 else {"shelf": "differs"}
+        def reordered_faces(rows5, fam6):
+            """gen 5's rows = gen 6's face blocks (each in its own order), faces in another order."""
+            blocks = [[lab(v) for v in face["rows"]] for face in fam6["faces"]]
+            if sorted(rows5) != sorted(r for b in blocks for r in b):
+                return False
+            i = 0
+            while i < len(rows5):
+                b = next((b for b in blocks if b and rows5[i:i + len(b)] == b), None)
+                if b is None:
+                    return False
+                blocks.remove(b); i += len(b)
+            return True
+        worst = None
+        if len(a5) != len(a6):
+            bycat["shelf"].append(("tiles", f"gen5 {len(a5)} gen6 {len(a6)}")); worst = "shelf"
+        for x, y, fam in zip(a5, a6, g6s):
+            if x == y:
+                continue
+            same_tile = x[:2] == y[:2]
+            cat = "shelf-order" if same_tile and reordered_faces(x[2], fam) else "shelf"
+            bycat[cat].append((x[0], f"gen5 {x[1]} {x[2][:6]}… | gen6 {y[0]} {y[1]} {y[2][:6]}…"))
+            worst = "shelf" if cat == "shelf" or worst == "shelf" else cat
+        report["shelf"] = {} if worst is None else {worst: "differs"}
     n = len(report)
     clean = sum(1 for v in report.values() if not v)
     blocking = {c: v for c, v in bycat.items() if c not in allow}

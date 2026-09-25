@@ -73,8 +73,8 @@ def gather(root):
 
 # ---------------------------------------------------------------- gen-5 facts the transform needs
 def new_report():
-    return {"overrides_dropped": [], "layer_toggles_dropped": [], "toggles": [], "graft_refs_to_any": [],
-            "reg_null_to_empty": [], "edits_moved": [], "canonical_layers": []}
+    return {"overrides_dropped": [], "layer_toggles_dropped": [], "toggles": [], "graft_refs_to_variant_dropped": [],
+            "reg_null_to_empty": [], "edits_moved": [], "canonical_layers": [], "grafts_kept": []}
 
 
 def bare(n):
@@ -246,34 +246,7 @@ def new_tile(T, parent):
     return out
 
 
-def tile_parents(nodes):
-    """PARENTUID of each tile: the nearest tile of the same family beneath it (gen 5's face depth), so an expansion
-    built on an expansion nests under it (AoE2 FE under TC, SWAT 4 EF under TSS)."""
-    out = {}
-    for h, n in nodes.items():
-        if "TILE" not in n:
-            continue
-        fam = str(n["TILE"]["UID"])
-        q, seen, found = deque(bare(n)), set(bare(n)), None
-        while q and found is None:
-            x = q.popleft()
-            m = nodes.get(x)
-            if m is None:
-                continue
-            if "TILE" in m and str(m["TILE"]["UID"]) == fam:
-                found = tile_uids(m["TILE"])[0]; break
-            for r in bare(m):
-                if r not in seen:
-                    seen.add(r); q.append(r)
-        own = tile_uids(n["TILE"])[0]
-        if found is None and own != fam:
-            found = fam                                     # a child face with its family's tile nowhere beneath
-        if found is not None and found != own:
-            out[h] = found
-    return out
-
-
-def transform(h, n, nodes, grafts, report, tile_parent):
+def transform(h, n, nodes, grafts, report):
     where = f"{n.get('LABEL')} ({h[:16]})"
     if "WHEN" in n:
         raise Fail(f"{where}: node-level WHEN (none expected; AND it onto the node's own layers if one appears)")
@@ -286,6 +259,8 @@ def transform(h, n, nodes, grafts, report, tile_parent):
         elif isinstance(r, list):
             if h not in grafts:
                 raise Fail(f"{where}: any-of outside a graft")
+            if grafts[h]["kept"]:
+                layers.append({"ANY": list(r)})                    # a graft: what it applies onto
             continue
         elif isinstance(r, dict) and set(r) == {"NOT"}:
             layers.append({"NOT": r["NOT"]})
@@ -319,7 +294,7 @@ def transform(h, n, nodes, grafts, report, tile_parent):
     if len({e["LABEL"] for e in entries}) != len(entries):
         raise Fail(f"{where}: two entries with one label after relabelling")
     if "TILE" in n:
-        t = new_tile(n["TILE"], tile_parent.get(h))
+        t = new_tile(n["TILE"], tile_uids(n["TILE"])[1])       # PARENTUID = the family (the base game)
         play = [e for e in entries if e["LABEL"] == PLAY]
         if play:
             play[0]["TILE"] = t
@@ -354,13 +329,15 @@ def migrate(nodes, report, paths=None):
                 targets.append(x)
         if not targets:
             raise Fail(f"graft {n.get('LABEL')} names no variant")
-        grafts[h] = {"targets": targets, "on": n["TOGGLE"] == "on", "key": n.get("LABEL")}
-    parents = tile_parents(nodes)
-    out = {h: transform(h, n, nodes, grafts, report, parents) for h, n in nodes.items()}
+        # an any-of graft (Wipeout's patches) stays a graft; one naming a single variant is that variant's own option
+        grafts[h] = {"targets": targets, "on": n["TOGGLE"] == "on", "key": n.get("LABEL"),
+                     "kept": any(isinstance(x, list) for x in n.get("OVER", []))}
+    out = {h: transform(h, n, nodes, grafts, report) for h, n in nodes.items()}
 
-    # A graft brought only what its variants lacked: inside what only grafts reach, a ref to something every target
-    # already contains was a requirement, not composition — it becomes ANY (else it would contain the variant: a
-    # cycle; or move a node the variant already placed).
+    # Inside what only a graft reaches, a ref to the variant it applies to is dropped: an option is contained by that
+    # variant (the ref would be a cycle — nfsu2_asiloader named nfsu2_vanilla_plus), and a kept graft's anchor ANY
+    # already requires it. Refs to anything else the variant contains stay NODE: they are held where the variant
+    # placed them (gen 5 brought only what the base lacked). A leading ANY stays reserved for a graft's anchor.
     closures = {}
     def clo(h):
         if h not in closures:
@@ -371,20 +348,16 @@ def migrate(nodes, report, paths=None):
         reached_by_launch |= clo(v)
     for g, info in grafts.items():
         tset = [clo(t) for t in info["targets"]]
-        # what only grafts reach (a library another launch also uses keeps its refs: they are its composition)
         private = {g} | {x for x in closure(nodes, g, lambda n: [r for r in bare(n) if r not in info["targets"]])
                          if not any(x in c for c in tset) and x not in reached_by_launch}
         for p in private:
-            for i, L in enumerate(out[p]["LAYERS"]):
-                r = L.get("NODE")
-                if r is None:
+            keep = []
+            for L in out[p]["LAYERS"]:
+                if L.get("NODE") in info["targets"]:
+                    report["graft_refs_to_variant_dropped"].append(f"{nodes[p].get('LABEL')}: {nodes[L['NODE']].get('LABEL')}")
                     continue
-                inn = [r in c for c in tset]
-                if all(inn):
-                    out[p]["LAYERS"][i] = {"ANY": [r]}
-                    report["graft_refs_to_any"].append(f"{nodes[p].get('LABEL')}: {nodes.get(r, {}).get('LABEL', r)}")
-                elif any(inn):
-                    raise Fail(f"{nodes[p].get('LABEL')}: ref {r} is in some targets of {info['key']} but not all")
+                keep.append(L)
+            out[p]["LAYERS"] = keep
 
     # tiles → RECOMMENDED lists; the face each variant presents (for the invariant)
     faces = {}
@@ -398,10 +371,21 @@ def migrate(nodes, report, paths=None):
     for h, n in nodes.items():
         if n.get("RECOMMENDED") and h not in variants:
             raise Fail(f"RECOMMENDED on a non-variant {n.get('LABEL')}")
+    # a kept graft shipped pre-ticked (TOGGLE on) is RECOMMENDED under the tiles of the variants it applies onto
+    for g, info in grafts.items():
+        if info["kept"]:
+            if out[g]["LAYERS"][0].get("ANY") is None:
+                raise Fail(f"graft {info['key']}: its list does not begin with ANY")
+            if info["on"]:
+                out[g]["RECOMMENDED"] = sorted({faces[t] for t in info["targets"]})
+            report["grafts_kept"].append(f"{info['key']}: ANY {len(info['targets'])} variant(s), "
+                                         + ("pre-ticked" if info["on"] else "not pre-ticked"))
 
     # grafts → the variants' own options (bool var + gated NODE), in gen 5's graft order (label, then key)
     per_variant = {}
     for g, info in grafts.items():
+        if info["kept"]:
+            continue
         for v in info["targets"]:
             per_variant.setdefault(v, []).append(g)
     for v, gs in per_variant.items():
@@ -413,8 +397,10 @@ def migrate(nodes, report, paths=None):
         L[at:at] = [{"VARS": decl}] + [{"NODE": g, "WHEN": f"%{grafts[g]['key']}%==1"} for g in gs]
         report["toggles"].append(f"{nodes[v].get('LABEL')}: " + ", ".join(f"{grafts[g]['key']}={'on' if grafts[g]['on'] else 'off'}" for g in gs))
     canonicalize(out, report)
-    place_edits(out, variants, paths or {}, report)
-    check(nodes, out, faces)
+    place_edits(out, variants, paths or {}, report,
+                {v: sorted((g for g, i in grafts.items() if i["kept"] and v in i["targets"]), key=lambda g: (nodes[g].get("LABEL", ""), g))
+                 for v in variants})
+    check(nodes, out, faces, [g for g, i in grafts.items() if i["kept"]])
     return out
 
 
@@ -467,7 +453,7 @@ def canonicalize(out, report):
 
 
 # ---------------------------------------------------------------- edit placement (§6 step 1)
-def place_edits(out, variants, paths, report):
+def place_edits(out, variants, paths, report, grafts_of=None):
     """gen 5 applied every base edit above all content; gen 6 applies it in place. An edit some later content would
     cover moves into a node of its own that each variant containing the edit's node places on top (before its
     entry). Repeated until nothing is covered (a moved edit is checked again)."""
@@ -478,8 +464,8 @@ def place_edits(out, variants, paths, report):
         covered, users = {}, {}
         for v in sorted(variants):
             opts = {k: "1" for L in out[v]["LAYERS"] for k, d in L.get("VARS", {}).items() if (d.get("UI") or {}).get("CONTROL") == "bool"}
-            for inst in ({}, opts):
-                plan = res.resolve(v, inst)
+            for inst, gs in (({}, []), (opts, (grafts_of or {}).get(v, []))):
+                plan = res.resolve(v, inst, grafts=gs)
                 for x in plan["order"]:
                     users.setdefault(x, set()).add(v)
                 seq = plan["seq"]
@@ -525,7 +511,7 @@ def sources(n):
     return out
 
 
-def check(old, new, faces):
+def check(old, new, faces, grafts_kept=()):
     if not set(old) <= set(new):
         raise Fail("a node disappeared")
     for h in set(new) - set(old):
@@ -542,6 +528,9 @@ def check(old, new, faces):
                 raise Fail(f"{n['LABEL']}: NODE {L['NODE']} does not resolve")
         if h in old and sources(old[h]) != sources(n):
             raise Fail(f"{n['LABEL']}: content CIDs changed")
+    anchored = {h for h, n in new.items() if n["LAYERS"] and "ANY" in n["LAYERS"][0]}
+    if anchored != set(grafts_kept):
+        raise Fail(f"leading ANY (= a graft) on {sorted(new[h]['LABEL'] for h in anchored ^ set(grafts_kept))}")
     # every variant presents its gen-5 face: the TILE on the nearest Play entry beneath (own counts)
     for h, uid in faces.items():
         q, seen, got = deque([h]), {h}, None
@@ -612,6 +601,8 @@ def self_test():
         H("lib"): {"CID": H("lib"), "LABEL": "lib", "DLLOVERRIDES": {"d3d8": "n,b"}},
         H("mod"): {"CID": H("mod"), "LABEL": "mod", "TOGGLE": "on", "OVER": [[H("v1"), H("v2")], H("lib")],
                    "PATCHES": [{"FILE": "%PrefixRoot%/drive_c/%PackageUID%/g.exe", "EDITS": [{"MODE": "Poke", "OFFSET": "0x10", "VALUE": "00"}]}]},
+        H("opt"): {"CID": H("opt"), "LABEL": "opt", "TOGGLE": "off", "OVER": [H("v1"), H("lib")],
+                   "LAYERS": [{"FORM": "zip", "PATH": "o.zip", "TARGET": "%PrefixRoot%/drive_c/%PackageUID%/opt"}]},
     }
     report = new_report()
     out = migrate(copy.deepcopy(nodes), report)
@@ -626,14 +617,17 @@ def self_test():
     assert v1["RECOMMENDED"] == ["7"] and v1["LAYERS"][0] == {"NODE": H("base")}
     assert v1["LAYERS"][1] == {"VARS": {"k": {"DEFAULT": "x", "WHEN": "%y%==1"}}}
     assert v1["LAYERS"][2] == {"ENV": {"B": None, "A": "1"}}
-    assert v1["LAYERS"][3] == {"VARS": {"mod": {"DEFAULT": "1", "UI": {"LABEL": "mod", "CONTROL": "bool"}}}}
-    assert v1["LAYERS"][4] == {"NODE": H("mod"), "WHEN": "%mod%==1"}
+    assert v1["LAYERS"][3] == {"VARS": {"opt": {"DEFAULT": "0", "UI": {"LABEL": "opt", "CONTROL": "bool"}}}}, v1["LAYERS"][3]
+    assert v1["LAYERS"][4] == {"NODE": H("opt"), "WHEN": "%opt%==1"}
     assert v1["LAYERS"][5]["EXEC"] == [{"LABEL": "Play", "HOST": "win32", "EXE": "C:/%PackageUID%/g.exe", "ARGS": []}]
     assert canon("pfx/drive_c/users/steamuser/Saved Games/x") == "%UserProfile%/Saved Games/x"
     assert canon("%PrefixRoot%/drive_cx") == "%PrefixRoot%/drive_cx"          # a prefix of a name is not a path prefix
     assert "RECOMMENDED" not in out[H("v2")] and out[H("v2")]["LAYERS"][-1]["EXEC"][0]["LABEL"] == "Play"
-    mod = out[H("mod")]["LAYERS"]
-    assert mod[0] == {"NODE": H("lib")} and "EDIT" in mod[1] and len(mod) == 2, mod
+    mod = out[H("mod")]                     # an any-of graft stays a graft: ANY first, pre-ticked = RECOMMENDED
+    assert mod["LAYERS"][0] == {"ANY": [H("v1"), H("v2")]} and mod["LAYERS"][1] == {"NODE": H("lib")}, mod
+    assert mod["RECOMMENDED"] == ["70", "7"] or mod["RECOMMENDED"] == sorted(["7", "70"]), mod
+    assert out[H("opt")]["LAYERS"][0] == {"NODE": H("lib")} and "RECOMMENDED" not in out[H("opt")]
+    assert not any(L.get("NODE") == H("mod") for L in out[H("v2")]["LAYERS"])
     assert report["overrides_dropped"] and report["toggles"]
     # refusals
     bad = copy.deepcopy(nodes); bad[H("v1")]["OVER"].append(H("mod"))
