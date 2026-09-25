@@ -295,7 +295,10 @@ int main(int argc, char *argv[])
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || LaunchParameters.LanHarness
         || !LaunchParameters.LaunchNodeId.empty();
-    if (HeadlessNeedsNode)
+    //--offline: a headless run that must not bring up the node (a resolve sweep over a whole library would otherwise
+    //start a libp2p node per call). Launch facts the node supplies (the virtual-LAN session vars) are then absent, as in
+    //any launch with the node down.
+    if (HeadlessNeedsNode && !LaunchParameters.Offline)
         IpfsWrapper::StartNode(IpfsRepo);   // non-fatal: a failed start just means fetches/seeds report errors
 
     //HEADLESS: print this node's peer ID + dialable addrs, then exit (so another node can --connect to it).
@@ -698,6 +701,10 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             //Dial a known peer (full /p2p/ multiaddr) before fetching — direct peering / controlled benchmark.
             RuntimeParameters.ConnectAddr      = argv[++i];
             RuntimeParameters.RunningHeadless  = true;
+        }
+        else if (arg == "--offline")
+        {
+            RuntimeParameters.Offline = true;
         }
         else if (arg == "--list-nodes")
         {

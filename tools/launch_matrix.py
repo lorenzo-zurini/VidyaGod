@@ -37,7 +37,8 @@ RUN_END   = "=== done"
 #Values that are a property of the MACHINE or the run, not of the package. Left in, every golden would differ on
 #every computer and the harness would be noise.
 VOLATILE_VARS = ("VIDYAGOD_SELF_NAME", "VIDYAGOD_SELF_VIP", "VIDYAGOD_PEER_NAMES",
-                 "VIDYAGOD_PEER_VIPS", "VIDYAGOD_SUBNET")
+                 "VIDYAGOD_PEER_VIPS", "VIDYAGOD_SUBNET",
+                 "ScreenWidth", "ScreenHeight")   # the machine's display (the dump's built-in variable map)
 
 def launchables(bundle):
     with open(os.path.join(bundle, "launchmatrix.json")) as F:
@@ -138,6 +139,19 @@ def main():
                                               f"golden/{name}.json", "resolved", n=2))
                 failures.append(f"{name}: PLAN CHANGED ({sum(1 for l in d if l.startswith(('+','-')) and not l.startswith(('+++','---')))} line(s))")
                 failures += ["    " + l.rstrip("\n") for l in d[:40]]
+
+        #--offline: a headless run that must not bring the node up (a resolve sweep over a whole library). The node
+        #creates its repo under the data dir when it starts, so after an offline resolve there must be none.
+        if not args.update:
+            node = launchables(bundle)[0]
+            shutil.rmtree(os.path.join(data, "IPFS"), ignore_errors=True)
+            run = subprocess.run([binary, "--bypass-single-instance-lock", "--offline", "--data-dir", data,
+                                  "--resolve-only", node], capture_output=True, text=True, timeout=300)
+            checked += 1
+            if run.returncode != 0 or not os.path.isfile(os.path.join(data, f"vg_resolve_{node}.json")):
+                failures.append(f"--offline resolve of {node} FAILED (exit {run.returncode})")
+            elif os.path.exists(os.path.join(data, "IPFS")):
+                failures.append(f"--offline resolve of {node} started the IPFS node (it created {data}/IPFS)")
 
         for node, entry in RUN_CASES:
             name = case_name(node, entry)

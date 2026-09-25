@@ -271,6 +271,7 @@ Add a source CID, download a game, launch it. Author or import your own via the 
 | `--audit-packages` | Resolve **every** launchable and report what would fail at launch. |
 | `--tray` | Start minimized to the system tray. |
 | `--bypass-single-instance-lock` | Run a read-only/CLI check while the GUI holds the lock. |
+| `--offline` | Never start the embedded IPFS node (headless sweeps; node-supplied LAN session vars are absent). |
 
 **Content & distribution**
 

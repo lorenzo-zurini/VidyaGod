@@ -1,4 +1,10 @@
 {
+  "ComposedExec": {
+    "CONTENTPATH": "%PrefixRoot%/drive_c/%PackageUID%/game/data.txt",
+    "EXEARGS": [],
+    "LABEL": "lm_minimal",
+    "PLATFORM": "linux64"
+  },
   "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
   "ContentPath": "drive_c/90000000000001/game/data.txt",
   "ContentRoot": "",
@@ -18,6 +24,8 @@
   "KeepFiles": [],
   "KeepRegHives": [],
   "KeepRegKeys": [],
+  "LaunchEnv": {},
+  "LaunchRemoveEnv": [],
   "PackageUID": "90000000000001",
   "Platform": "linux64",
   "PrefixGenerate": false,
@@ -40,13 +48,24 @@
       "NodeId": "baguqeerao6hwt2a5bltaftwjbwo2wenrnjhypth4tbdrbohc6wvdbi6cjgca"
     }
   ],
+  "RunnerComponents": [
+    {
+      "COMPONENTID": "lm_runner_native",
+      "SUBCOMPONENTS": []
+    }
+  ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "runner-loses",
     "LM_RUNNER_ONLY": "from-runner",
     "LM_SHOULD_BE_GONE": "runner-set-this"
   },
   "RunnerExecutable": "/bin/sh",
+  "RunnerLayers": [],
   "RunnerName": "lm_runner_native",
+  "RunnerPersistLayers": [],
+  "RunnerRecipe": [
+    "lm_runner_native"
+  ],
   "RunnerRemoveEnv": [
     "LM_GAME_KEEPS_THIS"
   ],
@@ -58,5 +77,26 @@
       "TYPE": "VFSZipLayer"
     }
   ],
-  "UnifiedRuntime": false
+  "UnifiedRuntime": false,
+  "Variables": {
+    "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
+    "ContentPath": "drive_c/90000000000001/game/data.txt",
+    "GameName": "Launch Matrix",
+    "PackageName": "Launch Matrix",
+    "PackageUID": "90000000000001",
+    "PrefixRoot": "",
+    "RunnerMount": "",
+    "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
+    "ScreenHeight": "<volatile>",
+    "ScreenWidth": "<volatile>",
+    "TempPath": "<TMP>/90000000000001/DefaultInstance",
+    "UMUID": "0",
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX": "on",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>"
+  }
 }

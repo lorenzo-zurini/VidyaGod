@@ -1,4 +1,14 @@
 {
+  "ComposedExec": {
+    "CONTENTPATH": "%PrefixRoot%/drive_c/%PackageUID%/bin/probe.sh",
+    "EXEARGS": [
+      "--matrix",
+      "%lm_derived%"
+    ],
+    "LABEL": "lm_run",
+    "PLATFORM": "linux64",
+    "WORKDIR": "%PrefixRoot%/drive_c/%PackageUID%"
+  },
   "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/bin/probe.sh",
   "ContentPath": "drive_c/90000000000001/bin/probe.sh",
   "ContentRoot": "",
@@ -45,6 +55,16 @@
   "KeepRegKeys": [
     "HKCU",
     "HKLM\\Software\\LaunchMatrix"
+  ],
+  "LaunchEnv": {
+    "LM_EXEC_ENV": "arrived",
+    "LM_FOLDED": "from-below",
+    "LM_FROM_VAR": "%lm_derived%",
+    "LM_OVERRIDDEN": "above"
+  },
+  "LaunchRemoveEnv": [
+    "LM_SHOULD_BE_GONE",
+    "LM_REMOVED_ABOVE"
   ],
   "PackageUID": "90000000000001",
   "Platform": "linux64",
@@ -99,6 +119,12 @@
       "NodeId": "baguqeerao6hwt2a5bltaftwjbwo2wenrnjhypth4tbdrbohc6wvdbi6cjgca"
     }
   ],
+  "RunnerComponents": [
+    {
+      "COMPONENTID": "lm_runner_native",
+      "SUBCOMPONENTS": []
+    }
+  ],
   "RunnerEnv": {
     "LM_EXEC_ENV": "arrived",
     "LM_FOLDED": "from-below",
@@ -107,7 +133,12 @@
     "LM_RUNNER_ONLY": "from-runner"
   },
   "RunnerExecutable": "/bin/sh",
+  "RunnerLayers": [],
   "RunnerName": "lm_runner_native",
+  "RunnerPersistLayers": [],
+  "RunnerRecipe": [
+    "lm_runner_native"
+  ],
   "RunnerRemoveEnv": [
     "LM_GAME_KEEPS_THIS",
     "LM_SHOULD_BE_GONE",
@@ -313,5 +344,31 @@
       "TYPE": "VFSDirLayer"
     }
   ],
-  "UnifiedRuntime": false
+  "UnifiedRuntime": false,
+  "Variables": {
+    "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/bin/probe.sh",
+    "ContentPath": "drive_c/90000000000001/bin/probe.sh",
+    "GameName": "Launch Matrix",
+    "PackageName": "Launch Matrix",
+    "PackageUID": "90000000000001",
+    "PrefixRoot": "",
+    "RunnerMount": "",
+    "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
+    "ScreenHeight": "<volatile>",
+    "ScreenWidth": "<volatile>",
+    "TempPath": "<TMP>/90000000000001/DefaultInstance",
+    "UMUID": "0",
+    "VIDYAGOD_PEER_NAMES": "<volatile>",
+    "VIDYAGOD_PEER_VIPS": "<volatile>",
+    "VIDYAGOD_SANDBOX": "on",
+    "VIDYAGOD_SANDBOX_NET": "isolated",
+    "VIDYAGOD_SELF_NAME": "<volatile>",
+    "VIDYAGOD_SELF_VIP": "<volatile>",
+    "VIDYAGOD_SUBNET": "<volatile>",
+    "lm_conditional": "on-because-beta",
+    "lm_derived": "hello-beta",
+    "lm_flag": "1",
+    "lm_mode": "beta",
+    "lm_text": "hello"
+  }
 }

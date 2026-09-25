@@ -23,7 +23,7 @@
 
 namespace fs = std::filesystem;
 
-static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
+static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // non-const: GetVariablesMap() is not const
 {
     nlohmann::ordered_json J;
     J["PackageUID"]        = CP.PackageUID;
@@ -59,6 +59,16 @@ static nlohmann::ordered_json DumpResolution(const struct ContainerParams &CP)
     J["RunnerShipsBuild"]  = CP.RunnerShipsBuild;
     J["UnifiedRuntime"]    = CP.UnifiedRuntime;
     J["SubComponentsArray"]= CP.SubComponentsArray;
+    //The rest of what a launch is made of: the game's folded environment, the launched entry, and the runner build
+    //(the boundary runner's closure, lowered) — so a dump is the complete resolved launch, not just the game side.
+    J["LaunchEnv"]         = CP.LaunchEnv;
+    J["LaunchRemoveEnv"]   = CP.LaunchRemoveEnv;
+    J["ComposedExec"]      = CP.ComposedExec;
+    J["RunnerRecipe"]      = CP.RunnerRecipe;
+    J["RunnerComponents"]  = CP.RunnerComponents;
+    J["RunnerLayers"]      = CP.RunnerLayers;
+    J["RunnerPersistLayers"]= CP.RunnerPersistLayers;
+    J["Variables"]         = CP.GetVariablesMap();   // every %KEY% the resolve substituted with (built-ins included)
     return J;
 }
 

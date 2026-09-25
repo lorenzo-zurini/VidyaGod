@@ -35,6 +35,7 @@ struct LaunchParameters
     bool HasHeadlessPackagePath = false;                                  //True when a package path has been resolved (CLI or auto-detect)
     std::filesystem::path HeadlessPackagePath;                            //Path to the package to launch in headless mode
     std::string LaunchNodeId;                                            //--node <NODE_ID>: launch a launchable node from the global node graph (everything-is-a-node)
+    bool Offline = false;                                                //--offline: never start the embedded IPFS node (headless sweeps; node-supplied session vars are absent)
     bool ResolveOnly = false;                                            //--resolve-only <NODE_ID>: resolve the node graph + dump ContainerParams to a file, then exit (no mount/launch) — golden-compare + hang-free verification
     bool ValidateNodes = false;                                          //--validate-nodes [pkg]: validate the node graph (dangling/cyclic PARENTS, layer PATHs, runner resolution, ...) then exit
     std::string ValidateScope;                                           //optional package UID / bundle dir / node id after --validate-nodes: validate only that package + its PARENTS closure (fast pre-publish check), instead of the whole catalog
