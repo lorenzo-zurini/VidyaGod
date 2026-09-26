@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <set>
 #include <deque>
 #include <fstream>
@@ -1214,6 +1215,17 @@ std::vector<ReceivedFetch> PlanReceivedFetches(const nlohmann::ordered_json &Glo
 // never rewritten), discover the next frontier from their NODE refs, repeat until the closure closes.
 // Synchronous (WaitBatch) — call OFF the GUI thread. False + *Error when the closure cannot converge (a dangling
 // ref, an unreachable seeder past the wait bound — the queue keeps retrying in the background either way).
+//Removes a landed node file, and the node's reference to it when that was the reference: a fetched node file is
+//referenced in place, so deleting it without this left an orphaned reference — hundreds per receive, each an
+//"Errored: missing files" row and a re-seeding heal pass. A reference to ANOTHER copy of the block (the same node
+//landed in two packages) is not orphaned by this removal and stays.
+static void RemoveLandedNode(const std::filesystem::path &F, const std::string &Cid)
+{
+    std::error_code Ec;
+    if (!std::filesystem::remove(F, Ec)) return;
+    if (IpfsWrapper::CidMissing(Cid)) IpfsWrapper::DropRef(Cid);
+}
+
 bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::string *Error)
 {
     namespace fs = std::filesystem;
@@ -1272,7 +1284,7 @@ bool CompleteClosure(const NodeIndex &Idx, const std::string &LaunchId, std::str
             std::string VErr;
             if (!NodeGraph::VerifyLanded(F, C, &J, &VErr))
             {
-                std::error_code Ec; fs::remove(F, Ec);
+                RemoveLandedNode(F, C);
                 if (Error) *Error = "closure block " + C + " refused: " + VErr;
                 return false;
             }
@@ -1353,11 +1365,16 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     // local package — launchable, its grafts offered, published with the library under the same CIDs. CATALOG holds
     // only un-installed stubs. A name collision with a package already in the library is refused, never merged.
     namespace fs = std::filesystem;
+    //Concurrent downloads share packages — a runner every game's chain reaches (native-passthrough, proton): one adopt
+    //at a time, and a package another download already installed is installed, not an error. Each download works from
+    //its own index snapshot, so the second found the stub gone and FAILED ITS WHOLE GAME (17 of 34 in a replication).
+    static std::mutex AdoptMu;
+    std::lock_guard<std::mutex> Lk(AdoptMu);
     std::error_code Ec;
     const fs::path Cat = fs::path(CatalogRootDir(Config)).lexically_normal();
     const fs::path Src = PkgDir.lexically_normal();
     auto [CatEnd, SrcEnd] = std::mismatch(Cat.begin(), Cat.end(), Src.begin(), Src.end());
-    if (Cat.empty() || CatEnd != Cat.end() || !fs::is_directory(Src, Ec))
+    if (Cat.empty() || CatEnd != Cat.end())
     { if (Error) *Error = "not a received package dir: " + PkgDir.string(); return false; }
     const std::string Lib = ReceivedLibraryName(Config, Src.parent_path().filename().string());
     if (Lib.empty()) { if (Error) *Error = "no share snapshot names " + Src.parent_path().filename().string(); return false; }
@@ -1366,6 +1383,12 @@ bool AdoptReceivedPackage(const nlohmann::ordered_json &Config, const std::files
     const fs::path Dest = fs::path(LibraryRootDir(Config)) / SafeSegment(Lib) / SafeSegment(Src.filename().string());
     if (!NodeGraph::PathWithin(LibraryRootDir(Config), Dest))
     { if (Error) *Error = "refused: " + Dest.string() + " is outside the library"; return false; }
+    if (!fs::is_directory(Src, Ec))
+    {
+        if (fs::is_directory(Dest, Ec)) { if (NewDir) *NewDir = Dest; return true; }   // installed meanwhile
+        if (Error) *Error = "not a received package dir: " + PkgDir.string();
+        return false;
+    }
     if (fs::exists(Dest, Ec)) { if (Error) *Error = "a package named '" + Src.filename().string() + "' already exists in library '" + Lib + "'"; return false; }
     // The landed folder was the receive artifact: its node files move up into the package dir (an installed package is
     // an ordinary bundle), its manifest is dropped. A name already there is the same node (files are CID-named).
@@ -1429,7 +1452,7 @@ bool LandReceivedPackages(const nlohmann::ordered_json &Config, std::string *Err
         {
             std::string VErr;
             if (NodeGraph::VerifyLanded(Dir / (C + ".json"), C, nullptr, &VErr)) continue;
-            fs::remove(Dir / (C + ".json"), Ec);
+            RemoveLandedNode(Dir / (C + ".json"), C);
             if (Error) *Error = "package " + Dir.filename().string() + ": node " + C.substr(0, 16) + "… " + VErr;
             LogWarn("PackageCatalog::LandReceivedPackages", "package '" + Dir.filename().string() + "': node " + C + " refused: " + VErr);
             Ok = false;
@@ -1463,7 +1486,8 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Confi
             const std::string Name = F.path().filename().string();
             if (!F.is_regular_file(Ec) || F.path().extension() != ".json" || Name.rfind(".package", 0) == 0) continue;
             if (Keep.count(F.path().stem().string())) continue;
-            if (fs::remove(F.path(), Ec)) ++Removed;
+            RemoveLandedNode(F.path(), F.path().stem().string());
+            if (!fs::exists(F.path(), Ec)) ++Removed;
         }
     }
     return Removed;
@@ -2026,6 +2050,24 @@ bool CollectContentTargets(const NodeIndex &Idx, const std::string &LaunchNodeId
         }
     }
     return true;
+}
+
+std::set<std::filesystem::path> PackagesToAdopt(const NodeIndex &Idx, const std::vector<std::string> &LaunchIds,
+                                                const std::vector<std::string> &RunnerIds,
+                                                const nlohmann::ordered_json &GlobalConfigJSON)
+{
+    std::set<std::filesystem::path> Out;
+    auto Take = [&](const std::string &Root) {
+        for (const std::string &Id : ManifestModel::Closure(Idx, Root))
+            if (const Node *N = Idx.Find(Id); N && N->Received && !N->BundleDir.empty()) Out.insert(N->BundleDir);
+    };
+    for (const std::string &Lid : LaunchIds)
+    {
+        Take(Lid);
+        for (const std::string &Rid : RunnerChainIds(Idx, Lid, GlobalConfigJSON)) Take(Rid);
+    }
+    for (const std::string &Rid : RunnerIds) Take(Rid);
+    return Out;
 }
 
 std::vector<std::string> RunnerChainIds(const NodeIndex &Idx, const std::string &LaunchNodeId,

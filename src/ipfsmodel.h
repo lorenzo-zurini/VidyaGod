@@ -138,6 +138,7 @@ private:
     QHash<QString, QPair<qlonglong,qlonglong>> Speed;             // CID → {sampleBytes, sampleMs} for the rate calc
     QHash<QString, qlonglong>                  LastProgress;      // CID → ms of last forward progress (stall detection)
     QHash<QString, qlonglong>                  ManifestSizes;     // CID → stamped SOURCE.SIZE from the catalog (instant, no network CidSize).
+    QSet<QString>                              SizeInFlight;      // CIDs whose local size stat is running (one at a time each)
                                                                   // Rebuilt in rebuildLabels; feeds the Size column + per-item speed and is
                                                                   // pushed to the node (SetExpectedSize) so a gateway fetch shows real progress.
 

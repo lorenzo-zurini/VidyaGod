@@ -304,6 +304,12 @@ int PruneStaleReceived(const NodeIndex &Idx, const nlohmann::ordered_json &Globa
 // an ordinary local package from then on. False + *Error on a name collision or an unknown lib dir.
 [[nodiscard]] bool AdoptReceivedPackage(const nlohmann::ordered_json &GlobalConfigJSON, const std::filesystem::path &PkgDir,
                                         std::filesystem::path *NewDir = nullptr, std::string *Error = nullptr);
+// The received package dirs a download must adopt before fetching: every package any node in the CLOSURE of each
+// launchable, of each runner its chain resolves to, and of each ticked runner lives in — a runner's own NODE layers
+// reach other packages too (proton contains proton-wine's chain).
+std::set<std::filesystem::path> PackagesToAdopt(const NodeIndex &Idx, const std::vector<std::string> &LaunchIds,
+                                                const std::vector<std::string> &RunnerIds,
+                                                const nlohmann::ordered_json &GlobalConfigJSON);
 
 // True if a PackageSources entry is an IPNS-name source (a friend / a manually-added /ipns/ address) rather than a
 // content folder CID: an explicit IPNS/FRIEND flag, or a CID field with the /ipns/ prefix.

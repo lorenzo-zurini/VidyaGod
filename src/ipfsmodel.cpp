@@ -496,10 +496,17 @@ void IpfsModel::ensureSize(const QString & cid)
     if (ManifestSizes.contains(cid) && Cids.contains(cid))
     { Cids[cid].size = ManifestSizes.value(cid); emit cidChanged(cid); return; }
     if (!IpfsWrapper::Available()) return;   // no node → the size stat can't run (and would outlive a short-lived model)
+    //LOCAL store only, and one lookup per CID at a time. This used CidSize — a bitswap fetch, then HEADs to every public
+    //gateway — once per queued row, per started transfer and per refresh for every row still without a size: rows that
+    //never get one (missing files) re-asked every refresh, each on its own thread, each opening fresh HTTPS connections.
+    //That filled a home router's connection table (VidyaGodIPFS doh.go). A row gets its size when its bytes land.
+    if (SizeInFlight.contains(cid)) return;
+    SizeInFlight.insert(cid);
     std::thread([this, cid, A = Alive]{
-        const long long S = IpfsWrapper::CidSize(cid.toStdString());
-        if (!A->load()) return;   // model destroyed while the network stat ran → don't touch `this`
+        const long long S = IpfsWrapper::CidSizeLocal(cid.toStdString());
+        if (!A->load()) return;   // model destroyed while the stat ran → don't touch `this`
         QMetaObject::invokeMethod(this, [this, cid, S]{
+            SizeInFlight.remove(cid);
             if (S >= 0 && Cids.contains(cid)) { Cids[cid].size = S; emit cidChanged(cid); }
         }, Qt::QueuedConnection);
     }).detach();
@@ -770,7 +777,10 @@ void IpfsModel::gatherHealth()
                 const QString cid = Todo->at(i);
                 const std::string C = cid.toStdString();
                 const int M = IpfsWrapper::CidMissing(C) ? 1 : 0;
-                const int N = (M == 1) ? -1 : IpfsWrapper::ProviderCount(C);
+                //No provider count here: each is a full DHT walk (dozens of new flows through the home router), and
+                //sweeping every row made the IPFS tab the node's biggest traffic source — part of what filled a
+                //router's connection table (VidyaGodIPFS netgate.go). The column shows local health (missing files).
+                const int N = -1;
                 if (!A->load()) return;
                 // Broken ref → repair (single-flight). Post to the model's thread so healOrphansIfAny touches
                 // AppModel main-thread state (KnownUnhealable) on the right thread, and only while the model is alive.

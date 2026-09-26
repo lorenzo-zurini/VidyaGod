@@ -40,7 +40,13 @@ def pins():
         off += 1000
 
 
+# A job in one of these states is over and did not pin: it is not pending, and sync queues the folder again
+# (Pinata keeps a failed job listed — counting it as pending left a failed package unpinned forever).
+FAILED = {"expired", "invalid_object", "bad_host_node", "over_free_limit", "over_max_size"}
+
+
 def jobs():
+    """Every listed pin job, by CID -> status (failed ones included; see FAILED)."""
     return {j["ipfs_pin_hash"]: j["status"] for j in call("/pinning/pinJobs?limit=1000").get("rows", [])}
 
 
@@ -60,22 +66,27 @@ for lib, rows in (cfg.get("Libraries") or {}).items():
 phase = args[0] if args else "status"
 tot = call("/data/userPinnedDataTotal")
 have = {r["ipfs_pin_hash"] for r in pins()}
-pending = jobs()
+listed = jobs()
+pending = {c: s for c, s in listed.items() if s not in FAILED}
 missing = [c for c in wanted if c not in have]
 extra = [c for c in have if c not in wanted]
 print(f"pins {tot.get('pin_count')} | billed {tot.get('pin_size_total', 0) / 1e9:.1f} GB | published packages {len(wanted)} | "
       f"pinned {len(wanted) - len(missing)} | missing {len(missing)} ({sum(1 for c in missing if c in pending)} in a job) | extra {len(extra)}")
 if phase == "status":
-    for c in missing: print("  missing", c[:24], wanted[c], "|", pending.get(c, "no job"))
+    for c in missing: print("  missing", c[:24], wanted[c], "|", listed.get(c, "no job") + (" (FAILED — sync re-queues it)" if listed.get(c) in FAILED else ""))
     for c in extra: print("  extra  ", c[:24])
 elif phase == "jobs":
-    for c, s in pending.items(): print(" ", s, c[:24], wanted.get(c, ""))
+    for c, s in listed.items(): print(" ", s + (" (failed)" if s in FAILED else ""), c[:24], wanted.get(c, ""))
 elif phase == "sync":
     if not wanted: sys.exit("config lists no published packages — publish first")
     for c in missing:
         if c in pending: continue
-        call("/pinning/pinByHash", {"hashToPin": c, "pinataMetadata": {"name": "VidyaGod " + wanted[c]}})
-        print("  pin   ", c[:24], wanted[c])
+        if c in listed:   # a failed job: pinByHash answers with the dead job; the pinning-service API re-queues it
+            call("/psa/pins", {"cid": c, "name": "VidyaGod " + wanted[c]})
+            print("  retry ", c[:24], wanted[c], f"(was {listed[c]})")
+        else:
+            call("/pinning/pinByHash", {"hashToPin": c, "pinataMetadata": {"name": "VidyaGod " + wanted[c]}})
+            print("  pin   ", c[:24], wanted[c])
     for c in extra:
         try: call(f"/pinning/unpin/{c}", method="DELETE"); print("  unpin ", c[:24])
         except Exception as e: print("  unpin error", c[:24], str(e)[:100])

@@ -22,7 +22,7 @@ import argparse, difflib, glob, hashlib, json, os, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 FIELDS = ["SubComponentsArray", "ComposedExec", "RunnerChain", "RunnerComponents", "LaunchEnv", "LaunchRemoveEnv",
-          "KeepFiles", "KeepRegKeys", "KeepRegHives", "Variables", "GuestRoots", "PackageUID", "GameName"]
+          "KeepFiles", "KeepDirs", "KeepRegKeys", "KeepRegHives", "Variables", "GuestRoots", "PackageUID", "GameName"]
 
 
 def load_nodes(lib):

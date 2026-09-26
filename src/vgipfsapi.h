@@ -23,6 +23,10 @@ int  VgOnline(void);    // 1 if the node's network stack is up (joined the swarm
 int  VgAddNoCopy(const char *path, char **outCid, char **errOut);   // seed a file by reference (filestore --nocopy)
 int  VgAddNoCopyMeta(const char *path, char **outCid, char **errOut); // seed a TEXT-ONLY Meta-CID in place (*.json only, no staging)
 int  VgFetchOnce(const char *cid, const char *dest, int isDir, char **errOut); // ONE attempt; rc 0=Done 1=Retryable 2=Terminal
+// The one network queue (netq.go): a fetch job's slot (blocks; release the handle once), and its size.
+long long VgNetAcquire(void);
+void VgNetRelease(long long handle);
+void VgSetNetSlots(int n);
 
 int  VgPinLs(char **outJson, char **errOut);   // JSON array of recursively-pinned CIDs
 int  VgPinRm(const char *cid, char **errOut);

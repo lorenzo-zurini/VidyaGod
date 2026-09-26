@@ -139,6 +139,7 @@ void GatherWorkingTree(const std::filesystem::path &Root,
         // friend's stub, and a hostile stub NODE_ID must not shadow our handle by winning first-seen).
         if (SkipReserved && E.is_directory(Ec) && E.path().filename().string().rfind("_friend_", 0) == 0)
         { It.disable_recursion_pending(); continue; }
+        if (E.is_directory(Ec) && IsFetchScratchDir(E.path())) { It.disable_recursion_pending(); continue; }
         if (!E.is_regular_file(Ec) || E.path().extension() != ".json") continue;
         // UNTRUSTED bytes can now live in the tree (a received share's block, landed verbatim by the fetch queue), so
         // the scan gets the same guards every fetched block gets — size cap + depth pre-scan BEFORE the recursive

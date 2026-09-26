@@ -9,6 +9,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <cstdio>
 #include <ctime>
 #include <string>
@@ -84,43 +85,25 @@ extern "C" void IpfsNodeTransferCb(const char *cid, int kind, double percent, in
 static std::string TakeStr(char *S) { std::string R = S ? S : std::string(); if (S) VgFree(S); return R; }
 
 // Format a byte count the way `ipfs repo stat --human` used to, for the IPFS tab.
-// ----- download concurrency throttle -----
-// A resizable counting semaphore (mutex + condvar so the limit can change at runtime): DownloadSlot acquires before
-// a fetch and releases after, and at most g_MaxConcurrent slots are held at once. Raising the limit wakes waiters;
-// lowering it just lets the surplus drain as in-flight fetches finish (never interrupts a running one).
-static std::mutex              g_ThrottleMu;
-static std::condition_variable g_ThrottleCv;
-static int g_MaxConcurrent = 3;   // default; overridden from Settings at startup
-static int g_ActiveDownloads = 0;
+// ----- download concurrency: the one network queue -----
+// A fetch job takes one slot of the IPFS node's network queue (VidyaGodIPFS netq.go) — the SAME queue the node's
+// provider walks and announcements take theirs from, at lower priority — so the user's limit bounds everything that
+// opens new connections, not only the fetches. The limit is mirrored here for the settings page.
+static std::atomic<int> g_MaxConcurrent{3};   // default; overridden from Settings at startup
 
 void SetMaxConcurrentDownloads(int N)
 {
-    std::lock_guard<std::mutex> Lk(g_ThrottleMu);
     g_MaxConcurrent = std::clamp(N, 1, 32);
-    g_ThrottleCv.notify_all();   // a higher limit may let blocked acquirers through
+    VgSetNetSlots(g_MaxConcurrent);
 }
 
-int MaxConcurrentDownloads()
-{
-    std::lock_guard<std::mutex> Lk(g_ThrottleMu);
-    return g_MaxConcurrent;
-}
+int MaxConcurrentDownloads() { return g_MaxConcurrent; }
 
-DownloadSlot::DownloadSlot()
-{
-    std::unique_lock<std::mutex> Lk(g_ThrottleMu);
-    g_ThrottleCv.wait(Lk, []{ return g_ActiveDownloads < g_MaxConcurrent; });
-    ++g_ActiveDownloads;
-}
+DownloadSlot::DownloadSlot() : Handle(VgNetAcquire()) {}
 
 DownloadSlot::~DownloadSlot()
 {
-    if (!Owned) return;   // moved-from: the slot now lives in another instance
-    {
-        std::lock_guard<std::mutex> Lk(g_ThrottleMu);
-        --g_ActiveDownloads;
-    }
-    g_ThrottleCv.notify_one();
+    if (Owned) VgNetRelease(Handle);   // moved-from: the slot now lives in another instance
 }
 
 void RequestCancel(const std::string &Cid) { VgRequestCancel(Cid.c_str()); }

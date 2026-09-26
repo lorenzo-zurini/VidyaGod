@@ -3,6 +3,7 @@
 
 #include "manifestmodel.h"   // NodeIndex, Node
 #include <nlohmann/json.hpp>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +20,15 @@ namespace NodeGraph {
 // A received package folder lands in <package dir>/.package/ — a dir its fetch owns whole (a re-publish replaces it).
 // The nodes in it belong to the package dir itself: their bundle (where content hydrates) is the parent.
 inline constexpr const char *kPackageFolderDir = ".package";
+
+// A fetch's SCRATCH dir: a folder fetch materializes into "<dest>.tmp" and renames it into place when complete. Its
+// half-landed node files are not a package — indexing them made the closure pass land blocks INTO the scratch dir
+// while the folder fetch was still writing it (Minecraft's 1 872-node folder never landed: the two kept colliding).
+inline bool IsFetchScratchDir(const std::filesystem::path &Dir)
+{
+    const std::string N = Dir.filename().string();
+    return N.size() > 4 && N.compare(N.size() - 4, 4, ".tmp") == 0;
+}
 
 // ---- pure transforms (nodegraphpure.cpp) ----
 

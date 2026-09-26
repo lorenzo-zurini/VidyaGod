@@ -489,6 +489,7 @@ std::map<std::string, std::string> ManifestTargets(const std::string &Dir, bool 
          It != End; It.increment(Ec))
     {
         if (Ec) { Ec.clear(); continue; }
+        if (It->is_directory(Ec) && NodeGraph::IsFetchScratchDir(It->path())) { It.disable_recursion_pending(); continue; }
         if (!It->is_regular_file(Ec) || It->path().extension() != ".json") continue;
 
         nlohmann::ordered_json J;

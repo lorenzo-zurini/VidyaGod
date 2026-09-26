@@ -540,14 +540,11 @@ void DownloadManager::beginDownload(const QString &Key, const std::vector<std::s
         }
         // INSTALL = ADOPT: a received package (its nodes live under CATALOG) moves into LIBRARY/<lib>/<pkg> before a
         // byte of content is fetched, so the content lands in the library and the package is ours from here on —
-        // launchable, its grafts offered, re-published with our library. Every selected launchable, every ticked
-        // runner and every runner the resolved chains reach: whatever is received, adopt; then re-index once.
+        // launchable, its grafts offered, re-published with our library. Every package the closures reach
+        // (PackagesToAdopt): whatever is received, adopt; then re-index once.
         if (Ok)
         {
-            std::set<std::filesystem::path> Adopt;
-            auto Consider = [&](const std::string &Id) { if (const Node *N = Idx.Find(Id); N && N->Received && !N->BundleDir.empty()) Adopt.insert(N->BundleDir); };
-            for (const std::string & Lid : LaunchIds) { Consider(Lid); for (const std::string & Rid : PackageCatalog::RunnerChainIds(Idx, Lid, ConfigSnap)) Consider(Rid); }
-            for (const std::string & Rid : RunnerIds) Consider(Rid);
+            const std::set<std::filesystem::path> Adopt = PackageCatalog::PackagesToAdopt(Idx, LaunchIds, RunnerIds, ConfigSnap);
             for (const std::filesystem::path & D : Adopt)
             {
                 std::string AErr;

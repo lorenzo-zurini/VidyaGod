@@ -658,6 +658,54 @@ private slots:
         IpfsWrapper::StopNode();
     }
 
+    // What a download adopts is every received package its closures reach — not just the packages of the nodes it
+    // names. A runner's own NODE layers reach other packages (proton contains proton-wine's chain); left in CATALOG,
+    // that package is never ours (never re-shared: a friend of ours would get proton without its wine), and on the
+    // replication run it was exactly that. A package nothing reaches stays a stub. Teeth: take only the named nodes
+    // (not their Closure) in PackagesToAdopt and the contained packages drop out.
+    void download_adopts_every_received_package_its_closures_reach()
+    {
+        QTemporaryDir RxData; QVERIFY(RxData.isValid());
+        json rx = json{{"Settings", {{"Paths", {{"LibraryRoot", (RxData.path() + "/LIBRARY").toStdString()}}}}}};
+        const std::string Catalog = PackageCatalog::CatalogRootDir(rx);
+        auto receive = [&](const std::string &Lib, const std::string &Pkg, const std::vector<json> &Nodes) {
+            const std::string Dir = Catalog + "/Alice - " + Lib + "/" + Pkg + "/.package";
+            std::filesystem::create_directories(Dir);
+            json Names = json::array();
+            std::vector<std::string> Cids;
+            for (const json &N : Nodes)
+            {
+                const std::string Bytes = Cid::Canonical(N);
+                const std::string C = Cid::OfBytes(Bytes);
+                { std::ofstream O(Dir + "/" + C + ".json", std::ios::binary); O << Bytes; }
+                Names.push_back(C); Cids.push_back(C);
+            }
+            { std::ofstream O(Dir + "/.package.json"); O << json{{"NODES", Names}, {"PKG", Pkg}}.dump(); }
+            return Cids;
+        };
+        const auto Wine = receive("Runners", "proton-wine", {json{{"LABEL", "wine_11"}, {"LAYERS", json::array({
+            NodeFixture::ContentCid("zip", "wine.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")})}}});
+        receive("Runners", "proton", {json{{"LABEL", "geproton_11"}, {"LAYERS", json::array({json{{"NODE", Wine[0]}},
+            json{{"EXEC", json::array({json{{"LABEL", "run"}, {"HOST", "linux"}, {"GUEST", "win64"}, {"EXE", "proton"}}})}}})}}});
+        const auto Lib = receive("Libraries", "dplay", {json{{"LABEL", "dplay_lib"}, {"LAYERS", json::array({
+            NodeFixture::ContentCid("zip", "dplay.zip", "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")})}}});
+        receive("Games", "[7] G", {json{{"LABEL", "g_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({json{{"NODE", Lib[0]}},
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux"}, {"EXE", "g"}, {"TILE", {{"UID", "7"}, {"TITLE", "G"}}}}})}}})}}});
+        receive("Games", "[8] Untouched", {json{{"LABEL", "u_exec"}, {"VARIANT", "Play"}, {"LAYERS", json::array({
+            json{{"EXEC", json::array({json{{"LABEL", "Play"}, {"HOST", "linux"}, {"EXE", "u"}, {"TILE", {{"UID", "8"}, {"TITLE", "U"}}}}})}}})}}});
+
+        const NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
+        QVERIFY2(Idx.Find("geproton_11") && Idx.Find("geproton_11")->Received, "precondition: the runner is received");
+        const auto Adopt = PackageCatalog::PackagesToAdopt(Idx, {"g_exec"}, {"geproton_11"}, rx);
+        auto has = [&](const std::string &Rel) { return Adopt.count(std::filesystem::path(Catalog) / Rel) > 0; };
+        QVERIFY2(has("Alice - Runners/proton"), "the ticked runner's own package");
+        QVERIFY2(has("Alice - Runners/proton-wine"), "the package the runner CONTAINS (its NODE layer) — adopted too");
+        QVERIFY2(has("Alice - Games/[7] G"), "the launchable's own package");
+        QVERIFY2(has("Alice - Libraries/dplay"), "the library package the launchable contains");
+        QVERIFY2(!has("Alice - Games/[8] Untouched"), "a package no closure reaches stays a stub");
+        QCOMPARE((int)Adopt.size(), 4);
+    }
+
     // INSTALL = ADOPT: a received package moves out of CATALOG into LIBRARY/<lib>/<pkg> — an ordinary local package
     // from then on (not Received: launchable, grafts offered, published with the library). The planner then never
     // re-lands it as a stub beside itself, and a name collision is refused, never merged.
@@ -685,6 +733,11 @@ private slots:
         QVERIFY2(std::filesystem::exists(NewDir) && !std::filesystem::exists(NewDir / ".package"), "moved, the landed folder dissolved");
         const std::string ACid = cidOfLabel(Items[0].value("cid", std::string()), "a_exec");
         QVERIFY2(std::filesystem::exists(NewDir / (ACid + ".json")), "its node files are the package's own now");
+        // Another download sharing this package (a runner every game reaches) adopts it again from its older snapshot:
+        // already installed — success, the library's copy — not a failure that sinks that whole download.
+        std::filesystem::path Again;
+        QVERIFY2(PackageCatalog::AdoptReceivedPackage(rx, Stub, &Again, &Err), Err.c_str());
+        QCOMPARE(Again, NewDir);
         NodeIndex Idx = PackageCatalog::BuildCatalogIndex(rx);
         const Node * A = Idx.Find("a_exec");
         QVERIFY(A);

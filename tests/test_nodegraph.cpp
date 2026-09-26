@@ -194,6 +194,22 @@ TEST(nodegraph_scan_rejects_hostile_deep_json_without_crashing)
     CHECK(NodeGraph::JsonDepthWithinLimit("{\"a\":[1,2,{\"b\":3}]}", 64));
 }
 
+TEST(nodegraph_scan_skips_a_folder_fetch_still_landing)
+{
+    // A folder fetch materializes into "<dest>.tmp" and renames it into place: its half-landed node files are not a
+    // package (indexed, the closure pass wrote INTO the scratch dir and collided with the fetch). The landed folder is
+    // one, its nodes' bundle the package dir.
+    ScanDir D;
+    D.Write("Lib/[1] G/.package.tmp/half.json", ordered_json{{"CID", "cidHalf"}, {"LABEL", "h"}, {"LAYERS", ordered_json::array()}}.dump());
+    D.Write("Lib/[1] G/.package/done.json", ordered_json{{"CID", "cidDone"}, {"LABEL", "d"}, {"LAYERS", ordered_json::array()}}.dump());
+    std::map<std::string, ordered_json> Tree;
+    std::map<std::string, std::filesystem::path> Dirs;
+    NodeGraph::GatherWorkingTree(D.P, Tree, Dirs);
+    CHECK(Tree.count("cidHalf") == 0);
+    CHECK(Tree.count("cidDone") == 1);
+    CHECK_EQ(Dirs["cidDone"].filename().string(), std::string("[1] G"));
+}
+
 TEST(nodegraph_scan_survives_hostile_handle_and_keeps_handleless)
 {
     // A received/working-tree file controls the "CID" handle's TYPE. A non-string handle must NOT throw the scan (that

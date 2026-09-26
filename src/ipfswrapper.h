@@ -103,18 +103,20 @@ std::string MakeDir(const std::map<std::string, std::string> &Entries, std::stri
 void SetMaxConcurrentDownloads(int N);
 int  MaxConcurrentDownloads();
 
-// RAII permit: construct to acquire a download slot (blocks until one is free), destruct to release it. Wrap each
-// FetchToPath in one of these so at most MaxConcurrentDownloads() fetches run concurrently. Movable so a slot can be
+// RAII permit: construct to acquire a slot of the node's one network queue (blocks until one is free; a fetch goes
+// ahead of the node's background announcing), destruct to release it. Wrap each FetchToPath in one of these so at
+// most MaxConcurrentDownloads() network jobs run at once. Movable so a slot can be
 // acquired by a dispatcher then handed to the worker thread that performs the fetch.
 class DownloadSlot {
 public:
     DownloadSlot();
     ~DownloadSlot();
-    DownloadSlot(DownloadSlot &&Other) noexcept : Owned(Other.Owned) { Other.Owned = false; }
+    DownloadSlot(DownloadSlot &&Other) noexcept : Handle(Other.Handle), Owned(Other.Owned) { Other.Owned = false; }
     DownloadSlot &operator=(const DownloadSlot &) = delete;
     DownloadSlot(const DownloadSlot &) = delete;
 private:
-    bool Owned = true;   // false after being moved-from, so only the live instance releases on destruction
+    long long Handle = 0;   // the network-queue slot (VgNetAcquire)
+    bool Owned = true;      // false after being moved-from, so only the live instance releases on destruction
 };
 
 // One file to fetch: its CID, the destination path, and whether a failure is tolerable (covers are optional).
