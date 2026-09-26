@@ -116,7 +116,9 @@ private:
     void PropagateModuleItem(QTreeWidgetItem* Item);
     void RefreshModuleLocks();
     // Collects the toggle states into a node-id -> enabled map (passed to the engine as ModuleStates).
-    std::vector<std::string> CollectGrafts() const;   // the ticked grafts, in list order (= the order applied)
+    std::vector<std::string> CollectGrafts() const;
+    void MoveSelectedGraft(int By);                   // reorder the instance's graft list (refused if a graft would drop)
+    void SaveGrafts();                                // the ticked rows, in order, as the instance's GRAFTS   // the ticked grafts, in list order (= the order applied)
 
     // ----- data -----
     nlohmann::ordered_json* GlobalConfigJSON = nullptr;
@@ -156,6 +158,9 @@ private:
     QFormLayout*  CustomVarForm         = nullptr;
     QGroupBox*    ModuleGroup           = nullptr;
     QTreeWidget*  ModuleTree            = nullptr;
+    QPushButton*  GraftUp               = nullptr;   // move the selected ticked graft earlier / later in the order
+    QPushButton*  GraftDown             = nullptr;
+    QLabel*       GraftNote             = nullptr;   // why a move was refused
     QTextEdit*    ConsoleEdit       = nullptr;
     QStringList   ConsolePending;                    // lines buffered between console flushes (see onLogLine)
     QTimer*       ConsoleFlushTimer = nullptr;       // single-shot ~60ms batcher — one document edit per burst

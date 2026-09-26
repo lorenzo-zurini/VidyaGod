@@ -78,10 +78,19 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
 int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordered_json &GlobalConfigJSON, QDir &AppDataDir)
 {
     (void)GlobalConfigJSON; (void)AppDataDir;
-    if (!LaunchParameters.LaunchNodeId.empty())
+    if (!LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty())
     {
-        LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
         auto Index = std::make_shared<NodeIndex>(PackageCatalog::BuildCatalogIndex(GlobalConfigJSON));   // repos + locally-added packages
+        //--tile [--variant]: the row the shelf shows, named the way the shelf names it.
+        if (LaunchParameters.LaunchNodeId.empty())
+        {
+            std::string Why;
+            LaunchParameters.LaunchNodeId = PackageCatalog::RowUnderTile(*Index, LaunchParameters.LaunchTile, LaunchParameters.LaunchVariant, &Why);
+            if (LaunchParameters.LaunchNodeId.empty()) { LogErr("main.cpp", Why + " — aborting."); return 1; }
+        }
+        else if (!LaunchParameters.LaunchVariant.empty())
+        { LogErr("main.cpp", "--variant picks a row under --tile; with --node the node is the row — aborting."); return 1; }
+        LogOut("main.cpp", "Launching node '" + LaunchParameters.LaunchNodeId + "' from the global node graph.");
         // Identity is the CID, so Find() keys on it. As a CLI CONVENIENCE, accept a cosmetic LABEL too: if the arg is
         // not a CID key, resolve it to the CID of the (first) node whose LABEL matches. Lets a person type
         // `--node "Age of Empires II"` instead of a hash. Ambiguous only across unrelated games (cosmetic labels may

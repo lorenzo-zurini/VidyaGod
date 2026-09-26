@@ -58,14 +58,8 @@ void CheckLayers(const Node &N, const std::string &Pkg, std::vector<Finding> &Ou
         {
             const std::string Mode = L.value("MODE", std::string());
             const std::string File = L.value("FILE", std::string());
-            const bool Override    = L.value("OVERRIDE", false);
-            //ConfigWrite READS the file, rewrites a line and writes it back, so the file must already exist. Content
-            //from a zip/delta layer exists only in the mounted RUNTIME union — never in DEFAULTDATA, where the base
-            //pass writes. A base-pass ConfigWrite therefore logs one error and does nothing.
-            if (Mode == "ConfigWrite" && !Override)
-                Out.push_back({N.NodeId, Pkg, "fileedit-configwrite-base-pass",
-                               "ConfigWrite on '" + File + "' runs in the BASE pass (before the content is mounted), "
-                               "so the file does not exist yet and the edit is silently skipped. Add \"OVERRIDE\": true.", true});
+            //(No pass check: an EDIT applies to the value beneath it — LowerPlan runs every file edit after the mount,
+            //so a ConfigWrite always finds the composed file. The pass is not the author's to get wrong any more.)
             //FILE is joined onto the pass's base dir. An ABSOLUTE path replaces the base entirely
             //(std::filesystem::operator/), so the edit escapes whichever pass it is in.
             if (File.rfind("%RuntimePath%", 0) == 0 || (!File.empty() && File[0] == '/'))

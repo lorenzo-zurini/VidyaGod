@@ -24,8 +24,6 @@ inline bool ArgReferencesContent(const std::string &RawArg)
 //%ContentPath% tokens, CONTENT_ROOT for host mount placement, and PREFIX_GENERATE for a one-time wine prefix.
 //The runner's TYPE no longer drives any C++ branch.)
 
-//(ModuleInfo / VariantInfo and the pure manifest-query helpers now live in manifestmodel.h / ManifestModel.)
-
 //One resolved runner in the launch CHAIN (runner daisy-chaining). A runner is a directed edge GUEST→HOST in the
 //platform graph; the chain nests them innermost→outermost: RunnerChain[0] runs the content, RunnerChain[i+1] runs
 //RunnerChain[i]'s command, and the last link is the native terminal (HOST==GUEST==machine) that VidyaGod execve's

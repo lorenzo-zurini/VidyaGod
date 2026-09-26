@@ -1516,6 +1516,32 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON)
     return Idx;
 }
 
+std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why)
+{
+    //The tile's rows: every variant presenting it (a variant presenting two tiles is a row under each), in the
+    //shelf's order within a face — RECOMMENDED under it first, then by VARIANT name.
+    std::vector<const Node *> Rows;
+    for (const auto &[Id, N] : Idx.Nodes)
+        if (N.IsVariant() && N.Presentable() && std::find(N.Faces.begin(), N.Faces.end(), Uid) != N.Faces.end())
+            Rows.push_back(&N);
+    const auto Rec = [&](const Node *N) { return std::find(N->Recommended.begin(), N->Recommended.end(), Uid) != N->Recommended.end(); };
+    std::sort(Rows.begin(), Rows.end(), [&](const Node *A, const Node *B) {
+        if (Rec(A) != Rec(B)) return Rec(A);
+        if (A->Variant != B->Variant) return A->Variant < B->Variant;
+        return A->Key() < B->Key();
+    });
+    if (Rows.empty()) { if (Why) *Why = "no tile with UID '" + Uid + "' in the library"; return {}; }
+    if (Variant.empty()) return Rows.front()->Key();
+    for (const Node *N : Rows) if (N->Variant == Variant) return N->Key();
+    if (Why)
+    {
+        std::string Names;
+        for (const Node *N : Rows) Names += (Names.empty() ? "" : ", ") + N->Variant;
+        *Why = "tile '" + Uid + "' has no variant '" + Variant + "' (it has: " + Names + ")";
+    }
+    return {};
+}
+
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx)
 {
     //A card = a family (the root of the PARENTUID chain: the base game). Within it the faces nest by PARENTUID — the
@@ -1592,6 +1618,33 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
         if (LocalGraft(Idx, G)) Local.push_back(G);
         else if (Dropped) Dropped->push_back(G);
     return Fold::ApplyGrafts(Lib, GIdx, L->Key(), Instance, Builtins, L->Uid, &Local, Dropped);
+}
+
+bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
+               int By, std::string *Why)
+{
+    const long To = (long)From + By;
+    if (From >= Ticked.size() || To < 0 || To >= (long)Ticked.size()) return false;
+    std::vector<std::string> Proposed = Ticked;
+    std::swap(Proposed[From], Proposed[(size_t)To]);
+    const size_t Before = AppliedGrafts(Idx, LaunchNodeId, Ticked).size();
+    std::vector<std::string> Dropped;
+    if (AppliedGrafts(Idx, LaunchNodeId, Proposed, {}, {}, &Dropped).size() < Before)
+    {
+        if (Why)
+        {
+            std::string Names;
+            for (const std::string &D : Dropped)
+            {
+                const Node *N = Idx.Find(D);
+                Names += (Names.empty() ? "" : ", ") + std::string("'") + (N && !N->NodeId.empty() ? N->NodeId : D) + "'";
+            }
+            *Why = Names + " would no longer apply: a graft applies only after the grafts it needs.";
+        }
+        return false;
+    }
+    Ticked = std::move(Proposed);
+    return true;
 }
 
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> *PreTicked,

@@ -5,6 +5,7 @@
 #include <QtTest>
 
 #include "launchresolver.h"
+#include "packagecatalog.h"
 #include "launchparams.h"
 #include "manifestmodel.h"
 #include "nodefixture.h"
@@ -723,6 +724,64 @@ private slots:
         cp.Grafts = std::vector<std::string>{ "conflict", "fine" };
         QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, cfg));
         QVERIFY(cp.AppliedGrafts == std::vector<std::string>{ "fine" });
+    }
+
+    // The instance's graft list is ordered — the order grafts apply in — and the pre-launch window reorders it
+    // through MoveGraft. A graft applies only once the grafts it needs are applied, so a move that would leave one
+    // unapplied (a graft on a graft moved above its base) is refused and names it; an allowed move reorders.
+    void a_graft_reorder_that_would_drop_a_graft_is_refused()
+    {
+        NodeIndex idx;
+        idx.Nodes["base"] = contentNode("base", json::array({ json{{"DIR", "base"}} }));
+        idx.Nodes["game"] = launchNode("game", kMachine, {"base"});
+        const auto graft = [](const char *Id, const char *On) {
+            return parse(json{ {"CID", Id}, {"LABEL", Id},
+                {"LAYERS", json::array({ json{{"ANY", json::array({On})}}, json{{"DIR", Id}} })} }, "/tmp/vg_bundle");
+        };
+        idx.Nodes["a"] = graft("a", "game");
+        idx.Nodes["b"] = graft("b", "game");
+        idx.Nodes["ona"] = graft("ona", "a");                                     // a graft on the graft a
+        finish(idx);
+        std::vector<std::string> T{ "a", "ona", "b" };
+        QCOMPARE(PackageCatalog::AppliedGrafts(idx, "game", T).size(), size_t(3));
+        std::string Why;
+        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 1, -1, &Why));           // ona above a: it would drop
+        QVERIFY2(Why.find("'ona'") != std::string::npos, Why.c_str());
+        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 0, +1));                // a below ona: the same
+        QVERIFY((T == std::vector<std::string>{ "a", "ona", "b" }));                // refused moves change nothing
+        QVERIFY(PackageCatalog::MoveGraft(idx, "game", T, 2, -1));                 // b is independent: it moves
+        QVERIFY((T == std::vector<std::string>{ "a", "b", "ona" }));
+        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 0, -1));                // nothing above the first
+        QVERIFY(!PackageCatalog::MoveGraft(idx, "game", T, 2, +1));                // nothing below the last
+    }
+
+    // `--tile <UID> [--variant <name>]` launches what the shelf shows: the named variant under that tile, else the
+    // tile's default row (the variant RECOMMENDED under it). A variant presenting two tiles is a row under each.
+    void the_row_under_a_tile_is_picked_by_variant_name_or_recommendation()
+    {
+        NodeIndex idx;
+        const auto variant = [](const char *Id, const char *Name, json Faces, json Rec) {
+            json Entries = json::array();
+            for (const auto &U : Faces)
+                Entries.push_back(json{ {"LABEL", "Play " + U.get<std::string>()}, {"HOST", kMachine}, {"EXE", "g.exe"},
+                                        {"TILE", {{"UID", U}, {"TITLE", "T" + U.get<std::string>()}}} });
+            json N = { {"CID", Id}, {"LABEL", Id}, {"VARIANT", Name}, {"LAYERS", json::array({ json{{"EXEC", Entries}} })} };
+            if (!Rec.empty()) N["RECOMMENDED"] = Rec;
+            return parse(N, "/tmp/vg_bundle");
+        };
+        idx.Nodes["old"] = variant("old", "1.00", json::array({"802"}), json::array());
+        idx.Nodes["new"] = variant("new", "1.28", json::array({"802", "803"}), json::array({"802"}));   // recommended under 802 only
+        idx.Nodes["tft"] = variant("tft", "1.31", json::array({"803"}), json::array({"803"}));
+        finish(idx);
+        std::string Why;
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "802", ""), std::string("new"));      // the recommended row
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", ""), std::string("tft"));      // recommended here, not "new"
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "802", "1.00"), std::string("old"));
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", "1.28"), std::string("new"));  // a row under both tiles
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "803", "1.00", &Why), std::string());
+        QVERIFY2(Why.find("1.28") != std::string::npos && Why.find("1.31") != std::string::npos, Why.c_str());   // it says what there is
+        QCOMPARE(PackageCatalog::RowUnderTile(idx, "999", "", &Why), std::string());
+        QVERIFY2(Why.find("999") != std::string::npos, Why.c_str());
     }
 
     // No authored native runner → the terminal is the synthesized passthrough sentinel.

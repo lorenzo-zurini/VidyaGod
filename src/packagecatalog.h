@@ -316,6 +316,10 @@ NodeIndex BuildCatalogIndex(const nlohmann::ordered_json &GlobalConfigJSON);
 // Presentable launchable nodes (ROLE:"launchable" + META) grouped by GROUP for library tiles: one inner vector per
 // tile (the group's editions, RECOMMENDED first then by id). Groups are ordered by the recommended edition's title.
 std::vector<std::vector<const Node*>> PresentableGroups(const NodeIndex &Idx);
+// The row a tile shows for a variant: the variant (a node with VARIANT) presenting tile Uid whose VARIANT is Variant;
+// with Variant empty, the tile's default row — the variant RECOMMENDED under it, else the first by VARIANT name. ""
+// when there is none, *Why saying what the tile offers instead.
+std::string RowUnderTile(const NodeIndex &Idx, const std::string &Uid, const std::string &Variant, std::string *Why = nullptr);
 // Runner nodes that can serve a launchable on this machine (GUEST ∋ launch host, HOST==machine, executable
 // available), in sorted node-id order — for the prelaunch runner dropdown.
 std::vector<const Node*> RunnerCandidates(const NodeIndex &Idx, const Node &Launch);
@@ -364,6 +368,12 @@ std::vector<std::string> AppliedGrafts(const NodeIndex &Idx, const std::string &
                                        const std::map<std::string, std::string> &Instance = {},
                                        const std::map<std::string, std::string> &Builtins = {},
                                        std::vector<std::string> *Dropped = nullptr);
+// Move the graft at Ticked[From] one place (By = -1 up, +1 down) in the instance's ordered graft list. The order is
+// the order they apply in, and a graft is only applied when it is offered with those before it applied — so a move
+// that would leave a graft unapplied (a graft on a graft moved above the graft it needs) is REFUSED, *Why naming it;
+// Ticked is changed only on success.
+bool MoveGraft(const NodeIndex &Idx, const std::string &LaunchNodeId, std::vector<std::string> &Ticked, size_t From,
+               int By, std::string *Why = nullptr);
 // The grafts this row offers with Chosen applied (a graft on a graft is offered once the graft it needs is), in the
 // default order (LABEL, then CID); into *PreTicked, a fresh instance's list (AppliedGrafts with nullopt).
 std::vector<std::string> OfferedGrafts(const NodeIndex &Idx, const std::string &LaunchNodeId,

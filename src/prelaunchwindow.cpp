@@ -134,10 +134,41 @@ PreLaunchWindow::PreLaunchWindow(
     ModuleGroup = new QGroupBox("Modules", CVContainer);
     QVBoxLayout* ModuleLayout = new QVBoxLayout(ModuleGroup);
     ModuleTree = new QTreeWidget(ModuleGroup);
+    ModuleTree->setObjectName("graftList");
     ModuleTree->setHeaderHidden(true);
     ModuleTree->setRootIsDecorated(false);
-    ModuleTree->setSelectionMode(QAbstractItemView::NoSelection);
+    //Single selection: the selected TICKED graft can be moved — the list order is the order grafts apply in.
+    ModuleTree->setSelectionMode(QAbstractItemView::SingleSelection);
     ModuleLayout->addWidget(ModuleTree);
+    {
+        auto* Row = new QHBoxLayout();
+        GraftUp   = new QPushButton("Move up", ModuleGroup);
+        GraftDown = new QPushButton("Move down", ModuleGroup);
+        GraftUp->setToolTip("Apply the selected graft earlier (those below it fold over it).");
+        GraftDown->setToolTip("Apply the selected graft later (it folds over those above it).");
+        GraftUp->setObjectName("graftUp");
+        GraftDown->setObjectName("graftDown");
+        Row->addWidget(GraftUp); Row->addWidget(GraftDown); Row->addStretch(1);
+        ModuleLayout->addLayout(Row);
+        GraftNote = new QLabel(ModuleGroup);
+        GraftNote->setObjectName("graftNote");
+        GraftNote->setWordWrap(true);
+        GraftNote->setVisible(false);
+        ModuleLayout->addWidget(GraftNote);
+        connect(GraftUp,   &QPushButton::clicked, this, [this]{ MoveSelectedGraft(-1); });
+        connect(GraftDown, &QPushButton::clicked, this, [this]{ MoveSelectedGraft(+1); });
+        auto Enable = [this]{
+            const QTreeWidgetItem* It = ModuleTree->currentItem();
+            const bool Ticked = It && It->data(0, Qt::UserRole + 2).toBool();
+            const std::vector<std::string> T = CollectGrafts();
+            const auto At = It ? std::find(T.begin(), T.end(), It->data(0, Qt::UserRole).toString().toStdString()) : T.end();
+            GraftUp->setEnabled(Ticked && At != T.end() && At != T.begin());
+            GraftDown->setEnabled(Ticked && At != T.end() && At + 1 != T.end());
+        };
+        connect(ModuleTree, &QTreeWidget::currentItemChanged, this, Enable);
+        connect(ModuleTree, &QTreeWidget::itemChanged, this, Enable);
+        GraftUp->setEnabled(false); GraftDown->setEnabled(false);
+    }
     ModuleGroup->setVisible(false);
     CVContainerLayout->addWidget(ModuleGroup);
     connect(ModuleTree, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* It, int){ PropagateModuleItem(It); });
@@ -538,13 +569,44 @@ void PreLaunchWindow::PropagateModuleItem(QTreeWidgetItem* Item)
 {
     if (!Item) return;
     Item->setData(0, Qt::UserRole + 2, Item->checkState(0) == Qt::Checked);
+    SaveGrafts();
+    RebuildModuleTree();
+    RebuildCustomVarPickers();   // a graft brings its own options
+    RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
+}
+
+void PreLaunchWindow::SaveGrafts()
+{
     //The instance's graft list = the ticked rows, in list order.
     nlohmann::ordered_json List = nlohmann::ordered_json::array();
     for (const std::string& G : CollectGrafts()) List.push_back(G);
     PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
-    RebuildModuleTree();
-    RebuildCustomVarPickers();   // a graft brings its own options
-    RefreshGraftEntryRows();     // a ticked mod loader adds a way to run; an unticked one takes it away
+}
+
+void PreLaunchWindow::MoveSelectedGraft(int By)
+{
+    const QTreeWidgetItem* It = ModuleTree ? ModuleTree->currentItem() : nullptr;
+    if (!It || !It->data(0, Qt::UserRole + 2).toBool()) return;
+    const std::string Key = It->data(0, Qt::UserRole).toString().toStdString();
+    std::vector<std::string> Ticked = CollectGrafts();
+    const auto At = std::find(Ticked.begin(), Ticked.end(), Key);
+    if (At == Ticked.end()) return;
+    std::string Why;
+    if (!PackageCatalog::MoveGraft(*Index, LaunchNodeId, Ticked, (size_t)(At - Ticked.begin()), By, &Why))
+    {
+        if (!Why.empty()) { GraftNote->setText(QString::fromStdString("Not moved: " + Why)); GraftNote->setVisible(true); }
+        return;
+    }
+    GraftNote->setVisible(false);
+    nlohmann::ordered_json List = nlohmann::ordered_json::array();
+    for (const std::string& G : Ticked) List.push_back(G);
+    PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
+    RebuildModuleTree();                 // rows follow the saved order
+    for (int i = 0; i < ModuleTree->topLevelItemCount(); ++i)
+        if (ModuleTree->topLevelItem(i)->data(0, Qt::UserRole).toString().toStdString() == Key)
+            ModuleTree->setCurrentItem(ModuleTree->topLevelItem(i));
+    RebuildCustomVarPickers();
+    RefreshGraftEntryRows();             // the entries grafts add follow the order too
 }
 
 std::vector<std::string> PreLaunchWindow::CollectGrafts() const
@@ -1052,9 +1114,7 @@ void PreLaunchWindow::onLaunchClicked()
     if (!PackageUID.empty())
     {
         PackageCatalog::MergePackageVariables(*GlobalConfigJSON, PackageUID, PickerVars);
-        nlohmann::ordered_json List = nlohmann::ordered_json::array();
-        for (const std::string& G : CollectGrafts()) List.push_back(G);
-        PackageCatalog::SetPackageUserSetting(*GlobalConfigJSON, PackageUID, "GRAFTS", List);
+        SaveGrafts();
         //Persist the whole resolved chain (RUNNER_CHAIN supersedes the old single PREFERRED_RUNNER). The resolver
         //honours it on the next launch (and the chain UI pre-selects it).
         { nlohmann::ordered_json ChainJson = nlohmann::ordered_json::array();

@@ -294,7 +294,7 @@ int main(int argc, char *argv[])
         || LaunchParameters.PrintFriendCode || LaunchParameters.FriendListOnly
         || !LaunchParameters.FriendAddCode.empty() || LaunchParameters.FriendServe
         || LaunchParameters.LanHarness
-        || !LaunchParameters.LaunchNodeId.empty();
+        || !LaunchParameters.LaunchNodeId.empty() || !LaunchParameters.LaunchTile.empty();
     //--offline: a headless run that must not bring up the node (a resolve sweep over a whole library would otherwise
     //start a libp2p node per call). Launch facts the node supplies (the virtual-LAN session vars) are then absent, as in
     //any launch with the node down.
@@ -487,6 +487,16 @@ LaunchParameters ParseCommandLineArguments(int argc, char* argv[])
             //Launch a launchable node from the global node graph (everything-is-a-node schema).
             RuntimeParameters.LaunchNodeId   = argv[++i];
             RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--tile" && i + 1 < argc)
+        {
+            //Launch by what the shelf shows: a tile's UID, and optionally the variant (by its VARIANT name).
+            RuntimeParameters.LaunchTile      = argv[++i];
+            RuntimeParameters.RunningHeadless = true;
+        }
+        else if (arg == "--variant" && i + 1 < argc)
+        {
+            RuntimeParameters.LaunchVariant = argv[++i];
         }
         else if (arg == "--resolve-only" && i + 1 < argc)
         {

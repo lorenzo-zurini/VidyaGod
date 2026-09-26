@@ -483,6 +483,7 @@ add_gui_test(test_vfsmount)
 add_gui_test(test_friends)
 add_gui_test(test_sandbox)
 add_gui_test(test_variantpicker)
+add_gui_test(test_prelaunch)
 # The friends test starts the embedded node to exercise the real C ABI; keep it hermetic (no swarm/DHT). The offline
 # switch must be in the environment at PROCESS START — Go caches its env at init, so a runtime setenv is invisible.
 set_tests_properties(test_friends PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;VIDYAGOD_IPFS_OFFLINE=1")

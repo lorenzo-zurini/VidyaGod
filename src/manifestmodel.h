@@ -13,31 +13,10 @@
 // ManifestModel — pure, stateless queries over a package MANIFEST (no launch session, no instance state).
 //
 // Two groups: (1) VFS-layer helpers that centralise the "is this a content layer / where does it live" logic
-// that used to be copy-pasted across the container code; (2) game/variant/module/component lookups and the
+// that used to be copy-pasted across the container code; (2) component lookups and the
 // manifest-only package predicates (hydrated / has-content / referenced CIDs). The launch engine
 // (ContainerWrapper) and the sharing service (PackageCatalog) both build on these.
 // ---------------------------------------------------------------------------
-
-//A toggleable build module: a reference to a component (leaf OR internal node) the user can enable or disable.
-//REQUIRED modules are always in the recipe and locked in the UI; optional ones (REQUIRED:false) are user-toggled,
-//starting at DEFAULT. Used identically by game variants and runners (universal schema).
-struct ModuleInfo {
-    std::string Component;        // COMPONENT — the component id this module pulls in
-    std::string Label;            // optional LABEL for the tree (falls back to component NAME/id)
-    bool        Required = true;  // REQUIRED — defaults true (modules are required unless opted out)
-    bool        Default  = true;  // DEFAULT — initial enabled state when optional; defaults true
-    std::vector<std::string> Exclude; // EXCLUDE — component ids this module is mutually exclusive with (symmetric)
-};
-
-//One available variant for a subgame (or a runner). Selecting a variant = selecting which MODULES to build.
-struct VariantInfo {
-    std::string VariantID;             // VARIANT_ID field on the variant
-    std::string Name;                  // optional NAME; falls back to VARIANT_ID for display
-    bool        IsRecommended = false; // RECOMMENDED:true — shown with ⭐ in the picker
-    std::string HostPlatform;          // HOST_PLATFORM — per-variant (game: target platform; runner: host OS)
-    std::vector<std::string> GuestPlatform; // GUEST_PLATFORM — runner variants only (guests this variant serves)
-    std::vector<ModuleInfo> Modules;   // MODULES array (toggleable component references, load order)
-};
 
 // ---------------------------------------------------------------------------
 // The node graph (MetaPackageFormat generation 6). A node is a plain JSON file {LABEL, VARIANT?, RECOMMENDED?,
@@ -255,19 +234,8 @@ std::string ResolveLayerSource(const nlohmann::ordered_json &Sub, const std::fil
 std::string MachinePlatform();   // the host platform a runner variant's HOST_PLATFORM must match (e.g. "linux64")
 std::string HostPlatform();      // the platform token the host runs as (Phase-1 stub: "linux64")
 
-// ----- game / component / variant / module lookups -----
-int FindGameIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);     // index or -1
+// ----- component lookups -----
 int FindComponentIndex(const nlohmann::ordered_json &MANIFESTJSON, const std::string &ComponentID); // index or -1
-std::vector<VariantInfo> GetAvailableVariants(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID);
-std::vector<ModuleInfo>  GetVariantModules(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
-std::vector<ModuleInfo>  ParseModules(const nlohmann::ordered_json &ModulesArray);
-// Resolves which of `Modules` are enabled into component ids (load order): REQUIRED||(state?:DEFAULT), REQUIRED
-// propagating up the PARENTCOMPONENT chain, EXCLUDE mutual exclusion, and the hierarchy gate. Variants AND runners.
-std::vector<std::string> ResolveEnabledModules(const std::vector<ModuleInfo> &Modules,
-                                               const std::map<std::string, bool> &ModuleStates,
-                                               const nlohmann::ordered_json &MANIFESTJSON);
-// Convenience: a variant's default-enabled module components (REQUIRED||DEFAULT, no overrides).
-std::vector<std::string> FindEndpointsForVariant(const nlohmann::ordered_json &MANIFESTJSON, const std::string &SubgameID, const std::string &VariantID);
 
 // ----- manifest-only package predicates -----
 // Every distinct ipfs CID referenced by the package's content layers (the set an install must fetch).

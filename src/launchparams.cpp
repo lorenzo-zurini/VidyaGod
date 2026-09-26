@@ -1,5 +1,6 @@
 #include "launchparams.h"
 #include "commonutils.h"   // LogOut
+#include "varsubst.h"
 
 //Minimal constructor — stores only the three PASSED values; everything else is derived later
 //by the LaunchResolver pipeline once the node graph and GlobalConfig are available.
@@ -45,5 +46,19 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //Custom variables last (may shadow a built-in).
     for (auto &[Key, Value] : this->CustomVariables)
         VariablesMap[Key] = Value;
+    //A guest-root anchor written as a token (GUEST_ROOTS {"%UserProfile%": "%PrefixRoot%/drive_c/users/steamuser"}) IS
+    //a coordinate the boundary runner places: it resolves to that place, as GuestToLayout would map it — so a path
+    //holding it substitutes cleanly wherever it is substituted (a KEEP path, an EDIT file), instead of surviving as an
+    //"undefined variable" until the mapping catches it. Computed from the map above; a custom variable is not shadowed.
+    if (this->GuestRoots.is_object())
+        for (const auto &[Anchor, Place] : this->GuestRoots.items())
+        {
+            if (Anchor.size() < 3 || Anchor.front() != '%' || Anchor.back() != '%' || !Place.is_string()) continue;
+            const std::string Key = Anchor.substr(1, Anchor.size() - 2);
+            if (this->CustomVariables.count(Key)) continue;
+            std::string R = Place.get<std::string>();
+            VarSubst::StringVariableSubstitution(R, VariablesMap);
+            VariablesMap[Key] = R;
+        }
     return VariablesMap;
 }

@@ -263,6 +263,7 @@ Add a source CID, download a game, launch it. Author or import your own via the 
 | Flag | Effect |
 |------|--------|
 | `--node <id>` | Fully resolve and launch a node from the catalog. |
+| `--tile <UID> [--variant <name>]` | Launch the row a tile shows: the named variant, else the tile's recommended one. |
 | `--resolve-only <id>` | Resolve the container and dump it to JSON (no launch). |
 | `--var KEY=VALUE` | Override a `CustomVar` for this run. |
 | `--graft <id>` | Apply a graft (repeat for more; the order given is the order applied). `--no-grafts` applies none. |
