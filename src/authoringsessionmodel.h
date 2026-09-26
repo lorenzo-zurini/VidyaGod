@@ -42,7 +42,8 @@ public slots:
 
 signals:
     // `runners` carries the wine-family runners offered by the "Run Windows program" tool (NOT a session-level runner).
-    void started(bool ok, QString runtimePath, QString contentRoot, bool isWine, QString runnerId, QStringList runners);
+    void started(bool ok, QString runtimePath, QString contentRoot, bool isWine, QString runnerId, QStringList runners,
+                 QStringList anchorLayouts = {});   // "%Anchor%\tlayout path" per anchor of the runtime
     void delta(QStringList paths);
     void runFinished(bool ok);
     void filesCopied(int count);
@@ -97,7 +98,7 @@ signals:
     void requestEnd();
     // → subwidgets
     void busyChanged(bool busy, QString what);
-    void sessionReady(QString runtimePath, QString contentRoot, bool isWine);
+    void sessionReady(QString runtimePath, QString contentRoot, bool isWine, QStringList anchorLayouts);
     void runnersChanged(QStringList runners, QString current);
     void deltaChanged(QStringList paths);
     void registryTreeChanged(QStringList regPaths);
@@ -108,7 +109,8 @@ signals:
     void failed(QString message);
 
 private slots:
-    void onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine, QString runnerId, QStringList runners);
+    void onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine, QString runnerId, QStringList runners,
+                   QStringList anchorLayouts);
     void onDelta(QStringList paths);
     void onRunFinished(bool ok);
     void onFilesCopied(int count);

@@ -863,8 +863,8 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
         if (N.OwnRunner)
         {
             if (N.GuestPlatform.empty()) Warnings.push_back(Tag + ": runner entry declares no GUEST platforms");
-            if (N.Exec.is_object() && N.Exec.value("PREFIX_GENERATE", false) && !N.Exec.contains("GUEST_ROOTS"))
-                Warnings.push_back(Tag + ": a runner that generates a prefix declares no GUEST_ROOTS — packages' C:/ paths cannot be placed");
+            if (N.Exec.is_object() && N.Exec.value("PREFIX_GENERATE", false) && !(N.Exec.contains("GUEST_ROOTS") && N.Exec.contains("DRIVES")))
+                Warnings.push_back(Tag + ": a runner that generates a prefix declares no GUEST_ROOTS/DRIVES — packages' anchored paths cannot be placed");
         }
 
         //The node's own facets.
@@ -987,13 +987,97 @@ void ValidateNodeGraph(const NodeIndex &Idx, std::vector<std::string> &Errors, s
     //A guest-root anchor a runner declares (GUEST_ROOTS {"%UserProfile%": ...}) is a canonical coordinate the launch
     //maps to where the runner puts it — not a variable, and never a typo.
     std::set<std::string> Anchors;
+    std::map<std::string, std::string> AnchorGuest;                      // %Anchor% -> its guest path, lowercased, '/'
     for (const auto &[Id, N] : Idx.Nodes)
         for (const auto &L : N.Json["LAYERS"])
             if (L.contains("EXEC") && L["EXEC"].is_array())
                 for (const auto &E : L["EXEC"])
                     if (E.is_object() && E.contains("GUEST_ROOTS") && E["GUEST_ROOTS"].is_object())
                         for (const auto &[A, To] : E["GUEST_ROOTS"].items())
-                            if (A.size() > 2 && A.front() == '%' && A.back() == '%') Anchors.insert(A.substr(1, A.size() - 2));
+                            if (A.size() > 2 && A.front() == '%' && A.back() == '%')
+                            {
+                                Anchors.insert(A.substr(1, A.size() - 2));
+                                std::string G = ToLowerAscii(To.is_string() ? To.get<std::string>() : std::string());
+                                std::replace(G.begin(), G.end(), '\\', '/');
+                                const auto [It, New] = AnchorGuest.emplace(A, G);
+                                if (!New && It->second != G)       // validated against one spelling: say which differ
+                                    Warnings.push_back("runners disagree where " + A + " is ('" + It->second + "' vs '" + G
+                                                       + "', node '" + Id + "') — packages are checked against the first");
+                            }
+    //A package names places only by anchor: a drive letter (C:/…, E:\) is where one runner happens to put things —
+    //and a place has ONE spelling, its most specific anchor (%SysDir32%/x, never %Windows%/syswow64/x), because
+    //addresses fold and own by their spelling. A runner's own GUEST_ROOTS/DRIVES are the map, not a use.
+    {
+        //a drive path (C:\x, E:/), or a value that is only a drive ("E:") — not a config key like "/W:"
+        const std::regex Drive(R"((^|[^A-Za-z0-9])[A-Za-z]:[\\/]|^[A-Za-z]:$)");
+        const std::regex Anchored(R"(%([A-Za-z0-9_]+)%([\\/][^"]*)?)");
+        std::function<void(const nlohmann::ordered_json &, const std::string &, std::set<std::string> &)> Scan =
+            [&](const nlohmann::ordered_json &J, const std::string &Where, std::set<std::string> &Out) {
+                auto Check = [&](const std::string &S) {
+                    if (std::regex_search(S, Drive)) Out.insert(Where + ": '" + S + "' names a drive — use an anchor (%GameDir%, %SysDir32%, %ProgramData%, …)");
+                    for (auto It = std::sregex_iterator(S.begin(), S.end(), Anchored); It != std::sregex_iterator(); ++It)
+                    {
+                        const std::string A = "%" + (*It)[1].str() + "%";
+                        const auto G = AnchorGuest.find(A);
+                        if (G == AnchorGuest.end()) continue;
+                        std::string Rest = ToLowerAscii((*It)[2].str());
+                        std::replace(Rest.begin(), Rest.end(), '\\', '/');
+                        const std::string Full = G->second + Rest;
+                        for (const auto &[B, BG] : AnchorGuest)
+                            if (B != A && BG.size() > G->second.size() && Full.compare(0, BG.size(), BG) == 0
+                                && (Full.size() == BG.size() || Full[BG.size()] == '/'))
+                                Out.insert(Where + ": '" + S + "' is inside " + B + " — write it from " + B);
+                    }
+                };
+                if (J.is_string()) Check(J.get<std::string>());
+                else if (J.is_array()) for (const auto &X : J) Scan(X, Where, Out);
+                else if (J.is_object())
+                    for (const auto &[K, V] : J.items())
+                    {
+                        if (K == "COMMENT") continue;                        // prose, not a place
+                        Check(K);
+                        Scan(V, Where, Out);
+                    }
+            };
+        //In a PATH an anchor is where the path starts: "mods/%GameDir%/x" would substitute to "mods/C:\802/x" and mount
+        //literally, silently. (A value may embed one anywhere: "RunDll32 %ProgramFiles32%\x.dll".)
+        auto PathCheck = [&](const std::string &P, const std::string &Where, std::set<std::string> &Out) {
+            for (const auto &[A, G] : AnchorGuest)
+                for (size_t At = P.find(A); At != std::string::npos; At = P.find(A, At + 1))
+                    if (At > 0) Out.insert(Where + ": path '" + P + "' has " + A + " inside it — an anchor starts a path");
+        };
+        auto Paths = [&](const nlohmann::ordered_json &L, const std::string &Where, std::set<std::string> &Out) {
+            auto Addr = [](const std::string &A) { const size_t S = A.find('/'); return S == std::string::npos ? std::string() : A.substr(S + 1); };
+            if (L.contains("TARGET") && L["TARGET"].is_string()) PathCheck(Addr(L["TARGET"].get<std::string>()), Where, Out);
+            if (L.contains("SUBMOUNTS") && L["SUBMOUNTS"].is_array())
+                for (const auto &M : L["SUBMOUNTS"])
+                    if (M.is_string()) { const std::string X = M.get<std::string>(); const size_t C = X.find(':');
+                                         if (C != std::string::npos) PathCheck(X.substr(C + 1), Where, Out); }
+            if (L.contains("TAKE") && L["TAKE"].is_array())
+                for (const auto &T : L["TAKE"])
+                    if (T.is_array() && T.size() == 2 && T[1].is_string()) PathCheck(T[1].get<std::string>(), Where, Out);
+            if (L.contains("KEEP") && L["KEEP"].is_object())
+                for (const auto &[K, V] : L["KEEP"].items()) PathCheck(Addr(K), Where, Out);
+            if (L.contains("EXEC") && L["EXEC"].is_array())
+                for (const auto &E : L["EXEC"])
+                    for (const char *F : {"EXE", "WORKDIR"})
+                        if (E.is_object() && E.contains(F) && E[F].is_string()) PathCheck(E[F].get<std::string>(), Where, Out);
+        };
+        for (const auto &[Id, N] : Idx.Nodes)
+        {
+            if (!InScope(Id)) continue;
+            std::set<std::string> Found;
+            for (nlohmann::ordered_json L : N.Json["LAYERS"])
+            {
+                if (L.contains("EXEC") && L["EXEC"].is_array())
+                    for (auto &E : L["EXEC"])
+                        if (E.is_object()) { E.erase("GUEST_ROOTS"); E.erase("DRIVES"); }
+                Scan(L, "node '" + Id + "'", Found);
+                Paths(L, "node '" + Id + "'", Found);
+            }
+            Errors.insert(Errors.end(), Found.begin(), Found.end());
+        }
+    }
     for (const auto &[Id, N] : Idx.Nodes)
     {
         if (!N.LowerError.empty()) continue;

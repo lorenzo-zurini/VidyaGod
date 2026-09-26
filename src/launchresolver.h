@@ -91,9 +91,18 @@ GuestTarget ComposeGuestTarget(struct ContainerParams &CP);
 
 //Native node-graph init — populates ContainerParams + the component pool (ComponentPool, out) DIRECTLY from the
 //node graph (ContainerParams.NodeIdx / .LaunchNodeId): runner pick, recipe, paths, custom vars, persistence.
-//A substituted path in guest coordinates (C:/…, %UserProfile%/…) → the boundary runner's layout. Paths are mapped
-//after substitution because a variable may carry one; anything not under a mapped anchor is returned unchanged.
+//A path the launch places, as a package writes it (by anchor: %GameDir%/x) → the boundary runner's layout: substituted
+//(an anchor resolves to its guest path, C:\802), then a guest path lands where its drive lives (DRIVES). Anything
+//that is not a guest path after substitution is returned substituted.
 std::string GuestToLayout(struct ContainerParams &ContainerParams, const std::string &Path);
+
+//What a run wrote, re-spelled by anchor: every string value of a captured registry delta ({REGPATH, KEYVALUES}
+//entries) has its guest paths rewritten from the most specific anchor of this runtime's runner (C:\\Program Files
+//(x86)\\LAV → %ProgramFiles32%\\LAV) — a package names places only by anchor, so a capture must too.
+nlohmann::ordered_json AnchorRegEdits(struct ContainerParams &ContainerParams, nlohmann::ordered_json Edits);
+
+//Each anchor this runtime maps, with where it lands in the runtime's layout (%GameDir% → pfx/drive_c/802).
+std::vector<std::pair<std::string, std::string>> AnchorLayouts(struct ContainerParams &ContainerParams);
 //A runner's build: its own node resolved (Fold) and lowered in its own layout — the ops a launch mounts at the runner
 //mount (real bytes), assembles into the prefix (%runtime% layers) and applies (edits, registry, DLLs, variables).
 nlohmann::ordered_json RunnerOps(const NodeIndex &Idx, const std::string &RunnerId, Fold::Plan *PlanOut = nullptr);

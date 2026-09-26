@@ -369,7 +369,7 @@ void PackageEditorModel::RunInNode(const std::string & NodeId, const std::string
     ContainerWrapper Container(*GlobalConfigJSON, Dummy, Params);
 
     // Resolve the exec (CONTENTPATH → %ContentPath%/%Content%) — same step the real launch path runs (launchthread/
-    // main). Without it ExePathRelative stays empty, so a wine runner's "C:\<UID>\%ContentPath%" arg becomes the bare
+    // main). Without it ExePathRelative stays empty, so a wine runner's "%GameDir%\%ContentPath%" arg becomes the bare
     // content dir and wine opens it in its file explorer instead of running the game.
     if (!LaunchResolver::ResolveExecutableDefinition(Dummy, Container.ContainerParams))
     { QMessageBox::warning(DialogParent, "Run", "Could not resolve the node's exec (CONTENTPATH). Check the log."); return; }

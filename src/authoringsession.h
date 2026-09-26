@@ -60,6 +60,7 @@ public:
     std::filesystem::path RuntimePath() const;         // the live mount root
     std::filesystem::path WriteLayerPath() const;      // the COW delta (capture source)
     std::string ContentRoot() const;                   // where the runner roots game content (for TARGET derivation)
+    std::vector<std::pair<std::string, std::string>> AnchorLayouts() const;   // each anchor → where it lands in this runtime
 
     // Runs Exe (a host path, or a guest command like "regedit.exe") against the LIVE mount. Returns false on a
     // non-zero / crashed exit. The runtime stays mounted.

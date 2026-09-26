@@ -23,17 +23,17 @@ TEST(lower_content_maps_the_type_key_and_carries_placement)
     const char *Kinds[][2] = { {"ZIP", "VFSZipLayer"}, {"DELTA", "VFSDeltaLayer"}, {"FILE", "VFSFileLayer"} };
     for (const auto &K : Kinds)
     {
-        const ordered_json L = Lower({ {K[0], "p.bin"}, {"TARGET", "FILES/C:/%PackageUID%"}, {"SOURCE", "Qm9"}, {"SIZE", 12},
-                                       {"SUBMOUNTS", ordered_json::array({"a/x.dll:C:/g/x.dll"})}, {"WHEN", "%m%==1"} });
+        const ordered_json L = Lower({ {K[0], "p.bin"}, {"TARGET", "FILES/%GameDir%"}, {"SOURCE", "Qm9"}, {"SIZE", 12},
+                                       {"SUBMOUNTS", ordered_json::array({"a/x.dll:%GameDir%/x.dll"})}, {"WHEN", "%m%==1"} });
         if (L.empty()) { CHECK(!L.empty()); continue; }
         CHECK_EQ(L.size(), (size_t)1);
         CHECK_EQ(L[0]["TYPE"].get<std::string>(), std::string(K[1]));
         CHECK_EQ(L[0]["PATH"].get<std::string>(), std::string("p.bin"));
-        CHECK_EQ(L[0]["TARGET"].get<std::string>(), std::string("C:/%PackageUID%"));   // the FILES namespace is the address, not the path
+        CHECK_EQ(L[0]["TARGET"].get<std::string>(), std::string("%GameDir%"));   // the FILES namespace is the address, not the path
         CHECK_EQ(L[0]["SOURCE"]["TYPE"].get<std::string>(), std::string("ipfs"));
         CHECK_EQ(L[0]["SOURCE"]["CID"].get<std::string>(), std::string("Qm9"));
         CHECK_EQ(L[0]["SOURCE"]["SIZE"].get<int>(), 12);
-        CHECK_EQ(L[0]["SUBMOUNTS"][0].get<std::string>(), std::string("a/x.dll:C:/g/x.dll"));
+        CHECK_EQ(L[0]["SUBMOUNTS"][0].get<std::string>(), std::string("a/x.dll:%GameDir%/x.dll"));
         CHECK_EQ(L[0]["WHEN"].get<std::string>(), std::string("%m%==1"));
     }
     //A DIR is a host directory: it lowers with its placement, and has no SOURCE to fetch.
@@ -51,7 +51,7 @@ TEST(lower_edit_splits_text_and_binary_ops_onto_the_target_file)
             {{"MODE", "ConfigWrite"}, {"SECTION", "D"}, {"KEY", "W"}, {"VALUE", "%ScreenWidth%"}},
             {{"MODE", "Replace"}, {"OFFSET", "0x10"}, {"EXPECT", "00"}, {"REPLACE", "01"}},
             {{"MODE", "AppendLine"}, {"VALUE", "x"}} })},
-        {"TARGET", "FILES/C:/g/a.bin"}, {"WHEN", "%w%==1"} });
+        {"TARGET", "FILES/%GameDir%/a.bin"}, {"WHEN", "%w%==1"} });
     CHECK_EQ(L.size(), (size_t)3);
     CHECK_EQ(L[0]["TYPE"].get<std::string>(), std::string("FileEdit"));
     CHECK_EQ(L[0]["SECTION"].get<std::string>(), std::string("D"));
@@ -61,7 +61,7 @@ TEST(lower_edit_splits_text_and_binary_ops_onto_the_target_file)
     CHECK_EQ(L[2]["TYPE"].get<std::string>(), std::string("FileEdit"));
     for (const auto &O : L)
     {
-        CHECK_EQ(O["FILE"].get<std::string>(), std::string("C:/g/a.bin"));
+        CHECK_EQ(O["FILE"].get<std::string>(), std::string("%GameDir%/a.bin"));
         CHECK_EQ(O["WHEN"].get<std::string>(), std::string("%w%==1"));        // the layer's WHEN reaches every op
     }
 }
@@ -116,7 +116,9 @@ TEST(lower_facts_and_refs_lower_to_no_op)
                                        "FILES/a/", "FILES/b/", "REG", "FILES/a/x.dll", "FILES/b/y.dll",
                                        ordered_json::array({"FILES/c/x.dll", "z.dll"}) })} },
                                    ordered_json{ {"NOT", "x"} }, ordered_json{ {"ENV", {{"A", "1"}}} },
-                                   ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}} })} } })
+                                   ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}} })} },
+                                   ordered_json{ {"EXEC", ordered_json::array({ {{"LABEL", "run"}, {"GUEST_ROOTS", {{"%GameDir%", "c:\\g"}}},  // drives: any case
+                                                                                 {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} } })
     {
         CHECK(!Refused(L));
         CHECK(Lower(L).empty());
@@ -125,21 +127,23 @@ TEST(lower_facts_and_refs_lower_to_no_op)
 
 TEST(lower_entry_splits_a_game_entry_from_a_runner_entry)
 {
-    const ordered_json G = NodeLower::LowerEntry({ {"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g.exe"},
-                                                  {"ARGS", ordered_json::array({"-w"})}, {"WORKDIR", "C:/g"} });
+    const ordered_json G = NodeLower::LowerEntry({ {"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"},
+                                                  {"ARGS", ordered_json::array({"-w"})}, {"WORKDIR", "%GameDir%"} });
     CHECK_EQ(G["PLATFORM"].get<std::string>(), std::string("win32"));
-    CHECK_EQ(G["CONTENTPATH"].get<std::string>(), std::string("C:/g.exe"));
+    CHECK_EQ(G["CONTENTPATH"].get<std::string>(), std::string("%GameDir%/g.exe"));
     CHECK_EQ(G["EXEARGS"][0].get<std::string>(), std::string("-w"));
-    CHECK_EQ(G["WORKDIR"].get<std::string>(), std::string("C:/g"));
+    CHECK_EQ(G["WORKDIR"].get<std::string>(), std::string("%GameDir%"));
     CHECK(!G.contains("GUEST"));
     const ordered_json R = NodeLower::LowerEntry({ {"LABEL", "run"}, {"HOST", "linux64"}, {"GUEST", ordered_json::array({"win32"})},
                                                   {"EXE", "%RunnerMount%/proton"}, {"CONTENT_ROOT", "pfx/drive_c/%PackageUID%"},
-                                                  {"PREFIX_GENERATE", true}, {"GUEST_ROOTS", {{"C:", "%PrefixRoot%/drive_c"}}} });
+                                                  {"PREFIX_GENERATE", true}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}},
+                                                  {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}} });
     CHECK_EQ(R["HOST"].get<std::string>(), std::string("linux64"));
     CHECK_EQ(R["EXECUTABLE"].get<std::string>(), std::string("%RunnerMount%/proton"));
     CHECK(R["ARGS"].is_array() && R["ARGS"].empty());
     CHECK(R["PREFIX_GENERATE"].get<bool>());
-    CHECK_EQ(R["GUEST_ROOTS"]["C:"].get<std::string>(), std::string("%PrefixRoot%/drive_c"));
+    CHECK_EQ(R["GUEST_ROOTS"]["%GameDir%"].get<std::string>(), std::string("C:\\%PackageUID%"));
+    CHECK_EQ(R["DRIVES"]["C:"].get<std::string>(), std::string("%PrefixRoot%/drive_c"));
     CHECK_EQ(R["CONTENT_ROOT"].get<std::string>(), std::string("pfx/drive_c/%PackageUID%"));
 }
 
@@ -158,6 +162,12 @@ TEST(check_refuses_type_confused_payloads_instead_of_throwing)
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"TILE", "x"}} })} },
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"TILE", {{"UID", 802}}}} })} },
         { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"PREFIX_GENERATE", "yes"}} })} },
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"C:", "%PrefixRoot%/drive_c"}}}} })} },  // a drive is not an anchor
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", 1}}}} })} },
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", "C:"}} })} },
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%Media%", "E:\\"}}}, {"DRIVES", {{"C:", "pfx/drive_c"}}}} })} },  // E: unmapped
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"GUEST_ROOTS", {{"%GameDir%", "C:\\g"}}}} })} },                              // no DRIVES
+        { {"EXEC", ordered_json::array({ {{"LABEL", "P"}, {"DRIVES", {{"C:", ordered_json::array()}}}} })} },
         { {"KEEP", {{"FILES/x", "yes"}}} }, { {"ANY", ordered_json::array()} }, { {"ANY", ordered_json::array({1})} }, { {"NOT", 1} },
         { {"ZIP", "x"}, {"EXTRA", 1} },
         //two selections landing on one address (the same leaf name, a pair renamed onto a leaf, case aside)

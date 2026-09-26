@@ -42,6 +42,7 @@ struct RunnerLink
     bool PrefixGenerate = false;                 // EXEC.PREFIX_GENERATE — this link needs a wine prefix
     bool UnifiedRuntime = false;                 // EXEC.UNIFIED_RUNTIME
     std::string GuestPathTemplate;               // EXEC.GUEST_PATH (Phase C: render an inner path into this runner's namespace; "" = identity)
+    std::string GameDirGuest;                    // EXEC.GUEST_ROOTS["%GameDir%"] — where the game's content is, in the guest
     std::string HostPlatform;                    // PLATFORM.HOST — the platform this runner runs ON
     std::vector<std::string> GuestPlatform;      // PLATFORM.GUEST — the platforms this runner can run
     std::vector<nlohmann::ordered_json> Layers;  // build VFS layers (this runner's content closure)
@@ -163,9 +164,11 @@ public:
     //Which entry to run, by LABEL ("" = the default: the first game entry) — of the row's folded EXEC, which
     //includes the entries its ticked grafts add (a mod loader is a way to run the variant). PASSED (picker / --entry).
     std::string Entrypoint;
-    //The boundary runner's map from guest coordinates to its layout (GUEST_ROOTS: {"C:": "%PrefixRoot%/drive_c", …}).
-    //Applied to every path AFTER substitution (a %variable% may carry a guest path) — LaunchResolver::GuestToLayout.
+    //The boundary runner's guest: GuestRoots {%Anchor%: guest (Windows) path} — %GameDir% → C:\%PackageUID%, … —
+    //and Drives {drive: layout path} — C: → %PrefixRoot%/drive_c. A package names only anchors; a VALUE it writes
+    //(a registry InstallPath, an argument) gets the guest path, a file it places gets the layout path.
     nlohmann::ordered_json GuestRoots;
+    nlohmann::ordered_json Drives;
     //The instance's graft list, in order (later = applied later = wins at a conflict). Unset = the grafts offered to
     //this row that are RECOMMENDED under its tile (a fresh instance). PASSED (instance GRAFTS / --graft).
     std::optional<std::vector<std::string>> Grafts;

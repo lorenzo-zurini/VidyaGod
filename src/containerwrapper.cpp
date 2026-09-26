@@ -375,7 +375,7 @@ bool ContainerWrapper::Execute(const std::string &OverrideExe)
     //The legacy single-runner fields are the boundary runner's view (the link that owns the FUSE mount / prefix —
     //proton for a win32 game, or the native terminal for native content). An EMPTY RunnerExecutable = native
     //passthrough: run the content's own executable (%Content%) directly. Otherwise the runner's EXECUTABLE + ARGS ARE
-    //the command (author composes the guest path into ARGS, e.g. proton's ["waitforexitandrun","C:\\%PackageUID%\\..."]).
+    //the command (author composes the guest path into ARGS, e.g. proton's ["waitforexitandrun","%GameDir%\\..."]).
     VarSubst::StringVariableSubstitution(ContainerParams.RunnerExecutable, ContainerParams.GetVariablesMap());
     const bool NativeBoundary = ContainerParams.RunnerExecutable.empty();
     std::string Program;

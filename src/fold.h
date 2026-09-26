@@ -94,9 +94,15 @@ Plan ResolveEntries(const Library &Lib, const std::string &Root);
 //substituted against the built-ins + every other variable until stable (16 passes at most).
 Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance);
 
-//Guest coordinates -> a runner's layout through its GUEST_ROOTS ({"C:": "%PrefixRoot%/drive_c", …}); drives are
-//case-insensitive, the longest anchor wins; a path under no mapped anchor is returned unchanged.
-std::string ToLayout(const std::string &Path, const json &GuestRoots);
+//A guest path -> a runner's layout through its DRIVES ({"C:": "%PrefixRoot%/drive_c", …}); drives are
+//case-insensitive, the longest match wins; a path under no mapped drive is returned unchanged.
+std::string ToLayout(const std::string &Path, const json &Drives);
+
+//The reverse, for what a run wrote (a captured registry value "C:\\Program Files (x86)\\X\\x.ax"): every guest path
+//inside Value that starts at a drive and lies under an anchor's guest path (Anchors: %Anchor% -> that path, as the
+//runner resolves it) is re-spelled from the MOST specific such anchor ("%ProgramFiles32%\\X\\x.ax"). A guest path under
+//no anchor is left as written. Case-insensitive; '\\' and '/' are the same separator.
+std::string ToAnchors(const std::string &Value, const std::map<std::string, std::string> &Anchors);
 
 //A relative path placed under a NODE layer's TARGET (anchored paths — a drive, a %Anchor% — stay where they are).
 std::string PlaceUnder(const std::string &Path, const std::string &Prefix);

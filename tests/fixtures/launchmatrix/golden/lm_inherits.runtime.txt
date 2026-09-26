@@ -7,6 +7,7 @@
   LM_EXEC_ENV=from-the-graft-entry
   LM_FOLDED=from-below
   LM_FROM_VAR=hello-beta
+  LM_GAMEDIR=C:\90000000000001
   LM_GRAFT_ENV=grafted
   LM_OVERRIDDEN=above
   LM_RUNNER_ONLY=from-runner
@@ -81,6 +82,8 @@
   libs/renamed.txt: a loose FILE, taken and renamed
   drop.dll / keep.dll / libfile.txt (must be absent): ABSENT
   shared/diamond.txt: one occurrence, however many containers
+=== anchors (a file placed at %Documents% lands where the runner lays its drive out)
+  Documents/lm/single.txt: single-file
 === writability (a KEEP dir must be writable, and survive)
   game/saves: writable
 === done

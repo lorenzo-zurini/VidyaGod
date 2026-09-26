@@ -85,7 +85,7 @@ ordered_json EditOp(const ordered_json &Op, const std::string &File)
 }
 
 //A KEEP address -> a DeclarePersist (the persistence engine's primitive).
-ordered_json PersistOp(const std::string &Address, const ordered_json &Val, const std::function<std::string(const std::string &)> &Map)
+ordered_json PersistOp(const std::string &Address, const ordered_json &Val)
 {
     const size_t S = Address.find('/');
     const std::string Ns = Address.substr(0, S), Rest = S == std::string::npos ? std::string() : Address.substr(S + 1);
@@ -100,7 +100,7 @@ ordered_json PersistOp(const std::string &Address, const ordered_json &Val, cons
     else
     {
         P["SCOPE"] = "file";
-        P["PATH"] = Map(Rest);
+        P["PATH"] = Rest;
     }
     if (Val.is_object())
     {
@@ -256,7 +256,30 @@ std::string CheckLayer(const ordered_json &L)
                 if (E.contains(F) && !E[F].is_null() && !StrArray(E[F])) return std::string("EXEC ") + F + " must be a list of strings";
             for (const char *F : {"PREFIX_GENERATE", "UNIFIED_RUNTIME"})
                 if (E.contains(F) && !E[F].is_boolean()) return std::string("EXEC ") + F + " must be true or false";
-            if (E.contains("GUEST_ROOTS") && !E["GUEST_ROOTS"].is_object()) return "GUEST_ROOTS must be {anchor: layout path}";
+            //A prefix runner's guest: GUEST_ROOTS {%Anchor%: the guest (Windows) path} — what a package's %GameDir%,
+            //%SysDir32%, … are inside it — and DRIVES {drive: layout path}, where each drive letter lives in its layout.
+            for (const char *F : {"GUEST_ROOTS", "DRIVES"})
+                if (E.contains(F))
+                {
+                    if (!E[F].is_object()) return std::string(F) + " must be an object of paths";
+                    for (const auto &[K, V] : E[F].items())
+                        if (!V.is_string()) return std::string(F) + "." + K + " must be a path";
+                }
+            if (E.contains("GUEST_ROOTS"))
+                for (const auto &[K, V] : E["GUEST_ROOTS"].items())
+                {
+                    if (K.size() < 3 || K.front() != '%' || K.back() != '%') return "GUEST_ROOTS keys are %Anchor%s ('" + K + "' is not)";
+                    //An anchor on a drive the runner does not lay out would land at a literal "E:" folder.
+                    const std::string G = V.get<std::string>();
+                    if (G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':')
+                    {
+                        bool Mapped = false;
+                        if (E.contains("DRIVES"))
+                            for (const auto &[D, To] : E["DRIVES"].items())
+                                Mapped |= D.size() == 2 && D[1] == ':' && std::tolower(static_cast<unsigned char>(D[0])) == std::tolower(static_cast<unsigned char>(G[0]));
+                        if (!Mapped) return "GUEST_ROOTS " + K + " is on drive " + G.substr(0, 2) + ", which DRIVES does not lay out";
+                    }
+                }
             if (E.contains("TILE"))
             {
                 const auto &Ti = E["TILE"];
@@ -324,7 +347,6 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
 {
     ordered_json Out = ordered_json::array();
     if (!CheckNode(J, NodeId).empty()) return Out;
-    const auto Id = [](const std::string &P) { return P; };
     for (const auto &L : J["LAYERS"])
     {
         const std::string T = Fold::TypeOf(L);
@@ -356,7 +378,7 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
         else if (T == "KEEP")
         {
             for (const auto &[A, V] : L["KEEP"].items())
-                if (!V.is_boolean() || V.get<bool>()) Ops.push_back(PersistOp(A, V, Id));
+                if (!V.is_boolean() || V.get<bool>()) Ops.push_back(PersistOp(A, V));
         }
         for (auto &O : Ops)
         {
@@ -378,7 +400,7 @@ nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &E)
         L["GUEST"] = E["GUEST"];
         L["EXECUTABLE"] = E.value("EXE", ordered_json(""));
         L["ARGS"] = E.contains("ARGS") && E["ARGS"].is_array() ? E["ARGS"] : ordered_json::array();
-        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "LABEL"})
+        for (const char *F : {"CONTENT_ROOT", "PREFIX_GENERATE", "UNIFIED_RUNTIME", "GUEST_ROOTS", "DRIVES", "LABEL"})
             if (E.contains(F)) L[F] = E[F];
     }
     else
@@ -468,10 +490,9 @@ std::vector<Mount> ApplyView(std::vector<Mount> Ms, const ordered_json &View)
 
 } // namespace
 
-nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_json &GuestRoots)
+nlohmann::ordered_json LowerPlan(const Fold::Plan &P)
 {
     ordered_json Out = ordered_json::array();
-    const auto Map = [&](const std::string &Path) { return Fold::ToLayout(Path, GuestRoots); };
 
     //Package-owned inside a user-owned subtree: re-applied after the user's state is restored.
     const auto TakenBack = [&](const std::string &Address) {
@@ -494,7 +515,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_js
         {
             for (const auto &O : I.Ops)
             {
-                ordered_json L = EditOp(O, Map(I.Target));
+                ordered_json L = EditOp(O, I.Target);
                 const std::string Addr = "FILES/" + I.Target
                                        + (Str(O.value("MODE", ordered_json())) == "ConfigWrite" ? "#" + Str(O.value("KEY", ordered_json())) : std::string());
                 //An EDIT applies to the value beneath it: the composed files, so after the mount. On a user-owned
@@ -511,17 +532,10 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_js
         }
         const std::string Path = (I.Payload.find('%') != std::string::npos || I.Dir.empty())
                                ? I.Payload : (std::filesystem::path(I.Dir) / I.Payload).string();
-        ordered_json Sub = I.Submounts;
-        if (Sub.is_array())
-            for (auto &S : Sub)
-            {
-                const std::string X = Str(S);
-                const size_t C = X.find(':');
-                if (C != std::string::npos) S = X.substr(0, C + 1) + Map(X.substr(C + 1));
-            }
+        const ordered_json &Sub = I.Submounts;
         if (I.View.is_null())
         {
-            Out.push_back(ContentOp(I.Kind, Path, Map(I.Target), I.Source, I.Size, Sub));
+            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Sub));
             continue;
         }
         //Seen through TAKE: only what is taken mounts, where TAKE puts it — as submounts (the FS's "src:dst" view of
@@ -542,11 +556,11 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_js
         if (Ms.empty()) continue;                                            // nothing of this layer is taken
         ordered_json Mounts = ordered_json::array();
         for (const auto &[Src, Addr] : Ms)
-            Mounts.push_back(Src + ":" + Map(Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
+            Mounts.push_back(Src + ":" + (Addr.size() > 6 ? Addr.substr(6) : std::string()));   // strip "FILES/"
         if (I.Kind == "FILE")
-            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().string(), Map(I.Target), ordered_json(), ordered_json(), Mounts));
+            Out.push_back(ContentOp("DIR", std::filesystem::path(Path).parent_path().string(), I.Target, ordered_json(), ordered_json(), Mounts));
         else
-            Out.push_back(ContentOp(I.Kind, Path, Map(I.Target), I.Source, I.Size, Mounts));
+            Out.push_back(ContentOp(I.Kind, Path, I.Target, I.Source, I.Size, Mounts));
     }
     //The folded registry, one RegEdit per (architecture, key) — values in fold order within a key.
     std::map<std::string, ordered_json> ByKey;
@@ -588,7 +602,7 @@ nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_js
         Out.push_back(std::move(V));
     }
     for (const auto &[A, V] : P.Keep.items())
-        if (!V.is_boolean() || V.get<bool>()) Out.push_back(PersistOp(A, V, Map));
+        if (!V.is_boolean() || V.get<bool>()) Out.push_back(PersistOp(A, V));
     return Out;
 }
 

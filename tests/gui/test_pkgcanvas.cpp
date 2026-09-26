@@ -113,7 +113,7 @@ private slots:
         const int i = Canvas->addNode("ZIP");
         const json &L0 = Doc["NODES"][i]["LAYERS"][0];
         QVERIFY(L0.contains("ZIP"));
-        QCOMPARE(L0["TARGET"].get<std::string>(), std::string("FILES/C:/%PackageUID%"));
+        QCOMPARE(L0["TARGET"].get<std::string>(), std::string("FILES/%GameDir%"));
         QVERIFY(!Doc["NODES"][i]["LABEL"].get<std::string>().empty());
         // …and every starter layer is one layer of its type — with a placement where one is needed (the file
         // name or the reference it holds is the author's to fill; validation names it until then).
@@ -352,7 +352,7 @@ private slots:
 
         // A delta offers exactly one reverse conversion — undelta, the inverse of "-> delta". It is not a zip,
         // so the zip actions do not apply until it has been undelta'd.
-        layer(Doc["NODES"][child], "ZIP") = json{{"DELTA", "d.vgdelta"}, {"TARGET", "FILES/C:/%PackageUID%"}};
+        layer(Doc["NODES"][child], "ZIP") = json{{"DELTA", "d.vgdelta"}, {"TARGET", "FILES/%GameDir%"}};
         QVERIFY(has(names(child), "undelta"));
         QVERIFY(!has(names(child), "to_dir"));         // a delta is not a zip
         QVERIFY(!has(names(child), "to_delta"));       // it already is one

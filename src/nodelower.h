@@ -34,15 +34,16 @@ nlohmann::ordered_json LowerNode(const nlohmann::ordered_json &J, const std::str
 
 //An EXEC entry → the engine's exec block. A launchable entry lowers to {PLATFORM, CONTENTPATH, EXEARGS, WORKDIR,
 //LABEL}; a runner entry (non-empty GUEST) to {HOST, GUEST, EXECUTABLE, ARGS, CONTENT_ROOT, PREFIX_GENERATE,
-//UNIFIED_RUNTIME, GUEST_ROOTS, LABEL}. Paths stay in guest coordinates.
+//UNIFIED_RUNTIME, GUEST_ROOTS, DRIVES, LABEL}. Paths stay as the package wrote them (by anchor).
 nlohmann::ordered_json LowerEntry(const nlohmann::ordered_json &Entry);
 
 //A resolved plan → the engine's ordered ops: content (PATH absolute from the node's bundle dir; TARGET and SUBMOUNT
-//destinations mapped through GuestRoots), EDIT ops as FileEdit/BinaryPatch in fold order, the folded registry as
+//destinations as the package addresses them — by anchor; the launch maps them into the runner's layout once
+//substituted, LaunchResolver::GuestToLayout), EDIT ops as FileEdit/BinaryPatch in fold order, the folded registry as
 //RegEdit per key, DllOverride, CustomVar per declaration (fold order), and KEEP as DeclarePersist. A FileEdit/RegEdit
 //whose address lies inside a user-owned (KEEP) subtree but is taken back by a more specific KEEP false is marked
 //OVERRIDE: it is re-applied after the user's state is restored — the package owns it.
-nlohmann::ordered_json LowerPlan(const Fold::Plan &P, const nlohmann::ordered_json &GuestRoots);
+nlohmann::ordered_json LowerPlan(const Fold::Plan &P);
 
 //Is Address (a FILES/… or REG/… address, guest coordinates) owned by the user under this KEEP fold? The most
 //specific KEEP entry covering it decides; nothing covering it ⇒ package-owned.

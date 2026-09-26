@@ -1,6 +1,7 @@
 #include "authoringsession.h"
 #include "containerwrapper.h"   // ContainerWrapper + ContainerParams (full definition)
 #include "commonutils.h"        // Log*
+#include "launchresolver.h"     // AnchorRegEdits / AnchorLayouts — captures and previews speak anchors
 
 #include <algorithm>
 #include <cstring>
@@ -102,6 +103,10 @@ std::string AuthoringSession::RunnerId() const { return Wrapper ? Wrapper->Conta
 fs::path AuthoringSession::RuntimePath() const { return Wrapper ? Wrapper->ContainerParams.RuntimePath : fs::path{}; }
 fs::path AuthoringSession::WriteLayerPath() const { return Wrapper ? Wrapper->ContainerParams.WriteLayerPath : fs::path{}; }
 std::string AuthoringSession::ContentRoot() const { return Wrapper ? Wrapper->ContainerParams.ContentRoot : std::string{}; }
+std::vector<std::pair<std::string, std::string>> AuthoringSession::AnchorLayouts() const
+{
+    return Wrapper ? LaunchResolver::AnchorLayouts(Wrapper->ContainerParams) : std::vector<std::pair<std::string, std::string>>{};
+}
 
 bool AuthoringSession::RunExe(const std::string &Exe)
 {
@@ -120,7 +125,8 @@ nlohmann::ordered_json AuthoringSession::CaptureRegistryDelta() const
     if (!Now.LoadPrefix(Hives))
         LogErr("AuthoringSession::RegistryDelta", "could not read the session registry at " + Hives.string()
                    + " — the diff will be EMPTY and any registry changes made while authoring are lost.");
-    return Now.DiffToRegEdits(Baseline);
+    //What the run wrote is in guest spelling (an installer's C:\Program Files (x86)\…); the node names places by anchor.
+    return LaunchResolver::AnchorRegEdits(Wrapper->ContainerParams, Now.DiffToRegEdits(Baseline));
 }
 
 void AuthoringSession::End()

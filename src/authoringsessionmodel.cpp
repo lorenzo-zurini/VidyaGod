@@ -24,9 +24,12 @@ void AuthoringWorker::emitDeltaList()
 void AuthoringWorker::emitSessionInfo()
 {
     if (!Session) { emit started(false, QString(), QString(), false, QString(), WineRunners); return; }
+    QStringList Anchors;
+    for (const auto & [A, Layout] : Session->AnchorLayouts())
+        Anchors << QString::fromStdString(A) + "\t" + QString::fromStdString(Layout);
     emit started(true, QString::fromStdString(Session->RuntimePath().string()),
                  QString::fromStdString(Session->ContentRoot()), Session->PrefixGenerate(),
-                 QString::fromStdString(Session->RunnerId()), WineRunners);
+                 QString::fromStdString(Session->RunnerId()), WineRunners, Anchors);
 }
 
 void AuthoringWorker::start(QString configDump, QString bundlePath, QString nodeId)
@@ -240,12 +243,12 @@ void AuthoringSessionModel::captureSelectedRegistry(const QStringList & RegPaths
 }
 
 void AuthoringSessionModel::onStarted(bool ok, QString runtimePath, QString contentRoot, bool isWine,
-                                      QString runnerId, QStringList runners)
+                                      QString runnerId, QStringList runners, QStringList anchorLayouts)
 {
     emit busyChanged(false, QString());
     if (!ok) { emit failed("Couldn't mount the authoring runtime — check the log."); return; }
     emit runnersChanged(runners, runnerId);
-    emit sessionReady(runtimePath, contentRoot, isWine);
+    emit sessionReady(runtimePath, contentRoot, isWine, anchorLayouts);
 }
 
 void AuthoringSessionModel::onDelta(QStringList paths) { emit busyChanged(false, QString()); emit deltaChanged(paths); }

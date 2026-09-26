@@ -436,19 +436,59 @@ Vars ResolveVars(const json &Decls, const Vars &Builtins, const Vars &Instance)
     return Cur;
 }
 
-std::string ToLayout(const std::string &Path, const json &GuestRoots)
+std::string ToLayout(const std::string &Path, const json &Drives)
 {
-    if (!GuestRoots.is_object()) return Path;
+    if (!Drives.is_object()) return Path;
     std::vector<std::string> Anchors;
-    for (const auto &[A, V] : GuestRoots.items()) Anchors.push_back(A);
+    for (const auto &[A, V] : Drives.items()) Anchors.push_back(A);
     std::stable_sort(Anchors.begin(), Anchors.end(), [](const std::string &A, const std::string &B) { return A.size() > B.size(); });
     const std::string Pl = Lower(Path);
     for (const auto &A : Anchors)
     {
         const std::string Al = Lower(A);
-        if (Pl == Al || Pl.compare(0, Al.size() + 1, Al + "/") == 0) return Str(GuestRoots[A]) + Path.substr(A.size());
+        if (Pl == Al || Pl.compare(0, Al.size() + 1, Al + "/") == 0) return Str(Drives[A]) + Path.substr(A.size());
     }
     return Path;
+}
+
+std::string ToAnchors(const std::string &Value, const std::map<std::string, std::string> &Anchors)
+{
+    auto Flat = [](std::string X) {                                      // case and separator, position for position
+        for (char &C : X) C = C == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(C)));
+        return X;
+    };
+    auto Norm = [&](const std::string &G) {
+        std::string X = Flat(G);
+        while (X.size() > 3 && X.back() == '/') X.pop_back();          // "C:\\" stays a drive root
+        return X;
+    };
+    std::vector<std::pair<std::string, std::string>> By;                // normalized guest path -> anchor, longest first
+    for (const auto &[A, G] : Anchors)
+        if (G.size() >= 2 && std::isalpha(static_cast<unsigned char>(G[0])) && G[1] == ':') By.emplace_back(Norm(G), A);
+    std::stable_sort(By.begin(), By.end(), [](const auto &X, const auto &Y) { return X.first.size() > Y.first.size(); });
+    const std::string L = Flat(Value);
+    std::string Out;
+    size_t I = 0;
+    while (I < Value.size())
+    {
+        const bool Start = std::isalpha(static_cast<unsigned char>(Value[I])) && I + 1 < Value.size() && Value[I + 1] == ':'
+                        && (I == 0 || !std::isalnum(static_cast<unsigned char>(Value[I - 1])));
+        bool Hit = false;
+        if (Start)
+            for (const auto &[G, A] : By)
+            {
+                if (L.compare(I, G.size(), G) != 0) continue;
+                const size_t E = I + G.size();
+                const char N = E < Value.size() ? Value[E] : '\0';
+                if (N != '\0' && N != '\\' && N != '/' && N != '"' && N != '\'' && N != ',' && N != ';') continue;   // C:\\8020 is not C:\\802
+                Out += A;
+                I = E;
+                Hit = true;
+                break;
+            }
+        if (!Hit) Out += Value[I++];
+    }
+    return Out;
 }
 
 static Plan ResolveImpl(const Library &Lib, const std::string &Root, const Vars &Instance, const Vars &Builtins,

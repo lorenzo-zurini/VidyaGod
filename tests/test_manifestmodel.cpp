@@ -56,9 +56,9 @@ TEST(parse_reads_a_gen6_node)
         {"CID", "h1"}, {"LABEL", "v"}, {"VARIANT", "1.0"}, {"RECOMMENDED", ordered_json::array({"7"})},
         {"LAYERS", ordered_json::array({
             {{"NODE", "base"}}, {{"NOT", "rival"}},
-            {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 5}, {"TARGET", "FILES/C:/%PackageUID%"}},
-            {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "00"}} })}, {"TARGET", "FILES/C:/g.exe"}},
-            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "C:/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
+            {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 5}, {"TARGET", "FILES/%GameDir%"}},
+            {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x1"}, {"VALUE", "00"}} })}, {"TARGET", "FILES/%GameDir%/g.exe"}},
+            {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"HOST", "win32"}, {"EXE", "%GameDir%/g.exe"}, {"TILE", {{"UID", "7"}}}} })}},
         })},
     };
     Node N;
@@ -74,11 +74,11 @@ TEST(parse_reads_a_gen6_node)
     //Its own layers lowered to the engine's vocabulary: content (TARGET without the FILES namespace), edit ops.
     CHECK_EQ(N.Layers.size(), (size_t)2);
     CHECK_EQ(N.Layers[0]["TYPE"].get<std::string>(), std::string("VFSZipLayer"));
-    CHECK_EQ(N.Layers[0]["TARGET"].get<std::string>(), std::string("C:/%PackageUID%"));
+    CHECK_EQ(N.Layers[0]["TARGET"].get<std::string>(), std::string("%GameDir%"));
     CHECK_EQ(N.Layers[0]["SOURCE"]["CID"].get<std::string>(), std::string("Qm1"));
     CHECK_EQ(N.Layers[0]["SOURCE"]["SIZE"].get<int>(), 5);
     CHECK_EQ(N.Layers[1]["TYPE"].get<std::string>(), std::string("BinaryPatch"));
-    CHECK_EQ(N.Layers[1]["FILE"].get<std::string>(), std::string("C:/g.exe"));
+    CHECK_EQ(N.Layers[1]["FILE"].get<std::string>(), std::string("%GameDir%/g.exe"));
 }
 
 TEST(a_graft_is_a_node_whose_list_begins_with_any)
@@ -138,14 +138,14 @@ TEST(facts_fold_entries_and_tiles_along_containment)
 {
     // base carries the tile on a partial "Play" entry; the variant contains it and adds how to run.
     NodeIndex Idx;
-    AddChain(Idx, "base", { NF::Merge({ NF::Content("zip", "g.zip", "C:/%PackageUID%"), NF::Tile("7", "Game", {{"TGDBID", "7"}}) }) });
-    AddChain(Idx, "v", { NF::Merge({ NF::Exec("win32", "C:/%PackageUID%/g.exe"), NF::Variant("1.0") }) }, { "base" });
+    AddChain(Idx, "base", { NF::Merge({ NF::Content("zip", "g.zip", "%GameDir%"), NF::Tile("7", "Game", {{"TGDBID", "7"}}) }) });
+    AddChain(Idx, "v", { NF::Merge({ NF::Exec("win32", "%GameDir%/g.exe"), NF::Variant("1.0") }) }, { "base" });
     ManifestModel::DeriveFacts(Idx);
     const Node &V = Idx.Nodes.at("v");
     CHECK(V.IsVariant());
     CHECK(V.HasExec && !V.HasRunner);
     CHECK_EQ(V.HostPlatform, std::string("win32"));
-    CHECK_EQ(V.Exec["CONTENTPATH"].get<std::string>(), std::string("C:/%PackageUID%/g.exe"));
+    CHECK_EQ(V.Exec["CONTENTPATH"].get<std::string>(), std::string("%GameDir%/g.exe"));
     CHECK(V.Faces == std::vector<std::string>{"7"});
     CHECK_EQ(V.Uid, std::string("7"));
     CHECK_EQ(V.PackageUid, std::string("7"));
@@ -182,7 +182,8 @@ TEST(a_runner_is_an_entry_with_guest_platforms)
 {
     NodeIndex Idx;
     ordered_json R = NF::Runner("linux64", {"win32", "win64"}, "%RunnerMount%/proton");
-    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"} };
+    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
     R["LAYERS"][0]["EXEC"][0]["PREFIX_GENERATE"] = true;
     AddChain(Idx, "proton", { R });
     ManifestModel::DeriveFacts(Idx);
@@ -190,7 +191,8 @@ TEST(a_runner_is_an_entry_with_guest_platforms)
     CHECK(P.IsRunner() && P.OwnRunner && !P.HasExec);
     CHECK((P.GuestPlatform == std::vector<std::string>{"win32", "win64"}));
     CHECK_EQ(P.Exec["EXECUTABLE"].get<std::string>(), std::string("%RunnerMount%/proton"));
-    CHECK(P.Exec["GUEST_ROOTS"].contains("C:"));
+    CHECK(P.Exec["GUEST_ROOTS"].contains("%GameDir%"));
+    CHECK(P.Exec["DRIVES"].contains("C:"));
     CHECK(P.Exec["PREFIX_GENERATE"].get<bool>());
 }
 
@@ -215,13 +217,13 @@ TEST(user_ownership_is_decided_by_the_most_specific_keep)
 {
     const ordered_json Keep = { {"FILES/%UserProfile%/Saved Games/X/", {{"NAME", "X"}}},
                                 {"FILES/%UserProfile%/Saved Games/X/ubi.ini", false},
-                                {"FILES/C:/g/Default.cfg#/W:", true} };
+                                {"FILES/%GameDir%/Default.cfg#/W:", true} };
     CHECK(NodeLower::UserOwned(Keep, "FILES/%UserProfile%/Saved Games/X/save1.sav"));
     CHECK(!NodeLower::UserOwned(Keep, "FILES/%UserProfile%/Saved Games/X/ubi.ini"));   // taken back
     CHECK(NodeLower::UserOwned(Keep, "FILES/%UserProfile%/saved games/x/other"));       // FILES compare case-insensitively
-    CHECK(!NodeLower::UserOwned(Keep, "FILES/C:/g/Default.cfg"));                        // the file is the package's…
-    CHECK(NodeLower::UserOwned(Keep, "FILES/C:/g/Default.cfg#/W:"));                     // …one key in it is the user's
-    CHECK(!NodeLower::UserOwned(Keep, "FILES/C:/elsewhere"));                            // nothing covers it: the package's
+    CHECK(!NodeLower::UserOwned(Keep, "FILES/%GameDir%/Default.cfg"));                        // the file is the package's…
+    CHECK(NodeLower::UserOwned(Keep, "FILES/%GameDir%/Default.cfg#/W:"));                     // …one key in it is the user's
+    CHECK(!NodeLower::UserOwned(Keep, "FILES/%Documents%/elsewhere"));                            // nothing covers it: the package's
 }
 
 TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
@@ -232,11 +234,11 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
     // launch; its edit of prefs.ini (inside the kept dir) is a package DEFAULT — applied while the user has no saved
     // copy (IF_UNSAVED). A binary patch always runs after the mount and carries neither.
     const ordered_json Game = { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
-        {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 9}, {"TARGET", "FILES/C:/%PackageUID%"}},
+        {{"ZIP", "g.zip"}, {"SOURCE", "Qm1"}, {"SIZE", 9}, {"TARGET", "FILES/%GameDir%"}},
         {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "v"}} })}, {"TARGET", "FILES/%UserProfile%/Saved Games/X/ubi.ini"}},
-        {{"EDIT", ordered_json::array({ {{"MODE", "ConfigWrite"}, {"KEY", "/W:"}, {"VALUE", "%ScreenWidth%"}} })}, {"TARGET", "FILES/C:/%PackageUID%/Default.cfg"}},
+        {{"EDIT", ordered_json::array({ {{"MODE", "ConfigWrite"}, {"KEY", "/W:"}, {"VALUE", "%ScreenWidth%"}} })}, {"TARGET", "FILES/%GameDir%/Default.cfg"}},
         {{"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "p"}} })}, {"TARGET", "FILES/%UserProfile%/Saved Games/X/prefs.ini"}},
-        {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "ff"}} })}, {"TARGET", "FILES/C:/%PackageUID%/g.exe"}},
+        {{"EDIT", ordered_json::array({ {{"MODE", "Poke"}, {"OFFSET", "0x10"}, {"VALUE", "ff"}} })}, {"TARGET", "FILES/%GameDir%/g.exe"}},
         {{"KEEP", {{"FILES/%UserProfile%/Saved Games/X/", {{"NAME", "X"}}}, {"FILES/%UserProfile%/Saved Games/X/ubi.ini", false}}}},
         {{"REG", {{"HKCU", {{"Software", {{"A", {{"k1", "1"}, {"k2", "2"}}}}}}}}}, {"ARCH", ordered_json::array({"32"})}},
         {{"DLL", {{"d3d8", "n,b"}}}},
@@ -245,20 +247,20 @@ TEST(lower_plan_places_folds_and_applies_edits_by_ownership)
     Fold::Library Lib;
     Lib.Nodes["g"] = { &Game, "/b" };
     const Fold::Plan P = Fold::Resolve(Lib, "g");
-    const ordered_json Ops = NodeLower::LowerPlan(P, ordered_json());
+    const ordered_json Ops = NodeLower::LowerPlan(P);
     auto Find = [&](const std::string &Type, const std::string &Key, const std::string &Val) -> const ordered_json * {
         for (const auto &O : Ops) if (O.value("TYPE", std::string()) == Type && O.value(Key, std::string()) == Val) return &O;
         return nullptr;
     };
-    const ordered_json *Zip = Find("VFSZipLayer", "TARGET", "C:/%PackageUID%");
+    const ordered_json *Zip = Find("VFSZipLayer", "TARGET", "%GameDir%");
     CHECK(Zip && (*Zip)["PATH"] == "/b/g.zip" && (*Zip)["SOURCE"]["CID"] == "Qm1" && (*Zip)["SOURCE"]["SIZE"] == 9);
     const ordered_json *Ubi = Find("FileEdit", "FILE", "%UserProfile%/Saved Games/X/ubi.ini");
     CHECK(Ubi && Ubi->value("OVERRIDE", false) && !Ubi->contains("IF_UNSAVED"));   // taken back ⇒ the package's, every launch
-    const ordered_json *Cfg = Find("FileEdit", "FILE", "C:/%PackageUID%/Default.cfg");
+    const ordered_json *Cfg = Find("FileEdit", "FILE", "%GameDir%/Default.cfg");
     CHECK(Cfg && Cfg->value("OVERRIDE", false) && !Cfg->contains("IF_UNSAVED"));   // the package's: over the mounted zip
     const ordered_json *Prefs = Find("FileEdit", "FILE", "%UserProfile%/Saved Games/X/prefs.ini");
     CHECK(Prefs && Prefs->value("OVERRIDE", false) && Prefs->value("IF_UNSAVED", false));   // the user's: a default
-    const ordered_json *Poke = Find("BinaryPatch", "FILE", "C:/%PackageUID%/g.exe");
+    const ordered_json *Poke = Find("BinaryPatch", "FILE", "%GameDir%/g.exe");
     CHECK(Poke && !Poke->contains("OVERRIDE") && !Poke->contains("IF_UNSAVED"));
     const ordered_json *Reg = Find("RegEdit", "REGPATH", "HKCU\\Software\\A");
     CHECK(Reg && (*Reg)["KEYVALUES"].size() == 2 && (*Reg)["ARCHITECTURE"] == "32");   // one RegEdit per key
@@ -284,36 +286,54 @@ TEST(lower_plan_mounts_only_what_take_selects_where_it_lands)
         {{"NODE", "lib"}, {"TAKE", ordered_json::array({ ordered_json::array({"FILES/bin/a.dll", "FILES/b.dll"}), "FILES/bin/save",
                                                          ordered_json::array({"FILES/a.dll", "FILES/c.dll"}) })}, {"TARGET", "FILES/lib"}} })} };
     const ordered_json G = { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
-        {{"NODE", "mid"}, {"TAKE", ordered_json::array({ "FILES/lib/" })}, {"TARGET", "FILES/C:/g"}} })} };
+        {{"NODE", "mid"}, {"TAKE", ordered_json::array({ "FILES/lib/" })}, {"TARGET", "FILES/%GameDir%"}} })} };
     Fold::Library L;
     L.Nodes["lib"] = { &Lib, "/b" };
     L.Nodes["mid"] = { &Mid, "/b" };
     L.Nodes["g"] = { &G, "/b" };
-    const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(L, "g"), ordered_json{ {"C:", "pfx/drive_c"} });
+    const ordered_json Ops = NodeLower::LowerPlan(Fold::Resolve(L, "g"));
     CHECK_EQ(Ops.size(), (size_t)2);                                                 // the untaken dir mounts nothing
     const ordered_json &Zip = Ops[0];
     CHECK(Zip["TYPE"] == "VFSZipLayer" && Zip["PATH"] == "/b/lib.zip");
-    CHECK(Zip["SUBMOUNTS"] == ordered_json::array({ "a.dll:pfx/drive_c/g/b.dll", "save:pfx/drive_c/g/save" }));
+    CHECK(Zip["SUBMOUNTS"] == ordered_json::array({ "a.dll:%GameDir%/b.dll", "save:%GameDir%/save" }));
     const ordered_json &File = Ops[1];                                                // a FILE: its dir, the one file submounted
     CHECK(File["TYPE"] == "VFSDirLayer" && File["PATH"] == "/b");
-    CHECK(File["SUBMOUNTS"] == ordered_json::array({ "a.dll:pfx/drive_c/g/c.dll" }));
+    CHECK(File["SUBMOUNTS"] == ordered_json::array({ "a.dll:%GameDir%/c.dll" }));
     // Without a take nothing is submounted: the layer mounts whole at its placement.
     const ordered_json Whole = { {"CID", "w"}, {"LABEL", "w"}, {"LAYERS", ordered_json::array({
-        {{"NODE", "lib"}, {"TARGET", "FILES/C:/g"}} })} };
+        {{"NODE", "lib"}, {"TARGET", "FILES/%GameDir%"}} })} };
     L.Nodes["w"] = { &Whole, "/b" };
-    const ordered_json W = NodeLower::LowerPlan(Fold::Resolve(L, "w"), ordered_json{ {"C:", "pfx/drive_c"} });
+    const ordered_json W = NodeLower::LowerPlan(Fold::Resolve(L, "w"));
     CHECK_EQ(W.size(), (size_t)3);
-    CHECK(!W[0].contains("SUBMOUNTS") && W[0]["TARGET"] == "pfx/drive_c/g/bin");
+    CHECK(!W[0].contains("SUBMOUNTS") && W[0]["TARGET"] == "%GameDir%/bin");
 }
 
-TEST(guest_coordinates_map_through_a_runners_guest_roots)
+TEST(guest_paths_map_through_a_runners_drives)
 {
-    const ordered_json Roots = { {"C:", "%PrefixRoot%/drive_c"}, {"%UserProfile%", "%PrefixRoot%/drive_c/users/steamuser"} };
-    CHECK_EQ(Fold::ToLayout("C:/%PackageUID%/g.exe", Roots), std::string("%PrefixRoot%/drive_c/%PackageUID%/g.exe"));
-    CHECK_EQ(Fold::ToLayout("c:/x", Roots), std::string("%PrefixRoot%/drive_c/x"));            // drives case-insensitive
-    CHECK_EQ(Fold::ToLayout("%UserProfile%/Saved Games", Roots), std::string("%PrefixRoot%/drive_c/users/steamuser/Saved Games"));
-    CHECK_EQ(Fold::ToLayout("client/x.jar", Roots), std::string("client/x.jar"));             // not a guest path
-    CHECK_EQ(Fold::ToLayout("C:x", Roots), std::string("C:x"));                               // not under the anchor
+    // A guest path (an anchor already resolved: C:\\802\\g.exe, separators normalized) lands where its drive lives.
+    const ordered_json Drives = { {"C:", "%PrefixRoot%/drive_c"}, {"D:", "%PrefixRoot%/media"} };
+    CHECK_EQ(Fold::ToLayout("C:/802/g.exe", Drives), std::string("%PrefixRoot%/drive_c/802/g.exe"));
+    CHECK_EQ(Fold::ToLayout("c:/x", Drives), std::string("%PrefixRoot%/drive_c/x"));            // drives case-insensitive
+    CHECK_EQ(Fold::ToLayout("D:/track.ogg", Drives), std::string("%PrefixRoot%/media/track.ogg"));
+    CHECK_EQ(Fold::ToLayout("client/x.jar", Drives), std::string("client/x.jar"));             // not a guest path
+    CHECK_EQ(Fold::ToLayout("C:x", Drives), std::string("C:x"));                               // not under the drive
+}
+
+TEST(captured_guest_paths_are_respelled_by_their_most_specific_anchor)
+{
+    const std::map<std::string, std::string> A = { {"%GameDir%", "C:\\802"}, {"%ProgramFiles%", "C:\\Program Files"},
+                                                   {"%ProgramFiles32%", "C:\\Program Files (x86)"}, {"%Windows%", "C:\\windows"},
+                                                   {"%SysDir32%", "C:\\windows\\syswow64"}, {"%Media%", "E:\\"} };
+    CHECK_EQ(Fold::ToAnchors("C:\\Program Files (x86)\\LAV\\x.ax", A), std::string("%ProgramFiles32%\\LAV\\x.ax"));  // longest wins
+    CHECK_EQ(Fold::ToAnchors("c:/WINDOWS/SysWOW64/a.dll", A), std::string("%SysDir32%/a.dll"));          // case, separators
+    CHECK_EQ(Fold::ToAnchors("C:\\windows\\win.ini", A), std::string("%Windows%\\win.ini"));
+    CHECK_EQ(Fold::ToAnchors("C:\\802", A), std::string("%GameDir%"));                                  // the whole value
+    CHECK_EQ(Fold::ToAnchors("C:\\8020\\x", A), std::string("C:\\8020\\x"));                        // not a prefix at a boundary
+    CHECK_EQ(Fold::ToAnchors("\"C:\\802\\u.exe\" /S", A), std::string("\"%GameDir%\\u.exe\" /S"));   // inside a command line
+    CHECK_EQ(Fold::ToAnchors("RunDll32 C:\\windows\\syswow64\\x.dll,Go", A), std::string("RunDll32 %SysDir32%\\x.dll,Go"));
+    CHECK_EQ(Fold::ToAnchors("E:\\", A), std::string("%Media%"));                                       // a drive-root anchor
+    CHECK_EQ(Fold::ToAnchors("D:\\x", A), std::string("D:\\x"));                                        // under no anchor: as written
+    CHECK_EQ(Fold::ToAnchors("dword:0000C:\\802", A), std::string("dword:0000C:\\802"));               // not at a path start
 }
 
 // ---- the validator ----------------------------------------------------------------------------------------------
@@ -348,9 +368,9 @@ TEST(validate_refuses_an_edit_beneath_what_replaces_its_file)
 {
     // A DIR provides everything under its target: an EDIT beneath it has no effect. Above it, it is fine.
     NodeIndex Covered, Fine;
-    const ordered_json Edit = NF::Layers({ { {"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/C:/g/a.cfg"} } });
-    AddChain(Covered, "v", { NF::Merge({ Edit, NF::Content("dir", "d", "C:/g"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
-    AddChain(Fine, "v", { NF::Merge({ NF::Content("dir", "d", "C:/g"), Edit, NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    const ordered_json Edit = NF::Layers({ { {"EDIT", ordered_json::array({ {{"MODE", "Overwrite"}, {"VALUE", "x"}} })}, {"TARGET", "FILES/%GameDir%/a.cfg"} } });
+    AddChain(Covered, "v", { NF::Merge({ Edit, NF::Content("dir", "d", "%GameDir%"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    AddChain(Fine, "v", { NF::Merge({ NF::Content("dir", "d", "%GameDir%"), Edit, NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Covered);
     ManifestModel::DeriveFacts(Fine);
     CHECK(AnyContains(Validate(Covered), "lies beneath"));
@@ -360,8 +380,8 @@ TEST(validate_refuses_an_edit_beneath_what_replaces_its_file)
 TEST(validate_refuses_a_delta_with_nothing_beneath_it)
 {
     NodeIndex Idx, Based;
-    AddChain(Idx, "v", { NF::Merge({ NF::Content("delta", "d.vgdelta", "C:/g"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
-    AddChain(Based, "v", { NF::Merge({ NF::Content("zip", "b.zip", "C:/g"), NF::Content("delta", "d.vgdelta", "C:/g"),
+    AddChain(Idx, "v", { NF::Merge({ NF::Content("delta", "d.vgdelta", "%GameDir%"), NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
+    AddChain(Based, "v", { NF::Merge({ NF::Content("zip", "b.zip", "%GameDir%"), NF::Content("delta", "d.vgdelta", "%GameDir%"),
                                        NF::Exec("win32", "g.exe"), NF::Tile("1"), NF::Variant("v") }) });
     ManifestModel::DeriveFacts(Idx);
     ManifestModel::DeriveFacts(Based);
@@ -393,6 +413,71 @@ TEST(validate_names_undefined_variables_and_malformed_whens)
     const auto E = Validate(Idx);
     CHECK(AnyContains(E, "undefined variable %typo_var%"));
     CHECK(AnyContains(E, "malformed WHEN"));
+}
+
+TEST(validate_refuses_drive_letters_and_non_canonical_anchors)
+{
+    // A package names places by anchor only, and each place by its MOST specific anchor; the runner's own map
+    // (GUEST_ROOTS, DRIVES) is where drive letters live.
+    NodeIndex Idx;
+    ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
+    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%Windows%", "C:\\windows"},
+                                                 {"%SysDir32%", "C:\\windows\\syswow64"} };
+    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    AddChain(Idx, "proton", { R });
+    Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"ZIP", "g.zip"}, {"TARGET", "FILES/C:/%PackageUID%"}},                              // a drive in a path
+        {{"REG", {{"HKLM", {{"Software", {{"G", {{"CDPath", "E:\\"}}}}}}}}}},                   // …and in a value
+        {{"FILE", "a.dll"}, {"TARGET", "FILES/%Windows%/syswow64/a.dll"}},                     // %SysDir32% spelled long
+        {{"FILE", "b.ini"}, {"TARGET", "FILES/%Windows%/win.ini"}},                            // fine: nothing narrower
+        {{"FILE", "c.dll"}, {"TARGET", "FILES/%SysDir32%/c.dll"}},                             // fine
+        {{"REG", {{"HKLM", {{"Software", {{"G", {{"Path", "%GameDir%\\bin"}}}}}}}}}},            // fine
+    })} });
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "'FILES/C:/%PackageUID%' names a drive"));
+    CHECK(AnyContains(E, "'E:\\' names a drive"));
+    CHECK(AnyContains(E, "'FILES/%Windows%/syswow64/a.dll' is inside %SysDir32%"));
+    CHECK(!AnyContains(E, "win.ini"));
+    CHECK(!AnyContains(E, "c.dll"));
+    CHECK(!AnyContains(E, "%GameDir%\\bin"));
+    CHECK(!AnyContains(E, "node 'proton'"));                                                   // the map is not a use
+}
+
+TEST(validate_places_anchors_at_the_start_of_paths_and_reads_every_value)
+{
+    NodeIndex Idx;
+    ordered_json R = NF::Runner("linux64", {"win32"}, "%RunnerMount%/proton");
+    R["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"} };
+    R["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"C:", "%PrefixRoot%/drive_c"} };
+    AddChain(Idx, "proton", { R });
+    Add(Idx, { {"CID", "g"}, {"LABEL", "g"}, {"LAYERS", ordered_json::array({
+        {{"ZIP", "g.zip"}, {"TARGET", "FILES/mods/%GameDir%/x"}},                              // anchor mid-path
+        {{"ZIP", "h.zip"}, {"SUBMOUNTS", ordered_json::array({"a:b/%GameDir%"})}},             // …in a submount
+        {{"KEEP", {{"FILES/saves/%GameDir%/", true}}}},                                         // …in a KEEP
+        {{"REG", {{"HKLM", {{"Software", {{"G", {{"CD", "E:"}}}}}}}}}},                          // a bare drive value
+        {{"EDIT", ordered_json::array({ {{"MODE", "ConfigWrite"}, {"KEY", "/W:"}, {"VALUE", "1"}} })}, {"TARGET", "FILES/%GameDir%/c.cfg"}},  // a key, not a drive
+        {{"REG", {{"HKLM", {{"Software", {{"G", {{"U", "RunDll32 %ProgramFiles32%\\x.dll"}}}}}}}}}, // a value may embed one
+         {"COMMENT", "the installer wrote C:\\Program Files (x86)\\G"}},                     // prose is not a place
+        {{"EXEC", ordered_json::array({ {{"LABEL", "Play"}, {"EXE", "%GameDir%/g.exe"}, {"WORKDIR", "bin/%GameDir%"}} })}},
+    })} });
+    const auto E = Validate(Idx);
+    CHECK(AnyContains(E, "path 'mods/%GameDir%/x' has %GameDir% inside it"));
+    CHECK(AnyContains(E, "path 'b/%GameDir%' has %GameDir% inside it"));
+    CHECK(AnyContains(E, "path 'saves/%GameDir%/' has %GameDir% inside it"));
+    CHECK(AnyContains(E, "path 'bin/%GameDir%' has %GameDir% inside it"));
+    CHECK(!AnyContains(E, "path '%GameDir%/g.exe'"));
+    CHECK(AnyContains(E, "'E:' names a drive"));
+    CHECK(!AnyContains(E, "'/W:'"));
+    CHECK(!AnyContains(E, "RunDll32"));
+    CHECK(!AnyContains(E, "installer wrote"));
+    // Two runners that place an anchor differently: packages are checked against one of them — said out loud.
+    ordered_json R2 = NF::Runner("linux64", {"win64"}, "%RunnerMount%/other");
+    R2["LAYERS"][0]["EXEC"][0]["GUEST_ROOTS"] = { {"%GameDir%", "D:\\%PackageUID%"} };
+    R2["LAYERS"][0]["EXEC"][0]["DRIVES"] = { {"D:", "%PrefixRoot%/drive_d"} };
+    AddChain(Idx, "other", { R2 });
+    std::vector<std::string> W;
+    Validate(Idx, &W);
+    CHECK(AnyContains(W, "runners disagree where %GameDir% is"));
 }
 
 static void MakeZip(const std::string &Path, bool Stored)
@@ -514,15 +599,15 @@ TEST(deciding_mentions_are_the_ones_whose_position_picks_a_winner)
 {
     const auto Zip = [](const char *F, const char *T) { return ordered_json{{"ZIP", F}, {"TARGET", T}}; };
     const auto N = [](ordered_json Layers) { return ordered_json{{"LABEL", "n"}, {"LAYERS", std::move(Layers)}}; };
-    const ordered_json A = N(ordered_json::array({ Zip("a.zip", "FILES/C:/g") }));
+    const ordered_json A = N(ordered_json::array({ Zip("a.zip", "FILES/%GameDir%") }));
     // held, deciding: B puts its own zip at A's target and mentions A AFTER it — folded there, A would win
-    const ordered_json B1 = N(ordered_json::array({ Zip("b.zip", "FILES/C:/g"), {{"NODE", "a"}} }));
+    const ordered_json B1 = N(ordered_json::array({ Zip("b.zip", "FILES/%GameDir%"), {{"NODE", "a"}} }));
     // held, not deciding: B's zip is elsewhere
-    const ordered_json B2 = N(ordered_json::array({ Zip("b.zip", "FILES/C:/other"), {{"NODE", "a"}} }));
+    const ordered_json B2 = N(ordered_json::array({ Zip("b.zip", "FILES/%Documents%/other"), {{"NODE", "a"}} }));
     const ordered_json V1 = N(ordered_json::array({ {{"NODE", "a"}}, {{"NODE", "b1"}} }));
     const ordered_json V2 = N(ordered_json::array({ {{"NODE", "a"}}, {{"NODE", "b2"}} }));
     // moved, deciding: V3's own zip sits between the two mentions of A at A's target
-    const ordered_json V3 = N(ordered_json::array({ {{"NODE", "a"}}, Zip("v.zip", "FILES/C:/g/sub"), {{"NODE", "a"}} }));
+    const ordered_json V3 = N(ordered_json::array({ {{"NODE", "a"}}, Zip("v.zip", "FILES/%GameDir%/sub"), {{"NODE", "a"}} }));
     // a held fact: B3 sets ENV X after A's value; holding A keeps B3's
     const ordered_json EA = N(ordered_json::array({ {{"ENV", {{"X", "a"}}}} }));
     const ordered_json B3 = N(ordered_json::array({ {{"ENV", {{"X", "b"}}}}, {{"NODE", "ea"}} }));

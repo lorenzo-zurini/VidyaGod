@@ -1,6 +1,7 @@
 #ifndef AUTHORINGSESSIONWINDOW_H
 #define AUTHORINGSESSIONWINDOW_H
 
+#include <QMap>
 #include <QWidget>
 
 #include <string>
@@ -41,6 +42,7 @@ private:
     QLabel *     InfoLabel    = nullptr;
     QLabel *     FilesPreview = nullptr;   // live capture-level + mount-path preview
     QString      ContentRootStr;           // the runner's content root (for the mount-path preview)
+    QMap<QString, QString> AnchorLayout;   // %Anchor% → where this runtime lays it out (for the mount-path preview)
     QComboBox *  RunnerCombo  = nullptr;
     QLineEdit *  TargetEdit   = nullptr;
     QLineEdit *  DestNameEdit = nullptr;

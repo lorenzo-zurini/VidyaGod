@@ -13,6 +13,7 @@
 #include <QThread>
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <map>
 #include <queue>
@@ -69,21 +70,55 @@ nlohmann::ordered_json LaunchResolver::RunnerOps(const NodeIndex &Idx, const std
     const Fold::Plan P = Fold::Resolve(ManifestModel::LibraryOf(Idx), RunnerId);
     if (!P.Error.empty()) LogWarn("LaunchResolver::RunnerOps", "runner '" + RunnerId + "': " + P.Error);
     if (PlanOut) *PlanOut = P;
-    return NodeLower::LowerPlan(P, nlohmann::ordered_json());
+    return NodeLower::LowerPlan(P);
 }
 
 std::string LaunchResolver::GuestToLayout(struct ContainerParams &CP, const std::string &Path)
 {
-    if (!CP.GuestRoots.is_object() || CP.GuestRoots.empty()) return Path;
+    //An anchor resolves to its guest path (C:\802 — the variables map says so: the same spelling a registry value
+    //gets); a guest path lands where its drive lives in the runner's layout.
     const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
-    nlohmann::ordered_json Roots = nlohmann::ordered_json::object();
-    for (const auto &[A, V] : CP.GuestRoots.items())
+    std::string P = Path;
+    if (P.find('%') != std::string::npos) VarSubst::StringVariableSubstitution(P, Vars);
+    if (!CP.Drives.is_object() || CP.Drives.empty()) return P;           // no drives: nothing is a guest path to map
+    const bool Guest = P.size() >= 2 && std::isalpha(static_cast<unsigned char>(P[0])) && P[1] == ':';
+    if (!Guest) return P;
+    std::replace(P.begin(), P.end(), '\\', '/');                        // a guest path: Windows separators
+    for (size_t I; (I = P.find("//")) != std::string::npos;) P.erase(I, 1);   // "E:\\" + "/x" is E:/x
+    nlohmann::ordered_json Drives = nlohmann::ordered_json::object();
+    for (const auto &[D, V] : CP.Drives.items())
     {
         std::string R = V.is_string() ? V.get<std::string>() : std::string();
         VarSubst::StringVariableSubstitution(R, Vars);
-        Roots[A] = R;
+        Drives[D] = R;
     }
-    return Fold::ToLayout(Path, Roots);
+    return Fold::ToLayout(P, Drives);
+}
+
+nlohmann::ordered_json LaunchResolver::AnchorRegEdits(struct ContainerParams &CP, nlohmann::ordered_json Edits)
+{
+    const std::map<std::string, std::string> Vars = CP.GetVariablesMap();
+    std::map<std::string, std::string> Anchors;                          // %Anchor% -> its guest path, resolved
+    if (CP.GuestRoots.is_object())
+        for (const auto &[A, V] : CP.GuestRoots.items())
+        {
+            const auto It = A.size() > 2 ? Vars.find(A.substr(1, A.size() - 2)) : Vars.end();
+            if (It != Vars.end()) Anchors[A] = It->second;
+        }
+    if (Anchors.empty() || !Edits.is_array()) return Edits;
+    for (auto &E : Edits)
+        if (E.is_object() && E.contains("KEYVALUES") && E["KEYVALUES"].is_object())
+            for (auto &[K, V] : E["KEYVALUES"].items())
+                if (V.is_string()) V = Fold::ToAnchors(V.get<std::string>(), Anchors);
+    return Edits;
+}
+
+std::vector<std::pair<std::string, std::string>> LaunchResolver::AnchorLayouts(struct ContainerParams &CP)
+{
+    std::vector<std::pair<std::string, std::string>> Out;
+    if (CP.GuestRoots.is_object())
+        for (const auto &[A, V] : CP.GuestRoots.items()) Out.emplace_back(A, GuestToLayout(CP, A));
+    return Out;
 }
 
 bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams, nlohmann::ordered_json &ComponentPool, const nlohmann::ordered_json &GlobalConfigJSON)
@@ -181,6 +216,15 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     {
       CP.ContentRoot.clear();
       CP.RunnerPersistLayers = nlohmann::ordered_json::array();
+      //A runner-less workbench has no guest: it lays each anchor any runner declares out as a top-level folder of
+      //its name (%GameDir%/x → GameDir/x), so the content it mounts, the capture preview and a captured TARGET all
+      //spell the same place.
+      CP.GuestRoots = nlohmann::ordered_json::object();
+      CP.Drives = nlohmann::ordered_json::object();
+      for (const auto &[Id, N] : Idx.Nodes)
+          if (N.OwnRunner && N.Exec.is_object() && N.Exec.contains("GUEST_ROOTS") && N.Exec["GUEST_ROOTS"].is_object())
+              for (const auto &[A, V] : N.Exec["GUEST_ROOTS"].items())
+                  if (A.size() > 2) CP.GuestRoots[A] = A.substr(1, A.size() - 2);
     }
     else
     {
@@ -213,6 +257,8 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     CP.RunnerShipsBuild  = Boundary.ShipsBuild;
     if (RunnerNode && RunnerNode->Exec.is_object() && RunnerNode->Exec.contains("GUEST_ROOTS")) GuestRoots = RunnerNode->Exec["GUEST_ROOTS"];
     CP.GuestRoots = GuestRoots;
+    CP.Drives = RunnerNode && RunnerNode->Exec.is_object() && RunnerNode->Exec.contains("DRIVES")
+              ? RunnerNode->Exec["DRIVES"] : nlohmann::ordered_json::object();
 
     //Where user state lives by the runner's choice: the KEEP entries of every runner in the chain (ours keep
     //nothing; the author decides). Folded into DerivePersistence before the game's.
@@ -241,7 +287,7 @@ bool LaunchResolver::InitializeFromNode(struct ContainerParams &ContainerParams,
     }   // end !AuthoringBare
 
     //The game: the resolved row, lowered. Its paths stay in guest coordinates until substituted (GuestToLayout).
-    Components.push_back({ {"COMPONENTID", LaunchId}, {"SUBCOMPONENTS", NodeLower::LowerPlan(Plan, nlohmann::ordered_json())} });
+    Components.push_back({ {"COMPONENTID", LaunchId}, {"SUBCOMPONENTS", NodeLower::LowerPlan(Plan)} });
     CP.Recipe.push_back(LaunchId);
 
     //The environment folds per name like everything else (null = removed) — the GAME's, merged over the runner's at exec.

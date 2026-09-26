@@ -378,20 +378,20 @@ void TypeColour(const std::string &Kind, int &R, int &G, int &B)
 //SOURCE on content is stamped by publish, not seeded here.
 json NewLayer(const std::string &T)
 {
-    if (T == "ZIP" || T == "FILE" || T == "DELTA") return json::object({{T, ""}, {"TARGET", "FILES/C:/%PackageUID%"}});
-    if (T == "DIR")   return json::object({{"DIR", ""}, {"TARGET", "FILES/C:/%PackageUID%"}});
+    if (T == "ZIP" || T == "FILE" || T == "DELTA") return json::object({{T, ""}, {"TARGET", "FILES/%GameDir%"}});
+    if (T == "DIR")   return json::object({{"DIR", ""}, {"TARGET", "FILES/%GameDir%"}});
     if (T == "NODE")  return json::object({{"NODE", ""}});
     if (T == "ANY")   return json::object({{"ANY", json::array()}});
     if (T == "NOT")   return json::object({{"NOT", ""}});
     if (T == "EDIT")  return json::object({{"EDIT", json::array({ json::object({{"MODE","ConfigWrite"},{"KEY",""},{"VALUE",""}}) })},
-                                           {"TARGET", "FILES/C:/%PackageUID%/"}});
+                                           {"TARGET", "FILES/%GameDir%/"}});
     if (T == "REG")   return json::object({{"REG", json::object()}, {"ARCH", json::array({"32"})}});
     if (T == "DLL")   return json::object({{"DLL", json::object()}});
     if (T == "ENV")   return json::object({{"ENV", json::object()}});
     if (T == "VARS")  return json::object({{"VARS", json::object()}});
     if (T == "KEEP")  return json::object({{"KEEP", json::object()}});
     if (T == "EXEC")  return json::object({{"EXEC", json::array({ json::object({{"LABEL","Play"},{"HOST","win32"},
-                                                                                {"EXE","C:/%PackageUID%/"},{"ARGS", json::array()}}) })}});
+                                                                                {"EXE","%GameDir%/"},{"ARGS", json::array()}}) })}});
     return json();
 }
 
@@ -562,7 +562,7 @@ std::vector<Field> Content(const char *Key, const char *Label, const char *Hint,
 {
     std::vector<Field> F = {
         {Key,         Label,       FieldKind::Text,       Hint, {}, {}},
-        {"TARGET",    "Target",    FieldKind::Text,       "FILES/C:/%PackageUID%/... - where it lands", {}, {}},
+        {"TARGET",    "Target",    FieldKind::Text,       "FILES/%GameDir%/... - where it lands", {}, {}},
         {"SUBMOUNTS", "Submounts", FieldKind::StringList, "source/path:dest/path", {}, {}},
     };
     if (Source) F.push_back({"SOURCE", "Source", FieldKind::Text, "CID - stamped by publish", {}, {}});
@@ -590,7 +590,7 @@ std::vector<Field> MakeFields(const std::string &Type)
         //(replace, poke, cave). An earlier table offered Cave and Poke without their PAYLOAD/VALUE, so picking
         //either produced a node validation then rejected with no way to fix it from the editor.
         return WithGate({
-            {"TARGET", "File", FieldKind::Text, "FILES/C:/%PackageUID%/... - the file edited", {}, {}},
+            {"TARGET", "File", FieldKind::Text, "FILES/%GameDir%/... - the file edited", {}, {}},
             {"EDIT",   "Ops",  FieldKind::ObjArray, "", {}, {
                 {"MODE",    "Mode",    FieldKind::Enum, "", ModeOpts, {}},
                 {"SECTION", "Section", FieldKind::Text, "ConfigWrite: [section] (optional)", {}, {}},
@@ -632,13 +632,14 @@ std::vector<Field> MakeFields(const std::string &Type)
                 {"LABEL",        "Label",        FieldKind::Text,       "entries fold by label (\"Play\" = the game)", {}, {}},
                 {"HOST",         "Host",         FieldKind::Text,       "the platform this needs (win32 / linux64 / ...)", {}, {}},
                 {"GUEST",        "Guest",        FieldKind::StringList, "platforms this PROVIDES - set => runner", {}, {}},
-                {"EXE",          "Exe",          FieldKind::Text,       "the program, in guest coordinates (C:/...)", {}, {}},
+                {"EXE",          "Exe",          FieldKind::Text,       "the program, by anchor (%GameDir%/...)", {}, {}},
                 {"ARGS",         "Args",         FieldKind::StringList, "one per line", {}, {}},
                 {"WORKDIR",      "Work dir",     FieldKind::Text,       "", {}, {}},
                 {"CONTENT_ROOT", "Content root", FieldKind::Text,       "runner only", {}, {}},
                 {"PREFIX_GENERATE", "Generate prefix", FieldKind::Check, "runner only - needs a wine/proton prefix", {}, {}},
                 {"UNIFIED_RUNTIME", "Unified runtime", FieldKind::Check, "runner only - mount the build INTO the game runtime", {}, {}},
-                {"GUEST_ROOTS",  "Guest roots",  FieldKind::KeyValue,   "runner only - C: -> %PrefixRoot%/drive_c", {}, {}},
+                {"GUEST_ROOTS",  "Guest roots",  FieldKind::KeyValue,   "runner only - %GameDir% -> C:\\%PackageUID%", {}, {}},
+                {"DRIVES",       "Drives",       FieldKind::KeyValue,   "runner only - C: -> %PrefixRoot%/drive_c", {}, {}},
                 {"TILE",         "Tile",         FieldKind::Object,     "", {}, {
                     {"UID",       "UID",        FieldKind::Text,     "stable id - one UID = one card", {}, {}},
                     {"PARENTUID", "Parent UID", FieldKind::Text,     "the family (base game) this tile nests under", {}, {}},

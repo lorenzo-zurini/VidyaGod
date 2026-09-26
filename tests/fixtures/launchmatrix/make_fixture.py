@@ -66,6 +66,8 @@ echo "  libs/readme.txt:  $(cat libs/readme.txt 2>/dev/null || echo MISSING)"
 echo "  libs/renamed.txt: $(cat libs/renamed.txt 2>/dev/null || echo MISSING)"
 echo "  drop.dll / keep.dll / libfile.txt (must be absent): $(ls libs/bin libs/drop.dll libs/keep.dll libs/libfile.txt 2>/dev/null || echo ABSENT)"
 echo "  shared/diamond.txt: $(cat shared/diamond.txt 2>/dev/null || echo MISSING)"
+echo "=== anchors (a file placed at %Documents% lands where the runner lays its drive out)"
+echo "  Documents/lm/single.txt: $(cat ../users/player/Documents/lm/single.txt 2>/dev/null || echo MISSING)"
 echo "=== writability (a KEEP dir must be writable, and survive)"
 mkdir -p game/saves 2>/dev/null && echo "written by the probe" > game/saves/save.txt 2>/dev/null \
   && echo "  game/saves: writable" || echo "  game/saves: NOT writable"
@@ -183,8 +185,11 @@ def make_deltas(B, tool):
 # ---------------------------------------------------------------------------------------------------------
 
 UID = "90000000000001"
-G = "C:/%PackageUID%"                       # the game's folder, in guest coordinates (the runner maps them)
-ROOTS = {"C:": "%PrefixRoot%/drive_c"}      # both fixture runners lay a guest drive out the way a wine prefix does
+G = "%GameDir%"                             # the game's folder, by anchor (the runner says where it is)
+# Both fixture runners lay a guest out the way a wine prefix does: each anchor is a guest (Windows) path — what a
+# value naming it reads — and the drive lives at %PrefixRoot%/drive_c in the runner's layout — where a file lands.
+ROOTS = {"%GameDir%": "C:\\%PackageUID%", "%Documents%": "C:\\users\\player\\Documents"}
+DRIVES = {"C:": "%PrefixRoot%/drive_c"}
 
 def F(path=""):
     """A FILES address."""
@@ -216,7 +221,7 @@ def nodes():
         {"ENV": {"LM_RUNNER_ONLY": "from-runner", "LM_SHOULD_BE_GONE": "runner-set-this",
                  "LM_EXEC_ENV": "runner-loses", "LM_GAME_KEEPS_THIS": None}},
         {"EXEC": [{"LABEL": "lm_runner_native", "HOST": "linux64", "GUEST": ["linux64"], "EXE": "/bin/sh",
-                   "ARGS": ["%Content%"], "GUEST_ROOTS": ROOTS}]}])
+                   "ARGS": ["%Content%"], "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}]}])
     add("lm_runner_content", [{"FILE": "fakerunner.sh", "TARGET": F("runner/fakerunner.sh")}])
     # HOST linux64 / GUEST fixture32 ⇒ running fixture32 content takes two hops: this, then the native one.
     add("lm_runner_prefix", [
@@ -224,8 +229,8 @@ def nodes():
         {"ENV": {"LM_RUNNER_ENV": "set", "LM_FROM_VAR": "%lm_text%", "LM_UNWANTED": None}},
         {"EXEC": [{"LABEL": "lm_runner_prefix", "HOST": "linux64", "GUEST": ["fixture32"],
                    "EXE": "%RunnerMount%/runner/fakerunner.sh", "ARGS": ["--run"],
-                   "CONTENT_ROOT": "%PrefixRoot%/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
-                   "GUEST_ROOTS": ROOTS}]}])
+                   "CONTENT_ROOT": "pfx/drive_c/%PackageUID%", "PREFIX_GENERATE": False,
+                   "GUEST_ROOTS": ROOTS, "DRIVES": DRIVES}]}])
 
     # ---- content: every payload type, every TARGET shape, submounts, deltas -----------------------------
     base   = add("lm_c_zip_base", [{"ZIP": "base.zip", "TARGET": F(G), "COMMENT": "the base layer"}])
@@ -329,8 +334,11 @@ def nodes():
 
     # ---- ENV beneath the launchable: it folds along the resolution, so it reaches the process unless a later
     # layer overrides (LM_OVERRIDDEN) or removes (LM_REMOVED_ABOVE) it.
+    # A value naming an anchor reads the guest path (LM_GAMEDIR = C:\\<UID>); a file placed at an anchor lands where
+    # the runner's drive lives (%Documents% → <PrefixRoot>/drive_c/users/player/Documents).
     grp = add("lm_group", [node(dia), {"ENV": {"LM_FOLDED": "from-below", "LM_OVERRIDDEN": "below",
-                                               "LM_REMOVED_ABOVE": "set-below"}}])
+                                               "LM_REMOVED_ABOVE": "set-below", "LM_GAMEDIR": "%GameDir%"}},
+                           {"FILE": "single.txt", "TARGET": F("%Documents%/lm")}])
 
     def play(host, exe, args, **kw):
         return {"EXEC": [dict({"LABEL": "Play", "HOST": host, "EXE": exe, "ARGS": args}, **kw)]}

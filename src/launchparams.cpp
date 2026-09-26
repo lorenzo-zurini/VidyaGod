@@ -46,19 +46,26 @@ std::map<std::string, std::string> ContainerParams::GetVariablesMap()
     //Custom variables last (may shadow a built-in).
     for (auto &[Key, Value] : this->CustomVariables)
         VariablesMap[Key] = Value;
-    //A guest-root anchor written as a token (GUEST_ROOTS {"%UserProfile%": "%PrefixRoot%/drive_c/users/steamuser"}) IS
-    //a coordinate the boundary runner places: it resolves to that place, as GuestToLayout would map it — so a path
-    //holding it substitutes cleanly wherever it is substituted (a KEEP path, an EDIT file), instead of surviving as an
-    //"undefined variable" until the mapping catches it. Computed from the map above; a custom variable is not shadowed.
+    //A guest-root anchor (GUEST_ROOTS {"%GameDir%": "C:\\%PackageUID%", "%UserProfile%": "C:\\users\\steamuser"}) resolves
+    //to its guest path — what a value naming it (a registry InstallPath, an argument, a config line) must say. A path
+    //the launch PLACES is then mapped through the runner's DRIVES (GuestToLayout). A custom variable is not shadowed.
+    //An anchor may be spelled from another (%AppData% = "%UserProfile%\\AppData\\Roaming"), declared in any order: resolve
+    //to a fixpoint — each pass from the raw spelling against the map so far; a cycle stops after one pass per anchor.
     if (this->GuestRoots.is_object())
-        for (const auto &[Anchor, Place] : this->GuestRoots.items())
+        for (size_t Pass = 0; Pass <= this->GuestRoots.size(); ++Pass)
         {
-            if (Anchor.size() < 3 || Anchor.front() != '%' || Anchor.back() != '%' || !Place.is_string()) continue;
-            const std::string Key = Anchor.substr(1, Anchor.size() - 2);
-            if (this->CustomVariables.count(Key)) continue;
-            std::string R = Place.get<std::string>();
-            VarSubst::StringVariableSubstitution(R, VariablesMap);
-            VariablesMap[Key] = R;
+            bool Changed = false;
+            for (const auto &[Anchor, Place] : this->GuestRoots.items())
+            {
+                if (Anchor.size() < 3 || Anchor.front() != '%' || Anchor.back() != '%' || !Place.is_string()) continue;
+                const std::string Key = Anchor.substr(1, Anchor.size() - 2);
+                if (this->CustomVariables.count(Key)) continue;
+                std::string R = Place.get<std::string>();
+                VarSubst::StringVariableSubstitution(R, VariablesMap);
+                auto It = VariablesMap.find(Key);
+                if (It == VariablesMap.end() || It->second != R) { VariablesMap[Key] = R; Changed = true; }
+            }
+            if (!Changed) break;
         }
     return VariablesMap;
 }

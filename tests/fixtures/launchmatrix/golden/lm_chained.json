@@ -1,13 +1,13 @@
 {
   "ComposedExec": {
-    "CONTENTPATH": "C:/%PackageUID%/probe.sh",
+    "CONTENTPATH": "%GameDir%/probe.sh",
     "EXEARGS": [],
     "LABEL": "Play",
     "PLATFORM": "fixture32"
   },
-  "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
+  "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/pfx/drive_c/90000000000001/probe.sh",
   "ContentPath": "probe.sh",
-  "ContentRoot": "/drive_c/90000000000001",
+  "ContentRoot": "pfx/drive_c/90000000000001",
   "CustomVariables": {
     "VIDYAGOD_PEER_NAMES": "<volatile>",
     "VIDYAGOD_PEER_VIPS": "<volatile>",
@@ -24,27 +24,31 @@
     "lm_text": "hello"
   },
   "DLLOverrides": [],
+  "Drives": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
   "ExeArgs": [],
   "GameName": "Launch Matrix",
   "GuestRoots": {
-    "C:": "%PrefixRoot%/drive_c"
+    "%Documents%": "C:\\users\\player\\Documents",
+    "%GameDir%": "C:\\%PackageUID%"
   },
   "KeepDirs": [
     {
       "cloud": true,
-      "path": "drive_c/90000000000001/game/saves",
+      "path": "pfx/drive_c/90000000000001/game/saves",
       "target": "Saves"
     },
     {
       "cloud": false,
-      "path": "drive_c/90000000000001/game/shadercache",
+      "path": "pfx/drive_c/90000000000001/game/shadercache",
       "target": "ShaderCache"
     }
   ],
   "KeepFiles": [
     {
       "cloud": true,
-      "path": "drive_c/90000000000001/game/config.ini",
+      "path": "pfx/drive_c/90000000000001/game/config.ini",
       "target": "Config"
     }
   ],
@@ -56,6 +60,7 @@
   "LaunchEnv": {
     "LM_EXEC_ENV": "game-wins-over-the-chain",
     "LM_FOLDED": "from-below",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_OVERRIDDEN": "below",
     "LM_REMOVED_ABOVE": "set-below"
   },
@@ -63,7 +68,7 @@
   "PackageUID": "90000000000001",
   "Platform": "fixture32",
   "PrefixGenerate": false,
-  "PrefixRoot": "",
+  "PrefixRoot": "pfx",
   "Recipe": [
     "lm_chained"
   ],
@@ -78,7 +83,7 @@
       ],
       "Host": "linux64",
       "Native": false,
-      "NodeId": "bafkreigvaniqapdbg2bkti5g6ouwk5sw7i4o2d57kctcnmwnni6jgp3bfi"
+      "NodeId": "bafkreicnpcx2mu4vdm2x6vnzh3pk3csw4ha2l6bkzvpqmdnrtu53cbyx6a"
     },
     {
       "Executable": "/bin/sh",
@@ -87,7 +92,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreih4upa57ohm3lembna2gbkalhnax5vjx43i3745e3qpxuughpfwpm"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
   "RunnerComponents": [
@@ -106,6 +111,7 @@
     "LM_EXEC_ENV": "game-wins-over-the-chain",
     "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_text%",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_OVERRIDDEN": "below",
     "LM_REMOVED_ABOVE": "set-below",
     "LM_RUNNER_ENV": "set"
@@ -130,54 +136,54 @@
   "SubComponentsArray": [
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
-      "TARGET": "/drive_c/90000000000001",
+      "TARGET": "pfx/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/patch.zip",
-      "TARGET": "/drive_c/90000000000001",
+      "TARGET": "pfx/drive_c/90000000000001",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/carrier.zip",
       "SUBMOUNTS": [
-        "nested/relocated.txt:/drive_c/90000000000001/unpacked/relocated.txt"
+        "nested/relocated.txt:pfx/drive_c/90000000000001/unpacked/relocated.txt"
       ],
-      "TARGET": "/drive_c/90000000000001/carrier",
+      "TARGET": "pfx/drive_c/90000000000001/carrier",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/loosedir",
-      "TARGET": "/drive_c/90000000000001/loose",
+      "TARGET": "pfx/drive_c/90000000000001/loose",
       "TYPE": "VFSDirLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
-      "TARGET": "/drive_c/90000000000001/loosefile",
+      "TARGET": "pfx/drive_c/90000000000001/loosefile",
       "TYPE": "VFSFileLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/maskeddir",
-      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TARGET": "pfx/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSDirLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/base.zip",
-      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TARGET": "pfx/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/over_base.vgdelta",
-      "TARGET": "/drive_c/90000000000001/deltatarget",
+      "TARGET": "pfx/drive_c/90000000000001/deltatarget",
       "TYPE": "VFSDeltaLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/probe.sh",
-      "TARGET": "/drive_c/90000000000001/bin",
+      "TARGET": "pfx/drive_c/90000000000001/bin",
       "TYPE": "VFSFileLayer"
     },
     {
-      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "FILE": "pfx/drive_c/90000000000001/game/config.ini",
       "IF_UNSAVED": true,
       "KEY": "Setting=",
       "MODE": "ConfigWrite",
@@ -186,7 +192,7 @@
       "VALUE": "1"
     },
     {
-      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "FILE": "pfx/drive_c/90000000000001/game/config.ini",
       "IF_UNSAVED": true,
       "KEY": "FromVar=",
       "MODE": "ConfigWrite",
@@ -195,7 +201,7 @@
       "VALUE": "hello-beta"
     },
     {
-      "FILE": "/drive_c/90000000000001/game/written.txt",
+      "FILE": "pfx/drive_c/90000000000001/game/written.txt",
       "MODE": "Overwrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
@@ -203,7 +209,7 @@
     },
     {
       "COMMENT": "idempotent by contract",
-      "FILE": "/drive_c/90000000000001/game/config.ini",
+      "FILE": "pfx/drive_c/90000000000001/game/config.ini",
       "IF_UNSAVED": true,
       "MODE": "AppendLine",
       "OVERRIDE": true,
@@ -218,7 +224,7 @@
       "VALUE": "relative target\n"
     },
     {
-      "FILE": "/drive_c/90000000000001/game/conditional.txt",
+      "FILE": "pfx/drive_c/90000000000001/game/conditional.txt",
       "MODE": "Overwrite",
       "OVERRIDE": true,
       "TYPE": "FileEdit",
@@ -227,14 +233,14 @@
     {
       "COMMENT": "VA replace behind an EXPECT guard",
       "EXPECT": "000102",
-      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "FILE": "pfx/drive_c/90000000000001/game/patch.exe",
       "MODE": "Replace",
       "OFFSET": "0x401000",
       "REPLACE": "aabbcc",
       "TYPE": "BinaryPatch"
     },
     {
-      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "FILE": "pfx/drive_c/90000000000001/game/patch.exe",
       "MODE": "Poke",
       "OFFSET": "0x401010",
       "TYPE": "BinaryPatch",
@@ -244,7 +250,7 @@
       "CAVE": "auto",
       "COMMENT": "cave into section slack the patcher picks itself",
       "EXPECT": "2021222324",
-      "FILE": "/drive_c/90000000000001/game/patch.exe",
+      "FILE": "pfx/drive_c/90000000000001/game/patch.exe",
       "MODE": "Cave",
       "OFFSET": "0x401020",
       "PAYLOAD": "9090",
@@ -253,25 +259,30 @@
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/lib.zip",
       "SUBMOUNTS": [
-        "bin/keep.dll:/drive_c/90000000000001/libs/kept.dll",
-        "doc:/drive_c/90000000000001/libs",
-        "libfile.txt:/drive_c/90000000000001/libs/renamed.txt"
+        "bin/keep.dll:pfx/drive_c/90000000000001/libs/kept.dll",
+        "doc:pfx/drive_c/90000000000001/libs",
+        "libfile.txt:pfx/drive_c/90000000000001/libs/renamed.txt"
       ],
-      "TARGET": "/drive_c/90000000000001/libs",
+      "TARGET": "pfx/drive_c/90000000000001/libs",
       "TYPE": "VFSZipLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix",
       "SUBMOUNTS": [
-        "libfile.txt:/drive_c/90000000000001/libs/renamed.txt"
+        "libfile.txt:pfx/drive_c/90000000000001/libs/renamed.txt"
       ],
-      "TARGET": "/drive_c/90000000000001/libs",
+      "TARGET": "pfx/drive_c/90000000000001/libs",
       "TYPE": "VFSDirLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/shareddir",
-      "TARGET": "/drive_c/90000000000001/shared",
+      "TARGET": "pfx/drive_c/90000000000001/shared",
       "TYPE": "VFSDirLayer"
+    },
+    {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "TARGET": "pfx/drive_c/users/player/Documents/lm",
+      "TYPE": "VFSFileLayer"
     },
     {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/never_fetched.zip",
@@ -279,7 +290,7 @@
         "CID": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e",
         "TYPE": "ipfs"
       },
-      "TARGET": "/drive_c/90000000000001/remote",
+      "TARGET": "pfx/drive_c/90000000000001/remote",
       "TYPE": "VFSZipLayer"
     },
     {
@@ -342,12 +353,14 @@
   ],
   "UnifiedRuntime": false,
   "Variables": {
-    "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
+    "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/pfx/drive_c/90000000000001/probe.sh",
     "ContentPath": "probe.sh",
+    "Documents": "C:\\users\\player\\Documents",
+    "GameDir": "C:\\90000000000001",
     "GameName": "Launch Matrix",
     "PackageName": "Launch Matrix",
     "PackageUID": "90000000000001",
-    "PrefixRoot": "",
+    "PrefixRoot": "pfx",
     "RunnerMount": "<TMP>/90000000000001/DefaultInstance/RUNNER",
     "RuntimePath": "<TMP>/90000000000001/DefaultInstance/RUNTIME",
     "ScreenHeight": "<volatile>",

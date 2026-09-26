@@ -1,6 +1,6 @@
 {
   "ComposedExec": {
-    "CONTENTPATH": "C:/%PackageUID%/game/data.txt",
+    "CONTENTPATH": "%GameDir%/game/data.txt",
     "EXEARGS": [],
     "LABEL": "Play",
     "PLATFORM": "linux64"
@@ -18,10 +18,14 @@
     "VIDYAGOD_SUBNET": "<volatile>"
   },
   "DLLOverrides": [],
+  "Drives": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
   "ExeArgs": [],
   "GameName": "Launch Matrix",
   "GuestRoots": {
-    "C:": "%PrefixRoot%/drive_c"
+    "%Documents%": "C:\\users\\player\\Documents",
+    "%GameDir%": "C:\\%PackageUID%"
   },
   "KeepDirs": [],
   "KeepFiles": [],
@@ -47,7 +51,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreih4upa57ohm3lembna2gbkalhnax5vjx43i3745e3qpxuughpfwpm"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
   "RunnerComponents": [
@@ -88,6 +92,8 @@
   "Variables": {
     "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/game/data.txt",
     "ContentPath": "drive_c/90000000000001/game/data.txt",
+    "Documents": "C:\\users\\player\\Documents",
+    "GameDir": "C:\\90000000000001",
     "GameName": "Launch Matrix",
     "PackageName": "Launch Matrix",
     "PackageUID": "90000000000001",

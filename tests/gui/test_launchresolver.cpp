@@ -307,6 +307,26 @@ private slots:
         QCOMPARE((int)cp.SubComponentsArray.size(), 1);
     }
 
+    // A runner-less workbench lays each anchor any runner declares out as a folder of its name: content placed at
+    // %GameDir% mounts at GameDir/, not at a literal "%GameDir%" folder.
+    void authoring_bare_lays_anchors_out_as_folders()
+    {
+        NodeIndex idx;
+        idx.Nodes["proton"] = runnerNode("proton", {"win32"}, {}, json{{"GUEST_ROOTS", {{"%GameDir%", "C:\\%PackageUID%"}}},
+                                                                       {"DRIVES", {{"C:", "%PrefixRoot%/drive_c"}}}});
+        idx.Nodes["c"] = contentNode("c", json::array({ json{{"DIR", "files"}, {"TARGET", "FILES/%GameDir%/data"}} }));
+        finish(idx);
+        ContainerParams cp("/tmp/vg_bundle");
+        cp.NodeIdx = &idx; cp.LaunchNodeId = "c"; cp.AuthoringBare = true;
+        json pool = json::object();
+        QVERIFY(LaunchResolver::InitializeFromNode(cp, pool, json{{"Settings", json::object()}}));
+        QCOMPARE((int)cp.SubComponentsArray.size(), 1);
+        QCOMPARE(cp.SubComponentsArray[0]["TARGET"].get<std::string>(), std::string("GameDir/data"));
+        const auto L = LaunchResolver::AnchorLayouts(cp);
+        QCOMPARE((int)L.size(), 1);
+        QCOMPARE(L[0].second, std::string("GameDir"));
+    }
+
     // PickRunnerNode honours an explicit RunnerID pin over the first-qualifying default.
     void pick_runner_honours_pin()
     {
@@ -1006,13 +1026,11 @@ private slots:
     {
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
         cp.ExePathRelative = std::filesystem::path("roms/game.smc");
-        //proton has NO explicit GUEST_PATH — the wine-drive template is DERIVED from CONTENT_ROOT (drive_c → C:\).
-        cp.RunnerChain = {
-            mkLink("snes9x", "win32", "snes9x.exe", "", {"%Content%"}),
-            mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
-                   {"waitforexitandrun", "C:\\%PackageUID%\\%ContentPath%"}),
-            mkLink("native", "linux64", "%Content%")
-        };
+        //proton has NO explicit GUEST_PATH — the guest sees the game's content at its GUEST_ROOTS %GameDir%.
+        RunnerLink Proton = mkLink("proton", "linux64", "%RunnerMount%/proton", "pfx/drive_c/%PackageUID%",
+                                   {"waitforexitandrun", "%GameDir%\\%ContentPath%"});
+        Proton.GameDirGuest = "C:\\%PackageUID%";
+        cp.RunnerChain = { mkLink("snes9x", "win32", "snes9x.exe", "", {"%Content%"}), Proton, mkLink("native", "linux64", "%Content%") };
         QCOMPARE(LaunchResolver::BoundaryLinkIndex(cp), 1);          // proton owns the guest fs
         QVERIFY(LaunchResolver::ChainHasInnerLinks(cp));
 
@@ -1020,7 +1038,7 @@ private slots:
         QVERIFY(gt.CrossNamespace);
         QCOMPARE(gt.ContentRel, std::string("__runner_snes9x__/snes9x.exe"));   // boundary's %ContentPath% target
         QCOMPARE((int)gt.TrailingArgs.size(), 1);
-        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms\\game.smc"));  // ROM, guest-translated (derived C:\ + backslashes)
+        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\roms\\game.smc"));  // ROM, guest-translated (%GameDir% + backslashes)
     }
 
     // Every classic chain ([content-runner, native]) has no inner links → ComposeGuestTarget is a no-op.
@@ -1045,19 +1063,69 @@ private slots:
         QCOMPARE(LaunchResolver::GuestPath(std::string(), "a/b.exe", cp), std::string("a/b.exe"));   // identity
     }
 
-    // The wine-drive guest template is derived from CONTENT_ROOT when a boundary declares no explicit GUEST_PATH.
-    void derived_guest_template_from_content_root()
+    // Without GUEST_ROOTS %GameDir% the boundary has no guest namespace to translate into: an inner path passes as is
+    // (a runner is not guessed into having a C: drive from the shape of its CONTENT_ROOT).
+    void guest_template_comes_from_gamedir_only()
     {
         ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "game";
         cp.ExePathRelative = std::filesystem::path("rom.sfc");
-        cp.RunnerChain = {
-            mkLink("emu", "win32", "emu.exe", "", {"%Content%"}),
-            mkLink("umu", "linux64", "umu-run", "drive_c/%PackageUID%", {"C:\\%PackageUID%\\%ContentPath%"}),
-            mkLink("native", "linux64", "%Content%")
-        };
-        auto gt = LaunchResolver::ComposeGuestTarget(cp);
-        QVERIFY(gt.CrossNamespace);
-        QCOMPARE(gt.TrailingArgs[0], std::string("C:\\game\\rom.sfc"));         // derived from "drive_c/%PackageUID%"
+        RunnerLink Umu = mkLink("umu", "linux64", "umu-run", "drive_c/%PackageUID%", {"%Content%"});
+        cp.RunnerChain = { mkLink("emu", "win32", "emu.exe", "", {"%Content%"}), Umu, mkLink("native", "linux64", "%Content%") };
+        QCOMPARE(LaunchResolver::ComposeGuestTarget(cp).TrailingArgs[0], std::string("rom.sfc"));
+        cp.RunnerChain[1].GameDirGuest = "D:\\%PackageUID%";
+        QCOMPARE(LaunchResolver::ComposeGuestTarget(cp).TrailingArgs[0], std::string("D:\\game\\rom.sfc"));
+    }
+
+    // A package names places by anchor. A VALUE naming one reads the guest path (GUEST_ROOTS); a PATH the launch places
+    // lands where that guest path's drive lives in the runner's layout (DRIVES) — the same anchor, two spellings.
+    void anchors_resolve_to_guest_values_and_layout_paths()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802"; cp.PrefixRoot = "pfx";
+        cp.GuestRoots = { {"%GameDir%", "C:\\%PackageUID%"}, {"%SysDir32%", "C:\\windows\\syswow64"},
+                          {"%Media%", "E:\\"} };
+        cp.Drives = { {"C:", "%PrefixRoot%/drive_c"}, {"E:", "%PrefixRoot%/media"} };
+        const auto V = cp.GetVariablesMap();
+        QCOMPARE(V.at("GameDir"), std::string("C:\\802"));                                    // a value: the guest path
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/data/x.cfg"), std::string("pfx/drive_c/802/data/x.cfg"));
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%SysDir32%/ir32_32.dll"), std::string("pfx/drive_c/windows/syswow64/ir32_32.dll"));
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%Media%/track.ogg"), std::string("pfx/media/track.ogg"));   // per drive
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "runner/own.sh"), std::string("runner/own.sh"));         // not a guest path
+        cp.Drives = nlohmann::ordered_json::object();                                                          // no drives:
+        QCOMPARE(LaunchResolver::GuestToLayout(cp, "%GameDir%/x"), std::string("C:\\802/x"));               // nothing maps
+    }
+
+    // An anchor may be spelled from another, declared in any order.
+    void anchors_resolve_through_each_other_in_any_order()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";
+        cp.GuestRoots = { {"%AppData%", "%UserProfile%\\AppData\\Roaming"}, {"%Saves%", "%AppData%\\G"},
+                          {"%UserProfile%", "C:\\users\\me"} };
+        const auto V = cp.GetVariablesMap();
+        QCOMPARE(V.at("AppData"), std::string("C:\\users\\me\\AppData\\Roaming"));
+        QCOMPARE(V.at("Saves"), std::string("C:\\users\\me\\AppData\\Roaming\\G"));
+        cp.GuestRoots = { {"%A%", "%B%\\a"}, {"%B%", "%A%\\b"} };                                    // a cycle ends
+        QVERIFY(cp.GetVariablesMap().count("A"));
+    }
+
+    // What an installer wrote (a captured registry delta) comes back spelled by anchor; the rest untouched.
+    void captured_registry_values_are_respelled_by_anchor()
+    {
+        ContainerParams cp("/tmp/vg_bundle"); cp.PackageUID = "802";
+        cp.GuestRoots = { {"%GameDir%", "C:\\%PackageUID%"}, {"%ProgramFiles32%", "C:\\Program Files (x86)"} };
+        const nlohmann::ordered_json D = LaunchResolver::AnchorRegEdits(cp, nlohmann::ordered_json::array({
+            { {"REGPATH", "HKLM\\Software\\G"}, {"KEYVALUES", { {"InstallPath", "C:\\802"}, {"Codec", "C:\\Program Files (x86)\\LAV\\a.ax"},
+                                                              {"Ver", "dword:00000001"} }} },
+            { {"REGPATH", "HKLM\\Software\\KeyOnly"} } }));
+        QCOMPARE(D[0]["KEYVALUES"]["InstallPath"].get<std::string>(), std::string("%GameDir%"));
+        QCOMPARE(D[0]["KEYVALUES"]["Codec"].get<std::string>(), std::string("%ProgramFiles32%\\LAV\\a.ax"));
+        QCOMPARE(D[0]["KEYVALUES"]["Ver"].get<std::string>(), std::string("dword:00000001"));
+        QVERIFY(!D[1].contains("KEYVALUES"));
+        // where each anchor lands, for the capture preview
+        cp.PrefixRoot = "pfx"; cp.Drives = { {"C:", "%PrefixRoot%/drive_c"} };
+        const auto L = LaunchResolver::AnchorLayouts(cp);
+        QCOMPARE((int)L.size(), 2);
+        QCOMPARE(L[0].second, std::string("pfx/drive_c/802"));
+        QCOMPARE(L[1].second, std::string("pfx/drive_c/Program Files (x86)"));
     }
 
     // ResolveCustomVariables priority: CLI override > USERSETTINGS > DEFAULT.

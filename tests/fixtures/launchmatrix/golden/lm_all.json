@@ -1,6 +1,6 @@
 {
   "ComposedExec": {
-    "CONTENTPATH": "C:/%PackageUID%/probe.sh",
+    "CONTENTPATH": "%GameDir%/probe.sh",
     "EXEARGS": [
       "--matrix",
       "%lm_derived%"
@@ -27,13 +27,17 @@
     "lm_text": "hello"
   },
   "DLLOverrides": [],
+  "Drives": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
   "ExeArgs": [
     "--matrix",
     "hello-beta"
   ],
   "GameName": "Launch Matrix",
   "GuestRoots": {
-    "C:": "%PrefixRoot%/drive_c"
+    "%Documents%": "C:\\users\\player\\Documents",
+    "%GameDir%": "C:\\%PackageUID%"
   },
   "KeepDirs": [
     {
@@ -62,6 +66,7 @@
   "LaunchEnv": {
     "LM_EXEC_ENV": "does-this-arrive",
     "LM_FOLDED": "from-below",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_OVERRIDDEN": "below",
     "LM_REMOVED_ABOVE": "set-below"
   },
@@ -84,7 +89,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreih4upa57ohm3lembna2gbkalhnax5vjx43i3745e3qpxuughpfwpm"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
   "RunnerComponents": [
@@ -96,6 +101,7 @@
   "RunnerEnv": {
     "LM_EXEC_ENV": "does-this-arrive",
     "LM_FOLDED": "from-below",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_OVERRIDDEN": "below",
     "LM_REMOVED_ABOVE": "set-below",
     "LM_RUNNER_ONLY": "from-runner",
@@ -259,6 +265,11 @@
       "TYPE": "VFSDirLayer"
     },
     {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "TARGET": "/drive_c/users/player/Documents/lm",
+      "TYPE": "VFSFileLayer"
+    },
+    {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/never_fetched.zip",
       "SOURCE": {
         "CID": "bafkreib52upmn2n6u65qll6mmj2dft4ddgnvrkcvyhiczcbjlrv2lu766e",
@@ -329,6 +340,8 @@
   "Variables": {
     "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/probe.sh",
     "ContentPath": "drive_c/90000000000001/probe.sh",
+    "Documents": "C:\\users\\player\\Documents",
+    "GameDir": "C:\\90000000000001",
     "GameName": "Launch Matrix",
     "PackageName": "Launch Matrix",
     "PackageUID": "90000000000001",

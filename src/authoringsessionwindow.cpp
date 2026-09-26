@@ -96,7 +96,7 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
     DestNameEdit = new QLineEdit(QString::fromStdString(TargetNodeId + "_files"), FilesTab);
     FForm->addRow("Captured dir (in bundle)", DestNameEdit);
     TargetEdit = new QLineEdit(FilesTab);
-    TargetEdit->setToolTip("Where the captured layer lands, as a guest path (C:/Game, %UserProfile%/Saves; '' = the root).");
+    TargetEdit->setToolTip("Where the captured layer lands, by anchor (%GameDir%, %Documents%/Saves; '' = the root).");
     connect(TargetEdit, &QLineEdit::textChanged, this, [this]{ updateCapturePreview(); });
     FForm->addRow("Mount TARGET", TargetEdit);
     FLay->addLayout(FForm);
@@ -185,8 +185,11 @@ AuthoringSessionWindow::AuthoringSessionWindow(PackageEditorModel * Editor, cons
         if (this->Mode == CaptureMode::Files)         Model->runGuest("explorer.exe");
         else if (this->Mode == CaptureMode::Registry) Model->runGuest("regedit.exe");
     });
-    connect(Model, &AuthoringSessionModel::sessionReady, this, [this, Tabs, RegTabIdx](const QString & Rt, const QString & Cr, bool Wine){
+    connect(Model, &AuthoringSessionModel::sessionReady, this, [this, Tabs, RegTabIdx](const QString & Rt, const QString & Cr, bool Wine,
+                                                                                    const QStringList & Anchors){
         ContentRootStr = Cr;
+        AnchorLayout.clear();
+        for (const QString & L : Anchors) AnchorLayout.insert(L.section('\t', 0, 0), L.section('\t', 1));
         TargetEdit->setText("");
         updateCapturePreview();
         // The "Run Windows program" tool is always available (it establishes the prefix on first use); Explorer/regedit
@@ -228,9 +231,14 @@ void AuthoringSessionWindow::updateCapturePreview()
     if (!FilesPreview) return;
     const QStringList Roots = Tree->checkedRoots();
     if (Roots.isEmpty()) { FilesPreview->setText("Nothing checked — tick a folder/file to capture it at that level."); return; }
+    //A TARGET by anchor lands where this runtime puts that anchor; any other TARGET is under the content root.
+    QString Target = TargetEdit->text().trimmed();
+    if (Target.startsWith("FILES/")) Target = Target.mid(6);
     QString MountBase = ContentRootStr;
-    const QString Target = TargetEdit->text().trimmed();
-    if (!Target.isEmpty()) MountBase += "/" + Target;
+    const int Close = Target.startsWith('%') ? Target.indexOf('%', 1) : -1;
+    if (Close > 0 && AnchorLayout.contains(Target.left(Close + 1)))
+        MountBase = AnchorLayout.value(Target.left(Close + 1)) + Target.mid(Close + 1);
+    else if (!Target.isEmpty()) MountBase += "/" + Target;
     QStringList Lines;
     for (const QString & R : Roots)
     {

@@ -207,6 +207,8 @@ RunnerLink BuildLink(const NodeIndex &Idx, const std::string &Id)
     L.PrefixGenerate   = E.value("PREFIX_GENERATE", false);
     L.UnifiedRuntime   = E.value("UNIFIED_RUNTIME", false);
     L.GuestPathTemplate= E.value("GUEST_PATH", std::string());
+    if (E.contains("GUEST_ROOTS") && E["GUEST_ROOTS"].is_object())
+        L.GameDirGuest = E["GUEST_ROOTS"].value("%GameDir%", std::string());
     L.HostPlatform     = R->HostPlatform;
     L.GuestPlatform    = R->GuestPlatform;
     //A runtime-sourced layer (a %variable% PATH — the prefix-assembly mounts) is NOT part of the runner's importable
@@ -322,19 +324,13 @@ bool LaunchResolver::ChainHasInnerLinks(const struct ContainerParams &CP)
     return BoundaryLinkIndex(CP) > 0;
 }
 
-//The effective guest-path template for a boundary runner: its explicit EXEC.GUEST_PATH, else DERIVED from CONTENT_ROOT
-//for a wine-family runner (a "…/drive_c/<sub>" mount means the guest sees it at C:\<sub>\…), else "" (identity). The
-//derivation makes cross-namespace nesting work for proton/wine/umu with zero authoring — it falls out of CONTENT_ROOT.
+//The effective guest-path template for a boundary runner: its explicit EXEC.GUEST_PATH, else where its guest sees the
+//game's content (GUEST_ROOTS %GameDir%: C:\%PackageUID% for a prefix runner) + the relative path, else "" (identity).
 static std::string EffectiveGuestTemplate(const RunnerLink &Boundary)
 {
     if (!Boundary.GuestPathTemplate.empty()) return Boundary.GuestPathTemplate;
-    const std::string &CR = Boundary.ContentRoot;                                // raw, e.g. "pfx/drive_c/%PackageUID%"
-    const std::string Key = "drive_c/";
-    const auto Pos = CR.find(Key);
-    if (Pos == std::string::npos) return std::string();                          // not a wine drive → identity
-    std::string After = CR.substr(Pos + Key.size());                             // "%PackageUID%"
-    std::replace(After.begin(), After.end(), '/', '\\');                         // guest uses backslashes
-    return "C:\\" + After + (After.empty() ? "" : "\\") + "%REL%";               // → "C:\\%PackageUID%\\%REL%"
+    if (Boundary.GameDirGuest.empty()) return std::string();                     // no guest namespace → identity
+    return Boundary.GameDirGuest + "\\%REL%";                                  // → "C:\%PackageUID%\%REL%"
 }
 
 std::string LaunchResolver::GuestPath(const std::string &Template, const std::string &Rel, struct ContainerParams &CP)
@@ -359,7 +355,7 @@ LaunchResolver::GuestTarget LaunchResolver::ComposeGuestTarget(struct ContainerP
     T.CrossNamespace = true;
 
     const RunnerLink &Boundary = CP.RunnerChain[B];
-    const std::string Template = EffectiveGuestTemplate(Boundary);   // explicit GUEST_PATH, else derived from CONTENT_ROOT
+    const std::string Template = EffectiveGuestTemplate(Boundary);   // explicit GUEST_PATH, else %GameDir% in the guest
 
     //The actual content (e.g. the ROM), as the boundary's guest path — what the innermost inner runner consumes.
     const std::string ContentGuest = GuestPath(Template, CP.ExePathRelative.string(), CP);

@@ -1,13 +1,13 @@
 {
   "ComposedExec": {
-    "CONTENTPATH": "C:/%PackageUID%/bin/probe.sh",
+    "CONTENTPATH": "%GameDir%/bin/probe.sh",
     "EXEARGS": [
       "--matrix",
       "%lm_derived%"
     ],
     "LABEL": "Play",
     "PLATFORM": "linux64",
-    "WORKDIR": "C:/%PackageUID%"
+    "WORKDIR": "%GameDir%"
   },
   "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/bin/probe.sh",
   "ContentPath": "drive_c/90000000000001/bin/probe.sh",
@@ -28,13 +28,17 @@
     "lm_text": "hello"
   },
   "DLLOverrides": [],
+  "Drives": {
+    "C:": "%PrefixRoot%/drive_c"
+  },
   "ExeArgs": [
     "--matrix",
     "hello-beta"
   ],
   "GameName": "Launch Matrix",
   "GuestRoots": {
-    "C:": "%PrefixRoot%/drive_c"
+    "%Documents%": "C:\\users\\player\\Documents",
+    "%GameDir%": "C:\\%PackageUID%"
   },
   "KeepDirs": [
     {
@@ -64,6 +68,7 @@
     "LM_EXEC_ENV": "from-the-graft-entry",
     "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_derived%",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_GRAFT_ENV": "grafted",
     "LM_OVERRIDDEN": "above"
   },
@@ -89,7 +94,7 @@
       ],
       "Host": "linux64",
       "Native": true,
-      "NodeId": "bafkreih4upa57ohm3lembna2gbkalhnax5vjx43i3745e3qpxuughpfwpm"
+      "NodeId": "bafkreiclbditqnvr7dfugtxdcouvyqfz6mecord4owyjn2l55ni2mrfcry"
     }
   ],
   "RunnerComponents": [
@@ -102,6 +107,7 @@
     "LM_EXEC_ENV": "from-the-graft-entry",
     "LM_FOLDED": "from-below",
     "LM_FROM_VAR": "%lm_derived%",
+    "LM_GAMEDIR": "%GameDir%",
     "LM_GRAFT_ENV": "grafted",
     "LM_OVERRIDDEN": "above",
     "LM_RUNNER_ONLY": "from-runner"
@@ -266,6 +272,11 @@
       "TYPE": "VFSDirLayer"
     },
     {
+      "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/single.txt",
+      "TARGET": "/drive_c/users/player/Documents/lm",
+      "TYPE": "VFSFileLayer"
+    },
+    {
       "PATH": "<DATA>/fixture/[90000000000001][v1.0] Launch Matrix/inheritdir",
       "TARGET": "/drive_c/90000000000001",
       "TYPE": "VFSDirLayer"
@@ -352,6 +363,8 @@
   "Variables": {
     "Content": "<TMP>/90000000000001/DefaultInstance/RUNTIME/drive_c/90000000000001/bin/probe.sh",
     "ContentPath": "drive_c/90000000000001/bin/probe.sh",
+    "Documents": "C:\\users\\player\\Documents",
+    "GameDir": "C:\\90000000000001",
     "GameName": "Launch Matrix",
     "PackageName": "Launch Matrix",
     "PackageUID": "90000000000001",

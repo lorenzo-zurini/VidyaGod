@@ -69,7 +69,8 @@ static nlohmann::ordered_json DumpResolution(struct ContainerParams &CP)   // no
     J["RunnerLayers"]      = CP.RunnerLayers;
     J["RunnerPersistLayers"]= CP.RunnerPersistLayers;
     J["Variables"]         = CP.GetVariablesMap();   // every %KEY% the resolve substituted with (built-ins included)
-    J["GuestRoots"]        = CP.GuestRoots;          // guest coordinates → the boundary runner's layout
+    J["GuestRoots"]        = CP.GuestRoots;          // each anchor, in the boundary runner's guest
+    J["Drives"]            = CP.Drives;              // each guest drive, in its layout
     return J;
 }
 
@@ -96,14 +97,19 @@ int CliModes::RunNodeLaunch(LaunchParameters &LaunchParameters, nlohmann::ordere
         // `--node "Age of Empires II"` instead of a hash. Ambiguous only across unrelated games (cosmetic labels may
         // repeat); the first match wins — a person who needs a specific variant passes its CID. The ARG is kept for
         // the log line and the resolve-dump filename; the resolved CID is what the engine looks the node up by.
+        //By CID, else by working-tree handle (the stored "CID" of the last publish — stable while a node is being
+        //edited, so a before/after comparison can name the same node), else by LABEL.
         std::string LookupCid = LaunchParameters.LaunchNodeId;
         if (!Index->Find(LookupCid))
         {
             LookupCid.clear();
             for (const auto &[Cid, N] : Index->Nodes)
-                if (N.NodeId == LaunchParameters.LaunchNodeId) { LookupCid = Cid; break; }
+                if (N.Handle == LaunchParameters.LaunchNodeId) { LookupCid = Cid; break; }
             if (LookupCid.empty())
-            { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID or name), aborting."); return 1; }
+                for (const auto &[Cid, N] : Index->Nodes)
+                    if (N.NodeId == LaunchParameters.LaunchNodeId) { LookupCid = Cid; break; }
+            if (LookupCid.empty())
+            { LogErr("main.cpp", "Node '" + LaunchParameters.LaunchNodeId + "' not found in the catalog (by CID, handle or name), aborting."); return 1; }
         }
 
         Diagnostics::Begin();   // count every WARN/ERR this launch produces; verdict printed at the end
